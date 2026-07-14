@@ -28,6 +28,17 @@ import {
 } from '../agent-skills-list.js';
 import { resolveGlobalSkillsDir } from '../global-skills-dir.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
+import { requireRole } from '../roles.js';
+// ESM-safe cycle (routes/skills → skill-improvement → skill-invoke →
+// routes/skills): every binding on this path is only read inside functions at
+// request time, never at module top level — same contract as the
+// agent-skills-list cycle documented above.
+import {
+  pendingSkillImprovementStorePath,
+  readSkillImprovements,
+  reviewSkillImprovement,
+  type SkillImprovementRecord,
+} from '../skill-improvement.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
@@ -814,6 +825,98 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
       res.status(500).json({ error: (err as Error).message });
     }
   });
+
+  // ─── Skill improvement review (Learned Lessons promotion) ───────────────
+  // Agents suggest lessons via <agenthub:skill-improvement>; suggestions land
+  // in a per-skill `.agenthub/pending-skill-improvements.jsonl` queue and DO
+  // NOT change SKILL.md. These routes are the human review half: list the
+  // queue, then approve (promote into `## Learned Lessons`) or reject.
+  // Approve/reject are Admin+ — promotion turns an untrusted suggestion into
+  // standing instructions for every future session, the exact escalation the
+  // pending queue exists to gate.
+
+  router.get('/api/projects/:projectId/skill-improvements', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const rawStatus = typeof req.query.status === 'string' ? req.query.status : 'pending';
+    if (!['pending', 'approved', 'rejected', 'all'].includes(rawStatus)) {
+      return res.status(400).json({ error: 'status must be pending|approved|rejected|all' });
+    }
+    try {
+      // Merged project+global tiers (a project skill shadows a same-id global
+      // one — same resolution the capture path used to pick the queue).
+      // Bundled defaults are skipped: they are read-only for improvements.
+      const merged = listMergedSkills(resolveProjectSkillsDir(project));
+      const improvements: Array<SkillImprovementRecord & { skillName: string }> = [];
+      for (const skill of merged) {
+        if (skill.source === 'default') continue;
+        const isFlat = skill.path.endsWith('.md');
+        const storePath = pendingSkillImprovementStorePath(skill.path, isFlat);
+        for (const rec of readSkillImprovements(storePath)) {
+          if (rawStatus !== 'all' && rec.status !== rawStatus) continue;
+          improvements.push({ ...rec, skillId: skill.id, skillName: skill.name });
+        }
+      }
+      improvements.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      res.json({ improvements });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  const reviewImprovementHandler =
+    (action: 'approve' | 'reject') => (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
+      if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
+      const improvementId = String(req.params.improvementId ?? '').trim();
+      if (!improvementId) return res.status(400).json({ error: 'improvementId required' });
+      const reason =
+        typeof (req.body as { reason?: unknown } | undefined)?.reason === 'string'
+          ? ((req.body as { reason: string }).reason as string)
+          : undefined;
+
+      const result = reviewSkillImprovement({
+        skillId: slugRes.slug,
+        improvementId,
+        action,
+        reason,
+        paths: { skillsDir: resolveProjectSkillsDir(project) },
+      });
+      if (!result.ok) {
+        const statusByCode: Record<typeof result.code, number> = {
+          skill_not_found: 404,
+          improvement_not_found: 404,
+          default_readonly: 409,
+          already_reviewed: 409,
+          io: 500,
+        };
+        return res
+          .status(statusByCode[result.code])
+          .json({ error: result.error, code: result.code });
+      }
+      broadcast({
+        type: 'skill_improvement_update',
+        projectId: req.params.projectId,
+        skillId: slugRes.slug,
+        improvementId,
+        action: result.record.status,
+      });
+      return res.json({ ok: true, improvement: result.record });
+    };
+
+  router.post(
+    '/api/projects/:projectId/skills/:skillId/improvements/:improvementId/approve',
+    requireRole('Admin'),
+    reviewImprovementHandler('approve'),
+  );
+
+  router.post(
+    '/api/projects/:projectId/skills/:skillId/improvements/:improvementId/reject',
+    requireRole('Admin'),
+    reviewImprovementHandler('reject'),
+  );
 
   router.put('/api/agents/:agentId/skills/:skillId/toggle', (req: Request, res: Response) => {
     const found = findAgent(req.params.agentId as string);

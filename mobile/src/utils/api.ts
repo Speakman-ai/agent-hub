@@ -500,6 +500,12 @@ export const api = {
         body: JSON.stringify({ content }),
     }),
     uninstallSkill: (projectId: any, skillId: any) => fetchJSON(`/projects/${projectId}/skills/${skillId}`, { method: 'DELETE' }),
+    // Skill improvement review — agent-suggested lessons pending human review.
+    // Approve promotes into `## Learned Lessons`; reject discards (optional
+    // audit reason). Approve/reject require Admin+ (server-enforced).
+    getSkillImprovements: (projectId: any, status = 'pending') => fetchJSON(`/projects/${projectId}/skill-improvements?status=${encodeURIComponent(status)}`),
+    approveSkillImprovement: (projectId: any, skillId: any, improvementId: any) => fetchJSON(`/projects/${projectId}/skills/${encodeURIComponent(skillId)}/improvements/${encodeURIComponent(improvementId)}/approve`, { method: 'POST' }),
+    rejectSkillImprovement: (projectId: any, skillId: any, improvementId: any, reason?: any) => fetchJSON(`/projects/${projectId}/skills/${encodeURIComponent(skillId)}/improvements/${encodeURIComponent(improvementId)}/reject`, { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) }),
     // Global (shared) skills — visible to every agent in every project.
     getGlobalSkills: () => fetchJSON(`/global-skills`),
     getGlobalSkill: (skillId: any) => fetchJSON(`/global-skills/${encodeURIComponent(skillId)}`),

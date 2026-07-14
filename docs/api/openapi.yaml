@@ -10101,6 +10101,71 @@ components:
         - credentials
         - source
       description: A single project-authored skill with its raw SKILL.md content.
+    SkillImprovementRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Improvement record id (UUID).
+        skillId:
+          type: string
+          description: Skill slug the lesson targets.
+        skillName:
+          type: string
+          description: Display name of the skill (list responses only).
+        source:
+          type: string
+          enum:
+            - project
+            - global
+          description: Tier the skill resolved to when the lesson was captured.
+        entry:
+          type: string
+          description: The suggested lesson text (max 1200 chars, newlines collapsed). Untrusted agent output — render as plain text.
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - rejected
+        createdAt:
+          type: string
+          description: ISO timestamp the lesson was suggested.
+        sessionId:
+          type: string
+          nullable: true
+          description: Originating session id — provenance for reviewers.
+        agentId:
+          type: string
+          nullable: true
+          description: Agent that suggested the lesson.
+        reviewedAt:
+          type: string
+          nullable: true
+        rejectReason:
+          type: string
+          nullable: true
+      required:
+        - id
+        - skillId
+        - source
+        - entry
+        - status
+        - createdAt
+      description: One suggested skill lesson awaiting (or past) review. Approval appends a dated bullet to the skill's `## Learned Lessons` section.
+    ReviewSkillImprovementResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        improvement:
+          $ref: "#/components/schemas/SkillImprovementRecord"
+      required:
+        - ok
+        - improvement
+      description: The reviewed record with its final status.
     SupportTicketReleaseNotification:
       type: object
       properties:
@@ -32467,6 +32532,204 @@ paths:
                 $ref: "#/components/schemas/SkillWriteError"
         "409":
           description: Slug is a bundled default skill.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+  /api/projects/{projectId}/skill-improvements:
+    get:
+      tags:
+        - Skills
+      summary: List skill improvement suggestions
+      description: Returns agent-suggested skill lessons across the project + global skill tiers (bundled defaults are read-only and never listed). Filter with `status` (default `pending`). Sorted oldest-first.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - pending
+              - approved
+              - rejected
+              - all
+            description: Filter by review status. Defaults to `pending`.
+          required: false
+          description: Filter by review status. Defaults to `pending`.
+          name: status
+          in: query
+      responses:
+        "200":
+          description: Improvement records matching the filter.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  improvements:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SkillImprovementRecord"
+                required:
+                  - improvements
+        "400":
+          description: Invalid status filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem read error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+  /api/projects/{projectId}/skills/{skillId}/improvements/{improvementId}/approve:
+    post:
+      tags:
+        - Skills
+      summary: Approve a skill improvement (Admin+)
+      description: Promotes a pending suggestion into the skill's `SKILL.md` as a dated bullet under `## Learned Lessons`, and marks the record `approved`. Runs under the per-skill file lock. Requires Admin or Owner. 409 when the record was already reviewed or the skill is a bundled default.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Skill slug the improvement belongs to.
+          required: true
+          description: Skill slug the improvement belongs to.
+          name: skillId
+          in: path
+        - schema:
+            type: string
+            description: Improvement record id (UUID).
+          required: true
+          description: Improvement record id (UUID).
+          name: improvementId
+          in: path
+      responses:
+        "200":
+          description: Approved and promoted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewSkillImprovementResult"
+        "400":
+          description: Invalid skill or improvement id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "403":
+          description: Caller is below Admin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Project, skill, or improvement not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "409":
+          description: Already reviewed, or bundled default skill.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+  /api/projects/{projectId}/skills/{skillId}/improvements/{improvementId}/reject:
+    post:
+      tags:
+        - Skills
+      summary: Reject a skill improvement (Admin+)
+      description: Marks a pending suggestion `rejected` without touching SKILL.md. An optional `reason` is kept on the record for audit. Requires Admin or Owner.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Skill slug the improvement belongs to.
+          required: true
+          description: Skill slug the improvement belongs to.
+          name: skillId
+          in: path
+        - schema:
+            type: string
+            description: Improvement record id (UUID).
+          required: true
+          description: Improvement record id (UUID).
+          name: improvementId
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Optional reviewer note kept for audit.
+      responses:
+        "200":
+          description: Rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewSkillImprovementResult"
+        "400":
+          description: Invalid skill or improvement id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "403":
+          description: Caller is below Admin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Project, skill, or improvement not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "409":
+          description: Already reviewed, or bundled default skill.
           content:
             application/json:
               schema:

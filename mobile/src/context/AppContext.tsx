@@ -127,6 +127,10 @@ export function AppProvider({ children }: any) {
     const refreshOpenPullCountRef = useRef<any>(null);
     // Kanban board refresh trigger
     const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
+    // Skill-improvement queue refresh trigger — bumped on the
+    // `skill_improvement_update` broadcast so SkillsScreen refetches its
+    // pending-lessons queue (mirrors the web's window-event fan-out).
+    const [skillImprovementRefreshKey, setSkillImprovementRefreshKey] = useState(0);
     // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
     const [changesReady, setChangesReady] = useState<any>({});
     // Map of sessionId -> latest Finalize Code Changes status string. Mirrors
@@ -587,6 +591,9 @@ export function AppProvider({ children }: any) {
                 if (forActiveSession) {
                     setMessages((prev: any) => prev.map((m: any) => (m.id === data.messageId ? { ...m, content: data.content } : m)));
                 }
+                break;
+            case 'skill_improvement_update':
+                setSkillImprovementRefreshKey((k: any) => (k || 0) + 1);
                 break;
             case 'kanban_update':
                 setKanbanRefreshKey((k: any) => (k || 0) + 1);
@@ -2041,6 +2048,7 @@ export function AppProvider({ children }: any) {
         handleEventsLoaded,
         cronSessions,
         kanbanRefreshKey,
+        skillImprovementRefreshKey,
         changesReady,
         shipFailureAt,
         dismissChangesReady,

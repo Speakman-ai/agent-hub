@@ -4346,9 +4346,20 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               paths: { skillsDir: paths.skillsDir },
               allowedSkills: agent.allowedSkills ?? null,
               loadedSkillIds,
+              provenance: { sessionId, agentId: agent.id },
             });
-            if (result.ok) console.log(`[skill-improvement] ${result.observation}`);
-            else console.warn(`[skill-improvement] ${result.observation}`);
+            if (result.ok) {
+              console.log(`[skill-improvement] ${result.observation}`);
+              // Live-update the Skills page pending badge (mirrors kanban_update
+              // / wiki_update). `projectId` lets clients scope the refetch.
+              broadcast({
+                type: 'skill_improvement_update',
+                projectId: project.id,
+                skillId: result.record?.skillId,
+                improvementId: result.record?.id,
+                action: 'created',
+              });
+            } else console.warn(`[skill-improvement] ${result.observation}`);
           }
 
           const actions: ReActAction[] = [];

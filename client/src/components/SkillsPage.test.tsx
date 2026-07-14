@@ -21,6 +21,12 @@ import { render, screen, act, fireEvent } from '@testing-library/react';
     updateGlobalSkill: vi.fn(),
     deleteGlobalSkill: vi.fn(),
     getGlobalSkill: vi.fn(),
+    // Skill-improvement review queue. Implementation set here (not in a
+    // beforeEach) so `vi.clearAllMocks()` — which clears calls, not
+    // implementations — keeps the empty default for suites that ignore it.
+    getSkillImprovements: vi.fn().mockResolvedValue({ improvements: [] }),
+    approveSkillImprovement: vi.fn(),
+    rejectSkillImprovement: vi.fn(),
   },
 }));
 

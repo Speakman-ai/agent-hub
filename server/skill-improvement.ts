@@ -1,6 +1,14 @@
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { appendFileSync, mkdirSync, rmSync, statSync } from 'fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { isSkillAllowed } from './agent-skills-list.js';
 import { loadSkillBody, type SkillInvokePaths } from './skill-invoke.js';
 import {
@@ -22,14 +30,27 @@ export interface SkillImprovementTask {
   entry: string;
 }
 
-export interface PendingSkillImprovementRecord {
+export type SkillImprovementStatus = 'pending' | 'approved' | 'rejected';
+
+export interface SkillImprovementRecord {
   id: string;
   skillId: string;
   source: 'project' | 'global';
   entry: string;
-  status: 'pending';
+  status: SkillImprovementStatus;
   createdAt: string;
+  /** Session that suggested the lesson — the provenance link reviewers use. */
+  sessionId?: string | null;
+  /** Agent that suggested the lesson. */
+  agentId?: string | null;
+  /** Set when the record leaves `pending` (approve or reject). */
+  reviewedAt?: string | null;
+  /** Optional reviewer-supplied reason, kept for audit (reject only). */
+  rejectReason?: string | null;
 }
+
+/** @deprecated Alias kept for callers written against the capture-only phase. */
+export type PendingSkillImprovementRecord = SkillImprovementRecord;
 
 export interface SkillImprovementMalformed {
   error: 'malformed';
@@ -41,12 +62,21 @@ export interface HandleSkillImprovementArgs {
   paths: SkillInvokePaths;
   allowedSkills?: string[] | null;
   loadedSkillIds: Iterable<string>;
+  /**
+   * Where the suggestion came from. Stored on the pending record so reviewers
+   * can jump to the originating session transcript — the affordance that lets
+   * a human distinguish a legitimate lesson from injected instructions the
+   * agent merely *read* during the session.
+   */
+  provenance?: { sessionId?: string | null; agentId?: string | null };
 }
 
 export interface HandleSkillImprovementResult {
   ok: boolean;
   markdown: string;
   observation: string;
+  /** Set on success so callers can broadcast/report the stored record. */
+  record?: SkillImprovementRecord;
 }
 
 export function detectSkillImprovementBlock(text: string): string | null {
@@ -145,12 +175,150 @@ export function pendingSkillImprovementStorePath(
 
 function writePendingSkillImprovement(
   pendingStorePath: string,
-  record: PendingSkillImprovementRecord,
+  record: SkillImprovementRecord,
 ): void {
   mkdirSync(path.dirname(pendingStorePath), { recursive: true });
   withSkillFileLock(pendingStorePath, () => {
     appendFileSync(pendingStorePath, `${JSON.stringify(record)}\n`);
   });
+}
+
+/**
+ * Read every improvement record in a skill's JSONL store (all statuses, in
+ * append order). Malformed lines are skipped — the store is append-only and a
+ * torn write must not make the whole queue unreadable.
+ */
+export function readSkillImprovements(pendingStorePath: string): SkillImprovementRecord[] {
+  if (!existsSync(pendingStorePath)) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(pendingStorePath, 'utf-8');
+  } catch {
+    return [];
+  }
+  const out: SkillImprovementRecord[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const rec = JSON.parse(line) as unknown;
+      if (
+        rec &&
+        typeof rec === 'object' &&
+        typeof (rec as SkillImprovementRecord).id === 'string' &&
+        typeof (rec as SkillImprovementRecord).entry === 'string'
+      ) {
+        out.push(rec as SkillImprovementRecord);
+      }
+    } catch {
+      /* skip torn/garbage line */
+    }
+  }
+  return out;
+}
+
+export type ReviewSkillImprovementErrorCode =
+  | 'skill_not_found'
+  | 'default_readonly'
+  | 'improvement_not_found'
+  | 'already_reviewed'
+  | 'io';
+
+export type ReviewSkillImprovementResult =
+  | { ok: true; record: SkillImprovementRecord; skillMdPath: string }
+  | { ok: false; code: ReviewSkillImprovementErrorCode; error: string };
+
+export interface ReviewSkillImprovementArgs {
+  skillId: string;
+  improvementId: string;
+  action: 'approve' | 'reject';
+  /** Optional reviewer note, persisted on reject for audit. */
+  reason?: string;
+  paths: SkillInvokePaths;
+  now?: Date;
+}
+
+/**
+ * Promote (approve) or discard (reject) one pending improvement.
+ *
+ * Approve appends the dated bullet to the skill's `## Learned Lessons`
+ * section via {@link appendSkillLearning} and marks the JSONL record
+ * `approved`; reject only marks the record. Both run inside the store's
+ * file lock so concurrent reviews / capture appends serialize. The SKILL.md
+ * body is re-read from disk here — `loadSkillBody` caps its copy at 32KB and
+ * promoting through that copy would silently truncate a large skill.
+ */
+export function reviewSkillImprovement(
+  args: ReviewSkillImprovementArgs,
+): ReviewSkillImprovementResult {
+  const loaded = loadSkillBody(args.skillId, args.paths);
+  if (!loaded) {
+    return {
+      ok: false,
+      code: 'skill_not_found',
+      error: `Skill "${args.skillId}" was not found in project/global skill directories.`,
+    };
+  }
+  if (loaded.source === 'default') {
+    return {
+      ok: false,
+      code: 'default_readonly',
+      error: `Skill "${args.skillId}" is a bundled default skill; its improvements are read-only.`,
+    };
+  }
+
+  const isFlat = Boolean(loaded.skillTitle);
+  const skillMdPath = isFlat ? loaded.skillDir : path.join(loaded.skillDir, 'SKILL.md');
+  const pendingStorePath = pendingSkillImprovementStorePath(loaded.skillDir, isFlat);
+
+  try {
+    return withSkillFileLock(pendingStorePath, (): ReviewSkillImprovementResult => {
+      const records = readSkillImprovements(pendingStorePath);
+      const idx = records.findIndex((r) => r.id === args.improvementId);
+      if (idx === -1) {
+        return {
+          ok: false,
+          code: 'improvement_not_found',
+          error: `Improvement "${args.improvementId}" was not found for skill "${args.skillId}".`,
+        };
+      }
+      const record = records[idx]!;
+      if (record.status !== 'pending') {
+        return {
+          ok: false,
+          code: 'already_reviewed',
+          error: `Improvement "${args.improvementId}" was already ${record.status}.`,
+        };
+      }
+
+      if (args.action === 'approve') {
+        const rawSkillMd = readFileSync(skillMdPath, 'utf-8');
+        // Idempotence guard: SKILL.md is appended before the JSONL record is
+        // rewritten, so a crash between the two writes leaves the record
+        // `pending` with the bullet already on disk. A re-approve must then
+        // only repair the record, not append a duplicate bullet.
+        if (!skillMdContainsLearning(rawSkillMd, record.entry)) {
+          writeFileSync(
+            skillMdPath,
+            appendSkillLearning(rawSkillMd, record.entry, { now: args.now }),
+          );
+        }
+      }
+
+      const reviewed: SkillImprovementRecord = {
+        ...record,
+        status: args.action === 'approve' ? 'approved' : 'rejected',
+        reviewedAt: (args.now ?? new Date()).toISOString(),
+        ...(args.action === 'reject' && args.reason?.trim()
+          ? { rejectReason: args.reason.trim().slice(0, MAX_ENTRY_CHARS) }
+          : {}),
+      };
+      records[idx] = reviewed;
+      writeFileSync(pendingStorePath, records.map((r) => `${JSON.stringify(r)}\n`).join(''));
+      return { ok: true, record: reviewed, skillMdPath };
+    });
+  } catch (err) {
+    return { ok: false, code: 'io', error: (err as Error).message };
+  }
 }
 
 export function parseSkillImprovementBlock(
@@ -199,6 +367,20 @@ export function parseSkillImprovementBlock(
   }
 
   return { name, entry };
+}
+
+/**
+ * True when `rawSkillMd` already carries `entry` as a dated Learned-Lessons
+ * bullet (`- YYYY-MM-DD: <entry>`), regardless of the date. Makes approval
+ * idempotent: if a previous approve appended the bullet but crashed before
+ * marking the JSONL record reviewed, the retry must not append a duplicate.
+ */
+export function skillMdContainsLearning(rawSkillMd: string, entry: string): boolean {
+  const normalized = normalizeEntry(entry);
+  return rawSkillMd.split('\n').some((line) => {
+    const m = line.match(/^- \d{4}-\d{2}-\d{2}: (.*)$/);
+    return m !== null && m[1] === normalized;
+  });
 }
 
 export function appendSkillLearning(
@@ -284,14 +466,17 @@ export function handleSkillImprovement(
     Boolean(loaded.skillTitle),
   );
   try {
-    writePendingSkillImprovement(pendingStorePath, {
+    const record: SkillImprovementRecord = {
       id: randomUUID(),
       skillId: parsed.name,
       source: loaded.source,
       entry: parsed.entry,
       status: 'pending',
       createdAt: new Date().toISOString(),
-    });
+      sessionId: args.provenance?.sessionId ?? null,
+      agentId: args.provenance?.agentId ?? null,
+    };
+    writePendingSkillImprovement(pendingStorePath, record);
     const markdown = [
       '## Skill Improvement Pending Review',
       `Skill \`${parsed.name}\` (${loaded.source}) learning recorded in \`${pendingStorePath}\`.`,
@@ -301,6 +486,7 @@ export function handleSkillImprovement(
       ok: true,
       markdown,
       observation: `- skill-improvement("${parsed.name}") recorded for pending review in ${loaded.source} skill.`,
+      record,
     };
   } catch (err) {
     const detail = (err as Error).message;

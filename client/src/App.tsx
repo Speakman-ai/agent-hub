@@ -2775,6 +2775,12 @@ export default function App({ initialView }: any = {}) {
           );
           break;
 
+        case 'skill_improvement_update':
+          // Skills page listens for this to live-refresh pending-lesson
+          // badges and the review panel (same pattern as wiki_update).
+          window.dispatchEvent(new CustomEvent('skill_improvement_update', { detail: data }));
+          break;
+
         case 'wiki_update':
           window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
           break;
@@ -5791,6 +5797,9 @@ export default function App({ initialView }: any = {}) {
                   projects={projects}
                   initialProjectId={currentView.slice('skills:'.length)}
                   onStartSkillBuilderMode={handleStartSkillBuilderMode}
+                  onOpenSession={({ sessionId, agentId }: any) =>
+                    focusAgentSession(agentId, sessionId)
+                  }
                 />
               ) : currentView === 'designs' ? (
                 <DesignsList

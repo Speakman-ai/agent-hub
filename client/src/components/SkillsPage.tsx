@@ -5,6 +5,7 @@ import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api';
 import { safeHttpHref } from '../utils/safeHttpUrl';
 import { formatDateTime } from '../utils/time';
+import { hasRole, isLocalMode } from '../utils/auth';
 import {
   BookOpen,
   Loader2,
@@ -24,6 +25,9 @@ import {
   Globe,
   Shield,
   ExternalLink,
+  Zap,
+  Check,
+  MessageSquare,
 } from 'lucide-react';
 
 function SkillsLoadError({ section, message, onRetry }: any) {
@@ -289,6 +293,185 @@ export function SkillEditor({
   );
 }
 
+/**
+ * Review queue for agent-suggested skill lessons (<agenthub:skill-improvement>).
+ *
+ * Security-relevant rendering choices, deliberate and load-bearing:
+ *   - `entry` is UNTRUSTED agent output — rendered as plain text, never
+ *     markdown/HTML.
+ *   - The provenance line (agent, timestamp, session deep link) is the
+ *     reviewer's tool for telling a legitimate lesson from injected
+ *     instructions the agent merely *read* during its session.
+ *   - Approve/reject is Admin+ (server-enforced; the client gate is a UX
+ *     hint). There is deliberately no bulk-approve: friction is the feature
+ *     when promoting text into standing instructions.
+ */
+export function PendingLessonsSection({ projectId, improvements, onReviewed, onOpenSession }: any) {
+  const canReview = hasRole('Admin') || isLocalMode();
+  const [busyId, setBusyId] = useState<any>(null);
+  const [error, setError] = useState<any>(null);
+  const [rejectingId, setRejectingId] = useState<any>(null);
+  const [rejectReason, setRejectReason] = useState('');
+
+  const review = useCallback(
+    async (imp: any, action: any) => {
+      setBusyId(imp.id);
+      setError(null);
+      try {
+        if (action === 'approve') {
+          await api.approveSkillImprovement(projectId, imp.skillId, imp.id);
+        } else {
+          await api.rejectSkillImprovement(
+            projectId,
+            imp.skillId,
+            imp.id,
+            rejectReason.trim() || undefined,
+          );
+        }
+        setRejectingId(null);
+        setRejectReason('');
+        if (onReviewed) onReviewed();
+      } catch (err: any) {
+        setError(err?.message || String(err));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [projectId, rejectReason, onReviewed],
+  );
+
+  if (!improvements?.length) return null;
+  const today = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div
+      className="mb-4 rounded-xl border border-amber-800/40 bg-amber-950/10"
+      data-testid="pending-lessons-section"
+    >
+      <div className="px-4 pt-3 pb-2 flex items-center gap-2">
+        <Zap size={14} className="text-amber-400" />
+        <h4 className="text-sm font-medium text-amber-200">
+          Pending lessons{' '}
+          <span className="text-amber-400/70 font-normal">({improvements.length})</span>
+        </h4>
+      </div>
+      <p className="px-4 pb-2 text-[11px] text-gray-500 leading-relaxed">
+        Agents suggested these skill lessons. Approving appends the dated bullet below to the
+        skill&apos;s <code className="bg-gray-900 px-1 rounded">## Learned Lessons</code> — it
+        becomes standing instructions for every future session, so check the source session before
+        promoting.
+      </p>
+      {error && (
+        <p role="alert" className="px-4 pb-2 text-xs text-red-400 break-words">
+          {error}
+        </p>
+      )}
+      <div className="divide-y divide-amber-900/30">
+        {improvements.map((imp: any) => (
+          <div key={imp.id} className="px-4 py-3" data-testid={`pending-lesson-${imp.id}`}>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-700/60 text-gray-300 font-mono">
+                {imp.skillName || imp.skillId}
+              </span>
+              {imp.source === 'global' && (
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-900/40 text-sky-400 inline-flex items-center gap-0.5">
+                  <Globe size={9} /> shared
+                </span>
+              )}
+            </div>
+            {/* Untrusted agent output — plain text on purpose. */}
+            <p className="text-xs text-gray-200 whitespace-pre-wrap break-words">{imp.entry}</p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-gray-500">
+              {imp.agentId ? <span>🤖 {imp.agentId}</span> : null}
+              <span>
+                {formatDateTime(imp.createdAt, { dateStyle: 'short', timeStyle: 'short' })}
+              </span>
+              {imp.sessionId && onOpenSession ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenSession({ sessionId: imp.sessionId, agentId: imp.agentId })}
+                  className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300"
+                  title="Open the session where this lesson was suggested"
+                >
+                  <MessageSquare size={10} /> view source session
+                </button>
+              ) : null}
+            </div>
+            <div className="mt-2 rounded-md bg-gray-900/70 border border-gray-800 px-2 py-1.5">
+              <p className="text-[10px] text-gray-500 mb-0.5">
+                Will append as (date stamped at approval):
+              </p>
+              <code className="text-[11px] text-emerald-300/90 break-words">
+                - {today}: {imp.entry}
+              </code>
+            </div>
+            {canReview ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busyId === imp.id}
+                  onClick={() => review(imp, 'approve')}
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-700/80 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+                  data-testid={`approve-lesson-${imp.id}`}
+                >
+                  {busyId === imp.id ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <Check size={11} />
+                  )}
+                  Approve
+                </button>
+                {rejectingId === imp.id ? (
+                  <>
+                    <input
+                      type="text"
+                      value={rejectReason}
+                      onChange={(e: any) => setRejectReason(e.target.value)}
+                      placeholder="Reason (optional, kept for audit)"
+                      className="min-w-[180px] flex-1 rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-[11px] text-gray-100 placeholder:text-gray-600 focus:border-red-500/60 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={busyId === imp.id}
+                      onClick={() => review(imp, 'reject')}
+                      className="inline-flex items-center gap-1 rounded-md bg-red-800/70 px-2.5 py-1 text-[11px] font-medium text-red-100 hover:bg-red-700 disabled:opacity-40"
+                      data-testid={`reject-lesson-${imp.id}`}
+                    >
+                      <X size={11} /> Confirm reject
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRejectingId(null);
+                        setRejectReason('');
+                      }}
+                      className="text-[11px] text-gray-500 hover:text-gray-300"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setRejectingId(imp.id)}
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2.5 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
+                  >
+                    <X size={11} /> Reject
+                  </button>
+                )}
+              </div>
+            ) : (
+              <p className="mt-2 text-[10px] text-gray-600">
+                Approving requires the Admin role — ask an operator to review.
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SkillCard({
   skill,
   agentId,
@@ -298,6 +481,7 @@ export function SkillCard({
   onUninstall,
   onEdit,
   isInstalled,
+  pendingCount = 0,
 }: any) {
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
@@ -457,6 +641,15 @@ export function SkillCard({
               {skill.source === 'global' && (
                 <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-900/40 text-sky-400 inline-flex items-center gap-0.5">
                   <Globe size={9} /> shared
+                </span>
+              )}
+              {pendingCount > 0 && (
+                <span
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 inline-flex items-center gap-0.5"
+                  title={`${pendingCount} pending lesson${pendingCount === 1 ? '' : 's'} awaiting review`}
+                  data-testid={`skill-pending-badge-${skill.id}`}
+                >
+                  <Zap size={9} /> {pendingCount}
                 </span>
               )}
             </div>
@@ -750,9 +943,11 @@ export default function SkillsPage({
   projects,
   onStartSkillBuilderMode,
   initialProjectId = null,
+  onOpenSession,
 }: any) {
   const activeProjectId = initialProjectId;
   const [skills, setSkills] = useState<any[]>([]);
+  const [improvements, setImprovements] = useState<any[]>([]);
   const [context, setContext] = useState<Record<string, any>>({});
   const [overrides, setOverrides] = useState<any[]>([]);
   const [loadingSkills, setLoadingSkills] = useState(false);
@@ -867,6 +1062,43 @@ export default function SkillsPage({
   }, [activeProjectId, referenceAgentId, reloadKey]);
 
   const retryInstalledLoad = useCallback(() => setReloadKey((k: any) => k + 1), []);
+
+  // Pending skill-improvement suggestions (agent-proposed Learned Lessons).
+  // Non-fatal on error: the review queue is an overlay on the skills page,
+  // not a prerequisite for it.
+  const loadImprovements = useCallback(() => {
+    if (!activeProjectId) return;
+    api
+      .getSkillImprovements(activeProjectId)
+      .then((data: any) => setImprovements(data?.improvements || []))
+      .catch((err: any) => {
+        setImprovements([]);
+        console.error('Failed to load skill improvements:', err);
+      });
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    loadImprovements();
+  }, [loadImprovements, reloadKey]);
+
+  // Live badge/queue refresh — App re-dispatches the `skill_improvement_update`
+  // WebSocket event as a window event (same pattern as wiki_update).
+  useEffect(() => {
+    const handler = (e: any) => {
+      const projectId = e?.detail?.projectId;
+      if (!projectId || projectId === activeProjectId) loadImprovements();
+    };
+    window.addEventListener('skill_improvement_update', handler);
+    return () => window.removeEventListener('skill_improvement_update', handler);
+  }, [activeProjectId, loadImprovements]);
+
+  const pendingCountBySkill = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const imp of improvements) {
+      counts[imp.skillId] = (counts[imp.skillId] || 0) + 1;
+    }
+    return counts;
+  }, [improvements]);
 
   const [actionError, setActionError] = useState<any>(null);
   useEffect(() => {
@@ -1029,6 +1261,12 @@ export default function SkillsPage({
                   Settings → Agents.
                 </p>
               ) : null}
+              <PendingLessonsSection
+                projectId={activeProjectId}
+                improvements={improvements}
+                onReviewed={loadImprovements}
+                onOpenSession={onOpenSession}
+              />
               {loadingSkills ? (
                 <p className="text-sm text-gray-500">Loading skills...</p>
               ) : skillsError ? (
@@ -1057,6 +1295,7 @@ export default function SkillsPage({
                       onUninstall={handleUninstall}
                       onEdit={(s: any) => setEditorState({ skill: s })}
                       isInstalled
+                      pendingCount={pendingCountBySkill[skill.id] || 0}
                     />
                   ))}
                 </div>

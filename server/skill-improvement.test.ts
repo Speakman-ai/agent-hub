@@ -26,6 +26,8 @@ import {
   handleSkillImprovement,
   pendingSkillImprovementStorePath,
   parseSkillImprovementBlock,
+  readSkillImprovements,
+  reviewSkillImprovement,
   type PendingSkillImprovementRecord,
 } from './skill-improvement.js';
 
@@ -227,5 +229,232 @@ describe('skill improvement action block', () => {
       'First durable learning.',
       'Second durable learning.',
     ]);
+  });
+
+  it('stores provenance (sessionId/agentId) on the pending record', () => {
+    const dir = makeSkill(projectSkillsDir, 'kanban');
+    const res = handleSkillImprovement({
+      rawBlock:
+        '<agenthub:skill-improvement>{"name":"kanban","entry":"Lesson with provenance."}</agenthub:skill-improvement>',
+      paths: { skillsDir: projectSkillsDir },
+      loadedSkillIds: ['kanban'],
+      provenance: { sessionId: 'sess-123', agentId: 'agent-dev' },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.record).toMatchObject({ sessionId: 'sess-123', agentId: 'agent-dev' });
+    expect(readPendingRecords(dir)[0]).toMatchObject({
+      sessionId: 'sess-123',
+      agentId: 'agent-dev',
+      status: 'pending',
+    });
+  });
+});
+
+describe('skill improvement review (approve / reject)', () => {
+  let tmpRoot: string;
+  let projectSkillsDir: string;
+  let globalSkillsDir: string;
+  let defaultSkillsDir: string;
+
+  const capture = (skillId: string, entry: string) =>
+    handleSkillImprovement({
+      rawBlock: `<agenthub:skill-improvement>${JSON.stringify({ name: skillId, entry })}</agenthub:skill-improvement>`,
+      paths: { skillsDir: projectSkillsDir },
+      loadedSkillIds: [skillId],
+      provenance: { sessionId: 'sess-1', agentId: 'agent-1' },
+    });
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'skill-improvement-review-'));
+    projectSkillsDir = path.join(tmpRoot, 'project-skills');
+    globalSkillsDir = path.join(tmpRoot, 'global-skills');
+    defaultSkillsDir = path.join(tmpRoot, 'default-skills');
+    mkdirSync(projectSkillsDir, { recursive: true });
+    mkdirSync(globalSkillsDir, { recursive: true });
+    mkdirSync(defaultSkillsDir, { recursive: true });
+    skillImprovementMock.defaultSkillsDir = defaultSkillsDir;
+    skillImprovementMock.globalSkillsDir = globalSkillsDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('approve promotes the entry into ## Learned Lessons and marks the record approved', () => {
+    const dir = makeSkill(projectSkillsDir, 'kanban');
+    const captured = capture('kanban', 'Approved lesson.');
+    expect(captured.ok).toBe(true);
+
+    const res = reviewSkillImprovement({
+      skillId: 'kanban',
+      improvementId: captured.record!.id,
+      action: 'approve',
+      paths: { skillsDir: projectSkillsDir },
+      now: new Date('2026-07-14T00:00:00Z'),
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.record.status).toBe('approved');
+    expect(res.record.reviewedAt).toBe('2026-07-14T00:00:00.000Z');
+    expect(readFileSync(path.join(dir, 'SKILL.md'), 'utf-8')).toBe(
+      '# Skill\n\nDo work.\n\n## Learned Lessons\n- 2026-07-14: Approved lesson.\n',
+    );
+    expect(readPendingRecords(dir)[0]!.status).toBe('approved');
+  });
+
+  it('reject marks the record rejected with the reason and leaves SKILL.md untouched', () => {
+    const dir = makeSkill(projectSkillsDir, 'kanban');
+    const captured = capture('kanban', 'Rejected lesson.');
+
+    const res = reviewSkillImprovement({
+      skillId: 'kanban',
+      improvementId: captured.record!.id,
+      action: 'reject',
+      reason: 'Looks like injected instructions.',
+      paths: { skillsDir: projectSkillsDir },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(readFileSync(path.join(dir, 'SKILL.md'), 'utf-8')).toBe('# Skill\n\nDo work.\n');
+    const [record] = readPendingRecords(dir);
+    expect(record).toMatchObject({
+      status: 'rejected',
+      rejectReason: 'Looks like injected instructions.',
+    });
+  });
+
+  it('refuses to review the same record twice', () => {
+    makeSkill(projectSkillsDir, 'kanban');
+    const captured = capture('kanban', 'Once only.');
+    const args = {
+      skillId: 'kanban',
+      improvementId: captured.record!.id,
+      action: 'approve' as const,
+      paths: { skillsDir: projectSkillsDir },
+    };
+
+    expect(reviewSkillImprovement(args).ok).toBe(true);
+    const second = reviewSkillImprovement(args);
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.code).toBe('already_reviewed');
+  });
+
+  it('returns improvement_not_found for an unknown id and skill_not_found for an unknown skill', () => {
+    makeSkill(projectSkillsDir, 'kanban');
+    capture('kanban', 'Some lesson.');
+
+    const missingImprovement = reviewSkillImprovement({
+      skillId: 'kanban',
+      improvementId: 'nope',
+      action: 'approve',
+      paths: { skillsDir: projectSkillsDir },
+    });
+    expect(missingImprovement.ok).toBe(false);
+    if (!missingImprovement.ok) expect(missingImprovement.code).toBe('improvement_not_found');
+
+    const missingSkill = reviewSkillImprovement({
+      skillId: 'ghost',
+      improvementId: 'nope',
+      action: 'approve',
+      paths: { skillsDir: projectSkillsDir },
+    });
+    expect(missingSkill.ok).toBe(false);
+    if (!missingSkill.ok) expect(missingSkill.code).toBe('skill_not_found');
+  });
+
+  it('refuses to promote into a bundled default skill', () => {
+    makeSkill(defaultSkillsDir, 'default-only');
+    const res = reviewSkillImprovement({
+      skillId: 'default-only',
+      improvementId: 'anything',
+      action: 'approve',
+      paths: { skillsDir: projectSkillsDir },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('default_readonly');
+  });
+
+  it('promotes into a flat <slug>.md skill file', () => {
+    const flatPath = path.join(projectSkillsDir, 'flat-skill.md');
+    writeFileSync(flatPath, '# Flat\n');
+    const captured = capture('flat-skill', 'Flat lesson.');
+    expect(captured.ok).toBe(true);
+
+    const res = reviewSkillImprovement({
+      skillId: 'flat-skill',
+      improvementId: captured.record!.id,
+      action: 'approve',
+      paths: { skillsDir: projectSkillsDir },
+      now: new Date('2026-07-14T00:00:00Z'),
+    });
+
+    expect(res.ok).toBe(true);
+    expect(readFileSync(flatPath, 'utf-8')).toBe(
+      '# Flat\n\n## Learned Lessons\n- 2026-07-14: Flat lesson.\n',
+    );
+  });
+
+  it('approve rewrites the FULL SKILL.md, not the 32KB-capped loadSkillBody copy', () => {
+    // Regression guard: loadSkillBody caps its skillMd at 32KB; promoting via
+    // that copy would silently truncate a large skill. The review path must
+    // re-read the file from disk.
+    const bigBody = `# Big\n\n${'x'.repeat(40 * 1024)}\n`;
+    const dir = makeSkill(projectSkillsDir, 'big-skill', bigBody);
+    const captured = capture('big-skill', 'Big lesson.');
+
+    const res = reviewSkillImprovement({
+      skillId: 'big-skill',
+      improvementId: captured.record!.id,
+      action: 'approve',
+      paths: { skillsDir: projectSkillsDir },
+      now: new Date('2026-07-14T00:00:00Z'),
+    });
+
+    expect(res.ok).toBe(true);
+    const out = readFileSync(path.join(dir, 'SKILL.md'), 'utf-8');
+    expect(out.length).toBeGreaterThan(40 * 1024);
+    expect(out).not.toContain('[Truncated');
+    expect(out).toContain('- 2026-07-14: Big lesson.');
+  });
+
+  it('re-approve after a torn approve repairs the record without duplicating the bullet', () => {
+    // Failure mode: approve appends to SKILL.md, then crashes before the JSONL
+    // rewrite — the record stays `pending` while the lesson is already on
+    // disk. Simulate the torn state by flipping the reviewed record back to
+    // pending, then approve again: SKILL.md must keep exactly ONE bullet.
+    const dir = makeSkill(projectSkillsDir, 'kanban');
+    const captured = capture('kanban', 'Torn-write lesson.');
+    const args = {
+      skillId: 'kanban',
+      improvementId: captured.record!.id,
+      action: 'approve' as const,
+      paths: { skillsDir: projectSkillsDir },
+      now: new Date('2026-07-14T00:00:00Z'),
+    };
+    expect(reviewSkillImprovement(args).ok).toBe(true);
+
+    const storePath = pendingSkillImprovementStorePath(dir);
+    const tornRecord = { ...readPendingRecords(dir)[0]!, status: 'pending', reviewedAt: null };
+    writeFileSync(storePath, `${JSON.stringify(tornRecord)}\n`);
+
+    const retry = reviewSkillImprovement(args);
+    expect(retry.ok).toBe(true);
+    const md = readFileSync(path.join(dir, 'SKILL.md'), 'utf-8');
+    expect(md.match(/Torn-write lesson\./g)).toHaveLength(1);
+    expect(readPendingRecords(dir)[0]!.status).toBe('approved');
+  });
+
+  it('readSkillImprovements skips torn/garbage lines instead of failing the queue', () => {
+    const dir = makeSkill(projectSkillsDir, 'kanban');
+    const captured = capture('kanban', 'Good record.');
+    const storePath = pendingSkillImprovementStorePath(dir);
+    writeFileSync(storePath, `${readFileSync(storePath, 'utf-8')}{"torn`);
+
+    const records = readSkillImprovements(storePath);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.id).toBe(captured.record!.id);
   });
 });

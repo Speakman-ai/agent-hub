@@ -410,3 +410,134 @@ registerPath({
     500: errorResponse('Filesystem write error.'),
   },
 });
+
+// ─── Skill improvement review (Learned Lessons promotion) ─────────────────
+// Agents suggest lessons via <agenthub:skill-improvement>; suggestions queue
+// per skill in `.agenthub/pending-skill-improvements.jsonl` without touching
+// SKILL.md. These routes are the review half: list, approve (promote into the
+// `## Learned Lessons` section), or reject. Approve/reject require Admin+.
+
+const SkillImprovementRecordSchema = registerComponent(
+  'SkillImprovementRecord',
+  z
+    .object({
+      id: z.string().openapi({ description: 'Improvement record id (UUID).' }),
+      skillId: z.string().openapi({ description: 'Skill slug the lesson targets.' }),
+      skillName: z
+        .string()
+        .optional()
+        .openapi({ description: 'Display name of the skill (list responses only).' }),
+      source: z.enum(['project', 'global']).openapi({
+        description: 'Tier the skill resolved to when the lesson was captured.',
+      }),
+      entry: z.string().openapi({
+        description:
+          'The suggested lesson text (max 1200 chars, newlines collapsed). Untrusted agent output — render as plain text.',
+      }),
+      status: z.enum(['pending', 'approved', 'rejected']),
+      createdAt: z.string().openapi({ description: 'ISO timestamp the lesson was suggested.' }),
+      sessionId: z.string().nullable().optional().openapi({
+        description: 'Originating session id — provenance for reviewers.',
+      }),
+      agentId: z.string().nullable().optional().openapi({
+        description: 'Agent that suggested the lesson.',
+      }),
+      reviewedAt: z.string().nullable().optional(),
+      rejectReason: z.string().nullable().optional(),
+    })
+    .openapi({
+      description:
+        "One suggested skill lesson awaiting (or past) review. Approval appends a dated bullet to the skill's `## Learned Lessons` section.",
+    }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/skill-improvements',
+  tags: ['Skills'],
+  summary: 'List skill improvement suggestions',
+  description:
+    'Returns agent-suggested skill lessons across the project + global skill tiers (bundled defaults are read-only and never listed). Filter with `status` (default `pending`). Sorted oldest-first.',
+  request: {
+    params: projectIdParam,
+    query: z.object({
+      status: z
+        .enum(['pending', 'approved', 'rejected', 'all'])
+        .optional()
+        .openapi({ description: 'Filter by review status. Defaults to `pending`.' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Improvement records matching the filter.',
+      content: jsonContent(z.object({ improvements: z.array(SkillImprovementRecordSchema) })),
+    },
+    400: errorResponse('Invalid status filter.'),
+    404: errorResponse('Project not found.'),
+    500: errorResponse('Filesystem read error.'),
+  },
+});
+
+const improvementParams = projectIdParam.extend({
+  skillId: z.string().openapi({ description: 'Skill slug the improvement belongs to.' }),
+  improvementId: z.string().openapi({ description: 'Improvement record id (UUID).' }),
+});
+
+const ReviewImprovementResultSchema = registerComponent(
+  'ReviewSkillImprovementResult',
+  z
+    .object({ ok: z.literal(true), improvement: SkillImprovementRecordSchema })
+    .openapi({ description: 'The reviewed record with its final status.' }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/skills/{skillId}/improvements/{improvementId}/approve',
+  tags: ['Skills'],
+  summary: 'Approve a skill improvement (Admin+)',
+  description:
+    "Promotes a pending suggestion into the skill's `SKILL.md` as a dated bullet under `## Learned Lessons`, and marks the record `approved`. Runs under the per-skill file lock. Requires Admin or Owner. 409 when the record was already reviewed or the skill is a bundled default.",
+  request: { params: improvementParams },
+  responses: {
+    200: {
+      description: 'Approved and promoted.',
+      content: jsonContent(ReviewImprovementResultSchema),
+    },
+    400: errorResponse('Invalid skill or improvement id.'),
+    403: errorResponse('Caller is below Admin.'),
+    404: errorResponse('Project, skill, or improvement not found.'),
+    409: errorResponse('Already reviewed, or bundled default skill.'),
+    500: errorResponse('Filesystem write error.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/skills/{skillId}/improvements/{improvementId}/reject',
+  tags: ['Skills'],
+  summary: 'Reject a skill improvement (Admin+)',
+  description:
+    'Marks a pending suggestion `rejected` without touching SKILL.md. An optional `reason` is kept on the record for audit. Requires Admin or Owner.',
+  request: {
+    params: improvementParams,
+    body: {
+      content: jsonContent(
+        z.object({
+          reason: z
+            .string()
+            .optional()
+            .openapi({ description: 'Optional reviewer note kept for audit.' }),
+        }),
+      ),
+      required: false,
+    },
+  },
+  responses: {
+    200: { description: 'Rejected.', content: jsonContent(ReviewImprovementResultSchema) },
+    400: errorResponse('Invalid skill or improvement id.'),
+    403: errorResponse('Caller is below Admin.'),
+    404: errorResponse('Project, skill, or improvement not found.'),
+    409: errorResponse('Already reviewed, or bundled default skill.'),
+    500: errorResponse('Filesystem write error.'),
+  },
+});

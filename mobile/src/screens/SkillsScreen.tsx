@@ -5,6 +5,7 @@ import { useNavigation } from '@react-navigation/native';
 import Markdown from 'react-native-markdown-display';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
+import { hasRole, getUserRole } from '../utils/auth';
 import { colors } from '../theme/colors';
 const CATEGORY_STYLES: Record<string, any> = {
     platform: { bg: colors.indigo900_40, fg: colors.indigo400 },
@@ -33,7 +34,95 @@ function CategoryBadge({ category }: any) {
       <Text style={[styles.categoryBadgeText, { color: style.fg }]}>{category}</Text>
     </View>);
 }
-function SkillCard({ skill, agentId, projectId, overrides, onToggle, onUninstall, isInstalled }: any) {
+/**
+ * Review queue for agent-suggested skill lessons (mobile parity with the web
+ * PendingLessonsSection). `entry` is UNTRUSTED agent output — rendered as
+ * plain <Text>, never markdown. The provenance line (agent, timestamp,
+ * session deep link) is what lets a reviewer tell a legitimate lesson from
+ * injected instructions the agent merely *read*. Approve/reject is Admin+
+ * (server-enforced; the client gate is a UX hint — local/bundled installs
+ * have no cached role and are treated as admin-equivalent, matching web).
+ */
+export function PendingLessonsSection({ projectId, improvements, onReviewed, onOpenSession }: any) {
+    const canReview = hasRole('Admin') || !getUserRole();
+    const [busyId, setBusyId] = useState<any>(null);
+    const [error, setError] = useState<any>(null);
+    const [rejectingId, setRejectingId] = useState<any>(null);
+    const [rejectReason, setRejectReason] = useState('');
+    const review = useCallback(async (imp: any, action: any) => {
+        setBusyId(imp.id);
+        setError(null);
+        try {
+            if (action === 'approve') {
+                await api.approveSkillImprovement(projectId, imp.skillId, imp.id);
+            }
+            else {
+                await api.rejectSkillImprovement(projectId, imp.skillId, imp.id, rejectReason.trim() || undefined);
+            }
+            setRejectingId(null);
+            setRejectReason('');
+            if (onReviewed)
+                onReviewed();
+        }
+        catch (err: any) {
+            setError(err?.message || String(err));
+        }
+        finally {
+            setBusyId(null);
+        }
+    }, [projectId, rejectReason, onReviewed]);
+    if (!improvements?.length)
+        return null;
+    const today = new Date().toISOString().slice(0, 10);
+    return (<View style={styles.lessonsSection} testID="pending-lessons-section">
+      <Text style={styles.lessonsTitle}>⚡ Pending lessons ({improvements.length})</Text>
+      <Text style={styles.lessonsHint}>
+        Agents suggested these skill lessons. Approving appends the dated bullet to the
+        skill&apos;s Learned Lessons — standing instructions for every future session, so check
+        the source session before promoting.
+      </Text>
+      {error ? <Text style={styles.lessonsError}>{error}</Text> : null}
+      {improvements.map((imp: any) => (<View key={imp.id} style={styles.lessonRow}>
+          <View style={styles.lessonBadgeRow}>
+            <View style={[styles.categoryBadge, { backgroundColor: colors.gray700_40 }]}>
+              <Text style={[styles.categoryBadgeText, { color: colors.gray300 }]}>
+                {imp.skillName || imp.skillId}
+              </Text>
+            </View>
+            {imp.source === 'global' ? (<View style={[styles.categoryBadge, { backgroundColor: colors.blue900_40 }]}>
+                <Text style={[styles.categoryBadgeText, { color: colors.blue400 }]}>shared</Text>
+              </View>) : null}
+          </View>
+          {/* Untrusted agent output — plain text on purpose. */}
+          <Text style={styles.lessonEntry}>{imp.entry}</Text>
+          <View style={styles.lessonMetaRow}>
+            {imp.agentId ? <Text style={styles.lessonMeta}>🤖 {imp.agentId}</Text> : null}
+            <Text style={styles.lessonMeta}>{imp.createdAt}</Text>
+            {imp.sessionId && onOpenSession ? (<TouchableOpacity onPress={() => onOpenSession({ sessionId: imp.sessionId, agentId: imp.agentId })} hitSlop={8}>
+                <Text style={styles.lessonSessionLink}>view source session</Text>
+              </TouchableOpacity>) : null}
+          </View>
+          <View style={styles.lessonPreview}>
+            <Text style={styles.lessonPreviewLabel}>Will append as (date stamped at approval):</Text>
+            <Text style={styles.lessonPreviewText}>- {today}: {imp.entry}</Text>
+          </View>
+          {canReview ? (<View style={styles.lessonActions}>
+              <TouchableOpacity style={styles.lessonApproveButton} disabled={busyId === imp.id} onPress={() => review(imp, 'approve')} testID={`approve-lesson-${imp.id}`}>
+                <Text style={styles.lessonApproveText}>{busyId === imp.id ? 'Working…' : '✓ Approve'}</Text>
+              </TouchableOpacity>
+              {rejectingId === imp.id ? (<>
+                  <TextInput value={rejectReason} onChangeText={setRejectReason} placeholder="Reason (optional)" placeholderTextColor={colors.gray600} style={styles.lessonReasonInput}/>
+                  <TouchableOpacity style={styles.lessonRejectButton} disabled={busyId === imp.id} onPress={() => review(imp, 'reject')} testID={`reject-lesson-${imp.id}`}>
+                    <Text style={styles.lessonRejectText}>✕ Confirm reject</Text>
+                  </TouchableOpacity>
+                </>) : (<TouchableOpacity style={styles.lessonRejectOutlineButton} onPress={() => setRejectingId(imp.id)}>
+                  <Text style={styles.lessonRejectOutlineText}>✕ Reject</Text>
+                </TouchableOpacity>)}
+            </View>) : (<Text style={styles.lessonMeta}>Approving requires the Admin role.</Text>)}
+        </View>))}
+    </View>);
+}
+function SkillCard({ skill, agentId, projectId, overrides, onToggle, onUninstall, isInstalled, pendingCount = 0 }: any) {
     const [expanded, setExpanded] = useState(false);
     const [fullContent, setFullContent] = useState(skill.content || null);
     const [loading, setLoading] = useState(false);
@@ -80,6 +169,9 @@ function SkillCard({ skill, agentId, projectId, overrides, onToggle, onUninstall
               </View>)}
             {skill.source === 'global' && (<View style={[styles.categoryBadge, { backgroundColor: colors.blue900_40 }]}>
                 <Text style={[styles.categoryBadgeText, { color: colors.blue400 }]}>shared</Text>
+              </View>)}
+            {pendingCount > 0 && (<View style={[styles.categoryBadge, { backgroundColor: colors.amber900_40 }]} testID={`skill-pending-badge-${skill.id}`}>
+                <Text style={[styles.categoryBadgeText, { color: colors.amber400 }]}>⚡ {pendingCount}</Text>
               </View>)}
           </View>
           {skill.description && (<Text style={styles.cardDescription} numberOfLines={2}>
@@ -163,7 +255,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }: any) {
     </View>);
 }
 export default function SkillsScreen() {
-    const { agents, projects, handleStartSkillBuilderMode } = useApp();
+    const { agents, projects, handleStartSkillBuilderMode, skillImprovementRefreshKey, handleOpenHandoffSession, } = useApp();
     const navigation = useNavigation<any>();
     const visibleProjects = useMemo(() => (projects || []).filter((p: any) => p?.id), [projects]);
     const [activeProjectId, setActiveProjectId] = useState(visibleProjects[0]?.id || null);
@@ -177,6 +269,8 @@ export default function SkillsScreen() {
     const [globalSkills, setGlobalSkills] = useState<any[]>([]);
     const [context, setContext] = useState<any>({});
     const [overrides, setOverrides] = useState<any[]>([]);
+    // Agent-suggested lessons awaiting review (project + global tiers).
+    const [improvements, setImprovements] = useState<any[]>([]);
     const [loadingSkills, setLoadingSkills] = useState(false);
     const [loadingContext, setLoadingContext] = useState(false);
     useEffect(() => {
@@ -285,6 +379,34 @@ export default function SkillsScreen() {
     const handleContextSaved = (filename: any, newContent: any) => {
         setContext((prev: any) => ({ ...prev, [filename]: newContent }));
     };
+    // Load the pending-lessons queue; refetch when the server broadcasts
+    // `skill_improvement_update` (AppContext bumps skillImprovementRefreshKey).
+    const loadImprovements = useCallback(() => {
+        if (!activeProjectId) {
+            setImprovements([]);
+            return;
+        }
+        api.getSkillImprovements(activeProjectId)
+            .then((data: any) => setImprovements(data?.improvements || []))
+            .catch(() => setImprovements([]));
+    }, [activeProjectId]);
+    useEffect(() => {
+        loadImprovements();
+    }, [loadImprovements, skillImprovementRefreshKey]);
+    const pendingCountBySkill = useMemo(() => {
+        const counts: Record<string, number> = {};
+        for (const imp of improvements)
+            counts[imp.skillId] = (counts[imp.skillId] || 0) + 1;
+        return counts;
+    }, [improvements]);
+    // Same object-shape callback as the web SkillsPage `onOpenSession` prop,
+    // so the PendingLessonsSection contract is identical across platforms.
+    const openLessonSession = useCallback(({ sessionId, agentId }: any) => {
+        if (!handleOpenHandoffSession)
+            return;
+        handleOpenHandoffSession(agentId, sessionId);
+        navigation.navigate('Chat');
+    }, [handleOpenHandoffSession, navigation]);
     return (<SafeAreaView style={styles.screen} edges={['top']}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         <Text style={styles.pageTitle}>Skills & Context</Text>
@@ -320,13 +442,14 @@ export default function SkillsScreen() {
                   <Text style={styles.buildSkillButtonText}>+ Build a skill</Text>
                 </TouchableOpacity>) : null}
             </View>
+            <PendingLessonsSection projectId={activeProjectId} improvements={improvements} onReviewed={loadImprovements} onOpenSession={openLessonSession}/>
             {loadingSkills ? (<ActivityIndicator size="small" color={colors.gray500} style={{ marginVertical: 20 }}/>) : skills.length === 0 ? (<View style={styles.emptyCard}>
                 <Text style={styles.emptyText}>No skills found</Text>
                 <Text style={styles.emptyHint}>
                   Use Build a skill or add files under skills/ in the project workspace
                 </Text>
               </View>) : (<View style={styles.cardList}>
-                {skills.map((skill: any) => (<SkillCard key={skill.id} skill={skill} agentId={referenceAgentId} projectId={activeProjectId} overrides={overrides} onToggle={referenceAgentId ? handleToggle : undefined} onUninstall={handleUninstall} isInstalled/>))}
+                {skills.map((skill: any) => (<SkillCard key={skill.id} skill={skill} agentId={referenceAgentId} projectId={activeProjectId} overrides={overrides} onToggle={referenceAgentId ? handleToggle : undefined} onUninstall={handleUninstall} isInstalled pendingCount={pendingCountBySkill[skill.id] || 0}/>))}
               </View>)}
           </View>) : null}
 
@@ -555,6 +678,132 @@ const styles = StyleSheet.create({
     categoryBadgeText: {
         fontSize: 10,
         fontWeight: '500',
+    },
+    // Pending-lessons review queue (skill improvements)
+    lessonsSection: {
+        borderWidth: 1,
+        borderColor: colors.amber900_40,
+        backgroundColor: 'rgba(120, 53, 15, 0.08)',
+        borderRadius: 12,
+        padding: 12,
+        marginBottom: 12,
+    },
+    lessonsTitle: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: colors.amber400,
+        marginBottom: 4,
+    },
+    lessonsHint: {
+        fontSize: 10,
+        color: colors.gray500,
+        lineHeight: 14,
+        marginBottom: 6,
+    },
+    lessonsError: {
+        fontSize: 11,
+        color: colors.red400,
+        marginBottom: 6,
+    },
+    lessonRow: {
+        borderTopWidth: 1,
+        borderTopColor: colors.amber900_40,
+        paddingTop: 10,
+        marginTop: 4,
+        marginBottom: 6,
+    },
+    lessonBadgeRow: {
+        flexDirection: 'row',
+        gap: 6,
+        marginBottom: 6,
+    },
+    lessonEntry: {
+        fontSize: 12,
+        color: colors.gray200,
+        lineHeight: 17,
+    },
+    lessonMetaRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 10,
+        marginTop: 4,
+        alignItems: 'center',
+    },
+    lessonMeta: {
+        fontSize: 10,
+        color: colors.gray500,
+    },
+    lessonSessionLink: {
+        fontSize: 10,
+        color: colors.indigo400,
+    },
+    lessonPreview: {
+        backgroundColor: colors.gray900,
+        borderRadius: 6,
+        padding: 8,
+        marginTop: 6,
+    },
+    lessonPreviewLabel: {
+        fontSize: 9,
+        color: colors.gray500,
+        marginBottom: 2,
+    },
+    lessonPreviewText: {
+        fontSize: 11,
+        color: colors.emerald300,
+        fontFamily: 'monospace',
+    },
+    lessonActions: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+        marginTop: 8,
+        alignItems: 'center',
+    },
+    lessonApproveButton: {
+        backgroundColor: colors.emerald700,
+        borderRadius: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+    },
+    lessonApproveText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: colors.white,
+    },
+    lessonRejectButton: {
+        backgroundColor: colors.red900_50,
+        borderRadius: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+    },
+    lessonRejectText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: colors.red400,
+    },
+    lessonRejectOutlineButton: {
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+    },
+    lessonRejectOutlineText: {
+        fontSize: 11,
+        color: colors.gray300,
+    },
+    lessonReasonInput: {
+        flex: 1,
+        minWidth: 140,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        backgroundColor: colors.gray900,
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        fontSize: 11,
+        color: colors.gray100,
     },
     installCount: {
         fontSize: 10,
