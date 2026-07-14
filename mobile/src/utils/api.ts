@@ -1086,7 +1086,7 @@ export const api = {
         return fetchJSON(`/support-tickets${qs ? `?${qs}` : ''}`);
     },
     getSupportTicket: (projectId: any, id: any) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
-    runSupportTicketInvestigation: (projectId: any, id: any, selection: any) => fetchJSON(`/projects/${projectId}/support-tickets/${id}/investigate`, {
+    runSupportTicketInvestigation: (projectId: any, id: any, selection: any = {}) => fetchJSON(`/projects/${projectId}/support-tickets/${id}/investigate`, {
         method: 'POST',
         body: JSON.stringify(selection),
     }),

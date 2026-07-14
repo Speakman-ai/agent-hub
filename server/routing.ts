@@ -128,3 +128,22 @@ export function pickLead(project: Project): Agent | null {
   const lead = agents.find((a) => a.role === 'lead');
   return lead ?? null;
 }
+
+/**
+ * Pick the project's primary implementation agent for work that has no card
+ * assignee. Leads are the primary agent when present; older projects use a
+ * role=dev agent instead. The final fallback keeps legacy rosters usable while
+ * excluding helper agents that must not receive implementation work.
+ */
+export function pickMainDevAgent(project: Project): Agent | null {
+  const agents = project.agents || [];
+  const active = (agent: Agent): boolean => agent.active !== false;
+  return (
+    agents.find((a) => active(a) && a.role === 'lead') ??
+    agents.find((a) => active(a) && a.role === 'dev') ??
+    agents.find(
+      (a) => active(a) && a.role !== 'docs' && a.role !== 'reviewer' && a.role !== 'skill-builder',
+    ) ??
+    null
+  );
+}

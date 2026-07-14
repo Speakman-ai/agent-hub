@@ -240,15 +240,10 @@ registerPath({
   },
 });
 
-const RunSupportTicketInvestigationRequestSchema = z
-  .object({
-    engine: z.enum(INVESTIGATION_ENGINES),
-    model: z.string().min(1).nullable().optional().openapi({
-      description:
-        'Model id for the selected engine. Omit or send null to use that engine’s configured default.',
-    }),
-  })
-  .openapi({ description: 'Engine and optional model for a queued AI investigation.' });
+const RunSupportTicketInvestigationRequestSchema = z.object({}).openapi({
+  description:
+    'No selection is required. The project main dev agent and the caller’s default model are used.',
+});
 
 const RunSupportTicketInvestigationResponse = registerComponent(
   'RunSupportTicketInvestigationResponse',
@@ -266,7 +261,7 @@ registerPath({
   tags: ['Support'],
   summary: 'Queue a support ticket AI investigation',
   description:
-    'Queues a one-shot investigation using the selected authenticated engine and model. The updated ticket is broadcast over WebSocket when the run completes.',
+    'Queues a one-shot investigation using the project main dev agent and the authenticated caller’s default model. The updated ticket is broadcast over WebSocket when the run completes.',
   request: {
     params: ticketParams,
     body: { content: jsonContent(RunSupportTicketInvestigationRequestSchema) },

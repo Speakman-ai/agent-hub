@@ -2061,7 +2061,7 @@ export const api = {
   },
   getSupportTicket: (projectId: any, id: any) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
-  runSupportTicketInvestigation: (projectId: any, id: any, selection: any) =>
+  runSupportTicketInvestigation: (projectId: any, id: any, selection: any = {}) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/investigate`, {
       method: 'POST',
       body: JSON.stringify(selection),

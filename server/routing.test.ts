@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { parseLabels, agentClaimsLabel, pickAgentForCard, pickLead } from './routing.js';
+import {
+  parseLabels,
+  agentClaimsLabel,
+  pickAgentForCard,
+  pickLead,
+  pickMainDevAgent,
+} from './routing.js';
 import type { Agent, KanbanCardRow, Project } from './types.js';
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
@@ -29,6 +35,25 @@ describe('parseLabels', () => {
 
   it('drops empty entries from messy input', () => {
     expect(parseLabels(' , , frontend, ')).toEqual(['frontend']);
+  });
+});
+
+describe('pickMainDevAgent', () => {
+  const project = (agents: Agent[]): Project =>
+    ({ id: 'p', name: 'Project', cwd: '/tmp', ahw: '/tmp/ahw', agents }) as Project;
+
+  it('prefers the active project lead, then the default dev agent', () => {
+    const dev = makeAgent({ id: 'dev', role: 'dev' });
+    const lead = makeAgent({ id: 'lead', role: 'lead' });
+    expect(pickMainDevAgent(project([dev, lead]))).toBe(lead);
+    expect(pickMainDevAgent(project([dev]))).toBe(dev);
+  });
+
+  it('skips inactive and helper agents', () => {
+    const helper = makeAgent({ id: 'docs', role: 'docs' });
+    const inactive = makeAgent({ id: 'inactive', role: 'dev', active: false });
+    const fallback = makeAgent({ id: 'fallback', role: 'specialist' });
+    expect(pickMainDevAgent(project([helper, inactive, fallback]))).toBe(fallback);
   });
 });
 

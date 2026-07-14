@@ -364,7 +364,7 @@ describe('CustomerSupportPage — ticket detail view', () => {
     expect(within(modal).getByText('handler').tagName).toBe('CODE');
   });
 
-  it('queues a ticket investigation with the selected engine and model', async () => {
+  it('queues a ticket investigation with the project main dev agent defaults', async () => {
     const item = ticket({ id: 'model-pick', subject: 'Choose a model' });
     (api.getSupportTickets as any).mockResolvedValue([item]);
     (api.getSupportTicket as any).mockResolvedValue(item);
@@ -373,32 +373,17 @@ describe('CustomerSupportPage — ticket detail view', () => {
     render(
       <CustomerSupportPage
         projectId="proj-1"
-        modelConfig={{
-          engineValidModels: {
-            'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'],
-            'codex-cli': ['gpt-5.5'],
-          },
-          engineDefaultModels: { 'claude-code': 'claude-opus-4-8', 'codex-cli': 'gpt-5.5' },
-        }}
+        agents={[{ id: 'proj-1-dev', name: 'Project Dev', role: 'dev', engine: 'claude-code' }]}
       />,
     );
     await waitFor(() => expect(screen.getByText('Choose a model')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /open support ticket/i }) as any);
     const modal = await screen.findByTestId('support-ticket-detail-modal');
 
-    fireEvent.change(within(modal).getByTestId('ticket-investigation-engine'), {
-      target: { value: 'codex-cli' },
-    });
-    fireEvent.change(within(modal).getByTestId('ticket-investigation-model'), {
-      target: { value: 'gpt-5.5' },
-    });
     fireEvent.click(within(modal).getByRole('button', { name: 'Run' }) as any);
 
     await waitFor(() =>
-      expect(api.runSupportTicketInvestigation).toHaveBeenCalledWith('proj-1', 'model-pick', {
-        engine: 'codex-cli',
-        model: 'gpt-5.5',
-      }),
+      expect(api.runSupportTicketInvestigation).toHaveBeenCalledWith('proj-1', 'model-pick'),
     );
   });
 

@@ -9,7 +9,7 @@
  * sequence in one place means the security-sensitive replay guard can't drift
  * between the two entry points.
  */
-import type { RouteDeps, SupportTicketRow } from './types.js';
+import type { Agent, RouteDeps, SupportTicketRow } from './types.js';
 import {
   createSupportTicket,
   setSupportTicketReplayRef,
@@ -28,6 +28,10 @@ export interface SupportTicketIntakeDeps {
   serverDir: string;
   /** Working dir for the AI investigation (the project's cwd). */
   cwd?: string;
+  /** Primary project agent used for the automatic investigation. */
+  agent?: Pick<Agent, 'id' | 'engine' | 'model'> | null;
+  /** Authenticated owner whose CLI credentials and model preference are used. */
+  userId?: string | null;
   /**
    * Optional post-guard body finalizer. Invoked with the ticket AFTER the
    * replay-ref attribution guard has run — so `ticket.replay_ref` is the
@@ -152,6 +156,10 @@ export async function intakeSupportTicket(
       broadcast: deps.broadcast,
       serverDir: deps.serverDir,
       cwd: deps.cwd,
+      agentId: deps.agent?.id,
+      agentEngine: deps.agent?.engine,
+      agentModel: deps.agent?.model,
+      userId: deps.userId,
     });
   }
 

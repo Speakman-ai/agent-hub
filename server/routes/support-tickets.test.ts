@@ -4,7 +4,7 @@ import express from 'express';
 import { readdirSync, rmSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getRequest, createProject } from '../test/helpers.js';
+import { getRequest, createAgent, createProject } from '../test/helpers.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { getStmts } from '../db.js';
 import type { RouteDeps } from '../types.js';
@@ -600,8 +600,24 @@ describe('support-tickets routes', () => {
     expect(triggerInvestigation).not.toHaveBeenCalled();
   });
 
+  it('keeps ticket listing read-only when a bug summary is missing', async () => {
+    const projectId = await newProjectId();
+    await createAgent({ projectId, role: 'dev', engine: 'claude-code' });
+    await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'summary disappeared', type: 'bug', severity: 'medium' })
+      .expect(201);
+
+    routeMocks.resolveOwnerUserId.mockReturnValueOnce('support-user');
+    triggerInvestigation.mockClear();
+    await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+
+    expect(triggerInvestigation).not.toHaveBeenCalled();
+  });
+
   it('rejects a selected investigation when no owner can be resolved', async () => {
     const projectId = await newProjectId();
+    await createAgent({ projectId, role: 'dev' });
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
       .send({ body: 'customer cannot sign in', type: 'question' })
@@ -617,8 +633,9 @@ describe('support-tickets routes', () => {
     expect(triggerInvestigation).not.toHaveBeenCalled();
   });
 
-  it('queues a selected investigation with the resolved owner', async () => {
+  it('queues an investigation with the project main dev agent and resolved owner', async () => {
     const projectId = await newProjectId();
+    await createAgent({ projectId, role: 'dev', engine: 'claude-code' });
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
       .send({ body: 'customer cannot sign in', type: 'question' })
@@ -633,7 +650,7 @@ describe('support-tickets routes', () => {
     triggerInvestigation.mockClear();
     const response = await request
       .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/investigate`)
-      .send({ engine: 'codex-cli', model: 'gpt-5.5' })
+      .send({})
       .expect(202);
 
     expect(response.body).toMatchObject({
@@ -645,53 +662,41 @@ describe('support-tickets routes', () => {
     expect(triggerInvestigation).toHaveBeenCalledWith(
       created.body.id,
       expect.objectContaining({
-        preferredEngine: 'codex-cli',
-        preferredModel: 'gpt-5.5',
+        agentEngine: 'claude-code',
         userId: 'user-selected',
       }),
     );
     expect(routeMocks.resolveOneShotEngine).toHaveBeenCalledWith(
       expect.any(Object),
       expect.objectContaining({
-        preferred: 'codex-cli',
-        preferredModel: 'gpt-5.5',
+        preferred: 'claude-code',
+        preferredModel: 'claude-opus-4-8',
         userId: 'user-selected',
-        fallbackChain: ['codex-cli'],
+        fallbackChain: ['claude-code'],
       }),
     );
     expect(routeMocks.resolveOneShotEngine).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects an unsupported model before queueing an investigation', async () => {
+  it('does not allow an explicit engine or model selection to override the project agent', async () => {
     const projectId = await newProjectId();
+    await createAgent({ projectId, role: 'dev', engine: 'claude-code' });
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
       .send({ body: 'bad model request', type: 'bug' })
       .expect(201);
 
+    routeMocks.resolveOwnerUserId.mockReturnValueOnce('user-selected');
+    routeMocks.resolveOneShotEngine.mockResolvedValueOnce({
+      engine: 'claude-code',
+      model: 'project-default',
+    });
     triggerInvestigation.mockClear();
     await request
       .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/investigate`)
-      .send({ engine: 'claude-code', model: 'not-a-real-model' })
-      .expect(400);
-    expect(triggerInvestigation).not.toHaveBeenCalled();
-  });
-
-  it('rejects non-string model values before queueing an investigation', async () => {
-    const projectId = await newProjectId();
-    const created = await request
-      .post(`/api/projects/${projectId}/support-tickets`)
-      .send({ body: 'wrong model type', type: 'bug' })
-      .expect(201);
-
-    triggerInvestigation.mockClear();
-    const response = await request
-      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/investigate`)
-      .send({ engine: 'claude-code', model: 123 })
-      .expect(400);
-
-    expect(response.body.error).toContain('non-empty string or null');
-    expect(triggerInvestigation).not.toHaveBeenCalled();
+      .send({ engine: 'codex-cli', model: 'not-a-real-model' })
+      .expect(202);
+    expect(triggerInvestigation).toHaveBeenCalledTimes(1);
   });
 
   // 1x1 transparent PNG.

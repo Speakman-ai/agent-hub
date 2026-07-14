@@ -31,6 +31,7 @@ import { resolveOneShotEngine } from './engine-resolver.js';
 import { runOneShotPrompt } from './one-shot-spawn.js';
 import type { SupportedEngine } from './engine-availability.js';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
+import { resolveEffectiveEngineAndModel } from './effective-model.js';
 import {
   getSupportTicket,
   recordSupportTicketInvestigation,
@@ -265,6 +266,9 @@ export type InvestigationRunner = (input: {
   cwd: string;
   preferredEngine?: SupportedEngine | null;
   preferredModel?: string | null;
+  agentId?: string | null;
+  agentEngine?: string | null;
+  agentModel?: string | null;
   userId?: string | null;
 }) => Promise<string>;
 
@@ -274,11 +278,27 @@ const defaultRunner: InvestigationRunner = async ({
   cwd,
   preferredEngine,
   preferredModel,
+  agentId,
+  agentEngine,
+  agentModel,
   userId,
 }) => {
+  const effective = agentId
+    ? resolveEffectiveEngineAndModel(cfg, {
+        agentId,
+        agentEngine: agentEngine || 'claude-code',
+        agentModel,
+        ownerUserId: userId,
+        explicitEngine: preferredEngine,
+        explicitModel: preferredModel,
+      })
+    : {
+        engine: preferredEngine || 'claude-code',
+        model: preferredModel || null,
+      };
   const resolved = await resolveOneShotEngine(cfg, {
-    preferred: preferredEngine ?? 'claude-code',
-    preferredModel,
+    preferred: effective.engine as SupportedEngine,
+    preferredModel: effective.model,
     userId: userId ?? null,
     fallbackChain: preferredEngine ? [preferredEngine] : undefined,
   });
@@ -310,6 +330,9 @@ export interface InvestigateDeps {
   cwd?: string;
   preferredEngine?: SupportedEngine | null;
   preferredModel?: string | null;
+  agentId?: string | null;
+  agentEngine?: string | null;
+  agentModel?: string | null;
   userId?: string | null;
   /** Override the model runner — tests pass a stub to avoid spawning a CLI. */
   runner?: InvestigationRunner;
@@ -342,6 +365,9 @@ export async function investigateSupportTicket(
     cwd,
     preferredEngine: deps.preferredEngine,
     preferredModel: deps.preferredModel,
+    agentId: deps.agentId,
+    agentEngine: deps.agentEngine,
+    agentModel: deps.agentModel,
     userId: deps.userId,
   });
   const { summary, details } = parseInvestigationResponse(raw);
@@ -371,14 +397,20 @@ export function triggerSupportTicketInvestigation(
   ticketId: string,
   deps: InvestigateDeps = {},
 ): void {
+  if (investigationInFlight.has(ticketId)) return;
+  investigationInFlight.add(ticketId);
   // `setImmediate` so the HTTP response for ticket creation isn't held up by
   // the model call.
   setImmediate(() => {
-    investigateSupportTicket(ticketId, deps).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(
-        `[Support Ticket Investigation] Investigation failed for ticket ${ticketId}: ${message}`,
-      );
-    });
+    investigateSupportTicket(ticketId, deps)
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[Support Ticket Investigation] Investigation failed for ticket ${ticketId}: ${message}`,
+        );
+      })
+      .finally(() => investigationInFlight.delete(ticketId));
   });
 }
+
+const investigationInFlight = new Set<string>();

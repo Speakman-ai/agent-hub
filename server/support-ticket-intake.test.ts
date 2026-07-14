@@ -10,6 +10,7 @@ import { getStmts } from './db.js';
 import { createSupportTicket, getSupportTicket } from './support-tickets-store.js';
 import { setGuardedReplayRef, intakeSupportTicket } from './support-ticket-intake.js';
 import config from './config.js';
+import { triggerSupportTicketInvestigation } from './support-ticket-investigation.js';
 
 function seedReplay(id: string, projectId: string | null): void {
   getStmts().insertSessionReplay.run(
@@ -80,6 +81,34 @@ describe('setGuardedReplayRef', () => {
 
 describe('intakeSupportTicket — created broadcast payload', () => {
   const stmts = getStmts();
+
+  it('passes the main dev agent and authenticated owner to bug investigation', async () => {
+    const broadcast = vi.fn();
+    const trigger = vi.mocked(triggerSupportTicketInvestigation);
+    trigger.mockClear();
+    const ticket = await intakeSupportTicket(
+      { projectId: `intake-agent-${Date.now()}`, type: 'bug', severity: 'high', body: 'broken' },
+      {
+        stmts,
+        broadcast,
+        config,
+        serverDir: '.',
+        cwd: '/tmp/project',
+        agent: { id: 'project-dev', engine: 'codex-cli', model: 'gpt-5.5' },
+        userId: 'support-user',
+      },
+    );
+
+    expect(trigger).toHaveBeenCalledWith(
+      ticket.id,
+      expect.objectContaining({
+        agentId: 'project-dev',
+        agentEngine: 'codex-cli',
+        agentModel: 'gpt-5.5',
+        userId: 'support-user',
+      }),
+    );
+  });
 
   // Regression: the sidebar/drawer unread badge only updates on a
   // support_ticket_* event that carries `projectId` + numeric `unreadCount`.

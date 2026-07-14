@@ -34282,7 +34282,7 @@ paths:
       tags:
         - Support
       summary: Queue a support ticket AI investigation
-      description: Queues a one-shot investigation using the selected authenticated engine and model. The updated ticket is broadcast over WebSocket when the run completes.
+      description: Queues a one-shot investigation using the project main dev agent and the authenticated caller’s default model. The updated ticket is broadcast over WebSocket when the run completes.
       parameters:
         - schema:
             type: string
@@ -34303,22 +34303,8 @@ paths:
           application/json:
             schema:
               type: object
-              properties:
-                engine:
-                  type: string
-                  enum:
-                    - claude-code
-                    - cursor-agent
-                    - codex-cli
-                    - grok-cli
-                model:
-                  type: string
-                  nullable: true
-                  minLength: 1
-                  description: Model id for the selected engine. Omit or send null to use that engine’s configured default.
-              required:
-                - engine
-              description: Engine and optional model for a queued AI investigation.
+              properties: {}
+              description: No selection is required. The project main dev agent and the caller’s default model are used.
       responses:
         "202":
           description: Investigation queued.

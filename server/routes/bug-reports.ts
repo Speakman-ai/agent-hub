@@ -1,7 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import express from 'express';
+import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, SupportTicketSeverity } from '../types.js';
 import { intakeSupportTicket } from '../support-ticket-intake.js';
+import { pickMainDevAgent } from '../routing.js';
+import { resolveOwnerUserId } from '../session-ownership.js';
 import { normalizeReporterEmail } from '../support-tickets-store.js';
 import {
   persistSupportTicketScreenshotBuffer,
@@ -489,6 +492,8 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
             config,
             serverDir,
             cwd: project.cwd,
+            agent: pickMainDevAgent(project),
+            userId: resolveOwnerUserId(req as AuthenticatedRequest),
             // Surface the replay ref in the body only once the guard has
             // accepted it for persistence (`ticket.replay_ref`). The helper
             // applies this before broadcast/investigation, so a rejected ref
