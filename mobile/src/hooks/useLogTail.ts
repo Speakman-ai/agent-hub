@@ -1,5 +1,6 @@
 /**
- * Live application-log tail hook (LOG-QUERY WebSocket contract).
+ * Live application-log tail hook (LOG-QUERY WebSocket contract), mobile port of
+ * `client/src/hooks/useLogTail.ts`.
  *
  * Wire protocol (server `websocket.ts`):
  *   → { type: 'logs_subscribe', projectId, cursor }
@@ -7,17 +8,16 @@
  *   ← { type: 'logs_tail',          projectId, records[], cursor, dropped }
  *   ← { type: 'logs_tail_recovery_required', projectId, dropped }  (then close 1013)
  *
- * The hook owns a dedicated socket so the tail is isolated from the main app
- * WebSocket. It reconnects with backoff, always re-subscribing from the last
- * durable cursor so a bounded-tail loss replays through backfill instead of
- * leaving a silent gap. `mergeTailRecords` dedupes replayed ids by id, so a
- * reconnect never doubles rows.
+ * Owns a dedicated socket so the tail is isolated from the main app WebSocket.
+ * Reconnects with backoff, always re-subscribing from the last durable cursor so
+ * a bounded-tail loss replays through backfill instead of leaving a silent gap.
+ * `mergeTailRecords` dedupes replayed ids, so a reconnect never doubles rows.
  *
  * Pausing freezes the visible list: incoming records buffer (bounded) and the
  * cursor still advances so reconnect math stays correct; resume merges them in.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getWsUrl } from '../utils/connection';
+import { getWsUrl } from '../utils/config';
 import { mergeTailRecords, resolveTailCursor, type LogRecord } from '../utils/logStream';
 
 export type LogTailStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
@@ -39,7 +39,7 @@ export interface UseLogTailOptions {
   /** Base reconnect delay in ms (exponential backoff, capped). */
   reconnectBaseMs?: number;
   maxReconnectMs?: number;
-  /** Socket factory — defaults to the real browser WebSocket at the /ws URL. */
+  /** Socket factory — defaults to the RN global WebSocket at the ws URL. */
   createSocket?: (url: string) => SocketLike;
 }
 

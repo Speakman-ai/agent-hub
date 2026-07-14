@@ -61,7 +61,7 @@ export function projectSettingsEntries(project: any) {
         { key: 'project-agents', label: 'Agents', icon: 'Bot', screen: 'ProjectAgents' },
         { key: 'runners', label: 'Runners', icon: 'Play', screen: 'Runners' },
         { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
-        { key: 'logs', label: 'Logs', icon: 'ScrollText', screen: 'LogSources' },
+        { key: 'logs', label: 'Logs', icon: 'ScrollText', screen: 'Logs' },
     ];
     if (project?.awsEnabled) {
         entries.push({ key: 'aws', label: 'AWS', icon: 'Cloud', screen: 'AwsProfiles' });

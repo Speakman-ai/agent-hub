@@ -245,6 +245,34 @@ export const api = {
     revokeLogSource: (projectId: any, sourceId: any) => fetchJSON(`/projects/${projectId}/log-sources/${sourceId}/revoke`, { method: 'POST' }),
     deleteLogSource: (projectId: any, sourceId: any) => fetchJSON(`/projects/${projectId}/log-sources/${sourceId}`, { method: 'DELETE' }),
     getLogsMetrics: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/metrics`),
+    // ── Application log reads (LOG-QUERY) — mirrors client/src/utils/api.ts ──
+    // Bounded, newest-first, cursor-paginated historical query. `params` is a
+    // plain object of the query filters (severity, source, service, text, …).
+    queryLogs: (projectId: any, params: Record<string, any> = {}) => {
+        const search = new URLSearchParams();
+        for (const [key, value] of Object.entries(params)) {
+            if (value == null || value === '')
+                continue;
+            search.set(key, String(value));
+        }
+        const qs = search.toString();
+        return fetchJSON(`/projects/${projectId}/logs${qs ? `?${qs}` : ''}`);
+    },
+    // ── Grouped error issues (LOG-GROUP) ──
+    listLogIssues: (projectId: any, params: Record<string, any> = {}) => {
+        const search = new URLSearchParams();
+        for (const [key, value] of Object.entries(params)) {
+            if (value == null || value === '')
+                continue;
+            search.set(key, String(value));
+        }
+        const qs = search.toString();
+        return fetchJSON(`/projects/${projectId}/logs/issues${qs ? `?${qs}` : ''}`);
+    },
+    getLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}`),
+    resolveLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/resolve`, { method: 'POST' }),
+    ignoreLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/ignore`, { method: 'POST' }),
+    reopenLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/reopen`, { method: 'POST' }),
     // ── Replays / RUM dashboard (mirrors client/src/utils/api.ts) ──
     // Segmented (continuous) session playback. The manifest lists every segment
     // for a client-minted session in playback order (chronological across views,

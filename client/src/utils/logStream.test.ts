@@ -9,6 +9,7 @@ import {
   severityLabel,
   severityTone,
   nanoToMillis,
+  resolveTailCursor,
   SEVERITY_NUMBER,
   type LogRecord,
 } from './logStream';
@@ -196,5 +197,18 @@ describe('severity helpers', () => {
   it('nanoToMillis floors nanoseconds to millis and guards non-finite', () => {
     expect(nanoToMillis(1_700_000_000_000_000)).toBe(1_700_000_000);
     expect(nanoToMillis(Number.NaN)).toBe(0);
+  });
+
+  it('resolveTailCursor prefers the backfill nextCursor continue-token', () => {
+    // Regression: a backfill frame must advance by `nextCursor`, not the page
+    // `cursor`, so a reconnect never resubscribes from a stale cursor and
+    // replays the same backfill window.
+    expect(resolveTailCursor({ cursor: 100, nextCursor: 250 }, 0)).toBe(250);
+    // Final backfill page (nextCursor null) → the last-record `cursor` wins.
+    expect(resolveTailCursor({ cursor: 8, nextCursor: null }, 3)).toBe(8);
+    // Live frame carries only `cursor`.
+    expect(resolveTailCursor({ cursor: 42 }, 10)).toBe(42);
+    // Bare keepalive → keep the current cursor.
+    expect(resolveTailCursor({}, 17)).toBe(17);
   });
 });

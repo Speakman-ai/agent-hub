@@ -1,14 +1,15 @@
 /**
- * Pure helpers for the web Logs module (LOG-QUERY live tail + Issues).
+ * Pure helpers for the mobile Logs module (LOG-QUERY live tail + Issues).
  *
- * These are transport-free so the merge/filter/parse logic is unit-testable
- * without a WebSocket or the DOM. The React hook (`useLogTail`) and the views
- * layer their lifecycle on top of these functions.
+ * Mirrors `client/src/utils/logStream.ts` so web and mobile bucket severity,
+ * merge the reconnect-safe tail, filter, and parse untrusted structured fields
+ * identically. Transport-free and UI-free: no WebSocket, no React, no RN
+ * primitives, so every function here is unit-testable in the `node` env.
  *
  * Every value that originates from an ingested log record is UNTRUSTED
- * (decision LOG-TRUST). This module never builds HTML from log text — callers
- * render the returned strings as text nodes. `parseAttributes` tolerates
- * malformed JSON and never throws.
+ * (decision LOG-TRUST). This module never builds markup from log text — callers
+ * render the returned strings as React Native <Text>. `parseAttributes`
+ * tolerates malformed JSON and never throws.
  */
 
 /** OpenTelemetry severity numbers we bucket against (mirrors logs-schema.ts). */
@@ -81,14 +82,13 @@ export function severityLabel(severityNumber: number, severityText?: string | nu
   return 'UNSET';
 }
 
-/** Tailwind tone classes for a severity badge, keyed off the number. */
-export function severityTone(severityNumber: number): string {
-  if (severityNumber >= SEVERITY_NUMBER.ERROR)
-    return 'bg-red-500/15 text-red-300 border-red-500/30';
-  if (severityNumber >= SEVERITY_NUMBER.WARN)
-    return 'bg-amber-500/15 text-amber-300 border-amber-500/30';
-  if (severityNumber >= SEVERITY_NUMBER.INFO) return 'bg-sky-500/15 text-sky-300 border-sky-500/30';
-  return 'bg-gray-500/15 text-gray-400 border-gray-500/30';
+/** Semantic tone key for a severity number — the screen maps it to theme colors. */
+export type SeverityTone = 'error' | 'warn' | 'info' | 'muted';
+export function severityToneKey(severityNumber: number): SeverityTone {
+  if (severityNumber >= SEVERITY_NUMBER.ERROR) return 'error';
+  if (severityNumber >= SEVERITY_NUMBER.WARN) return 'warn';
+  if (severityNumber >= SEVERITY_NUMBER.INFO) return 'info';
+  return 'muted';
 }
 
 /** Nanosecond epoch → millisecond epoch (display precision only). */
@@ -200,6 +200,21 @@ export function parseAttributes(json: string | null | undefined): Array<{
 }
 
 /**
+ * Pull a human stack trace out of an attributes blob. OpenTelemetry uses the
+ * `exception.stacktrace` attribute; we also accept a couple of common aliases.
+ * Returns the raw multi-line string for whitespace-preserving text rendering.
+ */
+export function extractStackTrace(attributesJson: string | null | undefined): string | null {
+  const attrs = parseAttributes(attributesJson);
+  const keys = ['exception.stacktrace', 'exception.stack_trace', 'stack', 'stacktrace'];
+  for (const k of keys) {
+    const hit = attrs.find((a) => a.key === k);
+    if (hit && hit.value.trim()) return hit.value;
+  }
+  return null;
+}
+
+/**
  * Resolve the durable resubscribe cursor after a live-tail frame.
  *
  * The two frame types the server sends do NOT carry the same cursor semantics
@@ -228,17 +243,12 @@ export function resolveTailCursor(
   return current;
 }
 
-/**
- * Pull a human stack trace out of an attributes blob. OpenTelemetry uses the
- * `exception.stacktrace` attribute; we also accept a couple of common aliases.
- * Returns the raw multi-line string for whitespace-preserving text rendering.
- */
-export function extractStackTrace(attributesJson: string | null | undefined): string | null {
-  const attrs = parseAttributes(attributesJson);
-  const keys = ['exception.stacktrace', 'exception.stack_trace', 'stack', 'stacktrace'];
-  for (const k of keys) {
-    const hit = attrs.find((a) => a.key === k);
-    if (hit && hit.value.trim()) return hit.value;
-  }
-  return null;
+/** Does a record carry expandable structured detail (attrs/resource/trace ids)? */
+export function recordHasDetail(record: LogRecord): boolean {
+  return (
+    Boolean(record.attributesJson) ||
+    Boolean(record.resourceJson) ||
+    Boolean(record.traceId) ||
+    Boolean(record.spanId)
+  );
 }

@@ -83,15 +83,13 @@ export function FreshTokenReveal({ token, label, onDismiss }: any) {
 }
 
 /**
- * LogSourcesScreen — mobile parity for the web LogSourcesSettingsSection.
- * Manages a project's write-only `ahlog_` ingest tokens (decision LOG-AUTH):
- * list sources with credential status + last ingest, create + reveal a token
- * once, rotate / revoke / delete, and show the project's storage limits.
+ * LogSourcesPanel — the write-only `ahlog_` ingest-credential manager (decision
+ * LOG-AUTH), rendered both as the standalone `LogSourcesScreen` and as the
+ * "Sources" tab of the Logs module (`LogsScreen`). It owns no header/back chrome
+ * so the embedding screen supplies its own. Mirrors the web
+ * `LogSourcesSettingsSection`.
  */
-export default function LogSourcesScreen({ route, navigation }: any) {
-  const { projectId, project: routeProject } = route.params || {};
-  const project = routeProject;
-
+export function LogSourcesPanel({ projectId }: { projectId: any }) {
   const [sources, setSources] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<any>(null);
@@ -230,9 +228,7 @@ export default function LogSourcesScreen({ route, navigation }: any) {
   };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
-      <ProjectScreenHeader title="Logs" project={project} onBack={() => navigation.goBack()} />
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {/* Write-only credential warning */}
         <View style={styles.warnBox} testID="logs-writeonly-warning">
           <Text style={styles.warnTitle}>Ingest tokens are write-only server secrets</Text>
@@ -383,7 +379,20 @@ export default function LogSourcesScreen({ route, navigation }: any) {
             POST /api/logs/ingest
           </Text>
         </View>
-      </ScrollView>
+    </ScrollView>
+  );
+}
+
+/**
+ * Standalone Log Sources screen (project Settings → Logs entry point kept for
+ * deep links). Wraps `LogSourcesPanel` with the shared project header.
+ */
+export default function LogSourcesScreen({ route, navigation }: any) {
+  const { projectId, project } = route.params || {};
+  return (
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <ProjectScreenHeader title="Logs" project={project} onBack={() => navigation.goBack()} />
+      <LogSourcesPanel projectId={projectId} />
     </SafeAreaView>
   );
 }
