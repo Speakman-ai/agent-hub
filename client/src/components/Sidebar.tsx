@@ -13,6 +13,7 @@ import {
   List,
   ListOrdered,
   Monitor,
+  Terminal,
   Play,
   Cloud,
   Activity,
@@ -296,6 +297,7 @@ export default function Sidebar({
     view === `project-crons:${pid}` ||
     view === `runners:${pid}` ||
     view === `preview:${pid}` ||
+    view === `devserver:${pid}` ||
     view === `rum:${pid}` ||
     view === `logs:${pid}` ||
     view === `aws:${pid}` ||
@@ -1061,6 +1063,22 @@ export default function Sidebar({
                                 >
                                   <Monitor size={14} className="flex-shrink-0" />
                                   <span className="truncate">Previews</span>
+                                </button>
+                              )}
+
+                              {!workflowProject && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate(`devserver:${project.id}`);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === `devserver:${project.id}`,
+                                  )}
+                                >
+                                  <Terminal size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Dev server</span>
                                 </button>
                               )}
 

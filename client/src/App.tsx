@@ -83,6 +83,7 @@ import ProjectWorkflowsPage from './components/ProjectWorkflowsPage';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder';
 import FinalizeSettingsSection from './components/FinalizeSettingsSection';
 import PreviewSection from './components/PreviewSection';
+import DevServerSection from './components/DevServerSection';
 import RumSettingsSection from './components/RumSettingsSection';
 import LogsPage from './components/logs/LogsPage';
 import ProjectAwsProfilesEditor from './components/ProjectAwsProfilesEditor';
@@ -4041,6 +4042,12 @@ export default function App({ initialView }: any = {}) {
     return projects.filter((p: any) => p.id === id);
   }, [currentView, projects]);
 
+  const devServerScopedProjects = useMemo(() => {
+    if (!currentView.startsWith('devserver:')) return [];
+    const id = currentView.slice('devserver:'.length);
+    return projects.filter((p: any) => p.id === id);
+  }, [currentView, projects]);
+
   const rumScopedProjects = useMemo(() => {
     if (!currentView.startsWith('rum:')) return [];
     const id = currentView.slice('rum:'.length);
@@ -5000,6 +5007,7 @@ export default function App({ initialView }: any = {}) {
     if (projectMenuRoute) return projectMenuRoute.projectId;
     if (currentView.startsWith('runners:')) return currentView.slice('runners:'.length);
     if (currentView.startsWith('preview:')) return currentView.slice('preview:'.length);
+    if (currentView.startsWith('devserver:')) return currentView.slice('devserver:'.length);
     if (currentView.startsWith('aws:')) return currentView.slice('aws:'.length);
     if (workflowEditRoute) return workflowEditRoute.projectId;
     if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
@@ -5616,6 +5624,15 @@ export default function App({ initialView }: any = {}) {
                       focusAgentSession(agentId, sessionId)
                     }
                   />
+                </div>
+              ) : currentView.startsWith('devserver:') ? (
+                <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                  <div className="max-w-4xl mx-auto">
+                    <DevServerSection
+                      projects={devServerScopedProjects}
+                      onProjectsChange={refreshProjects}
+                    />
+                  </div>
                 </div>
               ) : currentView.startsWith('rum:') ? (
                 <div className="flex-1 overflow-y-auto p-4 md:p-6">
