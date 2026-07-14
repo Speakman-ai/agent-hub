@@ -23,6 +23,7 @@ import { deriveSessionState } from '../utils/deriveSessionState';
 import { firstEngineWithAuthenticatedModels, defaultModelForAuthenticatedEngine, } from '../utils/authModelEngines';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
 import { buildInterruptQueuedMessageDispatch, isPersistedUploadAttachment, } from '@shared/utils/queuedMessageAttachments';
+import { addKanbanRefreshProject, createRefreshScheduler } from '@shared/utils/kanbanRefresh';
 const AppContext = createContext<any>(null);
 export function AppProvider({ children }: any) {
     const [agents, setAgents] = useState<any[]>([]);
@@ -127,6 +128,17 @@ export function AppProvider({ children }: any) {
     const refreshOpenPullCountRef = useRef<any>(null);
     // Kanban board refresh trigger
     const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
+    const [kanbanRefreshProjectIds, setKanbanRefreshProjectIds] = useState<Set<string>>(() => new Set());
+    const kanbanRefreshScheduler = useMemo(() => createRefreshScheduler(() => setKanbanRefreshKey((k: any) => (k || 0) + 1)), []);
+    useEffect(() => () => kanbanRefreshScheduler.dispose(), [kanbanRefreshScheduler]);
+    const acknowledgeKanbanRefresh = useCallback((projectId: string) => {
+        setKanbanRefreshProjectIds((pending) => {
+            if (!pending.has(projectId)) return pending;
+            const next = new Set(pending);
+            next.delete(projectId);
+            return next;
+        });
+    }, []);
     // Skill-improvement queue refresh trigger — bumped on the
     // `skill_improvement_update` broadcast so SkillsScreen refetches its
     // pending-lessons queue (mirrors the web's window-event fan-out).
@@ -599,7 +611,10 @@ export function AppProvider({ children }: any) {
                 setSkillImprovementRefreshKey((k: any) => (k || 0) + 1);
                 break;
             case 'kanban_update':
-                setKanbanRefreshKey((k: any) => (k || 0) + 1);
+                if (typeof data.projectId === 'string') {
+                    setKanbanRefreshProjectIds((pending) => addKanbanRefreshProject(pending, data.projectId));
+                    kanbanRefreshScheduler.schedule();
+                }
                 if (data.projectId)
                     refreshOpenPullCountRef.current?.(data.projectId);
                 // A security scan's only WS signal is kanban_update. Refresh the
@@ -618,8 +633,8 @@ export function AppProvider({ children }: any) {
                 setLastUserTodoEvent({ action: data.action ?? null, bump: Date.now() });
                 break;
             case 'dispatch_failure':
-                // Refresh kanban to show the failure comment on the card
-                setKanbanRefreshKey((k: any) => (k || 0) + 1);
+                // The linked card's kanban_update carries the project id and is
+                // enough to refresh the board after the failure comment lands.
                 break;
             case 'session_deleted':
                 setSessions((prev: any) => prev.filter((s: any) => s.id !== data.sessionId));
@@ -851,7 +866,7 @@ export function AppProvider({ children }: any) {
                 break;
             }
         }
-    }, [presentForegroundFor, reloadActiveAgentSkills]);
+    }, [kanbanRefreshScheduler, presentForegroundFor, reloadActiveAgentSkills]);
     const { send, connected, reconnecting, reconnect } = useWebSocket(handleWsMessage);
     // Mirror `sessions` into a ref so the notification-response listener —
     // which registers once on mount — can read the latest list without being
@@ -2051,6 +2066,8 @@ export function AppProvider({ children }: any) {
         handleEventsLoaded,
         cronSessions,
         kanbanRefreshKey,
+        kanbanRefreshProjectIds,
+        acknowledgeKanbanRefresh,
         skillImprovementRefreshKey,
         changesReady,
         shipFailureAt,

@@ -833,6 +833,8 @@ export default function KanbanBoard({
   const cardsRef = useRef(cards);
   const columnPagingRef = useRef(columnPaging);
   const inflightRef = useRef<Set<any>>(new Set());
+  const reconcileInFlightRef = useRef<Promise<any> | null>(null);
+  const reconcileQueuedRef = useRef(false);
   useEffect(() => {
     cardsRef.current = cards;
   }, [cards]);
@@ -1126,25 +1128,46 @@ export default function KanbanBoard({
   // Returns the reconciled card array so callers can re-pick the open card.
   const reconcileBoard = useCallback(async () => {
     if (!projectId) return undefined;
-    const preserve: Record<string, any> = {};
-    for (const c of cardsRef.current) {
-      preserve[c.column_id] = (preserve[c.column_id] || 0) + 1;
+    if (reconcileInFlightRef.current) {
+      reconcileQueuedRef.current = true;
+      return reconcileInFlightRef.current;
     }
+
+    const reconcile = async () => {
+      let latest: any[] | undefined;
+      do {
+        reconcileQueuedRef.current = false;
+        const preserve: Record<string, any> = {};
+        for (const c of cardsRef.current) {
+          preserve[c.column_id] = (preserve[c.column_id] || 0) + 1;
+        }
+        try {
+          const { data, allCards, paging } = await loadBoardPaged(preserve);
+          setBoard(data.board);
+          setColumns(data.columns);
+          setEpics(data.epics || []);
+          setCardTemplates(data.cardTemplates || []);
+          setServerAvailableLabels(
+            Array.isArray(data.availableLabels) ? data.availableLabels : null,
+          );
+          setColumnPaging(paging);
+          setCards(allCards);
+          onAssignableUsersChange?.(data.assignableUsers || []);
+          setError(null);
+          latest = allCards;
+        } catch (err: any) {
+          setError(err.message);
+        }
+      } while (reconcileQueuedRef.current);
+      return latest;
+    };
+
+    const request = reconcile();
+    reconcileInFlightRef.current = request;
     try {
-      const { data, allCards, paging } = await loadBoardPaged(preserve);
-      setBoard(data.board);
-      setColumns(data.columns);
-      setEpics(data.epics || []);
-      setCardTemplates(data.cardTemplates || []);
-      setServerAvailableLabels(Array.isArray(data.availableLabels) ? data.availableLabels : null);
-      setColumnPaging(paging);
-      setCards(allCards);
-      onAssignableUsersChange?.(data.assignableUsers || []);
-      setError(null);
-      return allCards;
-    } catch (err: any) {
-      setError(err.message);
-      return undefined;
+      return await request;
+    } finally {
+      if (reconcileInFlightRef.current === request) reconcileInFlightRef.current = null;
     }
   }, [projectId, loadBoardPaged, onAssignableUsersChange]);
 

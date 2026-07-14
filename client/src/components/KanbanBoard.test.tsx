@@ -121,6 +121,39 @@ describe('KanbanBoard background refresh', () => {
     // And fetchBoard was called again for the refresh.
     await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(2));
   });
+
+  it('coalesces refreshes that arrive while a board request is in flight', async () => {
+    const firstRefresh = deferred<any>();
+    const trailingRefresh = deferred<any>();
+    (api.getBoard as any)
+      .mockResolvedValueOnce(makeBoard([{ id: 1, title: 'Card A', column_id: 'col-todo' }]))
+      .mockReturnValueOnce(firstRefresh.promise)
+      .mockReturnValueOnce(trailingRefresh.promise);
+
+    const { rerender } = render(
+      <KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />,
+    );
+    await waitFor(() => expect(screen.getByText('Card A')).toBeInTheDocument());
+
+    rerender(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={1} />);
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(2));
+
+    // A second WS event while the first reconciliation is pending must queue
+    // one trailing read instead of starting another concurrent board request.
+    rerender(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={2} />);
+    expect(api.getBoard).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      firstRefresh.resolve(makeBoard([{ id: 1, title: 'Card A', column_id: 'col-done' }]));
+      await firstRefresh.promise;
+    });
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      trailingRefresh.resolve(makeBoard([{ id: 1, title: 'Card A', column_id: 'col-done' }]));
+      await trailingRefresh.promise;
+    });
+  });
 });
 
 describe('KanbanBoard template actions', () => {

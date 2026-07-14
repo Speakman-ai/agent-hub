@@ -99,6 +99,7 @@ import { useVersionCheck } from './hooks/useVersionCheck';
 import useReadback from './hooks/useReadback';
 import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck';
 import { api } from './utils/api';
+import { createRefreshScheduler, kanbanEventTargetsProject } from '@shared/utils/kanbanRefresh';
 import { readCollapsedColumnIds, writeCollapsedColumnIds } from './utils/kanbanColumnCollapse';
 import { isWorkflowProject } from './utils/projectMode';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate';
@@ -553,7 +554,21 @@ export default function App({ initialView }: any = {}) {
   const [kanbanPendingCreateTemplate, setKanbanPendingCreateTemplate] = useState<any>(null);
   const kanbanProjectId = currentView.startsWith('kanban:') ? currentView.slice(7) : null;
   const kanbanContextProjectId =
-    kanbanProjectId ?? (currentView.startsWith('kanban-templates:') ? currentView.slice(17) : null);
+    kanbanProjectId ??
+    (currentView.startsWith('kanban-templates:')
+      ? currentView.slice('kanban-templates:'.length)
+      : currentView.startsWith('epics:')
+        ? currentView.slice('epics:'.length)
+        : currentView.startsWith('epic:')
+          ? currentView.split(':')[1] || null
+          : null);
+  const kanbanContextProjectIdRef = useRef<string | null>(kanbanContextProjectId);
+  kanbanContextProjectIdRef.current = kanbanContextProjectId;
+  const kanbanRefreshScheduler = useMemo(
+    () => createRefreshScheduler(() => setKanbanRefreshKey((key: any) => key + 1)),
+    [],
+  );
+  useEffect(() => () => kanbanRefreshScheduler.dispose(), [kanbanRefreshScheduler]);
   const previousKanbanProjectIdRef = useRef<string | null>(null);
 
   const resetKanbanViewState = useCallback(() => {
@@ -2538,7 +2553,9 @@ export default function App({ initialView }: any = {}) {
           break;
 
         case 'kanban_update':
-          setKanbanRefreshKey((k: any) => k + 1);
+          if (kanbanEventTargetsProject(data.projectId, kanbanContextProjectIdRef.current)) {
+            kanbanRefreshScheduler.schedule();
+          }
           if (
             data.projectId &&
             pullsProjectIdRef.current === data.projectId &&
@@ -2606,8 +2623,8 @@ export default function App({ initialView }: any = {}) {
           };
           setToasts((prev: any) => [...prev, toast]);
           notify({ title: 'Dispatch Failure', body: dispatchMsg, type: 'error' });
-          // Also refresh kanban to show the new card comment
-          setKanbanRefreshKey((k: any) => k + 1);
+          // The linked card's kanban_update carries the project id and is
+          // enough to refresh the board after the failure comment lands.
           break;
         }
 
@@ -3182,6 +3199,7 @@ export default function App({ initialView }: any = {}) {
       bumpDiffReloadToken,
       refreshSecurityOpenCounts,
       refreshOpenPullCount,
+      kanbanRefreshScheduler,
     ],
   );
 

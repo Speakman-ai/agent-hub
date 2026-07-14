@@ -61,7 +61,9 @@ function CardAvatar({ initials, avatar, active }: any) {
 }
 export default function KanbanScreen({ route, navigation }: any) {
     const { projectId, project, cardId: deepLinkCardId } = route.params || {};
-    const { agents, kanbanRefreshKey, setActiveAgentId, setActiveSessionId } = useApp();
+    const { agents, kanbanRefreshKey, kanbanRefreshProjectIds, acknowledgeKanbanRefresh, setActiveAgentId, setActiveSessionId } = useApp();
+    const kanbanRefreshProjectIdsRef = useRef<Set<string>>(kanbanRefreshProjectIds || new Set());
+    kanbanRefreshProjectIdsRef.current = kanbanRefreshProjectIds || new Set();
     const { openSidebar } = useContext(SidebarContext);
     // Agents are loaded app-wide across every visible project; the assignee
     // picker must only offer agents that belong to this project.
@@ -241,12 +243,21 @@ export default function KanbanScreen({ route, navigation }: any) {
     // already covers the initial load).
     const firstRefreshRef = useRef(true);
     useEffect(() => {
+        const pending = kanbanRefreshProjectIdsRef.current.has(projectId);
         if (firstRefreshRef.current) {
             firstRefreshRef.current = false;
+            if (pending) acknowledgeKanbanRefresh(projectId);
             return;
         }
+        if (!pending) return;
+        acknowledgeKanbanRefresh(projectId);
         reconcileBoard();
-    }, [kanbanRefreshKey, reconcileBoard]);
+    }, [
+        kanbanRefreshKey,
+        acknowledgeKanbanRefresh,
+        projectId,
+        reconcileBoard,
+    ]);
     // Append the next keyset page for one column. Guarded against double-fetch
     // (sync inflightRef) and against fetching past the end. Deduped by id so a
     // racing reconcile can't double-insert.
