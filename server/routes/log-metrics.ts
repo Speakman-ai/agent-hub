@@ -58,6 +58,7 @@ export default function createLogMetricsRoutes({ findProject }: RouteDeps): Rout
           writeErrors: counters.writeErrors,
           expiredDeleted: counters.expiredDeleted,
           quotaDeleted: counters.quotaDeleted,
+          wsDrops: counters.wsDrops,
         },
         latency: {
           meanFlushMs: meanFlushLatencyMs(counters),

@@ -6518,6 +6518,9 @@ components:
               type: integer
             quotaDeleted:
               type: integer
+            wsDrops:
+              type: integer
+              description: Live-tail subscribers force-dropped for reconnect recovery.
           required:
             - accepted
             - written
@@ -6527,6 +6530,7 @@ components:
             - writeErrors
             - expiredDeleted
             - quotaDeleted
+            - wsDrops
           description: Monotonic ingest/reaper counters since boot.
         latency:
           type: object
@@ -26339,7 +26343,7 @@ paths:
       tags:
         - Log Sources
       summary: Log-store health metrics
-      description: Returns batch-writer queue depth, ingest/reaper counters (accepted, written, rejected, dropped, redacted, write errors, reaper deletions), writer latency, and per-project storage + retention-lag gauges. Requires Admin and project access.
+      description: Returns batch-writer queue depth, ingest/reaper counters (accepted, written, rejected, dropped, redacted, write errors, reaper deletions, WebSocket drops), writer latency, and per-project storage + retention-lag gauges. Requires Admin and project access.
       parameters:
         - schema:
             type: string

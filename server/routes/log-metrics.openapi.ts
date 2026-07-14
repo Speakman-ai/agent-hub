@@ -29,6 +29,9 @@ const LogMetricsComponent = registerComponent(
           writeErrors: z.number().int(),
           expiredDeleted: z.number().int(),
           quotaDeleted: z.number().int(),
+          wsDrops: z.number().int().openapi({
+            description: 'Live-tail subscribers force-dropped for reconnect recovery.',
+          }),
         })
         .openapi({ description: 'Monotonic ingest/reaper counters since boot.' }),
       latency: z
@@ -67,7 +70,7 @@ registerPath({
   tags: ['Log Sources'],
   summary: 'Log-store health metrics',
   description:
-    'Returns batch-writer queue depth, ingest/reaper counters (accepted, written, rejected, dropped, redacted, write errors, reaper deletions), writer latency, and per-project storage + retention-lag gauges. Requires Admin and project access.',
+    'Returns batch-writer queue depth, ingest/reaper counters (accepted, written, rejected, dropped, redacted, write errors, reaper deletions, WebSocket drops), writer latency, and per-project storage + retention-lag gauges. Requires Admin and project access.',
   request: {
     params: z.object({ projectId: z.string().openapi({ description: 'Project ID (slug).' }) }),
   },

@@ -38,6 +38,13 @@ export interface LogMetricsSnapshot {
   expiredDeleted: number;
   /** Records evicted by the per-project quota reaper pass. */
   quotaDeleted: number;
+  /**
+   * Live-tail subscribers force-dropped for recovery (bounded-queue overflow or
+   * socket backpressure). One per forced reconnect (decision LOG-SCOPE:
+   * "WebSocket drops"). A healthy Hub keeps this near zero; a climbing value
+   * means subscribers cannot keep up with the live stream.
+   */
+  wsDrops: number;
   /** Cumulative writer flush wall-time, ms (for an average-latency readout). */
   flushMillis: number;
   /** Number of flush transactions counted into `flushMillis`. */
@@ -56,6 +63,7 @@ function freshCounters(): LogMetricsSnapshot {
     writeErrors: 0,
     expiredDeleted: 0,
     quotaDeleted: 0,
+    wsDrops: 0,
     flushMillis: 0,
     flushCount: 0,
   };

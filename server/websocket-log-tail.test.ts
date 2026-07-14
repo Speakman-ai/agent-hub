@@ -7,6 +7,7 @@ import createWebSocket from './websocket.js';
 import { MAX_LOG_TAIL_SOCKET_BUFFERED_BYTES } from './websocket.js';
 import type { WebSocketDeps, Project } from './types.js';
 import { closeLogsDb, initLogsDb, insertLogRecords, type LogRecordRow } from './logs/logs-db.js';
+import { getLogMetrics, resetLogMetrics } from './logs/log-metrics.js';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -183,6 +184,7 @@ describe('WebSocket log live tail', () => {
       });
       ws.send(JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0 }));
       await messages.waitFor((message) => message.type === 'logs_tail_backfill');
+      resetLogMetrics();
       const recovery = messages.waitFor(
         (message) => message.type === 'logs_tail_recovery_required',
       );
@@ -211,6 +213,8 @@ describe('WebSocket log live tail', () => {
       );
       expect(await recovery).toMatchObject({ projectId: 'project-a', dropped: 1 });
       expect(await closed).toBe(1013);
+      // The forced recovery is counted as one WebSocket drop for operators.
+      expect(getLogMetrics().wsDrops).toBe(1);
     } finally {
       ws.close();
     }

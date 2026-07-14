@@ -28,6 +28,13 @@ describe('log-metrics counters', () => {
     expect(m.redacted).toBe(3);
   });
 
+  it('tracks WebSocket subscriber drops, starting from zero', () => {
+    expect(getLogMetrics().wsDrops).toBe(0);
+    incLogMetric('wsDrops');
+    incLogMetric('wsDrops');
+    expect(getLogMetrics().wsDrops).toBe(2);
+  });
+
   it('ignores non-positive / non-finite deltas', () => {
     incLogMetric('dropped', 0);
     incLogMetric('dropped', -4);

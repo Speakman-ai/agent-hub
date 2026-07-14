@@ -28,6 +28,7 @@ import { queryLogRecordsSince, type LogRecordRow } from './logs/logs-db.js';
 import { MAX_QUERY_LIMIT } from './logs/logs-schema.js';
 import { serializeLogRecord } from './logs/log-record-api.js';
 import { subscribeLogTail } from './logs/log-tail.js';
+import { incLogMetric } from './logs/log-metrics.js';
 
 /** Per-client cap: a slow subscriber can never grow an unbounded JS queue. */
 export const MAX_LOG_TAIL_BUFFER_RECORDS = 1_000;
@@ -225,6 +226,10 @@ export default function createWebSocket(
     reason: string,
   ): void {
     tailSubscriptions.delete(ws);
+    // One forced-recovery event = one WebSocket drop for the health gauge
+    // (decision LOG-SCOPE). Counted regardless of whether the closing control
+    // frame reaches the peer — the subscriber is dropped either way.
+    incLogMetric('wsDrops');
     if (ws.readyState !== WsClient.OPEN) return;
     try {
       ws.send(

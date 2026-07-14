@@ -50,6 +50,7 @@ describe('GET /api/projects/:projectId/logs/metrics', () => {
     expect(counters.accepted).toBe(2); // 2 admitted (oversize rejected pre-queue)
     expect(counters.written).toBe(2);
     expect(counters.rejected).toBe(1); // the oversize record
+    expect(counters.wsDrops).toBe(0); // no live-tail subscribers in this test
     expect(latency.flushCount).toBeGreaterThanOrEqual(1);
     expect(storage.projectBytes).toBeGreaterThan(0);
     expect(storage.dbBytes).toBeGreaterThan(0);
