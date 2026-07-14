@@ -20,6 +20,7 @@ import type {
   SessionEnvWorktreeMount,
 } from '../session-env/session-env.js';
 import type { Clock } from './preview-runtime.js';
+import { resolveDevServerPortClientUrl } from './preview-public-url.js';
 import {
   buildDevServerSpawnEnv,
   DevServerRuntime,
@@ -151,6 +152,11 @@ class FakeSessionEnv implements SessionEnv {
     return mapping;
   }
 
+  async mapPortsOut(internalPorts?: number[]): Promise<SessionEnvPortMapping[]> {
+    if (internalPorts === undefined) return this.listPortMappings();
+    return Promise.all(internalPorts.map((p) => this.mapPort(p)));
+  }
+
   listPortMappings(): SessionEnvPortMapping[] {
     return [...this.mappings.values()];
   }
@@ -225,6 +231,12 @@ function makeHarness(
     logTailLines?: number;
     notifyLog?: DevServerNotifyLogFn;
     notifyStatus?: DevServerNotifyStatusFn;
+    portClientUrl?: (args: {
+      sessionId: string;
+      hostPort: number;
+      internalPort: number;
+      primary: boolean;
+    }) => string;
   } = {},
 ): Harness {
   const db = new Database(':memory:');
@@ -260,6 +272,7 @@ function makeHarness(
       disposeGraceMs: 25,
       ...(opts.logTailLines !== undefined ? { logTailLines: opts.logTailLines } : {}),
       urlBase: (port, sessionId) => `/api/sessions/${sessionId}/preview/proxy/${port}`,
+      ...(opts.portClientUrl ? { portClientUrl: opts.portClientUrl } : {}),
     },
     logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
   });
@@ -400,6 +413,91 @@ describe('DevServerRuntime lifecycle', () => {
       internalPort: 5173,
       hostPort: 4500,
     });
+  });
+
+  it('maps every port primary-first and resolves per-entry proxy URLs', async () => {
+    const h = makeHarness({
+      portRange: { min: 4500, max: 4502 },
+      // Prod-mode resolver: primary → mount, extra → /p/<internalPort>.
+      portClientUrl: ({ sessionId, hostPort, internalPort, primary }) =>
+        resolveDevServerPortClientUrl(
+          'https://hub.example.com',
+          sessionId,
+          hostPort,
+          internalPort,
+          primary,
+        ),
+    });
+    const project = makeProject({
+      portMap: [
+        { internalPort: 5173, label: 'web', primary: true },
+        { internalPort: 8787, label: 'api' },
+      ],
+    });
+
+    const started = await h.runtime.start('session-multi', project, '/worktree');
+    await flushMicrotasks();
+
+    // Primary allocates from the pool; extras bind their internal port.
+    expect(started.port).toBe(4500);
+    expect(started.url).toBe('/api/sessions/session-multi/preview/proxy');
+    // mapPortsOut resolves primary first, then extras.
+    expect(h.envs[0].mapCalls).toEqual([5173, 8787]);
+    expect(h.runtime.getPorts(started.devServerId)).toEqual([
+      {
+        name: 'web',
+        internalPort: 5173,
+        hostPort: 4500,
+        primary: true,
+        url: '/api/sessions/session-multi/preview/proxy',
+      },
+      {
+        name: 'api',
+        internalPort: 8787,
+        hostPort: 8787,
+        primary: false,
+        url: '/api/sessions/session-multi/preview/proxy/p/8787',
+      },
+    ]);
+  });
+
+  it('resolves upstream host ports by internal port once ready', async () => {
+    const h = makeHarness({ portRange: { min: 4500, max: 4502 } });
+    const project = makeProject({
+      portMap: [
+        { internalPort: 5173, label: 'web', primary: true },
+        { internalPort: 8787, label: 'api' },
+      ],
+    });
+
+    const started = await h.runtime.start('session-up', project, '/worktree');
+    await flushMicrotasks();
+    expect(h.runtime.getActive('session-up')?.status).toBe('ready');
+
+    // Primary (no internal port) → pooled host port; extra → its mapped port.
+    expect(h.runtime.getSessionUpstreamPort('session-up')).toBe(4500);
+    expect(h.runtime.getSessionUpstreamPort('session-up', 5173)).toBe(4500);
+    expect(h.runtime.getSessionUpstreamPort('session-up', 8787)).toBe(8787);
+    // Unknown internal port / session → null (proxy returns 503).
+    expect(h.runtime.getSessionUpstreamPort('session-up', 9999)).toBeNull();
+    expect(h.runtime.getSessionUpstreamPort('missing', 5173)).toBeNull();
+
+    await h.runtime.stop(started.devServerId);
+    expect(h.runtime.getSessionUpstreamPort('session-up')).toBeNull();
+  });
+
+  it('does not resolve an upstream port while the group is not ready', async () => {
+    // Health probe never succeeds → the group stays `starting`, so the proxy
+    // upstream lookup must return null (proxy answers 503) rather than route
+    // to a port that is not serving yet.
+    const h = makeHarness({
+      fetchOk: false,
+      readyTimeoutMs: 1,
+      portRange: { min: 4500, max: 4501 },
+    });
+    await h.runtime.start('session-starting', makeProject(), '/worktree');
+    expect(h.runtime.getActive('session-starting')?.status).not.toBe('ready');
+    expect(h.runtime.getSessionUpstreamPort('session-starting')).toBeNull();
   });
 
   it('rolls back rows and disposes the env when spawn throws', async () => {

@@ -115,6 +115,7 @@ import {
 } from '../preview/get-session-preview-state.js';
 import { mintPreviewTicket, PREVIEW_TICKET_TTL_MS } from '../preview-auth.js';
 import type {
+  DevServerPortLookup,
   PreviewComposeRuntimeSync,
   PreviewRuntimeActiveLookup,
 } from '../preview/preview-runtime-lookup.js';
@@ -2076,15 +2077,22 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   );
 
   const previewProxyHandler = createPreviewProxyHandler({
-    getSessionPreviewPort: (sessionId) =>
-      getSessionPreviewPort(sessionId, {
-        getPreviewComposeRuntime: deps.getPreviewComposeRuntime as
-          | (() => PreviewComposeRuntimeSync | null)
-          | undefined,
-        getPreviewRuntime: deps.getPreviewRuntime as
-          | (() => PreviewRuntimeActiveLookup | null)
-          | undefined,
-      }),
+    getSessionPreviewPort: (sessionId, internalPort) =>
+      getSessionPreviewPort(
+        sessionId,
+        {
+          getDevServerRuntime: deps.getDevServerRuntime as
+            | (() => DevServerPortLookup | null)
+            | undefined,
+          getPreviewComposeRuntime: deps.getPreviewComposeRuntime as
+            | (() => PreviewComposeRuntimeSync | null)
+            | undefined,
+          getPreviewRuntime: deps.getPreviewRuntime as
+            | (() => PreviewRuntimeActiveLookup | null)
+            | undefined,
+        },
+        internalPort,
+      ),
     userOwnsSession,
     // CSP frame-ancestors source for cross-origin iframe loads in
     // subdomain mode. `config.publicUrl` is normally

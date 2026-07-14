@@ -136,6 +136,20 @@ export interface DevServerRuntimeConfig {
   logTailLines?: number;
   /** Client-facing URL stem. Default `http://localhost:<port>`. */
   urlBase?: (port: number, sessionId: string) => string;
+  /**
+   * Client-facing proxy URL for a single port entry — the resolved URL
+   * persisted on each process row and surfaced by `getPorts`. Lets the
+   * primary keep the back-compat proxy mount while extra ports resolve to
+   * their `/p/<internalPort>` sub-mount. Default: `urlBase(hostPort,
+   * sessionId)` for every entry (back-compat; prod injects a
+   * publicUrl-aware resolver).
+   */
+  portClientUrl?: (args: {
+    sessionId: string;
+    hostPort: number;
+    internalPort: number;
+    primary: boolean;
+  }) => string;
   /** Host the Hub itself dials for health probes. Default loopback. */
   healthUrlBase?: (port: number) => string;
   /** SIGTERM → SIGKILL grace on teardown. Default 5000. */
@@ -288,6 +302,12 @@ export class DevServerRuntime {
   private readonly healthIntervalMs: number;
   private readonly logTailLines: number;
   private readonly urlBase: (port: number, sessionId: string) => string;
+  private readonly portClientUrl: (args: {
+    sessionId: string;
+    hostPort: number;
+    internalPort: number;
+    primary: boolean;
+  }) => string;
   private readonly healthUrlBase: (port: number) => string;
   private readonly disposeGraceMs: number;
   private readonly defaultIdleTtlSeconds: number;
@@ -319,6 +339,8 @@ export class DevServerRuntime {
     this.healthIntervalMs = deps.config?.healthIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS;
     this.logTailLines = deps.config?.logTailLines ?? DEFAULT_LOG_TAIL_LINES;
     this.urlBase = deps.config?.urlBase ?? ((p) => `http://localhost:${p}`);
+    this.portClientUrl =
+      deps.config?.portClientUrl ?? ((a) => this.urlBase(a.hostPort, a.sessionId));
     this.healthUrlBase = deps.config?.healthUrlBase ?? ((p) => `http://127.0.0.1:${p}`);
     this.disposeGraceMs = deps.config?.disposeGraceMs ?? DEFAULT_DISPOSE_GRACE_MS;
     this.defaultIdleTtlSeconds = deps.config?.defaultIdleTtlSeconds ?? DEFAULT_IDLE_TTL_SECONDS;
@@ -515,6 +537,22 @@ export class DevServerRuntime {
     this.touch(devServerId);
   }
 
+  /**
+   * Upstream host port the preview proxy should dial for `sessionId`.
+   * Omit `internalPort` for the primary port (the back-compat
+   * `/preview/proxy` mount); pass one to resolve an extra portMap entry
+   * (the `/preview/proxy/p/<internalPort>` sub-mount). Resolves only once
+   * the group is `ready`, mirroring `getSessionPreviewPort`'s gate for the
+   * compose/legacy runtimes.
+   */
+  getSessionUpstreamPort(sessionId: string, internalPort?: number): number | null {
+    const row = this.getActiveBySessionId(sessionId);
+    if (!row || row.status !== 'ready') return null;
+    if (internalPort === undefined) return row.port > 0 ? row.port : null;
+    const match = this.getPorts(row.id).find((p) => p.internalPort === internalPort);
+    return match && match.hostPort > 0 ? match.hostPort : null;
+  }
+
   /** All port mappings for a group — primary first. */
   getPorts(devServerId: string): DevServerPortRow[] {
     const rows = this.db
@@ -697,7 +735,12 @@ export class DevServerRuntime {
       proc: null,
       tail: [],
       primaryHostPort: primaryEntry.hostPort,
-      primaryUrl: this.urlBase(primaryEntry.hostPort, sessionId),
+      primaryUrl: this.portClientUrl({
+        sessionId,
+        hostPort: primaryEntry.hostPort,
+        internalPort: primaryEntry.internalPort,
+        primary: true,
+      }),
       stopping: false,
     };
     this.active.set(groupId, record);
@@ -705,14 +748,15 @@ export class DevServerRuntime {
     let primaryEnvPort: number;
     try {
       await env.mountWorktree();
-      // Establish every mapping through the env so a containerized
-      // adapter publishes each port; the host adapter resolves through
-      // the allocator above.
-      const primaryMapping = await env.mapPort(primaryEntry.internalPort);
-      for (const r of reserved) {
-        if (!r.primary) await env.mapPort(r.internalPort);
-      }
-      primaryEnvPort = primaryMapping.envPort;
+      // Establish every mapping through the env so a containerized adapter
+      // publishes each port; the host adapter resolves through the pooled
+      // allocator above. Primary first so `mappings[0]` is its mapping.
+      const orderedInternalPorts = [
+        primaryEntry.internalPort,
+        ...reserved.filter((r) => !r.primary).map((r) => r.internalPort),
+      ];
+      const mappings = await env.mapPortsOut(orderedInternalPorts);
+      primaryEnvPort = mappings[0].envPort;
     } catch (err) {
       await this.rollbackStart(groupId, record);
       throw err;
@@ -878,7 +922,7 @@ export class DevServerRuntime {
     primary: boolean,
   ): ReservedEntry | null {
     const rowId = randomUUID();
-    const url = this.urlBase(hostPort, sessionId);
+    const url = this.portClientUrl({ sessionId, hostPort, internalPort, primary });
     try {
       this.db
         .prepare(

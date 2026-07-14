@@ -242,7 +242,10 @@ import createChatHandler, {
 } from './chat.js';
 
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
-import { createPreviewUrlBase } from './preview/preview-public-url.js';
+import {
+  createPreviewUrlBase,
+  resolveDevServerPortClientUrl,
+} from './preview/preview-public-url.js';
 import { attachDefaultPreviewProxyUpgrade } from './preview/preview-proxy.js';
 import { PtyHost } from './terminal/pty-host.js';
 import { PtySession } from './terminal/pty-session.js';
@@ -959,6 +962,11 @@ const { previewRuntime, previewComposeRuntime, devServerRuntime } = createPrevie
   },
   devServerConfig: {
     urlBase: previewUrlBase,
+    // Per-entry proxy URL: primary keeps the back-compat mount, extra ports
+    // resolve to their `/p/<internalPort>` sub-mount (path mode in prod;
+    // direct loopback host port locally).
+    portClientUrl: ({ sessionId, hostPort, internalPort, primary }) =>
+      resolveDevServerPortClientUrl(config.publicUrl, sessionId, hostPort, internalPort, primary),
     ...(previewHealthHost
       ? { healthUrlBase: (port: number) => `http://${previewHealthHost}:${port}` }
       : {}),
@@ -1500,11 +1508,16 @@ recoverInFlightDeployments({
 attachDefaultPreviewProxyUpgrade(
   server,
   {
-    getSessionPreviewPort: (sessionId) =>
-      getSessionPreviewPort(sessionId, {
-        getPreviewComposeRuntime: () => previewComposeRuntime,
-        getPreviewRuntime: () => previewRuntime,
-      }),
+    getSessionPreviewPort: (sessionId, internalPort) =>
+      getSessionPreviewPort(
+        sessionId,
+        {
+          getDevServerRuntime: () => devServerRuntime,
+          getPreviewComposeRuntime: () => previewComposeRuntime,
+          getPreviewRuntime: () => previewRuntime,
+        },
+        internalPort,
+      ),
   },
   { subdomainBase: config.previewSubdomainBase },
 );

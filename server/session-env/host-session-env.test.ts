@@ -367,6 +367,41 @@ describe('HostSessionEnv.mapPort', () => {
   });
 });
 
+describe('HostSessionEnv.mapPortsOut', () => {
+  it('resolves every port loopback-only in order and shares mapPort caching', async () => {
+    const allocations: number[] = [];
+    const { env } = makeEnv({
+      allocateHostPort: (internal) => {
+        allocations.push(internal);
+        return 4100 + (internal % 100);
+      },
+    });
+    const [a, b] = await env.mapPortsOut([5173, 8080]);
+    expect(a).toEqual({
+      internalPort: 5173,
+      hostPort: 4173,
+      envPort: 4173,
+      hostUrl: 'http://127.0.0.1:4173',
+    });
+    expect(b.internalPort).toBe(8080);
+    expect(b.hostUrl).toBe('http://127.0.0.1:4180');
+
+    // A repeat batch (and a port already resolved via mapPort) does not
+    // re-allocate — the pooled port is handed back from cache.
+    await env.mapPort(5173);
+    const again = await env.mapPortsOut([5173, 8080]);
+    expect(again).toEqual([a, b]);
+    expect(allocations).toEqual([5173, 8080]);
+  });
+
+  it('with no argument returns the mappings established so far', async () => {
+    const { env } = makeEnv();
+    expect(await env.mapPortsOut()).toEqual([]);
+    await env.mapPort(3000);
+    expect(await env.mapPortsOut()).toEqual(env.listPortMappings());
+  });
+});
+
 describe('HostSessionEnv.mountWorktree', () => {
   it('returns the worktree in place (hostPath === envPath)', async () => {
     const { env } = makeEnv();

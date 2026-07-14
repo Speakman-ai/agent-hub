@@ -17,13 +17,19 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { userOwnsSession as defaultUserOwnsSession } from '../session-ownership.js';
 import { parsePreviewSubdomainHost } from './preview-subdomain-host.js';
 import {
+  devServerPortProxyPath,
   previewProxyMountPath,
-  previewUpstreamPath,
+  previewUpstreamPathForMount,
   resolvePreviewUpstreamHost,
 } from './preview-public-url.js';
 
 export type PreviewProxyDeps = {
-  getSessionPreviewPort: (sessionId: string) => number | null;
+  /**
+   * Resolve the loopback upstream port for a session. `internalPort` is
+   * passed for the dev-server `/preview/proxy/p/<internalPort>` sub-mount
+   * so the request reaches that mapped extra port rather than the primary.
+   */
+  getSessionPreviewPort: (sessionId: string, internalPort?: number) => number | null;
   userOwnsSession: (req: AuthenticatedRequest, sessionId: string) => boolean;
   /**
    * Public URL of the Hub UI that's expected to iframe the preview
@@ -48,6 +54,7 @@ const HOP_BY_HOP = new Set([
 ]);
 
 const PREVIEW_PROXY_PATH_RE = /^\/api\/sessions\/([^/]+)\/preview\/proxy(?:\/(.*))?(?:\?.*)?$/;
+const PREVIEW_PROXY_SUBPORT_RE = /^\/api\/sessions\/[^/]+\/preview\/proxy\/p\/(\d+)(?:\/.*)?$/;
 
 /** Parse session id from a preview proxy HTTP or WS URL. */
 export function parsePreviewProxySessionId(rawUrl: string | undefined): string | null {
@@ -60,6 +67,21 @@ export function parsePreviewProxySessionId(rawUrl: string | undefined): string |
   } catch {
     return null;
   }
+}
+
+/**
+ * Parse the internal port from a dev-server extra-port sub-mount
+ * (`/api/sessions/:sid/preview/proxy/p/<internalPort>/...`). Returns null
+ * for the primary mount (no `/p/` segment) or an out-of-range port — the
+ * caller then treats the request as targeting the primary upstream.
+ */
+export function parsePreviewProxyInternalPort(rawUrl: string | undefined): number | null {
+  if (!rawUrl) return null;
+  const pathOnly = rawUrl.split('?')[0] ?? '';
+  const m = pathOnly.match(PREVIEW_PROXY_SUBPORT_RE);
+  if (!m?.[1]) return null;
+  const port = Number(m[1]);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
 function copyHeaders(src: IncomingMessage): Record<string, string | string[]> {
@@ -83,8 +105,16 @@ function copyHeaders(src: IncomingMessage): Record<string, string | string[]> {
  * HTML in place of each asset and the preview iframe goes white with
  * "Manifest: Line 1, column 1, Syntax error" in the console.
  */
-export function injectHtmlPreviewBaseHref(html: string, sessionId: string): string {
-  const baseHref = `${previewProxyMountPath(sessionId)}/`;
+export function injectHtmlPreviewBaseHref(
+  html: string,
+  sessionId: string,
+  internalPort?: number,
+): string {
+  const mount =
+    internalPort === undefined
+      ? previewProxyMountPath(sessionId)
+      : devServerPortProxyPath(sessionId, internalPort, false);
+  const baseHref = `${mount}/`;
   const baseTag = `<base href="${baseHref}">`;
   if (/<base\b[^>]*>/i.test(html)) {
     return html.replace(/<base\b[^>]*>/i, baseTag);
@@ -168,9 +198,14 @@ function proxyHttp(
   sessionId: string,
   port: number,
   parentPublicUrl?: string | null,
+  internalPort?: number,
 ): void {
   const upstreamHost = resolvePreviewUpstreamHost();
-  const path = previewUpstreamPath(req.originalUrl, sessionId);
+  const mount =
+    internalPort === undefined
+      ? previewProxyMountPath(sessionId)
+      : devServerPortProxyPath(sessionId, internalPort, false);
+  const path = previewUpstreamPathForMount(req.originalUrl, mount);
   const headers = upstreamRequestHeaders(req, port);
 
   const proxyReq = http.request(
@@ -207,7 +242,7 @@ function proxyHttp(
       proxyRes.on('end', () => {
         let body = Buffer.concat(chunks);
         const text = body.toString('utf8');
-        const rewritten = injectHtmlPreviewBaseHref(text, sessionId);
+        const rewritten = injectHtmlPreviewBaseHref(text, sessionId, internalPort);
         body = Buffer.from(rewritten, 'utf8');
         delete responseHeaders['content-length'];
         responseHeaders['content-length'] = String(body.length);
@@ -293,14 +328,19 @@ export function handlePreviewProxyUpgrade(
     return;
   }
 
-  const port = deps.getSessionPreviewPort(sessionId);
+  const internalPort = parsePreviewProxyInternalPort(req.url);
+  const port = deps.getSessionPreviewPort(sessionId, internalPort ?? undefined);
   if (port == null) {
     denyUpgrade(socket, 'HTTP/1.1 503 Service Unavailable');
     return;
   }
 
   const upstreamHost = resolvePreviewUpstreamHost();
-  const path = previewUpstreamPath(req.url, sessionId);
+  const mount =
+    internalPort == null
+      ? previewProxyMountPath(sessionId)
+      : devServerPortProxyPath(sessionId, internalPort, false);
+  const path = previewUpstreamPathForMount(req.url, mount);
 
   const proxySocket = net.connect({ host: upstreamHost, port }, () => {
     proxySocket.write(buildUpgradeRequestLines(req, path, port));
@@ -365,12 +405,13 @@ export function createPreviewProxyHandler(deps: PreviewProxyDeps): RequestHandle
       res.status(404).send('Session not found');
       return;
     }
-    const port = deps.getSessionPreviewPort(sessionId);
+    const internalPort = parsePreviewProxyInternalPort(req.originalUrl);
+    const port = deps.getSessionPreviewPort(sessionId, internalPort ?? undefined);
     if (port == null) {
       res.status(503).send('No active preview for this session');
       return;
     }
-    proxyHttp(req, res, sessionId, port, deps.parentPublicUrl);
+    proxyHttp(req, res, sessionId, port, deps.parentPublicUrl, internalPort ?? undefined);
   };
 }
 

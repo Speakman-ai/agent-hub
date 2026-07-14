@@ -72,6 +72,24 @@ export function describeSessionEnvContract(
       expect(listed[0]).toEqual(a);
     });
 
+    it('mapPortsOut resolves ports loopback-only and shares mapPort caching', async () => {
+      // 5173 is the single port every adapter harness declares up front —
+      // sysbox publishes are fixed at container start, so the contract can
+      // only exercise a pre-declared port. Multi-port ordering is covered in
+      // the host adapter's own suite.
+      const env = await harness.createEnv();
+      const [a] = await env.mapPortsOut([5173]);
+      expect(a.internalPort).toBe(5173);
+      expect(a.hostUrl).toBe(`http://127.0.0.1:${a.hostPort}`);
+      // Idempotent: a prior mapPort mapping is returned, not re-allocated.
+      const direct = await env.mapPort(5173);
+      expect(direct).toEqual(a);
+      const again = await env.mapPortsOut([5173]);
+      expect(again).toEqual([a]);
+      // No-arg form mirrors listPortMappings.
+      expect(await env.mapPortsOut()).toEqual(env.listPortMappings());
+    });
+
     it('mountWorktree returns host and in-env paths', async () => {
       const env = await harness.createEnv();
       const mount = await env.mountWorktree();

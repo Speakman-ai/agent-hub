@@ -138,6 +138,15 @@ export interface SessionEnv {
    * for an internal port. Idempotent per internal port for the env's life.
    */
   mapPort(internalPort: number): Promise<SessionEnvPortMapping>;
+  /**
+   * Batch {@link mapPort}: resolve (allocating on first touch) every
+   * internal port in `internalPorts` and return the mappings in the same
+   * order. Called with no argument, returns the mappings established so far
+   * (equivalent to {@link listPortMappings}). Idempotent per port. This is
+   * the internal → loopback-host-port map the preview proxy repoints its
+   * upstream onto — the sole off-host route into a session's ports.
+   */
+  mapPortsOut(internalPorts?: number[]): Promise<SessionEnvPortMapping[]>;
   /** All mappings established so far. */
   listPortMappings(): SessionEnvPortMapping[];
   /** Ensure the session worktree is visible inside the env. Idempotent. */

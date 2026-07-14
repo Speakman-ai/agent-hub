@@ -581,6 +581,14 @@ export class SysboxSessionEnv implements SessionEnv {
     return mapping;
   }
 
+  async mapPortsOut(internalPorts?: number[]): Promise<SessionEnvPortMapping[]> {
+    if (internalPorts === undefined) return this.listPortMappings();
+    // Idempotent per internal port: repeated ports collapse to one publish
+    // while the result keeps input order. All ports must be declared before
+    // the container starts — `mapPort` rejects an undeclared port post-start.
+    return Promise.all(internalPorts.map((p) => this.mapPort(p)));
+  }
+
   listPortMappings(): SessionEnvPortMapping[] {
     return [...this.settledMappings.values()];
   }

@@ -388,6 +388,13 @@ export class HostSessionEnv implements SessionEnv {
     return mapping;
   }
 
+  async mapPortsOut(internalPorts?: number[]): Promise<SessionEnvPortMapping[]> {
+    if (internalPorts === undefined) return this.listPortMappings();
+    // `mapPort` is idempotent + caches per internal port, so duplicates in
+    // the input collapse to one allocation while the result preserves order.
+    return Promise.all(internalPorts.map((p) => this.mapPort(p)));
+  }
+
   listPortMappings(): SessionEnvPortMapping[] {
     return [...this.settledMappings.values()];
   }
