@@ -1,17 +1,36 @@
 ---
 name: preview-setup
 description: >-
-  Default guided walkthrough for Docker Compose preview setup. Triggered by
+  Default guided walkthrough for session preview setup. Triggered by
   Settings → Preview or POST .../preview/setup-wizard. Reads README, handles
-  monorepos (multiple compose services), collects env vars, persists via
-  setup-apply, validates with preview/build.
-version: 3.0.0
+  monorepos, collects env vars, and authors the managed dev-server config
+  (`prEnv.devServer`) — with `docker compose up -d` kept for BACKING SERVICES
+  only. Persists via setup-apply.
+version: 4.0.0
 keep-coding-instructions: true
 ---
 
 # Preview Setup — Guided Walkthrough (default)
 
-**Settings → Preview → Start setup** is the primary path (scan, edit compose/env, **Build and run**). Use this walkthrough only when the user clicks **Agent walkthrough** or asks for help in chat.
+**Settings → Preview → Start setup** is the primary path (scan, edit config/env, **Build and run**). Use this walkthrough only when the user clicks **Agent walkthrough** or asks for help in chat.
+
+## Preview model — dev-server, not compose app-wrapping
+
+The Hub runs the app as a **managed long-lived host process** (`prEnv.devServer.startCommand`, default `npm run dev`), maps its ports out through the authenticated preview proxy, and owns start/stop/restart + log streaming. `docker compose` is kept ONLY for the project's own **backing services** (Postgres, Redis, Mailhog): the `startCommand` runs `docker compose up -d --wait <services>` first, then the app dev server.
+
+Author **`prEnv.devServer`**. Do **not** wrap the app itself in compose (`preview.compose.entryService` is the retired app-wrapping mode). A compose `preview` block is still accepted for services-only setups, but the app never runs as a compose entry service.
+
+### Migrating an existing compose app-wrapping project
+
+If the project already has `prEnv.preview.compose.entryService`, fetch a ready-made migration plan instead of hand-writing config:
+
+```bash
+curl -s "$AGENT_HUB_URL/api/projects/$PROJECT_ID/preview/migrate-devserver-plan?appDevCommand=npm%20run%20dev&services=db,redis" -H "X-API-Key: $AGENT_HUB_API_KEY"
+```
+
+It returns `{ devServer, startCommand, warnings }` — the `entryPort` becomes the primary `portMap` entry, `healthPath`/`readyTimeoutMs` carry over, and `warnings` lists per-project follow-ups (remove the app service from the compose file, move `envFile` vars into `devServer.env`/`secretKeys`, drop obsolete live-mount fields). Show the `warnings` to the user, then POST the returned `devServer` to `setup-apply`.
+
+Adopting `devServer` via `setup-apply` **without** re-sending a `preview` block automatically clears the project's legacy app-wrapping `preview.compose` config, so the compose runtime is not left selected alongside the dev server (no double-start). To keep a compose block, send it explicitly in the same call.
 
 ## Bound values
 
@@ -57,16 +76,16 @@ If `phase === "bootstrap_compose"`:
 
 ## Step 4 — Ports, health, routes
 
-`agenthub:ask` for entry port, health path (`preview.compose.healthPath`), env file, idle TTL, capture routes. Use draft defaults as option labels.
+`agenthub:ask` for the app dev command, the port(s) the app serves on (`devServer.portMap[].internalPort` + a short `label`), health path (`devServer.healthPath`), and capture routes. Use draft defaults as option labels. For a fullstack repo, add one `portMap` entry per served port and mark one `primary`.
 
 ## Step 5 — Environment variables
 
 For each `draft.envVars` entry (required first):
 
 - Ask in prose for values.
-- `kind: secret` for tokens/passwords; `plain` for public URLs.
+- Non-secret flags / public URLs → `devServer.env` (plain map). Tokens / passwords → `devServer.secretKeys[]` (names only; values go through the `secrets` bundle below and are injected at spawn, never returned to a client).
 
-Bundle into `setup-apply`:
+Bundle secrets into `setup-apply`:
 
 ```json
 "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" }
@@ -74,10 +93,20 @@ Bundle into `setup-apply`:
 
 ## Step 6 — Persist + validate
 
+Author `devServer` (compose for services only). The `startCommand` brings backing services up first, then the app:
+
 ```bash
-curl -s -X POST .../preview/setup-apply -H "X-API-Key: $AGENT_HUB_API_KEY" -d '{ "enabled": true, "preview": { "compose": { ... } }, "secrets": { ... } }'
-curl -s -X POST .../preview/build -H "X-API-Key: $AGENT_HUB_API_KEY" -d '{ "compose": { ... }, "envVars": [...] }'
-# or preview/test when build is not suitable
+curl -s -X POST .../preview/setup-apply -H "X-API-Key: $AGENT_HUB_API_KEY" -d '{
+  "enabled": true,
+  "devServer": {
+    "startCommand": "docker compose up -d --wait db redis && npm run dev",
+    "portMap": [{ "internalPort": 5173, "label": "web", "primary": true }],
+    "healthPath": "/",
+    "env": { "API_URL": "http://localhost:8080" },
+    "secretKeys": ["DATABASE_URL"]
+  },
+  "secrets": { "mode": "merge", "env": "DATABASE_URL=postgres://...\\n", "defaultKind": "secret" }
+}'
 curl -s -X POST .../preview/wizard-complete -H "X-API-Key: $AGENT_HUB_API_KEY"
 ```
 
@@ -91,8 +120,8 @@ curl -s -X POST .../preview/wizard-complete -H "X-API-Key: $AGENT_HUB_API_KEY"
 
 - **Fenced** `agenthub:ask` only (≥2 options per question). JSON must use **`question`**, **`header`**, and **`options[].label`** + **`options[].description`** — not `prompt`, `id`, or `type` (those show as raw code in chat).
 - Multiple ask rounds are expected for monorepos.
-- Never `startScript` / `processes[]` preview mode.
-- Prefer pointing users to **Settings → Preview** for compose/env edits and **Build and run**; use chat asks for choices you cannot infer from the draft.
+- Author **`devServer`**. Never author the app as a compose entry service (`preview.compose.entryService`), `startScript`, or `processes[]` preview mode — those are the retired app-wrapping modes. Compose is for backing services only, invoked from `devServer.startCommand`.
+- Prefer pointing users to **Settings → Preview** for config/env edits and **Build and run**; use chat asks for choices you cannot infer from the draft.
 
 ## Auth failure
 

@@ -160,12 +160,13 @@ const PreviewSetupApplyRequest = registerComponent(
       }),
       enabled: z.boolean().optional(),
       preview: z.unknown().optional(),
+      devServer: z.unknown().optional(),
       secrets: WizardSecrets.optional(),
     })
     .passthrough()
     .openapi({
       description:
-        'Apply payload for Preview setup. `preview.compose` is persisted into the project preview config; optional secrets are imported into project secrets.',
+        'Apply payload for Preview setup. `preview.compose` is persisted into the project preview config; `devServer` persists the managed dev-server config (compose for backing services only); at least one of the two is required when enabled. Optional secrets are imported into project secrets.',
     }),
 );
 
@@ -193,6 +194,69 @@ registerPath({
       ),
     },
     400: errorResponse('Preview config or secrets payload is invalid.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
+const DevServerPortMapEntrySchema = registerComponent(
+  'DevServerPortMapEntry',
+  z.object({
+    internalPort: z.number().int(),
+    label: z.string(),
+    primary: z.boolean().optional(),
+  }),
+);
+
+const DevServerConfigSchema = registerComponent(
+  'DevServerConfig',
+  z
+    .object({
+      startCommand: z.string(),
+      env: z.record(z.string(), z.string()),
+      secretKeys: z.array(z.string()),
+      portMap: z.array(DevServerPortMapEntrySchema),
+      healthPath: z.string().optional(),
+      readyTimeoutMs: z.number().int().optional(),
+      cwd: z.string().optional(),
+    })
+    .openapi({
+      description: 'Managed dev-server config (`prEnv.devServer`).',
+    }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/preview/migrate-devserver-plan',
+  tags: ['Preview'],
+  summary: 'Compute a compose→devServer migration plan',
+  description:
+    "Maps the project's existing compose app-wrapping preview config to the equivalent managed dev-server config. The generated `startCommand` runs `docker compose up -d --wait` for backing services then the app dev command. Read-only — does not persist; POST the returned `devServer` to `setup-apply` to adopt it.",
+  request: {
+    params: ProjectIdParam,
+    query: z.object({
+      appDevCommand: z
+        .string()
+        .optional()
+        .openapi({ description: 'App dev command appended after the compose services come up.' }),
+      services: z
+        .string()
+        .optional()
+        .openapi({ description: 'Comma-separated backing-service names to bring up explicitly.' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Migration plan computed.',
+      content: jsonContent(
+        z.object({
+          ok: z.literal(true),
+          devServer: DevServerConfigSchema,
+          startCommand: z.string(),
+          warnings: z.array(z.string()),
+        }),
+      ),
+    },
+    400: errorResponse('Project has no compose preview config to migrate.'),
     404: errorResponse('Project not found.'),
   },
 });

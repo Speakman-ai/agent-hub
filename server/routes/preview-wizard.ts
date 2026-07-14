@@ -12,7 +12,12 @@
  *     `bootstrap_compose` phase (user-approved only).
  *
  *   POST /api/projects/:projectId/preview/setup-apply
- *     Admin+. Persists compose preview config + optional secrets in one call.
+ *     Admin+. Persists compose preview and/or devServer config + optional
+ *     secrets in one call.
+ *
+ *   GET /api/projects/:projectId/preview/migrate-devserver-plan
+ *     Admin+. Read-only compose→devServer migration plan for the project's
+ *     existing compose app-wrapping preview config.
  *
  *   POST /api/projects/:projectId/preview/wizard-complete
  *     User+. Broadcasts `preview_wizard_complete` for the Settings panel.
@@ -35,6 +40,7 @@ import {
   type PreviewSetupApplyBody,
 } from '../preview-setup-apply.js';
 import { applyWizardSecrets, validateWizardSecrets } from '../wizard-secrets-apply.js';
+import { migrateComposePreviewToDevServer } from '../preview/migrate-compose-preview.js';
 import { resolveApplyTarget } from '../finalize/finalize-setup-apply-target.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
@@ -610,6 +616,44 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
               session_id: commitResult.sessionId,
             }),
       });
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/preview/migrate-devserver-plan',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const compose = project.prEnv?.preview?.compose;
+      if (!compose || !compose.entryService?.trim()) {
+        res.status(400).json({
+          error:
+            'Project has no compose app-wrapping preview config to migrate (prEnv.preview.compose.entryService is unset).',
+        });
+        return;
+      }
+      const appDevCommand =
+        typeof req.query.appDevCommand === 'string' && req.query.appDevCommand.trim()
+          ? req.query.appDevCommand.trim()
+          : undefined;
+      const services =
+        typeof req.query.services === 'string' && req.query.services.trim()
+          ? req.query.services
+              .split(',')
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0)
+          : undefined;
+      try {
+        const plan = migrateComposePreviewToDevServer(compose, { appDevCommand, services });
+        res.json({ ok: true, ...plan });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: message });
+      }
     },
   );
 

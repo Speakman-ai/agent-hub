@@ -7808,6 +7808,8 @@ components:
           type: boolean
         preview:
           nullable: true
+        devServer:
+          nullable: true
         secrets:
           type: object
           properties:
@@ -7827,7 +7829,48 @@ components:
             - env
       additionalProperties:
         nullable: true
-      description: Apply payload for Preview setup. `preview.compose` is persisted into the project preview config; optional secrets are imported into project secrets.
+      description: Apply payload for Preview setup. `preview.compose` is persisted into the project preview config; `devServer` persists the managed dev-server config (compose for backing services only); at least one of the two is required when enabled. Optional secrets are imported into project secrets.
+    DevServerPortMapEntry:
+      type: object
+      properties:
+        internalPort:
+          type: integer
+        label:
+          type: string
+        primary:
+          type: boolean
+      required:
+        - internalPort
+        - label
+    DevServerConfig:
+      type: object
+      properties:
+        startCommand:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        secretKeys:
+          type: array
+          items:
+            type: string
+        portMap:
+          type: array
+          items:
+            $ref: "#/components/schemas/DevServerPortMapEntry"
+        healthPath:
+          type: string
+        readyTimeoutMs:
+          type: integer
+        cwd:
+          type: string
+      required:
+        - startCommand
+        - env
+        - secretKeys
+        - portMap
+      description: Managed dev-server config (`prEnv.devServer`).
     ProjectAwsSsoProfile:
       type: object
       properties:
@@ -29030,6 +29073,71 @@ paths:
                   - secretsImported
         "400":
           description: Preview config or secrets payload is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewWizardErrorResponse"
+  /api/projects/{projectId}/preview/migrate-devserver-plan:
+    get:
+      tags:
+        - Preview
+      summary: Compute a compose→devServer migration plan
+      description: Maps the project's existing compose app-wrapping preview config to the equivalent managed dev-server config. The generated `startCommand` runs `docker compose up -d --wait` for backing services then the app dev command. Read-only — does not persist; POST the returned `devServer` to `setup-apply` to adopt it.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: App dev command appended after the compose services come up.
+          required: false
+          description: App dev command appended after the compose services come up.
+          name: appDevCommand
+          in: query
+        - schema:
+            type: string
+            description: Comma-separated backing-service names to bring up explicitly.
+          required: false
+          description: Comma-separated backing-service names to bring up explicitly.
+          name: services
+          in: query
+      responses:
+        "200":
+          description: Migration plan computed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  devServer:
+                    $ref: "#/components/schemas/DevServerConfig"
+                  startCommand:
+                    type: string
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - ok
+                  - devServer
+                  - startCommand
+                  - warnings
+        "400":
+          description: Project has no compose preview config to migrate.
           content:
             application/json:
               schema:

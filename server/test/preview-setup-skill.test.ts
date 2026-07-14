@@ -1,5 +1,5 @@
 /**
- * Coverage guard for the compose-only `preview-setup` default skill.
+ * Coverage guard for the dev-server `preview-setup` default skill.
  */
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
@@ -22,12 +22,13 @@ describe('preview-setup default skill — SKILL.md frontmatter', () => {
     const fm = match![1];
     expect(fm).toMatch(/^name:\s*preview-setup\s*$/m);
     expect(fm).toMatch(/^description:/m);
-    expect(fm).toMatch(/^version:\s*3\.0\.0\s*$/m);
+    expect(fm).toMatch(/^version:\s*4\.0\.0\s*$/m);
   });
 
-  it('frontmatter description mentions compose wizard and setup-wizard trigger', () => {
+  it('frontmatter description mentions the dev-server model and setup-wizard trigger', () => {
     const fm = readFileSync(SKILL_MD, 'utf8').match(/^---\n([\s\S]*?)\n---\n/)![1];
-    expect(fm).toMatch(/Docker Compose/i);
+    expect(fm).toMatch(/dev-server/i);
+    expect(fm).toMatch(/BACKING SERVICES/i);
     expect(fm).toMatch(/Triggered by/i);
     expect(fm).toMatch(/setup-wizard/);
   });
@@ -39,16 +40,24 @@ describe('preview-setup default skill — SKILL.md frontmatter', () => {
     expect(body).toMatch(/README/);
     expect(body).toMatch(/setup-compose-bootstrap/);
     expect(body).toMatch(/setup-apply/);
-    expect(body).toMatch(/preview\/build/);
     expect(body).toMatch(/agenthub:ask/);
     expect(body).toMatch(/preview\/wizard-complete/);
     expect(body).toMatch(/guided walkthrough/i);
   });
 
+  it('body documents the dev-server authoring model and compose migration', () => {
+    const body = readFileSync(SKILL_MD, 'utf8');
+    expect(body).toMatch(/devServer/);
+    expect(body).toMatch(/startCommand/);
+    expect(body).toMatch(/portMap/);
+    expect(body).toMatch(/migrate-devserver-plan/);
+    // Compose is for backing services only, invoked from startCommand.
+    expect(body).toMatch(/docker compose up -d/);
+  });
+
   it('sample wizard curls include the Hub API key header', () => {
     const body = readFileSync(SKILL_MD, 'utf8');
     expect(body).toMatch(/preview\/setup-apply[^\n]+X-API-Key: \$AGENT_HUB_API_KEY/);
-    expect(body).toMatch(/preview\/build[^\n]+X-API-Key: \$AGENT_HUB_API_KEY/);
     expect(body).toMatch(/preview\/wizard-complete[^\n]+X-API-Key: \$AGENT_HUB_API_KEY/);
   });
 

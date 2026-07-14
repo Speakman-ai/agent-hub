@@ -749,6 +749,85 @@ describe('POST /api/projects/:projectId/preview/setup-apply', () => {
   });
 });
 
+describe('GET /api/projects/:projectId/preview/migrate-devserver-plan', () => {
+  async function makeComposeProject(): Promise<string> {
+    const projectId = await makeProject();
+    await makeAgent(projectId);
+    await request
+      .post(`/api/projects/${projectId}/preview/setup-apply`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({
+        enabled: true,
+        preview: {
+          compose: {
+            file: 'docker-compose.yml',
+            entryService: 'web',
+            entryPort: 5173,
+            healthPath: '/healthz',
+          },
+        },
+      })
+      .expect(200);
+    return projectId;
+  }
+
+  it('404 when project does not exist', async () => {
+    const res = await request
+      .get('/api/projects/no-such-project/preview/migrate-devserver-plan')
+      .set('Authorization', `Bearer ${adminJwt}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('403 for callers below Admin', async () => {
+    const res = await request
+      .get('/api/projects/any-id/preview/migrate-devserver-plan')
+      .set('Authorization', `Bearer ${userJwt}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('400 when the project has no compose preview config', async () => {
+    const projectId = await makeProject();
+    const res = await request
+      .get(`/api/projects/${projectId}/preview/migrate-devserver-plan`)
+      .set('Authorization', `Bearer ${adminJwt}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/no compose/i);
+  });
+
+  it('returns a migration plan mapping compose to devServer', async () => {
+    const projectId = await makeComposeProject();
+    const res = await request
+      .get(`/api/projects/${projectId}/preview/migrate-devserver-plan`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .expect(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.devServer.portMap).toEqual([
+      { internalPort: 5173, label: 'web', primary: true },
+    ]);
+    expect(res.body.devServer.healthPath).toBe('/healthz');
+    expect(res.body.startCommand).toContain('docker compose');
+    expect(res.body.startCommand).toContain('npm run dev');
+    expect(Array.isArray(res.body.warnings)).toBe(true);
+    expect(res.body.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('honors appDevCommand and services query params', async () => {
+    const projectId = await makeComposeProject();
+    const res = await request
+      .get(`/api/projects/${projectId}/preview/migrate-devserver-plan`)
+      .query({ appDevCommand: 'pnpm dev', services: 'db, redis' })
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .expect(200);
+    // --scale web=0 always guards the entry service against depends_on
+    // resolution, even with an explicit backing-service list.
+    expect(res.body.startCommand).toBe(
+      'docker compose -f docker-compose.yml up -d --wait --scale web=0 db redis && pnpm dev',
+    );
+    // Fully-specified migration has no outstanding follow-ups.
+    expect(res.body.warnings).toEqual([]);
+  });
+});
+
 describe('POST /api/projects/:projectId/preview/wizard-complete', () => {
   it('401 for unauthenticated callers', async () => {
     const res = await request
