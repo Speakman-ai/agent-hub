@@ -1391,11 +1391,12 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) =>
     handleDesignChat(ws as WebSocketLike | null, msg),
   handleDesignCancel,
-  // Hand the compose runtime to the WS connect handler so it can replay
-  // active-preview snapshots to (re)connecting clients. Without this,
-  // a client that reconnects after the chat-handler broadcast loop has
-  // exited never learns that the container became ready.
-  getPreviewSnapshotRuntime: () => previewComposeRuntime,
+  // Hand the compose + dev-server runtimes to the WS connect handler so
+  // it can replay active-preview snapshots (state + log tail) to
+  // (re)connecting clients. Without this, a client that reconnects after
+  // the chat-handler broadcast loop has exited never learns that the
+  // preview became ready.
+  getPreviewSnapshotRuntime: () => [previewComposeRuntime, devServerRuntime],
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
@@ -1450,6 +1451,7 @@ const chatHandler = createChatHandler({
   parseDelegateBlock,
   getPreviewRuntime: () => previewRuntime,
   getPreviewComposeRuntime: () => previewComposeRuntime,
+  getDevServerRuntime: () => devServerRuntime,
   autoCommitAndPR,
   tryAutonomousDispatch,
 } as ChatHandlerDeps);

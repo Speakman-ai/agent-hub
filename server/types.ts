@@ -4099,15 +4099,16 @@ export interface WebSocketDeps {
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) => Promise<void>;
   handleDesignCancel: (designId: string) => void;
   /**
-   * Optional compose-runtime accessor used by the WS connect handler to
-   * replay `agenthub_preview` snapshots for active previews. Optional so
-   * legacy test wirings that don't construct a real runtime continue to
-   * work — the snapshot block is skipped when this is absent.
+   * Optional preview-runtime accessor used by the WS connect handler to
+   * replay `agenthub_preview` snapshots for active previews. Returns one
+   * runtime or several (compose + dev-server). Optional so legacy test
+   * wirings that don't construct a real runtime continue to work — the
+   * snapshot block is skipped when this is absent.
    */
-  getPreviewSnapshotRuntime?: () => {
-    listActive: () => import('./preview/preview-compose-runtime.js').ComposePreviewRow[];
-    getLogTail: (groupId: string) => string[];
-  } | null;
+  getPreviewSnapshotRuntime?: () =>
+    | import('./preview/preview-snapshot.js').PreviewSnapshotRuntime
+    | Array<import('./preview/preview-snapshot.js').PreviewSnapshotRuntime | null | undefined>
+    | null;
 }
 
 // ─── Route Dependencies ──────────────────────────────────────────

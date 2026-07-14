@@ -2,8 +2,9 @@
  * preview-react.ts — host-mediated `tool: preview` ReAct actions.
  *
  * Lets an agent OBSERVE (state / logs / screenshot) and DRIVE (navigate by
- * route, click, type, scroll, wait, read_page, extract) the docker-compose
- * preview that a human already started for the agent's own session.
+ * route, click, type, scroll, wait, read_page, extract) the preview —
+ * compose stack or managed dev server — that a human already started for
+ * the agent's own session.
  *
  * Invariants:
  * - **Lifecycle stays human-only.** There is intentionally no start/stop op —
@@ -47,7 +48,6 @@ import {
 } from '../browser-tools.js';
 import type { BrowserNavigationPolicyOpts } from '../browser-navigation-url.js';
 import { clipUtf8StringToMaxBytes } from '../utf8-clip.js';
-import type { ComposePreviewRow } from './preview-compose-runtime.js';
 
 // ─── Ops ─────────────────────────────────────────────────────────
 
@@ -110,19 +110,56 @@ export interface PreviewReActActionInput {
   condition?: string;
 }
 
-/** Structural subset of PreviewComposeRuntime used here (test seam). */
-export interface PreviewComposeRuntimeForReact {
-  getActiveBySessionId(sessionId: string): ComposePreviewRow | null;
+/**
+ * Structural minimum of a preview group row the tool reads. Both
+ * `ComposePreviewRow` and `DevServerRow` satisfy it.
+ */
+export interface PreviewReactRow {
+  id: string;
+  status: string;
+  url: string;
+  port: number;
+  started_at: string;
+  last_active_at: string;
+}
+
+/**
+ * Structural subset of a preview runtime used here (test seam). Both
+ * `PreviewComposeRuntime` and `DevServerRuntime` satisfy it.
+ */
+export interface PreviewRuntimeForReact {
+  getActiveBySessionId(sessionId: string): PreviewReactRow | null;
   getLogTail(groupId: string): string[];
   touchPreview(groupId: string): void;
   serverReachableUrlForPort(port: number): string;
 }
 
 export interface PreviewReActDeps {
-  /** Null when the compose runtime is not wired (legacy deploys, some tests). */
-  runtime: PreviewComposeRuntimeForReact | null;
+  /** Null when no preview runtime is wired (legacy deploys, some tests). */
+  runtime: PreviewRuntimeForReact | null;
   /** Agent/project browser tuning (viewport, timeout) for the drive session. */
   launchOpts?: BrowserSessionOptions;
+}
+
+/**
+ * Pick the runtime serving `chatSessionId`'s preview. Compose and
+ * dev-server share the backing table but own disjoint row sets, so at
+ * most one runtime has an active group for a session — ownership is
+ * resolved eagerly, right here, and the winner is returned as-is (a
+ * plain runtime, no stateful wrapper to misuse across sessions or call
+ * out of order). When no runtime owns an active group, the first wired
+ * runtime is returned so `runPreviewReActStep`'s own
+ * `getActiveBySessionId` probe yields the standard "no preview running"
+ * outcome. Nulls (unwired runtimes) are skipped; all-null collapses to
+ * `null`, which the step reports as "runtime unavailable".
+ */
+export function resolvePreviewReactRuntime(
+  chatSessionId: string,
+  runtimes: ReadonlyArray<PreviewRuntimeForReact | null | undefined>,
+): PreviewRuntimeForReact | null {
+  const live = runtimes.filter((r): r is PreviewRuntimeForReact => r != null);
+  if (live.length === 0) return null;
+  return live.find((rt) => rt.getActiveBySessionId(chatSessionId) != null) ?? live[0];
 }
 
 /** Stable browser-registry id for a session's preview drive browser. */
@@ -276,7 +313,7 @@ export async function runPreviewReActStep(
 
   if (!deps.runtime) {
     return outcome(
-      '## Preview tool\nThe compose preview runtime is not available on this server, so preview observations cannot be served.',
+      '## Preview tool\nNo preview runtime is available on this server, so preview observations cannot be served.',
       2,
       'runtime_unwired',
       'Preview runtime unavailable',

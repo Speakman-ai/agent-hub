@@ -69,6 +69,7 @@ import { sessionHasActiveUserPreview } from './preview/preview-worktree-sync.js'
 import { syncPreviewAfterWorktreeTurnIfDirty } from './code-change-tracker.js';
 import type { PreviewRuntime } from './preview/preview-runtime.js';
 import type { PreviewComposeRuntime } from './preview/preview-compose-runtime.js';
+import type { DevServerRuntime } from './preview/dev-server-runtime.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
@@ -221,6 +222,7 @@ import {
 } from './browser-tools.js';
 import {
   runPreviewReActStep,
+  resolvePreviewReactRuntime,
   PREVIEW_REACT_OP_SET,
   PREVIEW_DRIVE_OPS,
 } from './preview/preview-react.js';
@@ -466,6 +468,14 @@ export interface ChatHandlerDeps {
    * as the legacy accessor.
    */
   getPreviewComposeRuntime?: () => PreviewComposeRuntime | null;
+  /**
+   * Accessor for the managed dev-server runtime. Only the observe side
+   * of the ReAct `preview` tool consults it today (state / logs /
+   * drive against the session's dev-server group); lifecycle stays on
+   * the REST start/stop surface. Same null-when-unwired contract as
+   * the sibling accessors.
+   */
+  getDevServerRuntime?: () => DevServerRuntime | null;
   autoCommitAndPR: (
     sessionId: string,
     agentId: string,
@@ -1767,6 +1777,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     parseDelegateBlock,
     getPreviewRuntime,
     getPreviewComposeRuntime,
+    getDevServerRuntime,
     autoCommitAndPR,
     tryAutonomousDispatch,
   } = deps;
@@ -4833,7 +4844,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                       condition: action.condition,
                     },
                     {
-                      runtime: getPreviewComposeRuntime ? getPreviewComposeRuntime() : null,
+                      runtime: resolvePreviewReactRuntime(sessionId, [
+                        getPreviewComposeRuntime?.(),
+                        getDevServerRuntime?.(),
+                      ]),
                       launchOpts: browserLaunchOpts,
                     },
                   );

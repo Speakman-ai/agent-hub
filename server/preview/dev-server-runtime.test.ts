@@ -26,6 +26,8 @@ import {
   resolveDevServerPortEntries,
   uniquePortEntryNames,
   type CreateDevServerEnvFn,
+  type DevServerNotifyLogFn,
+  type DevServerNotifyStatusFn,
 } from './dev-server-runtime.js';
 
 class FakeClock implements Clock {
@@ -210,16 +212,24 @@ function makeProject(
 function makeHarness(
   opts: {
     fetchOk?: boolean;
+    /** Full fetch override — wins over `fetchOk`. */
+    fetchImpl?: (url: string) => Promise<{ ok: boolean; status: number }>;
     envSetup?: (env: FakeSessionEnv) => void;
     createEnvError?: Error;
     resolveEnvPort?: (internalPort: number, hostPort: number) => number;
     getProject?: (projectId: string) => Project | null;
     portRange?: { min: number; max: number };
+    /** Injected so a test's `fetchImpl` can close over the same clock. */
+    clock?: FakeClock;
+    readyTimeoutMs?: number;
+    logTailLines?: number;
+    notifyLog?: DevServerNotifyLogFn;
+    notifyStatus?: DevServerNotifyStatusFn;
   } = {},
 ): Harness {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  const clock = new FakeClock();
+  const clock = opts.clock ?? new FakeClock();
   const envs: FakeSessionEnv[] = [];
   const createEnv: CreateDevServerEnvFn = ({ sessionId, allocateHostPort }) => {
     if (opts.createEnvError) throw opts.createEnvError;
@@ -228,7 +238,9 @@ function makeHarness(
     envs.push(env);
     return env;
   };
-  const fetch = vi.fn().mockResolvedValue({ ok: opts.fetchOk ?? true, status: 200 });
+  const fetch = opts.fetchImpl
+    ? vi.fn(opts.fetchImpl)
+    : vi.fn().mockResolvedValue({ ok: opts.fetchOk ?? true, status: 200 });
   const loadProjectEnv = vi
     .fn()
     .mockReturnValue({ TOKEN: 'secret-value', UNUSED: 'do-not-inject' });
@@ -239,11 +251,14 @@ function makeHarness(
     clock,
     loadProjectEnv,
     getProject: opts.getProject,
+    notifyLog: opts.notifyLog,
+    notifyStatus: opts.notifyStatus,
     config: {
       portRange: opts.portRange ?? { min: 4500, max: 4502 },
-      readyTimeoutMs: 2,
+      readyTimeoutMs: opts.readyTimeoutMs ?? 2,
       healthIntervalMs: 1,
       disposeGraceMs: 25,
+      ...(opts.logTailLines !== undefined ? { logTailLines: opts.logTailLines } : {}),
       urlBase: (port, sessionId) => `/api/sessions/${sessionId}/preview/proxy/${port}`,
     },
     logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -456,5 +471,205 @@ describe('DevServerRuntime lifecycle', () => {
       expect.stringContaining(orphan.devServerId),
     ]);
     expect(h.envs.every((env) => env.disposed)).toBe(true);
+  });
+});
+
+describe('DevServerRuntime log streaming + tail buffer', () => {
+  it('fans every stdout/stderr line out via notifyLog with the stream tag', async () => {
+    const notifyLog = vi.fn();
+    const h = makeHarness({ notifyLog });
+    const project = makeProject({
+      portMap: [{ internalPort: 5173, label: 'web', primary: true }],
+    });
+    const started = await h.runtime.start('session-logs', project, '/worktree');
+    await flushMicrotasks();
+
+    h.envs[0].proc?.emitStdout('vite ready\nhmr update\n');
+    h.envs[0].proc?.emitStderr('deprecation warning\n');
+
+    const base = { sessionId: 'session-logs', groupId: started.devServerId, processName: 'web' };
+    expect(notifyLog.mock.calls.map(([info]) => info)).toEqual([
+      { ...base, line: 'vite ready', stream: 'stdout' },
+      { ...base, line: 'hmr update', stream: 'stdout' },
+      { ...base, line: 'deprecation warning', stream: 'stderr' },
+    ]);
+  });
+
+  it('a throwing notifyLog never breaks the tail append', async () => {
+    const notifyLog = vi.fn(() => {
+      throw new Error('ws send failed');
+    });
+    const h = makeHarness({ notifyLog });
+    const started = await h.runtime.start('session-throw', makeProject(), '/worktree');
+    await flushMicrotasks();
+
+    h.envs[0].proc?.emitStdout('line-1\nline-2\n');
+    expect(h.runtime.getLogTail(started.devServerId)).toEqual(['line-1', 'line-2']);
+  });
+
+  it('bounds the ring buffer to logTailLines, dropping the oldest lines first', async () => {
+    const h = makeHarness({ logTailLines: 3 });
+    const started = await h.runtime.start('session-ring', makeProject(), '/worktree');
+    await flushMicrotasks();
+
+    h.envs[0].proc?.emitStdout('a\nb\nc\nd\n');
+    h.envs[0].proc?.emitStderr('e\n');
+    expect(h.runtime.getLogTail(started.devServerId)).toEqual(['c', 'd', 'e']);
+  });
+
+  it('getLogTail returns a copy and [] for unknown groups', async () => {
+    const h = makeHarness();
+    const started = await h.runtime.start('session-copy', makeProject(), '/worktree');
+    await flushMicrotasks();
+
+    h.envs[0].proc?.emitStdout('original\n');
+    const tail = h.runtime.getLogTail(started.devServerId);
+    tail.push('mutated');
+    expect(h.runtime.getLogTail(started.devServerId)).toEqual(['original']);
+    expect(h.runtime.getLogTail('no-such-group')).toEqual([]);
+  });
+});
+
+describe('DevServerRuntime two-phase readiness', () => {
+  it('rebases the readiness deadline once the port binds within the boot budget', async () => {
+    const clock = new FakeClock();
+    // Bind (first non-throwing probe) at t=8, inside the original 10ms
+    // window; first 2xx at t=15 — past the original deadline but inside
+    // the rebased one (8 + 10 = 18). Without the rebase this boot fails.
+    const fetchImpl = async (): Promise<{ ok: boolean; status: number }> => {
+      if (clock.now < 8) throw new Error('ECONNREFUSED');
+      if (clock.now < 15) return { ok: false, status: 503 };
+      return { ok: true, status: 200 };
+    };
+    const notifyStatus = vi.fn();
+    const h = makeHarness({ clock, fetchImpl, readyTimeoutMs: 10, notifyStatus });
+
+    const started = await h.runtime.start('session-rebase', makeProject(), '/worktree');
+    await flushMicrotasks(120);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('ready');
+    expect(notifyStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready' }));
+  });
+
+  it('fails with a bind-phase reason when the port never binds', async () => {
+    const clock = new FakeClock();
+    const notifyStatus = vi.fn();
+    const h = makeHarness({
+      clock,
+      fetchImpl: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+      readyTimeoutMs: 5,
+      notifyStatus,
+    });
+
+    const started = await h.runtime.start('session-never-bound', makeProject(), '/worktree');
+    await flushMicrotasks(80);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('failed');
+    expect(notifyStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('port never bound'),
+      }),
+    );
+  });
+
+  it('a bind that overran the boot budget earns no fresh readiness window', async () => {
+    const clock = new FakeClock();
+    // The single probe response lands at t=6, past the 5ms budget: the
+    // rebase gate must leave the original deadline in place so the next
+    // expiry check fails the boot instead of extending it.
+    const fetchImpl = async (): Promise<{ ok: boolean; status: number }> => {
+      clock.now += 6;
+      return { ok: false, status: 503 };
+    };
+    const notifyStatus = vi.fn();
+    const h = makeHarness({ clock, fetchImpl, readyTimeoutMs: 5, notifyStatus });
+
+    const started = await h.runtime.start('session-overrun', makeProject(), '/worktree');
+    await flushMicrotasks(40);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('failed');
+    expect(notifyStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        // The reason must name the window that was actually granted —
+        // none — not the full readyTimeoutMs a rebase would have given.
+        error: expect.stringContaining('port bound at +6ms, after the 5ms boot budget expired'),
+      }),
+    );
+  });
+
+  it('the per-project readyTimeoutMs override drives the phase budget', async () => {
+    const clock = new FakeClock();
+    // Runtime default budget is 5ms; the project override (Zod floor is
+    // 5s) is effectively unbounded on this fake clock. Bind at t=8 —
+    // dead under the runtime default, alive under the project override.
+    const fetchImpl = async (): Promise<{ ok: boolean; status: number }> => {
+      if (clock.now < 8) throw new Error('ECONNREFUSED');
+      return { ok: true, status: 200 };
+    };
+    const h = makeHarness({ clock, fetchImpl, readyTimeoutMs: 5 });
+    const project = makeProject({ readyTimeoutMs: 20_000 });
+    const started = await h.runtime.start('session-project-budget', project, '/worktree');
+    await flushMicrotasks(60);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('ready');
+  });
+});
+
+describe('DevServerRuntime react/snapshot surface', () => {
+  it('listActive returns only dev-server groups, with primary port + url', async () => {
+    const h = makeHarness();
+    const a = await h.runtime.start('session-a', makeProject(), '/worktree/a');
+    const b = await h.runtime.start('session-b', makeProject(), '/worktree/b');
+    await flushMicrotasks();
+    // A foreign row (compose/legacy — no dev-server runtime marker) must
+    // be invisible to this runtime's snapshot listing.
+    h.db
+      .prepare(
+        `INSERT INTO worktree_preview_groups (id, session_id, project_id, status)
+         VALUES ('foreign-group', 'session-compose', 'project-1', 'starting')`,
+      )
+      .run();
+    // A dev-server group with no primary process row has no port/url a
+    // snapshot could render — it must be filtered, not emitted as
+    // port 0 / empty url.
+    h.db
+      .prepare(
+        `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, runtime)
+         VALUES ('primaryless-group', 'session-primaryless', 'project-1', 'starting', 'dev-server')`,
+      )
+      .run();
+
+    const rows = h.runtime.listActive();
+    expect(rows.map((r) => r.id).sort()).toEqual([a.devServerId, b.devServerId].sort());
+    const rowA = rows.find((r) => r.id === a.devServerId);
+    expect(rowA).toMatchObject({
+      session_id: 'session-a',
+      status: 'ready',
+      port: a.port,
+      url: a.url,
+    });
+  });
+
+  it('touchPreview bumps last_active_at like touch', async () => {
+    const h = makeHarness();
+    const started = await h.runtime.start('session-touch', makeProject(), '/worktree');
+    await flushMicrotasks();
+    h.db.prepare(`UPDATE worktree_preview_groups SET last_active_at = '2020-01-01 00:00:00'`).run();
+
+    h.runtime.touchPreview(started.devServerId);
+
+    const row = h.db
+      .prepare(`SELECT last_active_at FROM worktree_preview_groups WHERE id = ?`)
+      .get(started.devServerId) as { last_active_at: string };
+    expect(row.last_active_at).not.toBe('2020-01-01 00:00:00');
+  });
+
+  it('serverReachableUrlForPort mirrors the health-probe base', () => {
+    const h = makeHarness();
+    expect(h.runtime.serverReachableUrlForPort(4500)).toBe('http://127.0.0.1:4500');
   });
 });

@@ -26,7 +26,8 @@
  *      at the moment of the transition sees it — even if the original
  *      chat handler has exited.
  *
- *   2. On WS connect (this file), we walk every active compose group
+ *   2. On WS connect (this file), we walk every active preview group —
+ *      compose and dev-server —
  *      (`status IN ('starting','ready','failed')`) and emit a snapshot
  *      event so the reconnecting client can rebuild its preview pane
  *      state from scratch. Combined with #1, a reconnecting client
@@ -40,20 +41,32 @@
  * unit-testable with an in-memory compose runtime stub.
  */
 
-import type { ComposePreviewRow } from './preview-compose-runtime.js';
+/**
+ * Structural minimum of a preview group row the snapshot builder needs.
+ * Both `ComposePreviewRow` (compose runtime) and `DevServerRow`
+ * (dev-server runtime) satisfy it, so one builder serves every runtime
+ * that persists into `worktree_preview_groups`.
+ */
+export interface PreviewSnapshotRow {
+  id: string;
+  session_id: string;
+  status: string;
+  url: string;
+  port: number;
+}
 
 /**
- * The compose-runtime surface that the snapshot builder needs. Narrowed
- * from `PreviewComposeRuntime` so tests can pass a stub without standing
- * up a real runtime.
+ * The runtime surface that the snapshot builder needs. Narrowed from
+ * `PreviewComposeRuntime` / `DevServerRuntime` so tests can pass a stub
+ * without standing up a real runtime.
  */
 export interface PreviewSnapshotRuntime {
-  listActive(): ComposePreviewRow[];
+  listActive(): PreviewSnapshotRow[];
   /**
    * Returns the in-memory boot-log tail for `groupId`, or `[]` if the
    * group is unknown to the runtime (e.g. ghost row from a prior
-   * process). Calling this on the production runtime hits the docker
-   * daemon for a fresh `docker compose logs --tail` read; that's
+   * process). Calling this on the production compose runtime hits the
+   * docker daemon for a fresh `docker compose logs --tail` read; that's
    * acceptable on connect (one-shot) but would not be inside a hot
    * loop.
    */
@@ -103,36 +116,52 @@ export type PreviewSnapshotEvent = {
 
 /**
  * Build the full set of snapshot events for the WS connect handshake.
- * The caller is responsible for filtering each event through
- * `shouldDeliverBroadcast` before sending — we don't take a visibility
- * stamp here so the helper stays pure and trivially testable.
+ * Accepts one runtime or several (compose + dev-server share the
+ * backing table but own disjoint row sets, so concatenation never
+ * duplicates a group). Null/undefined entries — an unwired runtime on a
+ * legacy deploy or a test harness — are skipped, the same posture as
+ * `resolvePreviewReactRuntime`; wrapping nullable runtimes in an
+ * always-truthy array must not defeat the WS connect handler's
+ * null-guard. The caller is responsible for filtering each event
+ * through `shouldDeliverBroadcast` before sending — we don't take a
+ * visibility stamp here so the helper stays pure and trivially
+ * testable.
  *
- * Ordering matches `listActive` (started_at ASC) so a multi-session
- * replay is deterministic.
+ * Ordering matches `listActive` (started_at ASC) per runtime so a
+ * multi-session replay is deterministic.
  */
 export function buildPreviewSnapshotEvents(
-  runtime: PreviewSnapshotRuntime,
+  runtime:
+    | PreviewSnapshotRuntime
+    | null
+    | undefined
+    | ReadonlyArray<PreviewSnapshotRuntime | null | undefined>,
 ): PreviewSnapshotEvent[] {
+  const runtimes = (Array.isArray(runtime) ? runtime : [runtime]).filter(
+    (r): r is PreviewSnapshotRuntime => r != null,
+  );
   const events: PreviewSnapshotEvent[] = [];
-  for (const row of runtime.listActive()) {
-    const snap = previewSnapshotEventFromRow(row, runtime.getLogTail(row.id));
-    if (snap) events.push(snap);
+  for (const rt of runtimes) {
+    for (const row of rt.listActive()) {
+      const snap = previewSnapshotEventFromRow(row, rt.getLogTail(row.id));
+      if (snap) events.push(snap);
+    }
   }
   return events;
 }
 
 /**
- * Translate a single compose row + its log tail into a snapshot event.
+ * Translate a single group row + its log tail into a snapshot event.
  * Exposed so the WS connect handler can reuse it inside a per-row try
  * block (one row's `getLogTail` failing shouldn't take out the whole
  * snapshot).
  *
  * Returns `null` for statuses we don't snapshot (defense against
- * future ComposeStatus enum growth — we'd rather emit nothing than a
+ * future status enum growth — we'd rather emit nothing than a
  * mis-typed event).
  */
 export function previewSnapshotEventFromRow(
-  row: ComposePreviewRow,
+  row: PreviewSnapshotRow,
   logTail: string[],
 ): PreviewSnapshotEvent | null {
   // `fullUrl` mirrors the chat-handler convention: the snapshot is the

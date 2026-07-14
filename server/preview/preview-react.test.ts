@@ -7,7 +7,8 @@ import {
   PREVIEW_LOGS_DEFAULT_TAIL,
   PREVIEW_LOGS_MAX_TAIL,
   __resetPreviewDocumentGuardsForTests,
-  type PreviewComposeRuntimeForReact,
+  resolvePreviewReactRuntime,
+  type PreviewRuntimeForReact,
 } from './preview-react.js';
 import type { ComposePreviewRow } from './preview-compose-runtime.js';
 import {
@@ -41,7 +42,7 @@ function makeRuntime(overrides?: { row?: ComposePreviewRow | null; logLines?: st
     getLogTail: vi.fn((_groupId: string) => overrides?.logLines ?? ['line-1', 'line-2', 'line-3']),
     touchPreview: vi.fn((_groupId: string) => {}),
     serverReachableUrlForPort: vi.fn((port: number) => `http://localhost:${port}`),
-  } satisfies PreviewComposeRuntimeForReact;
+  } satisfies PreviewRuntimeForReact;
   return runtime;
 }
 
@@ -170,6 +171,42 @@ describe('preview-react — availability gates', () => {
     const logs = await runPreviewReActStep(SESSION_ID, { op: 'logs' }, { runtime });
     expect(logs.hostExit).toBe(0);
     expect(logs.markdown).toContain('boom');
+  });
+});
+
+describe('preview-react — runtime resolver', () => {
+  it('collapses all-null runtimes to null', () => {
+    expect(resolvePreviewReactRuntime(SESSION_ID, [null, undefined])).toBeNull();
+  });
+
+  it('returns the runtime that owns the session row, unwrapped', async () => {
+    const compose = makeRuntime({ row: null });
+    const devServer = makeRuntime({ logLines: ['dev-server-line'] });
+    const resolved = resolvePreviewReactRuntime(SESSION_ID, [compose, devServer]);
+    expect(resolved).toBe(devServer);
+    const r = await runPreviewReActStep(SESSION_ID, { op: 'logs' }, { runtime: resolved });
+    expect(r.hostExit).toBe(0);
+    expect(r.markdown).toContain('dev-server-line');
+    expect(compose.getLogTail).not.toHaveBeenCalled();
+    expect(devServer.getLogTail).toHaveBeenCalledWith('grp-1');
+    expect(devServer.touchPreview).toHaveBeenCalledWith('grp-1');
+  });
+
+  it('prefers the first runtime with an active row', () => {
+    const compose = makeRuntime();
+    const devServer = makeRuntime();
+    expect(resolvePreviewReactRuntime(SESSION_ID, [compose, devServer])).toBe(compose);
+    expect(devServer.getActiveBySessionId).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the first wired runtime when no preview is active (no_preview path)', async () => {
+    const compose = makeRuntime({ row: null });
+    const devServer = makeRuntime({ row: null });
+    const resolved = resolvePreviewReactRuntime(SESSION_ID, [compose, devServer]);
+    expect(resolved).toBe(compose);
+    const r = await runPreviewReActStep(SESSION_ID, { op: 'state' }, { runtime: resolved });
+    expect(r.hostExit).toBe(2);
+    expect(r.hostDetail).toBe('no_preview');
   });
 });
 

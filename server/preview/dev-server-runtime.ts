@@ -51,7 +51,7 @@ import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-po
 import { parseDbTime } from './preview-reaper.js';
 import type { Clock, HealthFetchFn, PortRange } from './preview-runtime.js';
 import { systemClock } from './preview-runtime.js';
-import { appendPreviewLogTailLine } from './preview-log-tail.js';
+import { appendPreviewLogTailLine, DEFAULT_PREVIEW_LOG_TAIL_LINES } from './preview-log-tail.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
 
@@ -132,7 +132,7 @@ export interface DevServerRuntimeConfig {
   readyTimeoutMs?: number;
   /** Cadence of the health-probe loop. Default 1000. */
   healthIntervalMs?: number;
-  /** Max lines retained in the in-memory log tail. Default 120. */
+  /** Max lines retained in the in-memory log tail. Default 4000. */
   logTailLines?: number;
   /** Client-facing URL stem. Default `http://localhost:<port>`. */
   urlBase?: (port: number, sessionId: string) => string;
@@ -178,7 +178,8 @@ export interface DevServerRuntimeDeps {
 /** Dev servers boot fast (no image build) — 2 min is generous. */
 export const DEFAULT_DEV_SERVER_READY_TIMEOUT_MS = 120_000;
 const DEFAULT_HEALTH_INTERVAL_MS = 1_000;
-const DEFAULT_LOG_TAIL_LINES = 120;
+/** Shared with the compose runtime so late joiners see the same depth. */
+const DEFAULT_LOG_TAIL_LINES = DEFAULT_PREVIEW_LOG_TAIL_LINES;
 const DEFAULT_DISPOSE_GRACE_MS = 5_000;
 const DEFAULT_IDLE_TTL_SECONDS = 14_400;
 const DEFAULT_SESSION_LOCK_TIMEOUT_MS = 120_000;
@@ -452,6 +453,49 @@ export class DevServerRuntime {
   /** Single group by id, or null. */
   getById(devServerId: string): DevServerRow | null {
     return (this.selectRow(`g.id = ?`, devServerId) as DevServerRow | null) ?? null;
+  }
+
+  /**
+   * Every dev-server group in `starting` / `ready` / `failed`, ordered by
+   * `started_at` ASC — the WS connect snapshot walks this so a late
+   * joiner (reconnect after tab sleep / WS drop) can rebuild its preview
+   * pane, same contract as the compose runtime's `listActive`.
+   */
+  listActive(): DevServerRow[] {
+    // INNER JOIN on the primary process row: a group with no primary yet
+    // has no port/url a snapshot could render, so it is invisible here
+    // rather than emitted as `port: 0` / `url: ''`. In practice the gap
+    // is unobservable — `_start` inserts the group and its process rows
+    // in one synchronous block — so this only guards hand-edited or
+    // partially-failed rows.
+    const rows = this.db
+      .prepare(
+        `SELECT g.id, g.session_id, g.project_id, g.status, g.started_at, g.last_active_at,
+                p.pid, p.port, p.url
+           FROM worktree_preview_groups g
+           JOIN worktree_preview_processes p
+                  ON p.group_id = g.id AND p.is_primary = 1
+          WHERE g.runtime = ? AND g.status IN ('starting','ready','failed')
+          ORDER BY g.started_at ASC`,
+      )
+      .all(DEV_SERVER_RUNTIME_KIND) as Array<Omit<DevServerRow, 'pid'> & { pid: number | null }>;
+    return rows.map((row) => ({ ...row, pid: row.pid ?? null }));
+  }
+
+  /**
+   * Base URL the **Hub process itself** can use to reach the dev server's
+   * host port. Mirrors the health-check target (honors
+   * `AGENT_HUB_PREVIEW_HEALTH_HOST` when the Hub runs inside Docker)
+   * rather than the client-facing proxy URL, which the server-side drive
+   * browser cannot resolve.
+   */
+  serverReachableUrlForPort(port: number): string {
+    return this.healthUrlBase(port);
+  }
+
+  /** Alias matching the preview-react runtime surface. */
+  touchPreview(devServerId: string): void {
+    this.touch(devServerId);
   }
 
   /** All port mappings for a group — primary first. */
@@ -860,24 +904,61 @@ export class DevServerRuntime {
     readyTimeoutMs: number,
   ): Promise<void> {
     const healthUrl = `${this.healthUrlBase(hostPort)}${healthPath}`;
-    const deadline = this.clock.nowMs() + readyTimeoutMs;
-    while (this.clock.nowMs() < deadline) {
+    const startedAt = this.clock.nowMs();
+    // Two-phase budget, carried over from the compose runtime's build-exit
+    // rebase. Phase one is BUILD/BOOT: the dev server is installing deps or
+    // compiling and nothing listens yet, so every probe throws (connection
+    // refused). Phase two is APP-READY: the port is bound and the probe gets
+    // an HTTP response of any status. The first bound response rebases
+    // `deadline` to `boundAt + readyTimeoutMs` exactly once, so the app gets
+    // the full readiness budget to go 2xx regardless of how long the
+    // compile took. A fast boot (probe answers almost immediately) collapses
+    // this back to the single-window behaviour.
+    //
+    // The rebase is gated on `boundAt <= originalDeadline`: a boot that
+    // overran its own budget must not earn a fresh readiness window — the
+    // expiry check below fails it instead of extending.
+    const originalDeadline = startedAt + readyTimeoutMs;
+    let deadline = originalDeadline;
+    let boundAtMs: number | null = null;
+    let rebased = false;
+    for (;;) {
+      if (this.clock.nowMs() >= deadline) break;
       const status = this.getStatus(groupId);
       // Stopped (row gone) or already terminal — nothing left to probe.
       if (status !== 'starting') return;
       try {
         const res = await this.fetch(healthUrl);
+        // Any response — even a 4xx/5xx — means the socket is bound: the
+        // build/boot phase is over. Rebase the readiness window once.
+        if (boundAtMs === null) {
+          boundAtMs = this.clock.nowMs();
+          if (boundAtMs <= originalDeadline) {
+            rebased = true;
+            deadline = boundAtMs + readyTimeoutMs;
+          }
+        }
         if (res.ok) {
           this.markReady(groupId);
           return;
         }
       } catch {
-        // Not bound yet — poll again.
+        // Not bound yet — still building/booting; poll again.
       }
       await this.clock.sleep(this.healthIntervalMs);
     }
     if (this.getStatus(groupId) !== 'starting') return;
-    await this.markFailed(groupId, `health check timed out after ${readyTimeoutMs}ms`);
+    // Three distinct failures, each naming the window it actually got:
+    // never bound (full budget spent booting), bound-in-budget (full
+    // rebased window granted, no 2xx), and bound-over-budget (rebase
+    // refused, so no post-bind window existed at all).
+    const reason =
+      boundAtMs === null
+        ? `health check timed out after ${readyTimeoutMs}ms (port never bound)`
+        : rebased
+          ? `health check timed out ${readyTimeoutMs}ms after the port bound (no 2xx from ${healthPath})`
+          : `port bound at +${boundAtMs - startedAt}ms, after the ${readyTimeoutMs}ms boot budget expired (no 2xx from ${healthPath})`;
+    await this.markFailed(groupId, reason);
   }
 
   private markReady(groupId: string): void {

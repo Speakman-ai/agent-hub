@@ -137,4 +137,47 @@ describe('buildPreviewSnapshotEvents', () => {
     });
     expect(events.map((e) => e.previewId)).toEqual(['grp-real']);
   });
+
+  it('accepts several runtimes and keeps each tail with its owning runtime', () => {
+    const compose = {
+      listActive: () => [row({ id: 'grp-compose', session_id: 'sess-1', status: 'ready' })],
+      getLogTail: (id: string) => [`compose-tail:${id}`],
+    };
+    // A dev-server shaped row: no compose_project_name, same structural core.
+    const devServer = {
+      listActive: () => [
+        {
+          id: 'grp-dev',
+          session_id: 'sess-2',
+          status: 'starting',
+          url: 'http://localhost:4300',
+          port: 4300,
+        },
+      ],
+      getLogTail: (id: string) => [`dev-tail:${id}`],
+    };
+
+    const events = buildPreviewSnapshotEvents([compose, devServer]);
+
+    expect(events.map((e) => [e.previewId, e.kind])).toEqual([
+      ['grp-compose', 'preview'],
+      ['grp-dev', 'preview_starting'],
+    ]);
+    expect(events[0].logTail).toEqual(['compose-tail:grp-compose']);
+    expect(events[1].logTail).toEqual(['dev-tail:grp-dev']);
+  });
+
+  it('skips null/undefined runtimes instead of throwing on WS connect', () => {
+    const live = {
+      listActive: () => [row({ id: 'grp-live', status: 'ready' })],
+      getLogTail: () => ['tail'],
+    };
+    // A null runtime wrapped in an always-truthy array must not defeat
+    // the connect handler's `if (runtime)` guard.
+    expect(buildPreviewSnapshotEvents([null, live, undefined]).map((e) => e.previewId)).toEqual([
+      'grp-live',
+    ]);
+    expect(buildPreviewSnapshotEvents(null)).toEqual([]);
+    expect(buildPreviewSnapshotEvents([null, undefined])).toEqual([]);
+  });
 });
