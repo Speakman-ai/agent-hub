@@ -86,6 +86,46 @@ describe('startSessionPreview', () => {
     );
   });
 
+  it('selects the managed dev-server runtime when configured', async () => {
+    const broadcast = vi.fn();
+    const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };
+    const devServerRuntime = {
+      start: vi.fn().mockResolvedValue({
+        devServerId: 'dev-server-1',
+        url: 'http://localhost:4200',
+        port: 4200,
+      }),
+      getById: vi.fn(),
+      getLogTail: vi.fn(),
+    };
+    const devServerProject = {
+      ...project,
+      prEnv: {
+        ...project.prEnv,
+        // Keep the legacy compose config present to pin dev-server precedence.
+        devServer: { startCommand: 'npm run dev', env: {}, secretKeys: [], portMap: [] },
+      },
+    } as Project;
+
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast,
+      findAgent: () => ({ project: devServerProject, agent: { id: 'a1' } }),
+      getPreviewComposeRuntime: () => composeRuntime,
+      getDevServerRuntime: () => devServerRuntime,
+      getSession: () => session,
+    });
+
+    expect(result).toEqual({ ok: true, started: true });
+    const handlerDeps = vi.mocked(handlePreviewBlock).mock.calls[0]?.[2];
+    expect(handlerDeps?.runtime).not.toBe(composeRuntime);
+    expect(handlerDeps?.runtime).toBeTruthy();
+
+    await handlerDeps!.runtime!.startPreview('sess-1', devServerProject, '/tmp/wt');
+    expect(devServerRuntime.start).toHaveBeenCalledWith('sess-1', devServerProject, '/tmp/wt');
+    expect(composeRuntime.startPreview).not.toHaveBeenCalled();
+  });
+
   it('returns 409 instead of falling back to project cwd before worktree provisioning finishes', async () => {
     const broadcast = vi.fn();
     const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };

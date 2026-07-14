@@ -2049,6 +2049,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           getPreviewRuntime: deps.getPreviewRuntime as StartSessionPreviewDeps['getPreviewRuntime'],
           getPreviewComposeRuntime:
             deps.getPreviewComposeRuntime as StartSessionPreviewDeps['getPreviewComposeRuntime'],
+          getDevServerRuntime: deps.getDevServerRuntime as
+            | StartSessionPreviewDeps['getDevServerRuntime']
+            | undefined,
           getSession: (id) => stmts.getSession.get(id) as SessionRow | undefined,
         });
         if (!result.ok) {

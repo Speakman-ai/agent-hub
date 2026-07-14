@@ -345,10 +345,21 @@ const COMPOSE_PREVIEW_READY_TIMEOUT_MS = 600_000;
  */
 export function resolvePreviewHandlerReadyTimeoutMs(
   project: {
-    prEnv?: { preview?: { compose?: { entryService?: string; readyTimeoutMs?: number } } };
+    prEnv?: {
+      preview?: { compose?: { entryService?: string; readyTimeoutMs?: number } };
+      devServer?: { readyTimeoutMs?: number };
+    };
   },
   composeReadyTimeoutMs: number = COMPOSE_PREVIEW_READY_TIMEOUT_MS,
 ): number {
+  const devServerTimeout = project.prEnv?.devServer?.readyTimeoutMs;
+  if (
+    typeof devServerTimeout === 'number' &&
+    Number.isFinite(devServerTimeout) &&
+    devServerTimeout > 0
+  ) {
+    return devServerTimeout;
+  }
   const perProject = project.prEnv?.preview?.compose?.readyTimeoutMs;
   if (typeof perProject === 'number' && Number.isFinite(perProject) && perProject > 0) {
     return perProject;
@@ -425,7 +436,8 @@ export async function handlePreviewBlock(
 
   // ── Gate 1: project has a preview config? ───────────────────────────
   const previewCfg = project.prEnv?.preview;
-  if (!project.prEnv || !previewCfg || previewCfg.enabled !== true) {
+  const devServerConfigured = !!project.prEnv?.devServer;
+  if (!project.prEnv || ((!previewCfg || previewCfg.enabled !== true) && !devServerConfigured)) {
     broadcast({
       type: 'agenthub_preview',
       kind: 'preview_unavailable',

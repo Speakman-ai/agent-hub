@@ -373,6 +373,29 @@ describe('handlePreviewBlock — gating', () => {
     expect(ev.wizardUrl).toBeTruthy();
   });
 
+  it('allows a dev-server-only project without a legacy preview block', async () => {
+    const project = configuredProject({
+      prEnv: {
+        enabled: true,
+        startScript: '',
+        internalPort: 3000,
+        devServer: {
+          startCommand: 'npm run dev',
+          env: {},
+          secretKeys: [],
+          portMap: [{ internalPort: 3000, label: 'web', primary: true }],
+        },
+      },
+    });
+    const fake = makeRuntime({ initialStatus: 'ready' });
+    const deps = makeDeps({ project, runtime: fake.runtime });
+
+    await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
+
+    expect(deps.events[deps.events.length - 1].kind).toBe('preview');
+    expect(fake.startPreviewCalls).toBe(1);
+  });
+
   it('emits preview_unavailable with wizard intent when runtime is null even if config is present', async () => {
     const deps = makeDeps({ runtime: null });
 
