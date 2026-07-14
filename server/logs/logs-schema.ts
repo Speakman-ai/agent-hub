@@ -195,6 +195,54 @@ export const LOGS_SCHEMA = `
   -- Retention reaper scans oldest-first across all projects.
   CREATE INDEX IF NOT EXISTS idx_log_records_time
     ON log_records(time_unix_nano);
+
+  -- Issue groups: one row per distinct error fingerprint (decision LOG-GROUP).
+  -- Aggregate + lifecycle state ONLY; the raw records stay immutable in
+  -- log_records and are joined back by (project_id, fingerprint). first/last
+  -- seen are record wall-clock (time_unix_nano); status_* is issue lifecycle.
+  CREATE TABLE IF NOT EXISTS log_issues (
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT NOT NULL,
+    fingerprint       TEXT NOT NULL,
+    title             TEXT NOT NULL,
+    service           TEXT,
+    environment       TEXT,
+    exception_type    TEXT,
+    message_template  TEXT,
+    first_seen        INTEGER NOT NULL,
+    last_seen         INTEGER NOT NULL,
+    event_count       INTEGER NOT NULL DEFAULT 0,
+    -- 'open' | 'resolved' | 'ignored'
+    status            TEXT NOT NULL DEFAULT 'open',
+    status_updated_at INTEGER,
+    status_updated_by TEXT,
+    -- Representative raw records: earliest + most-recent occurrence row ids.
+    first_record_id   INTEGER,
+    last_record_id    INTEGER,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    UNIQUE (project_id, fingerprint)
+  );
+  -- Issue lists are project-scoped and default to open, newest-activity first.
+  CREATE INDEX IF NOT EXISTS idx_log_issues_project_status
+    ON log_issues(project_id, status, last_seen DESC);
+  CREATE INDEX IF NOT EXISTS idx_log_issues_project_lastseen
+    ON log_issues(project_id, last_seen DESC);
+
+  -- Release / commit facets per issue (decision LOG-GROUP: "keep release and
+  -- commit SHA as facets", NOT in the fingerprint). Empty string stands in for
+  -- an absent release/commit so the composite key stays NOT NULL and dedups.
+  CREATE TABLE IF NOT EXISTS log_issue_releases (
+    issue_id     TEXT NOT NULL,
+    release      TEXT NOT NULL DEFAULT '',
+    commit_sha   TEXT NOT NULL DEFAULT '',
+    first_seen   INTEGER NOT NULL,
+    last_seen    INTEGER NOT NULL,
+    event_count  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (issue_id, release, commit_sha)
+  );
+  CREATE INDEX IF NOT EXISTS idx_log_issue_releases_issue
+    ON log_issue_releases(issue_id, last_seen DESC);
 `;
 
 /**

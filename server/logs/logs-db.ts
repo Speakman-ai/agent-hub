@@ -32,6 +32,8 @@ import {
   MAX_QUERY_LIMIT,
   DEFAULT_QUERY_LIMIT,
 } from './logs-schema.js';
+import type { IssueGrouping } from './log-fingerprint.js';
+import { recordIssueOccurrence } from './log-issues-store.js';
 
 let logsDb: Database.Database | null = null;
 /** True when the running SQLite build gave us the FTS5 message index. */
@@ -255,6 +257,14 @@ export interface LogRecordInput {
    * recomputing; absent, `insertLogRecords` computes it from the text columns.
    */
   byteSize?: number;
+  /**
+   * Issue-grouping metadata for an ERROR-or-higher / structured-exception
+   * record (decision LOG-GROUP). When present, `insertLogRecords` folds the
+   * record into its issue group in the same transaction. Never persisted to
+   * `log_records` — only `fingerprint` is a record column; the rest live on the
+   * issue row.
+   */
+  grouping?: IssueGrouping | null;
 }
 
 export interface LogRecordRow {
@@ -368,6 +378,19 @@ export function insertLogRecords(records: LogRecordInput[], nowMs: number): Inse
       );
       if (insertFts && r.body) {
         insertFts.run(info.lastInsertRowid as number, r.body, r.projectId);
+      }
+      // Fold group-eligible records into their issue group in the same
+      // transaction (decision LOG-GROUP), so a raw row and its aggregate
+      // commit or roll back together.
+      if (r.fingerprint && r.grouping) {
+        recordIssueOccurrence(
+          db,
+          r.projectId,
+          r.grouping,
+          Number(info.lastInsertRowid),
+          r.timeUnixNano,
+          nowMs,
+        );
       }
       result.records.push({
         id: Number(info.lastInsertRowid),

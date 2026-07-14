@@ -110,6 +110,7 @@ import createLogSourceRoutes from './routes/log-sources.js';
 import createLogMetricsRoutes from './routes/log-metrics.js';
 import createLogIngestRoutes from './routes/log-ingest.js';
 import createLogQueryRoutes from './routes/log-query.js';
+import createLogIssueRoutes from './routes/log-issues.js';
 import createHeartbeatRoutes from './routes/heartbeats.js';
 import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
@@ -1346,6 +1347,7 @@ app.use(createCodeRagRoutes(routeDeps));
 app.use(createLogSourceRoutes(routeDeps));
 app.use(createLogMetricsRoutes(routeDeps));
 app.use(createLogQueryRoutes(routeDeps));
+app.use(createLogIssueRoutes(routeDeps));
 // Write-only customer-log ingest (OTLP/HTTP + Agent Hub JSON batch). Public
 // (see auth.ts PUBLIC_METHOD_PATTERNS); self-authenticate from an `ahlog_` token.
 app.use(createLogIngestRoutes(routeDeps));

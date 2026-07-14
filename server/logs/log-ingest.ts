@@ -22,6 +22,7 @@
 import { recordByteSize, type LogRecordInput } from './logs-db.js';
 import { MAX_BATCH_RECORDS, MAX_RECORD_BYTES, SEVERITY_NUMBER } from './logs-schema.js';
 import { redactStructured, type RedactionConfig } from './log-redaction.js';
+import { deriveIssueGrouping } from './log-fingerprint.js';
 import type {
   JsonAnyValue,
   JsonLogsData,
@@ -217,6 +218,21 @@ function finalizeRecord(
     ctx.defaultEnvironment,
   );
 
+  // Issue grouping (decision LOG-GROUP) is derived from the REDACTED values so
+  // no secret ever feeds the fingerprint hash or the stored message template.
+  // Returns null for non-group-eligible records (below ERROR, no exception
+  // fields), leaving `fingerprint`/`grouping` unset.
+  const grouping = deriveIssueGrouping({
+    projectId: ctx.projectId,
+    sourceId: ctx.sourceId,
+    serviceName,
+    environment,
+    severityNumber: built.severityNumber,
+    body,
+    attributes,
+    resource,
+  });
+
   return {
     projectId: ctx.projectId,
     sourceId: ctx.sourceId,
@@ -229,7 +245,8 @@ function finalizeRecord(
     environment,
     traceId: built.traceId,
     spanId: built.spanId,
-    fingerprint: null,
+    fingerprint: grouping?.fingerprint ?? null,
+    grouping,
     resourceJson: Object.keys(resource).length ? JSON.stringify(resource) : null,
     attributesJson: Object.keys(attributes).length ? JSON.stringify(attributes) : null,
     scopeJson:

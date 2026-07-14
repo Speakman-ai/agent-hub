@@ -6287,6 +6287,135 @@ components:
       required:
         - error
       description: Ingest error envelope.
+    LogIssueRelease:
+      type: object
+      properties:
+        release:
+          type: string
+          nullable: true
+        commitSha:
+          type: string
+          nullable: true
+        firstSeen:
+          type: integer
+        lastSeen:
+          type: integer
+        eventCount:
+          type: integer
+      required:
+        - release
+        - commitSha
+        - firstSeen
+        - lastSeen
+        - eventCount
+    LogIssue:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        fingerprint:
+          type: string
+        title:
+          type: string
+        service:
+          type: string
+          nullable: true
+        environment:
+          type: string
+          nullable: true
+        exceptionType:
+          type: string
+          nullable: true
+        messageTemplate:
+          type: string
+          nullable: true
+        firstSeen:
+          type: integer
+        lastSeen:
+          type: integer
+        eventCount:
+          type: integer
+        status:
+          type: string
+          enum:
+            - open
+            - resolved
+            - ignored
+        statusUpdatedAt:
+          type: integer
+          nullable: true
+        statusUpdatedBy:
+          type: string
+          nullable: true
+        firstRecordId:
+          type: integer
+          nullable: true
+        lastRecordId:
+          type: integer
+          nullable: true
+        createdAt:
+          type: integer
+        updatedAt:
+          type: integer
+      required:
+        - id
+        - projectId
+        - fingerprint
+        - title
+        - service
+        - environment
+        - exceptionType
+        - messageTemplate
+        - firstSeen
+        - lastSeen
+        - eventCount
+        - status
+        - statusUpdatedAt
+        - statusUpdatedBy
+        - firstRecordId
+        - lastRecordId
+        - createdAt
+        - updatedAt
+    LogIssueDetail:
+      allOf:
+        - $ref: "#/components/schemas/LogIssue"
+        - type: object
+          properties:
+            releases:
+              type: array
+              items:
+                $ref: "#/components/schemas/LogIssueRelease"
+            samples:
+              type: array
+              items:
+                type: object
+                additionalProperties:
+                  nullable: true
+          required:
+            - releases
+            - samples
+    LogIssueListResponse:
+      type: object
+      properties:
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogIssue"
+        nextCursor:
+          type: string
+          nullable: true
+      required:
+        - issues
+        - nextCursor
+    LogIssueErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
     LogStoreMetrics:
       type: object
       properties:
@@ -25740,6 +25869,206 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogIngestError"
+  /api/projects/{projectId}/logs/issues:
+    get:
+      tags:
+        - Logs
+      summary: List grouped error issues
+      description: Project-scoped, newest-activity-first, cursor-paginated. Filter by lifecycle status (open/resolved/ignored). A cursor from another project cannot reveal its issues.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - open
+              - resolved
+              - ignored
+          required: false
+          name: status
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: cursor
+          in: query
+      responses:
+        "200":
+          description: Issue page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueListResponse"
+        "400":
+          description: Malformed query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "404":
+          description: Project not found or not visible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+  /api/projects/{projectId}/logs/issues/{issueId}:
+    get:
+      tags:
+        - Logs
+      summary: Get an error issue with release facets and sample records
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: issueId
+          in: path
+      responses:
+        "200":
+          description: Issue detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueDetail"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "404":
+          description: Project or issue not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+  /api/projects/{projectId}/logs/issues/{issueId}/resolve:
+    post:
+      tags:
+        - Logs
+      summary: Resolve an error issue
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: issueId
+          in: path
+      responses:
+        "200":
+          description: Updated issue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssue"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "404":
+          description: Project or issue not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+  /api/projects/{projectId}/logs/issues/{issueId}/ignore:
+    post:
+      tags:
+        - Logs
+      summary: Ignore (mute) an error issue
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: issueId
+          in: path
+      responses:
+        "200":
+          description: Updated issue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssue"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "404":
+          description: Project or issue not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+  /api/projects/{projectId}/logs/issues/{issueId}/reopen:
+    post:
+      tags:
+        - Logs
+      summary: Reopen an error issue
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: issueId
+          in: path
+      responses:
+        "200":
+          description: Updated issue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssue"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "404":
+          description: Project or issue not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
   /api/projects/{projectId}/logs/metrics:
     get:
       tags:
