@@ -26,6 +26,18 @@ export interface SessionRow {
    * than opening a new one. NULL for every non-resolve session.
    */
   resolve_pr_head_branch?: string | null;
+  /**
+   * User-chosen existing remote branch to position this session's worktree on.
+   * When set (and the session uses a worktree, is not a resolve-PR session, and
+   * the branch is not the repo default), `ensureSessionWorkspace` checks the
+   * clone out directly onto `origin/<branch>` instead of cutting a fresh
+   * `agent-hub/<agent>/session-<id>` branch — so commits land on the chosen
+   * branch and Finalize pushes/updates its PR. Settable only BEFORE the
+   * worktree is provisioned (once `worktree_path` is set the branch is locked,
+   * preserving the One-Session-One-Branch invariant). NULL for the default
+   * fresh-branch behavior. See `PUT /api/sessions/:sessionId/worktree-branch`.
+   */
+  worktree_checkout_branch?: string | null;
   changes_ready: string | null;
   /**
    * ISO timestamp of the first worktree mutation detected during this session
@@ -1996,6 +2008,7 @@ export interface Stmts {
   updateSessionWorktree: Stmt;
   updateSessionWorktreePath: Stmt;
   setSessionResolvePrHeadBranch: Stmt;
+  setSessionWorktreeCheckoutBranch: Stmt;
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;

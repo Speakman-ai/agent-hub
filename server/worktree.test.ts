@@ -468,6 +468,89 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(persist.mock.calls[0][1]).toMatch(/^agent-hub\/test-agent\/session-/);
   });
 
+  it('checks the worktree out onto a user-chosen existing branch (Branch picker)', async () => {
+    const persist = vi.fn();
+    const onFailure = vi.fn();
+
+    // An existing feature branch on origin, ahead of main.
+    git(sourceRepo, 'checkout -b feature/chosen');
+    writeFileSync(path.join(sourceRepo, 'chosen.txt'), 'chosen work\n');
+    git(sourceRepo, 'add chosen.txt');
+    git(sourceRepo, 'commit -m "chosen commit"');
+    git(sourceRepo, 'push -u origin feature/chosen');
+    const chosenTip = git(sourceRepo, 'rev-parse HEAD');
+    git(sourceRepo, 'checkout main');
+
+    const session = { ...makeSession(null), worktree_checkout_branch: 'feature/chosen' };
+    const clonePath = await ensureSessionWorkspace(
+      session,
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      onFailure,
+    );
+    createdWorkspace = clonePath;
+
+    // Worktree is on the chosen branch, at its tip, with its content.
+    expect(git(clonePath, 'rev-parse --abbrev-ref HEAD')).toBe('feature/chosen');
+    expect(git(clonePath, 'rev-parse HEAD')).toBe(chosenTip);
+    expect(existsSync(path.join(clonePath, 'chosen.txt'))).toBe(true);
+
+    // Persisted worktree_branch is the chosen branch (so Finalize/push targets it).
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist.mock.calls[0][1]).toBe('feature/chosen');
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it('errors (no silent fallback) when a user-chosen branch is missing on origin', async () => {
+    const persist = vi.fn();
+    const onFailure = vi.fn();
+
+    // A user explicitly chose a branch that no longer exists — unlike a resolve
+    // session, this must surface as a failure, not silently cut a new branch.
+    const session = { ...makeSession(null), worktree_checkout_branch: 'feature/gone' };
+    const result = await ensureSessionWorkspace(
+      session,
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      onFailure,
+    );
+
+    expect(result).toBe(sourceRepo); // silent-fallback-shaped return value
+    expect(persist).not.toHaveBeenCalled();
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    const [, failMsg] = onFailure.mock.calls[0];
+    expect(failMsg).toMatch(/feature\/gone/);
+    expect(failMsg).toMatch(/no longer exists/);
+  });
+
+  it('ignores a chosen branch equal to the default branch (cuts a fresh session branch)', async () => {
+    const persist = vi.fn();
+    const onFailure = vi.fn();
+
+    // Choosing the default branch would make Finalize push to main — the
+    // provisioner must fall through to a fresh session branch instead.
+    const session = { ...makeSession(null), worktree_checkout_branch: 'main' };
+    const clonePath = await ensureSessionWorkspace(
+      session,
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      onFailure,
+    );
+    createdWorkspace = clonePath;
+
+    const branch = git(clonePath, 'rev-parse --abbrev-ref HEAD');
+    expect(branch.startsWith('agent-hub/test-agent/session-')).toBe(true);
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist.mock.calls[0][1]).toMatch(/^agent-hub\/test-agent\/session-/);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
   it('does not reset the checked-out feature branch on reuse', async () => {
     const persist = vi.fn();
 

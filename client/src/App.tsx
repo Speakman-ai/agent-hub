@@ -35,6 +35,7 @@ const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPan
 const SessionTerminalPane = lazy(() => import('./components/SessionTerminalPane'));
 import LinkDesignModal from './components/LinkDesignModal';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton';
+import SessionBranchPicker from './components/SessionBranchPicker';
 import {
   paneOpenStorageKey,
   clearSessionPreviewStorage,
@@ -6351,6 +6352,15 @@ export default function App({ initialView }: any = {}) {
                               >
                                 <SquareTerminal size={13} /> Terminal
                               </button>
+                            )}
+                            {!chatProjectIsWorkflow && !sessionConsultActive && (
+                              <SessionBranchPicker
+                                sessionId={activeSessionId}
+                                session={activeSession}
+                                projectId={activeChatProject?.id}
+                                disabled={!connected || !activeChatProject}
+                                onError={(msg: any) => showToast(msg, 'error', 8000)}
+                              />
                             )}
                             {!chatProjectIsWorkflow && (
                               <SessionPreviewStartButton

@@ -363,6 +363,28 @@ export const PutSessionLinkedDesignRequestSchema = z.object({
     .openapi({ description: 'Design id to link, or null to clear the link.' }),
 });
 
+/**
+ * PUT /api/sessions/:sessionId/worktree-branch — choose (or clear) the existing
+ * remote branch this session's worktree is checked out onto. `branch: null`
+ * clears the choice back to the default fresh session branch. Only settable
+ * before the worktree is provisioned.
+ */
+export const PutSessionWorktreeBranchRequestSchema = z.object({
+  branch: z
+    .string()
+    .trim()
+    .min(1, 'branch must be a non-empty string or null')
+    .max(255, 'branch name is too long')
+    // Reject leading '-' (would be read as a git flag), any '..' segment, and
+    // anything outside the safe branch-name character set.
+    .regex(/^(?!-)(?!.*\.\.)[A-Za-z0-9._][A-Za-z0-9._/-]*$/, 'invalid branch name')
+    .nullable()
+    .openapi({
+      description:
+        'Existing remote branch to position the session worktree on, or null to clear the choice (revert to the default fresh session branch). Only settable before the worktree is provisioned.',
+    }),
+});
+
 export const RewindRequestSchema = z.object({
   uuid: z.string({ error: 'uuid is required' }).min(1, 'uuid is required'),
 });
@@ -718,6 +740,26 @@ registerPath({
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
     404: errorResponse('Session or design not found.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/worktree-branch
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/worktree-branch',
+  tags: ['Sessions'],
+  summary: 'Choose (or clear) the existing branch a session worktree checks out onto',
+  description:
+    'Sets `worktree_checkout_branch` so the session worktree is provisioned directly on the chosen existing remote branch (commits land there and Finalize pushes/updates its PR). Pass `branch: null` to clear the choice and revert to the default fresh `agent-hub/<agent>/session-<id>` branch. Settable only before the worktree is provisioned — otherwise the branch is locked (409). The provisioner ignores a chosen branch equal to the repo default branch.',
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(PutSessionWorktreeBranchRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Validation failed or session does not use a worktree.'),
+    404: errorResponse('Session not found.'),
+    409: errorResponse('Worktree already provisioned; the branch is locked.'),
   },
 });
 

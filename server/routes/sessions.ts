@@ -13,6 +13,7 @@ import {
   PutSessionReasoningEffortRequestSchema,
   PutSessionModeRequestSchema,
   PutSessionLinkedDesignRequestSchema,
+  PutSessionWorktreeBranchRequestSchema,
   RewindRequestSchema,
   PatchCheckpointRequestSchema,
   SubmitSessionCredentialRequestSchema,
@@ -1467,6 +1468,49 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
   });
+
+  /**
+   * Choose (or clear) the existing remote branch this session's worktree is
+   * checked out onto — the general form of the resolve-PR head-branch
+   * mechanism, surfaced as the session Branch picker. `branch: null` clears the
+   * choice and reverts to the default fresh `agent-hub/<agent>/session-<id>`
+   * branch.
+   *
+   * Settable only BEFORE the worktree is provisioned: once `worktree_path` is
+   * set the branch is locked (One-Session-One-Branch — Finalize keys off the
+   * recorded branch), so this returns 409. `ensureSessionWorkspace`
+   * authoritatively ignores a chosen branch equal to the repo default branch,
+   * so a stored default can never cause a push to main.
+   */
+  router.put(
+    '/api/sessions/:sessionId/worktree-branch',
+    requireRole('User'),
+    (req: Request, res: Response) => {
+      const parsed = parseBody(PutSessionWorktreeBranchRequestSchema, req, res);
+      if (!parsed) return;
+      const sessionId = req.params.sessionId as string;
+      const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (!existing) return res.status(404).json({ error: 'Session not found' });
+      if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      if (!sessionUsesWorktree(existing)) {
+        return res.status(400).json({ error: 'Session does not use a worktree' });
+      }
+      if (existing.worktree_path) {
+        return res
+          .status(409)
+          .json({ error: 'Worktree already provisioned; the branch is locked for this session' });
+      }
+
+      const branch = parsed.branch ?? null;
+      stmts.setSessionWorktreeCheckoutBranch.run(branch, sessionId);
+      const updated = stmts.getSession.get(sessionId) as SessionRow;
+      const enriched = enrichSessionForClient(updated, stmts);
+      deps.broadcast({ type: 'session-updated', session: enriched });
+      res.json(enriched);
+    },
+  );
 
   router.put('/api/sessions/:sessionId/linked-epic', (req: Request, res: Response) => {
     const epicId =

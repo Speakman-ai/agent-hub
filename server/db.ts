@@ -1885,6 +1885,15 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN resolve_pr_head_branch TEXT DEFAULT NULL');
   }
 
+  // User-chosen existing remote branch to check the worktree out onto (general
+  // form of resolve_pr_head_branch — set via the session Branch picker). NULL
+  // for the default `agent-hub/<agent>/session-<id>` fresh-branch behavior.
+  try {
+    db.prepare('SELECT worktree_checkout_branch FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN worktree_checkout_branch TEXT DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT changes_ready FROM sessions LIMIT 1').get();
   } catch {
@@ -4473,6 +4482,12 @@ function initDb(dataDir: string): void {
     // provisions the worktree directly on it (pushes update the existing PR).
     setSessionResolvePrHeadBranch: db.prepare(
       "UPDATE sessions SET resolve_pr_head_branch = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    // Session Branch picker: record the user-chosen existing branch so
+    // `ensureSessionWorkspace` checks the worktree out onto it (pushes update
+    // that branch's PR). NULL clears the choice back to the default fresh branch.
+    setSessionWorktreeCheckoutBranch: db.prepare(
+      "UPDATE sessions SET worktree_checkout_branch = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     getSessionIdsByWorktreeBranch: db.prepare('SELECT id FROM sessions WHERE worktree_branch = ?'),
     updateSessionGitWorktreeDetected: db.prepare(

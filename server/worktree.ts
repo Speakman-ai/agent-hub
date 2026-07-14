@@ -1948,6 +1948,59 @@ async function refreshSessionCloneRemotes(opts: RefreshSessionCloneRemotesOpts):
   }
 }
 
+/** Outcome of {@link positionCloneOnExistingBranch}. */
+type PositionCloneResult =
+  | { kind: 'positioned'; tip: string }
+  | { kind: 'missing' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Probe origin for `<branch>` and, when the ref is present, fetch it shallowly
+ * and check the fresh clone out onto it (`checkout -B <branch> origin/<branch>`).
+ * Shared by the resolve-PR path and the user Branch-picker path in
+ * {@link ensureSessionWorkspace}.
+ *
+ * Returns a discriminated result instead of throwing so callers can apply their
+ * own missing-ref policy: a resolve-PR session falls back to a fresh session
+ * branch when the head ref is gone (fork PR / deleted branch), whereas a
+ * user-chosen branch treats a missing ref as an error (never silently open a
+ * new branch / duplicate PR). Any git output in `error` is redacted.
+ */
+async function positionCloneOnExistingBranch(opts: {
+  cloneDir: string;
+  branch: string;
+  authArgs: string[];
+  userToken: string | null | undefined;
+}): Promise<PositionCloneResult> {
+  const { cloneDir, branch, authArgs, userToken } = opts;
+  let headRefExists: boolean;
+  try {
+    const refs = await runGit([...authArgs, 'ls-remote', '--heads', 'origin', branch], {
+      cwd: cloneDir,
+      timeoutMs: FETCH_TIMEOUT_MS,
+    });
+    headRefExists = lsRemoteHasExactHead(refs, branch);
+  } catch (err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
+    return { kind: 'error', message: redactAuthHeader(redactToken(normalized, userToken)) };
+  }
+  if (!headRefExists) return { kind: 'missing' };
+  try {
+    await fetchWithRetry(
+      [...authArgs, 'fetch', 'origin', `${branch}:refs/remotes/origin/${branch}`, '--depth', '1'],
+      { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
+    );
+    await runGit(['checkout', '-B', branch, `origin/${branch}`], { cwd: cloneDir });
+    const tip = await runGit(['rev-parse', `origin/${branch}`], { cwd: cloneDir });
+    return { kind: 'positioned', tip };
+  } catch (err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
+    return { kind: 'error', message: redactAuthHeader(redactToken(normalized, userToken)) };
+  }
+}
+
 /**
  * Provision or reuse the per-session git clone under `~/.agent-hub/workspaces/`.
  *
@@ -2077,6 +2130,11 @@ export async function ensureSessionWorkspace(
   // commits append to the existing PR and the session-end push updates it
   // instead of opening a new one. NULL for every other session.
   const resolvePrHeadBranch = session.resolve_pr_head_branch?.trim() || null;
+  // General "work on an existing branch" choice from the session Branch picker.
+  // Positions the worktree directly on the chosen branch (like resolve-PR) so
+  // commits land there and Finalize pushes/updates its PR. NULL for the default
+  // fresh-branch behavior. Ignored when resolve_pr_head_branch is set.
+  const worktreeCheckoutBranch = session.worktree_checkout_branch?.trim() || null;
 
   // Persisted worktree_path (resume, kanban dispatch, webhook autofix, etc.).
   // Must refresh remotes on every ensure — previously this path returned early
@@ -2224,93 +2282,80 @@ export async function ensureSessionWorkspace(
       }
     }
 
-    // The branch the session worktree ends up on. Resolve-PR sessions try to
-    // position on the PR head branch first (see below); everything else cuts
-    // the default `agent-hub/<agent>/session-<id>` branch off the base.
+    // The branch the session worktree ends up on. A resolve-PR session or a
+    // user-chosen `worktree_checkout_branch` positions the worktree directly on
+    // that existing branch (see below); everything else cuts the default
+    // `agent-hub/<agent>/session-<id>` branch off the base.
     let effectiveBranch = branchName;
-    let positionedOnPrHead = false;
+    let positionedOnExistingBranch = false;
 
-    if (resolvePrHeadBranch) {
-      // Position the worktree on the PR's head branch so the agent commits onto
-      // the branch GitHub's PR is tracking — `git push` then updates the
-      // existing PR (push-and-create-pr.ts finds it via `gh pr list --head`).
-      //
-      // CRITICAL: only a *genuinely missing* head ref may fall back to the
-      // default session branch (the fork-PR / deleted-branch case the prompt's
-      // `gh pr checkout` still covers). A transient/auth/refspec failure must
-      // NOT silently fall back — doing so would strand commits on
-      // `agent-hub/<agent>/session-*` and let finalize open a DUPLICATE PR,
-      // the exact failure this change prevents. So we first probe the remote
-      // with `ls-remote`: a reachable origin that lacks the ref is the safe
-      // fallback; any probe/fetch/checkout *error* routes through `onFailure`.
-      let headRefExists: boolean | null = null;
-      try {
-        const refs = await runGit(
-          [...authArgs, 'ls-remote', '--heads', 'origin', resolvePrHeadBranch],
-          { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
-        );
-        headRefExists = lsRemoteHasExactHead(refs, resolvePrHeadBranch);
-      } catch (err: unknown) {
-        const raw = err instanceof Error ? err.message : String(err);
-        const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
-        const message = redactAuthHeader(redactToken(normalized, userToken));
-        console.error(
-          `[Workspace] Failed to probe PR head branch '${resolvePrHeadBranch}' on origin (${cloneDir}); not falling back to a new branch:`,
-          message,
-        );
-        onFailure?.(session.id, message);
-        return projectCwd;
-      }
+    // Resolve-PR pins to the PR's head branch; a general session may carry a
+    // user-chosen branch from the Branch picker. Resolve takes precedence.
+    // `requireExactBranch` selects the missing-ref policy: a missing resolve
+    // head is the fork-PR / deleted-branch case that safely falls back to a
+    // fresh session branch, whereas a user-chosen branch that has vanished is
+    // an explicit error (never silently open a new branch / duplicate PR).
+    const requestedExistingBranch = resolvePrHeadBranch ?? worktreeCheckoutBranch;
+    const requireExactBranch = !resolvePrHeadBranch && !!worktreeCheckoutBranch;
 
-      if (headRefExists) {
-        try {
-          await fetchWithRetry(
-            [
-              ...authArgs,
-              'fetch',
-              'origin',
-              `${resolvePrHeadBranch}:refs/remotes/origin/${resolvePrHeadBranch}`,
-              '--depth',
-              '1',
-            ],
-            { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
-          );
-          await runGit(['checkout', '-B', resolvePrHeadBranch, `origin/${resolvePrHeadBranch}`], {
-            cwd: cloneDir,
-          });
-          const tip = await runGit(['rev-parse', `origin/${resolvePrHeadBranch}`], {
-            cwd: cloneDir,
-          });
-          effectiveBranch = resolvePrHeadBranch;
-          positionedOnPrHead = true;
+    if (requestedExistingBranch) {
+      // Never position onto the repo default branch — Finalize would then push
+      // to it (e.g. main). Fall through to the fresh session branch instead.
+      // This guard makes "push to main" impossible regardless of what branch
+      // was stored. Positioning onto a non-default feature/integration branch
+      // is allowed (that's the point).
+      const repoDefaultBranch = await getDefaultBranch(projectCwd);
+      if (requestedExistingBranch === repoDefaultBranch) {
+        console.warn(
+          `[Workspace] Requested branch '${requestedExistingBranch}' is the repo default branch; using fresh session branch ${branchName} (${cloneDir})`,
+        );
+      } else {
+        // Position the worktree on the existing branch so commits land there and
+        // `git push` updates its PR (push-and-create-pr.ts finds it via
+        // `gh pr list --head`). CRITICAL: a probe/fetch/checkout *error* must NOT
+        // silently fall back — that would strand commits on a fresh branch and
+        // let finalize open a DUPLICATE PR. Only a genuinely *missing* ref may
+        // fall back, and only for resolve-PR sessions.
+        const positioned = await positionCloneOnExistingBranch({
+          cloneDir,
+          branch: requestedExistingBranch,
+          authArgs,
+          userToken,
+        });
+        if (positioned.kind === 'positioned') {
+          effectiveBranch = requestedExistingBranch;
+          positionedOnExistingBranch = true;
           console.log(
-            `[Workspace] Resolve session positioned on PR head branch origin/${resolvePrHeadBranch} at ${tip.slice(0, 7)} (${cloneDir})`,
+            `[Workspace] Session positioned on existing branch origin/${requestedExistingBranch} at ${positioned.tip.slice(0, 7)} (${cloneDir})`,
           );
-        } catch (err: unknown) {
-          // The ref exists but fetch/checkout failed (transient/auth/refspec).
-          // This is an infra error, NOT a fork/deleted fallback — surface it so
+        } else if (positioned.kind === 'missing') {
+          if (requireExactBranch) {
+            const message = `Chosen branch '${requestedExistingBranch}' no longer exists on origin`;
+            console.error(`[Workspace] ${message} (${cloneDir}); not falling back to a new branch`);
+            onFailure?.(session.id, message);
+            return projectCwd;
+          }
+          // Reachable origin without the ref: fork PR (head lives on the fork) or
+          // a deleted head branch. Fall back to the default session branch; the
+          // resolve prompt's `gh pr checkout` lands fork-PR commits on the PR.
+          console.warn(
+            `[Workspace] PR head branch '${requestedExistingBranch}' not found on origin (fork PR / deleted branch) for ${cloneDir}; falling back to ${branchName}`,
+          );
+        } else {
+          // The ref exists but probe/fetch/checkout failed (transient/auth/
+          // refspec). Infra error, NOT a fork/deleted fallback — surface it so
           // finalize never opens a duplicate PR off the default session branch.
-          const raw = err instanceof Error ? err.message : String(err);
-          const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
-          const message = redactAuthHeader(redactToken(normalized, userToken));
           console.error(
-            `[Workspace] Failed to position resolve session on existing PR head branch '${resolvePrHeadBranch}' (${cloneDir}); not falling back to a new branch:`,
-            message,
+            `[Workspace] Failed to position session on existing branch '${requestedExistingBranch}' (${cloneDir}); not falling back to a new branch:`,
+            positioned.message,
           );
-          onFailure?.(session.id, message);
+          onFailure?.(session.id, positioned.message);
           return projectCwd;
         }
-      } else {
-        // Reachable origin without the ref: fork PR (head lives on the fork) or
-        // a deleted head branch. Fall back to the default session branch; the
-        // resolve prompt's `gh pr checkout` step lands fork-PR commits on the PR.
-        console.warn(
-          `[Workspace] PR head branch '${resolvePrHeadBranch}' not found on origin (fork PR / deleted branch) for ${cloneDir}; falling back to ${branchName}`,
-        );
       }
     }
 
-    if (!positionedOnPrHead) {
+    if (!positionedOnExistingBranch) {
       const defaultBranch = await getDefaultBranch(projectCwd);
       const syncBranch = await resolveSyncBranch(projectCwd, prBaseBranch);
       const baseIsFeatureBranch = !!syncBranch && syncBranch !== defaultBranch;

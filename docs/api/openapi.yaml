@@ -17729,6 +17729,60 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/worktree-branch:
+    put:
+      tags:
+        - Sessions
+      summary: Choose (or clear) the existing branch a session worktree checks out onto
+      description: "Sets `worktree_checkout_branch` so the session worktree is provisioned directly on the chosen existing remote branch (commits land there and Finalize pushes/updates its PR). Pass `branch: null` to clear the choice and revert to the default fresh `agent-hub/<agent>/session-<id>` branch. Settable only before the worktree is provisioned — otherwise the branch is locked (409). The provisioner ignores a chosen branch equal to the repo default branch."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                branch:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 255
+                  pattern: ^(?!-)(?!.*\.\.)[A-Za-z0-9._][A-Za-z0-9._/-]*$
+                  description: Existing remote branch to position the session worktree on, or null to clear the choice (revert to the default fresh session branch). Only settable before the worktree is provisioned.
+              required:
+                - branch
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or session does not use a worktree.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Worktree already provisioned; the branch is locked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/sessions/{sessionId}/linked-epic:
     put:
       tags:

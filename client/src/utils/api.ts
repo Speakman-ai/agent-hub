@@ -350,7 +350,8 @@ export const api = {
       )}`,
       { method: 'DELETE' },
     ),
-  getProjectBranches: (projectId: any) => fetchJSON(`/projects/${projectId}/branches`),
+  getProjectBranches: (projectId: any, refresh = false) =>
+    fetchJSON(`/projects/${projectId}/branches${refresh ? '?refresh=1' : ''}`),
   // Agent Hub-hosted git (gitHost: 'agenthub') — see server/routes/git-host.ts
   getGitHostStatus: (projectId: any) => fetchJSON(`/projects/${projectId}/git-host`),
   enableGitHost: (projectId: any, importFrom?: any) =>
@@ -1306,6 +1307,17 @@ export const api = {
     fetchJSON(`/sessions/${sessionId}/linked-epic`, {
       method: 'PUT',
       body: JSON.stringify({ epicId: epicId ?? null }),
+    }),
+  /**
+   * Choose (or clear) the existing remote branch this session's worktree is
+   * checked out onto. Pass `branch: null` to revert to the default fresh
+   * session branch. Only accepted before the worktree is provisioned (409
+   * afterward — the branch is then locked).
+   */
+  setSessionWorktreeBranch: (sessionId: any, branch: any) =>
+    fetchJSON(`/sessions/${sessionId}/worktree-branch`, {
+      method: 'PUT',
+      body: JSON.stringify({ branch: branch ?? null }),
     }),
   // `setSessionWorktree` was removed when Agent Hub locked to
   // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
