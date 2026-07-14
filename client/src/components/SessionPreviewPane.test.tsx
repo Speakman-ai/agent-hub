@@ -61,6 +61,39 @@ describe('SessionPreviewPane', () => {
     expect(iframe!.getAttribute('src')).toBe('http://localhost:4101/board?_ah=0');
   });
 
+  it('does not render a port selector for a single-port preview', async () => {
+    await renderReady();
+    expect(screen.queryByTestId('session-preview-pane-port-select')).toBeNull();
+  });
+
+  it('renders a port selector and switches the iframe to the chosen port', async () => {
+    const multiPortEvent = {
+      ...readyEvent,
+      fullUrl: 'http://localhost:4500',
+      previewUrl: 'http://localhost:4500',
+      port: 4500,
+      ports: [
+        { internalPort: 5173, label: 'web', primary: true, url: 'http://localhost:4500' },
+        { internalPort: 8787, label: 'api', primary: false, url: 'http://localhost:8787' },
+      ],
+    };
+    render(<SessionPreviewPane sessionId="s-1" event={multiPortEvent} onClose={() => {}} />);
+    // Defaults to the primary port's URL.
+    await waitFor(() => {
+      expect(screen.getByTestId('session-preview-pane-url')).toHaveValue('http://localhost:4500');
+    });
+    const select = screen.getByTestId('session-preview-pane-port-select') as HTMLSelectElement;
+    expect(select.value).toBe('5173');
+
+    fireEvent.change(select, { target: { value: '8787' } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-preview-pane-url')).toHaveValue('http://localhost:8787');
+    });
+    const iframe = screen.getByTestId('session-preview-pane-iframe');
+    expect(iframe.getAttribute('src')).toBe('http://localhost:8787/?_ah=0');
+  });
+
   it('clicking refresh bumps the iframe key (forcing a reload)', async () => {
     await renderReady();
     const iframe = screen.getByTestId('session-preview-pane-iframe');

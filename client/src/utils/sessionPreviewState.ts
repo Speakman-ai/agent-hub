@@ -227,6 +227,26 @@ export function resolvePreviewBrowserUrl(url: any, { origin, subdomainBase }: an
   }
 }
 
+/**
+ * Coerce a raw `event.ports` payload into a clean array of preview port
+ * entries. Drops anything without a usable `internalPort` + `url` so the
+ * selector never renders a broken option. Primary entry is floated first so
+ * the default selection matches the pane's primary URL.
+ */
+export function normalizePreviewPorts(raw: any) {
+  if (!Array.isArray(raw)) return [];
+  const cleaned = raw
+    .filter((p) => p && typeof p === 'object')
+    .map((p) => ({
+      internalPort: typeof p.internalPort === 'number' ? p.internalPort : null,
+      label: typeof p.label === 'string' && p.label ? p.label : null,
+      primary: p.primary === true,
+      url: typeof p.url === 'string' ? p.url : '',
+    }))
+    .filter((p: any) => p.internalPort != null && p.url);
+  return cleaned.sort((a: any, b: any) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
+}
+
 export function derivePaneState(event: any) {
   if (!event || typeof event !== 'object') return { status: 'idle' };
   const { kind, target, route, agentReason, previewId } = event;
@@ -236,6 +256,10 @@ export function derivePaneState(event: any) {
       status: 'ready',
       url,
       port: typeof event.port === 'number' ? event.port : null,
+      // Multi-port dev servers ship a `ports` array (primary first); the pane
+      // renders a selector when it has >1 entry. Single-port previews omit it,
+      // so this defaults to [] and the pane behaves exactly as before.
+      ports: normalizePreviewPorts(event.ports),
       route: route || '/',
       target: target || null,
       previewId: previewId || '',

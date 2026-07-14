@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   derivePaneState,
+  normalizePreviewPorts,
   createActivityTouch,
   clampPaneWidth,
   paneOpenStorageKey,
@@ -39,6 +40,41 @@ describe('derivePaneState', () => {
     expect(state.previewId).toBe('p1');
     expect(state.screenshotPath).toBe('/uploads/p1.png');
     expect(state.agentReason).toBe('show me the new board');
+  });
+
+  it('carries a multi-port `ports` array on a ready state (primary floated first)', () => {
+    const state = derivePaneState({
+      kind: 'preview',
+      fullUrl: '/api/sessions/s1/preview/proxy',
+      port: 4500,
+      ports: [
+        {
+          internalPort: 8787,
+          label: 'api',
+          primary: false,
+          url: '/api/sessions/s1/preview/proxy/p/8787',
+        },
+        { internalPort: 5173, label: 'web', primary: true, url: '/api/sessions/s1/preview/proxy' },
+      ],
+    });
+    expect(state.ports).toEqual([
+      { internalPort: 5173, label: 'web', primary: true, url: '/api/sessions/s1/preview/proxy' },
+      {
+        internalPort: 8787,
+        label: 'api',
+        primary: false,
+        url: '/api/sessions/s1/preview/proxy/p/8787',
+      },
+    ]);
+  });
+
+  it('defaults `ports` to [] when the event omits it (single-port preview)', () => {
+    const state = derivePaneState({
+      kind: 'preview',
+      fullUrl: 'http://localhost:4101',
+      port: 4101,
+    });
+    expect(state.ports).toEqual([]);
   });
 
   it('falls back to previewUrl when fullUrl is missing', () => {
@@ -92,6 +128,27 @@ describe('derivePaneState', () => {
 
   it('returns `idle` for an unknown kind', () => {
     expect(derivePaneState({ kind: 'preview_weird' })).toEqual({ status: 'idle' });
+  });
+});
+
+describe('normalizePreviewPorts', () => {
+  it('returns [] for non-array input', () => {
+    expect(normalizePreviewPorts(undefined)).toEqual([]);
+    expect(normalizePreviewPorts(null)).toEqual([]);
+    expect(normalizePreviewPorts('nope')).toEqual([]);
+  });
+
+  it('drops entries missing internalPort or url and floats primary first', () => {
+    const out = normalizePreviewPorts([
+      { internalPort: 8787, label: 'api', primary: false, url: '/x/p/8787' },
+      { label: 'broken', primary: true, url: '/x' }, // no internalPort → dropped
+      { internalPort: 3000, label: 'db', primary: false }, // no url → dropped
+      { internalPort: 5173, label: 'web', primary: true, url: '/x' },
+    ]);
+    expect(out).toEqual([
+      { internalPort: 5173, label: 'web', primary: true, url: '/x' },
+      { internalPort: 8787, label: 'api', primary: false, url: '/x/p/8787' },
+    ]);
   });
 });
 

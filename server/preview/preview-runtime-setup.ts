@@ -38,14 +38,17 @@ import {
   type PreviewComposeRuntimeConfig,
   type DeleteOverrideFileFn,
   type HealthFetchFn as ComposeHealthFetchFn,
-  type ComposePreviewNotifyStatusFn,
 } from './preview-compose-runtime.js';
 import { probePreviewHealth } from './preview-health-fetch.js';
 import { loadProjectEnvForSpawn } from './preview-secrets-store.js';
 import { reclaimFailedPortsInRange } from './preview-port-reclaim.js';
 import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
 import { reconcileStartupOrphanComposeProjects } from './preview-startup-reconcile.js';
-import { DevServerRuntime, type DevServerRuntimeConfig } from './dev-server-runtime.js';
+import {
+  DevServerRuntime,
+  type DevServerRuntimeConfig,
+  type DevServerNotifyStatusFn,
+} from './dev-server-runtime.js';
 import type { Project } from '../types.js';
 
 export interface CreatePreviewRuntimesDeps {
@@ -66,8 +69,13 @@ export interface CreatePreviewRuntimesDeps {
    * flips a group to `ready` / `failed` outside the chat handler's
    * polling window. Wired in production to the WS `broadcast()` so a
    * reconnecting client sees the transition.
+   *
+   * Typed as the dev-server superset (`DevServerNotifyStatusFn`) because it
+   * feeds both runtimes: the dev server adds an optional `ports` array on
+   * `ready`, which the compose runtime never sets. The extra optional field
+   * keeps it assignable to `ComposePreviewNotifyStatusFn` too.
    */
-  notifyStatus?: ComposePreviewNotifyStatusFn;
+  notifyStatus?: DevServerNotifyStatusFn;
   /** Optional config overrides — primarily used by integration tests. */
   legacyConfig?: PreviewRuntimeConfig;
   composeConfig?: PreviewComposeRuntimeConfig;

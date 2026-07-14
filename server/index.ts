@@ -1000,7 +1000,7 @@ const { previewRuntime, previewComposeRuntime, devServerRuntime } = createPrevie
   // client that reconnected after `handlePreviewBlock` returned (slow
   // boot, WS drop mid-build) would never see the transition. The
   // runtime owns the truth — broadcast it directly from there.
-  notifyStatus: ({ sessionId, groupId, status, port, url, logTail, error }) => {
+  notifyStatus: ({ sessionId, groupId, status, port, url, logTail, error, ports }) => {
     try {
       if (status === 'ready') {
         broadcast({
@@ -1018,6 +1018,10 @@ const { previewRuntime, previewComposeRuntime, devServerRuntime } = createPrevie
           previewUrl: url,
           fullUrl: url,
           port,
+          // Multi-port dev servers ship their port list so the pane can
+          // render a selector; a single-port group omits it (see
+          // getClientPorts / previewSnapshotEventFromRow).
+          ...(ports && ports.length > 1 ? { ports } : {}),
           screenshotPath: null,
           logTail,
         } as Record<string, unknown>);

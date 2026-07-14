@@ -28,3 +28,17 @@ export type PreviewComposeRuntimeSync = PreviewRuntimeActiveLookup & {
 export type DevServerPortLookup = {
   getSessionUpstreamPort(sessionId: string, internalPort?: number): number | null;
 };
+
+/**
+ * Client-facing description of one mapped dev-server port. Feeds the session
+ * preview pane's multi-port selector (rendered only when a group exposes more
+ * than one). `url` is the browser-facing proxy URL for that port: the primary
+ * keeps the back-compat `/preview/proxy/` mount, extras resolve to
+ * `/preview/proxy/p/<internalPort>/`.
+ */
+export type PreviewPortEntry = {
+  internalPort: number;
+  label: string;
+  primary: boolean;
+  url: string;
+};

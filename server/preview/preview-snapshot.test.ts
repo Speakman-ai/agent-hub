@@ -86,6 +86,45 @@ describe('previewSnapshotEventFromRow', () => {
     expect((event as Record<string, unknown>).fullUrl).toBeUndefined();
   });
 
+  it('includes a multi-port `ports` array on a ready snapshot', () => {
+    const ports = [
+      {
+        internalPort: 5173,
+        label: 'web',
+        primary: true,
+        url: '/api/sessions/sess-1/preview/proxy',
+      },
+      {
+        internalPort: 8787,
+        label: 'api',
+        primary: false,
+        url: '/api/sessions/sess-1/preview/proxy/p/8787',
+      },
+    ];
+    const event = previewSnapshotEventFromRow(row({ status: 'ready' }), ['boot-ok'], ports);
+    expect((event as Record<string, unknown>).ports).toEqual(ports);
+  });
+
+  it('omits `ports` when a group exposes a single port (no selector needed)', () => {
+    const single = [
+      {
+        internalPort: 5173,
+        label: 'web',
+        primary: true,
+        url: '/api/sessions/sess-1/preview/proxy',
+      },
+    ];
+    const ready = previewSnapshotEventFromRow(row({ status: 'ready' }), [], single);
+    expect((ready as Record<string, unknown>).ports).toBeUndefined();
+    // Never surfaced on non-ready snapshots even if ports are passed.
+    const starting = previewSnapshotEventFromRow(
+      row({ status: 'starting' }),
+      [],
+      [...single, { internalPort: 8787, label: 'api', primary: false, url: '/x/p/8787' }],
+    );
+    expect((starting as Record<string, unknown>).ports).toBeUndefined();
+  });
+
   it('returns null for an unknown future status (defense-in-depth)', () => {
     const future = row({
       status: 'pending' as unknown as ComposePreviewRow['status'],
@@ -165,6 +204,38 @@ describe('buildPreviewSnapshotEvents', () => {
     ]);
     expect(events[0].logTail).toEqual(['compose-tail:grp-compose']);
     expect(events[1].logTail).toEqual(['dev-tail:grp-dev']);
+  });
+
+  it('threads getClientPorts() into the ready snapshot for a dev-server runtime', () => {
+    const ports = [
+      {
+        internalPort: 5173,
+        label: 'web',
+        primary: true,
+        url: '/api/sessions/sess-2/preview/proxy',
+      },
+      {
+        internalPort: 8787,
+        label: 'api',
+        primary: false,
+        url: '/api/sessions/sess-2/preview/proxy/p/8787',
+      },
+    ];
+    const devServer = {
+      listActive: () => [
+        {
+          id: 'grp-dev',
+          session_id: 'sess-2',
+          status: 'ready' as const,
+          url: '/api/sessions/sess-2/preview/proxy',
+          port: 4500,
+        },
+      ],
+      getLogTail: () => [],
+      getClientPorts: () => ports,
+    };
+    const [event] = buildPreviewSnapshotEvents(devServer);
+    expect((event as Record<string, unknown>).ports).toEqual(ports);
   });
 
   it('skips null/undefined runtimes instead of throwing on WS connect', () => {

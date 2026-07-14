@@ -461,6 +461,52 @@ describe('DevServerRuntime lifecycle', () => {
     ]);
   });
 
+  it('exposes client-facing ports and emits them on the ready notifyStatus (multi-port)', async () => {
+    const notifyStatus = vi.fn();
+    const h = makeHarness({
+      portRange: { min: 4500, max: 4502 },
+      notifyStatus,
+      portClientUrl: ({ sessionId, hostPort, internalPort, primary }) =>
+        resolveDevServerPortClientUrl(
+          'https://hub.example.com',
+          sessionId,
+          hostPort,
+          internalPort,
+          primary,
+        ),
+    });
+    const project = makeProject({
+      portMap: [
+        { internalPort: 5173, label: 'web', primary: true },
+        { internalPort: 8787, label: 'api' },
+      ],
+    });
+
+    const started = await h.runtime.start('session-ports', project, '/worktree');
+    await flushMicrotasks();
+
+    const expectedPorts = [
+      {
+        internalPort: 5173,
+        label: 'web',
+        primary: true,
+        url: '/api/sessions/session-ports/preview/proxy',
+      },
+      {
+        internalPort: 8787,
+        label: 'api',
+        primary: false,
+        url: '/api/sessions/session-ports/preview/proxy/p/8787',
+      },
+    ];
+    expect(h.runtime.getClientPorts(started.devServerId)).toEqual(expectedPorts);
+    // The ready broadcast carries the port list so the pane can render its
+    // selector; the label comes from the (uniquified) portMap label.
+    expect(notifyStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'ready', ports: expectedPorts }),
+    );
+  });
+
   it('resolves upstream host ports by internal port once ready', async () => {
     const h = makeHarness({ portRange: { min: 4500, max: 4502 } });
     const project = makeProject({

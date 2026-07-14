@@ -52,6 +52,7 @@ import { parseDbTime } from './preview-reaper.js';
 import type { Clock, HealthFetchFn, PortRange } from './preview-runtime.js';
 import { systemClock } from './preview-runtime.js';
 import { appendPreviewLogTailLine, DEFAULT_PREVIEW_LOG_TAIL_LINES } from './preview-log-tail.js';
+import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
 
@@ -111,6 +112,12 @@ export type DevServerNotifyStatusFn = (info: {
   url: string;
   logTail: string[];
   error?: string;
+  /**
+   * Client-facing port entries (primary first). Present on `ready` for a
+   * multi-port dev server so the preview pane can render a port selector;
+   * omitted on `failed` (nothing to browse).
+   */
+  ports?: PreviewPortEntry[];
 }) => void;
 
 /**
@@ -575,6 +582,21 @@ export class DevServerRuntime {
       hostPort: r.port,
       primary: r.is_primary === 1,
       url: r.url,
+    }));
+  }
+
+  /**
+   * Client-facing port entries for a group (primary first). Feeds the
+   * preview pane's multi-port selector — the pane only renders it when the
+   * list has more than one entry, so a single-port dev server is unaffected.
+   * `url` is the stored browser-facing proxy URL for each port.
+   */
+  getClientPorts(groupId: string): PreviewPortEntry[] {
+    return this.getPorts(groupId).map((p) => ({
+      internalPort: p.internalPort,
+      label: p.name,
+      primary: p.primary,
+      url: p.url,
     }));
   }
 
@@ -1046,6 +1068,7 @@ export class DevServerRuntime {
           port: record.primaryHostPort,
           url: record.primaryUrl,
           logTail: [...record.tail],
+          ports: this.getClientPorts(groupId),
         });
       } catch {
         // Best-effort broadcast.

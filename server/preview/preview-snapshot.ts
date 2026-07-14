@@ -41,6 +41,8 @@
  * unit-testable with an in-memory compose runtime stub.
  */
 
+import type { PreviewPortEntry } from './preview-runtime-lookup.js';
+
 /**
  * Structural minimum of a preview group row the snapshot builder needs.
  * Both `ComposePreviewRow` (compose runtime) and `DevServerRow`
@@ -71,6 +73,13 @@ export interface PreviewSnapshotRuntime {
    * loop.
    */
   getLogTail(groupId: string): string[];
+  /**
+   * Client-facing port entries for `groupId`, primary first. Only the
+   * dev-server runtime implements this (multi-port support); the compose
+   * runtime has a single entry port and omits it, so a reconnecting client
+   * gets the port selector for dev-server previews only.
+   */
+  getClientPorts?(groupId: string): PreviewPortEntry[];
 }
 
 /**
@@ -109,6 +118,13 @@ export type PreviewSnapshotEvent = {
   previewUrl?: string;
   fullUrl?: string;
   port?: number;
+  /**
+   * Client-facing port entries (primary first) for a multi-port dev server.
+   * Present on `kind: 'preview'` only, and only when the group exposes more
+   * than one port — the pane renders its selector off this. Absent for
+   * compose/legacy single-port previews.
+   */
+  ports?: PreviewPortEntry[];
   screenshotPath: null;
   logTail: string[];
   error?: string;
@@ -143,7 +159,8 @@ export function buildPreviewSnapshotEvents(
   const events: PreviewSnapshotEvent[] = [];
   for (const rt of runtimes) {
     for (const row of rt.listActive()) {
-      const snap = previewSnapshotEventFromRow(row, rt.getLogTail(row.id));
+      const ports = rt.getClientPorts?.(row.id);
+      const snap = previewSnapshotEventFromRow(row, rt.getLogTail(row.id), ports);
       if (snap) events.push(snap);
     }
   }
@@ -163,6 +180,7 @@ export function buildPreviewSnapshotEvents(
 export function previewSnapshotEventFromRow(
   row: PreviewSnapshotRow,
   logTail: string[],
+  ports?: PreviewPortEntry[],
 ): PreviewSnapshotEvent | null {
   // `fullUrl` mirrors the chat-handler convention: the snapshot is the
   // canonical URL the iframe should load on success. Without a `route`
@@ -196,6 +214,9 @@ export function previewSnapshotEventFromRow(
       previewUrl: row.url,
       fullUrl: row.url,
       port: row.port,
+      // Only surface a `ports` array worth a selector — a single-port group
+      // (compose/legacy, or a dev server with one portMap entry) omits it.
+      ...(ports && ports.length > 1 ? { ports } : {}),
       screenshotPath: null,
       logTail,
     };

@@ -78,6 +78,15 @@ export default function SessionPreviewPane({
   //              events, so the user reattaches manually or via the button.
   // null       — not popped out.
   const [popMode, setPopMode] = useState<any>(null);
+  // Multi-port dev servers expose several proxy ports; the user picks which
+  // one this pane browses. `null` = follow the primary (default). Reset on
+  // preview rotation so a fresh boot starts on its primary port.
+  const ports = useMemo(
+    () => (state.status === 'ready' && Array.isArray(state.ports) ? state.ports : []),
+    [state.status, state.ports],
+  );
+  const hasMultiPort = ports.length > 1;
+  const [selectedInternalPort, setSelectedInternalPort] = useState<any>(null);
   const hasBootLog = Array.isArray(state.logTail) && state.logTail.length > 0;
   const [footerOpen, setFooterOpen] = useState(defaultFooterOpen || hasBootLog);
 
@@ -211,30 +220,46 @@ export default function SessionPreviewPane({
   useEffect(() => {
     setIframeKey(0);
     setCopied(false);
+    // A rotated preview may expose a different portMap — drop back to the
+    // primary port so the selector never points at a stale internal port.
+    setSelectedInternalPort(null);
     // Don't auto-reattach a popped window on previewId change — the
     // detached window is keyed by sessionId and would now host a stale
     // URL. The poll-loop below picks up `window.closed` and clears.
   }, [previewId]);
 
+  // The raw preview URL this pane should browse: the selected extra port's
+  // proxy URL when one is chosen and still present, else the primary
+  // (`state.url`). Everything downstream (subdomain/path resolution, ticket
+  // mint, iframe src, copy, pop-out) keys off this single value.
+  const activeRawUrl = useMemo(() => {
+    if (state.status !== 'ready') return '';
+    if (selectedInternalPort != null) {
+      const match = ports.find((p: any) => p.internalPort === selectedInternalPort);
+      if (match?.url) return match.url;
+    }
+    return state.url || '';
+  }, [state.status, state.url, ports, selectedInternalPort]);
+
   // Worktree edits while preview is up — soft-reload iframe (ng serve HMR
   // often updates without this; reload covers proxy/API staleness).
   const refreshAt = event?.refreshAt;
   const browserPreviewUrl = useMemo(() => {
-    if (state.status !== 'ready' || !state.url) return '';
+    if (state.status !== 'ready' || !activeRawUrl) return '';
     // Local-dev URLs (`http://localhost:<port>`) bypass Hub proxy/subdomain
     // routing — safe to render immediately without waiting on /api/config.
-    if (!previewProxySessionIdFromUrl(state.url)) {
-      return state.url;
+    if (!previewProxySessionIdFromUrl(activeRawUrl)) {
+      return activeRawUrl;
     }
     // Hub-proxied URLs need subdomain vs path-prefix resolution — block until
     // the /api/config fetch resolves so we don't race (SUBDOMAIN_LOADING).
     if (previewSubdomainBase === SUBDOMAIN_LOADING) {
       return '';
     }
-    return resolvePreviewBrowserUrl(state.url, {
+    return resolvePreviewBrowserUrl(activeRawUrl, {
       subdomainBase: previewSubdomainBase,
     });
-  }, [state.status, state.url, previewSubdomainBase]);
+  }, [state.status, activeRawUrl, previewSubdomainBase]);
 
   const baseIframeSrc = useMemo(() => {
     if (!browserPreviewUrl) return '';
@@ -481,6 +506,27 @@ export default function SessionPreviewPane({
         >
           {pill.label}
         </span>
+        {hasMultiPort && (
+          <select
+            value={
+              selectedInternalPort ??
+              ports.find((p: any) => p.primary)?.internalPort ??
+              ports[0].internalPort
+            }
+            onChange={(e: any) => setSelectedInternalPort(Number(e.target.value))}
+            title="Choose which mapped port this pane browses"
+            aria-label="Preview port"
+            data-testid="session-preview-pane-port-select"
+            className="shrink-0 max-w-[9rem] bg-gray-800 border border-gray-700 rounded px-1.5 py-1 text-xs text-gray-200"
+          >
+            {ports.map((p: any) => (
+              <option key={p.internalPort} value={p.internalPort}>
+                {p.label} :{p.internalPort}
+                {p.primary ? ' •' : ''}
+              </option>
+            ))}
+          </select>
+        )}
         <input
           type="text"
           readOnly
