@@ -25,8 +25,9 @@
  * forever. Logging must never crash the Hub or the source app.
  */
 
-import type { LogRecordInput } from './logs-db.js';
+import type { LogRecordInput, LogRecordRow } from './logs-db.js';
 import { insertLogRecords } from './logs-db.js';
+import { publishLogTail } from './log-tail.js';
 import {
   DEFAULT_WRITE_QUEUE_MAX_RECORDS,
   DEFAULT_WRITE_QUEUE_FLUSH_RECORDS,
@@ -38,7 +39,7 @@ import { incLogMetric, recordLogFlush } from './log-metrics.js';
 export type LogWriteFn = (
   records: LogRecordInput[],
   nowMs: number,
-) => { inserted: number; rejectedOversize: number };
+) => { inserted: number; rejectedOversize: number; records?: LogRecordRow[] };
 
 export interface LogWriteQueueOptions {
   maxQueueRecords?: number;
@@ -122,6 +123,10 @@ export class LogWriteQueue {
     try {
       const result = this.writeFn(batch, start);
       recordLogFlush(result.inserted, this.now() - start);
+      // The built-in SQLite writer returns the committed rows (including their
+      // durable cursor ids). Test writers may omit `records`; that deliberately
+      // makes them transport-silent rather than fabricating non-durable events.
+      if (result.records?.length) publishLogTail(result.records);
       // Any record the store itself refused (defense-in-depth oversize guard)
       // is a silent drop — it was already counted `accepted` on enqueue.
       if (result.rejectedOversize > 0) incLogMetric('dropped', result.rejectedOversize);

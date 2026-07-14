@@ -6380,6 +6380,95 @@ components:
       required:
         - error
       description: Error envelope.
+    LogRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        projectId:
+          type: string
+        sourceId:
+          type: string
+        timeUnixNano:
+          type: integer
+        observedTimeUnixNano:
+          type: integer
+          nullable: true
+        severityNumber:
+          type: integer
+        severityText:
+          type: string
+          nullable: true
+        body:
+          type: string
+          nullable: true
+        serviceName:
+          type: string
+          nullable: true
+        environment:
+          type: string
+          nullable: true
+        traceId:
+          type: string
+          nullable: true
+        spanId:
+          type: string
+          nullable: true
+        fingerprint:
+          type: string
+          nullable: true
+        resourceJson:
+          type: string
+          nullable: true
+        attributesJson:
+          type: string
+          nullable: true
+        scopeJson:
+          type: string
+          nullable: true
+        byteSize:
+          type: integer
+        ingestedAt:
+          type: integer
+      required:
+        - id
+        - projectId
+        - sourceId
+        - timeUnixNano
+        - observedTimeUnixNano
+        - severityNumber
+        - severityText
+        - body
+        - serviceName
+        - environment
+        - traceId
+        - spanId
+        - fingerprint
+        - resourceJson
+        - attributesJson
+        - scopeJson
+        - byteSize
+        - ingestedAt
+    LogQueryResponse:
+      type: object
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogRecord"
+        nextCursor:
+          type: integer
+          nullable: true
+      required:
+        - records
+        - nextCursor
+    LogQueryErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
     LogSource:
       type: object
       properties:
@@ -25661,6 +25750,121 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogMetricsErrorResponse"
+  /api/projects/{projectId}/logs:
+    get:
+      tags:
+        - Logs
+      summary: Query project logs
+      description: Returns a bounded newest-first page. Every filter and cursor is scoped to the path project; a cursor from another project cannot reveal records.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: startTimeUnixNano
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: endTimeUnixNano
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: sourceId
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: serviceName
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: environment
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            maximum: 24
+          required: false
+          name: minSeverityNumber
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 500
+          required: false
+          name: text
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+          required: false
+          name: traceId
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+          required: false
+          name: fingerprint
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+          required: false
+          name: cursor
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Log page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogQueryResponse"
+        "400":
+          description: Malformed query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogQueryErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogQueryErrorResponse"
+        "404":
+          description: Project not found or not visible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogQueryErrorResponse"
   /api/projects/{projectId}/log-sources:
     get:
       tags:

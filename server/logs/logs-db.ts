@@ -308,6 +308,8 @@ export interface InsertResult {
   inserted: number;
   /** Rows rejected because they exceeded MAX_RECORD_BYTES. */
   rejectedOversize: number;
+  /** Canonical rows committed by this transaction, in input order. */
+  records: LogRecordRow[];
 }
 
 /**
@@ -334,8 +336,11 @@ export function insertLogRecords(records: LogRecordInput[], nowMs: number): Inse
     ? db.prepare('INSERT INTO log_records_fts (rowid, body, project_id) VALUES (?, ?, ?)')
     : null;
 
-  const result: InsertResult = { inserted: 0, rejectedOversize: 0 };
-  const run = db.transaction((rows: LogRecordInput[]) => {
+  const run = db.transaction((rows: LogRecordInput[]): InsertResult => {
+    // Keep every publication candidate local to the transaction. If any later
+    // statement throws, better-sqlite3 rolls the DB back and this object never
+    // escapes to the writer/live-tail path as a committed-looking result.
+    const result: InsertResult = { inserted: 0, rejectedOversize: 0, records: [] };
     for (const r of rows) {
       const size = r.byteSize ?? recordByteSize(r);
       if (size > MAX_RECORD_BYTES) {
@@ -364,11 +369,31 @@ export function insertLogRecords(records: LogRecordInput[], nowMs: number): Inse
       if (insertFts && r.body) {
         insertFts.run(info.lastInsertRowid as number, r.body, r.projectId);
       }
+      result.records.push({
+        id: Number(info.lastInsertRowid),
+        project_id: r.projectId,
+        source_id: r.sourceId,
+        time_unix_nano: r.timeUnixNano,
+        observed_time_unix_nano: r.observedTimeUnixNano ?? null,
+        severity_number: r.severityNumber ?? 0,
+        severity_text: r.severityText ?? null,
+        body: r.body ?? null,
+        service_name: r.serviceName ?? null,
+        environment: r.environment ?? null,
+        trace_id: r.traceId ?? null,
+        span_id: r.spanId ?? null,
+        fingerprint: r.fingerprint ?? null,
+        resource_json: r.resourceJson ?? null,
+        attributes_json: r.attributesJson ?? null,
+        scope_json: r.scopeJson ?? null,
+        byte_size: size,
+        ingested_at: nowMs,
+      });
       result.inserted++;
     }
+    return result;
   });
-  run(records);
-  return result;
+  return run(records);
 }
 
 // ── Bounded query ─────────────────────────────────────────────────────────
@@ -397,6 +422,13 @@ export interface LogQuery {
 export interface LogQueryPage {
   records: LogRecordRow[];
   /** Cursor to pass as `cursor` for the next (older) page, or null at the end. */
+  nextCursor: number | null;
+}
+
+export interface LogQuerySincePage {
+  /** Records newer than the supplied cursor, ordered oldest-first for replay. */
+  records: LogRecordRow[];
+  /** Cursor to use for the next bounded replay page, or null when caught up. */
   nextCursor: number | null;
 }
 
@@ -469,6 +501,34 @@ export function queryLogRecords(q: LogQuery): LogQueryPage {
   if (rows.length > limit) {
     rows.length = limit;
     nextCursor = rows[rows.length - 1].id;
+  }
+  return { records: rows, nextCursor };
+}
+
+/**
+ * Bounded reconnect backfill for a live tail. Unlike the historical query
+ * above, this returns rows strictly *newer* than `cursor`, oldest-first, so a
+ * client can advance its last-seen cursor without reordering the live stream.
+ * The project predicate is deliberately first: a cursor obtained from another
+ * project can never reveal that project's rows.
+ */
+export function queryLogRecordsSince(
+  projectId: string,
+  cursor: number,
+  limit?: number,
+): LogQuerySincePage {
+  const effectiveLimit = clampQueryLimit(limit);
+  const rows = getLogsDb()
+    .prepare(
+      `SELECT * FROM log_records
+        WHERE project_id = ? AND id > ?
+        ORDER BY id ASC LIMIT ?`,
+    )
+    .all(projectId, cursor, effectiveLimit + 1) as LogRecordRow[];
+  let nextCursor: number | null = null;
+  if (rows.length > effectiveLimit) {
+    rows.length = effectiveLimit;
+    nextCursor = rows[rows.length - 1]!.id;
   }
   return { records: rows, nextCursor };
 }

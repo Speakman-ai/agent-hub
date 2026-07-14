@@ -4109,6 +4109,10 @@ export interface WebSocketDeps {
     | import('./preview/preview-snapshot.js').PreviewSnapshotRuntime
     | Array<import('./preview/preview-snapshot.js').PreviewSnapshotRuntime | null | undefined>
     | null;
+  /** Optional seam for committed customer-log records feeding live-tail subscribers. */
+  subscribeLogTail?: (
+    listener: (records: readonly import('./logs/logs-db.js').LogRecordRow[]) => void,
+  ) => () => void;
 }
 
 // ─── Route Dependencies ──────────────────────────────────────────

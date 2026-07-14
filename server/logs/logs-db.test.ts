@@ -121,6 +121,17 @@ describe('insertLogRecords', () => {
     expect(() => insertLogRecords(batch, NOW)).toThrow(/MAX_BATCH_RECORDS/);
   });
 
+  it('does not expose or persist earlier rows when a later row rolls back the transaction', () => {
+    const invalidSource = null as unknown as string;
+    expect(() =>
+      insertLogRecords([rec({ body: 'rolled back' }), rec({ sourceId: invalidSource })], NOW),
+    ).toThrow(/NOT NULL constraint failed/);
+    // The first insert ran before the constraint error, but the surrounding
+    // transaction rolled it back. Live-tail publication must likewise receive
+    // no returned committed rows from this failed batch.
+    expect(queryLogRecords({ projectId: 'proj-a' }).records).toHaveLength(0);
+  });
+
   it('records the normalized byte size for quota accounting', () => {
     insertLogRecords([rec({ body: 'abcde' })], NOW);
     expect(getProjectByteSize('proj-a')).toBeGreaterThanOrEqual(5);

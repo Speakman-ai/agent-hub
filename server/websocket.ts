@@ -23,6 +23,25 @@ import { buildFinalizeSnapshotEvents } from './finalize/finalize-snapshot.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
 import { parsePreviewProxySessionId } from './preview/preview-proxy.js';
 import { parseTerminalWebSocketSessionId } from './terminal/terminal-websocket.js';
+import { canViewProject } from './project-visibility.js';
+import { queryLogRecordsSince, type LogRecordRow } from './logs/logs-db.js';
+import { MAX_QUERY_LIMIT } from './logs/logs-schema.js';
+import { serializeLogRecord } from './logs/log-record-api.js';
+import { subscribeLogTail } from './logs/log-tail.js';
+
+/** Per-client cap: a slow subscriber can never grow an unbounded JS queue. */
+export const MAX_LOG_TAIL_BUFFER_RECORDS = 1_000;
+/** Stop calling ws.send when the underlying socket is already backpressured. */
+export const MAX_LOG_TAIL_SOCKET_BUFFERED_BYTES = 1_000_000;
+const LOG_TAIL_SEND_BATCH = 100;
+
+interface LogTailSubscription {
+  projectId: string;
+  records: LogRecordRow[];
+  scheduled: boolean;
+  /** Live records queue here until every reconnect-backfill page is sent. */
+  backfillInProgress: boolean;
+}
 
 /**
  * Match `/api/provisioning/<jobId>/events` and return the jobId. Returns
@@ -110,7 +129,184 @@ export default function createWebSocket(
     handleDesignChat,
     handleDesignCancel,
     getPreviewSnapshotRuntime,
+    subscribeLogTail: subscribeCommittedLogs = subscribeLogTail,
   } = deps;
+
+  // The writer invokes this only after its SQLite transaction commits. One
+  // listener fans records to the matching project subscriptions, each with an
+  // independent bounded queue so one stalled browser cannot affect another.
+  const tailSubscriptions = new WeakMap<WsClient, LogTailSubscription>();
+  const unsubscribeLogTail = subscribeCommittedLogs((records) => {
+    for (const client of wss.clients) {
+      const sub = tailSubscriptions.get(client as WsClient);
+      if (!sub || client.readyState !== WsClient.OPEN) continue;
+      const matching = records.filter((record) => record.project_id === sub.projectId);
+      if (matching.length === 0) continue;
+      sub.records.push(...matching);
+      if (sub.records.length > MAX_LOG_TAIL_BUFFER_RECORDS) {
+        const overflow = sub.records.length - MAX_LOG_TAIL_BUFFER_RECORDS;
+        // Do not advance the cursor past rows we could not deliver. Closing
+        // preserves the client's last durable cursor, so its reconnect
+        // backfill can recover this whole batch without a permanent gap.
+        requireLogTailRecovery(
+          client as WsClient,
+          sub,
+          overflow,
+          'Log tail queue overflow; reconnect to recover',
+        );
+        continue;
+      }
+      // A live cursor must never overtake an incomplete older backfill. Queue
+      // it until `streamLogTailBackfill` reaches nextCursor=null.
+      if (!sub.backfillInProgress) scheduleLogTailFlush(client as WsClient, sub);
+    }
+  });
+
+  function scheduleLogTailFlush(ws: WsClient, sub: LogTailSubscription): void {
+    if (sub.scheduled) return;
+    sub.scheduled = true;
+    queueMicrotask(() => {
+      sub.scheduled = false;
+      flushLogTail(ws, sub);
+    });
+  }
+
+  function flushLogTail(ws: WsClient, sub: LogTailSubscription): void {
+    if (tailSubscriptions.get(ws) !== sub || ws.readyState !== WsClient.OPEN) return;
+    if (sub.backfillInProgress) return;
+    if (sub.records.length === 0) return;
+    if (ws.bufferedAmount > MAX_LOG_TAIL_SOCKET_BUFFERED_BYTES) {
+      // A successful `send` is no longer possible within our memory bound.
+      // Closing with 1013 tells the client to reconnect; its durable cursor
+      // then replays every committed row through the backfill query. Merely
+      // clearing this queue would leave a quiet, permanent gap if the burst
+      // ended before a later frame could report `dropped`.
+      requireLogTailRecovery(
+        ws,
+        sub,
+        sub.records.length,
+        'Log tail backpressure; reconnect to recover',
+      );
+      return;
+    }
+    const records = sub.records.splice(0, LOG_TAIL_SEND_BATCH);
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'logs_tail',
+          projectId: sub.projectId,
+          records: records.map(serializeLogRecord),
+          cursor: records[records.length - 1]!.id,
+          dropped: 0,
+        }),
+      );
+    } catch {
+      requireLogTailRecovery(
+        ws,
+        sub,
+        records.length + sub.records.length,
+        'Log tail send failed; reconnect to recover',
+      );
+      return;
+    }
+    if (sub.records.length > 0) scheduleLogTailFlush(ws, sub);
+  }
+
+  /**
+   * Announce a bounded-tail loss when the transport can still accept a tiny
+   * control frame, then force the standard reconnect/backfill recovery path.
+   * The control frame deliberately has no replacement cursor: clients must
+   * keep their last received durable cursor instead of skipping the loss.
+   */
+  function requireLogTailRecovery(
+    ws: WsClient,
+    sub: LogTailSubscription,
+    dropped: number,
+    reason: string,
+  ): void {
+    tailSubscriptions.delete(ws);
+    if (ws.readyState !== WsClient.OPEN) return;
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'logs_tail_recovery_required',
+          projectId: sub.projectId,
+          dropped,
+        }),
+      );
+    } catch {
+      // Still close below: the client reconnects with its pre-loss cursor.
+    }
+    try {
+      ws.close(1013, reason);
+    } catch {
+      // Peer already disconnected; no retained queue remains.
+    }
+  }
+
+  /**
+   * Drain every bounded `id > cursor` page before releasing queued live
+   * records. Yielding between pages keeps the event loop responsive; records
+   * that arrive while yielded remain bounded in `sub.records` and can never
+   * advance the live cursor ahead of the undispatched middle pages.
+   */
+  async function streamLogTailBackfill(
+    ws: WsClient,
+    sub: LogTailSubscription,
+    initialCursor: number,
+  ): Promise<void> {
+    let cursor = initialCursor;
+    while (tailSubscriptions.get(ws) === sub && ws.readyState === WsClient.OPEN) {
+      if (ws.bufferedAmount > MAX_LOG_TAIL_SOCKET_BUFFERED_BYTES) {
+        requireLogTailRecovery(
+          ws,
+          sub,
+          sub.records.length,
+          'Log tail backfill backpressure; reconnect to recover',
+        );
+        return;
+      }
+      let page: ReturnType<typeof queryLogRecordsSince>;
+      try {
+        page = queryLogRecordsSince(sub.projectId, cursor, MAX_QUERY_LIMIT);
+      } catch {
+        requireLogTailRecovery(
+          ws,
+          sub,
+          sub.records.length,
+          'Log tail backfill failed; reconnect to recover',
+        );
+        return;
+      }
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'logs_tail_backfill',
+            projectId: sub.projectId,
+            records: page.records.map(serializeLogRecord),
+            cursor: page.records.length > 0 ? page.records[page.records.length - 1]!.id : cursor,
+            nextCursor: page.nextCursor,
+          }),
+        );
+      } catch {
+        requireLogTailRecovery(
+          ws,
+          sub,
+          sub.records.length,
+          'Log tail backfill send failed; reconnect to recover',
+        );
+        return;
+      }
+      if (page.nextCursor == null) {
+        if (tailSubscriptions.get(ws) !== sub) return;
+        sub.backfillInProgress = false;
+        if (sub.records.length > 0) scheduleLogTailFlush(ws, sub);
+        return;
+      }
+      cursor = page.nextCursor;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
 
   // Per-broadcast: resolve the event's projectId (if any) and look it up
   // in the in-memory project list. Both lookups are cheap (resolver hits
@@ -372,15 +568,58 @@ export default function createWebSocket(
       ) {
         if (!mayActOnSession(msg.sessionId)) return;
         handleEditQueueItem(msg.sessionId, msg.messageId, msg.content);
+      } else if (type === 'logs_subscribe') {
+        const projectId = typeof msg.projectId === 'string' ? msg.projectId : '';
+        const cursor = typeof msg.cursor === 'number' ? msg.cursor : 0;
+        if (
+          projectId.length === 0 ||
+          projectId.length > 200 ||
+          !Number.isSafeInteger(cursor) ||
+          cursor < 0
+        ) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Invalid log subscription' }));
+          return;
+        }
+        const project = findProjectLocal(projectId);
+        const subscriptionCaller = getWsAuthVisibility(ws as AuthStampedWs);
+        if (
+          !project ||
+          !subscriptionCaller ||
+          !canViewProject(project, {
+            userId: subscriptionCaller.userId,
+            role: subscriptionCaller.role,
+            localBypass: Boolean(subscriptionCaller.localBypass),
+          })
+        ) {
+          // Do not disclose whether a hidden project exists.
+          ws.send(JSON.stringify({ type: 'error', error: 'Project not found' }));
+          return;
+        }
+        const sub: LogTailSubscription = {
+          projectId,
+          records: [],
+          scheduled: false,
+          backfillInProgress: true,
+        };
+        // Install before reading the backfill: concurrent commits can produce a
+        // duplicate (the client dedupes by id), but never an unrecoverable gap.
+        tailSubscriptions.set(ws, sub);
+        void streamLogTailBackfill(ws, sub, cursor);
       } else if (type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong' }));
       }
     });
 
     ws.on('close', () => {
+      tailSubscriptions.delete(ws);
       console.log('Client disconnected');
     });
   });
+
+  // `wss` is normally process-lifetime. Standalone test servers close it,
+  // however, and must release their listener so records do not fan into dead
+  // server instances.
+  wss.on('close', unsubscribeLogTail);
 
   return { wss, broadcast };
 }

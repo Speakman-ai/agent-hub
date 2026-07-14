@@ -84,7 +84,8 @@ const PUBLIC_METHOD_PATTERNS: readonly { methods: readonly string[]; re: RegExp 
   { methods: ['POST'], re: /^\/api\/(?:otel\/v1\/logs|logs\/ingest)\/?$/ },
 ];
 
-function isPublicPath(pathname: string, method: string): boolean {
+/** Public-route allowlist predicate; exported for write-only credential tests. */
+export function isPublicPath(pathname: string, method: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;
   if (PUBLIC_PATTERNS.some((re) => re.test(pathname))) return true;
   return PUBLIC_METHOD_PATTERNS.some((p) => p.methods.includes(method) && p.re.test(pathname));
