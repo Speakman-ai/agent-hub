@@ -105,6 +105,7 @@ import createToolErrorRoutes from './routes/tool-errors.js';
 import createWikiRoutes from './routes/wiki.js';
 import createCodeRagRoutes from './routes/code-rag.js';
 import createLogSourceRoutes from './routes/log-sources.js';
+import createLogIngestRoutes from './routes/log-ingest.js';
 import createHeartbeatRoutes from './routes/heartbeats.js';
 import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
@@ -599,6 +600,13 @@ const ARTIFACT_UPLOAD_PATH = /^\/api\/sessions\/[^/]+\/artifacts\/?$/;
 // leaving `express.raw` with an empty stream. Skip it for those POSTs and let
 // the route own decoding (gzip-framed, `Content-Encoding: gzip`, or plain JSON).
 const REPLAY_INGEST_PATH = /^\/api\/replays(?:\/[A-Za-z0-9._-]+\/events)?\/?$/;
+// Customer-log ingest (OTLP/HTTP + the Agent Hub JSON batch) reads its own raw
+// body via `express.raw` so it can accept binary protobuf and own gzip
+// decompression. The global JSON parser would otherwise consume a JSON ingest
+// body before the route sees it, leaving `express.raw` with an empty stream.
+// Skip it for those POSTs. Trailing-slash-tolerant to match the route's
+// non-strict routing and the public-path check in auth.ts.
+const LOG_INGEST_PATH = /^\/api\/(?:otel\/v1\/logs|logs\/ingest)\/?$/;
 const globalJsonParser = express.json({
   limit: '20mb',
   verify: (req: Request, _res, buf: Buffer) => {
@@ -608,7 +616,9 @@ const globalJsonParser = express.json({
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (
     req.method === 'POST' &&
-    (ARTIFACT_UPLOAD_PATH.test(req.path) || REPLAY_INGEST_PATH.test(req.path))
+    (ARTIFACT_UPLOAD_PATH.test(req.path) ||
+      REPLAY_INGEST_PATH.test(req.path) ||
+      LOG_INGEST_PATH.test(req.path))
   ) {
     return next();
   }
@@ -1268,6 +1278,9 @@ app.use(createToolErrorRoutes(routeDeps));
 app.use(createWikiRoutes(routeDeps));
 app.use(createCodeRagRoutes(routeDeps));
 app.use(createLogSourceRoutes(routeDeps));
+// Write-only customer-log ingest (OTLP/HTTP + Agent Hub JSON batch). Public
+// (see auth.ts PUBLIC_METHOD_PATTERNS); self-authenticate from an `ahlog_` token.
+app.use(createLogIngestRoutes(routeDeps));
 app.use(createHeartbeatRoutes(routeDeps));
 app.use(createCronRoutes(routeDeps));
 app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));

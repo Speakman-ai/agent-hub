@@ -192,6 +192,7 @@ describe('SysboxSessionEnv container start', () => {
     expect(mapped).toEqual({
       internalPort: 5173,
       hostPort: 4173,
+      envPort: 5173,
       hostUrl: 'http://127.0.0.1:4173',
     });
 

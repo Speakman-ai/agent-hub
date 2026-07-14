@@ -3329,6 +3329,15 @@ export interface Project {
    */
   securityScan?: { onPush?: boolean; schedule?: 'off' | 'daily' | 'weekly' };
   /**
+   * Operator-configured extra redaction for customer log ingest (decision
+   * LOG-TRUST). Folded onto the built-in secret key/value patterns before a
+   * record is persisted (see `server/logs/log-redaction.ts`).
+   * - `redactKeys`: extra attribute-key substrings whose value is always dropped.
+   * - `redactPatterns`: extra JS regex sources; secret-looking substrings that
+   *   match are masked. An invalid pattern is skipped (never breaks ingest).
+   */
+  logIngest?: { redactKeys?: string[]; redactPatterns?: string[] };
+  /**
    * Per-project session-replay policy, server-delivered to recorders and the
    * admin UI (replaces the legacy per-browser localStorage sample rate so the
    * policy applies to ALL users on the project, not whoever flipped their own

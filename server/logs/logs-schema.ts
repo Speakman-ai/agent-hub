@@ -58,6 +58,17 @@ export const MAX_RECORD_BYTES = 256 * 1024; // 256 KiB
 /** Largest batch of records accepted in one ingest call. */
 export const MAX_BATCH_RECORDS = 1000;
 
+/**
+ * Largest ingest request body we accept (decision LOG-STORE: "Cap requests at
+ * 1 MiB"). This is the single ceiling for BOTH the on-the-wire bytes of an
+ * uncompressed request AND the DECOMPRESSED size of a gzip request — the body
+ * parser bounds an inflated `Content-Encoding: gzip` body to this limit, and the
+ * raw gzip-framed path caps its gunzip output to the same value (a
+ * decompression-bomb guard). Anything larger is rejected with 413 before any
+ * normalization runs.
+ */
+export const MAX_REQUEST_BYTES = 1 * 1024 * 1024; // 1 MiB
+
 /** Hard ceiling on rows returned by one bounded query, regardless of caller. */
 export const MAX_QUERY_LIMIT = 500;
 /** Default page size when a query omits `limit`. */

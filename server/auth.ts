@@ -75,6 +75,13 @@ const PUBLIC_METHOD_PATTERNS: readonly { methods: readonly string[]; re: RegExp 
   { methods: ['GET'], re: /^\/api\/auth\/invites\/[^/]+$/ },
   { methods: ['POST', 'OPTIONS'], re: /^\/api\/auth\/invites\/[^/]+\/accept$/ },
   { methods: ['POST', 'OPTIONS'], re: /^\/api\/replays\/[^/]+\/events$/ },
+  // Write-only customer-log ingest (decision LOG-AUTH). These self-authenticate
+  // from an `ahlog_` ingest token (Bearer / X-AgentHub-Log-Token) resolved by
+  // the route, NOT a Hub session — so the auth middleware must let them through.
+  // POST-only, and trailing-slash-tolerant to match Express's non-strict routing
+  // and the body-parser skip regex in index.ts (both accept an optional `/`), so
+  // `/api/otel/v1/logs/` can't fall through to a 401 instead of the token flow.
+  { methods: ['POST'], re: /^\/api\/(?:otel\/v1\/logs|logs\/ingest)\/?$/ },
 ];
 
 function isPublicPath(pathname: string, method: string): boolean {

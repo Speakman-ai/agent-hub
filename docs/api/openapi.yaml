@@ -76,6 +76,10 @@ components:
       in: cookie
       name: agent_hub_session
       description: Session cookie issued by `POST /api/auth/login`.
+    logIngestToken:
+      type: http
+      scheme: bearer
+      description: Write-only `ahlog_` log ingest token (also accepted via `X-AgentHub-Log-Token`). Identifies exactly one (project, source); grants no read/query/management access.
   schemas:
     Agent:
       type: object
@@ -6176,6 +6180,113 @@ components:
       required:
         - error
       description: Error envelope for hook routes.
+    LogIngestBatch:
+      type: object
+      properties:
+        resource:
+          type: object
+          additionalProperties:
+            nullable: true
+          description: Batch-level resource attributes merged under each record’s own resource.
+        records:
+          type: array
+          items:
+            type: object
+            properties:
+              timeUnixNano:
+                anyOf:
+                  - type: number
+                  - type: string
+                description: Event time, Unix nanoseconds. Falls back to `timeUnixMillis`, observed time, then ingest time.
+              timeUnixMillis:
+                type: number
+                description: Convenience event time in Unix milliseconds.
+              observedTimeUnixNano:
+                anyOf:
+                  - type: number
+                  - type: string
+              severityNumber:
+                type: integer
+                description: OTel severity number (1–24).
+              severityText:
+                type: string
+              severity:
+                type: string
+                description: Free-text level (e.g. "error"); mapped to a severity number.
+              body:
+                nullable: true
+                description: Log body — a string, or any JSON value (stored as JSON text).
+              message:
+                nullable: true
+                description: Alias for `body`.
+              attributes:
+                type: object
+                additionalProperties:
+                  nullable: true
+              resource:
+                type: object
+                additionalProperties:
+                  nullable: true
+              scope:
+                type: object
+                additionalProperties:
+                  nullable: true
+              traceId:
+                type: string
+              spanId:
+                type: string
+              service:
+                type: string
+                description: Convenience `service.name` facet override for this record.
+              environment:
+                type: string
+                description: Convenience `deployment.environment` facet override.
+            description: One log record in an Agent Hub JSON batch.
+          maxItems: 1000
+          description: Up to 1000 records; overflow is rejected and counted.
+      required:
+        - records
+      description: A simple Agent Hub JSON log batch mapped to the canonical OTel LogRecord model.
+    LogIngestResponse:
+      type: object
+      properties:
+        accepted:
+          type: integer
+          description: Records persisted.
+        rejected:
+          type: integer
+          description: Records rejected (batch overflow + oversize).
+        redactions:
+          type: integer
+          description: Secret substrings/keys masked before persistence.
+      required:
+        - accepted
+        - rejected
+        - redactions
+      description: Agent Hub batch ingest result.
+    OtlpExportLogsResponse:
+      type: object
+      properties:
+        partialSuccess:
+          type: object
+          properties:
+            rejectedLogRecords:
+              type: string
+              description: Count of rejected records (int64 as string).
+            errorMessage:
+              type: string
+          required:
+            - rejectedLogRecords
+          description: Present only when some records were rejected; absent/empty on full success.
+      description: OTLP `ExportLogsServiceResponse` (JSON encoding).
+    LogIngestError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Ingest error envelope.
     LogSource:
       type: object
       properties:
@@ -25248,6 +25359,118 @@ paths:
                     type: string
                 required:
                   - error
+  /api/otel/v1/logs:
+    post:
+      tags:
+        - Log Ingest
+      summary: OTLP/HTTP logs ingest
+      description: "OpenTelemetry OTLP/HTTP logs endpoint. Accepts `application/json` and binary `application/x-protobuf` `ExportLogsServiceRequest` bodies, each optionally gzip-compressed (`Content-Encoding: gzip` or a raw gzip-framed body). Requests are capped at 1 MiB on the wire; batches at 1,000 records; single records at 256 KiB. Rejected records are reported via `partialSuccess` — the HTTP status stays 200 so the source app is never blocked. Fields (severity, timestamps, resource, attributes, scope, trace_id, span_id) are preserved and redacted before persistence."
+      security: &a2
+        - logIngestToken: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties:
+                nullable: true
+              description: "OTLP `ExportLogsServiceRequest` (`{ resourceLogs: [...] }`)."
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+              description: Binary-Protobuf ExportLogsServiceRequest.
+      responses:
+        "200":
+          description: Accepted (possibly partial). `partialSuccess` populated when some records were rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OtlpExportLogsResponse"
+        "400":
+          description: Malformed JSON/Protobuf body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+            application/x-protobuf:
+              schema:
+                type: string
+                format: binary
+                description: Binary-Protobuf `google.rpc.Status` with code `INVALID_ARGUMENT`.
+        "401":
+          description: Missing, invalid, or revoked ingest token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+        "413":
+          description: Request or decompressed body exceeds the size cap.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+        "429":
+          description: Per-source or per-IP rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+        "503":
+          description: Log store temporarily unavailable (backpressure).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+  /api/logs/ingest:
+    post:
+      tags:
+        - Log Ingest
+      summary: Agent Hub JSON log batch ingest
+      description: "Simple JSON batch endpoint mapped to the same canonical OTel LogRecord model. Body is `{ resource?, records: [...] }`, optionally gzip-compressed. Same 1 MiB request / 1,000-record batch / 256 KiB record caps, source-token auth, and pre-persistence redaction as the OTLP endpoint."
+      security: *a2
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogIngestBatch"
+      responses:
+        "200":
+          description: Ingest result (accepted / rejected / redactions).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestResponse"
+        "400":
+          description: Malformed JSON body or missing `records` array.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+        "401":
+          description: Missing, invalid, or revoked ingest token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+        "413":
+          description: Request or decompressed body exceeds the size cap.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+        "429":
+          description: Per-source or per-IP rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
+        "503":
+          description: Log store temporarily unavailable (backpressure).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIngestError"
   /api/projects/{projectId}/log-sources:
     get:
       tags:

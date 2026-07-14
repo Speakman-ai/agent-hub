@@ -563,6 +563,9 @@ export class SysboxSessionEnv implements SessionEnv {
         const resolved: SessionEnvPortMapping = {
           internalPort,
           hostPort,
+          // Container translation publishes hostPort → internalPort, so the
+          // in-container process must bind the internal side of the mapping.
+          envPort: internalPort,
           // Loopback only — published as `-p 127.0.0.1:<host>:<internal>`.
           hostUrl: `http://127.0.0.1:${hostPort}`,
         };
