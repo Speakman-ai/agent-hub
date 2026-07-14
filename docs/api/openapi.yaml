@@ -6832,6 +6832,195 @@ components:
       required:
         - error
       description: Error envelope.
+    LogsWizardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+      description: Error envelope for logs wizard routes.
+    LogsEntryCandidate:
+      type: object
+      properties:
+        path:
+          type: string
+        kind:
+          type: string
+          enum:
+            - entrypoint
+            - logger-config
+            - bootstrap
+      required:
+        - path
+        - kind
+    LogsWizardSource:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        serviceName:
+          type: string
+          nullable: true
+        environment:
+          type: string
+          nullable: true
+        tokenPrefix:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - active
+            - revoked
+        createdAt:
+          type: integer
+        rotatedAt:
+          type: integer
+          nullable: true
+        revokedAt:
+          type: integer
+          nullable: true
+        lastIngestAt:
+          type: integer
+          nullable: true
+      required:
+        - id
+        - projectId
+        - name
+        - serviceName
+        - environment
+        - tokenPrefix
+        - status
+        - createdAt
+        - rotatedAt
+        - revokedAt
+        - lastIngestAt
+      description: Existing log source metadata (never carries token material).
+    LogsSetupDraft:
+      type: object
+      properties:
+        ingestOrigin:
+          type: string
+        otlpEndpoint:
+          type: string
+        batchEndpoint:
+          type: string
+        stack:
+          type: string
+          enum:
+            - node
+            - python
+            - go
+            - ruby
+            - java
+            - mixed
+            - unknown
+        packageManager:
+          type: string
+          nullable: true
+          enum:
+            - npm
+            - pnpm
+            - yarn
+            - bun
+            - pip
+            - poetry
+            - go
+            - bundler
+            - maven
+            - gradle
+            - null
+        loggingLibraries:
+          type: array
+          items:
+            type: string
+        hasOtelSdk:
+          type: boolean
+        hasOtelCollectorConfig:
+          type: boolean
+        collectorConfigPaths:
+          type: array
+          items:
+            type: string
+        entryCandidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogsEntryCandidate"
+        recommendedApproach:
+          type: string
+          enum:
+            - collector
+            - otel-sdk
+            - json-batch
+        suggestedServiceName:
+          type: string
+          nullable: true
+        envExampleKeys:
+          type: array
+          items:
+            type: string
+        readme:
+          nullable: true
+        notes:
+          type: array
+          items:
+            type: string
+        existingSources:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogsWizardSource"
+      required:
+        - ingestOrigin
+        - otlpEndpoint
+        - batchEndpoint
+        - stack
+        - packageManager
+        - loggingLibraries
+        - hasOtelSdk
+        - hasOtelCollectorConfig
+        - collectorConfigPaths
+        - entryCandidates
+        - recommendedApproach
+        - suggestedServiceName
+        - envExampleKeys
+        - notes
+        - existingSources
+      description: "Server-precomputed logs-instrumentation scan: detected stack, logging libraries, existing OpenTelemetry setup, exporter target candidates, a recommended ingest approach, the Hub ingest endpoints, and the project’s existing log sources."
+    LogsSetupDraftResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        draft:
+          $ref: "#/components/schemas/LogsSetupDraft"
+      required:
+        - projectId
+        - draft
+      description: Logs-instrumentation detection result for a project.
+    LogsWizardStartResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        draft:
+          $ref: "#/components/schemas/LogsSetupDraft"
+        session:
+          nullable: true
+          description: Raw `sessions` row for the spawned wizard session.
+      required:
+        - sessionId
+        - agentId
+        - draft
+      description: Logs setup wizard session spawned successfully.
     McpServersErrorResponse:
       type: object
       properties:
@@ -26845,6 +27034,92 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogSourceErrorResponse"
+  /api/projects/{projectId}/logs/setup-draft:
+    get:
+      tags:
+        - Logs
+      summary: Scan a project for log-instrumentation signal
+      description: "Admin+. Reads the project working copy and returns the draft the logs setup wizard needs: language stack, existing logging libraries and OpenTelemetry setup, exporter target candidates, a recommended ingest approach, the Hub ingest endpoints, and the project’s existing log sources (metadata only). Read-only — no session is spawned and no files are written."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Detection draft computed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsSetupDraftResponse"
+        "400":
+          description: Project has no cwd configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsWizardErrorResponse"
+  /api/projects/{projectId}/logs/setup-wizard:
+    post:
+      tags:
+        - Logs
+      summary: Spawn the AI logs setup wizard
+      description: |-
+        Admin+. Scans the project and spawns a **worktree-backed** chat session
+        (`use_worktree=1`) loaded with the `logs-setup` skill. The detection draft
+        (stack, recommended approach, exporter target candidates, ingest endpoints,
+        existing sources) is embedded in the kickoff prompt. The agent creates a
+        log source (minting an `ahlog_` token via the Hub API), wires an
+        OTLP/JSON-batch exporter into the app referencing the token as an env var,
+        commits to its branch, and uses Finalize Code Changes to push and open a PR.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              description: No body fields; send an empty object.
+      responses:
+        "201":
+          description: Wizard session spawned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsWizardStartResponse"
+        "400":
+          description: Project has no cwd configured, or no agents to host the wizard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsWizardErrorResponse"
+        "500":
+          description: Wizard agent could not be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsWizardErrorResponse"
   /api/mcp-catalog:
     get:
       tags:

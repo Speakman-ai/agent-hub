@@ -86,6 +86,7 @@ export default function LogsPage({
           <LogSourcesSettingsSection
             projects={[{ id: projectId, name: projectName || projectId }]}
             showToast={showToast}
+            onOpenSession={onOpenSession}
           />
         )}
       </div>

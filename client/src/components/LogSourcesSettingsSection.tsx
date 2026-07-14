@@ -30,6 +30,7 @@ import {
   ShieldAlert,
   RefreshCw,
   Ban,
+  Sparkles,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/export';
@@ -62,9 +63,18 @@ export function buildCurlExample(token: string): string {
   ].join('\n');
 }
 
-export default function LogSourcesSettingsSection({ projects = [], showToast }: any) {
+export default function LogSourcesSettingsSection({
+  projects = [],
+  showToast,
+  onOpenSession,
+}: any) {
   const project = projects[0] || null;
   const projectId = project?.id || '';
+
+  // AI setup wizard: spawns a worktree-backed `[Logs Setup]` session that wires
+  // an exporter into the app, then focuses that chat session.
+  const [wizardStarting, setWizardStarting] = useState(false);
+  const [wizardError, setWizardError] = useState<any>(null);
 
   const [sources, setSources] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -134,8 +144,35 @@ export default function LogSourcesSettingsSection({ projects = [], showToast }: 
     setRotatingId(null);
     setRevokingId(null);
     setDeletingId(null);
+    setWizardError(null);
+    // Reset the transient wizard flag too: a still-pending startLogsWizard from
+    // the previous project keeps its guarded `finally` from clearing it (the
+    // pid guard skips), so without this the new project would inherit a
+    // permanently-disabled "Set up with AI" button.
+    setWizardStarting(false);
     void reload(projectId);
   }, [projectId, reload]);
+
+  const handleStartWizard = useCallback(async () => {
+    if (!project || wizardStarting) return;
+    const pid = project.id;
+    setWizardStarting(true);
+    setWizardError(null);
+    try {
+      const res = await api.startLogsWizard(pid);
+      if (activePidRef.current !== pid) return; // switched projects
+      if (!res?.sessionId) {
+        setWizardError('Server did not return a wizard session id');
+        return;
+      }
+      if (onOpenSession) onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return;
+      setWizardError(err?.message || 'Failed to start the logs setup wizard');
+    } finally {
+      if (activePidRef.current === pid) setWizardStarting(false);
+    }
+  }, [project, wizardStarting, onOpenSession]);
 
   const revealToken = useCallback((label: string, token: string) => {
     setFreshLabel(label);
@@ -283,17 +320,42 @@ export default function LogSourcesSettingsSection({ projects = [], showToast }: 
 
   return (
     <div className="space-y-6 pb-28">
-      <div>
-        <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
-          <ScrollText size={18} className="text-sky-400" />
-          Application logs
-        </h3>
-        <p className="text-xs text-gray-500 max-w-2xl">
-          Register named <strong className="text-gray-300">log sources</strong> for this project.
-          Each source mints one write-only ingest token your server or an OpenTelemetry collector
-          uses to send application logs to Agent Hub for tailing and AI triage.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+            <ScrollText size={18} className="text-sky-400" />
+            Application logs
+          </h3>
+          <p className="text-xs text-gray-500 max-w-2xl">
+            Register named <strong className="text-gray-300">log sources</strong> for this project.
+            Each source mints one write-only ingest token your server or an OpenTelemetry collector
+            uses to send application logs to Agent Hub for tailing and AI triage.
+          </p>
+        </div>
+        {onOpenSession && (
+          <button
+            type="button"
+            onClick={handleStartWizard}
+            disabled={!project || wizardStarting}
+            data-testid="logs-setup-wizard-button"
+            title="Let an AI agent wire this project's app logs into Agent Hub on a branch"
+            className="flex-shrink-0 inline-flex items-center gap-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-2 text-xs font-medium text-white"
+          >
+            {wizardStarting ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Sparkles size={14} />
+            )}
+            {wizardStarting ? 'Starting…' : 'Set up with AI'}
+          </button>
+        )}
       </div>
+      {wizardError && (
+        <div className="flex items-center gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg p-2">
+          <AlertCircle size={14} className="flex-shrink-0" />
+          <span>{wizardError}</span>
+        </div>
+      )}
 
       {/* ── Write-only credential warning ───────────────────────── */}
       <div

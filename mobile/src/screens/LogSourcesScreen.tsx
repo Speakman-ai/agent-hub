@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -89,11 +89,18 @@ export function FreshTokenReveal({ token, label, onDismiss }: any) {
  * so the embedding screen supplies its own. Mirrors the web
  * `LogSourcesSettingsSection`.
  */
-export function LogSourcesPanel({ projectId }: { projectId: any }) {
+export function LogSourcesPanel({
+  projectId,
+  onOpenSession,
+}: {
+  projectId: any;
+  onOpenSession?: (target: { sessionId: string; agentId: string }) => void;
+}) {
   const [sources, setSources] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<any>(null);
   const [metrics, setMetrics] = useState<any>(null);
+  const [wizardStarting, setWizardStarting] = useState(false);
 
   const [newName, setNewName] = useState('');
   const [newService, setNewService] = useState('');
@@ -105,6 +112,18 @@ export function LogSourcesPanel({ projectId }: { projectId: any }) {
   const [freshLabel, setFreshLabel] = useState('');
 
   const [busyId, setBusyId] = useState<any>(null);
+
+  // Tracks the currently-selected project so an async wizard/response that
+  // started under a previous project can be ignored after the user switches
+  // (mirrors the web LogSourcesSettingsSection stale-guard).
+  const activePidRef = useRef(projectId);
+  useEffect(() => {
+    activePidRef.current = projectId;
+    // A pending startLogsWizard from the old project keeps its pid-guarded
+    // completion from clearing this flag, so reset it on switch to avoid a
+    // permanently-disabled button on the new project.
+    setWizardStarting(false);
+  }, [projectId]);
 
   const reload = useCallback(async () => {
     if (!projectId) return;
@@ -227,8 +246,42 @@ export function LogSourcesPanel({ projectId }: { projectId: any }) {
     Alert.alert(c.title, c.message, c.buttons);
   };
 
+  const handleStartWizard = async () => {
+    if (!projectId || wizardStarting) return;
+    const pid = projectId;
+    setWizardStarting(true);
+    try {
+      const res = await api.startLogsWizard(pid);
+      if (activePidRef.current !== pid) return; // switched projects — drop the result
+      if (res?.sessionId && onOpenSession) {
+        onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
+      } else if (!res?.sessionId) {
+        Alert.alert('Logs', 'Server did not return a wizard session id');
+      }
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return; // stale — don't alert for the old project
+      Alert.alert('Logs', err?.message || 'Failed to start the logs setup wizard');
+    } finally {
+      if (activePidRef.current === pid) setWizardStarting(false);
+    }
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {/* AI setup wizard */}
+        {onOpenSession && (
+          <TouchableOpacity
+            style={[styles.primaryBtn, wizardStarting && styles.btnDisabled]}
+            onPress={handleStartWizard}
+            disabled={wizardStarting}
+            testID="logs-setup-wizard-button"
+          >
+            <Text style={styles.primaryBtnText}>
+              {wizardStarting ? 'Starting…' : 'Set up with AI'}
+            </Text>
+          </TouchableOpacity>
+        )}
+
         {/* Write-only credential warning */}
         <View style={styles.warnBox} testID="logs-writeonly-warning">
           <Text style={styles.warnTitle}>Ingest tokens are write-only server secrets</Text>

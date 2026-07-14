@@ -22,6 +22,7 @@ export const SETUP_WIZARD_SESSION_PREFIXES = [
   '[Finalize Setup]',
   '[RUM Setup]',
   '[Deploy Setup]',
+  '[Logs Setup]',
 ] as const;
 
 /**

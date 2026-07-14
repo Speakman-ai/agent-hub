@@ -17,6 +17,7 @@ vi.mock('../utils/api', () => ({
     rotateLogSource: vi.fn(),
     revokeLogSource: vi.fn(),
     deleteLogSource: vi.fn(),
+    startLogsWizard: vi.fn(),
   },
 }));
 
@@ -202,5 +203,66 @@ describe('buildCurlExample', () => {
     const out = buildCurlExample('ahlog_TESTTOKEN');
     expect(out).toContain('Authorization: Bearer ahlog_TESTTOKEN');
     expect(out).toContain('/api/logs/ingest');
+  });
+});
+
+describe('AI setup wizard button', () => {
+  it('is hidden when no onOpenSession handler is provided', async () => {
+    render(<LogSourcesSettingsSection projects={projects} />);
+    await waitFor(() => expect(api.getLogSources).toHaveBeenCalled());
+    expect(screen.queryByTestId('logs-setup-wizard-button')).not.toBeInTheDocument();
+  });
+
+  it('starts the wizard and focuses the spawned session', async () => {
+    (api.startLogsWizard as any).mockResolvedValue({ sessionId: 'sess-1', agentId: 'agent-1' });
+    const onOpenSession = vi.fn();
+    render(<LogSourcesSettingsSection projects={projects} onOpenSession={onOpenSession} />);
+    await waitFor(() => expect(api.getLogSources).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('logs-setup-wizard-button'));
+
+    await waitFor(() => expect(api.startLogsWizard).toHaveBeenCalledWith('demo'));
+    await waitFor(() =>
+      expect(onOpenSession).toHaveBeenCalledWith({ sessionId: 'sess-1', agentId: 'agent-1' }),
+    );
+  });
+
+  it('surfaces a wizard error without focusing a session', async () => {
+    (api.startLogsWizard as any).mockRejectedValue(new Error('boom'));
+    const onOpenSession = vi.fn();
+    render(<LogSourcesSettingsSection projects={projects} onOpenSession={onOpenSession} />);
+    await waitFor(() => expect(api.getLogSources).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('logs-setup-wizard-button'));
+
+    await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument());
+    expect(onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it('re-enables the button for a new project while an old wizard request is still pending', async () => {
+    // Wizard request that never settles — mimics switching projects mid-flight.
+    (api.startLogsWizard as any).mockReturnValue(new Promise(() => {}));
+    const onOpenSession = vi.fn();
+    const { rerender } = render(
+      <LogSourcesSettingsSection projects={projects} onOpenSession={onOpenSession} />,
+    );
+    await waitFor(() => expect(api.getLogSources).toHaveBeenCalledWith('demo'));
+
+    // Start the wizard on project "demo" → button goes disabled and stays so
+    // (the promise never resolves, so the guarded finally can't clear it).
+    fireEvent.click(screen.getByTestId('logs-setup-wizard-button'));
+    await waitFor(() => expect(screen.getByTestId('logs-setup-wizard-button')).toBeDisabled());
+
+    // Switch to a different project while the request is still pending.
+    rerender(
+      <LogSourcesSettingsSection
+        projects={[{ id: 'other', name: 'Other' }]}
+        onOpenSession={onOpenSession}
+      />,
+    );
+    await waitFor(() => expect(api.getLogSources).toHaveBeenCalledWith('other'));
+
+    // The new project's button must NOT inherit the stale disabled state.
+    expect(screen.getByTestId('logs-setup-wizard-button')).not.toBeDisabled();
   });
 });

@@ -720,6 +720,17 @@ export const api = {
   // Revoke (soft-delete) an ingest client.
   revokeRumClient: (projectId: any, clientId: any) =>
     fetchJSON(`/projects/${projectId}/rum/clients/${clientId}`, { method: 'DELETE' }),
+  // ── AI logs setup wizard ─────────────────────────────────────────
+  // Read-only repo scan: stack, logging libs, existing OTel setup, exporter
+  // target candidates, recommended approach, existing sources. `{ projectId, draft }`.
+  getLogsSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/setup-draft`),
+  // Spawn the worktree-backed `[Logs Setup]` wizard session loaded with the
+  // `logs-setup` skill. Returns `{ sessionId, agentId, draft, session }`.
+  startLogsWizard: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/logs/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   // ── Application log sources (write-only `ahlog_` ingest credentials) ──
   // List a project's log sources — metadata only, never token material.
   getLogSources: (projectId: any) => fetchJSON(`/projects/${projectId}/log-sources`),

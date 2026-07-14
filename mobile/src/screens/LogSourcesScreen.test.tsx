@@ -32,6 +32,7 @@ import {
   formatBytes,
   buildConfirm,
   FreshTokenReveal,
+  LogSourcesPanel,
 } from './LogSourcesScreen';
 
 describe('formatLastIngest', () => {
@@ -99,5 +100,19 @@ describe('buildConfirm — destructive confirmation state', () => {
     // Simulate tapping the destructive button.
     c.buttons[1].onPress();
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('LogSourcesPanel — AI setup wizard button', () => {
+  it('renders the "Set up with AI" button when onOpenSession is provided', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(LogSourcesPanel, { projectId: 'demo', onOpenSession: () => {} }),
+    );
+    expect(html).toContain('Set up with AI');
+  });
+
+  it('omits the wizard button when no onOpenSession handler is given', () => {
+    const html = renderToStaticMarkup(React.createElement(LogSourcesPanel, { projectId: 'demo' }));
+    expect(html).not.toContain('Set up with AI');
   });
 });

@@ -1012,7 +1012,7 @@ export default function LogsScreen({ route, navigation }: any) {
           }}
         />
       ) : (
-        <LogSourcesPanel projectId={projectId} />
+        <LogSourcesPanel projectId={projectId} onOpenSession={openSession} />
       )}
     </SafeAreaView>
   );

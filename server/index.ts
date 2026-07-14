@@ -128,6 +128,7 @@ import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
 import createPreviewWizardRoutes from './routes/preview-wizard.js';
 import createRumWizardRoutes from './routes/rum-wizard.js';
+import createLogsWizardRoutes from './routes/logs-wizard.js';
 import createRumClientRoutes from './routes/rum-clients.js';
 import createPreviewEnvironmentRoutes from './routes/preview-environment.js';
 import createPreviewInstancesRoutes from './routes/preview-instances.js';
@@ -1387,6 +1388,7 @@ app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
 app.use(createPreviewWizardRoutes(routeDeps));
 app.use(createRumWizardRoutes(routeDeps));
+app.use(createLogsWizardRoutes(routeDeps));
 app.use(createRumClientRoutes(routeDeps));
 app.use(
   createPreviewEnvironmentRoutes({

@@ -233,6 +233,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ name }),
     }),
+    // ── AI logs setup wizard ──
+    getLogsSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/setup-draft`),
+    startLogsWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/setup-wizard`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    }),
     // ── Application log sources (write-only `ahlog_` ingest creds) ──
     // Mirrors client/src/utils/api.ts. List/create/rotate/revoke/delete sources;
     // create + rotate return the plaintext `token` exactly once.
