@@ -80,9 +80,11 @@ import {
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
 import {
+  getSessionEnvSelection,
   initSessionEnvSelection,
   logSessionEnvSelection,
 } from './session-env/sysbox-capability.js';
+import { createSessionEnv } from './session-env/select-session-env.js';
 import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import { authMiddleware } from './auth.js';
@@ -240,6 +242,9 @@ import createChatHandler, {
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
 import { createPreviewUrlBase } from './preview/preview-public-url.js';
 import { attachDefaultPreviewProxyUpgrade } from './preview/preview-proxy.js';
+import { PtyHost } from './terminal/pty-host.js';
+import { PtySession } from './terminal/pty-session.js';
+import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
@@ -1025,6 +1030,60 @@ const { previewRuntime, previewComposeRuntime, devServerRuntime } = createPrevie
   },
 });
 
+// One persistent terminal shell per Agent Hub session. When a managed dev
+// server is active, its SessionEnv is the terminal's isolation boundary too —
+// crucially, both enter the same Sysbox container and see the same backing
+// services. The universally-available host adapter can also open a standalone
+// terminal before a dev server exists. Sysbox cannot add published ports after
+// its container starts, so a terminal-first standalone Sysbox env would make a
+// later dev-server start impossible; require the managed env in that mode and
+// return an actionable attach error instead of creating a conflicting second
+// container.
+const terminalOwnedEnvs = new Map<string, ReturnType<typeof createSessionEnv>>();
+export const ptyHost = new PtyHost({
+  createSession: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session || session.deleted_at) throw new Error('Session not found');
+    const found = findAgent(session.agent_id);
+    if (!found) throw new Error('Session agent not found');
+
+    let env = devServerRuntime.getSessionEnvBySessionId(sessionId);
+    let ownsEnv = false;
+    if (!env) {
+      const worktreePath =
+        session.worktree_path ?? (Number(session.use_worktree) === 1 ? null : found.project.cwd);
+      if (!worktreePath) {
+        throw new Error(
+          'Session workspace is not ready; start the session before opening terminal',
+        );
+      }
+      const adapter = getSessionEnvSelection().adapter;
+      if (adapter === 'sysbox') {
+        throw new Error('Start the session dev server before opening its terminal in Sysbox mode');
+      }
+      env = createSessionEnv(adapter, { sessionId, worktreePath });
+      terminalOwnedEnvs.set(sessionId, env);
+      ownsEnv = true;
+    }
+
+    const ptySession = new PtySession({ sessionId, env });
+    if (ownsEnv) {
+      ptySession.onExit(() => {
+        if (terminalOwnedEnvs.get(sessionId) !== env) return;
+        terminalOwnedEnvs.delete(sessionId);
+        void env.dispose().catch((err: unknown) => {
+          console.warn(
+            `[terminal] failed to dispose standalone env for ${sessionId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+      });
+    }
+    return ptySession;
+  },
+});
+
 if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
   // Scheduled per the reaper's documented contract — every 60 s, scan
   // `worktree_preview_groups` and tear down idle / orphaned rows. We run
@@ -1407,6 +1466,18 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
+
+const terminalWebSocket = attachTerminalWebSocket(server, {
+  ptyHost,
+  sessionExists: (sessionId) => {
+    try {
+      const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+      return Boolean(session && !session.deleted_at);
+    } catch {
+      return false;
+    }
+  },
+});
 
 recoverInFlightDeployments({
   broadcast,
@@ -1833,7 +1904,23 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
 
   // SIGTERM/SIGINT → drain spawned CLI children before exit, so pm2 restarts
   // (e.g. max_memory_restart) don't reparent in-flight claudes to init.
+  let terminalShutdownStarted = false;
   const markActiveSessionsForShutdown = (signal: string): void => {
+    if (!terminalShutdownStarted) {
+      terminalShutdownStarted = true;
+      terminalWebSocket.close();
+      ptyHost.disposeAll();
+      for (const [sessionId, env] of terminalOwnedEnvs) {
+        terminalOwnedEnvs.delete(sessionId);
+        void env.dispose().catch((err: unknown) => {
+          console.warn(
+            `[terminal] shutdown dispose failed for ${sessionId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+      }
+    }
     // Best-effort: flush any records still pending in the log write queue so a
     // graceful restart doesn't lose the tail of a burst.
     try {

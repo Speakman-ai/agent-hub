@@ -375,6 +375,17 @@ describe('DevServerRuntime lifecycle', () => {
     expect(third.port).toBe(4500);
   });
 
+  it('exposes the live session env for the terminal and drops it after stop', async () => {
+    const h = makeHarness();
+    const started = await h.runtime.start('session-terminal', makeProject(), '/worktree');
+
+    expect(h.runtime.getSessionEnvBySessionId('session-terminal')).toBe(h.envs[0]);
+    expect(h.runtime.getSessionEnvBySessionId('missing')).toBeNull();
+
+    await h.runtime.stop(started.devServerId);
+    expect(h.runtime.getSessionEnvBySessionId('session-terminal')).toBeNull();
+  });
+
   it('injects the adapter-facing env port while persisting the host proxy port', async () => {
     const h = makeHarness({ resolveEnvPort: (internalPort) => internalPort });
     const project = makeProject({

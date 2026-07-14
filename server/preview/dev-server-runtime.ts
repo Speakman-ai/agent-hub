@@ -378,6 +378,23 @@ export class DevServerRuntime {
   }
 
   /**
+   * Live isolation environment for a session managed by this process.
+   *
+   * The terminal PTY must enter the same Sysbox container as the dev server;
+   * creating a second `SessionEnv` for the same session would collide on the
+   * container name and split the shell from the app's backing services. This
+   * deliberately exposes only the env (not the runtime's private process
+   * record) for that shared-session consumer. Rows recovered after a Hub
+   * restart have no in-memory env and therefore return null.
+   */
+  getSessionEnvBySessionId(sessionId: string): SessionEnv | null {
+    const row = this.getActiveBySessionId(sessionId);
+    if (!row) return null;
+    const env = this.active.get(row.id)?.env;
+    return env && !env.disposed ? env : null;
+  }
+
+  /**
    * Tear down one dev-server group: SIGTERM the process group, SIGKILL
    * survivors after the grace window, release ports, delete the rows.
    * Idempotent; a no-op for rows owned by another runtime.

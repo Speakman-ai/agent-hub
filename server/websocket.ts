@@ -21,6 +21,8 @@ import { buildAwaitingInputSnapshotLenient } from './awaiting-input.js';
 import { buildPreviewSnapshotEvents } from './preview/preview-snapshot.js';
 import { buildFinalizeSnapshotEvents } from './finalize/finalize-snapshot.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
+import { parsePreviewProxySessionId } from './preview/preview-proxy.js';
+import { parseTerminalWebSocketSessionId } from './terminal/terminal-websocket.js';
 
 /**
  * Match `/api/provisioning/<jobId>/events` and return the jobId. Returns
@@ -77,7 +79,26 @@ export default function createWebSocket(
   server: Server,
   deps: WebSocketDeps,
 ): { wss: WebSocketServer; broadcast: BroadcastFn } {
-  const wss = new WebSocketServer({ server });
+  // Route upgrades explicitly instead of letting `ws` claim every path on the
+  // HTTP server. The terminal channel and preview HMR proxy have their own
+  // upgrade handlers; a `{server}` WebSocketServer would also call
+  // `handleUpgrade` for those sockets, causing the classic "handleUpgrade was
+  // called more than once" crash after the dedicated handler accepted them.
+  const wss = new WebSocketServer({ noServer: true });
+  const handleChatUpgrade = (
+    request: IncomingMessage,
+    socket: import('node:stream').Duplex,
+    head: Buffer,
+  ): void => {
+    if (parsePreviewProxySessionId(request.url) || parseTerminalWebSocketSessionId(request.url)) {
+      return;
+    }
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  };
+  server.on('upgrade', handleChatUpgrade);
+  wss.on('close', () => server.off('upgrade', handleChatUpgrade));
 
   const {
     getProjects,
