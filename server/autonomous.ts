@@ -20,7 +20,12 @@ import {
 } from './epic-spec.js';
 import { lastDispatchedReviewId } from './review-feedback-dedup.js';
 import { resolveEffectiveModel } from './effective-model.js';
-import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
+import {
+  loadBoardBlockers,
+  hasUnresolvedBlockers,
+  isColumnDone,
+  type BoardBlockerIndex,
+} from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import { agentAcceptsAutonomousTickets } from './agent-autonomy.js';
 import type {
@@ -704,6 +709,66 @@ async function maybeAdvanceToNextPhase(
   );
 }
 
+/**
+ * Readiness-aware resilience for phase ordering. A phase run advances the
+ * cascade only when the phase *completes* (all cards Done). If a running phase
+ * is stuck because all of its cards are blocked by cards in a LATER phase
+ * (phases authored in narrative order while dependencies live in blocker
+ * edges), that phase never completes and the cascade never reaches the phase
+ * that holds the unblocking work — a self-unresolvable deadlock.
+ *
+ * This helper breaks the deadlock without depending on phase ordering: when the
+ * current phase has no dispatchable card, it starts the earliest armed,
+ * not-yet-running phase in the epic that has at least one READY (unblocked, To
+ * Do, unassigned) card. Once started, that phase's own runner dispatches its
+ * ready card, which unblocks the stuck phase on a later tick. Starting an
+ * already-running phase is a no-op, and a phase stops being "ready" once its
+ * card is dispatched, so this converges instead of thrashing. Mirrors the owner
+ * and arming gates of `maybeAdvanceToNextPhase`.
+ *
+ * Returns true if it started a phase.
+ */
+async function maybeStartEarliestReadyPhase(
+  projectId: string,
+  epic: KanbanEpicRow,
+  currentPhase: KanbanPhaseRow,
+  blockerIndex: BoardBlockerIndex,
+): Promise<boolean> {
+  const d = getDeps();
+  const phases = d.stmts.getKanbanPhasesByEpic.all(epic.id) as KanbanPhaseRow[];
+  for (const p of phases) {
+    if (p.id === currentPhase.id) continue;
+    if (!p.autonomous) continue; // not armed for auto-dispatch
+    if (p.autonomous_running) continue; // already running — nothing to kick
+
+    const buildCards = d.stmts.getEligibleAutonomousCardsByPhase.all(p.id) as KanbanCardRow[];
+    const spikeCards = d.stmts.getEligibleAutonomousSpikeCardsByPhase.all(p.id) as KanbanCardRow[];
+    const hasReadyCard =
+      buildCards.some((c) => !hasUnresolvedBlockers(c.id, blockerIndex)) ||
+      spikeCards.some((c) => !hasUnresolvedBlockers(c.id, blockerIndex));
+    if (!hasReadyCard) continue;
+
+    const owner = p.autonomous_enabled_by ?? currentPhase.autonomous_enabled_by ?? null;
+    if (!owner) {
+      console.log(
+        `[Autonomous] phase "${currentPhase.name}" has no dispatchable cards — cannot start ready phase "${p.name}": no resolvable owner for credential resolution`,
+      );
+      continue;
+    }
+
+    d.stmts.setPhaseAutonomousEnabledBy.run(owner, p.id);
+    d.stmts.setPhaseAutonomousRunning.run(1, p.id);
+    const started = d.stmts.getKanbanPhase.get(p.id) as KanbanPhaseRow;
+    scheduleAutonomousPhase(projectId, started);
+    d.broadcast({ type: 'kanban_update', projectId });
+    console.log(
+      `[Autonomous] phase "${currentPhase.name}" has no dispatchable cards (all blocked) — started ready phase "${p.name}" to make forward progress`,
+    );
+    return true;
+  }
+  return false;
+}
+
 async function runAutonomousLoopInner(
   projectId: string,
   epic: KanbanEpicRow,
@@ -878,8 +943,15 @@ async function runAutonomousLoopInner(
 
   if (eligible.length === 0) {
     console.log(
-      `[Autonomous] No eligible cards for epic "${epic.name}" (all assigned, done, or blocked)`,
+      `[Autonomous] No eligible cards for ${scopeLabel} (all assigned, done, or blocked)`,
     );
+    // Readiness-aware resilience: a running phase with nothing dispatchable is
+    // the deadlock signature when its cards are cross-phase-blocked. Kick the
+    // earliest armed phase that DOES have a ready card so the cascade makes
+    // forward progress instead of stalling on positional order.
+    if (phase) {
+      await maybeStartEarliestReadyPhase(projectId, epic, phase, blockerIndex);
+    }
     return;
   }
 

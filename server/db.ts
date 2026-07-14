@@ -5320,6 +5320,9 @@ function initDb(dataDir: string): void {
     setPhaseAutonomousRunning: db.prepare(
       `UPDATE kanban_phases SET autonomous_running = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
+    setKanbanPhasePosition: db.prepare(
+      `UPDATE kanban_phases SET position = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
     deleteKanbanPhase: db.prepare('DELETE FROM kanban_phases WHERE id = ?'),
     getKanbanCardsByPhase: db.prepare(
       'SELECT * FROM kanban_cards WHERE phase_id = ? ORDER BY position ASC',

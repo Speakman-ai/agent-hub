@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GitBranch, Plus, ScrollText } from 'lucide-react';
+import { ArrowDownWideNarrow, GitBranch, Plus, ScrollText } from 'lucide-react';
 import EpicScopeHeader from './EpicScopeHeader';
 import PhaseFlowchartView from './PhaseFlowchartView';
 import EpicManageListView from './EpicManageListView';
@@ -54,6 +54,8 @@ export default function EpicScopeWorkbench({
   creatingPhase,
   onRunPhase,
   onStopPhase,
+  onReorderPhases,
+  onAutoSortPhases,
   phaseStoppingId,
   onOpenEpic,
   onCreateEpic,
@@ -95,6 +97,7 @@ export default function EpicScopeWorkbench({
       creatingPhase={creatingPhase}
       onRunPhase={onRunPhase}
       onStopPhase={onStopPhase}
+      onReorderPhases={onReorderPhases}
       phaseStoppingId={phaseStoppingId}
       onOpenCard={onOpenCard}
       modelConfig={modelConfig}
@@ -155,15 +158,29 @@ export default function EpicScopeWorkbench({
             icon={GitBranch}
             action={
               !showPhaseForm && epicPhases.length > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => setShowPhaseForm(true)}
-                  disabled={creatingPhase}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-emerald-300 bg-emerald-600/20 hover:bg-emerald-600/30 px-2.5 py-1.5 rounded-lg"
-                >
-                  <Plus size={12} />
-                  Phase
-                </button>
+                <div className="flex items-center gap-2">
+                  {onAutoSortPhases && epicPhases.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => onAutoSortPhases()}
+                      title="Reorder phases so blocker prerequisites come first"
+                      className="inline-flex items-center gap-1 text-xs font-medium text-gray-300 bg-white/[0.06] hover:bg-white/[0.1] px-2.5 py-1.5 rounded-lg"
+                      data-testid="phases-auto-sort"
+                    >
+                      <ArrowDownWideNarrow size={12} />
+                      Auto-order
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowPhaseForm(true)}
+                    disabled={creatingPhase}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-emerald-300 bg-emerald-600/20 hover:bg-emerald-600/30 px-2.5 py-1.5 rounded-lg"
+                  >
+                    <Plus size={12} />
+                    Phase
+                  </button>
+                </div>
               ) : null
             }
           />

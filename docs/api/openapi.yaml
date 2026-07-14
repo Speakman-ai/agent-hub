@@ -16253,6 +16253,67 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/phases/reorder:
+    post:
+      tags:
+        - Board
+      summary: Reorder an epic’s phases (explicit order or auto topological sort)
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                epicId:
+                  type: string
+                  minLength: 1
+                phaseIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  minItems: 1
+                  description: All phase ids for the epic in the desired order. The server rewrites positions atomically to 0..N-1. Provide this OR sortByDependencies, not both.
+                sortByDependencies:
+                  type: boolean
+                  description: When true, the server derives the order from the epic's card blocker graph (prerequisites first) and rewrites positions. Returns 409 `cycle` if the phase dependency graph has a loop. Provide this OR phaseIds, not both.
+              required:
+                - epicId
+      responses:
+        "200":
+          description: The epic's phases in their new order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanPhase"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project or epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "409":
+          description: Phase dependency graph has a cycle (auto sort only).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
   /api/projects/{projectId}/board/spec-items:
     post:
       tags:

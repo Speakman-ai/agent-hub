@@ -1920,6 +1920,17 @@ export const api = {
     fetchJSON(`/projects/${projectId}/board/phases/${phaseId}/run`, { method: 'POST' }),
   stopPhase: (projectId: any, phaseId: any) =>
     fetchJSON(`/projects/${projectId}/board/phases/${phaseId}/stop`, { method: 'POST' }),
+  // Reorder an epic's phases. Pass `phaseIds` for an explicit order, or
+  // `sortByDependencies: true` to derive the order from the card blocker graph.
+  reorderPhases: (
+    projectId: any,
+    epicId: string,
+    opts: { phaseIds?: string[]; sortByDependencies?: boolean },
+  ) =>
+    fetchJSON(`/projects/${projectId}/board/phases/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ epicId, ...opts }),
+    }),
 
   // Epic spec decisions
   createSpecItem: (projectId: any, data: any) =>

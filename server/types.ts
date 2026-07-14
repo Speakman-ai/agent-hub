@@ -2268,6 +2268,7 @@ export interface Stmts {
   setPhaseAutonomousEnabledBy: Stmt;
   setPhaseAutonomousSendIt: Stmt;
   setPhaseAutonomousRunning: Stmt;
+  setKanbanPhasePosition: Stmt;
   deleteKanbanPhase: Stmt;
   getKanbanCardsByPhase: Stmt;
   getKanbanSpecItems: Stmt;

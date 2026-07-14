@@ -1005,6 +1005,96 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(byIdStmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalled();
   });
 
+  it('starts a later ready phase when the running phase is fully cross-phase-blocked', async () => {
+    // Inverted-order epic: the "front" phase runs first by position but every
+    // one of its cards is blocked by a card in the "foundation" phase authored
+    // last. Positional advance deadlocks (front never completes → cascade never
+    // reaches foundation). Readiness-aware advance must start foundation so the
+    // epic makes forward progress.
+    const front = makePhase({
+      id: 'phase-front',
+      name: 'Front',
+      position: 0,
+      autonomous: 1,
+      autonomous_running: 1,
+      autonomous_enabled_by: 'owner-1',
+    });
+    const foundation = makePhase({
+      id: 'phase-foundation',
+      name: 'Foundation',
+      position: 1,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: null, // inherits owner from the stuck phase
+    });
+    const byId: Record<string, KanbanPhaseRow> = {
+      [front.id]: front,
+      [foundation.id]: foundation,
+    };
+    const frontCard = makeCard({
+      id: 'front-card',
+      phase_id: front.id,
+      column_id: 'col-todo',
+    });
+    const foundationCard = makeCard({
+      id: 'foundation-card',
+      phase_id: foundation.id,
+      column_id: 'col-todo',
+    });
+    // front-card is blocked by foundation-card, which is not Done → the block is
+    // unresolved and front has nothing dispatchable.
+    const blockerRow = {
+      card_id: 'front-card',
+      blocked_by_card_id: 'foundation-card',
+      blocker_id: 'foundation-card',
+      blocker_title: 'Foundation',
+      blocker_column_id: 'col-todo',
+      blocker_column_name: 'To Do',
+      blocked_id: 'front-card',
+      blocked_title: 'Front',
+      blocked_column_id: 'col-todo',
+      blocked_column_name: 'To Do',
+    };
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, id: 'epic-1', autonomous: 1 })) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanPhase: { get: vi.fn((id: string) => byId[id]) },
+      getKanbanPhasesByEpic: { all: vi.fn(() => [front, foundation]) },
+      getKanbanCardsByPhase: {
+        all: vi.fn((id: string) => (id === front.id ? [frontCard] : [foundationCard])),
+      },
+      getEligibleAutonomousCardsByPhase: {
+        all: vi.fn((id: string) => (id === front.id ? [frontCard] : [foundationCard])),
+      },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      getBlockersForBoard: { all: vi.fn(() => [blockerRow]) },
+      setPhaseAutonomousEnabledBy: { run: vi.fn() },
+      setPhaseAutonomousRunning: {
+        run: vi.fn((val: number, id: string) => {
+          if (byId[id]) byId[id] = { ...byId[id], autonomous_running: val };
+        }),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-front');
+
+    // The foundation phase, which has a ready card, is started with the
+    // inherited owner so the cascade advances instead of deadlocking on the
+    // stuck front phase.
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).toHaveBeenCalledWith(
+      'owner-1',
+      'phase-foundation',
+    );
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, 'phase-foundation');
+    // The front phase is never disarmed/advanced positionally — it stays running
+    // and its blocked card is untouched (no dispatch of front-card).
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, 'phase-front');
+  });
+
   it('skips dispatch when no session owner can be resolved', async () => {
     const card = makeCard();
     const stmts = makeStmts({

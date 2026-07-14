@@ -28,6 +28,7 @@ import {
   PREMATURE_DONE_MESSAGE,
 } from '../kanban-premature-done.js';
 import { deriveCardPrefix } from '../kanban-short-id.js';
+import { topologicallySortPhaseIds, PhaseCycleError } from '../kanban-phase-topo-sort.js';
 import {
   type CardCursor,
   clampPageLimit,
@@ -98,6 +99,7 @@ import {
   LinkEpicRequestSchema,
   CreatePhaseRequestSchema,
   UpdatePhaseRequestSchema,
+  ReorderPhasesRequestSchema,
   CreateSpecItemRequestSchema,
   UpdateSpecItemRequestSchema,
   DecideForMeRequestSchema,
@@ -2206,6 +2208,76 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     stmts.deleteKanbanPhase.run(req.params.phaseId);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
+  });
+
+  router.post('/api/projects/:projectId/board/phases/reorder', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const parsed = parseBody(ReorderPhasesRequestSchema, req, res);
+    if (!parsed) return;
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    const epic = stmts.getKanbanEpic.get(parsed.epicId) as KanbanEpicRow | undefined;
+    if (!epic || epic.board_id !== board.id) {
+      return res.status(404).json({ error: 'Epic not found' });
+    }
+
+    const phases = stmts.getKanbanPhasesByEpic.all(parsed.epicId) as KanbanPhaseRow[];
+    const explicit = parsed.phaseIds != null;
+    const auto = parsed.sortByDependencies === true;
+    // Exactly one ordering source: an explicit permutation, or server-side
+    // topological sort. Both (or neither) is ambiguous.
+    if (explicit === auto) {
+      return res.status(400).json({
+        error: 'Provide exactly one of phaseIds (explicit order) or sortByDependencies (auto)',
+      });
+    }
+
+    let orderedIds: string[];
+    if (auto) {
+      // Derive the dependency order from the epic's card blocker graph. Cards
+      // outside these phases and intra-phase edges are ignored by the sorter.
+      const epicCards = stmts.getKanbanCardsByEpic.all(parsed.epicId) as KanbanCardRow[];
+      const cardIds = new Set(epicCards.map((c) => c.id));
+      const blockerRows = stmts.getBlockersForBoard.all(board.id) as Array<{
+        card_id: string;
+        blocked_by_card_id: string;
+      }>;
+      const edges = blockerRows.filter((r) => cardIds.has(r.card_id));
+      try {
+        orderedIds = topologicallySortPhaseIds(
+          phases.map((p) => ({ id: p.id, position: p.position })),
+          epicCards.map((c) => ({ id: c.id, phase_id: c.phase_id ?? null })),
+          edges,
+        );
+      } catch (err) {
+        if (err instanceof PhaseCycleError) {
+          return res.status(409).json({ error: 'cycle', phaseIds: err.cyclePhaseIds });
+        }
+        throw err;
+      }
+    } else {
+      orderedIds = parsed.phaseIds as string[];
+      const phaseById = new Map(phases.map((p) => [p.id, p]));
+      const uniqueIds = new Set(orderedIds);
+      if (uniqueIds.size !== orderedIds.length) {
+        return res.status(400).json({ error: 'phaseIds must not contain duplicates' });
+      }
+      if (orderedIds.length !== phases.length || orderedIds.some((id) => !phaseById.has(id))) {
+        return res.status(400).json({
+          error: "phaseIds must include every one of the epic's phases exactly once",
+        });
+      }
+    }
+
+    const reorder = getDb().transaction((ids: string[]) => {
+      for (const [position, phaseId] of ids.entries()) {
+        stmts.setKanbanPhasePosition.run(position, phaseId);
+      }
+      return stmts.getKanbanPhasesByEpic.all(parsed.epicId) as KanbanPhaseRow[];
+    });
+    const nextPhases = reorder(orderedIds);
+    broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    res.json(nextPhases);
   });
 
   router.post('/api/projects/:projectId/board/spec-items', (req: Request, res: Response) => {

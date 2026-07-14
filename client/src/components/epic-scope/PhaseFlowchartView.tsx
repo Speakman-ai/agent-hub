@@ -1,5 +1,15 @@
 import { useState } from 'react';
-import { ArrowRight, Ban, Check, Play, Plus, Square, Zap } from 'lucide-react';
+import {
+  ArrowRight,
+  Ban,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Play,
+  Plus,
+  Square,
+  Zap,
+} from 'lucide-react';
 import {
   columnDotStyle,
   columnNameById,
@@ -48,6 +58,8 @@ function PhaseColumn({
   onRunPhase,
   onStopPhase,
   onOpenCard,
+  onMoveLeft,
+  onMoveRight,
   running,
   stopping,
   modelConfig,
@@ -109,6 +121,32 @@ function PhaseColumn({
               </p>
             ) : null}
           </div>
+          {(onMoveLeft || onMoveRight) && (
+            <div className="flex shrink-0 items-center gap-0.5">
+              <button
+                type="button"
+                onClick={onMoveLeft}
+                disabled={!onMoveLeft}
+                title="Move phase earlier"
+                aria-label={`Move phase ${phase.name} earlier`}
+                data-testid={`phase-move-left-${phase.id}`}
+                className="flex h-5 w-5 items-center justify-center rounded text-gray-500 hover:text-gray-200 hover:bg-white/[0.08] disabled:opacity-25 disabled:hover:bg-transparent"
+              >
+                <ChevronLeft size={13} />
+              </button>
+              <button
+                type="button"
+                onClick={onMoveRight}
+                disabled={!onMoveRight}
+                title="Move phase later"
+                aria-label={`Move phase ${phase.name} later`}
+                data-testid={`phase-move-right-${phase.id}`}
+                className="flex h-5 w-5 items-center justify-center rounded text-gray-500 hover:text-gray-200 hover:bg-white/[0.08] disabled:opacity-25 disabled:hover:bg-transparent"
+              >
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          )}
         </div>
         <div className="mt-2.5 h-1 rounded-full bg-white/[0.06] overflow-hidden">
           <div
@@ -352,10 +390,18 @@ export default function PhaseFlowchartView({
   creatingPhase,
   onRunPhase,
   onStopPhase,
+  onReorderPhases,
   phaseStoppingId,
   onOpenCard,
   modelConfig,
 }: any) {
+  const movePhase = (index: number, delta: number) => {
+    const ids = phases.map((p: any) => p.id);
+    const target = index + delta;
+    if (target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    onReorderPhases?.(ids);
+  };
   const [showEmptyPhaseForm, setShowEmptyPhaseForm] = useState(false);
   const [showTrailingPhaseForm, setShowTrailingPhaseForm] = useState(false);
 
@@ -415,6 +461,10 @@ export default function PhaseFlowchartView({
               onRunPhase={onRunPhase}
               onStopPhase={onStopPhase}
               onOpenCard={onOpenCard}
+              onMoveLeft={onReorderPhases && index > 0 ? () => movePhase(index, -1) : undefined}
+              onMoveRight={
+                onReorderPhases && index < phases.length - 1 ? () => movePhase(index, 1) : undefined
+              }
               running={!!phase.autonomous_running}
               stopping={phaseStoppingId === phase.id}
               modelConfig={modelConfig}

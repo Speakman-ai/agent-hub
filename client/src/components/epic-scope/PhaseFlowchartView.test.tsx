@@ -52,6 +52,55 @@ describe('PhaseFlowchartView phase completion shading', () => {
   });
 });
 
+describe('PhaseFlowchartView reorder controls', () => {
+  it('renders move controls only when onReorderPhases is provided', () => {
+    const { rerender } = render(
+      <PhaseFlowchartView phases={phases} tickets={[]} columns={columns} phaseForms={{}} />,
+    );
+    expect(screen.queryByTestId('phase-move-right-p1')).toBeNull();
+
+    rerender(
+      <PhaseFlowchartView
+        phases={phases}
+        tickets={[]}
+        columns={columns}
+        phaseForms={{}}
+        onReorderPhases={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('phase-move-right-p1')).not.toBeNull();
+  });
+
+  it('moving a phase right calls onReorderPhases with the swapped order', () => {
+    const onReorderPhases = vi.fn();
+    render(
+      <PhaseFlowchartView
+        phases={phases}
+        tickets={[]}
+        columns={columns}
+        phaseForms={{}}
+        onReorderPhases={onReorderPhases}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('phase-move-right-p1'));
+    expect(onReorderPhases).toHaveBeenCalledWith(['p2', 'p1']);
+  });
+
+  it('disables move-left on the first phase and move-right on the last', () => {
+    render(
+      <PhaseFlowchartView
+        phases={phases}
+        tickets={[]}
+        columns={columns}
+        phaseForms={{}}
+        onReorderPhases={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('phase-move-left-p1')).toBeDisabled();
+    expect(screen.getByTestId('phase-move-right-p2')).toBeDisabled();
+  });
+});
+
 describe('PhaseFlowchartView Auto Merge toggle', () => {
   it('shows the Auto Merge toggle, checked, when the phase defaults to armed + auto-merge', () => {
     render(

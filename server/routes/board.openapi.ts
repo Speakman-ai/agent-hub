@@ -697,6 +697,29 @@ export const UpdatePhaseRequestSchema = z.preprocess(
   }),
 );
 
+export const ReorderPhasesRequestSchema = z.preprocess(
+  aliasPreprocess({
+    epicId: 'epic_id',
+    phaseIds: 'phase_ids',
+    sortByDependencies: 'sort_by_dependencies',
+  }),
+  z.object({
+    epicId: z.string({ error: 'epicId is required' }).min(1, 'epicId is required'),
+    phaseIds: z
+      .array(z.string().min(1, 'phase id is required'))
+      .min(1, 'phaseIds must not be empty')
+      .optional()
+      .openapi({
+        description:
+          'All phase ids for the epic in the desired order. The server rewrites positions atomically to 0..N-1. Provide this OR sortByDependencies, not both.',
+      }),
+    sortByDependencies: z.boolean().optional().openapi({
+      description:
+        "When true, the server derives the order from the epic's card blocker graph (prerequisites first) and rewrites positions. Returns 409 `cycle` if the phase dependency graph has a loop. Provide this OR phaseIds, not both.",
+    }),
+  }),
+);
+
 export const CreateSpecItemRequestSchema = z.preprocess(
   aliasPreprocess({ epicId: 'epic_id', phaseId: 'phase_id', createSpikeCard: 'create_spike_card' }),
   z.object({
@@ -1491,6 +1514,26 @@ registerPath({
   responses: {
     200: { description: 'The phase, now stopped.', content: jsonContent(KanbanPhaseComponent) },
     400: errorResponse('Phase could not be stopped.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/phases/reorder',
+  tags: ['Board'],
+  summary: 'Reorder an epic’s phases (explicit order or auto topological sort)',
+  request: {
+    params: projectIdParams,
+    body: { content: jsonContent(ReorderPhasesRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: "The epic's phases in their new order.",
+      content: jsonContent(z.array(KanbanPhaseComponent)),
+    },
+    400: errorResponse('Validation failed.'),
+    404: errorResponse('Project or epic not found.'),
+    409: errorResponse('Phase dependency graph has a cycle (auto sort only).'),
   },
 });
 

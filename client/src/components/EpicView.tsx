@@ -474,6 +474,34 @@ export default function EpicView({
     }
   };
 
+  const handleReorderPhases = async (phaseIds: string[]) => {
+    if (!epic?.id) return;
+    setPhaseRunError(null);
+    try {
+      await api.reorderPhases(projectId, epic.id, { phaseIds });
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to reorder phases:', err);
+      setPhaseRunError(err?.message || 'Failed to reorder phases');
+    }
+  };
+
+  const handleAutoSortPhases = async () => {
+    if (!epic?.id) return;
+    setPhaseRunError(null);
+    try {
+      await api.reorderPhases(projectId, epic.id, { sortByDependencies: true });
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to auto-sort phases:', err);
+      setPhaseRunError(
+        err?.message === 'cycle'
+          ? 'Cannot auto-order: phases have a circular blocker dependency.'
+          : err?.message || 'Failed to auto-order phases',
+      );
+    }
+  };
+
   const handlePhaseFormChange = (phaseId: string, patch: any) => {
     // Build the next form synchronously from the current render's state so the
     // persist payload below is always the FULL merged form, never the bare
@@ -1013,6 +1041,8 @@ export default function EpicView({
                 creatingPhase={creatingPhase}
                 onRunPhase={handleRunPhase}
                 onStopPhase={handleStopPhase}
+                onReorderPhases={handleReorderPhases}
+                onAutoSortPhases={handleAutoSortPhases}
                 phaseStoppingId={phaseStoppingId}
                 onOpenEpic={onOpenEpic}
                 onAddSpecItem={handleAddSpecItem}
