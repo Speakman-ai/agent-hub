@@ -74,6 +74,7 @@ import {
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
   MIGRATE_LEGACY_PREVIEWS_SQL,
   DEFAULT_PREVIEW_PORT_RANGE,
+  ensureDevServerPreviewColumns,
 } from './preview-schema.js';
 import {
   validateProcessGraph,
@@ -371,6 +372,9 @@ export class PreviewRuntime {
     this.db.exec(WORKTREE_PREVIEWS_SCHEMA);
     this.db.exec(WORKTREE_PREVIEW_GROUPS_SCHEMA);
     this.db.exec(MIGRATE_LEGACY_PREVIEWS_SQL);
+    // Backfill the dev-server ownership columns on DBs that predate them
+    // — the ownership guards below reference `runtime` unconditionally.
+    ensureDevServerPreviewColumns(this.db);
   }
 
   // ─── Public API ───────────────────────────────────────────────────────
@@ -531,12 +535,24 @@ export class PreviewRuntime {
     // compose runtime entirely, the SELECT returns NULL — same as a
     // legitimate spawn-managed row — so the guard is a no-op on those.
     const groupRow = this.db
-      .prepare(`SELECT id, compose_project_name FROM worktree_preview_groups WHERE id = ?`)
-      .get(groupId) as { id: string; compose_project_name: string | null } | undefined;
+      .prepare(`SELECT id, compose_project_name, runtime FROM worktree_preview_groups WHERE id = ?`)
+      .get(groupId) as
+      | { id: string; compose_project_name: string | null; runtime: string | null }
+      | undefined;
     if (!groupRow) return;
     if (groupRow.compose_project_name) {
       this.logger.warn(
         `[preview] stopPreview(${groupId}) called for a compose-managed group; ignoring (PreviewComposeRuntime owns teardown)`,
+      );
+      return;
+    }
+    if (groupRow.runtime === 'dev-server') {
+      // Same rationale as the compose guard: no in-memory handle is
+      // registered here for dev-server groups, so acting on the row
+      // would DELETE it without killing the process — leaking the
+      // dev server + its host port. DevServerRuntime owns teardown.
+      this.logger.warn(
+        `[preview] stopPreview(${groupId}) called for a dev-server group; ignoring (DevServerRuntime owns teardown)`,
       );
       return;
     }
@@ -577,7 +593,8 @@ export class PreviewRuntime {
         `SELECT id FROM worktree_preview_groups
           WHERE session_id = ?
             AND status IN ('starting','ready','failed')
-            AND compose_project_name IS NULL`,
+            AND compose_project_name IS NULL
+            AND (runtime IS NULL OR runtime <> 'dev-server')`,
       )
       .all(sessionId) as Array<{ id: string }>;
     for (const r of rows) {
@@ -613,6 +630,7 @@ export class PreviewRuntime {
         `SELECT id, session_id, project_id, status, started_at, last_active_at
            FROM worktree_preview_groups
           WHERE session_id = ? AND status IN ('starting','ready','failed')
+            AND (runtime IS NULL OR runtime <> 'dev-server')
           ORDER BY started_at DESC
           LIMIT 1`,
       )

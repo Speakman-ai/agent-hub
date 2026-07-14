@@ -93,7 +93,13 @@ export const WORKTREE_PREVIEW_GROUPS_SCHEMA = `
     -- override_file_path) are added idempotently by the compose
     -- runtime migration to keep this base schema minimal for callers
     -- that do not enable compose mode.
-    compose_project_name TEXT
+    compose_project_name TEXT,
+    -- runtime ownership discriminator for non-compose rows. NULL for
+    -- legacy spawn-managed rows; 'dev-server' for DevServerRuntime
+    -- rows. The legacy PreviewRuntime excludes 'dev-server' rows from
+    -- its teardown paths so its reaper pass can't DELETE a row out from
+    -- under a live dev-server process.
+    runtime TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_worktree_preview_groups_session
     ON worktree_preview_groups(session_id);
@@ -110,6 +116,14 @@ export const WORKTREE_PREVIEW_GROUPS_SCHEMA = `
     log_path        TEXT,
     status          TEXT NOT NULL CHECK(status IN ('pending','starting','ready','failed')),
     started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    -- Dev-server companion columns. port stores the HOST port the
+    -- proxy dials; internal_port is the port from the project's
+    -- devServer portMap (what the process is told to serve inside the
+    -- session env). is_primary marks the entry that keeps the
+    -- back-compat /preview/proxy/ mount. NULL / 0 on legacy + compose
+    -- rows.
+    internal_port   INTEGER,
+    is_primary      INTEGER NOT NULL DEFAULT 0,
     UNIQUE(group_id, name)
   );
   CREATE INDEX IF NOT EXISTS idx_worktree_preview_processes_group
@@ -166,6 +180,32 @@ export const MIGRATE_LEGACY_PREVIEWS_SQL = `
         WHERE group_id = worktree_preview_groups.id
      );
 `;
+
+/**
+ * Idempotent column backfill for databases created before the dev-server
+ * runtime columns were promoted into the base schema above. Mirrors the
+ * compose runtime's `addComposeProjectNameColumnIfMissing` pattern:
+ * `ALTER TABLE … ADD COLUMN` is fast and atomic, and the duplicate-column
+ * error is swallowed per-statement so a partially-migrated DB still picks
+ * up the remaining additions. Called by the PreviewRuntime and
+ * DevServerRuntime constructors.
+ */
+export function ensureDevServerPreviewColumns(db: { exec(sql: string): unknown }): void {
+  const additions = [
+    `ALTER TABLE worktree_preview_groups ADD COLUMN runtime TEXT`,
+    `ALTER TABLE worktree_preview_processes ADD COLUMN internal_port INTEGER`,
+    `ALTER TABLE worktree_preview_processes ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0`,
+  ];
+  for (const stmt of additions) {
+    try {
+      db.exec(stmt);
+    } catch (err) {
+      const msg = (err as Error).message ?? '';
+      if (msg.includes('duplicate column name')) continue;
+      throw err;
+    }
+  }
+}
 
 /**
  * Default port range for preview processes. Sits above the PR-env pool's

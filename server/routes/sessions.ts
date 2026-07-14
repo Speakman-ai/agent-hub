@@ -441,13 +441,24 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   }
 
   /**
-   * Tear down any preview groups owned by `sessionId` across both runtimes.
+   * Tear down any preview groups owned by `sessionId` across all runtimes.
    * Each runtime's `stopBySessionId` is a no-op for rows it does not own.
    */
   async function stopPreviewsForSession(sessionId: string): Promise<void> {
     const composeRuntime = deps.getPreviewComposeRuntime?.();
     const legacyRuntime = deps.getPreviewRuntime?.();
+    const devServerRuntime = deps.getDevServerRuntime?.();
     const tasks: Promise<unknown>[] = [];
+    if (devServerRuntime) {
+      tasks.push(
+        devServerRuntime.stopBySessionId(sessionId).catch((err) => {
+          console.warn(
+            `[sessions] dev-server stopBySessionId failed (${sessionId}):`,
+            (err as Error).message,
+          );
+        }),
+      );
+    }
     if (composeRuntime) {
       tasks.push(
         composeRuntime.stopBySessionId(sessionId).catch((err) => {

@@ -278,17 +278,19 @@ describe('buildDiskOverrideFileDeleter', () => {
 });
 
 describe('createPreviewRuntimes', () => {
-  it('mkdir-ps the previews + preview-compose dirs and returns both runtimes', () => {
+  it('mkdir-ps the previews + preview-compose dirs and returns all runtimes', () => {
     const dataDir = freshTmpDir();
     const db = new Database(':memory:');
-    const { previewRuntime, previewComposeRuntime, composeOverrideDir } = createPreviewRuntimes({
-      db,
-      dataDir,
-      reconcileOrphanComposeOnBoot: false,
-    });
+    const { previewRuntime, previewComposeRuntime, devServerRuntime, composeOverrideDir } =
+      createPreviewRuntimes({
+        db,
+        dataDir,
+        reconcileOrphanComposeOnBoot: false,
+      });
 
     expect(previewRuntime).toBeDefined();
     expect(previewComposeRuntime).toBeDefined();
+    expect(devServerRuntime).toBeDefined();
     expect(composeOverrideDir).toBe(path.join(dataDir, 'preview-compose'));
     expect(existsSync(path.join(dataDir, 'previews'))).toBe(true);
     expect(existsSync(composeOverrideDir)).toBe(true);
@@ -301,6 +303,7 @@ describe('createPreviewRuntimes', () => {
     const colNames = cols.map((c) => c.name);
     expect(colNames).toContain('compose_project_name');
     expect(colNames).toContain('override_file_path');
+    expect(colNames).toContain('runtime');
   });
 
   it('wires loadProjectEnv on PreviewRuntime so per-project secrets reach the spawn', () => {

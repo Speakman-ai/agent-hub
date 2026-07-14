@@ -45,6 +45,8 @@ import { loadProjectEnvForSpawn } from './preview-secrets-store.js';
 import { reclaimFailedPortsInRange } from './preview-port-reclaim.js';
 import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
 import { reconcileStartupOrphanComposeProjects } from './preview-startup-reconcile.js';
+import { DevServerRuntime, type DevServerRuntimeConfig } from './dev-server-runtime.js';
+import type { Project } from '../types.js';
 
 export interface CreatePreviewRuntimesDeps {
   db: Database;
@@ -69,6 +71,9 @@ export interface CreatePreviewRuntimesDeps {
   /** Optional config overrides — primarily used by integration tests. */
   legacyConfig?: PreviewRuntimeConfig;
   composeConfig?: PreviewComposeRuntimeConfig;
+  devServerConfig?: DevServerRuntimeConfig;
+  /** Project resolver for the dev-server runtime's `reap` pass. */
+  getProject?: (projectId: string) => Project | null;
   /** Run docker orphan reconcile on startup. Defaults to true. */
   reconcileOrphanComposeOnBoot?: boolean;
 }
@@ -76,6 +81,7 @@ export interface CreatePreviewRuntimesDeps {
 export interface CreatePreviewRuntimesResult {
   previewRuntime: PreviewRuntime;
   previewComposeRuntime: PreviewComposeRuntime;
+  devServerRuntime: DevServerRuntime;
   /** Resolved compose override dir (`<dataDir>/preview-compose`). */
   composeOverrideDir: string;
 }
@@ -179,10 +185,10 @@ export function buildDiskOverrideFileDeleter(composeOverrideDir: string): Delete
 }
 
 /**
- * Construct the production runtime pair. Both runtimes share the same
- * SQLite database so the legacy spawn pool + compose pool see each
- * other's allocated ports through the `worktree_preview_processes`
- * UNIQUE(port) invariant.
+ * Construct the production runtime set. All runtimes share the same
+ * SQLite database so the legacy spawn, compose, and managed dev-server
+ * pools see each other's allocated ports through the
+ * `worktree_preview_processes` UNIQUE(port) invariant.
  */
 export function createPreviewRuntimes(
   deps: CreatePreviewRuntimesDeps,
@@ -273,6 +279,23 @@ export function createPreviewRuntimes(
     config: deps.composeConfig,
   });
 
+  // Dev-server runtime — direct managed process per session (spec
+  // process-model). Health probes go through `probePreviewHealth` for
+  // the same Host-header reason as compose above.
+  const devServerRuntime = new DevServerRuntime({
+    db: deps.db,
+    fetch: async (url) => {
+      const { ok, statusCode } = await probePreviewHealth(url);
+      return { ok, status: statusCode ?? 0 };
+    },
+    loadProjectEnv: (projectId, ctx) =>
+      loadProjectEnvForSpawn(projectId, { sessionId: ctx.sessionId }),
+    getProject: deps.getProject,
+    notifyLog: deps.notifyLog,
+    notifyStatus: deps.notifyStatus,
+    config: deps.devServerConfig,
+  });
+
   const portMin =
     deps.composeConfig?.portRange?.min ??
     deps.legacyConfig?.portRange?.min ??
@@ -291,5 +314,5 @@ export function createPreviewRuntimes(
     reconcileStartupOrphanComposeProjects({ db: deps.db });
   }
 
-  return { previewRuntime, previewComposeRuntime, composeOverrideDir };
+  return { previewRuntime, previewComposeRuntime, devServerRuntime, composeOverrideDir };
 }

@@ -1540,6 +1540,36 @@ describe('PreviewRuntime — cross-runtime ownership guard', () => {
     expect(harness.calls).toHaveLength(0);
     expect(harness.killCalls).toHaveLength(0);
   });
+
+  it('stopBySessionId leaves dev-server-owned rows for DevServerRuntime teardown', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const runtime = new PreviewRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      kill: harness.kill,
+      logSink: makeLogSink(),
+    });
+    db.prepare(
+      `INSERT INTO worktree_preview_groups
+         (id, session_id, project_id, status, compose_project_name, runtime)
+       VALUES ('g-dev-server', 'sess-dev-server', 'proj-mixed', 'ready', NULL, 'dev-server')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, pid, port, url, log_path, status, internal_port, is_primary)
+       VALUES ('g-dev-server:web', 'g-dev-server', 'web', 4321, 4902,
+               'http://localhost:4902', NULL, 'ready', 5173, 1)`,
+    ).run();
+
+    expect(await runtime.stopBySessionId('sess-dev-server')).toBe(0);
+    expect(
+      db.prepare(`SELECT id FROM worktree_preview_groups WHERE id = 'g-dev-server'`).get(),
+    ).toBeTruthy();
+    expect(harness.killCalls).toHaveLength(0);
+  });
 });
 
 // ─── Helpers ───────────────────────────────────────────────────────

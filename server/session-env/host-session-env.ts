@@ -373,6 +373,9 @@ export class HostSessionEnv implements SessionEnv {
         const resolved: SessionEnvPortMapping = {
           internalPort,
           hostPort,
+          // No translation on the host adapter — the process binds the
+          // allocated host port directly (steered via the injected PORT).
+          envPort: hostPort,
           // Loopback only — the preview proxy is the sole off-host route in.
           hostUrl: `http://127.0.0.1:${hostPort}`,
         };

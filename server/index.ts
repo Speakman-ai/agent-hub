@@ -926,11 +926,18 @@ export const activeProcesses = new Map<string, ChildProcess>();
 // out from under them.
 const previewHealthHost = process.env.AGENT_HUB_PREVIEW_HEALTH_HOST?.trim();
 const previewUrlBase = createPreviewUrlBase(config.publicUrl);
-const { previewRuntime, previewComposeRuntime } = createPreviewRuntimes({
+const { previewRuntime, previewComposeRuntime, devServerRuntime } = createPreviewRuntimes({
   db: getDb(),
   dataDir: _activeDataDir,
+  getProject: (id) => findProject(id) ?? null,
   legacyConfig: {
     urlBase: previewUrlBase,
+  },
+  devServerConfig: {
+    urlBase: previewUrlBase,
+    ...(previewHealthHost
+      ? { healthUrlBase: (port: number) => `http://${previewHealthHost}:${port}` }
+      : {}),
   },
   composeConfig: {
     urlBase: previewUrlBase,
@@ -1039,6 +1046,12 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
         getProject: (id) => findProject(id) ?? null,
       }).catch((err) => {
         console.warn('[preview-reaper] tick failed:', (err as Error).message);
+      });
+      // Dev-server rows are excluded from both preview reapers' teardown
+      // paths (runtime ownership guard) — this pass is their only
+      // authoritative idle/orphan cleanup.
+      void devServerRuntime.reap(Date.now()).catch((err) => {
+        console.warn('[dev-server-reaper] tick failed:', (err as Error).message);
       });
       if (dockerAvailability.enabled) {
         void runPreviewReaper({
@@ -1212,6 +1225,7 @@ export const routeDeps: RouteDeps = {
   scheduleAll,
   getPreviewRuntime: () => previewRuntime,
   getPreviewComposeRuntime: () => previewComposeRuntime,
+  getDevServerRuntime: () => devServerRuntime,
   provisionSessionWorkspace: async (sessionId: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {

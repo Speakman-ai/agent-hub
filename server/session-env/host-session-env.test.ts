@@ -325,7 +325,12 @@ describe('HostSessionEnv.mapPort', () => {
   it('defaults to identity mapping on the host', async () => {
     const { env } = makeEnv();
     const m = await env.mapPort(5173);
-    expect(m).toEqual({ internalPort: 5173, hostPort: 5173, hostUrl: 'http://127.0.0.1:5173' });
+    expect(m).toEqual({
+      internalPort: 5173,
+      hostPort: 5173,
+      envPort: 5173,
+      hostUrl: 'http://127.0.0.1:5173',
+    });
   });
 
   it('uses the injected allocator and releases mappings on dispose', async () => {

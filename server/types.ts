@@ -4176,6 +4176,9 @@ export interface RouteDeps {
   getPreviewComposeRuntime?: () => {
     stopBySessionId: (sessionId: string) => Promise<number>;
   } | null;
+  getDevServerRuntime?: () => {
+    stopBySessionId: (sessionId: string) => Promise<number>;
+  } | null;
   /**
    * Clone or attach the session git worktree before the first chat turn.
    * Wired from `index.ts` (`ensureWorktree`). Used by

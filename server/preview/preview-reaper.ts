@@ -85,7 +85,8 @@ export async function runPreviewReaper(deps: PreviewReaperDeps): Promise<Preview
     .prepare(
       `SELECT id, session_id, project_id, last_active_at, status
          FROM worktree_preview_groups
-        WHERE status IN ('starting','ready','failed')`,
+        WHERE status IN ('starting','ready','failed')
+          AND (runtime IS NULL OR runtime <> 'dev-server')`,
     )
     .all() as ScanRow[];
   result.scanned = rows.length;
@@ -135,9 +136,10 @@ function resolveIdleTtl(project: Project, fallbackSec: number): number {
 /**
  * Parse the `datetime('now')` / ISO format that SQLite emits without a
  * trailing Z. Returns null on missing/unparseable input so callers can
- * skip the row instead of NaN-bombing the comparison.
+ * skip the row instead of NaN-bombing the comparison. Exported for the
+ * DevServerRuntime's own `reap()`, which applies the same idle-TTL math.
  */
-function parseDbTime(raw: string | null): number | null {
+export function parseDbTime(raw: string | null): number | null {
   if (!raw) return null;
   const normalised = raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z';
   const parsed = Date.parse(normalised);

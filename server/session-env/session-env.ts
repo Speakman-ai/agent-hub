@@ -87,6 +87,14 @@ export interface SessionEnvPortMapping {
   internalPort: number;
   /** Loopback host port the Hub (preview proxy) dials. */
   hostPort: number;
+  /**
+   * Port the process must actually bind inside the env — what the
+   * dev-server runtime announces via `PORT`. The host adapter has no
+   * port translation, so this equals `hostPort`; a containerized
+   * adapter (sysbox) publishes `hostPort` → `internalPort` and sets
+   * this to `internalPort`.
+   */
+  envPort: number;
   /** Always loopback — upstream ports are never exposed off-host. */
   hostUrl: string;
 }
