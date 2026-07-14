@@ -3692,6 +3692,18 @@ export interface AppConfig {
    */
   codexDangerBypass: boolean;
   /**
+   * Which SessionEnv backend runs per-session dev environments (dev server,
+   * PTY host, port mapping). `auto` (the default) probes the host at boot and
+   * picks the sysbox adapter when sysbox-runc is installed and registered
+   * with Docker, else the host adapter. `host` / `sysbox` force a backend;
+   * a forced `sysbox` that fails the capability probe falls back to host
+   * with a logged warning. Configure via `sessionEnvAdapter` in config.json
+   * or env `AGENT_HUB_SESSION_ENV_ADAPTER`. Probe + selection logic:
+   * server/session-env/sysbox-capability.ts; host install:
+   * docs/deployment/SYSBOX-HOST-SETUP.md.
+   */
+  sessionEnvAdapter: 'auto' | 'host' | 'sysbox';
+  /**
    * When false (the default), a successful push to GitHub parks the linked
    * kanban card in **Review**; only the PR-merge moves it to **Done**. This is
    * the merge-gated §15 Finalize flow (push → Review, merge → Done) and encodes

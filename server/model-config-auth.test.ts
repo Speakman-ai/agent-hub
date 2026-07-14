@@ -53,6 +53,7 @@ function makeConfig(): AppConfig {
       from: '',
     },
     codexProfile: null,
+    sessionEnvAdapter: 'auto' as const,
     codexDangerBypass: true,
     cardDoneOnPush: true,
     slackWebhookUrl: null,

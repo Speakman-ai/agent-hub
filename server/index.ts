@@ -79,6 +79,10 @@ import {
 } from './replays/rum-lifecycle-reconciler.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
+import {
+  initSessionEnvSelection,
+  logSessionEnvSelection,
+} from './session-env/sysbox-capability.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
@@ -1810,6 +1814,13 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     setActualPort(actualPort);
     console.log(`Agent Hub server running on http://localhost:${actualPort}`);
     console.log(`Loaded ${getProjects().length} projects, ${allAgents().length} agents`);
+
+    // SessionEnv adapter selection: probe sysbox availability once at boot
+    // and cache the host/sysbox choice for the per-session env runtime.
+    // Best-effort — a probe failure must not block boot.
+    void initSessionEnvSelection(config.sessionEnvAdapter)
+      .then((selection) => logSessionEnvSelection(selection))
+      .catch((e) => console.error('[session-env] capability probe failed:', (e as Error).message));
 
     // Hosted-git notify hooks embed this process's port — refresh on every
     // boot so post-receive notifications reach the current process.

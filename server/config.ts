@@ -28,6 +28,7 @@ import {
   PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS,
 } from './preview/preview-ready-timeout-bounds.js';
 import { normalizeSmtpConfig } from './smtp-config.js';
+import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -504,6 +505,14 @@ const config: AppConfig = {
     }
     return coerceConfigBooleanLoose(fileConfig.codexDangerBypass, true);
   })(),
+
+  // SessionEnv backend for per-session dev environments. 'auto' probes the
+  // host at boot (sysbox when available, else host); 'host' / 'sysbox' force
+  // a backend. Unknown values fall back to 'auto' so a typo never forces a
+  // backend silently. See server/session-env/sysbox-capability.ts.
+  sessionEnvAdapter: coerceSessionEnvAdapterMode(
+    resolve('AGENT_HUB_SESSION_ENV_ADAPTER', 'sessionEnvAdapter', 'auto'),
+  ),
 
   // Card → Done on push. Default false: a successful GitHub push parks the
   // linked kanban card in Review and only the PR-merge moves it to Done

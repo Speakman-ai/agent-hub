@@ -103,6 +103,15 @@ maybe_fix_al2023_nginx_libprofiler
 systemctl enable nginx
 %{ endif }
 
+# Sysbox (SessionEnv per-session isolation) is an OPERATOR step, not part of
+# this boot script: the AL2023 source build takes minutes and pulls from
+# GitHub, both unacceptable in cloud-init. Run ops/scripts/setup-sysbox-host.sh
+# once per host (and again on any new AMI/instance); until then the Hub's boot
+# probe selects the host adapter and logs a warning. Budget disk for session
+# containers (~0.5-1 GB per concurrent session) — the agenthub-docker-gc timer
+# below reaps leaked containers/images daily. See
+# docs/deployment/SYSBOX-HOST-SETUP.md.
+
 # App user + docker group
 id -u ${app_user} &>/dev/null || useradd -m -s /bin/bash ${app_user}
 mkdir -p /home/${app_user}/app
