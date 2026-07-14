@@ -41,6 +41,11 @@ paths = [
   # Generated OpenAPI spec + its Zod source use documentation example values.
   '''docs/api/openapi\.yaml''',
   '''server/routes/.*\.openapi\.ts''',
+  # Vendored @xterm/xterm browser bundle. Its minified internal symbol
+  # assignments (for example `TwoKeyMap` and `Sequencer`) trigger the generic
+  # API-key detector, but the file is generated solely from the pinned public
+  # npm package and contains no project credentials.
+  '''mobile/src/utils/xtermBundle\.generated\.ts''',
 ]
 regexes = [
   # The canonical AWS documentation example access key id (not a real key).

@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, FlatList, StyleSheet, KeyboardAvoidingView, Platform, } from 'react-native';
+import { View, Text, FlatList, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useApp } from '../context/AppContext';
@@ -17,6 +17,8 @@ import SessionAgentsPanel from '../components/SessionAgentsPanel';
 import ChangesReadyBox from '../components/ChangesReadyBox';
 import FinalizeBar from '../components/FinalizeBar';
 import SessionDesignFilesPanel from '../components/SessionDesignFilesPanel';
+import MobileTerminalPane from '../components/MobileTerminalPane';
+import { SquareTerminal } from 'lucide-react-native';
 import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
 import { useSessionCommittable } from '../hooks/useSessionCommittable';
 import { isWorkflowProject } from '../utils/project-mode';
@@ -30,6 +32,7 @@ export default function ChatScreen() {
     const navigation = useNavigation<any>();
     const flatListRef = useRef<any>(null);
     const [showSwitcher, setShowSwitcher] = useState(false);
+    const [showTerminal, setShowTerminal] = useState(false);
     // Reload the active session's messages every time the Chat screen gains
     // focus — either from a cold launch, returning from another stack screen,
     // or the user tapping a session in the drawer (which routes through
@@ -56,6 +59,10 @@ export default function ChatScreen() {
     const activeProject = projects?.find((p: any) => p.id === activeAgent?.projectId);
     const workflowProject = isWorkflowProject(activeProject);
     const activeSession = useMemo<any>(() => sessions?.find((s: any) => s.id === activeSessionId) ?? null, [sessions, activeSessionId]);
+    useEffect(() => {
+        if (!activeSessionId)
+            setShowTerminal(false);
+    }, [activeSessionId]);
     const activeResolvePrBannerInfo = useMemo<any>(() => {
         if (!activeSession?.name || !isResolvePrSessionTitle(activeSession.name))
             return null;
@@ -149,6 +156,21 @@ export default function ChatScreen() {
             })} showFinalize={showFinalizeBar} status={finalize.status} phase={finalize.phase} phases={finalize.phases} run={finalize.run} onChanged={finalize.refetch}/>) : null}
       {activeSessionId && activeSession?.session_mode === 'design' ? (<SessionDesignFilesPanel sessionId={activeSessionId} reloadNonce={isProcessing ? 0 : messages.length}/>) : null}
       {activeSessionId ? (<SessionAgentsPanel sessionId={activeSessionId} sessionAgents={sessionAgents} maxTurns={activeSession?.max_turns} agents={agents} onUpdated={handleSessionAgentsUpdated}/>) : null}
+      {activeSessionId && activeSession?.session_mode !== 'consult' ? (<>
+        <View style={styles.terminalToggleRow}>
+          <TouchableOpacity
+            testID="toggle-mobile-terminal"
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showTerminal }}
+            onPress={() => setShowTerminal((open) => !open)}
+            style={[styles.terminalToggle, showTerminal && styles.terminalToggleActive]}
+          >
+            <SquareTerminal size={14} color={showTerminal ? colors.teal300 : colors.gray300}/>
+            <Text style={styles.terminalToggleText}>{showTerminal ? 'Hide terminal' : 'Open terminal'}</Text>
+          </TouchableOpacity>
+        </View>
+        {showTerminal ? <MobileTerminalPane sessionId={activeSessionId} onClose={() => setShowTerminal(false)}/> : null}
+      </>) : null}
       {pendingChanges && !workflowProject ? (<ChangesReadyBox sessionId={activeSessionId} changes={pendingChanges} onTrigger={triggerCreateTicketAndPr} onDismiss={dismissChangesReady} isSessionProcessing={isProcessing} shipFailureAt={shipFailureAt}/>) : null}
       {sessionRoundProcessing ? (<View style={styles.roundBanner}>
           <Text style={styles.roundBannerText}>Multi-agent round in progress…</Text>
@@ -186,6 +208,29 @@ const styles = StyleSheet.create({
         paddingVertical: 8,
     },
     roundBannerText: { color: colors.amber400 || '#fbbf24', fontSize: 12 },
+    terminalToggleRow: {
+        borderBottomWidth: 1,
+        borderBottomColor: colors.gray800,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+    },
+    terminalToggle: {
+        alignSelf: 'flex-start',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 6,
+        backgroundColor: colors.gray900,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+    },
+    terminalToggleActive: {
+        borderColor: colors.teal500,
+        backgroundColor: colors.teal900_30,
+    },
+    terminalToggleText: { color: colors.gray200, fontSize: 12 },
     listContent: {
         paddingVertical: 12,
     },
