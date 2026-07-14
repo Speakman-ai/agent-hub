@@ -32,6 +32,7 @@ import SessionScopingModePane from './components/SessionScopingModePane';
 // Lazy — pulls in @git-diff-view/react + its CSS only when the diff pane opens.
 const SessionChangesPane = lazy(() => import('./components/SessionChangesPane'));
 const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPane'));
+const SessionTerminalPane = lazy(() => import('./components/SessionTerminalPane'));
 import LinkDesignModal from './components/LinkDesignModal';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton';
 import {
@@ -139,6 +140,7 @@ import {
   ArrowLeftRight,
   GitBranch,
   Package,
+  SquareTerminal,
   PanelLeftOpen,
 } from 'lucide-react';
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
@@ -365,6 +367,11 @@ export default function App({ initialView }: any = {}) {
   /** Per-session Artifacts pane open flag. Mutually exclusive with the Changes
    * and preview panes (only one right pane shows at a time). */
   const [artifactsPaneOpenBySession, setArtifactsPaneOpenBySession] = useState<Record<string, any>>(
+    {},
+  );
+  /** Per-session shared terminal pane flag. The terminal occupies the same
+   * right-hand slot as preview, Changes, and Artifacts. */
+  const [terminalPaneOpenBySession, setTerminalPaneOpenBySession] = useState<Record<string, any>>(
     {},
   );
   /** Per-session count of artifacts, to badge the "Artifacts" toolbar button. */
@@ -4073,16 +4080,23 @@ export default function App({ initialView }: any = {}) {
   // The Changes (code diff) pane and the preview pane share the right-hand
   // slot and are mutually exclusive — opening Changes replaces an open
   // preview (the preview's own state is preserved and returns on close).
-  const showSessionDiffPane = !!activeSessionId && diffPaneOpenBySession[activeSessionId] === true;
+  const showSessionTerminalPane =
+    !!activeSessionId && terminalPaneOpenBySession[activeSessionId] === true;
+  const showSessionDiffPane =
+    !showSessionTerminalPane &&
+    !!activeSessionId &&
+    diffPaneOpenBySession[activeSessionId] === true;
   // The Artifacts pane shares the right-hand slot with Changes/preview and is
   // mutually exclusive with them. Changes wins if somehow both are flagged.
   const showSessionArtifactsPane =
     !showSessionDiffPane &&
+    !showSessionTerminalPane &&
     !!activeSessionId &&
     artifactsPaneOpenBySession[activeSessionId] === true;
   const showSessionPreviewPane =
     !showSessionDiffPane &&
     !showSessionArtifactsPane &&
+    !showSessionTerminalPane &&
     shouldShowSessionPreviewPane({
       activeSessionId,
       project: activeChatProject,
@@ -6241,6 +6255,10 @@ export default function App({ initialView }: any = {}) {
                                       ...prev,
                                       [activeSessionId]: false,
                                     }));
+                                    setTerminalPaneOpenBySession((prev: any) => ({
+                                      ...prev,
+                                      [activeSessionId]: false,
+                                    }));
                                   }
                                 }}
                                 title="View session file changes"
@@ -6275,6 +6293,10 @@ export default function App({ initialView }: any = {}) {
                                     ...prev,
                                     [activeSessionId]: false,
                                   }));
+                                  setTerminalPaneOpenBySession((prev: any) => ({
+                                    ...prev,
+                                    [activeSessionId]: false,
+                                  }));
                                 }
                               }}
                               title="View documents the agent generated"
@@ -6291,6 +6313,38 @@ export default function App({ initialView }: any = {}) {
                                 </span>
                               )}
                             </button>
+                            {!chatProjectIsWorkflow && !sessionConsultActive && (
+                              <button
+                                type="button"
+                                data-testid="toggle-terminal-pane"
+                                aria-pressed={showSessionTerminalPane}
+                                onClick={() => {
+                                  const opening = !terminalPaneOpenBySession[activeSessionId];
+                                  setTerminalPaneOpenBySession((prev: any) => ({
+                                    ...prev,
+                                    [activeSessionId]: opening,
+                                  }));
+                                  if (opening) {
+                                    setDiffPaneOpenBySession((prev: any) => ({
+                                      ...prev,
+                                      [activeSessionId]: false,
+                                    }));
+                                    setArtifactsPaneOpenBySession((prev: any) => ({
+                                      ...prev,
+                                      [activeSessionId]: false,
+                                    }));
+                                  }
+                                }}
+                                title="Open the shared session terminal"
+                                className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
+                                  showSessionTerminalPane
+                                    ? 'bg-cyan-800/70 text-cyan-50 border-cyan-600'
+                                    : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+                                }`}
+                              >
+                                <SquareTerminal size={13} /> Terminal
+                              </button>
+                            )}
                             {!chatProjectIsWorkflow && (
                               <SessionPreviewStartButton
                                 sessionId={activeSessionId}
@@ -6426,6 +6480,25 @@ export default function App({ initialView }: any = {}) {
                                 ? prev
                                 : { ...prev, [activeSessionId]: n },
                             )
+                          }
+                        />
+                      </Suspense>
+                    )}
+                    {showSessionTerminalPane && (
+                      <Suspense
+                        fallback={
+                          <aside className="hidden lg:flex items-center justify-center shrink-0 border-l border-gray-800 bg-gray-950 w-[600px]">
+                            <Loader2 size={18} className="animate-spin text-cyan-300" />
+                          </aside>
+                        }
+                      >
+                        <SessionTerminalPane
+                          sessionId={activeSessionId}
+                          onClose={() =>
+                            setTerminalPaneOpenBySession((prev: any) => ({
+                              ...prev,
+                              [activeSessionId]: false,
+                            }))
                           }
                         />
                       </Suspense>

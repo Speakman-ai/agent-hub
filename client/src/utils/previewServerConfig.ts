@@ -102,7 +102,9 @@ export function buildPreviewServerConfig(env: any) {
     // so poll to keep HMR reliable.
     watch: { usePolling: true, interval: 300, ignored: PREVIEW_WATCH_IGNORED },
     proxy: {
-      '/api': apiTarget,
+      // `/api` includes the dedicated session-terminal WebSocket route, so it
+      // must forward upgrade requests as well as ordinary REST traffic.
+      '/api': { target: apiTarget, ws: true },
       '/uploads': apiTarget,
       '/design-files': apiTarget,
       // The nested app opens a same-origin WebSocket at `/ws` for live chat

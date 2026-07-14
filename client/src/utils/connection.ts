@@ -104,6 +104,31 @@ export function getWsUrl() {
 }
 
 /**
+ * Build the dedicated terminal WebSocket URL for a session.
+ *
+ * Unlike chat, terminal upgrades live under `/api/sessions/:id/terminal/ws`
+ * rather than `/ws`. Keep the same local-dev, same-origin, remote-server, and
+ * browser-auth behavior as `getWsUrl()` without routing terminal frames through
+ * the chat socket.
+ */
+export function getTerminalWsUrl(sessionId: string) {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/terminal/ws`;
+  const config = getConnectionConfig();
+  let wsUrl: string;
+
+  if (config.mode === 'remote' && config.remoteUrl) {
+    wsUrl = config.remoteUrl.trim().replace(/\/+$/, '').replace(/^http/, 'ws') + path;
+  } else if (import.meta.env.VITE_API_PORT) {
+    wsUrl = `ws://${window.location.hostname}:${import.meta.env.VITE_API_PORT}${path}`;
+  } else {
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsUrl = `${wsProto}//${window.location.host}${path}`;
+  }
+
+  return appendAuthToWsUrl(wsUrl);
+}
+
+/**
  * Append the caller's auth credential (JWT preferred, apiKey fallback) to
  * an absolute server-issued WebSocket URL.
  *

@@ -15,9 +15,7 @@ let mockJwt: any = null;
   getToken: () => mockJwt,
 }));
 
-import { appendAuthToWsUrl, saveConnectionConfig } from './connection';
-
-const STORAGE_KEY = 'agent-hub-connection';
+import { appendAuthToWsUrl, getTerminalWsUrl, saveConnectionConfig } from './connection';
 
 describe('appendAuthToWsUrl', () => {
   beforeEach(() => {
@@ -73,5 +71,33 @@ describe('appendAuthToWsUrl', () => {
   it('url-encodes JWTs that contain reserved characters', () => {
     mockJwt = 'a b+c/d=';
     expect(appendAuthToWsUrl('wss://x/api/y')).toBe('wss://x/api/y?token=a%20b%2Bc%2Fd%3D');
+  });
+});
+
+describe('getTerminalWsUrl', () => {
+  beforeEach(() => {
+    mockJwt = null;
+    const store = new Map();
+    (globalThis as any).localStorage = {
+      getItem: (k: any) => (store.has(k) ? store.get(k) : null),
+      setItem: (k: any, v: any) => store.set(k, String(v)),
+      removeItem: (k: any) => store.delete(k),
+      clear: () => store.clear(),
+    };
+    (globalThis as any).window = globalThis.window || {};
+  });
+
+  afterEach(() => {
+    delete (globalThis as any).localStorage;
+    mockJwt = null;
+  });
+
+  it('builds the dedicated remote terminal route and appends browser auth', () => {
+    mockJwt = 'jwt-terminal';
+    saveConnectionConfig({ mode: 'remote', remoteUrl: 'https://hub.example.test/' });
+
+    expect(getTerminalWsUrl('session/a')).toBe(
+      'wss://hub.example.test/api/sessions/session%2Fa/terminal/ws?token=jwt-terminal',
+    );
   });
 });

@@ -38,7 +38,7 @@ describe('buildPreviewServerConfig', () => {
       watch: { usePolling: true, interval: 300, ignored: PREVIEW_WATCH_IGNORED },
     });
     // Same-origin /api proxied to the compose `server` service by default.
-    expect(cfg!.proxy['/api']).toBe('http://server:3051');
+    expect(cfg!.proxy['/api']).toEqual({ target: 'http://server:3051', ws: true });
     expect(cfg!.proxy['/uploads']).toBe('http://server:3051');
     expect(cfg!.proxy['/design-files']).toBe('http://server:3051');
     // The nested app's live WebSocket (/ws) must be upgraded to the server too.
@@ -60,7 +60,7 @@ describe('buildPreviewServerConfig', () => {
     });
     expect(cfg!.port).toBe(4173);
     expect(cfg!.hmr).toEqual({ protocol: 'ws', clientPort: 8443 });
-    expect(cfg!.proxy['/api']).toBe('http://backend:9000');
+    expect(cfg!.proxy['/api']).toEqual({ target: 'http://backend:9000', ws: true });
   });
 
   it('defaults the port to 80 when FRONTEND_PORT is missing or junk', () => {

@@ -17,28 +17,37 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const CONF_PATH = resolve(__dirname, '..', 'ops', 'nginx', 'agent-hub.conf');
 const CONF = readFileSync(CONF_PATH, 'utf8');
+const CLIENT_CONF_PATH = resolve(__dirname, '..', 'client', 'nginx.conf');
+const CLIENT_CONF = readFileSync(CLIENT_CONF_PATH, 'utf8');
 
 /**
  * Extract a `location <prefix>` { ... } block by matching brace pairs.
  * Returns the inner body (without the outer braces), or `null` if no such
  * block exists.
  */
-function extractLocation(prefix: string): string | null {
-  // Match `location <prefix>` (with either exact match or prefix match flags),
-  // then find the matching closing brace by counting depth. This tolerates
-  // the nested `map`/`log_format`/`server` blocks around the target.
-  const header = new RegExp(
-    `location\\s+\\^?~?\\s*${prefix.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\s*\\{`,
-  );
-  const m = CONF.match(header);
-  if (!m || m.index === undefined) return null;
+function extractLocation(prefix: string, conf = CONF): string | null {
+  // Find `location <prefix>` with any nginx location modifier, then find the
+  // matching closing brace by counting depth. Literal string matching also
+  // handles regex location expressions without parsing their syntax.
+  const matches = [
+    `location ${prefix} {`,
+    `location = ${prefix} {`,
+    `location ^~ ${prefix} {`,
+    `location ~ ${prefix} {`,
+    `location ~* ${prefix} {`,
+  ]
+    .map((header) => ({ header, index: conf.indexOf(header) }))
+    .filter((match) => match.index >= 0)
+    .sort((a, b) => a.index - b.index);
+  const match = matches[0];
+  if (!match) return null;
   let depth = 1;
-  const start = m.index + m[0].length;
-  for (let i = start; i < CONF.length; i++) {
-    if (CONF[i] === '{') depth++;
-    else if (CONF[i] === '}') {
+  const start = match.index + match.header.length;
+  for (let i = start; i < conf.length; i++) {
+    if (conf[i] === '{') depth++;
+    else if (conf[i] === '}') {
       depth--;
-      if (depth === 0) return CONF.slice(start, i);
+      if (depth === 0) return conf.slice(start, i);
     }
   }
   return null;
@@ -101,6 +110,27 @@ describe('ops/nginx/agent-hub.conf', () => {
       expect(body).toMatch(/client_max_body_size\s+0;/);
       expect(body).toMatch(/proxy_read_timeout\s+3600s;/);
       expect(body).toMatch(/proxy_send_timeout\s+3600s;/);
+    });
+  });
+
+  describe('dedicated terminal WebSocket location', () => {
+    const terminalLocation = '^/api/sessions/[^/]+/terminal/ws/?$';
+
+    it.each([
+      ['self-hosted edge', CONF],
+      ['container client', CLIENT_CONF],
+    ])('%s preserves WebSocket upgrades before the generic /api proxy', (_label, conf) => {
+      const body = extractLocation(terminalLocation, conf);
+      expect(body).not.toBeNull();
+      expect(body!).toMatch(/proxy_http_version\s+1\.1;/);
+      expect(body!).toMatch(/proxy_set_header\s+Upgrade\s+\$http_upgrade;/);
+      expect(body!).toMatch(/proxy_set_header\s+Connection\s+\$connection_upgrade;/);
+      expect(body!).toMatch(/proxy_read_timeout\s+86400s;/);
+    });
+
+    it('uses sanitized logging at the self-hosted edge so auth query strings are not stored', () => {
+      const body = extractLocation(terminalLocation, CONF);
+      expect(body).toMatch(/access_log\s+\S+\s+ws_sanitized;/);
     });
   });
 });
