@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionEnv, SessionEnvPty, SessionEnvPtyOpts } from '../session-env/session-env.js';
-import { PtySession, type PtySessionDeps } from './pty-session.js';
+import { PtySession, promptLineDirtyAfterWrite, type PtySessionDeps } from './pty-session.js';
 import { FakeTerminalBuffer, type TerminalBufferFactory } from './terminal-buffer.js';
 
 /** Controllable in-memory PTY — never spawns a real shell. */
@@ -237,5 +237,178 @@ describe('PtySession', () => {
     pty.emit('data\r\n');
     expect(ok).toEqual(['data\r\n']);
     expect(warn).toHaveBeenCalled();
+  });
+
+  describe('agent turn-taking primitives', () => {
+    it('lastOutputAt seeds at shell start and advances on every output', async () => {
+      const pty = new FakePty();
+      let clock = 1000;
+      const { session } = makeSession(pty, { now: () => clock });
+      await session.start();
+      // Seeded at start so a just-booted shell is not treated as long-idle.
+      expect(session.lastOutputAt).toBe(1000);
+      clock = 1500;
+      pty.emit('prompt$ ');
+      expect(session.lastOutputAt).toBe(1500);
+    });
+
+    it('inputQueueIdle is false before start and true on a quiet running shell', async () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty);
+      expect(session.inputQueueIdle).toBe(false);
+      await session.start();
+      expect(session.inputQueueIdle).toBe(true);
+    });
+
+    it('inputQueueIdle is false after exit', async () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty);
+      await session.start();
+      pty.exit(0);
+      expect(session.inputQueueIdle).toBe(false);
+    });
+
+    it('readSnapshot flushes + serializes scrollback without registering a viewer', async () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty);
+      await session.start();
+      pty.emit('line-1\r\nline-2\r\n');
+      const snap = await session.readSnapshot();
+      expect(snap).toBe('line-1\r\nline-2\r\n');
+      // Pure read — no viewer registered, so no SIGWINCH redraw was issued.
+      expect(session.viewerCount).toBe(0);
+      expect(pty.resizes).toEqual([]);
+    });
+
+    it('readSnapshot returns null before the shell has started', async () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty);
+      expect(await session.readSnapshot()).toBeNull();
+    });
+
+    it('write routes one injected line through the shared queue', async () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty);
+      await session.start();
+      expect(session.write('npm test\n')).toBe(true);
+      await flush();
+      expect(pty.writes).toEqual(['npm test\n']);
+    });
+
+    it('promptLineDirty tracks un-submitted input across writes', async () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty);
+      await session.start();
+      // Fresh prompt is clean.
+      expect(session.promptLineDirty).toBe(false);
+      // Human types a partial command (no Enter) → dirty.
+      session.write('rm -rf ');
+      expect(session.promptLineDirty).toBe(true);
+      // Pressing Enter submits the line → clean again.
+      session.write('\r');
+      expect(session.promptLineDirty).toBe(false);
+      // Type again, then Ctrl-U (kill line) clears it → clean.
+      session.write('half');
+      expect(session.promptLineDirty).toBe(true);
+      session.write('\x15');
+      expect(session.promptLineDirty).toBe(false);
+    });
+
+    it('promptLineDirty is false for a non-running shell', () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty);
+      expect(session.promptLineDirty).toBe(false);
+    });
+
+    it('a write to a non-running shell is refused and leaves promptLineDirty untouched', async () => {
+      // A write the PTY never receives must not flip turn-taking state. On a
+      // non-running shell write() returns false before touching the flag.
+      const pty = new FakePty();
+      const { session } = makeSession(pty);
+      await session.start();
+      pty.exit(0); // exited → queue closed
+      expect(session.write('\n')).toBe(false); // refused, PTY never receives it
+      expect(session.promptLineDirty).toBe(false);
+    });
+  });
+
+  describe('injectAtIdle (atomic turn-taking reservation)', () => {
+    const opts = { now: 10_000, quietWindowMs: 750 };
+
+    it('enqueues the line in one step when the prompt is idle', async () => {
+      const pty = new FakePty();
+      // Non-zero start stamp so lastOutputAt isn't the "never output" sentinel.
+      let clock = 1_000;
+      const { session } = makeSession(pty, { now: () => clock });
+      await session.start(); // lastOutputAt := 1_000
+      clock = 10_000; // 9s of quiet ≫ window
+      const res = session.injectAtIdle('npm test\n', opts);
+      expect(res).toEqual({ ok: true });
+      await flush();
+      expect(pty.writes).toEqual(['npm test\n']);
+      // The inject's trailing newline leaves the line clean.
+      expect(session.promptLineDirty).toBe(false);
+    });
+
+    it('defers (enqueues nothing) when the prompt line is dirty', async () => {
+      const pty = new FakePty();
+      let clock = 1_000;
+      const { session } = makeSession(pty, { now: () => clock });
+      await session.start();
+      clock = 10_000;
+      session.write('half-typed'); // human mid-command, dirty
+      const res = session.injectAtIdle('ls\n', opts);
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.deferred).toBe(true);
+      await flush();
+      expect(pty.writes).toEqual(['half-typed']); // only the human input
+    });
+
+    it('defers while the shell is inside the output-quiet window', async () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty, { now: () => 1_000 });
+      await session.start(); // lastOutputAt := 1_000
+      // Evaluate the gate only 100ms later — inside the 750ms quiet window.
+      const res = session.injectAtIdle('ls\n', { now: 1_100, quietWindowMs: 750 });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.deferred).toBe(true);
+      expect(pty.writes).toEqual([]);
+    });
+
+    it('defers (never phantom-writes) when the shell is not running', () => {
+      const pty = new FakePty();
+      const { session } = makeSession(pty); // never started
+      const res = session.injectAtIdle('ls\n', opts);
+      expect(res.ok).toBe(false);
+      // Not running → gate returns not-idle (deferred), never a phantom write.
+      if (!res.ok) expect(res.deferred).toBe(true);
+      expect(pty.writes).toEqual([]);
+    });
+  });
+});
+
+describe('promptLineDirtyAfterWrite', () => {
+  it('newline / carriage-return submit the line (clean)', () => {
+    expect(promptLineDirtyAfterWrite(true, '\n')).toBe(false);
+    expect(promptLineDirtyAfterWrite(true, '\r')).toBe(false);
+  });
+
+  it('Ctrl-C and Ctrl-U abort/kill the line (clean)', () => {
+    expect(promptLineDirtyAfterWrite(true, '\x03')).toBe(false);
+    expect(promptLineDirtyAfterWrite(true, '\x15')).toBe(false);
+  });
+
+  it('printable input makes the line dirty', () => {
+    expect(promptLineDirtyAfterWrite(false, 'l')).toBe(true);
+    expect(promptLineDirtyAfterWrite(false, 'echo hi')).toBe(true);
+  });
+
+  it('an agent inject (command + trailing newline) ends clean', () => {
+    expect(promptLineDirtyAfterWrite(false, 'npm test\n')).toBe(false);
+  });
+
+  it('trailing chars after a newline are uncommitted (dirty)', () => {
+    // e.g. a submitted line followed by the start of the next command.
+    expect(promptLineDirtyAfterWrite(false, 'ls\rrm')).toBe(true);
   });
 });

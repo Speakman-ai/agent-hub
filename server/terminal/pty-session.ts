@@ -76,10 +76,120 @@ export interface PtySessionDeps {
   createBuffer?: TerminalBufferFactory;
   /** Backpressure bound on the write queue. */
   writeQueueMaxQueued?: number;
+  /** Clock for output-quiescence tracking (agent turn-taking). Default `Date.now`. */
+  now?: () => number;
   logger?: { warn: (msg: string) => void };
 }
 
 type PtySessionStatus = 'idle' | 'running' | 'exited' | 'disposed';
+
+/**
+ * Fold one input write into the "is the current prompt line dirty?" flag —
+ * i.e. does the shell's input line hold un-submitted characters a human is
+ * still editing? Since client local echo is disabled, EVERY keystroke a human
+ * types is written through the PTY, so scanning the input byte stream is a
+ * reliable-enough signal without a full terminal model:
+ *   - `\n` / `\r` (Enter) submit the line, and Ctrl-C (0x03) / Ctrl-U (0x15)
+ *     abort/kill it — all four leave the input line empty ⇒ clean.
+ *   - Any other byte is (conservatively) treated as uncommitted input ⇒ dirty.
+ * The agent's own inject ends with `\n`, so it always leaves the line clean.
+ * Conservative on ambiguous edits (backspace, arrow keys): stays dirty, which
+ * only ever *withholds* an inject — never lands one onto a human's line.
+ */
+export function promptLineDirtyAfterWrite(prevDirty: boolean, data: string): boolean {
+  let dirty = prevDirty;
+  for (let i = 0; i < data.length; i++) {
+    const code = data.charCodeAt(i);
+    if (code === 0x0a || code === 0x0d || code === 0x03 || code === 0x15) {
+      dirty = false;
+    } else {
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
+/** Readiness primitives the agent turn-taking gate reads (a live PtySession
+ *  satisfies this, and so do test fakes). */
+export interface PromptInjectReadiness {
+  isRunning: boolean;
+  /** True when no input is queued/draining/paused on the single writer queue. */
+  inputQueueIdle: boolean;
+  /** True when the input line holds un-submitted characters (human mid-command). */
+  promptLineDirty: boolean;
+  /** Epoch ms of the last PTY output (or shell start); 0 before the shell runs. */
+  lastOutputAt: number;
+}
+
+export interface InjectIdleGate {
+  idle: boolean;
+  /** Human-readable reason when not idle (empty when idle). */
+  reason: string;
+}
+
+/**
+ * The agent turn-taking gate. An inject is allowed only when ALL hold:
+ *  1. the shell is running;
+ *  2. the single writer queue holds nothing (no keystrokes mid-flight);
+ *  3. the input line is clean — no un-submitted human characters (closes the
+ *     "human typed half a command then paused past the window" hole that
+ *     output-quiescence alone would miss); and
+ *  4. the shell has been output-quiet for `quietWindowMs` (approximating an
+ *     idle prompt, since a shell prompt can't be parsed reliably).
+ *
+ * Pure and synchronous, so {@link PtySession.injectAtIdle} can evaluate it and
+ * enqueue in one un-interruptible step (no event-loop turn boundary between the
+ * check and the write).
+ */
+export function evaluateInjectIdle(
+  view: PromptInjectReadiness,
+  now: number,
+  quietWindowMs: number,
+): InjectIdleGate {
+  if (!view.isRunning) {
+    return { idle: false, reason: 'The terminal shell is not running.' };
+  }
+  if (!view.inputQueueIdle) {
+    return {
+      idle: false,
+      reason:
+        'Input is already in flight — another write is queued/draining or the ' +
+        'terminal is paused. Retry once it settles.',
+    };
+  }
+  if (view.promptLineDirty) {
+    return {
+      idle: false,
+      reason:
+        'The prompt line holds un-submitted input — a human is mid-command. ' +
+        'Injecting now would append onto their line. Wait until the line is ' +
+        'submitted or cleared, then retry.',
+    };
+  }
+  const quietForMs = view.lastOutputAt > 0 ? now - view.lastOutputAt : -1;
+  if (quietForMs < quietWindowMs) {
+    const since = quietForMs < 0 ? 'has not settled yet' : `was active ${quietForMs}ms ago`;
+    return {
+      idle: false,
+      reason:
+        `The shell ${since}; turn-taking waits for a ${quietWindowMs}ms output-quiet ` +
+        'window (so an inject cannot land mid-line or mid-command). Retry shortly.',
+    };
+  }
+  return { idle: true, reason: '' };
+}
+
+/** Result of an atomic {@link PtySession.injectAtIdle} attempt. */
+export type InjectAtIdleResult =
+  | { ok: true }
+  /** Gate held it back (`deferred: true`) or the queue refused it (false). */
+  | { ok: false; deferred: boolean; reason: string };
+
+/** Options for {@link PtySession.injectAtIdle}. */
+export interface InjectAtIdleOpts {
+  now: number;
+  quietWindowMs: number;
+}
 
 export class PtySession {
   readonly sessionId: string;
@@ -94,6 +204,7 @@ export class PtySession {
   readonly #scrollback: number;
   readonly #createBuffer: TerminalBufferFactory;
   readonly #writeQueueMaxQueued?: number;
+  readonly #now: () => number;
   readonly #logger: { warn: (msg: string) => void };
 
   readonly #arbiter = new PtyResizeArbiter();
@@ -108,6 +219,22 @@ export class PtySession {
   #exitResult: PtySessionExit | null = null;
   /** Current PTY winsize, so we can detect whether a resize is a real change. */
   #currentSize: TerminalSize | null = null;
+  /**
+   * Epoch ms of the most recent PTY output (or shell start). Powers the
+   * output-quiescence half of the agent turn-taking gate: an injected command
+   * only lands once the shell has been quiet for a window, so it can't wedge
+   * into a human's in-progress line or a running command's output.
+   */
+  #lastOutputAtMs = 0;
+  /**
+   * Whether the shell's input line currently holds un-submitted characters
+   * (a human mid-command). Folded from every input write (see
+   * {@link promptLineDirtyAfterWrite}). The agent turn-taking gate refuses an
+   * inject while this is true, so a paused-but-partial human line can never be
+   * appended to — closing the hole where output-quiescence alone would wrongly
+   * read a stalled half-typed line as an idle prompt.
+   */
+  #promptLineDirty = false;
 
   constructor(deps: PtySessionDeps) {
     this.sessionId = deps.sessionId;
@@ -121,6 +248,7 @@ export class PtySession {
     this.#scrollback = deps.scrollback ?? DEFAULT_TERMINAL_SCROLLBACK;
     this.#createBuffer = deps.createBuffer ?? createXtermTerminalBuffer;
     this.#writeQueueMaxQueued = deps.writeQueueMaxQueued;
+    this.#now = deps.now ?? (() => Date.now());
     this.#logger = deps.logger ?? { warn: (m) => console.warn(m) };
   }
 
@@ -194,6 +322,11 @@ export class PtySession {
     this.#buffer = buffer;
     this.#pty = pty;
     this.#currentSize = { cols: this.#initialCols, rows: this.#initialRows };
+    // Treat the shell as "just active" so an agent inject can't fire before the
+    // first prompt has had a chance to render.
+    this.#lastOutputAtMs = this.#now();
+    // Fresh shell → empty input line.
+    this.#promptLineDirty = false;
     this.#queue = new PtyWriteQueue({
       write: (data) => pty.write(data),
       maxQueued: this.#writeQueueMaxQueued,
@@ -204,6 +337,7 @@ export class PtySession {
     pty.onData((data) => {
       // Mirror into scrollback first so a viewer attaching mid-chunk can't
       // miss bytes, then fan out live to every current viewer.
+      this.#lastOutputAtMs = this.#now();
       this.#buffer?.write(data);
       for (const viewer of this.#viewers.values()) {
         try {
@@ -279,7 +413,85 @@ export class PtySession {
   /** Queue input for the shell. Returns false if the shell is not running. */
   write(data: string): boolean {
     if (this.#status !== 'running' || !this.#queue) return false;
-    return this.#queue.enqueue(data);
+    const accepted = this.#queue.enqueue(data);
+    // Fold this write (human keystrokes OR an agent inject) into the
+    // prompt-line-dirty flag ONLY for input the queue actually took. `enqueue`
+    // refuses (drops the data entirely) only when the queue is closed; a
+    // backpressure `false` still keeps THIS newest message, so the input did
+    // reach the queue and must update the flag. Gate on `isClosed` rather than
+    // the ambiguous boolean, so a refused write never corrupts turn-taking
+    // state (which could otherwise wedge the session dirty forever).
+    if (!this.#queue.isClosed) {
+      this.#promptLineDirty = promptLineDirtyAfterWrite(this.#promptLineDirty, data);
+    }
+    return accepted;
+  }
+
+  /**
+   * Atomic agent turn-taking reservation: evaluate the idle gate AND enqueue
+   * the line in ONE synchronous step, so a human keystroke (delivered on a
+   * separate event-loop turn — the terminal WS `message` handler) can never
+   * interleave between the "is the prompt idle?" check and the write. The tool
+   * layer cannot split these across an `await`, which is what makes the
+   * turn-taking guarantee hold rather than relying on incidental call ordering.
+   *
+   * The enqueue folds `promptLineDirty` back to clean (the line ends with a
+   * newline), so a follow-up inject won't fire until fresh human input or shell
+   * output changes the state again.
+   */
+  injectAtIdle(line: string, opts: InjectAtIdleOpts): InjectAtIdleResult {
+    const gate = evaluateInjectIdle(this, opts.now, opts.quietWindowMs);
+    if (!gate.idle) return { ok: false, deferred: true, reason: gate.reason };
+    const accepted = this.write(line);
+    if (!accepted) {
+      return {
+        ok: false,
+        deferred: false,
+        reason: 'the terminal did not accept the command (queue closed or shell exited).',
+      };
+    }
+    return { ok: true };
+  }
+
+  /** Epoch ms of the last PTY output (or shell start); 0 before the shell runs. */
+  get lastOutputAt(): number {
+    return this.#lastOutputAtMs;
+  }
+
+  /**
+   * True when the shell's input line holds un-submitted characters (a human is
+   * mid-command). The agent turn-taking gate refuses an inject while this is
+   * set, so an injected command can never be appended onto a partial human
+   * line. A non-running shell is reported clean (nothing to protect).
+   */
+  get promptLineDirty(): boolean {
+    return this.#status === 'running' ? this.#promptLineDirty : false;
+  }
+
+  /**
+   * True when the write queue holds nothing and is neither draining, paused,
+   * nor closed — i.e. no input is mid-flight. This is the write-queue half of
+   * the agent turn-taking gate (the output-quiescence half is
+   * {@link lastOutputAt}). A non-running shell is never input-idle.
+   */
+  get inputQueueIdle(): boolean {
+    const q = this.#queue;
+    if (this.#status !== 'running' || !q) return false;
+    return !q.isDraining && !q.isPaused && !q.isClosed && q.length === 0;
+  }
+
+  /**
+   * Serialize the current scrollback for a read-only observer (the agent's
+   * ReAct `terminal` read). Unlike {@link attach} this registers no viewer,
+   * touches no resize arbiter, and fires no SIGWINCH — it is a pure read. The
+   * buffer is flushed first so the snapshot reflects the latest output. Returns
+   * `null` when there is no live buffer (shell never started / disposed).
+   */
+  async readSnapshot(): Promise<string | null> {
+    const buffer = this.#buffer;
+    if (!buffer) return null;
+    await buffer.flush();
+    return buffer.serialize();
   }
 
   /** Pause input delivery (agent/human turn-taking). */

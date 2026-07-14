@@ -223,6 +223,12 @@ import {
   PREVIEW_DRIVE_OPS,
 } from './preview/preview-react.js';
 import {
+  runTerminalReActStep,
+  createTerminalReactRuntime,
+  TERMINAL_REACT_OP_SET,
+  type AgentTerminalView,
+} from './terminal/terminal-react.js';
+import {
   effectiveBrowserToolsEnabled,
   resolveBrowserSessionOptions,
 } from './browser-agent-settings.js';
@@ -472,6 +478,14 @@ export interface ChatHandlerDeps {
    * the sibling accessors.
    */
   getDevServerRuntime?: () => DevServerRuntime | null;
+  /**
+   * Accessor for the per-session PTY host. The ReAct `terminal` tool consults
+   * it to observe (state / read) and take a turn (inject at an idle prompt) on
+   * the shared shell a human opened. `get`-only — the agent never boots or
+   * kills a shell, so terminal lifecycle stays human-driven. Null-when-unwired,
+   * matching the sibling runtime accessors.
+   */
+  getPtyHost?: () => { get(sessionId: string): AgentTerminalView | undefined } | null;
   autoCommitAndPR: (
     sessionId: string,
     agentId: string,
@@ -579,7 +593,7 @@ function persistLegacyWikiHybridGateIfNeeded(session: SessionRow, sessionId: str
   }
 }
 
-type ReActTool = 'wiki' | 'skill' | 'web' | 'browser' | 'preview' | 'google';
+type ReActTool = 'wiki' | 'skill' | 'web' | 'browser' | 'preview' | 'terminal' | 'google';
 
 interface ReActAction {
   tool: ReActTool;
@@ -598,6 +612,8 @@ interface ReActAction {
   route?: string;
   /** preview logs — tail line count. */
   tail?: number;
+  /** terminal inject — single command line to run at an idle prompt. */
+  command?: string;
   /** google — read-only inline context; see server/google-react.ts */
   surface?: string;
   from?: string;
@@ -876,6 +892,7 @@ ${skillsList.join('\n')}`;
     const previewToolLines = previewEnabledForPrompt
       ? `\n- \`preview\` — observe and drive **this session's dev preview** after the human starts it via **Start preview** (field: \`op\` + operands). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. You cannot start or stop the preview — if none is running you'll get a "not running" observation; ask the human to start it.`
       : '';
+    const terminalToolLines = `\n- \`terminal\` — co-observe and take a turn on **this session's shared terminal** the human opened (field: \`op\`). \`state\` — is a shell running, is it at an idle prompt. \`read\` — the current terminal screen + scrollback. \`inject\` (\`command\`) — run ONE command line at an idle prompt through the shared single-writer queue; it lands only when the shell is output-quiet and no human keystrokes are in flight (turn-taking), otherwise it's deferred with a retryable reason. The command is one line (no embedded newlines; the trailing newline is added for you). You cannot open or kill the shell — if none is running, ask the human to open the **Terminal** tab. This is for deliberate co-observation, not your primary command path — use your normal Bash tool for scripted work.`;
 
     prompt += `\n\n## ReAct Loop
 When you need extra context mid-answer, use a host-mediated ReAct action block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
@@ -887,7 +904,7 @@ Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
 - \`skill\` — load a registered Agent Hub skill (field: \`name\`).
 - \`web\` — live web search via Serper (field: \`query\`). Only works when the server has \`SERPER_API_KEY\` or \`WEB_SEARCH_API_KEY\` set; otherwise the host returns a clear configuration error.
-${browserToolLines}${previewToolLines}
+${browserToolLines}${previewToolLines}${terminalToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
   }
 
@@ -1490,6 +1507,21 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       });
       continue;
     }
+    if (a.tool === 'terminal') {
+      const op = typeof a.op === 'string' ? a.op.trim().toLowerCase() : '';
+      if (!op || !TERMINAL_REACT_OP_SET.has(op)) {
+        return {
+          error: 'malformed',
+          detail: 'terminal action requires op as "state", "read", or "inject"',
+        };
+      }
+      const command = typeof a.command === 'string' ? a.command : undefined;
+      if (op === 'inject' && (command === undefined || command.trim().length === 0)) {
+        return { error: 'malformed', detail: 'terminal inject requires a non-empty command' };
+      }
+      actions.push({ tool: 'terminal', op, command });
+      continue;
+    }
     if (a.tool === 'google') {
       const surface = typeof a.surface === 'string' ? a.surface.trim().toLowerCase() : '';
       if (surface !== 'calendar' && surface !== 'gmail' && surface !== 'sheets') {
@@ -1518,7 +1550,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
     return {
       error: 'malformed',
       detail:
-        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", or "google"',
+        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", "terminal", or "google"',
     };
   }
   return { actions };
@@ -1774,6 +1806,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     getPreviewRuntime,
     getPreviewComposeRuntime,
     getDevServerRuntime,
+    getPtyHost,
     autoCommitAndPR,
     tryAutonomousDispatch,
   } = deps;
@@ -4885,6 +4918,26 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 }
                 hostExit = p.hostExit;
                 hostDetail = p.hostDetail || opName;
+                continue;
+              }
+              if (action.tool === 'terminal') {
+                const opName = action.op ?? '';
+                const host = getPtyHost?.() ?? null;
+                const t = await runTerminalReActStep(
+                  sessionId,
+                  { op: opName, command: action.command },
+                  { runtime: host ? createTerminalReactRuntime(host) : null },
+                );
+                if (t.markdown.trim()) {
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${t.markdown.trim()}`
+                    : t.markdown.trim();
+                  reactObservations.push(
+                    `- terminal(${opName}) host step finished (exit ${t.hostExit}).`,
+                  );
+                }
+                hostExit = t.hostExit;
+                hostDetail = t.hostDetail || opName;
                 continue;
               }
             } catch (err: unknown) {

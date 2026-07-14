@@ -455,6 +455,57 @@ describe('parseReActBlock — wrapper-shape tolerance', () => {
   });
 });
 
+describe('parseReActBlock — terminal tool', () => {
+  it('parses a terminal state action', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"terminal","op":"state"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) {
+      expect(r.actions[0]).toMatchObject({ tool: 'terminal', op: 'state' });
+    }
+  });
+
+  it('parses a terminal inject action and keeps the command', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"terminal","op":"inject","command":"npm test"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) {
+      expect(r.actions[0]).toMatchObject({ tool: 'terminal', op: 'inject', command: 'npm test' });
+    }
+  });
+
+  it('normalizes op casing / whitespace', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"terminal","op":" READ "}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) expect(r.actions[0].op).toBe('read');
+  });
+
+  it('rejects an unknown terminal op', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"terminal","op":"kill"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(true);
+  });
+
+  it('rejects inject without a command', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"terminal","op":"inject"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(true);
+  });
+
+  it('rejects inject with a blank command', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"terminal","op":"inject","command":"   "}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(true);
+  });
+});
+
 // ─── stripFencedCodeBlockBodies ─────────────────────────────────────────
 
 describe('stripFencedCodeBlockBodies', () => {

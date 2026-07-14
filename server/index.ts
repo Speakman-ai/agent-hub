@@ -1551,6 +1551,7 @@ const chatHandler = createChatHandler({
   getPreviewRuntime: () => previewRuntime,
   getPreviewComposeRuntime: () => previewComposeRuntime,
   getDevServerRuntime: () => devServerRuntime,
+  getPtyHost: () => ptyHost,
   autoCommitAndPR,
   tryAutonomousDispatch,
 } as ChatHandlerDeps);
