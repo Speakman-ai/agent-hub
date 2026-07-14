@@ -41,6 +41,7 @@ import {
 } from '../preview-setup-apply.js';
 import { applyWizardSecrets, validateWizardSecrets } from '../wizard-secrets-apply.js';
 import { migrateComposePreviewToDevServer } from '../preview/migrate-compose-preview.js';
+import { isLegacyPreviewComposeConfig } from '../preview/preview-compose-config.js';
 import { resolveApplyTarget } from '../finalize/finalize-setup-apply-target.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
@@ -629,7 +630,7 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
         return;
       }
       const compose = project.prEnv?.preview?.compose;
-      if (!compose || !compose.entryService?.trim()) {
+      if (!isLegacyPreviewComposeConfig(compose)) {
         res.status(400).json({
           error:
             'Project has no compose app-wrapping preview config to migrate (prEnv.preview.compose.entryService is unset).',

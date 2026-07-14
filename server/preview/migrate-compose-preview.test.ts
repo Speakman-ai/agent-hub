@@ -5,9 +5,11 @@ import {
   DEFAULT_COMPOSE_FILE,
 } from './migrate-compose-preview.js';
 import { DEV_SERVER_DEFAULT_START_COMMAND } from '../dev-server-config.js';
-import type { PreviewComposeConfig } from '../types.js';
+import type { LegacyPreviewComposeConfig } from './preview-compose-config.js';
 
-function baseCompose(overrides: Partial<PreviewComposeConfig> = {}): PreviewComposeConfig {
+function baseCompose(
+  overrides: Partial<LegacyPreviewComposeConfig> = {},
+): LegacyPreviewComposeConfig {
   return { entryService: 'web', entryPort: 3000, ...overrides };
 }
 

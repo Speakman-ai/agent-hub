@@ -3,6 +3,7 @@
  */
 import type { Project } from './types.js';
 import type { PreviewComposeRuntime } from './preview/preview-compose-runtime.js';
+import { isLegacyPreviewComposeConfig } from './preview/preview-compose-config.js';
 
 const BUILD_TEST_SESSION_PREFIX = '__preview_build_test__';
 const POLL_MS = 500;
@@ -47,6 +48,17 @@ export async function runPreviewComposeBuildTest(
       ports: { allocated: null },
       durationMs: clock.nowMs() - start,
       error: 'Preview compose config is not enabled.',
+      logTail: [],
+    };
+  }
+  if (!isLegacyPreviewComposeConfig(project.prEnv.preview.compose)) {
+    return {
+      ok: false,
+      ports: { allocated: null },
+      durationMs: clock.nowMs() - start,
+      error:
+        'Compose build test is only available for legacy app-wrapping configs. ' +
+        'Start the managed dev server instead; compose is for backing services.',
       logTail: [],
     };
   }

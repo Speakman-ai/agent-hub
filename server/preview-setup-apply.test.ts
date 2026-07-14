@@ -111,6 +111,27 @@ describe('buildPrEnvPatchFromWizardApply', () => {
     }
   });
 
+  it('accepts services-only compose metadata alongside devServer', () => {
+    const result = buildPrEnvPatchFromWizardApply(stubProject(), {
+      enabled: true,
+      preview: {
+        compose: { file: 'docker-compose.yml', envFile: '.env.preview' },
+      },
+      devServer: {
+        startCommand: 'docker compose up -d --wait db && npm run dev',
+        portMap: [{ internalPort: 3000, label: 'web' }],
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prEnv.preview?.compose).toEqual({
+        file: 'docker-compose.yml',
+        envFile: '.env.preview',
+      });
+      expect(result.prEnv.devServer?.startCommand).toContain('npm run dev');
+    }
+  });
+
   it('rejects devServer combined with an app-wrapping compose preview', () => {
     // `preview.compose.entryService` IS the app-wrapping runtime — there is no
     // "services-only" compose in that field. Combining it with devServer would

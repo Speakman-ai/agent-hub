@@ -281,13 +281,24 @@ describe('resolvePreviewHandlerReadyTimeoutMs', () => {
 
   it('prefers per-project compose.readyTimeoutMs', () => {
     const project = {
-      prEnv: { preview: { compose: { entryService: 'web', readyTimeoutMs: 42_000 } } },
+      prEnv: {
+        preview: { compose: { entryService: 'web', entryPort: 3000, readyTimeoutMs: 42_000 } },
+      },
     } as Project;
     expect(resolvePreviewHandlerReadyTimeoutMs(project, 600_000)).toBe(42_000);
   });
 
   it('uses spawn default when compose is not configured', () => {
     const project = { prEnv: { preview: { enabled: true } } } as Project;
+    expect(resolvePreviewHandlerReadyTimeoutMs(project, 600_000)).toBe(120_000);
+  });
+
+  it('uses spawn default for services-only compose metadata', () => {
+    const project = {
+      prEnv: {
+        preview: { enabled: true, compose: { file: 'compose.yml', readyTimeoutMs: 42_000 } },
+      },
+    } as Project;
     expect(resolvePreviewHandlerReadyTimeoutMs(project, 600_000)).toBe(120_000);
   });
 });

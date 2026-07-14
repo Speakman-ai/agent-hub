@@ -578,8 +578,10 @@ export interface ValidatedPrEnvPreviewConfig {
  */
 export interface ValidatedPreviewComposeConfig {
   file?: string;
-  entryService: string;
-  entryPort: number;
+  /** Deprecated one-release app-wrapping fallback. */
+  entryService?: string;
+  /** Deprecated one-release app-wrapping fallback. */
+  entryPort?: number;
   envFile?: string;
   healthPath?: string;
   hostPortRange?: { min: number; max: number };
@@ -731,9 +733,9 @@ const PREVIEW_COMPOSE_TRAVERSAL_RE = /(^|\/)\.\.(\/|$)/;
  * runtime fills them in at start time so an operator's stored config
  * round-trips exactly what they typed.
  *
- * Cross-field exclusivity (compose vs. `processes[]` vs. non-default
- * `startScript`) is checked by the caller in `validatePrEnvPreview` so
- * the error message can point at all three fields at once.
+ * The compose block is services-only when `entryService` / `entryPort` are
+ * absent. Cross-field exclusivity for the deprecated app-wrapping fallback
+ * is checked by the caller in `validatePrEnvPreview`.
  */
 function validatePreviewCompose(
   raw: unknown,
@@ -744,40 +746,56 @@ function validatePreviewCompose(
   }
   const obj = raw as Record<string, unknown>;
 
-  // entryService — required, non-empty, matches the compose service-name rule.
-  if (typeof obj.entryService !== 'string') {
-    return { ok: false, error: 'prEnv.preview.compose.entryService is required' };
-  }
-  const entryService = obj.entryService.trim();
-  if (!entryService) {
-    return { ok: false, error: 'prEnv.preview.compose.entryService is required' };
-  }
-  if (!PREVIEW_COMPOSE_SERVICE_NAME_RE.test(entryService)) {
+  // A services-only compose block omits the old app identity fields. During
+  // the one-release migration window, the legacy fallback still requires the
+  // pair together so a partial config can never select it accidentally.
+  const hasEntryService = obj.entryService !== undefined && obj.entryService !== null;
+  const hasEntryPort = obj.entryPort !== undefined && obj.entryPort !== null;
+  if (hasEntryService !== hasEntryPort) {
     return {
       ok: false,
       error:
-        'prEnv.preview.compose.entryService must match [a-zA-Z0-9][a-zA-Z0-9_.-]* ' +
-        '(Docker compose service-name rule)',
+        'prEnv.preview.compose.entryService and entryPort must be provided together for the legacy fallback',
     };
   }
 
-  // entryPort — required, integer in [1, 65535].
-  let entryPort: number | null = null;
-  if (typeof obj.entryPort === 'number' && Number.isFinite(obj.entryPort)) {
-    entryPort = Math.floor(obj.entryPort);
-  } else if (typeof obj.entryPort === 'string' && /^\d+$/.test(obj.entryPort.trim())) {
-    entryPort = parseInt(obj.entryPort.trim(), 10);
+  let entryService: string | undefined;
+  if (hasEntryService) {
+    if (typeof obj.entryService !== 'string') {
+      return { ok: false, error: 'prEnv.preview.compose.entryService must be a string' };
+    }
+    entryService = obj.entryService.trim();
+    if (!entryService) {
+      return { ok: false, error: 'prEnv.preview.compose.entryService is required' };
+    }
+    if (!PREVIEW_COMPOSE_SERVICE_NAME_RE.test(entryService)) {
+      return {
+        ok: false,
+        error:
+          'prEnv.preview.compose.entryService must match [a-zA-Z0-9][a-zA-Z0-9_.-]* ' +
+          '(Docker compose service-name rule)',
+      };
+    }
   }
-  if (
-    entryPort === null ||
-    !Number.isInteger(entryPort) ||
-    entryPort < 1 ||
-    entryPort > PR_ENV_PREVIEW_PORT_MAX
-  ) {
-    return {
-      ok: false,
-      error: `prEnv.preview.compose.entryPort must be an integer between 1 and ${PR_ENV_PREVIEW_PORT_MAX}`,
-    };
+
+  let entryPort: number | undefined;
+  if (hasEntryPort) {
+    if (typeof obj.entryPort === 'number' && Number.isFinite(obj.entryPort)) {
+      entryPort = Math.floor(obj.entryPort);
+    } else if (typeof obj.entryPort === 'string' && /^\d+$/.test(obj.entryPort.trim())) {
+      entryPort = parseInt(obj.entryPort.trim(), 10);
+    }
+    if (
+      entryPort === undefined ||
+      !Number.isInteger(entryPort) ||
+      entryPort < 1 ||
+      entryPort > PR_ENV_PREVIEW_PORT_MAX
+    ) {
+      return {
+        ok: false,
+        error: `prEnv.preview.compose.entryPort must be an integer between 1 and ${PR_ENV_PREVIEW_PORT_MAX}`,
+      };
+    }
   }
 
   // file / envFile — optional relative paths, no traversal, length-capped.
@@ -1024,7 +1042,9 @@ function validatePreviewCompose(
     if (normalised.length > 0) shadowDirs = normalised;
   }
 
-  const value: ValidatedPreviewComposeConfig = { entryService, entryPort };
+  const value: ValidatedPreviewComposeConfig = {};
+  if (entryService) value.entryService = entryService;
+  if (entryPort !== undefined) value.entryPort = entryPort;
   if (fileResult.value) value.file = fileResult.value;
   if (envFileResult.value) value.envFile = envFileResult.value;
   if (healthPath) value.healthPath = healthPath;
@@ -1156,7 +1176,7 @@ function validatePrEnvPreview(
   // We surface the conflict at save time so the operator can pick.
   const composeResult = validatePreviewCompose(obj.compose);
   if (!composeResult.ok) return { ok: false, error: composeResult.error };
-  if (composeResult.value) {
+  if (composeResult.value?.entryService) {
     if (startScript) {
       return {
         ok: false,
@@ -1189,7 +1209,7 @@ function validatePrEnvPreview(
             '— multi-process mode spawns each entry in processes[] and ignores startScript',
         };
       }
-      if (composeResult.value) {
+      if (composeResult.value?.entryService) {
         return {
           ok: false,
           error:

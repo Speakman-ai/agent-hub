@@ -191,8 +191,9 @@ export interface PreviewHandlerDeps {
    * preview surface) — the handler treats that as `preview_unavailable`.
    *
    * Accepts either the legacy {@link PreviewRuntime} (spawn-based) or the
-   * compose-mode {@link PreviewComposeRuntime}. The chat dispatch site
-   * decides which to pass based on `project.prEnv.preview.compose.entryService`.
+   * one-release compose app-wrapping fallback. New dev-server projects use
+   * the managed runtime; compose metadata without an entry service does not
+   * select this runtime.
    */
   runtime: PreviewRuntimeLike | null;
   broadcast: BroadcastFn;
@@ -346,7 +347,9 @@ const COMPOSE_PREVIEW_READY_TIMEOUT_MS = 600_000;
 export function resolvePreviewHandlerReadyTimeoutMs(
   project: {
     prEnv?: {
-      preview?: { compose?: { entryService?: string; readyTimeoutMs?: number } };
+      preview?: {
+        compose?: { entryService?: string; entryPort?: number; readyTimeoutMs?: number };
+      };
       devServer?: { readyTimeoutMs?: number };
     };
   },
@@ -360,11 +363,18 @@ export function resolvePreviewHandlerReadyTimeoutMs(
   ) {
     return devServerTimeout;
   }
-  const perProject = project.prEnv?.preview?.compose?.readyTimeoutMs;
+  const legacyCompose = project.prEnv?.preview?.compose;
+  const legacyComposeConfigured =
+    typeof legacyCompose?.entryService === 'string' &&
+    legacyCompose.entryService.trim().length > 0 &&
+    typeof legacyCompose.entryPort === 'number';
+  const perProject = legacyComposeConfigured
+    ? project.prEnv?.preview?.compose?.readyTimeoutMs
+    : undefined;
   if (typeof perProject === 'number' && Number.isFinite(perProject) && perProject > 0) {
     return perProject;
   }
-  if (project.prEnv?.preview?.compose?.entryService) {
+  if (legacyComposeConfigured) {
     return composeReadyTimeoutMs;
   }
   return DEFAULT_READY_TIMEOUT_MS;

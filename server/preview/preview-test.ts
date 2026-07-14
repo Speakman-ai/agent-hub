@@ -60,6 +60,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
 import type { Project } from '../types.js';
+import { isLegacyPreviewComposeConfig } from './preview-compose-config.js';
 
 // ─── Public types ──────────────────────────────────────────────────
 
@@ -188,7 +189,8 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
     };
   }
 
-  // Compose-mode dispatch — when `prEnv.preview.compose` is set the
+  // Legacy compose-mode dispatch — when the deprecated app-wrapping
+  // `prEnv.preview.compose` shape is set the
   // project boots its docker-compose stack via `PreviewComposeRuntime`
   // for real session previews. The one-shot Test button doesn't yet
   // own a transient compose lifecycle (separate follow-up card —
@@ -198,7 +200,7 @@ export async function runPreviewTest(deps: PreviewTestDeps): Promise<PreviewTest
   // explicitly so the user understands the Test button is a
   // spawn-mode-only validator and can still test their compose stack
   // by starting a session and emitting `<agenthub:preview>`.
-  if (previewCfg.compose) {
+  if (isLegacyPreviewComposeConfig(previewCfg.compose)) {
     return {
       ok: false,
       ports,

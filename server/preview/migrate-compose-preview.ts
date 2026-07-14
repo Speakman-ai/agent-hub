@@ -31,6 +31,7 @@ import {
   type DevServerConfig,
 } from '../dev-server-config.js';
 import type { PreviewComposeConfig } from '../types.js';
+import type { LegacyPreviewComposeConfig } from './preview-compose-config.js';
 
 /** Default compose file name when `PreviewComposeConfig.file` is unset. */
 export const DEFAULT_COMPOSE_FILE = 'docker-compose.yml';
@@ -145,7 +146,7 @@ export function buildComposeServicesUpCommand(
  * already-validated compose config).
  */
 export function migrateComposePreviewToDevServer(
-  compose: PreviewComposeConfig,
+  compose: LegacyPreviewComposeConfig,
   opts: ComposePreviewMigrationOptions = {},
 ): ComposePreviewMigrationPlan {
   const warnings: string[] = [];

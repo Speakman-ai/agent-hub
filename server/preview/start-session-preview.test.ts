@@ -126,6 +126,41 @@ describe('startSessionPreview', () => {
     expect(composeRuntime.startPreview).not.toHaveBeenCalled();
   });
 
+  it('does not select the legacy compose runtime for services-only metadata', async () => {
+    const broadcast = vi.fn();
+    const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };
+    const devServerRuntime = {
+      start: vi.fn(),
+      getById: vi.fn(),
+      getLogTail: vi.fn(),
+    };
+    const servicesProject = {
+      ...project,
+      prEnv: {
+        ...project.prEnv,
+        preview: {
+          enabled: true,
+          compose: { file: 'docker-compose.yml' },
+        },
+        devServer: { startCommand: 'docker compose up -d db && npm run dev' },
+      },
+    } as Project;
+
+    await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast,
+      findAgent: () => ({ project: servicesProject, agent: { id: 'a1' } }),
+      getPreviewComposeRuntime: () => composeRuntime,
+      getDevServerRuntime: () => devServerRuntime,
+      getSession: () => session,
+    });
+
+    const handlerDeps = vi.mocked(handlePreviewBlock).mock.calls[0]?.[2];
+    expect(handlerDeps?.runtime).toBeTruthy();
+    expect(handlerDeps?.runtime).not.toBe(composeRuntime);
+    expect(composeRuntime.startPreview).not.toHaveBeenCalled();
+  });
+
   it('returns 409 instead of falling back to project cwd before worktree provisioning finishes', async () => {
     const broadcast = vi.fn();
     const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };

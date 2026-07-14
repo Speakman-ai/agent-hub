@@ -685,7 +685,7 @@ describe('PreviewComposeRuntime.startPreview — happy path', () => {
     );
   });
 
-  it('throws when prEnv.preview.compose is unset', async () => {
+  it('throws when prEnv.preview.compose is unset or services-only', async () => {
     const runtime = new PreviewComposeRuntime({
       db: freshDb(),
       spawn: makeSpawn().spawn,
@@ -700,7 +700,18 @@ describe('PreviewComposeRuntime.startPreview — happy path', () => {
       },
     });
     await expect(runtime.startPreview('sess-x', projectNoCompose, '/wt')).rejects.toThrow(
-      /without prEnv\.preview\.compose set/,
+      /one-release legacy app-wrapping config/,
+    );
+    const servicesOnly = makeProject({
+      prEnv: {
+        enabled: true,
+        startScript: 'npm run dev',
+        internalPort: 3000,
+        preview: { enabled: true, compose: { file: 'compose.yml' } },
+      },
+    });
+    await expect(runtime.startPreview('sess-services', servicesOnly, '/wt')).rejects.toThrow(
+      /one-release legacy app-wrapping config/,
     );
   });
 });

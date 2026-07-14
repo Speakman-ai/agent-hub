@@ -3071,23 +3071,13 @@ export interface PrEnvPreviewConfig {
    */
   processes?: PreviewProcess[];
   /**
-   * Optional docker-compose orchestration. When set, the
-   * `PreviewComposeRuntime` runs the project's `docker-compose.yml`
-   * inside an isolated compose project named
-   * `agenthub-session-<sessionId>`, rather than spawning host processes
-   * via `startScript` / `processes[]`. This is the "universal" preview
-   * mode for repos that already ship a working compose file — the
-   * project's existing local-dev workflow is the source of truth, with
-   * no Agent-Hub-specific path-prefix proxy, framework middleware, or
-   * `servePath` flags.
+   * Optional compose metadata for the project's backing services. The
+   * managed app process belongs in `devServer.startCommand`; it may run
+   * `docker compose up -d --wait db redis` before starting the app.
    *
-   * When `compose.entryService` is set the runtime picks the compose
-   * path; otherwise it falls back to the legacy single/multi-process
-   * spawn path. The two configurations are mutually exclusive at the
-   * validator level — `compose` cannot coexist with `processes[]` or a
-   * non-default `startScript`.
-   *
-   * See ADR: `worktree-previews-compose-pivot-adr` on the wiki.
+   * Existing configs that contain `entryService` and `entryPort` receive a
+   * one-release compatibility fallback through the legacy compose runtime.
+   * New configs must omit those app-wrapping fields.
    */
   compose?: PreviewComposeConfig;
 }
@@ -3096,17 +3086,14 @@ export interface PrEnvPreviewConfig {
  * Docker-compose preview orchestration sub-config attached to
  * {@link PrEnvPreviewConfig}.
  *
- * Each session boots a dedicated `docker compose -p
- * agenthub-session-<sessionId>` project against the worktree-bind-mounted
- * compose file, exposing the entry service's internal port on a single
- * allocated host port. Backing services (Postgres, Redis, etc.) are
- * declared as siblings in the same compose file; each session gets its
- * own ephemeral copy, torn down via `docker compose down -v` on session
- * end / idle reap.
+ * Compose metadata for backing services (Postgres, Redis, etc.) used by a
+ * managed dev server. The Hub does not run the app as a compose entry
+ * service. The project's `devServer.startCommand` owns the compose command
+ * and app startup lifecycle.
  *
- * The contract is intentionally minimal — five fields cover the happy
- * path; everything else (overrides, profiles, build args) is whatever
- * the project's compose file already declares.
+ * `entryService` and `entryPort` are deprecated compatibility fields. They
+ * are accepted for one release so existing projects can migrate; when both
+ * are present the temporary legacy compose app-wrapping fallback is used.
  */
 export interface PreviewComposeConfig {
   /**
@@ -3119,21 +3106,15 @@ export interface PreviewComposeConfig {
    */
   file?: string;
   /**
-   * Service name (must exist in the compose file) whose port is exposed
-   * to the iframe. Required — there's no way to guess which of N services
-   * is the "frontend" without reading the compose file, and we want
-   * config-level explicitness here.
-   *
-   * Must match `/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/` (compose's own service-
-   * name rules).
+   * @deprecated App-wrapping compatibility field. Omit for services-only
+   * compose metadata.
    */
-  entryService: string;
+  entryService?: string;
   /**
-   * Internal port that `entryService` listens on inside its container.
-   * The runtime maps an allocated host port → this internal port via a
-   * compose `ports:` override at start. Bounded 1..65535.
+   * @deprecated App-wrapping compatibility field. Required together with
+   * `entryService` only for the one-release fallback.
    */
-  entryPort: number;
+  entryPort?: number;
   /**
    * Optional dotenv file passed to `docker compose --env-file`,
    * relative to the worktree root. Missing files are a no-op (compose's

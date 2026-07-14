@@ -1,12 +1,15 @@
 /**
- * Docker-compose worktree preview runtime.
+ * Legacy Docker-compose worktree preview compatibility runtime.
  *
- * Per-session compose orchestration for worktree previews — see the ADR
- * page `worktree-previews-compose-pivot-adr` on the wiki. PR 1 shipped
- * the skeleton + schema, PR 2 wired the runtime into the chat handler,
- * and PR 3 converted the webapp project's prEnv from the legacy
- * `./quickstart` spawn to `preview.compose.entryService = 'frontend'`
- * targeting `compose.preview.yml`. PR 4 removes the legacy spawn path.
+ * This module is retained for one release solely to keep existing
+ * `prEnv.preview.compose.entryService` + `entryPort` projects running while
+ * they migrate to `prEnv.devServer`. New previews run the app as a managed
+ * process; compose commands in that model are for backing services only.
+ *
+ * The per-session compose orchestration below is therefore a compatibility
+ * path, not the current preview model. It is deliberately guarded by
+ * `isLegacyPreviewComposeConfig` at the public start boundary and should be
+ * removed after the migration window.
  *
  * Lifecycle:
  *
@@ -73,7 +76,7 @@ import {
   MIGRATE_LEGACY_PREVIEWS_SQL,
   DEFAULT_PREVIEW_PORT_RANGE,
 } from './preview-schema.js';
-import type { PreviewComposeConfig, PrEnvPreviewConfig, Project } from '../types.js';
+import type { PrEnvPreviewConfig, Project } from '../types.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import {
   requireVisibleComposeProjectDirectory,
@@ -93,6 +96,11 @@ import {
 import { waitForWorktreeComposeReady } from './worktree-compose-ready.js';
 import { previewProxyMountPath } from './preview-public-url.js';
 import { DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS } from './preview-ready-timeout-bounds.js';
+import {
+  isLegacyPreviewComposeConfig,
+  LEGACY_COMPOSE_PREVIEW_WARNING,
+  type LegacyPreviewComposeConfig,
+} from './preview-compose-config.js';
 
 export type RemoveComposeProjectVolumesFn = (deps: RemoveComposeProjectVolumesDeps) => void;
 
@@ -641,12 +649,12 @@ export function buildComposeOverrideYaml(opts: {
 }
 
 /**
- * Resolve the effective {@link PreviewComposeConfig} for a project — fills
- * in defaults from the runtime config so the rest of the runtime can
- * treat every field as defined.
+ * Resolve the effective legacy app-wrapping compose config — fills in
+ * defaults from the runtime config so the compatibility path can treat
+ * every field as defined.
  */
 export function resolveComposeConfig(
-  raw: PreviewComposeConfig,
+  raw: LegacyPreviewComposeConfig,
   defaults: {
     composeFile: string;
     healthPath: string;
@@ -686,6 +694,7 @@ function normaliseHealthPath(raw: string): string {
 
 // ─── Implementation ─────────────────────────────────────────────────────
 
+/** @deprecated One-release fallback for legacy compose app-wrapping configs. */
 export class PreviewComposeRuntime {
   private readonly db: Database;
   private readonly spawn: SpawnFn;
@@ -827,9 +836,10 @@ export class PreviewComposeRuntime {
     worktreePath: string,
   ): Promise<StartComposePreviewResult> {
     const previewCfg: PrEnvPreviewConfig = project.prEnv?.preview ?? { enabled: false };
-    if (!previewCfg.compose) {
+    if (!isLegacyPreviewComposeConfig(previewCfg.compose)) {
       throw new Error(
-        `PreviewComposeRuntime called for project ${project.id} without prEnv.preview.compose set`,
+        `PreviewComposeRuntime only supports the one-release legacy app-wrapping config ` +
+          `(prEnv.preview.compose.entryService + entryPort) for project ${project.id}`,
       );
     }
     const cfg = resolveComposeConfig(previewCfg.compose, {
@@ -861,6 +871,10 @@ export class PreviewComposeRuntime {
     const groupId = randomUUID();
     this.sessionIdByGroup.set(groupId, sessionId);
     this.logTails.set(groupId, []);
+    this.logger.warn(
+      `[preview-compose ${groupId}] ${LEGACY_COMPOSE_PREVIEW_WARNING} ` +
+        'This compatibility path will be removed after the migration release.',
+    );
 
     // Allocate a host port + insert the group row + the single `entry`
     // process row inside one DB transaction so a half-inserted group
@@ -885,6 +899,7 @@ export class PreviewComposeRuntime {
     });
 
     const url = this.urlBase(port, sessionId);
+    this.appendComposeLog(groupId, `[preview-compose] ${LEGACY_COMPOSE_PREVIEW_WARNING}`, 'stderr');
     this.appendComposeLog(
       groupId,
       `[preview-compose] Starting docker compose project ${projectName} on host port ${port}…`,

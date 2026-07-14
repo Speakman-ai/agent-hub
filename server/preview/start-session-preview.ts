@@ -9,6 +9,7 @@ import type { PreviewRuntimeLike } from './preview-block.js';
 import { handlePreviewBlock, resolvePreviewHandlerReadyTimeoutMs } from './preview-block.js';
 import type { PreviewTask } from './preview-block.js';
 import { projectWithWorktreePreviewOverride } from './worktree-preview-config.js';
+import { isLegacyPreviewComposeConfig } from './preview-compose-config.js';
 
 export interface StartSessionPreviewBody {
   route?: string;
@@ -111,7 +112,7 @@ export async function startSessionPreview(
   };
 
   const devServerConfigured = !!effectiveProject.prEnv?.devServer;
-  const composeConfigured = !!effectiveProject.prEnv?.preview?.compose?.entryService;
+  const composeConfigured = isLegacyPreviewComposeConfig(effectiveProject.prEnv?.preview?.compose);
   const devServerRuntime = devServerConfigured ? (deps.getDevServerRuntime?.() ?? null) : null;
   const previewRuntime = devServerConfigured
     ? devServerRuntime
