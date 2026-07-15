@@ -19,7 +19,7 @@ export default function DevServerScreen({ route, navigation }: any) {
     <SafeAreaView style={styles.screen} edges={['top']}>
       <ProjectScreenHeader title="Dev Server" project={project} onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <DevServerSection project={project} />
+        <DevServerSection project={project} navigation={navigation} />
       </ScrollView>
     </SafeAreaView>
   );

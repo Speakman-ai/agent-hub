@@ -4702,6 +4702,185 @@ components:
           type: string
       required:
         - error
+    DevServerWizardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+      description: Error envelope for Dev Server wizard routes.
+    DevServerStartCommandCandidate:
+      type: object
+      properties:
+        command:
+          type: string
+        script:
+          type: string
+        raw:
+          type: string
+        recommended:
+          type: boolean
+      required:
+        - command
+        - script
+        - raw
+        - recommended
+    DevServerPortGuess:
+      type: object
+      properties:
+        internalPort:
+          type: integer
+        label:
+          type: string
+        source:
+          type: string
+      required:
+        - internalPort
+        - label
+        - source
+    DevServerSetupDraft:
+      type: object
+      properties:
+        cwd:
+          type: string
+        packageManager:
+          type: string
+          nullable: true
+          enum:
+            - npm
+            - pnpm
+            - yarn
+            - bun
+            - null
+        isMonorepo:
+          type: boolean
+        monorepoDirs:
+          type: array
+          items:
+            type: string
+        startCommandCandidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/DevServerStartCommandCandidate"
+        frameworks:
+          type: array
+          items:
+            type: string
+        portGuesses:
+          type: array
+          items:
+            $ref: "#/components/schemas/DevServerPortGuess"
+        healthPathGuess:
+          type: string
+        existing:
+          nullable: true
+          description: Current `prEnv.devServer` config, or null.
+        readme:
+          type: object
+          properties:
+            path:
+              type: string
+              nullable: true
+            excerpt:
+              type: string
+              nullable: true
+          required:
+            - path
+            - excerpt
+      required:
+        - cwd
+        - packageManager
+        - isMonorepo
+        - monorepoDirs
+        - startCommandCandidates
+        - frameworks
+        - portGuesses
+        - healthPathGuess
+        - readme
+      description: "Server-precomputed Dev Server scan: start-command candidates, package manager, monorepo layout, framework/port guesses, health-path default, existing config, and a README excerpt."
+    DevServerSetupDraftResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        draft:
+          $ref: "#/components/schemas/DevServerSetupDraft"
+      required:
+        - projectId
+        - draft
+      description: Dev Server detection result for a project.
+    DevServerWizardStartResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        draft:
+          $ref: "#/components/schemas/DevServerSetupDraft"
+        session:
+          nullable: true
+          description: Raw `sessions` row for the spawned wizard session.
+      required:
+        - sessionId
+        - agentId
+        - draft
+      description: Dev Server setup wizard session spawned successfully.
+    DevServerSetupApplyRequest:
+      type: object
+      properties:
+        devServer:
+          type: object
+          additionalProperties:
+            nullable: true
+          description: The authored `prEnv.devServer` block (startCommand, env, secretKeys, portMap, healthPath, readyTimeoutMs, cwd). Validated by parseDevServerConfig; the first `prEnv.devServer.<path>` issue is returned as a 400.
+        secrets:
+          type: object
+          properties:
+            env:
+              type: string
+              description: Dotenv `KEY=value` lines of secret values.
+            mode:
+              type: string
+              enum:
+                - merge
+                - replace
+            defaultKind:
+              type: string
+              enum:
+                - plain
+                - secret
+          required:
+            - env
+          description: Freshly-typed secret values to store encrypted. The config references these by name via `devServer.secretKeys`; plaintext values never live in the config.
+      required:
+        - devServer
+      description: Persist payload for the Dev Server setup wizard.
+    DevServerSetupApplyResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        secretsImported:
+          type: integer
+      required:
+        - ok
+        - secretsImported
+      description: Dev-server config persisted to the project record.
+    DevServerWizardOkResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+      required:
+        - ok
     EscalationsErrorResponse:
       type: object
       properties:
@@ -22245,6 +22424,137 @@ paths:
           description: 'Import could not proceed. `error: "design_import_failed"` (e.g. no eligible target agent in a linked project) is terminal; `error: "import_in_progress"` (`retryable: true`) means a concurrent import holds the lock — retry shortly.'
         "503":
           description: Worktree provisioning is not wired.
+  /api/projects/{projectId}/dev-server/setup-draft:
+    get:
+      tags:
+        - Dev Server
+      summary: Scan a project for dev-server setup signal
+      description: "Admin+. Reads the project working copy and returns the detection draft the Dev Server setup wizard needs: start-command candidates from `package.json` scripts, package manager, monorepo layout, framework/port guesses, a health-path default, the existing config, and a README excerpt. Read-only — no session spawn, no writes."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Detection draft computed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerSetupDraftResponse"
+        "400":
+          description: Project has no cwd configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardErrorResponse"
+  /api/projects/{projectId}/dev-server/setup-wizard:
+    post:
+      tags:
+        - Dev Server
+      summary: Spawn the Dev Server setup wizard
+      description: Admin+. Scans the project and spawns a worktree-backed `[Dev Server Setup]` chat session loaded with the `dev-server-setup` skill, the draft embedded in the kickoff prompt. The agent walks the user through authoring `prEnv.devServer` (start command, port map, env, secret references, health path, monorepo cwd) and calls setup-apply to persist it.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "201":
+          description: Wizard session spawned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardStartResponse"
+        "400":
+          description: Project has no cwd configured, or no agents to host the wizard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardErrorResponse"
+        "500":
+          description: Wizard agent could not be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardErrorResponse"
+  /api/projects/{projectId}/dev-server/setup-apply:
+    post:
+      tags:
+        - Dev Server
+      summary: Persist the authored dev-server config
+      description: Admin+. Validates and persists the authored `prEnv.devServer` config (and optional secret values) to the project record. Unlike preview/rum setup this touches no repo file — dev-server config lives in `projects.json` — so there is no git commit step. Secret values are stored encrypted; the config references them by name via `devServer.secretKeys`.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DevServerSetupApplyRequest"
+      responses:
+        "200":
+          description: Config persisted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerSetupApplyResponse"
+        "400":
+          description: devServer missing/invalid, or a `prEnv.devServer.<path>` validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardErrorResponse"
+  /api/projects/{projectId}/dev-server/wizard-complete:
+    post:
+      tags:
+        - Dev Server
+      summary: Signal Dev Server wizard completion
+      description: User+. Broadcasts `dev_server_wizard_complete` so the Settings panel refetches the project record after the wizard persists config.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Completion broadcast (idempotent).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevServerWizardOkResponse"
   /api/escalations:
     get:
       tags:

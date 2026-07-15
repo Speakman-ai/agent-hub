@@ -2471,6 +2471,21 @@ export default function App({ initialView }: any = {}) {
             new CustomEvent('agenthub:preview_wizard_complete', { detail: data }),
           );
           break;
+        // AI-assisted Dev Server (prEnv.devServer) setup wizard. The route
+        // spawns a session (`dev_server_wizard_started`) and the skill pings
+        // the completion endpoint after persisting config + secrets
+        // (`dev_server_wizard_complete`). DevServerSection listens for the
+        // completion event to reload the saved config.
+        case 'dev_server_wizard_started':
+          window.dispatchEvent(
+            new CustomEvent('agenthub:dev_server_wizard_started', { detail: data }),
+          );
+          break;
+        case 'dev_server_wizard_complete':
+          window.dispatchEvent(
+            new CustomEvent('agenthub:dev_server_wizard_complete', { detail: data }),
+          );
+          break;
         // AI-assisted Finalize Code Changes ci.yaml setup wizard.
         // `finalize_wizard_started` fires on POST .../finalize/setup-wizard;
         // `finalize_wizard_complete` after the skill calls wizard-complete.
@@ -5654,6 +5669,9 @@ export default function App({ initialView }: any = {}) {
                     <DevServerSection
                       projects={devServerScopedProjects}
                       onProjectsChange={refreshProjects}
+                      onOpenSession={({ sessionId, agentId }: any) =>
+                        focusAgentSession(agentId, sessionId)
+                      }
                     />
                   </div>
                 </div>

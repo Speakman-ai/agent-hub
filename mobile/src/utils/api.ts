@@ -223,6 +223,16 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ profile }),
     }),
+    // ── AI-assisted Dev Server (prEnv.devServer) setup wizard ──
+    getDevServerSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/dev-server/setup-draft`),
+    startDevServerWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/dev-server/setup-wizard`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    }),
+    completeDevServerWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/dev-server/wizard-complete`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    }),
     getRumSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/rum/setup-draft`),
     startRumWizard: (projectId: any, { maskAllText = false }: any = {}) => fetchJSON(`/projects/${projectId}/rum/setup-wizard`, {
         method: 'POST',

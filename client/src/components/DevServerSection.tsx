@@ -9,6 +9,7 @@ import {
   Network,
   Save,
   RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import {
@@ -38,7 +39,7 @@ const smallInputClass =
  * path, and ready timeout. Validation mirrors the server Zod schema so
  * bad input surfaces before the PATCH.
  */
-export default function DevServerSection({ projects = [], onProjectsChange }: any) {
+export default function DevServerSection({ projects = [], onProjectsChange, onOpenSession }: any) {
   const project = projects?.[0] || null;
   const projectId = project?.id || '';
 
@@ -55,6 +56,8 @@ export default function DevServerSection({ projects = [], onProjectsChange }: an
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [wizardStarting, setWizardStarting] = useState(false);
+  const [wizardError, setWizardError] = useState<string | null>(null);
 
   const projectRef = useRef(project);
   projectRef.current = project;
@@ -89,6 +92,44 @@ export default function DevServerSection({ projects = [], onProjectsChange }: an
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The Agent walkthrough persists prEnv.devServer + secrets server-side and
+  // pings wizard-complete; reload so the form reflects what the agent saved.
+  useEffect(() => {
+    const handler = (e: any) => {
+      const pid = e?.detail?.projectId;
+      if (pid && projectRef.current?.id === pid) {
+        void load();
+        if (typeof onProjectsChange === 'function') onProjectsChange();
+      }
+    };
+    window.addEventListener('agenthub:dev_server_wizard_complete', handler);
+    return () => window.removeEventListener('agenthub:dev_server_wizard_complete', handler);
+  }, [load, onProjectsChange]);
+
+  const handleStartWalkthrough = useCallback(async () => {
+    if (!project || wizardStarting) return;
+    setWizardStarting(true);
+    setWizardError(null);
+    try {
+      const res = await api.startDevServerWizard(project.id);
+      if (!res?.sessionId) {
+        setWizardError('Server did not return a wizard session id');
+        return;
+      }
+      if (typeof onOpenSession === 'function') {
+        onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
+      } else {
+        setWizardError(
+          `Walkthrough started (session ${res.sessionId}) — open it from the agent session list.`,
+        );
+      }
+    } catch (err: any) {
+      setWizardError(err?.message || 'Failed to start setup walkthrough');
+    } finally {
+      setWizardStarting(false);
+    }
+  }, [project, wizardStarting, onOpenSession]);
 
   const setField = (key: keyof DevServerForm, value: any) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -253,6 +294,20 @@ export default function DevServerSection({ projects = [], onProjectsChange }: an
         <div className="flex items-center gap-3 text-sm mt-3">
           <button
             type="button"
+            onClick={() => void handleStartWalkthrough()}
+            disabled={wizardStarting || !project}
+            className="flex items-center gap-1.5 text-xs bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-300 border border-emerald-700/40 rounded-lg px-3 py-1.5 disabled:opacity-50"
+            data-testid="dev-server-walkthrough"
+          >
+            {wizardStarting ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Sparkles size={13} />
+            )}
+            {wizardStarting ? 'Starting…' : 'Agent walkthrough'}
+          </button>
+          <button
+            type="button"
             onClick={() => void load()}
             disabled={loading || saving}
             className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
@@ -262,6 +317,19 @@ export default function DevServerSection({ projects = [], onProjectsChange }: an
             Reload
           </button>
         </div>
+        <p className="text-[11px] text-gray-500 mt-2 max-w-2xl">
+          Not sure what to fill in? <strong className="text-gray-300">Agent walkthrough</strong>{' '}
+          opens a guided chat session that scans the repo, confirms the start command, ports, and
+          env/secret split with you, and saves the config for you.
+        </p>
+        {wizardError && (
+          <p
+            className="text-xs text-red-400 flex items-center gap-2 mt-2"
+            data-testid="dev-server-walkthrough-error"
+          >
+            <AlertCircle size={13} /> {wizardError}
+          </p>
+        )}
       </div>
 
       {error && (

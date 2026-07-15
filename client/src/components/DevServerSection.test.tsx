@@ -9,6 +9,7 @@ import { SECRET_MASK } from '../utils/devServerConfig';
     getProjectSecrets: vi.fn(),
     putProjectSecrets: vi.fn(),
     updateProject: vi.fn(),
+    startDevServerWizard: vi.fn(),
   },
 }));
 
@@ -320,5 +321,33 @@ describe('DevServerSection', () => {
 
   it('references the MASK sentinel constant shared with the store', () => {
     expect(SECRET_MASK).toBe('••••••••');
+  });
+
+  describe('Agent walkthrough', () => {
+    it('starts the wizard and opens the spawned session', async () => {
+      (api.startDevServerWizard as any).mockResolvedValue({
+        sessionId: 'sess-9',
+        agentId: 'agent-9',
+      });
+      const onOpenSession = vi.fn();
+      render(<DevServerSection projects={[project]} onOpenSession={onOpenSession} />);
+
+      fireEvent.click(screen.getByTestId('dev-server-walkthrough'));
+
+      await waitFor(() => expect(api.startDevServerWizard).toHaveBeenCalledWith('proj-1'));
+      expect(onOpenSession).toHaveBeenCalledWith({ sessionId: 'sess-9', agentId: 'agent-9' });
+    });
+
+    it('surfaces an error when the wizard fails to start', async () => {
+      (api.startDevServerWizard as any).mockRejectedValue(new Error('no agents'));
+      render(<DevServerSection projects={[project]} onOpenSession={vi.fn()} />);
+
+      fireEvent.click(screen.getByTestId('dev-server-walkthrough'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('dev-server-walkthrough-error')).toBeInTheDocument(),
+      );
+      expect(screen.getByTestId('dev-server-walkthrough-error').textContent).toMatch(/no agents/);
+    });
   });
 });

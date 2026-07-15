@@ -668,6 +668,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // ── AI-assisted Dev Server (prEnv.devServer) setup wizard ────────
+  // Read-only repo scan: start-command candidates, package manager,
+  // monorepo layout, framework/port guesses, existing config. `{ projectId, draft }`.
+  getDevServerSetupDraft: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/dev-server/setup-draft`),
+  // Spawn the worktree-backed `[Dev Server Setup]` wizard session loaded with
+  // the `dev-server-setup` skill. Returns `{ sessionId, agentId, draft, session }`.
+  startDevServerWizard: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/dev-server/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  // Notify Settings that the Dev Server wizard finished persisting config.
+  completeDevServerWizard: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/dev-server/wizard-complete`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   // Finalize Code Changes — `.agent-hub/ci.yaml` setup wizard.
   // Spawns a guided chat session loaded with the `finalize-setup`
   // skill. Returns `{ sessionId, agentId, draft, session }`.

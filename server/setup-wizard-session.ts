@@ -19,6 +19,7 @@
  */
 export const SETUP_WIZARD_SESSION_PREFIXES = [
   '[Preview Setup]',
+  '[Dev Server Setup]',
   '[Finalize Setup]',
   '[RUM Setup]',
   '[Deploy Setup]',

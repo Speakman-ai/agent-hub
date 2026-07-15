@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { api } from '../../utils/api';
+import { useApp } from '../../context/AppContext';
 import { colors } from '../../theme/colors';
 import HubIcon from '../HubIcon';
 import {
@@ -141,8 +142,18 @@ export async function loadDevServerSecrets(
  * port map. Validation mirrors the server Zod schema so bad input surfaces
  * before the PATCH.
  */
-export default function DevServerSection({ project }: { project?: any }) {
+export default function DevServerSection({
+  project,
+  navigation,
+}: {
+  project?: any;
+  navigation?: any;
+}) {
   const projectId = project?.id || '';
+  const { setActiveAgentId, setActiveSessionId } = useApp();
+
+  const [wizardStarting, setWizardStarting] = useState(false);
+  const [wizardError, setWizardError] = useState<string | null>(null);
 
   const [form, setForm] = useState<DevServerForm>(() =>
     project ? devServerFormFromProject(project, []) : emptyDevServerForm(),
@@ -302,6 +313,30 @@ export default function DevServerSection({ project }: { project?: any }) {
     }
   };
 
+  // Spawn the guided dev-server-setup wizard session and jump into its chat,
+  // mirroring the web "Agent walkthrough" button and the mobile Finalize flow.
+  const handleStartWalkthrough = useCallback(async () => {
+    if (!project || wizardStarting) return;
+    setWizardStarting(true);
+    setWizardError(null);
+    try {
+      const res = await api.startDevServerWizard(project.id);
+      if (!res?.sessionId) {
+        setWizardError('Server did not return a wizard session id');
+        return;
+      }
+      if (res.agentId) setActiveAgentId(res.agentId);
+      setActiveSessionId(res.sessionId);
+      if (navigation && typeof navigation.navigate === 'function') {
+        navigation.navigate('Chat');
+      }
+    } catch (err: any) {
+      setWizardError(err?.message || 'Failed to start setup walkthrough');
+    } finally {
+      setWizardStarting(false);
+    }
+  }, [project, wizardStarting, navigation, setActiveAgentId, setActiveSessionId]);
+
   if (!project) {
     return <Text style={styles.emptyText}>No project selected.</Text>;
   }
@@ -317,6 +352,31 @@ export default function DevServerSection({ project }: { project?: any }) {
         session env. Non-secret env and referenced secrets are injected at spawn; mapped internal
         ports are exposed through the authenticated preview proxy.
       </Text>
+
+      <TouchableOpacity
+        onPress={() => void handleStartWalkthrough()}
+        disabled={wizardStarting}
+        style={[styles.walkthroughBtn, wizardStarting && styles.primaryBtnDisabled]}
+        accessibilityLabel="Start dev-server agent walkthrough"
+        testID="dev-server-walkthrough"
+      >
+        {wizardStarting ? (
+          <ActivityIndicator size="small" color={colors.emerald400} />
+        ) : (
+          <Text style={styles.walkthroughText}>✨ Agent walkthrough</Text>
+        )}
+      </TouchableOpacity>
+      <Text style={styles.hint}>
+        Not sure what to fill in? The agent walkthrough opens a guided chat that scans the repo,
+        confirms the start command, ports, and env/secret split, and saves the config for you.
+      </Text>
+      {wizardError && (
+        <View style={styles.errorBox}>
+          <Text style={styles.errorBoxText} accessibilityLabel="walkthrough error">
+            {wizardError}
+          </Text>
+        </View>
+      )}
 
       <TouchableOpacity
         onPress={() => void load()}
@@ -562,6 +622,17 @@ const styles = StyleSheet.create({
   sectionDesc: { fontSize: 12, color: colors.gray500, marginBottom: 12, lineHeight: 17 },
   reloadBtn: { alignSelf: 'flex-start', marginBottom: 12 },
   reloadText: { fontSize: 12, color: colors.gray400, textDecorationLine: 'underline' },
+  walkthroughBtn: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.emerald600,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 6,
+  },
+  walkthroughText: { fontSize: 13, color: colors.emerald400, fontWeight: '600' },
   card: {
     backgroundColor: colors.gray900,
     borderWidth: 1,

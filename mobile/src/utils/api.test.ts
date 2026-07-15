@@ -694,6 +694,27 @@ describe('api.startFinalizeWizard — Finalize setup parity with web client', ()
         expect(res).toEqual(payload);
     });
 });
+describe('api.startDevServerWizard — Dev Server setup parity with web client', () => {
+    it('POSTs /projects/:projectId/dev-server/setup-wizard with empty body', async () => {
+        await api.startDevServerWizard('agent-hub');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/dev-server/setup-wizard');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({});
+    });
+    it('getDevServerSetupDraft → GET /projects/:projectId/dev-server/setup-draft', async () => {
+        await api.getDevServerSetupDraft('agent-hub');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/dev-server/setup-draft');
+        expect(init?.method ?? 'GET').toBe('GET');
+    });
+    it('completeDevServerWizard → POST /projects/:projectId/dev-server/wizard-complete', async () => {
+        await api.completeDevServerWizard('agent-hub');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/dev-server/wizard-complete');
+        expect(init.method).toBe('POST');
+    });
+});
 describe('api.getHealth — drawer footer / mount-effect contract', () => {
     // DrawerContent mounts a useEffect that calls `api.getHealth()` to populate
     // the footer's server version/git hash. Guard the contract that effect relies
