@@ -24,6 +24,7 @@ import {
   emitFinalizeChecksRoundTimeline,
   runStepsSequence,
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
+  type FlakeRecoveredInstance,
   type StepPersistMeta,
   type StepResult,
   type StepRunResult,
@@ -115,32 +116,98 @@ export function minAcquireTimeoutMs(): number {
   return DEFAULT_MIN_ACQUIRE_TIMEOUT_MS;
 }
 
+/** Options for {@link runInstanceWithRetries}. */
+export interface InstanceRetryPolicy {
+  /**
+   * Total attempts allowed for a TRANSIENT `infra_error` (Spot reclaim, lost
+   * agent, `runner_cancelled` collateral). Defaults to
+   * {@link MAX_INSTANCE_INFRA_ATTEMPTS}. Each attempt re-acquires a fresh lease.
+   */
+  maxInfraAttempts?: number;
+  /**
+   * Extra re-runs allowed for a GENUINE test `failure` on the SAME commit
+   * (config-driven `retries:` — flaky-test tolerance). `0` disables. A
+   * `timeout` is never retried here (time-class), and infra collateral uses
+   * `maxInfraAttempts` instead.
+   */
+  maxFailureRetries?: number;
+  /** Called before each infra re-run with the 1-based re-run count + detail. */
+  onInfraRetry?: (rerun: number, detail: string | undefined) => void;
+  /** Called before each failure re-run with the 1-based re-run count + detail. */
+  onFailureRetry?: (rerun: number, detail: string | undefined) => void;
+}
+
 /**
- * Re-run a job instance only on `infra_error`. Each attempt re-acquires a new
- * lease (new agent, fresh DinD) and re-runs all the instance's steps from the
- * start — CI steps aren't resume-able mid-job. A real test `failure` or a
- * genuine `timeout` is NEVER retried; re-running those would just loop.
+ * Re-run a job instance across two independent, bounded retry classes. Each
+ * attempt re-acquires a new lease (new agent, fresh DinD) and re-runs ALL the
+ * instance's steps from the start — CI steps aren't resume-able mid-job.
+ *
+ *   - **infra** (`infra_error`, transient): a Spot reclaim / lost agent /
+ *     `runner_cancelled` collateral is re-run on a fresh agent, up to
+ *     `maxInfraAttempts` TOTAL attempts. A DETERMINISTIC reason (e.g.
+ *     `worktree_bundle_failed`, which classifies CI-class) recurs identically,
+ *     so it short-circuits immediately.
+ *   - **failure** (`failure`, genuine red): re-run on the SAME commit up to
+ *     `maxFailureRetries` extra times (config-driven `retries:`). This is the
+ *     flaky-test path — a test that passes on a later run makes the shard green
+ *     without any code change. A `timeout` is time-class and never retried.
+ *
+ * The two budgets are counted separately, so a shard that flaps infra then
+ * fails a real test still gets its full failure-retry allowance.
+ */
+export async function runInstanceWithRetries(
+  runOnce: () => Promise<JobInstanceOutcome>,
+  policy: InstanceRetryPolicy = {},
+): Promise<JobInstanceOutcome> {
+  const maxInfraAttempts = policy.maxInfraAttempts ?? MAX_INSTANCE_INFRA_ATTEMPTS;
+  const maxInfraReruns = Math.max(0, maxInfraAttempts - 1);
+  const maxFailureRetries = Math.max(0, policy.maxFailureRetries ?? 0);
+  let infraReruns = 0;
+  let failureReruns = 0;
+  let outcome!: JobInstanceOutcome;
+  for (;;) {
+    outcome = await runOnce();
+    const status = outcome.result.status;
+    if (status === 'success') break;
+    const reason = outcome.result.failureReason;
+    const detail = outcome.result.infraErrorDetail;
+    if (status === 'infra_error') {
+      // Only re-run TRANSIENT infra failures; a deterministic (CI-class) reason
+      // recurs on a fresh agent, so retrying just burns attempts.
+      const isDeterministic = !!reason && classifyFailureReason(reason) !== 'infra';
+      if (!isDeterministic && infraReruns < maxInfraReruns) {
+        infraReruns += 1;
+        policy.onInfraRetry?.(infraReruns, detail);
+        continue;
+      }
+      break;
+    }
+    // Config-driven flaky-test retry: a genuine `failure` re-runs the whole
+    // shard on the SAME commit. `timeout` deliberately falls through to break.
+    if (status === 'failure' && failureReruns < maxFailureRetries) {
+      failureReruns += 1;
+      policy.onFailureRetry?.(failureReruns, outcome.result.failedStep?.name ?? detail);
+      continue;
+    }
+    break;
+  }
+  return outcome;
+}
+
+/**
+ * Back-compat wrapper: infra-only retry (no config failure retries). Kept for
+ * callers/tests that only exercise the transient-infra path.
  */
 export async function runInstanceWithInfraRetry(
   runOnce: () => Promise<JobInstanceOutcome>,
   maxAttempts: number = MAX_INSTANCE_INFRA_ATTEMPTS,
   onRetry?: (attempt: number, detail: string | undefined) => void,
 ): Promise<JobInstanceOutcome> {
-  let outcome!: JobInstanceOutcome;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    outcome = await runOnce();
-    // Only re-run TRANSIENT infra failures. A deterministic reason (e.g.
-    // `worktree_bundle_failed`, which classifies CI-class) recurs identically on
-    // a fresh agent, so retrying just burns attempts — break out immediately.
-    const reason = outcome.result.failureReason;
-    const isDeterministic = !!reason && classifyFailureReason(reason) !== 'infra';
-    if (outcome.result.status === 'infra_error' && !isDeterministic && attempt < maxAttempts) {
-      onRetry?.(attempt, outcome.result.infraErrorDetail);
-      continue;
-    }
-    break;
-  }
-  return outcome;
+  return runInstanceWithRetries(runOnce, {
+    maxInfraAttempts: maxAttempts,
+    maxFailureRetries: 0,
+    ...(onRetry ? { onInfraRetry: onRetry } : {}),
+  });
 }
 
 /**
@@ -743,6 +810,10 @@ export async function runJobPhase(
   const budgetStartedAt = now();
   const concurrency = readMaxParallelJobs();
   const failFastCancelledJobs = new Set<string>();
+  // Shards that failed a genuine test then PASSED on a same-commit `retries:`
+  // rerun this phase. Surfaced on the phase result so the orchestrator can fold
+  // them into the flake gate (a red→green retry must not auto-push as clean).
+  const flakeRecoveredInstances: FlakeRecoveredInstance[] = [];
 
   const markSkipped = (instance: JobInstance): JobInstanceOutcome => {
     persistJobState(
@@ -771,15 +842,38 @@ export async function runJobPhase(
       return markSkipped(instance);
     }
 
-    const outcome = await runInstanceWithInfraRetry(
+    let failureRerunCount = 0;
+    const outcome = await runInstanceWithRetries(
       () => runJobInstance(deps, opts, instance, planned, budgetStartedAt, budgetMs, now),
-      MAX_INSTANCE_INFRA_ATTEMPTS,
-      (attempt, detail) =>
-        console.warn(
-          `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} infra_error on attempt ` +
-            `${attempt}/${MAX_INSTANCE_INFRA_ATTEMPTS} (${detail ?? 'runner lost'}) — retrying on a fresh agent`,
-        ),
+      {
+        maxInfraAttempts: MAX_INSTANCE_INFRA_ATTEMPTS,
+        maxFailureRetries: instance.retries,
+        onInfraRetry: (rerun, detail) =>
+          console.warn(
+            `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} infra_error on attempt ` +
+              `${rerun}/${MAX_INSTANCE_INFRA_ATTEMPTS} (${detail ?? 'runner lost'}) — retrying on a fresh agent`,
+          ),
+        onFailureRetry: (rerun, detail) => {
+          failureRerunCount = rerun;
+          console.warn(
+            `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} test failure — ` +
+              `rerun ${rerun}/${instance.retries} on the same commit ` +
+              `(no code change; flaky-test retry${detail ? `, step: ${detail}` : ''})`,
+          );
+        },
+      },
     );
+
+    // Passed only after a same-commit failure rerun → a recovered flake. Record
+    // it so the orchestrator's flake gate withholds auto-push (the retry made
+    // the round green, but the flake still happened and must not be laundered).
+    if (outcome.result.status === 'success' && failureRerunCount > 0) {
+      flakeRecoveredInstances.push({
+        jobId: instance.jobId,
+        matrixKey: instance.matrixKey,
+        failureCount: failureRerunCount,
+      });
+    }
 
     if (outcome.result.status !== 'success' && instance.failFast) {
       failFastCancelledJobs.add(instance.jobId);
@@ -883,7 +977,7 @@ export async function runJobPhase(
   }
 
   emitFinalizeChecksRoundTimeline(deps, { runId: opts.runId, sessionId: opts.sessionId });
-  return result;
+  return flakeRecoveredInstances.length > 0 ? { ...result, flakeRecoveredInstances } : result;
 }
 
 export { readMaxParallelJobs, sanitizeComposeProjectName };

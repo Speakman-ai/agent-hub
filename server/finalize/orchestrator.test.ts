@@ -602,6 +602,76 @@ describe('runFinalize — split modes', () => {
     expect(stmts.stmts.setFinalizeRunFlakeRecoveredJobs.run).toHaveBeenCalled();
   });
 
+  it('withholds auto-push when a v2 shard recovered a flake via same-commit config retry', async () => {
+    // Reviewer regression: a shard that fails a genuine test then PASSES on a
+    // same-commit `retries:` rerun makes the round green, but that recovery is
+    // invisible to the cross-round attempt history (the retry overwrote the job
+    // state to `passed`). Without folding the intra-phase signal into the gate,
+    // the run would auto-push as clean — laundering the flake. The gate must be
+    // flake_recovered so automation is withheld.
+    const ciV2 = {
+      ok: true as const,
+      config: {
+        version: 2 as const,
+        on: ['finalize'] as ['finalize'],
+        timeoutMinutes: 45,
+        jobs: {
+          server: {
+            runsOn: 'ubuntu-24.04',
+            failFast: false,
+            warmup: false,
+            needs: [],
+            retries: 2,
+            matrixInclude: [{}],
+            steps: [{ name: 't', run: 'npm test' }],
+          },
+        },
+      },
+    };
+    const { deps, stmts } = makeDeps({
+      loadCiConfigFromFile: vi.fn().mockResolvedValue(ciV2) as never,
+      // Green phase, but one shard only passed after a config-retry rerun.
+      runJobPhase: vi.fn().mockResolvedValue({
+        status: 'success',
+        stepResults: [],
+        activeSecondsBilled: 5,
+        flakeRecoveredInstances: [{ jobId: 'server', matrixKey: '', failureCount: 1 }],
+      }) as never,
+    });
+    // A CLEAN cross-round history (one passed attempt) so classifyRunFlakeRecovery
+    // itself returns `clean` — the intra-phase recovery is the ONLY flake signal.
+    (stmts.stmts.listFinalizeRunJobAttemptsForRun as unknown as { all: () => unknown }).all =
+      () => [
+        {
+          job_id: 'server',
+          matrix_key: '',
+          round: 1,
+          state: 'passed',
+          exit_code: 0,
+          head_sha: 'sha',
+        },
+      ];
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+
+    // Run parks (a human may still push); it must NOT terminate.
+    expect(result.kind).toBe('ready_to_push');
+    // The gate persisted a NON-null flake_recovered verdict → auto-push withheld.
+    const calls = (
+      stmts.stmts.setFinalizeRunFlakeRecoveredJobs.run as unknown as {
+        mock: { calls: unknown[][] };
+      }
+    ).mock.calls;
+    const serialized = calls[calls.length - 1][0] as string | null;
+    expect(serialized).not.toBeNull();
+    const gate = JSON.parse(serialized as string) as {
+      status: string;
+      jobs: Array<{ jobId: string }>;
+    };
+    expect(gate.status).toBe('flake_recovered');
+    expect(gate.jobs.map((j) => j.jobId)).toContain('server');
+  });
+
   it('checks mode still dispatches a fix when the tasks phase fails', async () => {
     const failingSteps = fakeRunSteps({
       status: 'failure',
@@ -1679,25 +1749,26 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
     }
   });
 
-  it('fails fast with fix_no_progress when a fix dispatch does not advance HEAD', async () => {
-    // The exact production trap (session b8dc59b7): the fixer's commits
-    // land on a DIFFERENT branch than the one finalize tracks, so the
-    // post-rebase HEAD never moves. Every round reproduces the identical
-    // failure. The no-progress guard must catch this at round 2 instead
-    // of spinning to MAX_FIX_DISPATCH_LOOPS and burning the budget.
-    const failedSteps: StepRunResult = {
-      status: 'failure',
-      stepResults: [],
-      activeSecondsBilled: 1,
-      failedStep: {
-        index: 1,
-        name: 'Test',
-        run: 'npm test',
-        exitCode: 1,
-        outputTail: ['still failing'],
-      },
-    };
-    const runSteps = fakeRunSteps(failedSteps);
+  const FROZEN_FAILED_STEPS: StepRunResult = {
+    status: 'failure',
+    stepResults: [],
+    activeSecondsBilled: 1,
+    failedStep: {
+      index: 1,
+      name: 'Test',
+      run: 'npm test',
+      exitCode: 1,
+      outputTail: ['still failing'],
+    },
+  };
+
+  it('allows one same-SHA rerun then terminates fix_no_progress (default budget)', async () => {
+    // The exact production trap (session b8dc59b7): the fixer's commits land on
+    // a DIFFERENT branch than the one finalize tracks, so the post-rebase HEAD
+    // never moves. A transient/flaky failure that left HEAD unchanged now gets
+    // ONE bounded same-SHA rerun (DEFAULT_MAX_SAME_SHA_RERUNS=1) before the
+    // guard terminates — it must NOT spin to MAX_FIX_DISPATCH_LOOPS.
+    const runSteps = fakeRunSteps(FROZEN_FAILED_STEPS);
     // resolveHead returns the SAME sha every call → HEAD never advances.
     const resolveHead = vi
       .fn<(...args: unknown[]) => Promise<string>>()
@@ -1715,12 +1786,43 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
       expect(result.failureReason).toBe('fix_no_progress');
       expect(result.failureReason).not.toBe('max_fix_iterations');
       expect(result.detail).toContain(baseOpts().branch);
+      expect(result.detail).toContain('same-SHA rerun');
     }
-    // Round 1: steps run + fix dispatched. Round 2: rebase runs, the
-    // guard fires BEFORE steps re-run. So exactly one of each.
-    expect(runSteps).toHaveBeenCalledTimes(1);
-    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
-    expect(deps.runRebasePhase).toHaveBeenCalledTimes(2);
+    // Round 1: steps run + fix. Round 2: HEAD unchanged → 1 same-SHA rerun
+    // (steps run again) + fix. Round 3: budget spent → guard terminates before
+    // steps re-run. So 2 step runs, 2 fix dispatches, 3 rebases — bounded.
+    expect(runSteps).toHaveBeenCalledTimes(2);
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(2);
+    expect(deps.runRebasePhase).toHaveBeenCalledTimes(3);
+  });
+
+  it('FINALIZE_MAX_SAME_SHA_RERUNS=0 restores strict immediate fix_no_progress', async () => {
+    const prev = process.env.FINALIZE_MAX_SAME_SHA_RERUNS;
+    process.env.FINALIZE_MAX_SAME_SHA_RERUNS = '0';
+    try {
+      const runSteps = fakeRunSteps(FROZEN_FAILED_STEPS);
+      const resolveHead = vi
+        .fn<(...args: unknown[]) => Promise<string>>()
+        .mockResolvedValue('frozen-sha');
+      const { deps } = makeDeps({
+        runStepPhase: runSteps,
+        resolveHeadSha: resolveHead,
+        budgetSeconds: 999_999_999,
+      });
+
+      const result = await runFinalize(deps, baseOpts());
+      expect(result.kind).toBe('failed');
+      if (result.kind === 'failed') {
+        expect(result.failureReason).toBe('fix_no_progress');
+      }
+      // No rerun budget → the guard fires at round 2 before steps re-run.
+      expect(runSteps).toHaveBeenCalledTimes(1);
+      expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
+      expect(deps.runRebasePhase).toHaveBeenCalledTimes(2);
+    } finally {
+      if (prev === undefined) delete process.env.FINALIZE_MAX_SAME_SHA_RERUNS;
+      else process.env.FINALIZE_MAX_SAME_SHA_RERUNS = prev;
+    }
   });
 });
 

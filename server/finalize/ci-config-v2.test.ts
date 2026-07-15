@@ -3,8 +3,10 @@ import { parseCiConfig } from './ci-config.js';
 import {
   applyEnvToStep,
   buildFinalizeBuiltinEnv,
+  DEFAULT_JOB_RETRIES,
   expandJobInstances,
   matrixKeyFromRow,
+  resolveDefaultJobRetries,
   resolveDefaultMatrixFailFast,
   substituteEnvString,
 } from './ci-config-v2.js';
@@ -441,5 +443,126 @@ ${stepTail}
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe('invalid_step_timeout_v2');
+  });
+});
+
+describe('ci-config-v2 job retries', () => {
+  const jobCfg = (retriesLine = ''): string => `
+version: 2
+on: [finalize]
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+${retriesLine ? `    ${retriesLine}\n` : ''}    steps:
+      - name: Test
+        run: npm test
+`;
+
+  it('defaults job.retries to 2 when the key is omitted', () => {
+    const r = parseCiConfig(jobCfg());
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 2) return;
+    expect(r.config.jobs.backend.retries).toBe(2);
+  });
+
+  it('accepts an explicit retries value', () => {
+    const r = parseCiConfig(jobCfg('retries: 4'));
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 2) return;
+    expect(r.config.jobs.backend.retries).toBe(4);
+  });
+
+  it('accepts retries: 0 to disable flaky-test reruns', () => {
+    const r = parseCiConfig(jobCfg('retries: 0'));
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 2) return;
+    expect(r.config.jobs.backend.retries).toBe(0);
+  });
+
+  it.each([
+    ['retries: -1', 'negative'],
+    ['retries: 1.5', 'non-integer'],
+    ['retries: 11', 'above the max'],
+    ["retries: 'two'", 'a string'],
+    ['retries: true', 'a boolean'],
+  ])('rejects %s (%s) with invalid_retries', (line) => {
+    const r = parseCiConfig(jobCfg(line));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('invalid_retries');
+  });
+
+  it('defaults a WARMUP job to retries 0 (setup is not flaky-test work)', () => {
+    const r = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  prepare:
+    runs-on: host
+    warmup: true
+    steps:
+      - run: build-images
+`);
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 2) return;
+    expect(r.config.jobs.prepare.retries).toBe(0);
+  });
+
+  it('honors an explicit retries value on a warmup job (opt-in)', () => {
+    const r = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  prepare:
+    runs-on: host
+    warmup: true
+    retries: 3
+    steps:
+      - run: build-images
+`);
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 2) return;
+    expect(r.config.jobs.prepare.retries).toBe(3);
+  });
+
+  it('threads job.retries onto every expanded matrix instance', () => {
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    retries: 3
+    matrix:
+      include:
+        - group: A
+        - group: B
+    steps:
+      - run: echo test
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+    const builtins = buildFinalizeBuiltinEnv({ branch: 'feat/x', headSha: 'abc123' });
+    const instances = expandJobInstances(parsed.config, builtins);
+    expect(instances).toHaveLength(2);
+    expect(instances.map((i) => i.retries)).toEqual([3, 3]);
+  });
+
+  it('resolveDefaultJobRetries honors a valid FINALIZE_JOB_RETRIES_DEFAULT override', () => {
+    const prev = process.env.FINALIZE_JOB_RETRIES_DEFAULT;
+    try {
+      process.env.FINALIZE_JOB_RETRIES_DEFAULT = '0';
+      expect(resolveDefaultJobRetries()).toBe(0);
+      process.env.FINALIZE_JOB_RETRIES_DEFAULT = '5';
+      expect(resolveDefaultJobRetries()).toBe(5);
+      // Invalid values fall back to the constant default.
+      process.env.FINALIZE_JOB_RETRIES_DEFAULT = 'garbage';
+      expect(resolveDefaultJobRetries()).toBe(DEFAULT_JOB_RETRIES);
+      process.env.FINALIZE_JOB_RETRIES_DEFAULT = '-2';
+      expect(resolveDefaultJobRetries()).toBe(DEFAULT_JOB_RETRIES);
+    } finally {
+      if (prev === undefined) delete process.env.FINALIZE_JOB_RETRIES_DEFAULT;
+      else process.env.FINALIZE_JOB_RETRIES_DEFAULT = prev;
+    }
   });
 });

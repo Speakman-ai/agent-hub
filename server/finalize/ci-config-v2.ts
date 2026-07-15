@@ -61,8 +61,49 @@ export interface CiJobV2 {
    * fall back to the coarse "any code change counts as a fix" heuristic.
    */
   paths?: string[];
+  /**
+   * How many extra times a FAILED shard (job instance) is re-run within the
+   * same checks phase before its failure is reported. The shard command is
+   * re-executed from the start on the SAME commit (no code change between
+   * runs), so this recovers a flaky test that passes on a subsequent run
+   * (GHA/Playwright/Jest `retries` parity). Only a genuine test `failure` is
+   * retried — an infra `runner_cancelled` / `spot_reclaimed` collateral has
+   * its own transient retry (see job-runner.ts), and a `timeout` is never
+   * retried. `retries: 0` disables.
+   *
+   * Default when the key is omitted: {@link DEFAULT_JOB_RETRIES} (2) for a
+   * normal job, overridable with `FINALIZE_JOB_RETRIES_DEFAULT`. A **warmup**
+   * job defaults to **0** — warmup runs one-shot setup/preparation (build
+   * images, seed the DB, warm the cache), not tests, so silently re-running a
+   * failed setup command is not flaky-test tolerance and would change failure
+   * semantics for non-test work. An explicit `retries:` on a warmup job is
+   * still honored if an operator genuinely wants it.
+   */
+  retries: number;
   env?: Record<string, string>;
   steps: CiStepV2[];
+}
+
+/**
+ * Default per-job `retries` when a job omits the key. Config-driven flaky-test
+ * tolerance is opt-out (default 2), so a shard that fails on a flaky test is
+ * re-run up to twice on the same commit before the round is reported red.
+ * Override globally with `FINALIZE_JOB_RETRIES_DEFAULT` (a non-negative
+ * integer; anything invalid falls back to this constant).
+ */
+export const DEFAULT_JOB_RETRIES = 2;
+
+/** Hard ceiling on `retries` — a typo like `retries: 999` can't loop a shard forever. */
+export const MAX_JOB_RETRIES = 10;
+
+/** Resolve the fallback `retries` used when a job omits the key. */
+export function resolveDefaultJobRetries(): number {
+  const raw = process.env.FINALIZE_JOB_RETRIES_DEFAULT?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0 && String(n) === raw) return Math.min(MAX_JOB_RETRIES, n);
+  }
+  return DEFAULT_JOB_RETRIES;
 }
 
 export interface CiConfigV2 {
@@ -83,6 +124,8 @@ export interface JobInstance {
   warmup: boolean;
   /** Job ids that must complete successfully before this instance runs. */
   needs: string[];
+  /** Extra same-commit re-runs of this shard on a genuine test failure (see CiJobV2.retries). */
+  retries: number;
   steps: CiStepV2[];
   /** Merged env: top + job + matrix builtins (not step env). */
   env: Record<string, string>;
@@ -95,6 +138,7 @@ const V2_JOB_KEYS = new Set([
   'warmup',
   'needs',
   'paths',
+  'retries',
   'matrix',
   'env',
   'steps',
@@ -118,6 +162,7 @@ export type CiConfigV2ErrorCode =
   | 'invalid_warmup'
   | 'invalid_needs'
   | 'invalid_paths'
+  | 'invalid_retries'
   | 'unknown_needs_job'
   | 'cyclic_needs'
   | 'unknown_top_level_key_v2'
@@ -430,6 +475,28 @@ function parseJob(
     const cleaned = [...new Set(rawPaths.map((p) => (p as string).trim()))];
     if (cleaned.length > 0) paths = cleaned;
   }
+  // Warmup jobs run one-shot setup, not tests: default them to 0 reruns so a
+  // failed prepare step isn't silently re-run as if it were a flaky test. An
+  // explicit `retries:` below still wins for a warmup job that opts in.
+  let retries = warmup ? 0 : resolveDefaultJobRetries();
+  if ('retries' in jobObj && jobObj.retries !== null && jobObj.retries !== undefined) {
+    const rawRetries = jobObj.retries;
+    if (
+      typeof rawRetries !== 'number' ||
+      !Number.isInteger(rawRetries) ||
+      rawRetries < 0 ||
+      rawRetries > MAX_JOB_RETRIES
+    ) {
+      return err(
+        'invalid_retries',
+        `'${jobPath}.retries' must be an integer between 0 and ${MAX_JOB_RETRIES}; got ${describeValue(
+          rawRetries,
+        )}.`,
+        `${jobPath}.retries`,
+      );
+    }
+    retries = rawRetries;
+  }
   const matrixParsed = parseMatrixInclude(jobObj.matrix, jobPath);
   if (!matrixParsed.ok) return matrixParsed;
   let jobEnv: Record<string, string> | undefined;
@@ -450,6 +517,7 @@ function parseJob(
       failFast,
       warmup,
       needs,
+      retries,
       matrixInclude: matrixParsed.include,
       ...(paths ? { paths } : {}),
       ...(jobEnv ? { env: jobEnv } : {}),
@@ -635,6 +703,7 @@ export function expandJobInstances(
         failFast: job.failFast,
         warmup: job.warmup,
         needs: job.needs,
+        retries: job.retries,
         steps: job.steps,
         env,
       });

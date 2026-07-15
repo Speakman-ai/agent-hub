@@ -787,6 +787,10 @@ on: [finalize]
 jobs:
   prepare:
     runs-on: host
+    # retries: 0 keeps this skip-cascade test focused on dependency semantics —
+    # the failing prepare shard should NOT be re-run by the flaky-test retry
+    # default here (that behavior is covered in job-runner-failure-retry.test.ts).
+    retries: 0
     steps:
       - run: prepare-cmd
   e2e:
@@ -809,6 +813,82 @@ jobs:
 
     expect(result.status).not.toBe('success');
     expect(order).toEqual(['prepare-cmd']); // e2e never ran
+  });
+
+  it('surfaces a shard that failed then passed on a config-retry as a recovered flake', async () => {
+    // Shard fails its test the FIRST time (exit 1), passes on the same-commit
+    // retry (exit 0). The phase is green, but the recovery must be reported in
+    // `flakeRecoveredInstances` so the orchestrator's flake gate can withhold
+    // auto-push instead of laundering the flake into a clean merge.
+    let attempts = 0;
+    const spawnStep: SpawnStepFn = ({ step }) => {
+      const code = step.run === 'flaky-cmd' ? (attempts++ === 0 ? 1 : 0) : 0;
+      const child: SpawnedStep = {
+        stdout: null,
+        stderr: null,
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
+          if (event === 'close')
+            queueMicrotask(() => (listener as (c: number | null) => void)(code));
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      return child;
+    };
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  server:
+    runs-on: host
+    retries: 2
+    steps:
+      - run: flaky-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(vi.fn(spawnStep)), {
+      runId: 'flake-recover-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success'); // green after the retry
+    expect(attempts).toBe(2); // initial fail + one rerun
+    expect(result.flakeRecoveredInstances).toEqual([
+      { jobId: 'server', matrixKey: '', failureCount: 1 },
+    ]);
+  });
+
+  it('does not report flakeRecoveredInstances when a shard passes first try', async () => {
+    const spawnStep = vi.fn(makeFakeSpawnStep(() => {}));
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  server:
+    runs-on: host
+    steps:
+      - run: clean-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(spawnStep), {
+      runId: 'clean-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.flakeRecoveredInstances).toBeUndefined();
   });
 
   it('persists every planned step as queued up front (pending display)', async () => {

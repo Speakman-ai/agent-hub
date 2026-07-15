@@ -116,7 +116,13 @@ import {
   type TimelineMessageDeps,
 } from './timeline-message.js';
 import { classifyRunFlakeRecovery, recordJobAttemptsForRound } from './flake-gate.js';
-import { blockedGateResult, serializeFlakeGate, type FlakeGateResult } from './flake-recovery.js';
+import {
+  blockedGateResult,
+  serializeFlakeGate,
+  withIntraPhaseFlakeRecovered,
+  type FlakeGateResult,
+} from './flake-recovery.js';
+import type { FlakeRecoveredInstance } from './step-runner.js';
 import { loadActiveQuarantine, recordRunTestHistory } from './quarantine-gate.js';
 import { applyQuarantineToGate, describeExcused } from './quarantine.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
@@ -159,6 +165,37 @@ function notifyReadyToPushAutomationHook(
  * a healthy run almost never exceeds 5 loops.
  */
 export const MAX_FIX_DISPATCH_LOOPS = 50;
+
+/**
+ * How many times the fix-dispatch loop may re-run checks at the SAME post-rebase
+ * HEAD before giving up with `fix_no_progress`.
+ *
+ * Historically an unchanged HEAD after a fix dispatch was terminal — the fixer
+ * landed no commit, so re-running checks "would reproduce the identical
+ * result." That's true for a DETERMINISTIC red, but a transient / flaky failure
+ * (a context-cancel that slipped the infra classifier, a Spot reclaim, an
+ * order-dependent test) can pass on a plain re-run with no code change. So we
+ * allow a small, bounded number of same-SHA reruns first — enough to shake out
+ * a flake, few enough that a genuinely stuck run (fixer committing to the wrong
+ * branch, a real red) still terminates quickly instead of livelocking.
+ *
+ * A same-SHA rerun that goes green is still fail→pass with no intervening
+ * commit, so the flake gate classifies it `flake_recovered` and WITHHOLDS
+ * auto-push — the recovery is surfaced, not silently laundered.
+ *
+ * Override with `FINALIZE_MAX_SAME_SHA_RERUNS` (non-negative integer; `0`
+ * restores the strict "unchanged HEAD is immediately terminal" behavior).
+ */
+export const DEFAULT_MAX_SAME_SHA_RERUNS = 1;
+
+export function resolveMaxSameShaReruns(): number {
+  const raw = process.env.FINALIZE_MAX_SAME_SHA_RERUNS?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0 && String(n) === raw) return n;
+  }
+  return DEFAULT_MAX_SAME_SHA_RERUNS;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -812,6 +849,11 @@ export async function runFinalize(
     // this guard with an unchanged HEAD: it only fires when HEAD MOVED,
     // so the next snapshot necessarily differs.
     let prevValidatedHead: string | null = null;
+    // §6 no-progress reruns: how many same-SHA reruns we've already spent this
+    // streak. Reset to 0 whenever HEAD advances (a real commit landed). Bounds
+    // the relaxed fix_no_progress path so a stuck run can't livelock.
+    const maxSameShaReruns = resolveMaxSameShaReruns();
+    let sameShaRerunsUsed = 0;
     // Flake gate (fail-closed): set to false the moment any round's per-round
     // job-attempt history fails to persist. Without complete history, the
     // classifier can't tell a real fix from a laundered flake, so the gate must
@@ -822,6 +864,13 @@ export async function runFinalize(
     // absence fails the gate closed; a review-only run never ran jobs and has
     // nothing to classify.
     let ranV2Jobs = false;
+    // Intra-phase recovered flakes accumulated across every round: a shard that
+    // failed a genuine test then passed on a same-commit `retries:` rerun. These
+    // never appear as a failed row in the per-round attempt history (the retry
+    // overwrote the job state to `passed`), so we fold them into the flake gate
+    // at the push step — a red→green config retry must not launder to auto-push.
+    // Keyed by "jobId matrixKey"; the highest observed failure count wins.
+    const intraPhaseFlakeRecovered = new Map<string, FlakeRecoveredInstance>();
 
     while (loopCount < MAX_FIX_DISPATCH_LOOPS) {
       loopCount += 1;
@@ -1018,22 +1067,45 @@ export async function runFinalize(
       // branch so the operator can see the fixer committed to the wrong
       // branch (or not at all).
       if (prevValidatedHead !== null && headValidatedAgainst === prevValidatedHead) {
-        trace('terminal', {
-          result: 'fix_no_progress',
-          round: loopCount,
-          head: headValidatedAgainst,
-        });
-        return terminate(
-          deps,
-          runId,
-          'failed',
-          'fix_no_progress',
-          `fix dispatch ended without advancing HEAD on '${opts.branch}' ` +
-            `(still ${headValidatedAgainst}) — re-running checks would reproduce ` +
-            `the same result. The fixer may have committed to a different branch ` +
-            `or made no commit.`,
-          log,
-        );
+        // HEAD did not advance since the previous round — no code change. Give a
+        // transient/flaky failure a bounded number of same-SHA reruns before
+        // giving up, then terminate to avoid livelocking on a genuine red.
+        if (sameShaRerunsUsed < maxSameShaReruns) {
+          sameShaRerunsUsed += 1;
+          trace('same_sha_rerun', {
+            round: loopCount,
+            used: sameShaRerunsUsed,
+            max: maxSameShaReruns,
+            head: headValidatedAgainst,
+          });
+          log(
+            `[finalize-orchestrator] no code change since last round at ${headValidatedAgainst} — ` +
+              `rerun ${sameShaRerunsUsed}/${maxSameShaReruns} (flaky/transient retry) for run=${runId}`,
+          );
+          // fall through to re-run checks at the same HEAD.
+        } else {
+          trace('terminal', {
+            result: 'fix_no_progress',
+            round: loopCount,
+            head: headValidatedAgainst,
+          });
+          return terminate(
+            deps,
+            runId,
+            'failed',
+            'fix_no_progress',
+            `fix dispatch ended without advancing HEAD on '${opts.branch}' ` +
+              `(still ${headValidatedAgainst}) after ${sameShaRerunsUsed} same-SHA rerun` +
+              `${sameShaRerunsUsed === 1 ? '' : 's'} — re-running checks keeps reproducing ` +
+              `the same result. The fixer may have committed to a different branch ` +
+              `or made no commit.`,
+            log,
+          );
+        }
+      } else {
+        // HEAD advanced (or this is the first round) — a real commit landed, so
+        // the flaky-rerun budget resets for the new tree.
+        sameShaRerunsUsed = 0;
       }
       prevValidatedHead = headValidatedAgainst;
 
@@ -1303,6 +1375,17 @@ export async function runFinalize(
         // v1 sequential steps have no job concept to track.
         if (parsedCi.version === 2) {
           ranV2Jobs = true;
+          // Capture any shard that recovered a genuine test failure via a
+          // same-commit config `retries:` rerun this round. These are invisible
+          // to the per-round attempt history below (their final state is
+          // `passed`), so accumulate them for the flake gate at the push step.
+          for (const inst of lastStepOutcome.flakeRecoveredInstances ?? []) {
+            const key = `${inst.jobId} ${inst.matrixKey}`;
+            const prev = intraPhaseFlakeRecovered.get(key);
+            if (!prev || inst.failureCount > prev.failureCount) {
+              intraPhaseFlakeRecovered.set(key, inst);
+            }
+          }
           const persisted = recordJobAttemptsForRound(
             { stmts: deps.stmts, now, log },
             { runId, round: loopCount, headSha: headValidatedAgainst },
@@ -1498,6 +1581,32 @@ export async function runFinalize(
           const msg = err instanceof Error ? err.message : String(err);
           log(`[finalize-orchestrator] flake-recovery classification threw run=${runId}: ${msg}`);
           gate = blockedGateResult(`flake classification threw: ${msg}`);
+        }
+        // Fold in intra-phase recovered flakes (a shard that passed only on a
+        // same-commit `retries:` rerun). The cross-round classifier can't see
+        // these — the retry left only a `passed` row — so without this a
+        // config-retry recovery would auto-push as clean, reopening the
+        // flake-laundering path. Merged BEFORE quarantine so a known-flaky shard
+        // can still be excused, exactly like a cross-round flake.
+        if (intraPhaseFlakeRecovered.size > 0) {
+          const before = gate.status;
+          gate = withIntraPhaseFlakeRecovered(gate, [...intraPhaseFlakeRecovered.values()]);
+          if (gate.status !== before) {
+            trace('intra_phase_flake_recovered', {
+              round: loopCount,
+              status: gate.status,
+              instances: [...intraPhaseFlakeRecovered.values()].map((v) => ({
+                jobId: v.jobId,
+                matrixKey: v.matrixKey,
+                failureCount: v.failureCount,
+              })),
+            });
+            log(
+              `[finalize-orchestrator] run=${runId} withholding auto-push: ` +
+                `${intraPhaseFlakeRecovered.size} shard(s) passed only on a same-commit ` +
+                `config-retry (recovered flake)`,
+            );
+          }
         }
         // ── Quarantine lane (§ replace silent retry) ────────────────
         // Excuse flake_recovered instances that are under an active quarantine:

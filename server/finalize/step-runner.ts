@@ -365,6 +365,25 @@ export interface StepRunResult {
    * `failure`/`timeout` too so callers have a single source of truth.
    */
   failureReason?: string;
+  /**
+   * v2 tasks phase only. Instances that FAILED a genuine test at least once
+   * this phase and then PASSED on a same-commit config `retries:` rerun (see
+   * `job-runner.ts` `runInstanceWithRetries`). These recovered within a single
+   * round, so the per-round attempt history the flake gate reads only ever sees
+   * their final `passed` state — this list is how that intra-phase flake is
+   * surfaced up to the orchestrator, which folds it into the flake-recovery
+   * gate so a red→green retry is NOT silently auto-pushed as clean. Absent when
+   * no shard recovered a flake this phase.
+   */
+  flakeRecoveredInstances?: FlakeRecoveredInstance[];
+}
+
+/** A shard that passed only after a same-commit config-`retries` rerun. */
+export interface FlakeRecoveredInstance {
+  jobId: string;
+  matrixKey: string;
+  /** Same-commit failure reruns before the instance passed (>= 1). */
+  failureCount: number;
 }
 
 /**

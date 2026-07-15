@@ -343,6 +343,47 @@ export function blockedGateResult(reason: string): FlakeGateResult {
   return { status: 'blocked', jobs: [], reason };
 }
 
+/**
+ * Fold INTRA-PHASE recovered flakes into a gate result.
+ *
+ * A shard that fails a genuine test and then passes on a same-commit config
+ * `retries:` rerun recovers WITHIN a single round, so the per-round attempt
+ * history the cross-round classifier reads only ever sees its final `passed`
+ * state — the flake is invisible to {@link classifyRunFlakeRecovery}. This
+ * helper adds those instances as `flake_recovered` verdicts so a red→green
+ * retry is treated exactly like a cross-round laundered flake: auto-push is
+ * withheld, the instances are listed, and the quarantine lane can still excuse
+ * a known-flaky shard (the merge runs BEFORE quarantine).
+ *
+ * A `blocked` gate is returned unchanged — it already withholds automation
+ * (fail-closed) and has no per-instance verdicts to reason about.
+ */
+export function withIntraPhaseFlakeRecovered(
+  gate: FlakeGateResult,
+  instances: Array<{ jobId: string; matrixKey: string; failureCount: number }>,
+): FlakeGateResult {
+  if (instances.length === 0 || gate.status === 'blocked') return gate;
+  const seen = new Set(gate.jobs.map((v) => `${v.jobId} ${v.matrixKey}`));
+  const added: JobFlakeVerdict[] = [];
+  for (const inst of instances) {
+    const key = `${inst.jobId} ${inst.matrixKey}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    added.push({
+      jobId: inst.jobId,
+      matrixKey: inst.matrixKey,
+      classification: 'flake_recovered',
+      // The flake happened within one round, so there is no cross-round fail
+      // history to cite; failureCount carries the same-commit rerun count.
+      failedRounds: [],
+      passedRound: null,
+      failureCount: inst.failureCount,
+    });
+  }
+  if (added.length === 0) return gate;
+  return { status: 'flake_recovered', jobs: [...gate.jobs, ...added] };
+}
+
 function isFlakeVerdict(v: unknown): v is JobFlakeVerdict {
   return (
     !!v &&

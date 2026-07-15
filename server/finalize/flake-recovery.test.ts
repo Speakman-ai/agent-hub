@@ -12,6 +12,8 @@ import {
   serializeFlakeGate,
   parseFlakeGate,
   flakeGateBlocksAutoPush,
+  withIntraPhaseFlakeRecovered,
+  type FlakeGateResult,
   type JobRoundAttempt,
   type ClassifyDeps,
 } from './flake-recovery.js';
@@ -362,5 +364,67 @@ describe('flake gate status + fail-closed semantics', () => {
         flake_recovered_jobs: serializeFlakeGate(gateResultFromVerdicts(flakeVerdicts)),
       }),
     ).toBe(true);
+  });
+});
+
+describe('withIntraPhaseFlakeRecovered', () => {
+  const clean: FlakeGateResult = { status: 'clean', jobs: [] };
+
+  it('returns the gate unchanged when there are no intra-phase flakes', () => {
+    expect(withIntraPhaseFlakeRecovered(clean, [])).toBe(clean);
+  });
+
+  it('promotes a clean gate to flake_recovered and lists the instance', () => {
+    const result = withIntraPhaseFlakeRecovered(clean, [
+      { jobId: 'server', matrixKey: '3/6', failureCount: 1 },
+    ]);
+    expect(result.status).toBe('flake_recovered');
+    expect(result.jobs).toHaveLength(1);
+    expect(result.jobs[0]).toMatchObject({
+      jobId: 'server',
+      matrixKey: '3/6',
+      classification: 'flake_recovered',
+      failureCount: 1,
+    });
+    // A promoted gate serializes non-null → blocks auto-push.
+    expect(flakeGateBlocksAutoPush({ flake_recovered_jobs: serializeFlakeGate(result) })).toBe(
+      true,
+    );
+  });
+
+  it('leaves a blocked gate untouched (already fail-closed)', () => {
+    const blocked = blockedGateResult('history unavailable');
+    const result = withIntraPhaseFlakeRecovered(blocked, [
+      { jobId: 'server', matrixKey: '', failureCount: 2 },
+    ]);
+    expect(result).toBe(blocked);
+    expect(result.status).toBe('blocked');
+  });
+
+  it('unions with existing cross-round verdicts and de-dupes by instance', () => {
+    const crossRound: FlakeGateResult = {
+      status: 'flake_recovered',
+      jobs: [
+        {
+          jobId: 'server',
+          matrixKey: '1/6',
+          classification: 'flake_recovered',
+          failedRounds: [1],
+          passedRound: 2,
+          failureCount: 1,
+        },
+      ],
+    };
+    const result = withIntraPhaseFlakeRecovered(crossRound, [
+      // Same instance as the cross-round verdict → de-duped (not added twice).
+      { jobId: 'server', matrixKey: '1/6', failureCount: 3 },
+      // New instance → appended.
+      { jobId: 'e2e', matrixKey: '2/4', failureCount: 1 },
+    ]);
+    expect(result.status).toBe('flake_recovered');
+    expect(result.jobs.map((j) => `${j.jobId} ${j.matrixKey}`).sort()).toEqual([
+      'e2e 2/4',
+      'server 1/6',
+    ]);
   });
 });
