@@ -231,6 +231,34 @@ async function flush() {
 setInterval(() => void flush(), 2000).unref(); // periodic flush
 ```
 
+### Avoid the exporter feedback loop
+
+If your exporter POSTs to the Hub over an HTTP client that *itself* logs
+requests, and those logs propagate to the same root logger you export from, you
+get a self-sustaining loop: the exporter sends a batch → the HTTP client logs
+that `POST /api/logs/ingest` → the root logger exports that record → the
+exporter sends it → repeat. The tell is a steady stream of `200 OK`
+`.../api/logs/ingest` INFO lines from a transport logger (`httpx`/`httpcore` in
+Python, `undici`/`http` in Node) that carry no application meaning.
+
+The Hub cannot break this loop for you — a record describing a call to
+`/api/logs/ingest` is indistinguishable from a legitimate "my service called an
+ingest endpoint" log, so the ingest endpoint accepts both. Fix it at the source,
+in your logging config, by keeping the exporter's own transport off the exported
+pipeline. Either raise the transport logger's level so its request lines never
+fire:
+
+```python
+# Python: silence the HTTP client the Hub exporter rides on
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+```
+
+or attach a handler-level filter, keyed to the Hub ingest URL, that drops only
+records whose message references your ingest endpoint — precise enough to keep
+other HTTP logs flowing. Whichever you pick, verify with a quick smoke test that
+a single emitted log produces exactly one ingest POST, not a cascade.
+
 ## 4. OpenTelemetry Collector example
 
 The Collector is the recommended buffer for production: it handles retry,
