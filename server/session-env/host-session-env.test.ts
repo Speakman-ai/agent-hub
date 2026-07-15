@@ -292,6 +292,22 @@ describe('HostSessionEnv.openPty', () => {
     expect(env.liveProcessCount()).toBe(0);
   });
 
+  it('uses a line-editing shell when the host environment has no SHELL', async () => {
+    const fake = new FakePty();
+    const calls: Parameters<HostPtyFactory>[0][] = [];
+    const { env } = makeEnv({
+      baseEnv: { PATH: '/usr/bin', HOME: '/home/hub' },
+      openPty: async (opts) => {
+        calls.push(opts);
+        return fake;
+      },
+    });
+
+    await env.openPty();
+
+    expect(calls[0].command).toBe('/bin/bash');
+  });
+
   it('PTY I/O bumps lastActivityAtMs', async () => {
     const fake = new FakePty();
     const { env, clock } = makeEnv({ openPty: async () => fake });

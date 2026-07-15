@@ -59,7 +59,7 @@ export interface PtySessionDeps {
   sessionId: string;
   /** Isolation boundary the PTY is opened in (host or sysbox adapter). */
   env: SessionEnv;
-  /** Shell program. Default: the env's login shell (`SHELL` / `/bin/sh`). */
+  /** Shell program. Default: the env's login shell (`SHELL` / `/bin/bash`). */
   shell?: string;
   /** Shell args. Default `['-l']` — a login shell that reads the profile. */
   shellArgs?: string[];

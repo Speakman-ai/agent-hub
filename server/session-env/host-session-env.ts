@@ -312,7 +312,10 @@ export class HostSessionEnv implements SessionEnv {
       if (v !== undefined) env[k] = v;
     }
     const raw = await this.ptyFactory({
-      command: opts.command ?? this.baseEnv.SHELL ?? '/bin/sh',
+      // Keep the standalone host terminal useful when the service environment
+      // does not define SHELL. Dash accepts a PTY but does not provide line
+      // history or completion, so the fallback must be a line-editing shell.
+      command: opts.command ?? this.baseEnv.SHELL ?? '/bin/bash',
       args: opts.args ?? [],
       cwd,
       env,
