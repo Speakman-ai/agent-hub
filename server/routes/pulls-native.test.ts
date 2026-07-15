@@ -447,7 +447,7 @@ describe('PR validation passthrough surface', () => {
       null,
     );
     stmts!.markFinalizeRunReadyToPush.run(headSha, runId);
-    stmts!.upsertFinalizeRunJob.run(runId, 'unit', '', 'passed', 0, Date.now(), Date.now());
+    stmts!.upsertFinalizeRunJob.run(runId, 'unit', '', 'passed', 0, Date.now(), Date.now(), null);
 
     detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.finalize_validated).toBe(true);
@@ -612,8 +612,8 @@ describe('branch protection', () => {
       null,
     );
     stmts!.failFinalizeRun.run('failed', 'checks_failed', 'rerun-base');
-    stmts!.upsertFinalizeRunJob.run('rerun-base', 'backend', '', 'failed', 1, 1, 2);
-    stmts!.upsertFinalizeRunJob.run('rerun-base', 'frontend', '', 'failed', 1, 1, 2);
+    stmts!.upsertFinalizeRunJob.run('rerun-base', 'backend', '', 'failed', 1, 1, 2, null);
+    stmts!.upsertFinalizeRunJob.run('rerun-base', 'frontend', '', 'failed', 1, 1, 2, null);
 
     stmts!.insertFinalizeRun.run(
       'rerun-frontend',
@@ -636,7 +636,7 @@ describe('branch protection', () => {
       null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'rerun-frontend');
-    stmts!.upsertFinalizeRunJob.run('rerun-frontend', 'frontend', '', 'passed', 0, 3, 4);
+    stmts!.upsertFinalizeRunJob.run('rerun-frontend', 'frontend', '', 'passed', 0, 3, 4, null);
 
     const blocked = await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
@@ -664,7 +664,7 @@ describe('branch protection', () => {
       null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'rerun-backend');
-    stmts!.upsertFinalizeRunJob.run('rerun-backend', 'backend', '', 'passed', 0, 5, 6);
+    stmts!.upsertFinalizeRunJob.run('rerun-backend', 'backend', '', 'passed', 0, 5, 6, null);
 
     const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(
@@ -740,7 +740,7 @@ describe('branch protection', () => {
       null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'partial-frontend');
-    stmts!.upsertFinalizeRunJob.run('partial-frontend', 'frontend', '', 'passed', 0, 1, 2);
+    stmts!.upsertFinalizeRunJob.run('partial-frontend', 'frontend', '', 'passed', 0, 1, 2, null);
 
     const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.checks).toHaveLength(1);
@@ -983,8 +983,8 @@ describe('checks_run — detailed run for the PR page', () => {
       null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, runId);
-    stmts!.upsertFinalizeRunJob.run(runId, 'backend', '', 'passed', 0, 1, 2);
-    stmts!.upsertFinalizeRunJob.run(runId, 'frontend', '', 'passed', 0, 3, 4);
+    stmts!.upsertFinalizeRunJob.run(runId, 'backend', '', 'passed', 0, 1, 2, null);
+    stmts!.upsertFinalizeRunJob.run(runId, 'frontend', '', 'passed', 0, 3, 4, null);
 
     const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
 
@@ -1127,8 +1127,8 @@ describe('checks merge across runs (per-job re-run keeps all checks visible)', (
       null,
     );
     stmts!.failFinalizeRun.run('failed', 'checks_failed', 'mc-run1');
-    stmts!.upsertFinalizeRunJob.run('mc-run1', 'backend-tests', '', 'passed', 0, 1, 2);
-    stmts!.upsertFinalizeRunJob.run('mc-run1', 'frontend-tests', '', 'failed', 1, 1, 2);
+    stmts!.upsertFinalizeRunJob.run('mc-run1', 'backend-tests', '', 'passed', 0, 1, 2, null);
+    stmts!.upsertFinalizeRunJob.run('mc-run1', 'frontend-tests', '', 'failed', 1, 1, 2, null);
 
     // Run 2 (newer, per-job re-run): ONLY frontend, now passed.
     stmts!.insertFinalizeRun.run(
@@ -1152,7 +1152,7 @@ describe('checks merge across runs (per-job re-run keeps all checks visible)', (
       null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'mc-run2');
-    stmts!.upsertFinalizeRunJob.run('mc-run2', 'frontend-tests', '', 'passed', 0, 3, 4);
+    stmts!.upsertFinalizeRunJob.run('mc-run2', 'frontend-tests', '', 'passed', 0, 3, 4, null);
 
     const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     const byName = Object.fromEntries(
@@ -1279,7 +1279,7 @@ describe('linked card + list CI status', () => {
       null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'lk-run');
-    stmts!.upsertFinalizeRunJob.run('lk-run', 'unit', '', 'passed', 0, 1, 2);
+    stmts!.upsertFinalizeRunJob.run('lk-run', 'unit', '', 'passed', 0, 1, 2, null);
 
     const list = await authedGet(`/api/projects/${id}/pulls`).expect(200);
     expect(list.body.pulls[0].linked_card).toMatchObject({

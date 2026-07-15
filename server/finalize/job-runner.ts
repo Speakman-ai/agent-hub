@@ -5,6 +5,7 @@
  * containers (or host bash for `runs-on: host`) and schedules shards
  * with a bounded parallelism pool.
  */
+import { randomUUID } from 'crypto';
 import type { CiConfigV2, CiStepV2, JobInstance } from './ci-config-v2.js';
 import {
   applyEnvToStep,
@@ -300,6 +301,15 @@ function toCiStep(step: CiStepV2, env: Record<string, string>): CiStep {
   };
 }
 
+/**
+ * Persist one job's state row. `attempt` is the per-EXECUTION nonce: minted
+ * (randomUUID) when the job starts running, echoed verbatim by that
+ * execution's terminal write, and NULL for queued/skipped writes. The upsert
+ * only applies a terminal write whose nonce matches the row's current
+ * execution (see upsertFinalizeRunJob in db.ts) — a delayed terminal from an
+ * abandoned earlier execution is silently a no-op, even when a retry landed
+ * in the same millisecond (which would defeat a timestamp identity).
+ */
 function persistJobState(
   deps: StepRunnerDeps,
   runId: string,
@@ -309,6 +319,7 @@ function persistJobState(
   exitCode: number | null,
   startedAt: number | null,
   endedAt: number | null,
+  attempt: string | null,
 ): void {
   try {
     deps.stmts.upsertFinalizeRunJob.run(
@@ -319,6 +330,7 @@ function persistJobState(
       exitCode,
       startedAt,
       endedAt,
+      attempt,
     );
   } catch (err) {
     console.warn(
@@ -360,6 +372,9 @@ async function runJobInstance(
   const { runId, worktreePath, sessionId, config } = opts;
   const persistMeta: StepPersistMeta = { jobId: instance.jobId, matrixKey: instance.matrixKey };
   const jobStartedAt = now();
+  // This execution's identity. jobStartedAt is display-only (duration); the
+  // nonce is what the terminal write must echo to pass the out-of-order guard.
+  const jobAttempt = randomUUID();
 
   persistJobState(
     deps,
@@ -370,6 +385,7 @@ async function runJobInstance(
     null,
     jobStartedAt,
     null,
+    jobAttempt,
   );
 
   const image = resolveRunsOnImage(instance.runsOn);
@@ -404,6 +420,7 @@ async function runJobInstance(
         -1,
         jobStartedAt,
         endedAt,
+        jobAttempt,
       );
       return {
         instance,
@@ -449,6 +466,7 @@ async function runJobInstance(
           -1,
           jobStartedAt,
           endedAt,
+          jobAttempt,
         );
         return {
           instance,
@@ -510,6 +528,7 @@ async function runJobInstance(
           -1,
           jobStartedAt,
           endedAt,
+          jobAttempt,
         );
         // A `git bundle` failure (e.g. "Refusing to create empty bundle") is
         // DETERMINISTIC — re-acquiring on a fresh agent re-runs the same broken
@@ -591,6 +610,7 @@ async function runJobInstance(
     jobExit,
     jobStartedAt,
     jobEndedAt,
+    jobAttempt,
   );
 
   return { instance, result };
@@ -675,6 +695,7 @@ export async function runJobPhase(
       null,
       null,
       null,
+      null,
     );
   }
 
@@ -733,6 +754,7 @@ export async function runJobPhase(
       null,
       null,
       now(),
+      null,
     );
     return {
       instance,

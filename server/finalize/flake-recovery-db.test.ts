@@ -24,6 +24,7 @@ function makeDb(): { db: Database.Database; stmts: Pick<Stmts, KnownStmt> } {
       exit_code INTEGER,
       started_at INTEGER,
       ended_at INTEGER,
+      attempt TEXT,
       PRIMARY KEY (run_id, job_id, matrix_key)
     );
     CREATE TABLE finalize_run_job_attempts (
@@ -42,12 +43,23 @@ function makeDb(): { db: Database.Database; stmts: Pick<Stmts, KnownStmt> } {
 
   const stmts = {
     upsertFinalizeRunJob: db.prepare(
-      `INSERT INTO finalize_run_jobs (run_id, job_id, matrix_key, state, exit_code, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO finalize_run_jobs (run_id, job_id, matrix_key, state, exit_code, started_at, ended_at, attempt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(run_id, job_id, matrix_key) DO UPDATE SET
          state = excluded.state, exit_code = excluded.exit_code,
-         started_at = COALESCE(finalize_run_jobs.started_at, excluded.started_at),
-         ended_at = excluded.ended_at`,
+         started_at = CASE
+           WHEN excluded.state = 'queued' THEN NULL
+           ELSE COALESCE(excluded.started_at, finalize_run_jobs.started_at)
+         END,
+         ended_at = excluded.ended_at,
+         attempt = CASE
+           WHEN excluded.state = 'queued' THEN NULL
+           WHEN excluded.state = 'running' THEN excluded.attempt
+           ELSE finalize_run_jobs.attempt
+         END
+       WHERE excluded.state IN ('queued', 'running')
+          OR (finalize_run_jobs.attempt IS excluded.attempt
+              AND finalize_run_jobs.state IN ('queued', 'running'))`,
     ),
     listFinalizeRunJobsForRun: db.prepare(
       `SELECT run_id, job_id, matrix_key, state, exit_code, started_at, ended_at
@@ -114,8 +126,15 @@ describe('flake-recovery DB round-trip', () => {
 
   it('records per-round history and classifies a laundered flake vs a real fix', async () => {
     let round = 0;
+    // Model the real per-round lifecycle: each fix round re-queues the row,
+    // starts a fresh execution (new nonce), and terminalizes it with that
+    // nonce. Writing a terminal directly onto a terminal row is exactly what
+    // the upsert's live-state guard rejects (duplicate/replayed terminals).
     const upsertJob = (jobId: string, state: string, exit: number): void => {
-      stmts.upsertFinalizeRunJob.run('r1', jobId, '', state, exit, 1, 2);
+      const attempt = `${jobId}-round-${round}`;
+      stmts.upsertFinalizeRunJob.run('r1', jobId, '', 'queued', null, null, null, null);
+      stmts.upsertFinalizeRunJob.run('r1', jobId, '', 'running', null, 1, null, attempt);
+      stmts.upsertFinalizeRunJob.run('r1', jobId, '', state, exit, 1, 2, attempt);
     };
 
     // ── Round 1 on head h1: both jobs fail. ───────────────────────────
@@ -169,7 +188,7 @@ describe('flake-recovery DB round-trip', () => {
   });
 
   it('a clean run leaves the gate column NULL', async () => {
-    stmts.upsertFinalizeRunJob.run('r1', 'e2e', '', 'passed', 0, 1, 2);
+    stmts.upsertFinalizeRunJob.run('r1', 'e2e', '', 'passed', 0, 1, 2, null);
     const ok = recordJobAttemptsForRound(
       { stmts, now: () => 1 },
       { runId: 'r1', round: 1, headSha: 'h1' },

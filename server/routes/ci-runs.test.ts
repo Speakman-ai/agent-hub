@@ -73,7 +73,16 @@ function seedRun(
       .prepare('UPDATE finalize_runs SET ended_at = ?, failure_reason = ? WHERE id = ?')
       .run(overrides.endedAt ?? null, overrides.failureReason ?? null, runId);
   }
-  stmts.upsertFinalizeRunJob.run(runId, 'unit', 'default', 'success', 0, Date.now(), Date.now());
+  stmts.upsertFinalizeRunJob.run(
+    runId,
+    'unit',
+    'default',
+    'success',
+    0,
+    Date.now(),
+    Date.now(),
+    null,
+  );
   stmts.upsertFinalizeRunStep.run(
     runId,
     1,
@@ -249,13 +258,13 @@ jobs:
     getDb()
       .prepare('DELETE FROM finalize_run_jobs WHERE run_id IN (?, ?, ?)')
       .run(runA, runB, runC);
-    stmts.upsertFinalizeRunJob.run(runA, 'build', '', 'passed', 0, 2_000, 12_000);
-    stmts.upsertFinalizeRunJob.run(runA, 'test', 'server', 'passed', 0, 2_000, 32_000);
-    stmts.upsertFinalizeRunJob.run(runA, 'test', 'client', 'passed', 0, 2_000, 42_000);
-    stmts.upsertFinalizeRunJob.run(runB, 'build', '', 'passed', 0, 102_000, 112_000);
-    stmts.upsertFinalizeRunJob.run(runB, 'test', 'server', 'failed', 1, 102_000, 142_000);
-    stmts.upsertFinalizeRunJob.run(runB, 'test', 'client', 'passed', 0, 102_000, 132_000);
-    stmts.upsertFinalizeRunJob.run(runC, 'test', 'client', 'failed', -1, 202_000, 252_000);
+    stmts.upsertFinalizeRunJob.run(runA, 'build', '', 'passed', 0, 2_000, 12_000, null);
+    stmts.upsertFinalizeRunJob.run(runA, 'test', 'server', 'passed', 0, 2_000, 32_000, null);
+    stmts.upsertFinalizeRunJob.run(runA, 'test', 'client', 'passed', 0, 2_000, 42_000, null);
+    stmts.upsertFinalizeRunJob.run(runB, 'build', '', 'passed', 0, 102_000, 112_000, null);
+    stmts.upsertFinalizeRunJob.run(runB, 'test', 'server', 'failed', 1, 102_000, 142_000, null);
+    stmts.upsertFinalizeRunJob.run(runB, 'test', 'client', 'passed', 0, 102_000, 132_000, null);
+    stmts.upsertFinalizeRunJob.run(runC, 'test', 'client', 'failed', -1, 202_000, 252_000, null);
 
     const res = await request.get(`/api/projects/${projectId}/ci-runs/stats`).expect(200);
     expect(res.body.overall).toMatchObject({
@@ -332,6 +341,7 @@ jobs:
       1,
       now - 49 * 60 * 60 * 1000,
       now - 48 * 60 * 60 * 1000,
+      null,
     );
     stmts.upsertFinalizeRunJob.run(
       recentRun,
@@ -341,6 +351,7 @@ jobs:
       0,
       now - 60 * 60 * 1000,
       now - 30 * 60 * 1000,
+      null,
     );
 
     const all = await request
@@ -381,9 +392,9 @@ jobs:
     });
 
     getDb().prepare('DELETE FROM finalize_run_jobs WHERE run_id = ?').run(runId);
-    stmts.upsertFinalizeRunJob.run(runId, 'current-tests', '', 'passed', 0, 2_000, 12_000);
-    stmts.upsertFinalizeRunJob.run(runId, 'backend-tests', '0', 'passed', 0, 2_000, 12_000);
-    stmts.upsertFinalizeRunJob.run(runId, 'backend-tests', '1', 'passed', 0, 2_000, 12_000);
+    stmts.upsertFinalizeRunJob.run(runId, 'current-tests', '', 'passed', 0, 2_000, 12_000, null);
+    stmts.upsertFinalizeRunJob.run(runId, 'backend-tests', '0', 'passed', 0, 2_000, 12_000, null);
+    stmts.upsertFinalizeRunJob.run(runId, 'backend-tests', '1', 'passed', 0, 2_000, 12_000, null);
 
     const res = await request.get(`/api/projects/${projectId}/ci-runs/stats`).expect(200);
     expect(res.body.tests.map((t: Record<string, unknown>) => t.name)).toEqual(['current-tests']);
@@ -434,9 +445,27 @@ jobs:
       endedAt: 31_000,
     });
     getDb().prepare('DELETE FROM finalize_run_jobs WHERE run_id = ?').run(runId);
-    stmts.upsertFinalizeRunJob.run(runId, 'current-tests', 'server', 'passed', 0, 2_000, 12_000);
-    stmts.upsertFinalizeRunJob.run(runId, 'current-tests', 'client', 'passed', 0, 2_000, 12_000);
-    stmts.upsertFinalizeRunJob.run(runId, 'old-tests', '', 'passed', 0, 2_000, 12_000);
+    stmts.upsertFinalizeRunJob.run(
+      runId,
+      'current-tests',
+      'server',
+      'passed',
+      0,
+      2_000,
+      12_000,
+      null,
+    );
+    stmts.upsertFinalizeRunJob.run(
+      runId,
+      'current-tests',
+      'client',
+      'passed',
+      0,
+      2_000,
+      12_000,
+      null,
+    );
+    stmts.upsertFinalizeRunJob.run(runId, 'old-tests', '', 'passed', 0, 2_000, 12_000, null);
 
     expect(git(gitHostRepoPath(projectId), 'show refs/heads/main:.agent-hub/ci.yaml')).toContain(
       'current-tests',

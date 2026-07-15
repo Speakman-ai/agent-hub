@@ -303,6 +303,11 @@ function makeStmts(): {
     beginFinalizeRunStepAttempt: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['beginFinalizeRunStepAttempt'],
+    finishFinalizeRunStepIfAttempt: {
+      // Terminal writes must report changes>0 or announceStepEnd treats them
+      // as stale (out-of-order) and drops the broadcast.
+      run: vi.fn(() => ({ changes: 1 })),
+    } as unknown as OrchestratorDeps['stmts']['finishFinalizeRunStepIfAttempt'],
     attachFinalizeRunStepLog: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['attachFinalizeRunStepLog'],

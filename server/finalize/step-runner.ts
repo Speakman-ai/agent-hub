@@ -418,6 +418,7 @@ export interface StepRunnerDeps {
     | 'failFinalizeRun'
     | 'upsertFinalizeRunStep'
     | 'beginFinalizeRunStepAttempt'
+    | 'finishFinalizeRunStepIfAttempt'
     | 'attachFinalizeRunStepLog'
     | 'listFinalizeRunStepsForRun'
     | 'upsertFinalizeRunJob'
@@ -670,9 +671,13 @@ export async function runStepsSequence(
         ? step.timeoutMinutes * 60_000
         : Number.POSITIVE_INFINITY;
     const stepHardTimeoutMs = Math.min(remainingBudgetMs, spawnHardTimeoutMs, perStepCapMs);
-    // announceStepStart mints this execution's log nonce and clears any prior
-    // log location; thread it to the (detached) upload so its blob key + guarded
-    // attach are tied to THIS execution.
+    // announceStepStart mints this execution's attempt nonce and clears any
+    // prior log location. The nonce is the execution's identity: it threads to
+    // the (detached) upload so the blob key + guarded attach are tied to THIS
+    // execution, and announceStepEnd echoes it so the terminal write only
+    // applies while the row still belongs to this execution (out-of-order
+    // guard — see finishFinalizeRunStepIfAttempt in db.ts). A timestamp can't
+    // serve as that identity: a restart can land in the same millisecond.
     const attempt = announceStepStart(
       deps,
       opts.sessionId,
@@ -710,7 +715,16 @@ export async function runStepsSequence(
     // safe to leave unhandled; the attach is an idempotent best-effort UPDATE
     // that lands a moment later in the long-lived Hub process.
     if (runOutcome.kind === 'success') {
-      announceStepEnd(deps, opts.sessionId, opts.runId, stepIndex, stepForRun, 0, persistMeta);
+      announceStepEnd(
+        deps,
+        opts.sessionId,
+        opts.runId,
+        stepIndex,
+        stepForRun,
+        0,
+        attempt,
+        persistMeta,
+      );
       void uploadAndAttachStepLog(deps, opts.runId, stepIndex, runOutcome.logSnapshot, attempt);
       continue;
     }
@@ -722,6 +736,7 @@ export async function runStepsSequence(
       stepIndex,
       stepForRun,
       runOutcome.result.exitCode,
+      attempt,
       persistMeta,
     );
     void uploadAndAttachStepLog(deps, opts.runId, stepIndex, runOutcome.logSnapshot, attempt);
@@ -1472,6 +1487,15 @@ function announceStepStart(
  * location is attached separately, AFTER this, via the per-execution nonce
  * minted at {@link announceStepStart}, so a slow upload can't hold the step in
  * `running` (see uploadAndAttachStepLog).
+ *
+ * `attempt` is the nonce {@link announceStepStart} minted for THIS execution.
+ * The terminal write (finishFinalizeRunStepIfAttempt) applies only while the
+ * row is still `running` under the same nonce, so a delayed terminal from a
+ * superseded execution (row since re-queued or restarted by a later fix
+ * round — even within the same millisecond) matches zero rows instead of
+ * clobbering the current round's state. A rejected (stale) write is dropped
+ * WITHOUT a broadcast: the row now belongs to a different execution, and the
+ * UI must keep reflecting that execution's state.
  */
 function announceStepEnd(
   deps: StepRunnerDeps,
@@ -1480,20 +1504,37 @@ function announceStepEnd(
   stepIndex: number,
   step: CiStep,
   exitCode: number,
+  attempt: string,
   meta?: StepPersistMeta,
 ): void {
   const endedAt = Date.now();
-  persistFinalizeRunStep(
-    deps.stmts,
-    runId,
-    stepIndex,
-    step.name,
-    exitCode === 0 ? 'passed' : 'failed',
-    exitCode,
-    null,
-    endedAt,
-    meta,
-  );
+  const state = exitCode === 0 ? 'passed' : 'failed';
+  let changes = 0;
+  try {
+    const res = deps.stmts.finishFinalizeRunStepIfAttempt.run(
+      state,
+      exitCode,
+      endedAt,
+      runId,
+      stepIndex,
+      attempt,
+    ) as { changes: number };
+    changes = res?.changes ?? 0;
+  } catch (err) {
+    console.warn(
+      `[finalize-step-runner] finishFinalizeRunStepIfAttempt failed run=${runId} step=${stepIndex}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return;
+  }
+  if (changes === 0) {
+    console.warn(
+      `[finalize-step-runner] dropped out-of-order terminal write run=${runId} ` +
+        `step=${stepIndex} attempt=${attempt}: row belongs to a different execution`,
+    );
+    return;
+  }
   try {
     deps.broadcast({
       type: 'finalize_run_step_state',
@@ -1501,7 +1542,7 @@ function announceStepEnd(
       session_id: sessionId,
       step_index: stepIndex,
       step_name: step.name,
-      state: exitCode === 0 ? 'passed' : 'failed',
+      state,
       exit_code: exitCode,
       ...(meta?.jobId ? { job_id: meta.jobId } : {}),
       ...(meta?.matrixKey ? { matrix_key: meta.matrixKey } : {}),

@@ -244,6 +244,7 @@ export interface OrchestratorDeps {
     | 'getMessageById'
     | 'upsertFinalizeRunStep'
     | 'beginFinalizeRunStepAttempt'
+    | 'finishFinalizeRunStepIfAttempt'
     | 'attachFinalizeRunStepLog'
     | 'listFinalizeRunStepsForRun'
     | 'markFinalizeRunStepSkippedIfPending'

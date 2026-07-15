@@ -2691,6 +2691,7 @@ export interface Stmts {
   getFinalizeRunStep: Stmt;
   beginFinalizeRunStepAttempt: Stmt;
   attachFinalizeRunStepLog: Stmt;
+  finishFinalizeRunStepIfAttempt: Stmt;
   upsertFinalizeRunJob: Stmt;
   listFinalizeRunJobsForRun: Stmt;
   upsertFinalizeRunJobAttempt: Stmt;

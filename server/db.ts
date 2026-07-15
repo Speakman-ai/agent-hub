@@ -1499,11 +1499,23 @@ function initDb(dataDir: string): void {
       exit_code INTEGER,
       started_at INTEGER,
       ended_at INTEGER,
+      attempt TEXT,
       PRIMARY KEY (run_id, job_id, matrix_key)
     );
     CREATE INDEX IF NOT EXISTS finalize_run_jobs_run
       ON finalize_run_jobs(run_id, job_id);
   `);
+
+  // Per-execution nonce for finalize_run_jobs, mirroring finalize_run_steps'
+  // log_attempt: minted when a job execution starts, echoed by its terminal
+  // write as the out-of-order guard in upsertFinalizeRunJob. A wall-clock
+  // stamp is NOT collision-safe (a retry/fix-round restart can land in the
+  // same millisecond), so identity must be a nonce.
+  try {
+    db.prepare('SELECT attempt FROM finalize_run_jobs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_run_jobs ADD COLUMN attempt TEXT');
+  }
 
   // Per-round job/matrix retry history. finalize_run_jobs holds only the
   // LATEST state per instance (it upserts in place); this table appends one
@@ -6425,6 +6437,29 @@ function initDb(dataDir: string): void {
     // running → passed/failed) never resurrects a previous execution's stale
     // location — and there is no COALESCE that could preserve it across a
     // re-run.
+    //
+    // started_at semantics (per-EXECUTION, not per-row): a fix round re-runs
+    // checks by re-queuing the SAME (run_id, step_index) rows, so the stamp
+    // must follow the latest execution —
+    //   - re-queue (state='queued')  → reset to NULL (fresh round, fresh clock);
+    //   - start   (state='running')  → overwrite with this execution's start;
+    //   - terminal                   → apply ONLY if it carries the row's
+    //     current started_at (the terminal WHERE guard below).
+    // The old `COALESCE(existing, excluded)` kept the ROUND-1 stamp forever,
+    // so after N fix rounds the UI showed steps "running" for the cumulative
+    // wall-clock of every round (support: "These have been running for hours").
+    //
+    // Out-of-order-write guard: a DELAYED terminal write from a previous
+    // execution (e.g. a zombie remote runner settling after the row was
+    // re-queued/restarted) must not clobber the current round. The REAL
+    // terminal writer (announceStepEnd) does not use this upsert — it goes
+    // through finishFinalizeRunStepIfAttempt below, guarded on the
+    // per-execution `log_attempt` nonce (a wall-clock stamp is not
+    // collision-safe: a restart can land in the same millisecond). The
+    // WHERE here is defense-in-depth for any other conflicting terminal
+    // write: it only applies when the write echoes the row's current
+    // started_at (`IS` = null-safe compare). queued/running writes are
+    // orchestrator-ordered round boundaries and always apply.
     upsertFinalizeRunStep: db.prepare(
       `INSERT INTO finalize_run_steps (
         run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key
@@ -6433,10 +6468,34 @@ function initDb(dataDir: string): void {
         name = excluded.name,
         state = excluded.state,
         exit_code = excluded.exit_code,
-        started_at = COALESCE(finalize_run_steps.started_at, excluded.started_at),
+        started_at = CASE
+          WHEN excluded.state = 'queued' THEN NULL
+          ELSE COALESCE(excluded.started_at, finalize_run_steps.started_at)
+        END,
         ended_at = excluded.ended_at,
         job_id = excluded.job_id,
-        matrix_key = excluded.matrix_key`,
+        matrix_key = excluded.matrix_key
+      WHERE excluded.state IN ('queued', 'running')
+         OR finalize_run_steps.started_at IS excluded.started_at`,
+    ),
+    // Terminal step write, guarded on the per-execution `log_attempt` nonce
+    // minted by beginFinalizeRunStepAttempt when the execution started. This
+    // is the ONLY statement announceStepEnd uses: a delayed terminal from a
+    // superseded execution carries that execution's nonce and matches zero
+    // rows — even when a retry/fix-round restart happened within the same
+    // millisecond (which defeats any timestamp-based identity). The
+    // `state = 'running'` conjunct additionally rejects a stale terminal
+    // arriving after the row was re-queued but before it restarted (the
+    // nonce is only re-minted on start, so it alone would still match).
+    // started_at is deliberately untouched — the running write's stamp is
+    // preserved for duration display. Callers must check `changes`: 0 means
+    // the write was stale and MUST NOT be broadcast.
+    finishFinalizeRunStepIfAttempt: db.prepare(
+      `UPDATE finalize_run_steps
+          SET state = ?, exit_code = ?, ended_at = ?
+        WHERE run_id = ? AND step_index = ?
+          AND state = 'running'
+          AND log_attempt IS ?`,
     ),
     listFinalizeRunStepsForRun: db.prepare(
       `SELECT run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key,
@@ -6536,15 +6595,49 @@ function initDb(dataDir: string): void {
               log_key = ?, log_lines = ?, log_truncated = ?
         WHERE run_id = ? AND step_index = ? AND log_attempt = ?`,
     ),
+    // started_at follows the same per-EXECUTION semantics as
+    // upsertFinalizeRunStep above (re-queue resets, start overwrites, terminal
+    // preserves — the stamp exists purely for duration display). Identity is
+    // the `attempt` nonce, NOT the timestamp: the 'running' write mints a
+    // fresh nonce for the execution, its terminal write echoes it, and the
+    // WHERE only applies a terminal write when the nonce matches the row's
+    // current execution (`IS` = null-safe). A delayed terminal from an
+    // abandoned earlier execution carries that execution's nonce and matches
+    // zero rows — even when a retry/restart landed in the same millisecond
+    // (which defeats any timestamp identity).
+    //
+    // Terminal writes additionally require the row to still be LIVE
+    // (`state IN ('queued','running')`) — the jobs analog of the step
+    // guard's `state = 'running'` conjunct — so a duplicate/replayed
+    // terminal from the SAME execution (matching nonce) can never rewrite an
+    // already-terminal row (e.g. flip `passed` to `failed`). The live set
+    // includes 'queued' (unlike steps) because fail-fast `skipped` writes
+    // legitimately terminalize a job that never started: they pass a NULL
+    // nonce against a re-queued NULL row, which the null-safe IS accepts —
+    // while a `passed`/`failed` write always carries its execution's non-null
+    // nonce, so it can never apply to a queued (NULL-nonce) row.
+    // queued/running writes are orchestrator-ordered round boundaries and
+    // always apply (queued also resets the nonce).
     upsertFinalizeRunJob: db.prepare(
       `INSERT INTO finalize_run_jobs (
-        run_id, job_id, matrix_key, state, exit_code, started_at, ended_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        run_id, job_id, matrix_key, state, exit_code, started_at, ended_at, attempt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id, job_id, matrix_key) DO UPDATE SET
         state = excluded.state,
         exit_code = excluded.exit_code,
-        started_at = COALESCE(finalize_run_jobs.started_at, excluded.started_at),
-        ended_at = excluded.ended_at`,
+        started_at = CASE
+          WHEN excluded.state = 'queued' THEN NULL
+          ELSE COALESCE(excluded.started_at, finalize_run_jobs.started_at)
+        END,
+        ended_at = excluded.ended_at,
+        attempt = CASE
+          WHEN excluded.state = 'queued' THEN NULL
+          WHEN excluded.state = 'running' THEN excluded.attempt
+          ELSE finalize_run_jobs.attempt
+        END
+      WHERE excluded.state IN ('queued', 'running')
+         OR (finalize_run_jobs.attempt IS excluded.attempt
+             AND finalize_run_jobs.state IN ('queued', 'running'))`,
     ),
     listFinalizeRunJobsForRun: db.prepare(
       `SELECT run_id, job_id, matrix_key, state, exit_code, started_at, ended_at

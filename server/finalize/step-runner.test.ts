@@ -73,6 +73,7 @@ interface FakeStmts {
   getMessageById: { get: ReturnType<typeof vi.fn> };
   upsertFinalizeRunStep: { run: ReturnType<typeof vi.fn> };
   beginFinalizeRunStepAttempt: { run: ReturnType<typeof vi.fn> };
+  finishFinalizeRunStepIfAttempt: { run: ReturnType<typeof vi.fn> };
   attachFinalizeRunStepLog: { run: ReturnType<typeof vi.fn> };
   listFinalizeRunStepsForRun: { all: ReturnType<typeof vi.fn> };
 }
@@ -119,6 +120,29 @@ function makeStmts(): FakeStmts {
       ),
     },
     beginFinalizeRunStepAttempt: { run: vi.fn() },
+    // Mirrors the production guarded terminal write: applies only while the
+    // row is `running` (nonce fidelity isn't modelled — each fake execution
+    // is the row's only writer) and reports `changes` so announceStepEnd can
+    // drop stale writes.
+    finishFinalizeRunStepIfAttempt: {
+      run: vi.fn(
+        (
+          state: string,
+          exitCode: number | null,
+          endedAt: number | null,
+          _runId: string,
+          stepIndex: number,
+          _attempt: string,
+        ) => {
+          const existing = steps.find((s) => s.step_index === stepIndex);
+          if (!existing || existing.state !== 'running') return { changes: 0 };
+          existing.state = state;
+          existing.exit_code = exitCode;
+          existing.ended_at = endedAt;
+          return { changes: 1 };
+        },
+      ),
+    },
     attachFinalizeRunStepLog: { run: vi.fn() },
     listFinalizeRunStepsForRun: {
       all: vi.fn(() => [...steps].sort((a, b) => a.step_index - b.step_index)),
