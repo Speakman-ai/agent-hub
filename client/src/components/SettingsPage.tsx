@@ -32,7 +32,7 @@ import {
   isAutonomyLockedOn,
 } from '../utils/agentAutonomy';
 import { isElectron } from '../utils/isElectron';
-import { RELEASE_BUCKET_ROOT } from '../utils/version';
+import { buildLatestDmgDownloadUrl } from '../utils/version';
 import * as LucideIcons from 'lucide-react';
 
 /** Error boundary to catch render crashes in individual settings tabs */
@@ -833,6 +833,7 @@ export function GeneralSection() {
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
   const labelClass = 'block text-xs text-gray-400 mb-1';
+  const desktopDownloadUrl = buildLatestDmgDownloadUrl();
 
   if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
   if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
@@ -860,7 +861,7 @@ export function GeneralSection() {
         )}
       </div>
 
-      {!isElectron() && RELEASE_BUCKET_ROOT && (
+      {!isElectron() && desktopDownloadUrl && (
         <div className="bg-gray-800 rounded-xl p-4 space-y-3">
           <div className="flex items-center gap-2">
             <Monitor size={16} className="text-sky-400 shrink-0" />
@@ -872,7 +873,7 @@ export function GeneralSection() {
             latest build from the releases bucket.
           </p>
           <a
-            href={RELEASE_BUCKET_ROOT}
+            href={desktopDownloadUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 transition-colors"

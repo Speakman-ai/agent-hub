@@ -97,5 +97,17 @@ export function buildDmgDownloadUrl({ version, platform, arch }: any = {}) {
   return `${base}/v${encodeURIComponent(v)}/${filename}`;
 }
 
+/**
+ * Build the default desktop download URL for the release represented by the
+ * current web bundle. Browser user agents do not expose the Mac CPU
+ * architecture, so this follows the update flow's x64 fallback.
+ */
+export function buildLatestDmgDownloadUrl() {
+  return buildDmgDownloadUrl({
+    version: importMetaEnv()?.VITE_APP_VERSION,
+    platform: 'darwin',
+  });
+}
+
 /** Exposed for testing. Not part of the public API. */
 export const __test = { parseVersion, S3_BUCKET_BASE, RELEASE_BUCKET_ROOT };

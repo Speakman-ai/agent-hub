@@ -369,6 +369,7 @@ describe('GeneralSection — CLI binary paths', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     delete (window as any).electronAPI;
   });
 
@@ -378,6 +379,19 @@ describe('GeneralSection — CLI binary paths', () => {
     await waitFor(() => {
       expect(getByText(/Desktop app:/)).toBeTruthy();
     });
+  });
+
+  it('links to the versioned desktop DMG instead of the release bucket root', async () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
+    vi.stubEnv('VITE_APP_VERSION', '2.31.41');
+
+    const { findByRole } = render(<GeneralSection />);
+    const link = await findByRole('link', { name: /Download desktop app/ });
+
+    expect(link).toHaveAttribute(
+      'href',
+      'https://releases.example.test/v2.31.41/Agent%20Hub-2.31.41.dmg',
+    );
   });
 
   it('renders a cursorBin input pre-populated from config', async () => {

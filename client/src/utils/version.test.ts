@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   compareSemver,
   buildDmgDownloadUrl,
+  buildLatestDmgDownloadUrl,
   RELEASE_BUCKET_ROOT,
   resolveReleaseBucketBase,
 } from './version';
@@ -133,5 +134,20 @@ describe('buildDmgDownloadUrl', () => {
   it('handles a completely empty argument object without throwing', () => {
     expect(buildDmgDownloadUrl({})).toBeNull();
     expect(buildDmgDownloadUrl()).toBeNull();
+  });
+});
+
+describe('buildLatestDmgDownloadUrl', () => {
+  it('builds a direct x64 DMG URL from the current web bundle version', () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', BASE);
+    vi.stubEnv('VITE_APP_VERSION', '2.31.41');
+
+    expect(buildLatestDmgDownloadUrl()).toBe(`${BASE}/v2.31.41/Agent%20Hub-2.31.41.dmg`);
+  });
+
+  it('returns null when the web bundle has no release version', () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', BASE);
+
+    expect(buildLatestDmgDownloadUrl()).toBeNull();
   });
 });
