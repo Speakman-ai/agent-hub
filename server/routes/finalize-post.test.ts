@@ -80,6 +80,7 @@ vi.mock('../db.js', () => ({
 // Import after all mocks so the route file binds to them.
 import createFinalizeRoutes from './finalize.js';
 import { resolveFinalizeAttempt } from '../finalize/trigger-run.js';
+import { getSessionWorktreeLockOwner } from '../session-worktree-lock.js';
 import type { FinalizeRunRow, RouteDeps } from '../types.js';
 
 function makeStmts() {
@@ -546,7 +547,12 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       worktree_branch: 'feature/x',
     });
     stmts.getFinalizeRunByIdempotencyKey.get.mockReturnValue(undefined);
-    runFinalize.mockReturnValue(new Promise(() => {}));
+    let resolveRun!: () => void;
+    runFinalize.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveRun = resolve;
+      }),
+    );
 
     const res = await supertest(app)
       .post('/api/projects/proj-1/cards/card-1/finalize')
@@ -562,6 +568,10 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     expect(runFinalize).toHaveBeenCalledOnce();
     expect(stmts.insertFinalizeKickoffClaim.run).toHaveBeenCalledOnce();
     expect(stmts.deleteFinalizeKickoffClaim.run).not.toHaveBeenCalled();
+    expect(getSessionWorktreeLockOwner('sess-1')).toBe('finalize');
+
+    resolveRun();
+    await vi.waitFor(() => expect(getSessionWorktreeLockOwner('sess-1')).toBeNull());
   });
 });
 

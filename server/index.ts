@@ -92,7 +92,12 @@ import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { sessionUsesWorktree } from './project-mode.js';
-import { ensureSessionWorkspace, type OnBaseBranchAdvancedFn } from './worktree.js';
+import { isSessionWorktreeLocked } from './session-worktree-lock.js';
+import {
+  ensureSessionWorkspace,
+  switchSessionWorkspaceBranch,
+  type OnBaseBranchAdvancedFn,
+} from './worktree.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers } from './process-groups.js';
 import { markSessionTermination } from './process-termination.js';
@@ -1270,6 +1275,7 @@ export const routeDeps: RouteDeps = {
   allAgents,
   saveProjects,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
+  drainSessionQueue: (sessionId: string) => drainQueue(sessionId),
   lastDispatchedReviewId,
   scheduleAutonomousEpic,
   autonomousCrons,
@@ -1342,6 +1348,26 @@ export const routeDeps: RouteDeps = {
       project.githubRepo ?? null,
       hostedBarePathForProject(project),
     );
+  },
+  switchSessionWorkspaceBranch: async (sessionId: string, branch: string) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    const found = findAgent(session.agent_id);
+    if (!found) {
+      throw new Error('Agent not found');
+    }
+    const result = await switchSessionWorkspaceBranch(
+      session,
+      branch,
+      found.project.githubRepo ?? null,
+      hostedBarePathForProject(found.project),
+    );
+    if (result.kind !== 'switched') {
+      throw new Error(result.message);
+    }
+    return { worktreePath: result.worktreePath, branch: result.branch };
   },
 };
 
@@ -1636,6 +1662,7 @@ function handleEditQueueItem(sessionId: string, messageId: string, content: stri
 function drainQueue(sessionId: string): void {
   if (activeProcesses.has(sessionId)) return;
   if (activeDelegationSessions.has(sessionId)) return;
+  if (isSessionWorktreeLocked(sessionId)) return;
   if (drainingLock.has(sessionId)) return;
 
   drainingLock.add(sessionId);

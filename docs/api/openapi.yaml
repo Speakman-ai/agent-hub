@@ -2278,6 +2278,12 @@ components:
         worktree_branch:
           type: string
           nullable: true
+        worktree_checkout_branch:
+          type: string
+          nullable: true
+        code_changed_at:
+          type: string
+          nullable: true
         engine_session_id:
           type: string
           nullable: true
@@ -18217,7 +18223,7 @@ paths:
       tags:
         - Sessions
       summary: Choose (or clear) the existing branch a session worktree checks out onto
-      description: "Sets `worktree_checkout_branch` so the session worktree is provisioned directly on the chosen existing remote branch (commits land there and Finalize pushes/updates its PR). Pass `branch: null` to clear the choice and revert to the default fresh `agent-hub/<agent>/session-<id>` branch. Settable only before the worktree is provisioned — otherwise the branch is locked (409). The provisioner ignores a chosen branch equal to the repo default branch."
+      description: "Before provisioning, sets `worktree_checkout_branch` so the session worktree starts directly on the chosen existing remote branch. After provisioning, switches a clean and idle worktree onto the chosen existing non-default branch. Commits then land there and Finalize pushes or updates its PR. Pass `branch: null` only before provisioning to clear the choice and revert to the default fresh `agent-hub/<agent>/session-<id>` branch. Code changes, active turns, Finalize runs, dirty worktrees, and the repository default branch are rejected."
       parameters:
         - schema:
             type: string
@@ -18238,7 +18244,7 @@ paths:
                   minLength: 1
                   maxLength: 255
                   pattern: ^(?!-)(?!.*\.\.)[A-Za-z0-9._][A-Za-z0-9._/-]*$
-                  description: Existing remote branch to position the session worktree on, or null to clear the choice (revert to the default fresh session branch). Only settable before the worktree is provisioned.
+                  description: Existing remote branch to position the session worktree on, or null to clear the choice before provisioning (revert to the default fresh session branch). After provisioning, only a clean and idle session may switch to an existing non-default branch.
               required:
                 - branch
       responses:
@@ -18261,7 +18267,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "409":
-          description: Worktree already provisioned; the branch is locked.
+          description: The branch cannot be changed in the current session state.
           content:
             application/json:
               schema:

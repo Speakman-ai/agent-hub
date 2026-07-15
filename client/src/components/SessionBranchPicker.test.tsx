@@ -17,6 +17,7 @@ const baseSession = {
   worktree_path: null,
   worktree_branch: null,
   worktree_checkout_branch: null,
+  code_changed_at: null,
 };
 
 function renderPicker(session: any = baseSession, extra: any = {}) {
@@ -76,6 +77,7 @@ describe('SessionBranchPicker', () => {
       ...baseSession,
       worktree_path: '/tmp/w',
       worktree_branch: 'agent-hub/x/session-1',
+      code_changed_at: '2026-07-15T16:00:00.000Z',
     });
     const btn = screen.getByTestId('session-branch-picker');
     expect(btn).toHaveTextContent('agent-hub/x/session-1');
@@ -83,5 +85,22 @@ describe('SessionBranchPicker', () => {
     // Locked: clicking does not open the branch list.
     expect(api.getProjectBranches).not.toHaveBeenCalled();
     expect(screen.queryByText(/Start session on/)).toBeNull();
+  });
+
+  it('allows a clean provisioned session to choose another existing branch', async () => {
+    renderPicker({
+      ...baseSession,
+      worktree_path: '/tmp/w',
+      worktree_branch: 'agent-hub/x/session-1',
+    });
+
+    fireEvent.click(screen.getByTestId('session-branch-picker'));
+    await screen.findByText('feature/foo');
+    expect(screen.queryByText(/Default/)).toBeNull();
+
+    fireEvent.click(screen.getByText('feature/foo'));
+    await waitFor(() =>
+      expect(api.setSessionWorktreeBranch).toHaveBeenCalledWith('sess-1', 'feature/foo'),
+    );
   });
 });

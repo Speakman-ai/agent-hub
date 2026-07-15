@@ -1347,12 +1347,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ epicId: epicId ?? null }),
     }),
-  /**
-   * Choose (or clear) the existing remote branch this session's worktree is
-   * checked out onto. Pass `branch: null` to revert to the default fresh
-   * session branch. Only accepted before the worktree is provisioned (409
-   * afterward — the branch is then locked).
-   */
+  /** Choose an initial branch, or switch a clean provisioned worktree. */
   setSessionWorktreeBranch: (sessionId: any, branch: any) =>
     fetchJSON(`/sessions/${sessionId}/worktree-branch`, {
       method: 'PUT',

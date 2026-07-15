@@ -12,6 +12,13 @@ import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
 import { getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { createStreamParser } from './stream-parser.js';
 import { buildSessionMultiSpawnArgs, normalizeSessionMultiEngine } from './session-multi-engine.js';
+import { sessionUsesWorktree } from './project-mode.js';
+import {
+  getSessionWorktreeLockOwner,
+  releaseSessionWorktreeLock,
+  tryAcquireSessionWorktreeLock,
+  waitForSessionWorktreeLockRelease,
+} from './session-worktree-lock.js';
 import type {
   Stmts,
   EnrichedAgent,
@@ -182,7 +189,7 @@ export async function handleMultiAgentChat(
   const config = d.getConfig();
   const MAX_QUEUE_SIZE = d.getMaxQueueSize();
 
-  const session = S.getSession.get(sessionId) as SessionRow | undefined;
+  let session = S.getSession.get(sessionId) as SessionRow | undefined;
   if (!session) {
     if (ws) ws.send(JSON.stringify({ type: 'error', error: `Unknown session: ${sessionId}` }));
     return;
@@ -199,11 +206,53 @@ export async function handleMultiAgentChat(
     .map((r) => d.getEnrichedAgent(r.agent_id))
     .filter((a): a is EnrichedAgent => !!a);
 
+  let worktreeRoundLockHeld = false;
+  const finalizeLockOwned =
+    msg._finalizeInternal === true && getSessionWorktreeLockOwner(sessionId) === 'finalize';
+  if (sessionUsesWorktree(session) && !finalizeLockOwned) {
+    while (!worktreeRoundLockHeld) {
+      const lockOwner = getSessionWorktreeLockOwner(sessionId);
+      if (!lockOwner) {
+        worktreeRoundLockHeld = tryAcquireSessionWorktreeLock(sessionId, 'multi-agent-round');
+        continue;
+      }
+      // A different multi-agent round also owns the session until its
+      // executor and advisor work finish. Waiting keeps this turn from
+      // entering the round while the other owner is still active.
+      await waitForSessionWorktreeLockRelease(sessionId);
+    }
+
+    session = S.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) {
+      releaseSessionWorktreeLock(sessionId, 'multi-agent-round');
+      if (ws) ws.send(JSON.stringify({ type: 'error', sessionId, error: 'Session not found' }));
+      return;
+    }
+  } else if (finalizeLockOwned) {
+    session = S.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) {
+      if (ws) ws.send(JSON.stringify({ type: 'error', sessionId, error: 'Session not found' }));
+      return;
+    }
+  }
+
   if (advisors.length === 0) {
-    return d.runExecutorTurn(ws, msg);
+    try {
+      return await d.runExecutorTurn(ws, {
+        ...msg,
+        ...(worktreeRoundLockHeld || finalizeLockOwned ? { _multiAgentInternal: true } : {}),
+      });
+    } finally {
+      if (worktreeRoundLockHeld) {
+        releaseSessionWorktreeLock(sessionId, 'multi-agent-round');
+      }
+    }
   }
 
   if (activeMultiAgentRounds.has(sessionId) && !msg._fromQueue) {
+    if (worktreeRoundLockHeld) {
+      releaseSessionWorktreeLock(sessionId, 'multi-agent-round');
+    }
     const currentQueue = S.getQueuedMessages.all(sessionId) as MessageQueueRow[];
     if (currentQueue.length >= MAX_QUEUE_SIZE) {
       if (ws) {
@@ -332,6 +381,9 @@ export async function handleMultiAgentChat(
       await runAdvisorTurn(ws, session, primary, turn.agent, roundState);
     }
   } finally {
+    if (worktreeRoundLockHeld) {
+      releaseSessionWorktreeLock(sessionId, 'multi-agent-round');
+    }
     const wasCancelled = roundState.cancelled;
     activeMultiAgentRounds.delete(sessionId);
     d.broadcast({ type: 'session_round_done', sessionId });

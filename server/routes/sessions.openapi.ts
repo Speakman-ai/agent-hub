@@ -68,6 +68,8 @@ export const SessionComponent = registerComponent(
       }),
       worktree_path: z.string().nullable().optional(),
       worktree_branch: z.string().nullable().optional(),
+      worktree_checkout_branch: z.string().nullable().optional(),
+      code_changed_at: z.string().nullable().optional(),
       engine_session_id: z.string().nullable().optional(),
       cron_id: z.number().int().nullable().optional(),
       deleted_at: z.string().nullable().optional(),
@@ -366,8 +368,10 @@ export const PutSessionLinkedDesignRequestSchema = z.object({
 /**
  * PUT /api/sessions/:sessionId/worktree-branch — choose (or clear) the existing
  * remote branch this session's worktree is checked out onto. `branch: null`
- * clears the choice back to the default fresh session branch. Only settable
- * before the worktree is provisioned.
+ * clears the choice back to the default fresh session branch before the
+ * worktree is provisioned. After provisioning, a clean and idle session may
+ * switch to an existing non-default branch; code changes, active turns, and
+ * Finalize lock the branch.
  */
 export const PutSessionWorktreeBranchRequestSchema = z.object({
   branch: z
@@ -381,7 +385,7 @@ export const PutSessionWorktreeBranchRequestSchema = z.object({
     .nullable()
     .openapi({
       description:
-        'Existing remote branch to position the session worktree on, or null to clear the choice (revert to the default fresh session branch). Only settable before the worktree is provisioned.',
+        'Existing remote branch to position the session worktree on, or null to clear the choice before provisioning (revert to the default fresh session branch). After provisioning, only a clean and idle session may switch to an existing non-default branch.',
     }),
 });
 
@@ -750,7 +754,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Choose (or clear) the existing branch a session worktree checks out onto',
   description:
-    'Sets `worktree_checkout_branch` so the session worktree is provisioned directly on the chosen existing remote branch (commits land there and Finalize pushes/updates its PR). Pass `branch: null` to clear the choice and revert to the default fresh `agent-hub/<agent>/session-<id>` branch. Settable only before the worktree is provisioned — otherwise the branch is locked (409). The provisioner ignores a chosen branch equal to the repo default branch.',
+    'Before provisioning, sets `worktree_checkout_branch` so the session worktree starts directly on the chosen existing remote branch. After provisioning, switches a clean and idle worktree onto the chosen existing non-default branch. Commits then land there and Finalize pushes or updates its PR. Pass `branch: null` only before provisioning to clear the choice and revert to the default fresh `agent-hub/<agent>/session-<id>` branch. Code changes, active turns, Finalize runs, dirty worktrees, and the repository default branch are rejected.',
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(PutSessionWorktreeBranchRequestSchema) },
@@ -759,7 +763,7 @@ registerPath({
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed or session does not use a worktree.'),
     404: errorResponse('Session not found.'),
-    409: errorResponse('Worktree already provisioned; the branch is locked.'),
+    409: errorResponse('The branch cannot be changed in the current session state.'),
   },
 });
 

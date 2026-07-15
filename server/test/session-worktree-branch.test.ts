@@ -4,18 +4,37 @@
  *
  * The endpoint is the general form of the resolve-PR head-branch mechanism, so
  * the guards matter: it must reject unsafe branch names, refuse to mutate a
- * session whose worktree is already provisioned (the One-Session-One-Branch
- * invariant Finalize keys off), and refuse sessions that don't use a worktree.
+ * session after code work begins, and refuse sessions that don't use a
+ * worktree.
  */
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { execFileSync } from 'child_process';
+import { vi } from 'vitest';
 import type supertest from 'supertest';
 import { getRequest, createProject, createAgent, createSession } from './helpers.js';
 import { getDb } from '../db.js';
+import { routeDeps } from '../index.js';
+import {
+  releaseSessionWorktreeLock,
+  tryAcquireSessionWorktreeLock,
+} from '../session-worktree-lock.js';
+
+const checkWorktreeChangesMock = vi.hoisted(() => vi.fn());
+vi.mock('../auto-git.js', async () => {
+  const actual = await vi.importActual<typeof import('../auto-git.js')>('../auto-git.js');
+  checkWorktreeChangesMock.mockImplementation(actual.checkWorktreeChanges);
+  return { ...actual, checkWorktreeChanges: checkWorktreeChangesMock };
+});
 
 let request: supertest.Agent;
 
 interface SessionBody {
   id: string;
   worktree_checkout_branch?: string | null;
+  worktree_path?: string | null;
+  worktree_branch?: string | null;
 }
 
 async function freshWorktreeSession(): Promise<string> {
@@ -90,11 +109,147 @@ describe('PUT /api/sessions/:sessionId/worktree-branch', () => {
       .expect(400);
   });
 
-  it('returns 409 once the worktree has been provisioned (branch is locked)', async () => {
+  it('switches a clean, provisioned session onto an existing branch', async () => {
+    const sessionId = await freshWorktreeSession();
+    const worktreePath = mkdtempSync(join(tmpdir(), 'agent-hub-branch-'));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: worktreePath });
+    writeFileSync(join(worktreePath, 'README.md'), 'test\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: worktreePath });
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Agent Hub Test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '-qm',
+        'init',
+      ],
+      { cwd: worktreePath },
+    );
+    const switchSpy = vi
+      .spyOn(routeDeps, 'switchSessionWorkspaceBranch')
+      .mockResolvedValue({ worktreePath, branch: 'feature/foo' });
+
+    try {
+      getDb()
+        .prepare(
+          'UPDATE sessions SET worktree_path = ?, worktree_branch = ?, code_changed_at = NULL WHERE id = ?',
+        )
+        .run(worktreePath, 'agent-hub/x/session-y', sessionId);
+
+      const res = await request
+        .put(`/api/sessions/${sessionId}/worktree-branch`)
+        .send({ branch: 'feature/foo' });
+      expect(res.status).toBe(200);
+
+      expect(switchSpy).toHaveBeenCalledWith(sessionId, 'feature/foo');
+      expect((res.body as SessionBody).worktree_branch).toBe('feature/foo');
+      expect((res.body as SessionBody).worktree_path).toBe(worktreePath);
+    } finally {
+      switchSpy.mockRestore();
+      rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a concurrent switch before the first worktree check completes', async () => {
+    const sessionId = await freshWorktreeSession();
+    const worktreePath = mkdtempSync(join(tmpdir(), 'agent-hub-branch-'));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: worktreePath });
+    writeFileSync(join(worktreePath, 'README.md'), 'test\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: worktreePath });
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Agent Hub Test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '-qm',
+        'init',
+      ],
+      { cwd: worktreePath },
+    );
+
+    let releaseCheck!: () => void;
+    let resolveCheckStarted!: () => void;
+    const checkStarted = new Promise<void>((resolve) => {
+      resolveCheckStarted = resolve;
+    });
+    const defaultCheckWorktreeChanges = checkWorktreeChangesMock.getMockImplementation()!;
+    checkWorktreeChangesMock.mockImplementation(async (cwd: string) => {
+      if (cwd !== worktreePath) return defaultCheckWorktreeChanges(cwd);
+      resolveCheckStarted();
+      await new Promise<void>((resolveRelease) => {
+        releaseCheck = resolveRelease;
+      });
+      return { hasUncommitted: false, hasUnpushed: false, branch: 'main', headSha: 'test' };
+    });
+    const switchSpy = vi
+      .spyOn(routeDeps, 'switchSessionWorkspaceBranch')
+      .mockResolvedValue({ worktreePath, branch: 'feature/foo' });
+
+    try {
+      getDb()
+        .prepare(
+          'UPDATE sessions SET worktree_path = ?, worktree_branch = ?, code_changed_at = NULL WHERE id = ?',
+        )
+        .run(worktreePath, 'agent-hub/x/session-y', sessionId);
+
+      const firstResponsePromise = request
+        .put(`/api/sessions/${sessionId}/worktree-branch`)
+        .send({ branch: 'feature/foo' })
+        .then((response) => response);
+      await checkStarted;
+
+      const secondResponse = await request
+        .put(`/api/sessions/${sessionId}/worktree-branch`)
+        .send({ branch: 'feature/bar' });
+      expect(secondResponse.status).toBe(409);
+      expect(secondResponse.body.error).toBe('The session is already starting or switching a turn');
+
+      releaseCheck();
+      expect((await firstResponsePromise).status).toBe(200);
+      expect(switchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      checkWorktreeChangesMock.mockImplementation(defaultCheckWorktreeChanges);
+      switchSpy.mockRestore();
+      rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a switch while a turn has reserved the session startup', async () => {
     const sessionId = await freshWorktreeSession();
     getDb()
-      .prepare('UPDATE sessions SET worktree_path = ?, worktree_branch = ? WHERE id = ?')
+      .prepare(
+        'UPDATE sessions SET worktree_path = ?, worktree_branch = ?, code_changed_at = NULL WHERE id = ?',
+      )
       .run('/tmp/some/worktree', 'agent-hub/x/session-y', sessionId);
+    const switchSpy = vi.spyOn(routeDeps, 'switchSessionWorkspaceBranch');
+
+    expect(tryAcquireSessionWorktreeLock(sessionId, 'turn-start')).toBe(true);
+    try {
+      const response = await request
+        .put(`/api/sessions/${sessionId}/worktree-branch`)
+        .send({ branch: 'feature/foo' });
+      expect(response.status).toBe(409);
+      expect(response.body.error).toBe('The session is already starting or switching a turn');
+      expect(switchSpy).not.toHaveBeenCalled();
+    } finally {
+      releaseSessionWorktreeLock(sessionId, 'turn-start');
+      switchSpy.mockRestore();
+    }
+  });
+
+  it('returns 409 once the worktree has code changes', async () => {
+    const sessionId = await freshWorktreeSession();
+    getDb()
+      .prepare(
+        'UPDATE sessions SET worktree_path = ?, worktree_branch = ?, code_changed_at = ? WHERE id = ?',
+      )
+      .run('/tmp/some/worktree', 'agent-hub/x/session-y', '2026-07-15T16:00:00.000Z', sessionId);
 
     await request
       .put(`/api/sessions/${sessionId}/worktree-branch`)

@@ -7,10 +7,9 @@ import { isSessionWorktreeEnabled } from '../utils/sessionDerivedState';
  * Toolbar control to position a session worktree on an EXISTING remote branch
  * (the general form of the resolve-PR head-branch mechanism).
  *
- * The choice is only settable BEFORE the worktree is provisioned — once
- * `worktree_path` is set the branch is locked (One-Session-One-Branch: Finalize
- * keys off the recorded branch). After provisioning this renders a locked chip
- * showing the branch the session is actually on.
+ * Before provisioning, the picker chooses the branch for the initial clone.
+ * After provisioning, it remains available only while the session is clean
+ * and has not recorded code changes. Once work begins it renders a locked chip.
  *
  * Selecting a branch calls `PUT /api/sessions/:id/worktree-branch`; the server
  * broadcasts `session-updated`, so the `session` prop refreshes over WebSocket
@@ -32,6 +31,7 @@ export default function SessionBranchPicker({
 
   const worktreeEnabled = isSessionWorktreeEnabled(session);
   const provisioned = !!session?.worktree_path;
+  const canSwitchProvisioned = provisioned && !session?.code_changed_at;
   const chosen = session?.worktree_checkout_branch || null;
   const lockedBranch = session?.worktree_branch || null;
 
@@ -69,7 +69,7 @@ export default function SessionBranchPicker({
   }
 
   function toggleOpen() {
-    if (provisioned) return; // locked — nothing to choose
+    if (provisioned && !canSwitchProvisioned) return;
     const next = !open;
     setOpen(next);
     if (next) void loadBranches(false);
@@ -89,11 +89,14 @@ export default function SessionBranchPicker({
 
   // Label: locked branch after provisioning, else the chosen branch, else a prompt.
   const label = provisioned ? lockedBranch || 'Branch' : chosen || 'Branch';
-  const title = provisioned
-    ? `Worktree is on ${lockedBranch || 'its branch'} — locked once created`
-    : chosen
-      ? `Session will start on existing branch ${chosen}`
-      : 'Start this session on an existing branch';
+  const title =
+    provisioned && canSwitchProvisioned
+      ? 'Switch this clean session to an existing branch'
+      : provisioned
+        ? `Worktree is on ${lockedBranch || 'its branch'} - locked after code changes`
+        : chosen
+          ? `Session will start on existing branch ${chosen}`
+          : 'Start this session on an existing branch';
 
   // Branches that can be checked out onto (exclude the default — Finalize can't
   // push to it — and the session's own default branch pattern is never listed).
@@ -104,27 +107,29 @@ export default function SessionBranchPicker({
       <button
         type="button"
         data-testid="session-branch-picker"
-        aria-haspopup={!provisioned}
+        aria-haspopup={!provisioned || canSwitchProvisioned}
         aria-expanded={open}
         disabled={disabled}
         onClick={toggleOpen}
         title={title}
         className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
-          provisioned
+          provisioned && !canSwitchProvisioned
             ? 'bg-gray-900/60 text-gray-400 border-gray-800 cursor-default'
-            : chosen
-              ? 'bg-emerald-800/60 text-emerald-50 border-emerald-600 hover:bg-emerald-700/60'
-              : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+            : provisioned
+              ? 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+              : chosen
+                ? 'bg-emerald-800/60 text-emerald-50 border-emerald-600 hover:bg-emerald-700/60'
+                : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
         } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
-        {provisioned ? <Lock size={12} /> : <GitBranch size={13} />}
+        {provisioned && !canSwitchProvisioned ? <Lock size={12} /> : <GitBranch size={13} />}
         <span className="truncate max-w-[120px]">{label}</span>
       </button>
 
-      {open && !provisioned && (
+      {open && (!provisioned || canSwitchProvisioned) && (
         <div className="absolute z-30 bottom-full mb-1 left-0 w-72 max-h-80 overflow-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl p-1 text-xs">
           <div className="flex items-center justify-between px-2 py-1.5 text-[11px] uppercase tracking-wide text-gray-500">
-            <span>Start session on…</span>
+            <span>{provisioned ? 'Switch session to…' : 'Start session on…'}</span>
             <button
               type="button"
               onClick={() => void loadBranches(true)}
@@ -135,19 +140,21 @@ export default function SessionBranchPicker({
             </button>
           </div>
 
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => void choose(null)}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-800 text-left text-gray-200"
-          >
-            <span className="w-3">
-              {!chosen && <Check size={12} className="text-emerald-400" />}
-            </span>
-            <span>
-              Default <span className="text-gray-500">(new branch off the base)</span>
-            </span>
-          </button>
+          {!provisioned && (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void choose(null)}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-800 text-left text-gray-200"
+            >
+              <span className="w-3">
+                {!chosen && <Check size={12} className="text-emerald-400" />}
+              </span>
+              <span>
+                Default <span className="text-gray-500">(new branch off the base)</span>
+              </span>
+            </button>
+          )}
 
           <div className="my-1 border-t border-gray-800" />
 
@@ -171,7 +178,9 @@ export default function SessionBranchPicker({
                 className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-800 text-left text-gray-200"
               >
                 <span className="w-3">
-                  {chosen === b.name && <Check size={12} className="text-emerald-400" />}
+                  {(provisioned ? lockedBranch : chosen) === b.name && (
+                    <Check size={12} className="text-emerald-400" />
+                  )}
                 </span>
                 <GitBranch size={12} className="text-gray-500 shrink-0" />
                 <span className="truncate">{b.name}</span>

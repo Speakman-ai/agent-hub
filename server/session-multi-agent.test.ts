@@ -1,11 +1,21 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildSessionMultiSpawnArgs,
   normalizeSessionMultiEngine,
   isSessionMultiEngine,
 } from './session-multi-engine.js';
-import { buildMultiAgentTurnPlan, parseMentions } from './session-multi-agent.js';
-import type { EnrichedAgent } from './types.js';
+import {
+  buildMultiAgentTurnPlan,
+  handleMultiAgentChat,
+  initSessionMultiAgent,
+  parseMentions,
+} from './session-multi-agent.js';
+import {
+  getSessionWorktreeLockOwner,
+  releaseSessionWorktreeLock,
+  tryAcquireSessionWorktreeLock,
+} from './session-worktree-lock.js';
+import type { AppConfig, EnrichedAgent, SessionRow, Stmts } from './types.js';
 
 describe('normalizeSessionMultiEngine / isSessionMultiEngine', () => {
   it('defaults unknown engines to claude-code', () => {
@@ -88,5 +98,74 @@ describe('buildMultiAgentTurnPlan', () => {
     const mentions = parseMentions('@Reviewer please review', [reviewer, reviewerBot]);
     expect(mentions.has('r1')).toBe(true);
     expect(mentions.has('r2')).toBe(false);
+  });
+});
+
+describe('multi-agent worktree lock', () => {
+  it('holds the lock through the no-advisor executor handoff', async () => {
+    const sessionId = 'multi-agent-lock-test';
+    const session = {
+      id: sessionId,
+      agent_id: 'primary',
+      use_worktree: 1,
+    } as SessionRow;
+    let currentSession = session;
+    const primary = {
+      id: 'primary',
+      name: 'Primary',
+      color: '#f00',
+      projectId: 'p1',
+      cwd: '/tmp',
+    } as EnrichedAgent;
+    let releaseExecutor!: () => void;
+    let resolveExecutorStarted!: () => void;
+    const executorStarted = new Promise<void>((resolve) => {
+      resolveExecutorStarted = resolve;
+    });
+    const runExecutorTurn = vi.fn(async (_ws, msg) => {
+      expect(msg._multiAgentInternal).toBe(true);
+      resolveExecutorStarted();
+      await new Promise<void>((resolve) => {
+        releaseExecutor = resolve;
+      });
+    });
+    const getSession = vi.fn(() => currentSession);
+
+    initSessionMultiAgent({
+      stmts: {
+        getSession: { get: getSession },
+        getSessionAgents: { all: vi.fn(() => []) },
+      } as unknown as Stmts,
+      broadcast: vi.fn(),
+      getEnrichedAgent: vi.fn(() => primary),
+      buildEnrichedPrompt: vi.fn(() => ''),
+      getClaudeBin: vi.fn(() => '/bin/claude'),
+      getCursorBin: vi.fn(() => '/bin/cursor'),
+      getGeminiBin: vi.fn(() => '/bin/gemini'),
+      getCodexBin: vi.fn(() => '/bin/codex'),
+      getConfig: vi.fn(() => ({}) as AppConfig),
+      getMaxQueueSize: vi.fn(() => 10),
+      runExecutorTurn,
+    });
+
+    expect(tryAcquireSessionWorktreeLock(sessionId, 'turn-start')).toBe(true);
+    const execution = handleMultiAgentChat(null, {
+      type: 'chat',
+      agentId: 'primary',
+      sessionId,
+      content: 'start',
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runExecutorTurn).not.toHaveBeenCalled();
+    currentSession = { ...session, worktree_branch: 'feature/switched' };
+    releaseSessionWorktreeLock(sessionId, 'turn-start');
+    await executorStarted;
+    expect(getSession).toHaveBeenCalledTimes(2);
+    expect(getSessionWorktreeLockOwner(sessionId)).toBe('multi-agent-round');
+
+    releaseExecutor();
+    await execution;
+    expect(getSessionWorktreeLockOwner(sessionId)).toBeNull();
+    expect(runExecutorTurn).toHaveBeenCalledTimes(1);
   });
 });

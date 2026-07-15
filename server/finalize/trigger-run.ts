@@ -24,6 +24,11 @@ import {
   registerFinalizeRunAbort,
   unregisterFinalizeRunAbort,
 } from './run-abort-registry.js';
+import {
+  releaseSessionWorktreeLock,
+  tryAcquireSessionWorktreeLock,
+  waitForSessionWorktreeLockRelease,
+} from '../session-worktree-lock.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -133,16 +138,20 @@ export type StartFinalizeRunBackgroundResult =
   | { ok: true; runId: string; status: string }
   | { ok: false; error: string; runId?: string; message?: string };
 
-async function kickoffFinalizeRun(
+type KickoffFinalizeRunArgs = {
+  project: Project;
+  card: KanbanCardRow;
+  session: SessionRow;
+  triggerSource: 'ui_button' | 'agent_block';
+  triggeredByUserId: string;
+  mode?: FinalizeRunMode;
+  onFinalizeStarted?: () => void;
+  onFinalizeSettled?: () => void;
+};
+
+async function kickoffFinalizeRunBody(
   deps: RouteDeps,
-  args: {
-    project: Project;
-    card: KanbanCardRow;
-    session: SessionRow;
-    triggerSource: 'ui_button' | 'agent_block';
-    triggeredByUserId: string;
-    mode?: FinalizeRunMode;
-  },
+  args: KickoffFinalizeRunArgs,
 ): Promise<
   | { kind: 'started'; runId: string; status: string }
   | { kind: 'reused'; runId: string; status: string }
@@ -293,7 +302,9 @@ async function kickoffFinalizeRun(
       .finally(() => {
         settled = true;
         if (registeredRunId) unregisterFinalizeRunAbort(registeredRunId);
+        args.onFinalizeSettled?.();
       });
+    args.onFinalizeStarted?.();
 
     for (let i = 0; i < ROW_VISIBILITY_POLL_MAX_ATTEMPTS; i++) {
       const created = stmts.getFinalizeRunByIdempotencyKey.get(idempotencyKey) as
@@ -316,6 +327,61 @@ async function kickoffFinalizeRun(
   } finally {
     if (shouldReleaseClaim || !runFinalizeStarted) {
       stmts.deleteFinalizeKickoffClaim.run(claimKey);
+    }
+  }
+}
+
+/**
+ * Start Finalize while reserving the session worktree for the entire
+ * orchestrator lifetime. The reservation is transferred to the background
+ * promise after kickoff, then released when that promise settles.
+ */
+async function kickoffFinalizeRun(
+  deps: RouteDeps,
+  args: Omit<KickoffFinalizeRunArgs, 'onFinalizeStarted' | 'onFinalizeSettled'>,
+): ReturnType<typeof kickoffFinalizeRunBody> {
+  const { stmts } = deps;
+  const current = stmts.getSession.get(args.session.id) as SessionRow | undefined;
+  if (!current) {
+    return { kind: 'error', error: 'session_not_found', message: 'Session not found.' };
+  }
+
+  let lockHeld = false;
+  let lockTransferred = false;
+  let session: SessionRow = current;
+
+  if (current.worktree_path && current.worktree_branch) {
+    while (!tryAcquireSessionWorktreeLock(current.id, 'finalize')) {
+      await waitForSessionWorktreeLockRelease(current.id);
+    }
+    lockHeld = true;
+    const refreshed = stmts.getSession.get(current.id) as SessionRow | undefined;
+    if (!refreshed) {
+      releaseSessionWorktreeLock(current.id, 'finalize');
+      return { kind: 'error', error: 'session_not_found', message: 'Session not found.' };
+    }
+    session = refreshed;
+  }
+
+  try {
+    return await kickoffFinalizeRunBody(deps, {
+      ...args,
+      session,
+      onFinalizeStarted: () => {
+        lockTransferred = lockHeld;
+        lockHeld = false;
+      },
+      onFinalizeSettled: () => {
+        if (lockTransferred) {
+          lockTransferred = false;
+          releaseSessionWorktreeLock(session.id, 'finalize');
+          setImmediate(() => deps.drainSessionQueue?.(session.id));
+        }
+      },
+    });
+  } finally {
+    if (lockHeld) {
+      releaseSessionWorktreeLock(session.id, 'finalize');
     }
   }
 }

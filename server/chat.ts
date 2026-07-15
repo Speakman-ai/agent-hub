@@ -119,6 +119,12 @@ import {
 } from './spawn-prompt-payload.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
 import {
+  getSessionWorktreeLockOwner,
+  releaseSessionWorktreeLock,
+  tryAcquireSessionWorktreeLock,
+  waitForSessionWorktreeLockRelease,
+} from './session-worktree-lock.js';
+import {
   appendRunCancelledSystemMessage,
   finalizeChatRunAfterTermination,
   formatChatExitLog,
@@ -1928,6 +1934,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
   }
 
   async function handleChat(ws: WebSocketLike | null, msg: InternalChatMessage): Promise<void> {
+    let turnStartLockHeld = false;
+    const { sessionId } = msg;
     const persistHook = msg._onUserMessagePersisted;
     let persistReported = false;
     const reportUserMessagePersisted = (accepted: boolean) => {
@@ -1937,7 +1945,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     };
 
     try {
-      const { agentId, sessionId, content, images, hookSpecificOutput } = msg;
+      const { agentId, content, images, hookSpecificOutput } = msg;
       const isAutoContinuation = msg._autoContinuation === true;
       const continuationDepth = msg._continuationDepth || 0;
       const attachments: string | null =
@@ -2014,12 +2022,54 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         return;
       }
 
+      let finalizeLockOwned = false;
+      if (session && sessionUsesWorktree(session) && !msg._multiAgentInternal) {
+        if (getSessionWorktreeLockOwner(sessionId) === 'branch-switch') {
+          await waitForSessionWorktreeLockRelease(sessionId);
+          session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+          if (!session) {
+            if (ws) {
+              ws.send(JSON.stringify({ type: 'error', sessionId, error: 'Session not found' }));
+            }
+            return;
+          }
+        }
+        finalizeLockOwned =
+          msg._finalizeInternal === true && getSessionWorktreeLockOwner(sessionId) === 'finalize';
+        if (
+          !finalizeLockOwned &&
+          !activeProcesses.has(sessionId) &&
+          !activeDelegationSessions.has(sessionId)
+        ) {
+          turnStartLockHeld = tryAcquireSessionWorktreeLock(sessionId, 'turn-start');
+        }
+      }
+
       const existingTask = stmts.getActiveTask.get(sessionId) as ActiveTaskRow | undefined;
+      const worktreeTurnStartBlocked =
+        sessionUsesWorktree(session!) &&
+        !msg._multiAgentInternal &&
+        !finalizeLockOwned &&
+        !turnStartLockHeld;
       const sessionBusy =
         isSessionChatBusy(sessionId, activeProcesses, activeDelegationSessions, existingTask) ||
-        activeMultiAgentRounds.has(sessionId);
+        activeMultiAgentRounds.has(sessionId) ||
+        worktreeTurnStartBlocked;
 
-      if (sessionBusy && !msg._fromQueue && !msg._multiAgentInternal) {
+      if (
+        sessionBusy &&
+        ((!msg._fromQueue && !msg._multiAgentInternal) || worktreeTurnStartBlocked)
+      ) {
+        if (turnStartLockHeld) {
+          releaseSessionWorktreeLock(sessionId, 'turn-start');
+          turnStartLockHeld = false;
+        }
+        if (worktreeTurnStartBlocked && msg._fromQueue) {
+          setTimeout(() => {
+            void handleChat(null, msg);
+          }, 100);
+          return;
+        }
         if (isAutoContinuation) {
           const retries = msg._continuationRetry ?? 0;
           const plan = planAutoContinuationRetry({ retries });
@@ -3713,6 +3763,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       };
 
       activeProcesses.set(sessionId, proc);
+      if (turnStartLockHeld) {
+        releaseSessionWorktreeLock(sessionId, 'turn-start');
+        turnStartLockHeld = false;
+      }
       trackChild(proc);
       // NOTE: `sessions.last_turn_error` is intentionally NOT cleared here.
       // Clearing at spawn would reopen the Finalize automation gate while a
@@ -5765,6 +5819,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         drainQueue(sessionId);
       });
     } finally {
+      if (turnStartLockHeld) {
+        releaseSessionWorktreeLock(sessionId, 'turn-start');
+        turnStartLockHeld = false;
+      }
       if (persistHook && !persistReported) {
         persistReported = true;
         persistHook(false);

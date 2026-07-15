@@ -40,6 +40,7 @@ describe('createSpawnFinalizeFixTurn', () => {
         // CLI turn, not a pointer to a system message it cannot see on resume.
         content: REVIEWER_BODY,
         _skipUserMessagePersist: true,
+        _finalizeInternal: true,
       }),
     );
     // The reviewer's actual finding is present in what the CLI receives.

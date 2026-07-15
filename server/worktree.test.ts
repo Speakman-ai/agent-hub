@@ -13,6 +13,7 @@ vi.mock('./config.js', () => ({
 const {
   getOrCreateProcessWorktree,
   ensureSessionWorkspace,
+  switchSessionWorkspaceBranch,
   removeWorkspace,
   cleanupStaleWorkspaces,
   __test,
@@ -451,6 +452,39 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     // Persisted worktree_branch is the PR head branch (so Finalize/push targets it).
     expect(persist).toHaveBeenCalledTimes(1);
     expect(persist.mock.calls[0][1]).toBe('feature/pr-head');
+  });
+
+  it('switches a clean provisioned worktree onto an existing branch', async () => {
+    const persist = vi.fn();
+
+    git(sourceRepo, 'checkout -b feature/switch-target');
+    writeFileSync(path.join(sourceRepo, 'switch.txt'), 'switch target\n');
+    git(sourceRepo, 'add switch.txt');
+    git(sourceRepo, 'commit -m "switch target"');
+    git(sourceRepo, 'push -u origin feature/switch-target');
+    const targetTip = git(sourceRepo, 'rev-parse HEAD');
+    git(sourceRepo, 'checkout main');
+
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
+    createdWorkspace = clonePath;
+
+    const result = await switchSessionWorkspaceBranch(
+      { ...makeSession(clonePath), worktree_branch: 'agent-hub/test-agent/session-old' },
+      'feature/switch-target',
+    );
+
+    expect(result).toEqual({
+      kind: 'switched',
+      worktreePath: clonePath,
+      branch: 'feature/switch-target',
+    });
+    expect(git(clonePath, 'rev-parse --abbrev-ref HEAD')).toBe('feature/switch-target');
+    expect(git(clonePath, 'rev-parse HEAD')).toBe(targetTip);
   });
 
   it('falls back to the default session branch when the PR head branch is missing on origin', async () => {

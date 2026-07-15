@@ -2001,6 +2001,66 @@ async function positionCloneOnExistingBranch(opts: {
   }
 }
 
+export type SessionWorkspaceBranchSwitchResult =
+  | { kind: 'switched'; worktreePath: string; branch: string }
+  | { kind: 'default'; message: string }
+  | { kind: 'missing'; message: string }
+  | { kind: 'error'; message: string };
+
+/**
+ * Move a clean, already-provisioned session worktree onto an existing remote
+ * branch. Callers must guard against active turns and dirty worktrees before
+ * invoking this helper; the Git operation itself remains centralized here so
+ * hosted-repo remotes and per-user credentials follow the normal workspace
+ * path.
+ */
+export async function switchSessionWorkspaceBranch(
+  session: SessionRow,
+  branch: string,
+  githubRepo?: string | null,
+  hostedBarePath?: string | null,
+): Promise<SessionWorkspaceBranchSwitchResult> {
+  const worktreePath = session.worktree_path;
+  if (!worktreePath) {
+    return { kind: 'error', message: 'Session worktree is not provisioned' };
+  }
+
+  if (hostedBarePath) {
+    await ensureOriginPointsAtHostedRepo(worktreePath, hostedBarePath);
+  }
+
+  const defaultBranch = await getDefaultBranch(worktreePath);
+  if (branch === defaultBranch) {
+    return {
+      kind: 'default',
+      message: `Cannot switch a session worktree onto the repository default branch '${defaultBranch}'`,
+    };
+  }
+
+  const tokenOwnerId = await resolveWorktreeTokenOwnerId(
+    session.owner_user_id ?? null,
+    githubRepo ?? null,
+  );
+  const userToken = await resolveUserGithubToken(tokenOwnerId, {
+    oauthCredentials: resolveOAuthAppCredentials(config),
+  });
+  const authArgs = userToken ? gitAuthArgsForGithubPat(userToken) : [];
+  const positioned = await positionCloneOnExistingBranch({
+    cloneDir: worktreePath,
+    branch,
+    authArgs,
+    userToken,
+  });
+
+  if (positioned.kind === 'positioned') {
+    return { kind: 'switched', worktreePath, branch };
+  }
+  if (positioned.kind === 'missing') {
+    return { kind: 'missing', message: `Branch '${branch}' no longer exists on origin` };
+  }
+  return positioned;
+}
+
 /**
  * Provision or reuse the per-session git clone under `~/.agent-hub/workspaces/`.
  *

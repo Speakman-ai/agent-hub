@@ -78,6 +78,7 @@ export function createSpawnFinalizeFixTurn(deps: SpawnFinalizeFixTurnDeps): Spaw
         // dispatcher already inserted the same body as a `system` row.
         content: composeFixTurnContent(args.body),
         _skipUserMessagePersist: true,
+        _finalizeInternal: true,
       });
       return { spawned: true };
     } catch (err) {

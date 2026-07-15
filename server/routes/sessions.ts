@@ -138,6 +138,10 @@ import {
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import {
+  releaseSessionWorktreeLock,
+  tryAcquireSessionWorktreeLock,
+} from '../session-worktree-lock.js';
+import {
   consumeSessionCredentialRequest,
   getSessionCredentialRequestStatus,
   submitSessionCredentialRequest,
@@ -1476,16 +1480,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
    * choice and reverts to the default fresh `agent-hub/<agent>/session-<id>`
    * branch.
    *
-   * Settable only BEFORE the worktree is provisioned: once `worktree_path` is
-   * set the branch is locked (One-Session-One-Branch — Finalize keys off the
-   * recorded branch), so this returns 409. `ensureSessionWorkspace`
-   * authoritatively ignores a chosen branch equal to the repo default branch,
-   * so a stored default can never cause a push to main.
+   * Before provisioning, this records the branch for the initial clone. After
+   * provisioning, a clean and idle session may switch to another existing
+   * non-default branch. Once code changes, an active turn, or Finalize exists,
+   * the branch is locked because Finalize keys off the recorded branch.
    */
   router.put(
     '/api/sessions/:sessionId/worktree-branch',
     requireRole('User'),
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const parsed = parseBody(PutSessionWorktreeBranchRequestSchema, req, res);
       if (!parsed) return;
       const sessionId = req.params.sessionId as string;
@@ -1497,14 +1500,79 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (!sessionUsesWorktree(existing)) {
         return res.status(400).json({ error: 'Session does not use a worktree' });
       }
-      if (existing.worktree_path) {
+      const branch = parsed.branch ?? null;
+      if (!tryAcquireSessionWorktreeLock(sessionId, 'branch-switch')) {
         return res
           .status(409)
-          .json({ error: 'Worktree already provisioned; the branch is locked for this session' });
+          .json({ error: 'The session is already starting or switching a turn' });
       }
+      try {
+        const current = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (!current) return res.status(404).json({ error: 'Session not found' });
+        if (!sessionUsesWorktree(current)) {
+          return res.status(400).json({ error: 'Session does not use a worktree' });
+        }
+        if (!current.worktree_path) {
+          stmts.setSessionWorktreeCheckoutBranch.run(branch, sessionId);
+        } else {
+          if (!branch) {
+            return res.status(409).json({
+              error: 'Worktree already provisioned; choose an existing branch to switch it',
+            });
+          }
+          if (current.code_changed_at) {
+            return res.status(409).json({
+              error: 'The session already has code changes; its branch is locked',
+            });
+          }
+          const activeTask = stmts.getActiveTask.get(sessionId) as
+            | { status?: string | null }
+            | undefined;
+          if (activeProcesses.has(sessionId) || activeTask?.status === 'running') {
+            return res
+              .status(409)
+              .json({ error: 'Cannot switch branches while the session is active' });
+          }
+          const activeFinalizeRuns = stmts.getActiveFinalizeRuns.all() as Array<{
+            session_id?: string | null;
+          }>;
+          const hasFinalizeRun = activeFinalizeRuns.some((run) => run.session_id === sessionId);
+          if (hasFinalizeRun) {
+            return res
+              .status(409)
+              .json({ error: 'Cannot switch branches while Finalize is active' });
+          }
+          if (!deps.switchSessionWorkspaceBranch) {
+            return res.status(503).json({ error: 'Workspace branch switching is not available' });
+          }
 
-      const branch = parsed.branch ?? null;
-      stmts.setSessionWorktreeCheckoutBranch.run(branch, sessionId);
+          let changes;
+          try {
+            changes = await checkWorktreeChanges(current.worktree_path);
+          } catch (err: unknown) {
+            return res.status(409).json({
+              error: 'Unable to verify that the session worktree is clean',
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+          if (changes.hasUncommitted || changes.hasUnpushed) {
+            return res.status(409).json({
+              error: 'The session worktree has changes or commits that must be preserved first',
+            });
+          }
+
+          const switched = await deps.switchSessionWorkspaceBranch(sessionId, branch);
+          stmts.updateSessionWorktreePath.run(switched.worktreePath, switched.branch, sessionId);
+          stmts.setSessionWorktreeCheckoutBranch.run(switched.branch, sessionId);
+        }
+      } catch (err: unknown) {
+        return res.status(409).json({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        releaseSessionWorktreeLock(sessionId, 'branch-switch');
+        setImmediate(() => deps.drainSessionQueue?.(sessionId));
+      }
       const updated = stmts.getSession.get(sessionId) as SessionRow;
       const enriched = enrichSessionForClient(updated, stmts);
       deps.broadcast({ type: 'session-updated', session: enriched });

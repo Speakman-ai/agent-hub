@@ -31,11 +31,11 @@ export interface SessionRow {
    * When set (and the session uses a worktree, is not a resolve-PR session, and
    * the branch is not the repo default), `ensureSessionWorkspace` checks the
    * clone out directly onto `origin/<branch>` instead of cutting a fresh
-   * `agent-hub/<agent>/session-<id>` branch — so commits land on the chosen
-   * branch and Finalize pushes/updates its PR. Settable only BEFORE the
-   * worktree is provisioned (once `worktree_path` is set the branch is locked,
-   * preserving the One-Session-One-Branch invariant). NULL for the default
-   * fresh-branch behavior. See `PUT /api/sessions/:sessionId/worktree-branch`.
+   * `agent-hub/<agent>/session-<id>` branch. A clean, idle provisioned session
+   * may also update this value through the Branch picker, which moves the
+   * worktree before Finalize or code changes can claim the old branch. NULL for
+   * the default fresh-branch behavior. See
+   * `PUT /api/sessions/:sessionId/worktree-branch`.
    */
   worktree_checkout_branch?: string | null;
   changes_ready: string | null;
@@ -4094,6 +4094,8 @@ export interface ChatMessage {
   _skipUserMessagePersist?: boolean;
   /** Internal: advisor feedback content for executor follow-up prompt. */
   _advisorFeedback?: { name: string; content: string };
+  /** Internal: Finalize-dispatched turns run under the Finalize worktree lock. */
+  _finalizeInternal?: boolean;
 }
 
 export interface CancelMessage {
@@ -4239,6 +4241,13 @@ export interface RouteDeps {
    * immediately after opening a session.
    */
   provisionSessionWorkspace?: (sessionId: string) => Promise<string>;
+  /** Move a clean session worktree onto an existing remote branch. */
+  switchSessionWorkspaceBranch?: (
+    sessionId: string,
+    branch: string,
+  ) => Promise<{ worktreePath: string; branch: string }>;
+  /** Resume queued messages after a branch switch releases the worktree lock. */
+  drainSessionQueue?: (sessionId: string) => void;
 }
 
 // ─── Design with linked projects ─────────────────────────────────
