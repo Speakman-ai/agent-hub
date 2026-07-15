@@ -166,8 +166,11 @@ describe('server/Dockerfile — better-sqlite3 native binding', () => {
     // This is the regression that caused production to crash-loop:
     // the server install ran with --ignore-scripts but never rebuilt,
     // so /app/server/node_modules/better-sqlite3 had no .node binary.
+    // node-pty (the other native server addon) is rebuilt on the same line;
+    // allow additional package names after better-sqlite3. The comprehensive
+    // "every native addon is rebuilt" guard lives in dockerfile.test.ts.
     expect(dockerfile).toMatch(
-      /^\s*RUN\s+cd\s+server\s+&&\s+npm\s+ci\s+--ignore-scripts\s+&&\s+npm\s+rebuild\s+better-sqlite3\s*$/m,
+      /^\s*RUN\s+cd\s+server\s+&&\s+npm\s+ci\s+--ignore-scripts\s+&&\s+npm\s+rebuild\s+better-sqlite3(?:\s+[\w-]+)*\s*$/m,
     );
   });
 

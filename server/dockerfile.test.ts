@@ -24,6 +24,36 @@ describe('server/Dockerfile', () => {
     expect(copyWithChown).toBeGreaterThanOrEqual(5);
   });
 
+  it('rebuilds every native addon in server/node_modules under --ignore-scripts', () => {
+    // The build stage installs server deps with `npm ci --ignore-scripts`, which
+    // skips each package's install/postinstall — the step that compiles native
+    // addons. Any native module therefore MUST be listed in an explicit
+    // `npm rebuild` or its binding is silently absent at runtime.
+    //
+    // Regression this guards: node-pty ships prebuilds for darwin/win32 ONLY, so
+    // on the Linux runtime image its pty.node was never compiled and the Terminal
+    // crashed with "Failed to load native module: pty.node". better-sqlite3 has
+    // the same requirement (it was already rebuilt). If a new native dep is added
+    // to server/package.json, add it to the rebuild list and to this test.
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    const buildIdx = dockerfile.indexOf('FROM node:22-slim AS build');
+    const clientIdx = dockerfile.indexOf('FROM node:22-slim AS client-build');
+    expect(buildIdx).toBeGreaterThan(-1);
+    expect(clientIdx).toBeGreaterThan(buildIdx);
+    const buildStage = dockerfile.slice(buildIdx, clientIdx);
+
+    // Every server-side native module must appear in an `npm rebuild ...` line.
+    const nativeServerModules = ['better-sqlite3', 'node-pty'];
+    const rebuildLines = buildStage.split('\n').filter((line) => /npm rebuild/.test(line));
+    expect(rebuildLines.length).toBeGreaterThan(0);
+    for (const mod of nativeServerModules) {
+      const rebuilt = rebuildLines.some((line) =>
+        new RegExp(`npm rebuild\\b[^\\n]*\\b${mod.replace('.', '\\.')}\\b`).test(line),
+      );
+      expect(rebuilt, `expected build stage to \`npm rebuild ${mod}\``).toBe(true);
+    }
+  });
+
   it('installs python3 + venv + pip in the runtime stage', () => {
     // Agents shell out to python3 (e.g. data wrangling, ad-hoc scripts). The
     // build stage installs python only to compile better-sqlite3; that stage
