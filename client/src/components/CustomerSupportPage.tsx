@@ -589,10 +589,49 @@ function ConvertControl({
   );
 }
 
+function TicketScreenshot({ src, scrollRoot }: any) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [shouldLoad, setShouldLoad] = useState(() => typeof IntersectionObserver === 'undefined');
+
+  useEffect(() => {
+    if (shouldLoad) return;
+    const image = imageRef.current;
+    if (!image || typeof IntersectionObserver === 'undefined') {
+      setShouldLoad(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          setShouldLoad(true);
+          observer.disconnect();
+        }
+      },
+      { root: scrollRoot?.current ?? null, rootMargin: '256px 0px' },
+    );
+    observer.observe(image);
+    return () => observer.disconnect();
+  }, [scrollRoot, shouldLoad]);
+
+  return (
+    <img
+      ref={imageRef}
+      src={shouldLoad ? src : undefined}
+      alt="Reporter screenshot"
+      className="h-32 w-48 rounded border border-gray-700 object-contain"
+      // Only images near the queue viewport use eager loading. Off-screen
+      // tickets do not receive a src until the observer brings them near view.
+      loading={shouldLoad ? 'eager' : 'lazy'}
+    />
+  );
+}
+
 function SupportTicketCard({
   ticket,
   projectId,
   agents,
+  screenshotRoot,
   onOpen,
   onDeleted,
   onConverted,
@@ -695,12 +734,7 @@ function SupportTicketCard({
                 className="relative block mt-2 w-fit"
                 data-testid="ticket-screenshot-thumb"
               >
-                <img
-                  src={screenshotUrl}
-                  alt="Reporter screenshot"
-                  className="max-h-32 rounded border border-gray-700 object-contain"
-                  loading="lazy"
-                />
+                <TicketScreenshot src={screenshotUrl} scrollRoot={screenshotRoot} />
               </a>
             ) : null}
 
@@ -1150,6 +1184,7 @@ function CustomerSupportPageInner(
   // that drives the list (see upsertTicket / removeTicket), so it still tracks
   // live updates and closes if the ticket is deleted.
   const [openTicket, setOpenTicket] = useState<any>(null);
+  const screenshotScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Resolve the active filter group to the set of statuses it covers (the API
   // takes a comma-separated list); always send an explicit set so the server's
@@ -1350,7 +1385,7 @@ function CustomerSupportPageInner(
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={screenshotScrollRef} className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center h-full text-gray-500">
             <div className="animate-spin w-5 h-5 border-2 border-gray-600 border-t-gray-300 rounded-full" />
@@ -1378,6 +1413,7 @@ function CustomerSupportPageInner(
                 ticket={ticket}
                 projectId={projectId}
                 agents={agents}
+                screenshotRoot={screenshotScrollRef}
                 onOpen={handleOpenTicket}
                 onDeleted={removeTicket}
                 onConverted={removeTicket}

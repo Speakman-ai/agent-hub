@@ -461,6 +461,7 @@ describe('CustomerSupportPage — ticket detail view', () => {
       'src',
       'https://hub.example.com/uploads/support-screenshot-abc.png',
     );
+    expect(thumbImg!).toHaveAttribute('loading', 'eager');
 
     // Open the modal and assert the larger screenshot renders too.
     fireEvent.click(screen.getByRole('button', { name: /open support ticket/i } as any) as any);
@@ -473,6 +474,56 @@ describe('CustomerSupportPage — ticket detail view', () => {
       'src',
       'https://hub.example.com/uploads/support-screenshot-abc.png',
     );
+  });
+
+  it('defers off-screen screenshot downloads until they approach the queue viewport', async () => {
+    const originalIntersectionObserver = (globalThis as any).IntersectionObserver;
+    let observerCallback: any;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    class FakeIntersectionObserver {
+      observe = observe;
+      disconnect = disconnect;
+
+      constructor(callback: any) {
+        observerCallback = callback;
+      }
+    }
+    (globalThis as any).IntersectionObserver = FakeIntersectionObserver;
+
+    try {
+      const shot = ticket({
+        id: 'deferred',
+        subject: 'Deferred visual bug',
+        screenshot_ref: '/uploads/support-screenshot-deferred.png',
+      });
+      (api.getSupportTickets as any).mockResolvedValue([shot]);
+
+      render(<CustomerSupportPage projectId="proj-1" />);
+      await waitFor(() => expect(screen.getByText('Deferred visual bug')).toBeInTheDocument());
+
+      const image = within(screen.getByTestId('ticket-screenshot-thumb')).getByRole('img');
+      await waitFor(() => expect(observe).toHaveBeenCalledWith(image));
+      expect(image).not.toHaveAttribute('src');
+      expect(image).toHaveAttribute('loading', 'lazy');
+      expect(image).toHaveClass('h-32', 'w-48');
+
+      act(() => observerCallback([{ isIntersecting: true }]));
+
+      await waitFor(() =>
+        expect(image).toHaveAttribute(
+          'src',
+          'https://hub.example.com/uploads/support-screenshot-deferred.png',
+        ),
+      );
+      expect(image).toHaveAttribute('loading', 'eager');
+    } finally {
+      if (originalIntersectionObserver) {
+        (globalThis as any).IntersectionObserver = originalIntersectionObserver;
+      } else {
+        delete (globalThis as any).IntersectionObserver;
+      }
+    }
   });
 
   it('shows no screenshot affordance when screenshot_ref is null', async () => {
