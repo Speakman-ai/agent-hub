@@ -255,14 +255,16 @@ export function mergeableBadge(mergeable: any) {
  *
  * Merge is only enabled when:
  *  - the PR is open (not closed/merged/draft)
- *  - GitHub has finished computing mergeability and reports `mergeable === true`
+ *  - GitHub has finished computing mergeability and reports either
+ *    `mergeable === true` or a clean merge-state status
  *
- * `mergeable === null` means GitHub is still computing — we keep the button
- * disabled with an explanatory tooltip rather than letting the user click and
- * fail.
+ * The list endpoint can return `mergeable === null` even after GraphQL reports
+ * `merge_state_status === 'CLEAN'`. The clean status is the stronger signal in
+ * that case, and keeps list actions consistent with the detail view.
  *
  * @param {{state?:string, draft?:boolean, merged_at?:string|null,
- *          mergeable?:boolean|null}} pr
+ *          mergeable?:boolean|null, merge_state_status?:string|null,
+ *          mergeable_state?:string|null}} pr
  * @returns {{enabled:boolean, reason:string}}
  */
 export function mergeButtonState(pr: any) {
@@ -274,8 +276,21 @@ export function mergeButtonState(pr: any) {
   // Branch protection (native PRs): the server-computed block reason wins
   // over mergeability — the merge endpoint would 409 with this message.
   if (pr.merge_blocked_reason) return { enabled: false, reason: pr.merge_blocked_reason };
-  if (pr.mergeable === true) return { enabled: true, reason: 'Squash and merge this PR' };
   if (pr.mergeable === false) return { enabled: false, reason: 'PR has merge conflicts' };
+  const mergeStateStatus = String(pr.merge_state_status || '').toUpperCase();
+  const mergeableState = String(pr.mergeable_state || '').toLowerCase();
+  if (mergeStateStatus === 'BLOCKED' || mergeableState === 'blocked') {
+    return { enabled: false, reason: 'Merging is blocked by branch protection' };
+  }
+  if (mergeStateStatus === 'BEHIND' || mergeableState === 'behind') {
+    return { enabled: false, reason: 'Head branch is behind the base branch' };
+  }
+  if (mergeStateStatus === 'UNSTABLE' || mergeableState === 'unstable') {
+    return { enabled: false, reason: 'Required checks are not passing' };
+  }
+  if (pr.mergeable === true || mergeStateStatus === 'CLEAN' || mergeableState === 'clean') {
+    return { enabled: true, reason: 'Squash and merge this PR' };
+  }
   return { enabled: false, reason: 'GitHub is still computing mergeability — try Refresh' };
 }
 

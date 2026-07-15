@@ -592,6 +592,27 @@ describe('mergeButtonState', () => {
     expect(s.reason).toMatch(/computing|refresh/i);
   });
 
+  it('clean merge state enables a list row when mergeable is null', () => {
+    const s = mergeButtonState({ state: 'open', mergeable: null, merge_state_status: 'CLEAN' });
+    expect(s.enabled).toBe(true);
+    expect(s.reason).toMatch(/squash and merge/i);
+  });
+
+  it('branch-protection and unstable states stay disabled', () => {
+    expect(
+      mergeButtonState({ state: 'open', mergeable: true, merge_state_status: 'BLOCKED' }),
+    ).toMatchObject({ enabled: false });
+    expect(
+      mergeButtonState({ state: 'open', mergeable: true, merge_state_status: 'UNSTABLE' }),
+    ).toMatchObject({ enabled: false });
+  });
+
+  it('explicit conflicts win over a clean status', () => {
+    expect(
+      mergeButtonState({ state: 'open', mergeable: false, merge_state_status: 'CLEAN' }),
+    ).toMatchObject({ enabled: false, reason: expect.stringMatching(/conflict/i) });
+  });
+
   it('mergeable undefined → disabled', () => {
     const s = mergeButtonState({ state: 'open' });
     expect(s.enabled).toBe(false);

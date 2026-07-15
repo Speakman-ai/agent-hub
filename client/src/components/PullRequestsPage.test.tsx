@@ -487,6 +487,17 @@ describe('<PullRequestsPage /> — PR list row button layout', () => {
     (api.getProjectPulls as any).mockReset();
   });
 
+  it('enables Merge when the list reports a clean merge state without mergeable', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({
+      pulls: [{ ...prSummary, mergeable: null, merge_state_status: 'CLEAN' }],
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+
+    const mergeBtn = await screen.findByRole('button', { name: /merge pr #123/i });
+    expect(mergeBtn).not.toBeDisabled();
+  });
+
   it('action buttons in list rows are arranged horizontally (flex-row not flex-col)', async () => {
     (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
 
