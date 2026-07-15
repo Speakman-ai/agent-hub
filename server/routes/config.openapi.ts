@@ -153,6 +153,54 @@ export const GoogleOAuthStatusComponent = registerComponent(
     }),
 );
 
+// A GitHub numeric id (App id / installation id): a positive integer, accepted
+// as a number or a digits-only string. The string branch's negative lookahead
+// rejects all-zero values ("0"/"00"), mirroring the route's normalizePositiveIntId.
+const PositiveIntIdSchema = z.union([
+  z.string().regex(/^(?!0+$)\d+$/),
+  z.number().int().positive(),
+]);
+
+export const GithubAppInstallationComponent = registerComponent(
+  'GithubAppInstallation',
+  z
+    .object({
+      account: z.string().optional().openapi({
+        description: 'GitHub account login (org or user) this installation serves.',
+      }),
+      id: PositiveIntIdSchema.openapi({
+        description: 'GitHub installation id — a positive integer.',
+      }),
+    })
+    .openapi({ description: 'One GitHub App installation, keyed by the account it serves.' }),
+);
+
+export const GithubAppStatusComponent = registerComponent(
+  'GithubAppStatus',
+  z
+    .object({
+      configured: z.boolean().openapi({
+        description: 'True when both an App id and a private key are stored (mint-ready).',
+      }),
+      appId: z.union([z.string(), z.number()]).nullable().openapi({
+        description: 'Numeric GitHub App id (display-safe; not a secret).',
+      }),
+      installationId: z.union([z.string(), z.number()]).nullable().openapi({
+        description: 'Default installation id used when no per-owner match is found.',
+      }),
+      installations: z.array(GithubAppInstallationComponent).openapi({
+        description: 'Per-owner installation map so one App serving several orgs resolves right.',
+      }),
+      hasPrivateKey: z.boolean().openapi({
+        description: 'Whether a PEM private key is stored. The key itself is never returned.',
+      }),
+    })
+    .openapi({
+      description:
+        'Server-global GitHub App status — the mirror-push branch-protection bypass identity. The private key is write-only and never echoed; only `hasPrivateKey` is exposed.',
+    }),
+);
+
 export const GithubStatusComponent = registerComponent(
   'GithubStatus',
   z
@@ -304,6 +352,29 @@ export const PutGoogleOAuthRequestSchema = z
   })
   .openapi({
     description: 'Google OAuth app client credentials. Both fields are required.',
+  });
+
+export const PutGithubAppRequestSchema = z
+  .object({
+    appId: PositiveIntIdSchema.openapi({
+      description:
+        'GitHub App id (the `iss` of the signed App JWT) — a positive integer. Digits only, and not zero; a non-numeric or all-zero value is rejected with 400. Required.',
+    }),
+    privateKey: z.string().optional().openapi({
+      description:
+        'PEM **RSA** private key. Optional on update: omit to keep the stored key (required on first configuration). A non-RSA or unparseable key is rejected with 400. Write-only — never returned on read.',
+    }),
+    installationId: PositiveIntIdSchema.nullish().openapi({
+      description:
+        'Default installation id — a positive integer. Cleared when absent or blank; a non-numeric or all-zero value is rejected with 400.',
+    }),
+    installations: z.array(GithubAppInstallationComponent).optional().openapi({
+      description: 'Per-owner installation map. Replaces the stored list; cleared when omitted.',
+    }),
+  })
+  .openapi({
+    description:
+      'Server-global GitHub App credentials for the mirror-push bypass identity. `appId` is required; `privateKey` is required only when none is already stored.',
   });
 
 export const DetectRepoRequestSchema = z
@@ -599,6 +670,64 @@ registerPath({
   path: '/api/config/google-oauth',
   tags: ['Config'],
   summary: 'Clear server-global Google OAuth app credentials',
+  responses: {
+    200: {
+      description: 'Removed.',
+      content: jsonContent(z.object({ ok: z.boolean() })),
+    },
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Requires the Admin role or higher.'),
+  },
+});
+
+// ─── GitHub App (server-global, Admin/Owner-gated) ────────────────
+
+registerPath({
+  method: 'get',
+  path: '/api/config/github-app',
+  tags: ['Config'],
+  summary: 'Read server-global GitHub App configuration status (mirror-push bypass identity)',
+  responses: {
+    200: {
+      description: 'GitHub App status. The private key is never returned.',
+      content: jsonContent(GithubAppStatusComponent),
+    },
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Requires the Admin role or higher.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/config/github-app',
+  tags: ['Config'],
+  summary: 'Set server-global GitHub App credentials',
+  request: { body: { content: jsonContent(PutGithubAppRequestSchema) } },
+  responses: {
+    200: {
+      description: 'Saved.',
+      content: jsonContent(
+        z.object({
+          ok: z.boolean(),
+          configured: z.literal(true),
+          appId: z.union([z.string(), z.number()]),
+          installationId: z.union([z.string(), z.number()]).nullable(),
+          installations: z.array(GithubAppInstallationComponent),
+          hasPrivateKey: z.boolean(),
+        }),
+      ),
+    },
+    400: errorResponse('appId is required (and privateKey when none is stored).'),
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Requires the Admin role or higher.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/config/github-app',
+  tags: ['Config'],
+  summary: 'Clear server-global GitHub App credentials',
   responses: {
     200: {
       description: 'Removed.',

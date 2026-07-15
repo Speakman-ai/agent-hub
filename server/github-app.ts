@@ -20,7 +20,7 @@
  *      installation token (~1h TTL), cached until shortly before expiry.
  */
 
-import { createSign } from 'crypto';
+import { createSign, createPrivateKey } from 'crypto';
 import type { GitHubAppConfig } from './types.js';
 
 interface JWTHeader {
@@ -58,6 +58,24 @@ export function normalizePemPrivateKey(privateKey: string): string {
   key = key.replace(/\\n/g, '\n');
   key = key.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   return key;
+}
+
+/**
+ * True when `privateKey` parses as an **RSA** private key (PKCS#1 or PKCS#8
+ * PEM), after the same normalization applied at sign time. Rejects a pasted
+ * public key, a truncated/typo'd PEM, or arbitrary text — AND a valid non-RSA
+ * key (e.g. an EC/ed25519 key): the App JWT is hard-coded to `alg: RS256`, so a
+ * non-RSA key would parse fine here yet fail later when GitHub verifies the JWT.
+ * Catching it at config-save time (400) keeps the failure at the input boundary
+ * instead of at token-mint time on the mirror push.
+ */
+export function isValidGithubAppPrivateKey(privateKey: string): boolean {
+  try {
+    const key = createPrivateKey(normalizePemPrivateKey(privateKey));
+    return key.asymmetricKeyType === 'rsa';
+  } catch {
+    return false;
+  }
 }
 
 /**

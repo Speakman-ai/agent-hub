@@ -3556,10 +3556,14 @@ export interface GitHubAppInstallation {
  * App to a repository ruleset's bypass list so the mirror can push a
  * branch-protected default branch while other pushers stay blocked.
  *
- * File-only (`config.json` `githubApp` block); intentionally NOT exposed via
- * `PATCH /api/config` so the private key never crosses the REST surface.
- * `clientId`/`clientSecret` are the legacy OAuth pair still consumed by
- * `resolvePersonalOAuthConfig` — carried here only for documentation/back-compat.
+ * Persisted in the `config.json` `githubApp` block. Editable by Admin/Owner via
+ * the dedicated `GET|PUT|DELETE /api/config/github-app` routes (surfaced in the
+ * web GitHub settings tab) — NOT via `PATCH /api/config`. The private key is
+ * write-only across that surface: accepted on PUT, never returned on read (GET
+ * reports `hasPrivateKey` only), so the key never crosses the REST surface
+ * outbound. `clientId`/`clientSecret` are the legacy OAuth pair still consumed
+ * by `resolvePersonalOAuthConfig` — carried here only for documentation/back-compat
+ * and preserved across App-config writes.
  */
 export interface GitHubAppConfig {
   /** Numeric GitHub App id (`iss` of the signed JWT). */

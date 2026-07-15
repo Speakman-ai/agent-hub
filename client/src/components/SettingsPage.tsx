@@ -15,6 +15,7 @@ import AccountSection, { OrganizationSection } from './AccountSection';
 import JobQueueSection from './JobQueueSection';
 import GithubConnectionSection from './GithubConnectionSection';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection';
+import GithubAppConfigSection from './GithubAppConfigSection';
 import AuthUpgradeBanner from './AuthUpgradeBanner';
 import GlobalSkillsSection from './GlobalSkillsSection';
 import PerUserModelSelect from './PerUserModelSelect';
@@ -997,10 +998,12 @@ export function GitHubSection() {
       <div>
         <h3 className="text-lg font-semibold mb-1">GitHub Settings</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Two independent pieces: <span className="text-gray-300">your GitHub account</span>{' '}
-          (sign-in for PR actions) and <span className="text-gray-300">an OAuth App</span>{' '}
-          (server-wide; powers &ldquo;Sign in with GitHub&rdquo; without PATs). Per-project repo
-          links live on the <span className="text-gray-300">Projects</span> tab.
+          Independent pieces: <span className="text-gray-300">your GitHub account</span> (sign-in
+          for PR actions), <span className="text-gray-300">an OAuth App</span> (server-wide; powers
+          &ldquo;Sign in with GitHub&rdquo; without PATs), and{' '}
+          <span className="text-gray-300">a GitHub App</span> (server-wide; the Hub &rarr; GitHub
+          mirror-push branch-protection bypass identity). Per-project repo links live on the{' '}
+          <span className="text-gray-300">Projects</span> tab.
         </p>
       </div>
 
@@ -1009,6 +1012,9 @@ export function GitHubSection() {
 
       {/* Server-level OAuth App credentials. */}
       <PersonalOAuthConfigSection />
+
+      {/* Server-global GitHub App — the mirror-push branch-protection bypass identity. */}
+      <GithubAppConfigSection />
     </div>
   );
 }

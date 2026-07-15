@@ -3115,6 +3115,56 @@ components:
         - clientId
         - redirectUri
       description: Server-global Google OAuth app status. `configured` is true when both client id and secret are stored; `clientId` is exposed for display, the secret never is.
+    GithubAppInstallation:
+      type: object
+      properties:
+        account:
+          type: string
+          description: GitHub account login (org or user) this installation serves.
+        id:
+          anyOf:
+            - type: string
+              pattern: ^(?!0+$)\d+$
+            - type: integer
+              minimum: 0
+              exclusiveMinimum: true
+          description: GitHub installation id — a positive integer.
+      required:
+        - id
+      description: One GitHub App installation, keyed by the account it serves.
+    GithubAppStatus:
+      type: object
+      properties:
+        configured:
+          type: boolean
+          description: True when both an App id and a private key are stored (mint-ready).
+        appId:
+          anyOf:
+            - type: string
+            - type: number
+            - nullable: true
+          description: Numeric GitHub App id (display-safe; not a secret).
+        installationId:
+          anyOf:
+            - type: string
+            - type: number
+            - nullable: true
+          description: Default installation id used when no per-owner match is found.
+        installations:
+          type: array
+          items:
+            $ref: "#/components/schemas/GithubAppInstallation"
+          description: Per-owner installation map so one App serving several orgs resolves right.
+        hasPrivateKey:
+          type: boolean
+          description: Whether a PEM private key is stored. The key itself is never returned.
+      required:
+        - configured
+        - appId
+        - installationId
+        - installations
+        - hasPrivateKey
+      description: Server-global GitHub App status — the mirror-push branch-protection bypass identity. The private key is write-only and never echoed; only `hasPrivateKey` is exposed.
     GithubStatus:
       type: object
       properties:
@@ -20449,6 +20499,150 @@ paths:
       tags:
         - Config
       summary: Clear server-global Google OAuth app credentials
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Requires the Admin role or higher.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/config/github-app:
+    get:
+      tags:
+        - Config
+      summary: Read server-global GitHub App configuration status (mirror-push bypass identity)
+      responses:
+        "200":
+          description: GitHub App status. The private key is never returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubAppStatus"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Requires the Admin role or higher.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+    put:
+      tags:
+        - Config
+      summary: Set server-global GitHub App credentials
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                appId:
+                  anyOf:
+                    - type: string
+                      pattern: ^(?!0+$)\d+$
+                    - type: integer
+                      minimum: 0
+                      exclusiveMinimum: true
+                  description: GitHub App id (the `iss` of the signed App JWT) — a positive integer. Digits only, and not zero; a non-numeric or all-zero value is rejected with 400. Required.
+                privateKey:
+                  type: string
+                  description: "PEM **RSA** private key. Optional on update: omit to keep the stored key (required on first configuration). A non-RSA or unparseable key is rejected with 400. Write-only — never returned on read."
+                installationId:
+                  anyOf:
+                    - type: string
+                      pattern: ^(?!0+$)\d+$
+                    - type: integer
+                      minimum: 0
+                      exclusiveMinimum: true
+                    - nullable: true
+                  description: Default installation id — a positive integer. Cleared when absent or blank; a non-numeric or all-zero value is rejected with 400.
+                installations:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/GithubAppInstallation"
+                  description: Per-owner installation map. Replaces the stored list; cleared when omitted.
+              required:
+                - appId
+              description: Server-global GitHub App credentials for the mirror-push bypass identity. `appId` is required; `privateKey` is required only when none is already stored.
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  configured:
+                    type: boolean
+                    enum:
+                      - true
+                  appId:
+                    anyOf:
+                      - type: string
+                      - type: number
+                  installationId:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - nullable: true
+                  installations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GithubAppInstallation"
+                  hasPrivateKey:
+                    type: boolean
+                required:
+                  - ok
+                  - configured
+                  - appId
+                  - installationId
+                  - installations
+                  - hasPrivateKey
+        "400":
+          description: appId is required (and privateKey when none is stored).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Requires the Admin role or higher.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+    delete:
+      tags:
+        - Config
+      summary: Clear server-global GitHub App credentials
       responses:
         "200":
           description: Removed.

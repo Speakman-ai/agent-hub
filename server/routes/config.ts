@@ -1,12 +1,21 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import rateLimit from 'express-rate-limit';
 import { localDateStr } from '../memory.js';
-import type { RouteDeps, PersonalOAuthConfig, GoogleOAuthConfig, Project } from '../types.js';
+import type {
+  RouteDeps,
+  PersonalOAuthConfig,
+  GoogleOAuthConfig,
+  GitHubAppConfig,
+  GitHubAppInstallation,
+  Project,
+} from '../types.js';
+import { resolveGithubAppConfig } from '../github-app-config.js';
+import { isValidGithubAppPrivateKey } from '../github-app.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { refreshShellPath, getCachedShellPath, coerceConfigBooleanLoose } from '../config.js';
 import { requireRole } from '../roles.js';
@@ -55,8 +64,48 @@ interface FileConfig {
   grokBin?: string;
   personalOAuth?: PersonalOAuthConfig;
   googleOAuth?: GoogleOAuthConfig;
+  githubApp?: GitHubAppConfig;
   smtp?: unknown;
   [key: string]: unknown;
+}
+
+/**
+ * Persist the host `config.json` with owner-only (0o600) permissions. The
+ * `mode` option only applies when the file is newly created, so we also
+ * best-effort `chmodSync` to tighten a pre-existing 0o644 file — this file
+ * carries secrets (API keys, OAuth secrets, and the GitHub App private key),
+ * so it must never be world/group-readable. Failures (missing file under a
+ * mocked fs, or a platform without POSIX modes) are swallowed: the write
+ * itself already succeeded.
+ */
+function writeSecureConfig(configPath: string, fileConfig: FileConfig): void {
+  writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
+  try {
+    chmodSync(configPath, 0o600);
+  } catch {
+    /* best-effort hardening */
+  }
+}
+
+/**
+ * Normalize a GitHub id (App id / installation id) to a positive integer,
+ * accepting a number or a numeric string and returning the normalized value —
+ * or `null` for anything invalid. Rejects 0, negatives, decimals, and
+ * non-numeric or all-zero strings; the string branch uses a negative lookahead
+ * so "0"/"00" are rejected just like the number branch's `> 0`. These ids are
+ * used verbatim as GitHub App / installation ids, so a typo must fail at save
+ * time rather than at token-mint time on the mirror push.
+ */
+function normalizePositiveIntId(raw: unknown): string | number | null {
+  if (typeof raw === 'number') return Number.isInteger(raw) && raw > 0 ? raw : null;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return /^(?!0+$)\d+$/.test(trimmed) ? trimmed : null;
+  }
+  return null;
 }
 
 interface CronImportData {
@@ -798,6 +847,220 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       res.json({ ok: true });
     },
   );
+
+  // ─── GitHub App (server-global, Admin/Owner-gated) ─────────────────────────
+  // The GitHub App whose *installation token* the Hub → GitHub mirror push uses
+  // as the branch-protection / ruleset **bypass identity** (an operator adds
+  // this App to the repo ruleset's bypass list so the mirror can push a
+  // protected default branch while everyone else stays blocked — see
+  // server/git-host/mirror.ts `resolveMirrorToken`). Server-global, not
+  // per-project. The PEM **private key is write-only**: it is accepted on PUT
+  // but NEVER returned on read (GET reports `hasPrivateKey` instead). Editing
+  // App id / installation without re-pasting the key is supported — omit
+  // `privateKey` and the stored one is preserved. Legacy `clientId`/
+  // `clientSecret` in the same block (consumed by resolvePersonalOAuthConfig)
+  // are preserved across writes.
+
+  router.get('/api/config/github-app', requireRole('Admin'), (_req: Request, res: Response) => {
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    const raw: Partial<GitHubAppConfig> =
+      fileConfig.githubApp && typeof fileConfig.githubApp === 'object' ? fileConfig.githubApp : {};
+
+    const appId = typeof raw.appId === 'number' || typeof raw.appId === 'string' ? raw.appId : null;
+    const installationId =
+      typeof raw.installationId === 'number' || typeof raw.installationId === 'string'
+        ? raw.installationId
+        : null;
+    const installations: GitHubAppInstallation[] = Array.isArray(raw.installations)
+      ? raw.installations
+          .map((inst): GitHubAppInstallation | null => {
+            const id =
+              typeof inst?.id === 'number' || (typeof inst?.id === 'string' && inst.id.trim())
+                ? inst.id
+                : null;
+            if (id === null) return null;
+            const account =
+              typeof inst?.account === 'string' && inst.account.trim()
+                ? inst.account.trim()
+                : undefined;
+            return account ? { account, id } : { id };
+          })
+          .filter((inst): inst is GitHubAppInstallation => inst !== null)
+      : [];
+    const hasPrivateKey = typeof raw.privateKey === 'string' && raw.privateKey.trim().length > 0;
+
+    // Never echo the private key. `configured` mirrors resolveGithubAppConfig's
+    // rule (both appId AND privateKey present) — the minimum to mint a token.
+    res.json({
+      configured: Boolean(appId) && hasPrivateKey,
+      appId,
+      installationId,
+      installations,
+      hasPrivateKey,
+    });
+  });
+
+  router.put('/api/config/github-app', requireRole('Admin'), (req: Request, res: Response) => {
+    const body = req.body as {
+      appId?: unknown;
+      privateKey?: unknown;
+      installationId?: unknown;
+      installations?: unknown;
+    };
+
+    // appId (required) — a GitHub App id is a positive integer (the JWT `iss`).
+    // Accept a number or a numeric string, but reject non-numeric input: a typo
+    // like "abc" must fail here, not silently save as configured and then break
+    // later at JWT signing when the mirror push tries to authenticate.
+    const appIdMissing =
+      body.appId === undefined ||
+      body.appId === null ||
+      (typeof body.appId === 'string' && body.appId.trim() === '');
+    if (appIdMissing) {
+      return res.status(400).json({ error: 'appId is required' });
+    }
+    // Positive integer only (see normalizePositiveIntId): rejects a typo like
+    // "abc" and an all-zero "0"/"00" that would mint an unusable JWT `iss`.
+    const appId = normalizePositiveIntId(body.appId);
+    if (appId === null) {
+      return res.status(400).json({ error: 'appId must be a numeric GitHub App id' });
+    }
+
+    // installationId (optional) — cleared when absent/blank; otherwise it must
+    // be a positive integer, same as the App id (both are GitHub numeric ids).
+    let installationId: string | number | undefined;
+    const installationIdProvided =
+      body.installationId !== undefined &&
+      body.installationId !== null &&
+      !(typeof body.installationId === 'string' && body.installationId.trim() === '');
+    if (installationIdProvided) {
+      const normalized = normalizePositiveIntId(body.installationId);
+      if (normalized === null) {
+        return res.status(400).json({ error: 'installationId must be a positive integer' });
+      }
+      installationId = normalized;
+    }
+
+    // installations (optional) — per-owner installation map. Each id must be a
+    // positive integer too.
+    let installations: GitHubAppInstallation[] | undefined;
+    if (body.installations !== undefined && body.installations !== null) {
+      if (!Array.isArray(body.installations)) {
+        return res.status(400).json({ error: 'installations must be an array' });
+      }
+      const parsed: GitHubAppInstallation[] = [];
+      for (const item of body.installations) {
+        const rec = item as { account?: unknown; id?: unknown };
+        const id = normalizePositiveIntId(rec?.id);
+        if (id === null) {
+          return res
+            .status(400)
+            .json({ error: 'each installation requires a positive integer id' });
+        }
+        const account =
+          typeof rec?.account === 'string' && rec.account.trim() ? rec.account.trim() : undefined;
+        parsed.push(account ? { account, id } : { id });
+      }
+      installations = parsed.length ? parsed : undefined;
+    }
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    const existing: Partial<GitHubAppConfig> =
+      fileConfig.githubApp && typeof fileConfig.githubApp === 'object' ? fileConfig.githubApp : {};
+
+    // The private key is write-only: a new one replaces the stored key; when
+    // omitted the existing key is kept so an admin can edit id/installations
+    // without re-pasting the secret. Store the raw PEM — it is normalized
+    // (escaped `\n`, CRLF/BOM) at JWT-sign time by normalizePemPrivateKey.
+    const suppliedKey =
+      typeof body.privateKey === 'string' && body.privateKey.trim() ? body.privateKey : undefined;
+    const existingKey =
+      typeof existing.privateKey === 'string' && existing.privateKey.trim()
+        ? existing.privateKey
+        : undefined;
+    const privateKey = suppliedKey ?? existingKey;
+    if (!privateKey) {
+      return res.status(400).json({ error: 'privateKey is required' });
+    }
+
+    // Reject a key that does not actually parse as a private key (a pasted
+    // public key, an admin typo, a truncated PEM). Without this the config
+    // saves as `configured: true` and the failure only surfaces later when the
+    // mirror push tries to sign a JWT. Validate whichever key we're about to
+    // persist — supplied OR the preserved stored one.
+    if (!isValidGithubAppPrivateKey(privateKey)) {
+      return res.status(400).json({
+        error: suppliedKey
+          ? 'privateKey is not a valid PEM private key'
+          : 'the stored private key is no longer a valid PEM private key — paste a valid one',
+      });
+    }
+
+    // Merge over the existing block so legacy clientId/clientSecret survive.
+    const merged: GitHubAppConfig = { ...existing, appId, privateKey };
+    if (installationId !== undefined) merged.installationId = installationId;
+    else delete merged.installationId;
+    if (installations !== undefined) merged.installations = installations;
+    else delete merged.installations;
+
+    fileConfig.githubApp = merged;
+    writeSecureConfig(configPath, fileConfig);
+
+    config.githubApp = resolveGithubAppConfig(fileConfig as Record<string, unknown>);
+    console.log(`[GitHub App] Configured (appId: ${appId})`);
+
+    res.json({
+      ok: true,
+      configured: true,
+      appId,
+      installationId: merged.installationId ?? null,
+      installations: merged.installations ?? [],
+      hasPrivateKey: true,
+    });
+  });
+
+  router.delete('/api/config/github-app', requireRole('Admin'), (_req: Request, res: Response) => {
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    const existing =
+      fileConfig.githubApp && typeof fileConfig.githubApp === 'object'
+        ? (fileConfig.githubApp as Record<string, unknown>)
+        : null;
+    if (existing) {
+      // Remove only the App-token fields; preserve legacy OAuth clientId/secret.
+      delete existing.appId;
+      delete existing.privateKey;
+      delete existing.installationId;
+      delete existing.installations;
+      if (Object.keys(existing).length === 0) delete fileConfig.githubApp;
+      else fileConfig.githubApp = existing as GitHubAppConfig;
+    }
+    writeSecureConfig(configPath, fileConfig);
+
+    // Falls back to null (no appId+privateKey) — the mirror push then uses the
+    // per-user OAuth/PAT chain again.
+    config.githubApp = resolveGithubAppConfig(fileConfig as Record<string, unknown>);
+    console.log('[GitHub App] Configuration removed');
+
+    res.json({ ok: true });
+  });
 
   // ─── GitHub CLI Status & Repo Detection ────────────────────────────────────
 

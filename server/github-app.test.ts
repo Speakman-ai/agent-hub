@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateKeyPairSync, createVerify } from 'crypto';
 import {
   normalizePemPrivateKey,
+  isValidGithubAppPrivateKey,
   generateJWT,
   getInstallationToken,
   getInstallationTokenForOwner,
@@ -14,6 +15,56 @@ const { publicKey, privateKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
   publicKeyEncoding: { type: 'spki', format: 'pem' },
   privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+});
+
+// A PKCS#1 ("BEGIN RSA PRIVATE KEY") key to prove both PEM flavours validate.
+const { privateKey: pkcs1PrivateKey } = generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+  privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+});
+
+// A valid EC private key — parses fine, but the App JWT is hard-coded RS256, so
+// it must be rejected as an App key.
+const { privateKey: ecPrivateKey } = generateKeyPairSync('ec', {
+  namedCurve: 'prime256v1',
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+});
+
+describe('isValidGithubAppPrivateKey', () => {
+  it('accepts a real PKCS#8 private key', () => {
+    expect(isValidGithubAppPrivateKey(privateKey)).toBe(true);
+  });
+
+  it('accepts a real PKCS#1 ("RSA PRIVATE KEY") private key', () => {
+    expect(isValidGithubAppPrivateKey(pkcs1PrivateKey)).toBe(true);
+  });
+
+  it('accepts a key mangled with escaped \\n (same normalization as signing)', () => {
+    expect(isValidGithubAppPrivateKey(privateKey.replace(/\n/g, '\\n'))).toBe(true);
+  });
+
+  it('rejects a pasted PUBLIC key', () => {
+    expect(isValidGithubAppPrivateKey(publicKey)).toBe(false);
+  });
+
+  it('rejects a valid non-RSA (EC) private key — the App JWT is hard-coded RS256', () => {
+    expect(isValidGithubAppPrivateKey(ecPrivateKey)).toBe(false);
+  });
+
+  it('rejects a truncated / typo PEM', () => {
+    expect(
+      isValidGithubAppPrivateKey(
+        '-----BEGIN RSA PRIVATE KEY-----\nnope\n-----END RSA PRIVATE KEY-----',
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects empty / arbitrary text', () => {
+    expect(isValidGithubAppPrivateKey('')).toBe(false);
+    expect(isValidGithubAppPrivateKey('not a key at all')).toBe(false);
+  });
 });
 
 function decodeJwtPart(part: string): Record<string, unknown> {
