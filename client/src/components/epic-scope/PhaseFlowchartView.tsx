@@ -52,6 +52,7 @@ function PhaseColumn({
   phaseForm,
   onPhaseFormChange,
   onSavePhase,
+  autoSavePhaseSettings,
   saving,
   onAddTicket,
   addingTicketPhaseId,
@@ -272,7 +273,9 @@ function PhaseColumn({
           <p className="text-[10px] text-gray-600 leading-snug">
             Run phase dispatches implementation tickets as build sessions after all spec decisions
             are locked, each at Auto Merge so the next phase starts automatically when this one
-            finishes. Save settings first, then click Run phase.
+            finishes.{' '}
+            {autoSavePhaseSettings ? 'Changes save automatically. ' : 'Save settings first, then '}
+            click Run phase.
           </p>
         )}
       </div>
@@ -359,7 +362,7 @@ function PhaseColumn({
         )}
       </div>
 
-      {onSavePhase && (
+      {onSavePhase && !autoSavePhaseSettings && (
         <div className="px-2 pb-2">
           <button
             type="button"
@@ -383,6 +386,7 @@ export default function PhaseFlowchartView({
   phaseForms,
   onPhaseFormChange,
   onSavePhase,
+  autoSavePhaseSettings,
   phaseSavingId,
   onAddTicket,
   addingTicketPhaseId,
@@ -455,6 +459,7 @@ export default function PhaseFlowchartView({
               phaseForm={phaseForms?.[phase.id]}
               onPhaseFormChange={(patch: any) => onPhaseFormChange?.(phase.id, patch)}
               onSavePhase={() => onSavePhase?.(phase, phaseForms?.[phase.id])}
+              autoSavePhaseSettings={autoSavePhaseSettings}
               saving={phaseSavingId === phase.id}
               onAddTicket={onAddTicket}
               addingTicketPhaseId={addingTicketPhaseId}

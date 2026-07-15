@@ -573,6 +573,86 @@ describe('EpicView', () => {
     );
   });
 
+  it('persists every phase setting when it changes on the feature page', async () => {
+    vi.clearAllMocks();
+    const enrichedBoard = {
+      ...board,
+      phases: [
+        {
+          id: 'ph1',
+          epic_id: 'e1',
+          name: 'Build',
+          position: 0,
+          autonomous: 1,
+          autonomous_interval: 9,
+          autonomous_max_concurrent: 4,
+          autonomous_model: 'claude-sonnet-4-6',
+          autonomous_send_it: 1,
+        },
+      ],
+    };
+    (api.getBoard as any).mockResolvedValue(enrichedBoard);
+    (api.getModelConfig as any).mockResolvedValue({
+      engineValidModels: { 'claude-code': ['claude-sonnet-4-6', 'claude-opus-4-8'] },
+    });
+    (api.updatePhase as any).mockResolvedValue({ id: 'ph1' });
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    const model = await screen.findByTestId('phase-model-ph1' as any);
+    fireEvent.change(model, { target: { value: 'claude-opus-4-8' } });
+    await waitFor(() =>
+      expect(api.updatePhase).toHaveBeenLastCalledWith('p1', 'ph1', {
+        name: 'Build',
+        description: '',
+        autonomous: 1,
+        autonomousInterval: 9,
+        autonomousMaxConcurrent: 4,
+        autonomousModel: 'claude-opus-4-8',
+        autonomousSendIt: 1,
+      }),
+    );
+
+    fireEvent.click(within(screen.getByTestId('phase-auto-merge-ph1' as any)).getByRole('switch'));
+    await waitFor(() =>
+      expect(api.updatePhase).toHaveBeenLastCalledWith('p1', 'ph1', {
+        name: 'Build',
+        description: '',
+        autonomous: 1,
+        autonomousInterval: 9,
+        autonomousMaxConcurrent: 4,
+        autonomousModel: 'claude-opus-4-8',
+        autonomousSendIt: 0,
+      }),
+    );
+
+    fireEvent.change(screen.getByTestId('phase-max-concurrent-ph1' as any), {
+      target: { value: '3' },
+    });
+    await waitFor(() =>
+      expect(api.updatePhase).toHaveBeenLastCalledWith('p1', 'ph1', {
+        name: 'Build',
+        description: '',
+        autonomous: 1,
+        autonomousInterval: 9,
+        autonomousMaxConcurrent: 3,
+        autonomousModel: 'claude-opus-4-8',
+        autonomousSendIt: 0,
+      }),
+    );
+    expect(screen.queryByText('Save phase settings')).not.toBeInTheDocument();
+  });
+
   it('shows branch controls at the top and preserves stored feature automation fields', async () => {
     const boardWithUnsetAutoMerge = {
       ...board,

@@ -48,6 +48,7 @@ export default function EpicScopeWorkbench({
   phaseForms,
   onPhaseFormChange,
   onSavePhase,
+  autoSavePhaseSettings,
   phaseSavingId,
   onAddTicket,
   addingTicketPhaseId,
@@ -90,6 +91,7 @@ export default function EpicScopeWorkbench({
       phaseForms={phaseForms}
       onPhaseFormChange={onPhaseFormChange}
       onSavePhase={onSavePhase}
+      autoSavePhaseSettings={autoSavePhaseSettings}
       phaseSavingId={phaseSavingId}
       onAddTicket={onAddTicket}
       addingTicketPhaseId={addingTicketPhaseId}

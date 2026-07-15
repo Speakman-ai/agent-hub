@@ -102,6 +102,8 @@ export default function EpicView({
   const [creatingPhase, setCreatingPhase] = useState(false);
   const [phaseSavingId, setPhaseSavingId] = useState<any>(null);
   const [phaseForms, setPhaseForms] = useState<Record<string, any>>({});
+  const phaseFormsRef = useRef<Record<string, any>>({});
+  const phaseSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
   const [specSavingId, setSpecSavingId] = useState<any>(null);
   const [phaseRunError, setPhaseRunError] = useState<string | null>(null);
   const [phaseStoppingId, setPhaseStoppingId] = useState<string | null>(null);
@@ -228,6 +230,7 @@ export default function EpicView({
 
   useEffect(() => {
     if (!epicPhases.length) {
+      phaseFormsRef.current = {};
       setPhaseForms({});
       return;
     }
@@ -236,6 +239,7 @@ export default function EpicView({
       for (const phase of epicPhases) {
         if (!next[phase.id]) next[phase.id] = autonomousFormFromRow(phase);
       }
+      phaseFormsRef.current = next;
       return next;
     });
   }, [epicPhases]);
@@ -524,26 +528,31 @@ export default function EpicView({
     // React may defer the updater, so the API write could have fired with only
     // `{ autonomous }` and reset description/interval/concurrency/model/send-it
     // to defaults.)
-    const merged = { ...(phaseForms[phaseId] || {}), ...patch };
+    const merged = { ...(phaseFormsRef.current[phaseId] || phaseForms[phaseId] || {}), ...patch };
+    phaseFormsRef.current[phaseId] = merged;
     setPhaseForms((prev: any) => ({
       ...prev,
       [phaseId]: { ...(prev[phaseId] || {}), ...patch },
     }));
-    // Auto-persist the auto-dispatch toggle so it sticks across remounts/reloads.
-    // Other fields (e.g. "tickets at once") still persist via "Save phase
-    // settings" / "Run phase" so we don't fire a request on every keystroke.
-    if ('autonomous' in patch) {
-      const phase = epicPhases.find((p: any) => p.id === phaseId);
-      if (phase) {
-        setPhaseRunError(null);
-        api
-          .updatePhase(projectId, phaseId, phaseFormToUpdateBody({ ...merged, name: phase.name }))
-          .then(() => fetchBoard())
-          .catch((err: any) => {
-            console.error('Failed to persist auto-dispatch toggle:', err);
-            setPhaseRunError(err?.message || 'Failed to update auto-dispatch');
-          });
-      }
+    const phase = epicPhases.find((p: any) => p.id === phaseId);
+    if (phase) {
+      setPhaseRunError(null);
+      const previousSave = phaseSaveQueuesRef.current[phaseId] || Promise.resolve();
+      const queuedSave = previousSave
+        .catch(() => undefined)
+        .then(async () => {
+          await api.updatePhase(
+            projectId,
+            phaseId,
+            phaseFormToUpdateBody({ ...merged, name: phase.name }),
+          );
+          await fetchBoard();
+        })
+        .catch((err: any) => {
+          console.error('Failed to persist phase settings:', err);
+          setPhaseRunError(err?.message || 'Failed to update phase settings');
+        });
+      phaseSaveQueuesRef.current[phaseId] = queuedSave;
     }
   };
 
@@ -1049,6 +1058,7 @@ export default function EpicView({
                 modelConfig={modelConfig}
                 onPhaseFormChange={handlePhaseFormChange}
                 onSavePhase={handleSavePhaseAutonomous}
+                autoSavePhaseSettings
                 phaseSavingId={phaseSavingId}
                 onAddTicket={handleAddTicketToPhase}
                 addingTicketPhaseId={addingTicketPhaseId}
