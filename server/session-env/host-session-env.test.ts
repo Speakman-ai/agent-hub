@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HostChildLike,
   HostPtyFactory,
@@ -9,6 +9,10 @@ import {
 } from './host-session-env.js';
 import { SessionEnvClock } from './session-env.js';
 import { describeSessionEnvContract } from './session-env-contract.js';
+
+vi.mock('node-pty', () => ({
+  spawn: vi.fn(() => new FakePty()),
+}));
 
 // ── Fakes ─────────────────────────────────────────────────────────
 
@@ -312,12 +316,12 @@ describe('HostSessionEnv.openPty', () => {
     expect(fake.kills.length).toBeGreaterThan(0);
   });
 
-  it('surfaces a missing node-pty module as an actionable error (default factory)', async () => {
-    // node-pty is intentionally NOT a server dependency (native module,
-    // no prebuilt on every host) — the default factory lazy-imports it.
-    // If the PTY-host card adds the dependency, update this test.
+  it('opens a PTY through the installed node-pty dependency by default', async () => {
     const { env } = makeEnv({ openPty: undefined });
-    await expect(env.openPty()).rejects.toThrow(/node-pty/);
+    const pty = await env.openPty({ command: '/bin/bash' });
+
+    expect(pty.pid).toBe(7777);
+    expect(env.liveProcessCount()).toBe(1);
   });
 });
 

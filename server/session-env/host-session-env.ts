@@ -80,10 +80,8 @@ export interface HostSessionEnvDeps {
   worktreePath: string;
   spawn?: HostSpawnFn;
   /**
-   * PTY factory. Defaults to a lazy `import('node-pty')` — node-pty is an
-   * optional native module (prebuilt binaries are not available on every
-   * host), so the import happens per `openPty` call and a missing module
-   * surfaces as an actionable error there instead of at Hub boot.
+   * PTY factory. Defaults to a lazy `import('node-pty')` so the native
+   * module is loaded only when a terminal is opened.
    */
   openPty?: HostPtyFactory;
   /** Signal a pid (negative pid = process group). Default `process.kill`. */
@@ -117,14 +115,13 @@ async function defaultIsDirectory(path: string): Promise<boolean> {
 const defaultPtyFactory: HostPtyFactory = async (opts) => {
   let mod: { spawn: (file: string, args: string[], o: object) => HostPtyLike };
   try {
-    // Non-literal specifier: node-pty is optional (native module without a
-    // prebuilt on every host), so it is not in package.json and a literal
-    // import would fail typecheck. Resolved at runtime only.
+    // Keep the import lazy so Hub boot does not load the native binding when
+    // the Terminal surface is unused.
     const specifier = 'node-pty';
     mod = (await import(specifier)) as unknown as typeof mod;
   } catch (err) {
     throw new Error(
-      'openPty requires the optional native module "node-pty" (npm install node-pty in server/). ' +
+      'openPty requires the native module "node-pty" (install the server dependencies). ' +
         `Import failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }

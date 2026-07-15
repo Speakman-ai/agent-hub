@@ -33,6 +33,7 @@
     "googleapis": "^173.0.0",
     "gray-matter": "^4.0.3",
     "node-cron": "^4.2.1",
+    "node-pty": "^1.1.0",
     "nodemailer": "^9.0.1",
     "playwright": "^1.59.1",
     "swagger-ui-express": "^5.0.1",

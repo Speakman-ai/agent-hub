@@ -86,12 +86,13 @@ export function runDockerCommand(argv: string[]): Promise<SysboxRunResult> {
 const defaultPtyFactory: HostPtyFactory = async (opts) => {
   let mod: { spawn: (file: string, args: string[], o: object) => HostPtyLike };
   try {
-    // Optional native module — same lazy-import rationale as the host adapter.
+    // Keep the native module lazy so the container adapter only loads it when
+    // a terminal is opened.
     const specifier = 'node-pty';
     mod = (await import(specifier)) as unknown as typeof mod;
   } catch (err) {
     throw new Error(
-      'openPty requires the optional native module "node-pty" (npm install node-pty in server/). ' +
+      'openPty requires the native module "node-pty" (install the server dependencies). ' +
         `Import failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
