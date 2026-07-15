@@ -21,6 +21,7 @@ import {
 import { readSpawnCredsFile } from './spawn-creds-file.js';
 import { ensureSpawnCredsForSession } from './spawn-creds-mint.js';
 import { resolvePersonalOAuthConfig } from './personal-oauth-config.js';
+import { resolveGithubAppConfig } from './github-app-config.js';
 import { resolveGoogleOAuthConfig } from './google-oauth-config.js';
 import {
   DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
@@ -443,6 +444,13 @@ const config: AppConfig = {
   // removed GitHub App keep working OAuth sign-in + token refresh. See
   // server/personal-oauth-config.ts.
   personalOAuth: resolvePersonalOAuthConfig(fileConfig),
+  // Server-global GitHub App (app id + private key + installation id) used
+  // ONLY to mint an installation token for the Hub → GitHub mirror push, so
+  // it can bypass branch protection on the mirrored default branch. Null
+  // unless the `githubApp` block carries a complete app id + private key.
+  // File-only (never surfaced via PATCH /api/config). See
+  // server/github-app-config.ts.
+  githubApp: resolveGithubAppConfig(fileConfig),
   // Server-global Google OAuth app credentials for the per-user "Connect
   // Google" flow. Null when unset. See server/google-oauth-config.ts.
   googleOAuth: resolveGoogleOAuthConfig(fileConfig),

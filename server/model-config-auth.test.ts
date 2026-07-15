@@ -37,6 +37,7 @@ function makeConfig(): AppConfig {
     publicUrl: null,
     defaultReviewer: null,
     personalOAuth: null,
+    githubApp: null,
     googleOAuth: null,
     apiKey: null,
     openaiApiKey: null,

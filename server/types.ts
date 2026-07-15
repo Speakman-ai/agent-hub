@@ -3541,6 +3541,41 @@ export interface PersonalOAuthConfig {
   clientSecret: string;
 }
 
+/** One GitHub App installation, keyed by the account (org/user login) it serves. */
+export interface GitHubAppInstallation {
+  /** GitHub account login (org or user) this installation belongs to. */
+  account?: string;
+  /** GitHub installation id. */
+  id: string | number;
+}
+
+/**
+ * MINIMAL server-global GitHub App config — restored (PR #1205 removed the
+ * full App integration) for exactly ONE purpose: minting an installation
+ * access token the Hub → GitHub mirror push can use. An operator adds this
+ * App to a repository ruleset's bypass list so the mirror can push a
+ * branch-protected default branch while other pushers stay blocked.
+ *
+ * File-only (`config.json` `githubApp` block); intentionally NOT exposed via
+ * `PATCH /api/config` so the private key never crosses the REST surface.
+ * `clientId`/`clientSecret` are the legacy OAuth pair still consumed by
+ * `resolvePersonalOAuthConfig` — carried here only for documentation/back-compat.
+ */
+export interface GitHubAppConfig {
+  /** Numeric GitHub App id (`iss` of the signed JWT). */
+  appId?: string | number;
+  /** PEM private key; tolerates escaped `\n`, JSON-quoting, and CRLF/BOM. */
+  privateKey?: string;
+  /** Default installation id when no per-owner match is found. */
+  installationId?: string | number;
+  /** Per-owner installation map, so one App serving several orgs resolves right. */
+  installations?: GitHubAppInstallation[];
+  /** Legacy OAuth client id (still read by resolvePersonalOAuthConfig). */
+  clientId?: string;
+  /** Legacy OAuth client secret (still read by resolvePersonalOAuthConfig). */
+  clientSecret?: string;
+}
+
 /**
  * Server-global Google OAuth client credentials — the OAuth *app* (web client)
  * registered in Google Cloud Console. Optional: when unset, the per-user
@@ -3630,6 +3665,14 @@ export interface AppConfig {
    * PAT connect in Settings works without this.
    */
   personalOAuth: PersonalOAuthConfig | null;
+  /**
+   * Optional server-global GitHub App credentials (app id + private key +
+   * installation id), used ONLY to mint an installation token for the
+   * Hub → GitHub mirror push so it can bypass branch protection on the
+   * mirrored default branch. Null when the `githubApp` config block lacks a
+   * complete app id + private key. See server/github-app-config.ts.
+   */
+  githubApp: GitHubAppConfig | null;
   /**
    * Optional server-global Google OAuth app credentials (client id/secret) for
    * the per-user "Connect Google" flow. Null = unconfigured, in which case the

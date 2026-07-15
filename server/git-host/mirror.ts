@@ -29,6 +29,8 @@ import { classifyCloneUrl, redactAuthHeader, redactToken } from '../clone-url-au
 import { gitAuthArgsForGithubPat, resolveUserGithubToken } from '../skill-credentials-github.js';
 import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
 import { resolveOwnerWithRepoAccess } from '../repo-aware-token.js';
+import { getInstallationTokenForOwner } from '../github-app.js';
+import type { GitHubAppConfig } from '../types.js';
 import { gitHostRepoPath, hostedRepoDefaultBranch, hostedRepoExists } from './repo-store.js';
 
 const execFileP = promisify(execFile);
@@ -125,11 +127,36 @@ interface QueueEntry {
 const queues = new Map<string, QueueEntry>();
 
 /**
- * Resolve the GitHub token used to push the mirror (and fetch GitHub's
- * default branch during reconcile) — the repo-aware Owner chain. Exported
- * so the reconcile poller shares exactly the mirror's auth path.
+ * Test/override seam for {@link resolveMirrorToken}. Both fields default to
+ * the production wiring; tests inject fakes without vi.mock'ing the whole
+ * github-app module.
  */
-export async function resolveMirrorToken(project: Project): Promise<string | null> {
+export interface MirrorTokenOverrides {
+  /** GitHub App config to consult (defaults to `config.githubApp`). */
+  appConfig?: GitHubAppConfig | null;
+  /** Installation-token minter (defaults to the real graceful minter). */
+  mintAppToken?: typeof getInstallationTokenForOwner;
+}
+
+/**
+ * Resolve the GitHub token used to push the mirror (and fetch GitHub's
+ * default branch during reconcile). Exported so the reconcile poller shares
+ * exactly the mirror's auth path.
+ *
+ * Token precedence:
+ *   1. **GitHub App installation token** — when a server-global `githubApp`
+ *      is configured AND an installation resolves for the repo owner. This
+ *      is the identity an operator adds to the repo's ruleset bypass list,
+ *      so the mirror push succeeds against a branch-protected default
+ *      branch. `getInstallationTokenForOwner` degrades to `null` (never
+ *      throws) on any misconfiguration, so a broken App can't strand the
+ *      mirror — it just falls through to (2).
+ *   2. **Per-user OAuth/PAT token** — the repo-aware Owner chain, unchanged.
+ */
+export async function resolveMirrorToken(
+  project: Project,
+  overrides: MirrorTokenOverrides = {},
+): Promise<string | null> {
   // Prefer the explicit `owner/repo` field; fall back to deriving it
   // from the mirror URL so older projects (repoUrl only) still resolve.
   let ownerRepo = project.githubRepo ?? null;
@@ -139,6 +166,18 @@ export async function resolveMirrorToken(project: Project): Promise<string | nul
       ownerRepo = `${parsed.owner}/${parsed.repo}`;
     }
   }
+
+  // (1) GitHub App installation token — the bypass identity.
+  const appConfig =
+    overrides.appConfig !== undefined ? overrides.appConfig : (config.githubApp ?? null);
+  if (appConfig) {
+    const owner = ownerRepo ? ownerRepo.split('/')[0] : null;
+    const mint = overrides.mintAppToken ?? getInstallationTokenForOwner;
+    const appToken = await mint(appConfig, owner);
+    if (appToken) return appToken;
+  }
+
+  // (2) Fall back to the per-user OAuth/PAT token chain.
   const ownerId = await resolveOwnerWithRepoAccess(ownerRepo);
   if (!ownerId) return null;
   return resolveUserGithubToken(ownerId, {
