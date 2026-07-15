@@ -3534,6 +3534,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         ? [
             {
               ...emailPayload(record.username),
+              username: record.username,
               role: record.role,
               createdAt: record.createdAt,
             },
@@ -3553,6 +3554,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
           {
             id: null,
             ...emailPayload(record.username),
+            username: record.username,
             role: record.role,
             createdAt: record.createdAt,
           },
@@ -3564,6 +3566,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       users: members.map((m) => ({
         id: m.userId,
         ...emailPayload(m.username),
+        username: m.username,
         role: m.role,
         createdAt: m.createdAt,
         mfaEnabled: getUserMfaState(m.userId)?.enabled ?? false,

@@ -86,8 +86,14 @@ export default function ProjectMembersSection({ project, showToast }: ProjectMem
       .then((res) => {
         if (cancelled) return;
         const users = (res.users || [])
-          .filter((u): u is { id: string; username: string; role: string } => Boolean(u.id))
-          .map((u) => ({ id: u.id, username: u.username }));
+          .filter((u) => Boolean(u.id))
+          // Label with the login username, falling back to email (or the id) so
+          // the option is never blank — email-only responses used to render as
+          // empty options, making the picker look like it had no users.
+          .map((u) => ({
+            id: u.id as string,
+            username: u.username || u.email || (u.id as string),
+          }));
         setRoster(users);
       })
       .catch(() => {

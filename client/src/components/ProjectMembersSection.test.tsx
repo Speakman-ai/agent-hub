@@ -132,6 +132,34 @@ describe('ProjectMembersSection', () => {
     await waitFor(() => expect(getProjectMembers).toHaveBeenCalledTimes(2));
   });
 
+  it('labels assignable options when the roster has email but no username', async () => {
+    // Regression: GET /api/auth/users returns email-based identifiers; when the
+    // `username` field is absent the option label must fall back to email so the
+    // picker is not blank ("no users to assign").
+    getOrgUsers.mockResolvedValue({
+      users: [
+        { id: 'creator', email: 'creator@example.com', role: 'Owner' },
+        { id: 'bob', email: 'bob@example.com', role: 'User' },
+      ],
+    });
+    getProjectMembers.mockResolvedValue({
+      projectId: 'proj-1',
+      ownerUserId: 'creator',
+      visibility: 'shared',
+      restricted: false,
+      members: [],
+    });
+
+    render(<ProjectMembersSection project={project} />);
+    const select = (await screen.findByTestId('project-member-select-proj-1')) as HTMLSelectElement;
+    const bobOption = await within(select).findByText('bob@example.com');
+    expect(bobOption).toBeTruthy();
+    expect((bobOption as HTMLOptionElement).value).toBe('bob');
+    // Both org users are assignable (project has no members yet).
+    expect(within(select).getByText('creator@example.com')).toBeTruthy();
+    expect(select.disabled).toBe(false);
+  });
+
   it('removes a member', async () => {
     getProjectMembers
       .mockResolvedValueOnce({

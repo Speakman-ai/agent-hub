@@ -308,7 +308,12 @@ export const api = {
   // Org user roster (Admin+). Used to populate the member-assignment picker.
   getOrgUsers: () =>
     fetchJSON<{
-      users: Array<{ id: string | null; username: string; role: string }>;
+      users: Array<{
+        id: string | null;
+        username?: string;
+        email?: string | null;
+        role: string;
+      }>;
     }>('/auth/users'),
   // Per-user, project-scoped settings (e.g. default Finalize automation level).
   getProjectUserSettings: (projectId: any) => fetchJSON(`/projects/${projectId}/user-settings`),

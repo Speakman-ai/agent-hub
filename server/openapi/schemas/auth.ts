@@ -62,6 +62,9 @@ export const UserSummary = registerComponent(
   z.object({
     id: z.string().optional().nullable(),
     email: z.string().nullable(),
+    // Login identifier. May be an email or a plain username; the UI uses it as
+    // a display label (and a fallback when `email` is null for non-email logins).
+    username: z.string().optional(),
     needsEmailUpdate: z.boolean().optional(),
     role: z.enum(['Owner', 'Admin', 'User']),
     createdAt: z.union([z.string(), z.number()]).optional().nullable(),

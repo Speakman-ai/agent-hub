@@ -593,6 +593,10 @@ describe('GET /api/auth/users (requireRole Admin)', () => {
     expect(res.status).toBe(200);
     expect(res.body.users).toHaveLength(1);
     expect(res.body.users[0]).toMatchObject({ email: 'owner@example.com', role: 'Owner' });
+    // The login identifier must be present so member-assignment / roster UIs
+    // can label each user — a missing `username` rendered the project-member
+    // picker options blank ("no users to assign").
+    expect(res.body.users[0].username).toBe('owner@example.com');
   });
 
   it('rejects unauthenticated requests', async () => {
