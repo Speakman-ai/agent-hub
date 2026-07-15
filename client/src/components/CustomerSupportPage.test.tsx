@@ -283,7 +283,23 @@ describe('CustomerSupportPage — deep-linked ticket focus', () => {
 });
 
 describe('CustomerSupportPage — ticket detail view', () => {
-  it('opens a detail modal via the full-card open button and shows the full AI investigation from the detail endpoint', async () => {
+  it('opens a ticket when its visible content is clicked', async () => {
+    const item = ticket({ id: 'content-click', subject: 'Click this ticket' });
+    (api.getSupportTickets as any).mockResolvedValue([item]);
+    (api.getSupportTicket as any).mockResolvedValue(item);
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Click this ticket')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Click this ticket'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('support-ticket-detail-modal')).toBeInTheDocument(),
+    );
+    expect(api.getSupportTicket).toHaveBeenCalledWith('proj-1', 'content-click');
+  });
+
+  it('opens a detail modal via the ticket content button and shows the full AI investigation from the detail endpoint', async () => {
     (api.getSupportTickets as any).mockResolvedValue([
       ticket({
         id: 'crit',

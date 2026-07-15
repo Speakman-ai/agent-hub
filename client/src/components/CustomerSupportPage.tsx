@@ -618,14 +618,8 @@ function SupportTicketCard({
 
   const handleOpen = () => onOpen?.(ticket);
 
-  // Accessible "stretched button" layout: the card container is a plain,
-  // non-interactive element. A single dedicated <button> is absolutely
-  // positioned to cover the whole card (the full-card open affordance, with
-  // native keyboard/Enter/Space support), and the real inner actions (Watch
-  // replay, Convert) sit ABOVE it as siblings — never nested inside another
-  // interactive control. The content layer is pointer-events-none so a click on
-  // empty card space falls through to the overlay button; the action buttons
-  // re-enable pointer events for themselves.
+  // Keep the open control around only non-interactive ticket content. This
+  // avoids relying on an invisible overlay button for browser hit testing.
   return (
     <>
       <div
@@ -635,14 +629,7 @@ function SupportTicketCard({
           isUnread ? 'border-gray-800 border-l-2 border-l-blue-500' : 'border-gray-800'
         }`}
       >
-        <button
-          type="button"
-          onClick={handleOpen}
-          aria-label={`Open support ticket: ${title}`}
-          className="absolute inset-0 z-0 rounded-lg cursor-pointer focus:outline-none"
-        />
-
-        <div className="pointer-events-none relative z-10 flex items-start gap-3">
+        <div className="flex items-start gap-3">
           <Icon size={16} className={`flex-shrink-0 mt-0.5 ${type.className}`} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
@@ -666,45 +653,46 @@ function SupportTicketCard({
               </span>
             </div>
 
-            <div
-              className={`text-sm mt-1.5 break-words ${
+            <button
+              type="button"
+              onClick={handleOpen}
+              aria-label={`Open support ticket: ${title}`}
+              className={`block w-full text-left text-sm mt-1.5 break-words focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 rounded ${
                 isUnread ? 'text-gray-50 font-semibold' : 'text-gray-200 font-medium'
               }`}
             >
               {title}
-            </div>
-
-            {ticket.subject?.trim() && ticket.body?.trim() ? (
-              <div className="text-xs text-gray-500 mt-1 line-clamp-3 whitespace-pre-wrap break-words">
-                {ticket.body}
-              </div>
-            ) : null}
-
-            {reporterLabel ? (
-              <div className="text-[11px] text-gray-600 mt-1.5">{reporterLabel}</div>
-            ) : null}
-
-            {ticket.ai_summary ? (
-              <div className="mt-2 flex items-start gap-2 rounded-md bg-violet-500/10 border border-violet-500/20 px-2.5 py-2">
-                <Sparkles size={13} className="text-violet-300 flex-shrink-0 mt-0.5" />
-                <div className="min-w-0">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-300/80">
-                    AI investigation
-                  </div>
-                  <div className="text-xs text-gray-300 mt-0.5 whitespace-pre-wrap break-words">
-                    {ticket.ai_summary}
-                  </div>
-                </div>
-              </div>
-            ) : null}
+              {ticket.subject?.trim() && ticket.body?.trim() ? (
+                <span className="block text-xs text-gray-500 mt-1 line-clamp-3 whitespace-pre-wrap break-words font-normal">
+                  {ticket.body}
+                </span>
+              ) : null}
+              {reporterLabel ? (
+                <span className="block text-[11px] text-gray-600 mt-1.5 font-normal">
+                  {reporterLabel}
+                </span>
+              ) : null}
+              {ticket.ai_summary ? (
+                <span className="mt-2 flex items-start gap-2 rounded-md bg-violet-500/10 border border-violet-500/20 px-2.5 py-2 font-normal">
+                  <Sparkles size={13} className="text-violet-300 flex-shrink-0 mt-0.5" />
+                  <span className="min-w-0">
+                    <span className="block text-[10px] font-semibold uppercase tracking-wide text-violet-300/80">
+                      AI investigation
+                    </span>
+                    <span className="block text-xs text-gray-300 mt-0.5 whitespace-pre-wrap break-words">
+                      {ticket.ai_summary}
+                    </span>
+                  </span>
+                </span>
+              ) : null}
+            </button>
 
             {screenshotUrl ? (
               <a
                 href={screenshotUrl}
                 target="_blank"
                 rel="noreferrer"
-                onClick={(e: any) => e.stopPropagation()}
-                className="pointer-events-auto relative block mt-2 w-fit"
+                className="relative block mt-2 w-fit"
                 data-testid="ticket-screenshot-thumb"
               >
                 <img
@@ -720,7 +708,7 @@ function SupportTicketCard({
               <button
                 type="button"
                 onClick={() => setWatchingReplay(true)}
-                className="pointer-events-auto relative inline-flex items-center gap-1.5 mt-2 text-xs text-blue-400 hover:text-blue-300"
+                className="relative inline-flex items-center gap-1.5 mt-2 text-xs text-blue-400 hover:text-blue-300"
                 data-testid="watch-replay-button"
               >
                 <PlayCircle size={13} />
