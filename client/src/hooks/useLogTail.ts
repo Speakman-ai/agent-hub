@@ -56,6 +56,12 @@ export interface UseLogTailResult {
   pendingCount: number;
   /** Merge buffered records into the visible tail and stay live. */
   resume: () => void;
+  /**
+   * Empty the visible tail locally (after a server-side "Clear logs" purge).
+   * Clears displayed + buffered records and rewinds the cursor so the socket
+   * stays connected and only surfaces records ingested after the purge.
+   */
+  reset: () => void;
   error: string | null;
 }
 
@@ -226,6 +232,42 @@ export function useLogTail(
     }
   }, []);
 
+  const reset = useCallback(() => {
+    // Purge barrier for a destructive "Clear logs": the server store is now
+    // empty, so we must tear the current socket down — detaching its handlers
+    // first — and reconnect from a rewound cursor. Detaching `onmessage`
+    // guarantees any `logs_tail` frame that was queued before/during the DELETE
+    // can never land after this point and re-add now-deleted rows. The fresh
+    // socket resubscribes from cursor 0 (the start of the now-empty history), so
+    // the live view reflects only records ingested AFTER the purge.
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    const sock = socketRef.current;
+    socketRef.current = null;
+    if (sock) {
+      sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null;
+      try {
+        sock.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    cursorRef.current = 0;
+    pendingRef.current = [];
+    attemptsRef.current = 0;
+    setRecords([]);
+    setPendingCount(0);
+    setDropped(0);
+    // Reconnect immediately unless the component is tearing down or has no
+    // project (the mount effect owns connection in those cases).
+    if (!closedRef.current && projectIdRef.current) {
+      setStatus('connecting');
+      connectRef.current();
+    }
+  }, []);
+
   useEffect(() => {
     closedRef.current = false;
     cursorRef.current = 0;
@@ -273,6 +315,7 @@ export function useLogTail(
     setPaused,
     pendingCount,
     resume,
+    reset,
     error,
   };
 }

@@ -52,6 +52,11 @@ const LogQueryResponse = registerComponent(
 
 const ErrorResponse = registerComponent('LogQueryErrorResponse', z.object({ error: z.string() }));
 
+const LogPurgeResponse = registerComponent(
+  'LogPurgeResponse',
+  z.object({ purged: z.number().int().nonnegative() }),
+);
+
 registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/logs',
@@ -71,6 +76,32 @@ registerPath({
     400: {
       description: 'Malformed query parameters.',
       content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Project not found or not visible.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/logs',
+  tags: ['Logs'],
+  summary: 'Clear all project logs',
+  description:
+    'Purges every ingested log record (and its full-text index row) for the project in one transaction, returning the number removed. Destructive and Admin-gated. Grouped error Issues are a separate surface and are left intact.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: 'Records purged.',
+      content: { 'application/json': { schema: LogPurgeResponse } },
     },
     403: {
       description: 'Insufficient role.',

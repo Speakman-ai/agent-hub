@@ -5,7 +5,7 @@
  * cursor-paginated "load older" history.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pause, Play, AlertTriangle, Loader2, RadioTower, Plug, X } from 'lucide-react';
+import { Pause, Play, AlertTriangle, Loader2, RadioTower, Plug, X, Trash2 } from 'lucide-react';
 import { api } from '../../utils/api';
 import {
   filterLogRecords,
@@ -22,6 +22,7 @@ interface LiveLogsViewProps {
   projectId: string;
   /** Forwarded to `useLogTail` — tests inject a fake socket factory here. */
   tailOptions?: UseLogTailOptions;
+  showToast?: (message: string, kind?: string) => void;
 }
 
 const OLDER_PAGE_LIMIT = 100;
@@ -52,9 +53,20 @@ function StatusBadge({ status }: { status: LogTailStatus }): React.ReactElement 
 export default function LiveLogsView({
   projectId,
   tailOptions,
+  showToast,
 }: LiveLogsViewProps): React.ReactElement {
-  const { records, status, dropped, clearDropped, paused, setPaused, pendingCount, resume, error } =
-    useLogTail(projectId, tailOptions);
+  const {
+    records,
+    status,
+    dropped,
+    clearDropped,
+    paused,
+    setPaused,
+    pendingCount,
+    resume,
+    reset,
+    error,
+  } = useLogTail(projectId, tailOptions);
 
   const [minSeverityNumber, setMinSeverityNumber] = useState(0);
   const [sourceId, setSourceId] = useState('');
@@ -64,6 +76,8 @@ export default function LiveLogsView({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderExhausted, setOlderExhausted] = useState(false);
   const [olderError, setOlderError] = useState<string | null>(null);
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const filter: LogFilter = useMemo(
     () => ({ minSeverityNumber, sourceId, environment, text }),
@@ -138,6 +152,31 @@ export default function LiveLogsView({
     text,
   ]);
 
+  const clearLogs = useCallback(async () => {
+    setClearing(true);
+    try {
+      const res = (await api.clearLogs(projectId)) as { purged?: number };
+      // Drop the live tail buffer and any loaded history so the view reflects
+      // the purge immediately, without waiting for a reconnect.
+      reset();
+      setOlder([]);
+      setOlderExhausted(true);
+      setOlderError(null);
+      setConfirmingClear(false);
+      const n = typeof res?.purged === 'number' ? res.purged : 0;
+      showToast?.(
+        n === 0
+          ? 'No logs to clear.'
+          : `Cleared ${n.toLocaleString()} ${n === 1 ? 'log' : 'logs'}.`,
+        'success',
+      );
+    } catch (err) {
+      showToast?.(err instanceof Error ? err.message : 'Failed to clear logs', 'error');
+    } finally {
+      setClearing(false);
+    }
+  }, [projectId, reset, showToast]);
+
   return (
     <div className="flex h-full flex-col">
       {/* Controls */}
@@ -160,6 +199,39 @@ export default function LiveLogsView({
             {pendingCount} new {pendingCount === 1 ? 'log' : 'logs'}
           </button>
         ) : null}
+
+        {confirmingClear ? (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="text-xs text-gray-400">Clear all logs?</span>
+            <button
+              type="button"
+              onClick={clearLogs}
+              disabled={clearing}
+              className="inline-flex items-center gap-1 rounded bg-red-600/90 px-2 py-1 text-xs text-white hover:bg-red-600 disabled:opacity-50"
+            >
+              {clearing ? <Loader2 size={13} className="animate-spin" /> : null}
+              Confirm
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingClear(false)}
+              disabled={clearing}
+              className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmingClear(true)}
+            aria-label="Clear all logs"
+            className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-300"
+          >
+            <Trash2 size={13} />
+            Clear logs
+          </button>
+        )}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <select

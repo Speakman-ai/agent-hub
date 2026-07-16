@@ -73,6 +73,60 @@ type LogsTab = 'live' | 'issues' | 'sources';
 
 const OLDER_PAGE_LIMIT = 100;
 
+/** User-facing result copy for a "Clear logs" purge of `purged` records. */
+export function clearedLogsMessage(purged: number): string {
+  const n = Number.isFinite(purged) && purged > 0 ? Math.floor(purged) : 0;
+  if (n === 0) return 'No logs to clear.';
+  return `Cleared ${n.toLocaleString()} ${n === 1 ? 'log' : 'logs'}.`;
+}
+
+/** Injected dependencies for the destructive clear action (test seam). */
+export interface LogClearDeps {
+  projectId: string;
+  clearLogs: (projectId: string) => Promise<{ purged?: number } | undefined>;
+  /** Purge barrier on the live tail hook (detaches socket + rewinds cursor). */
+  reset: () => void;
+  /** Discard any loaded older-history pages so the view reflects the purge. */
+  clearHistory: () => void;
+  showToast?: (message: string, kind?: string) => void;
+}
+
+/**
+ * Execute a "Clear logs" purge: DELETE the records, drop the live tail buffer
+ * and loaded history, then toast the outcome. Extracted from the component so
+ * the destructive wiring is unit-testable without a native runtime (mobile's
+ * test env has no RN event dispatch). On failure nothing is reset and the error
+ * is surfaced — a failed purge must not blank the view as if it succeeded.
+ */
+export async function runLogClear(deps: LogClearDeps): Promise<void> {
+  const { projectId, clearLogs, reset, clearHistory, showToast } = deps;
+  try {
+    const res = await clearLogs(projectId);
+    reset();
+    clearHistory();
+    showToast?.(clearedLogsMessage(typeof res?.purged === 'number' ? res.purged : 0), 'success');
+  } catch (err: any) {
+    showToast?.(err?.message || 'Failed to clear logs', 'error');
+  }
+}
+
+/** Alert config for the destructive clear confirmation (title/message/buttons). */
+export function buildClearConfirm(onConfirm: () => void): {
+  title: string;
+  message: string;
+  buttons: Array<{ text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }>;
+} {
+  return {
+    title: 'Clear all logs?',
+    message:
+      'This permanently deletes every ingested log record for this project. This cannot be undone.',
+    buttons: [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Clear logs', style: 'destructive', onPress: onConfirm },
+    ],
+  };
+}
+
 /** Semantic severity tone → concrete text colour. */
 const TONE_COLOR: Record<SeverityTone, string> = {
   error: colors.red400,
@@ -252,9 +306,25 @@ function StatusBadge({ status }: { status: LogTailStatus }) {
 }
 
 // ── Live tail view ───────────────────────────────────────────────────────────
-export function LiveLogsView({ projectId }: { projectId: string }) {
-  const { records, status, dropped, clearDropped, paused, setPaused, pendingCount, resume, error } =
-    useLogTail(projectId);
+export function LiveLogsView({
+  projectId,
+  showToast,
+}: {
+  projectId: string;
+  showToast?: (message: string, kind?: string) => void;
+}) {
+  const {
+    records,
+    status,
+    dropped,
+    clearDropped,
+    paused,
+    setPaused,
+    pendingCount,
+    resume,
+    reset,
+    error,
+  } = useLogTail(projectId);
 
   const [minSeverityNumber, setMinSeverityNumber] = useState(0);
   const [sourceId, setSourceId] = useState('');
@@ -264,6 +334,7 @@ export function LiveLogsView({ projectId }: { projectId: string }) {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderExhausted, setOlderExhausted] = useState(false);
   const [olderError, setOlderError] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   const filter: LogFilter = useMemo(
     () => ({ minSeverityNumber, sourceId, environment, text }),
@@ -325,6 +396,32 @@ export function LiveLogsView({ projectId }: { projectId: string }) {
     }
   }, [loadingOlder, olderExhausted, combined, projectId, minSeverityNumber, sourceId, environment, text]);
 
+  const runClear = useCallback(async () => {
+    setClearing(true);
+    try {
+      await runLogClear({
+        projectId,
+        clearLogs: api.clearLogs,
+        reset,
+        // Drop any loaded older-history pages so the view reflects the purge.
+        clearHistory: () => {
+          setOlder([]);
+          setOlderExhausted(true);
+          setOlderError(null);
+        },
+        showToast,
+      });
+    } finally {
+      setClearing(false);
+    }
+  }, [projectId, reset, showToast]);
+
+  const confirmClear = useCallback(() => {
+    if (clearing) return;
+    const { title, message, buttons } = buildClearConfirm(() => void runClear());
+    Alert.alert(title, message, buttons);
+  }, [clearing, runClear]);
+
   const sourceOptions = useMemo(
     () => [{ label: 'All sources', value: '' }, ...sources.map((s) => ({ label: s, value: s }))],
     [sources],
@@ -357,6 +454,15 @@ export function LiveLogsView({ projectId }: { projectId: string }) {
               </Text>
             </TouchableOpacity>
           ) : null}
+          <TouchableOpacity
+            onPress={confirmClear}
+            disabled={clearing}
+            style={[styles.clearBtn, clearing && styles.btnDisabled]}
+            testID="logs-clear-btn"
+          >
+            {clearing ? <ActivityIndicator size="small" color={colors.red400} /> : null}
+            <Text style={styles.clearBtnText}>🗑 Clear</Text>
+          </TouchableOpacity>
         </View>
 
         <ChipRow
@@ -999,7 +1105,14 @@ export default function LogsScreen({ route, navigation }: any) {
       </View>
 
       {tab === 'live' ? (
-        <LiveLogsView projectId={projectId} />
+        <LiveLogsView
+          projectId={projectId}
+          showToast={(message) => {
+            // No global toast on mobile; surface the purge result (and any
+            // failure) via an Alert so the destructive action is acknowledged.
+            Alert.alert('Logs', message);
+          }}
+        />
       ) : tab === 'issues' ? (
         <IssuesView
           projectId={projectId}
@@ -1052,6 +1165,18 @@ const styles = StyleSheet.create({
   pauseBtnText: { fontSize: 12, color: colors.gray200 },
   pendingBtn: { backgroundColor: colors.blue600, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   pendingBtnText: { fontSize: 12, color: colors.white },
+  clearBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginLeft: 'auto',
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  clearBtnText: { fontSize: 12, color: colors.red400 },
 
   chipScroll: { flexGrow: 0 },
   chipScrollContent: { gap: 6, paddingRight: 12 },

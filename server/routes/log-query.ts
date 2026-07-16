@@ -4,7 +4,7 @@ import { requireRole } from '../roles.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import type { RouteDeps } from '../types.js';
-import { queryLogRecords } from '../logs/logs-db.js';
+import { queryLogRecords, purgeProjectLogRecords } from '../logs/logs-db.js';
 import { serializeLogRecord } from '../logs/log-record-api.js';
 import { LogQueryParamsSchema } from './log-query.openapi.js';
 
@@ -44,6 +44,26 @@ export default function createLogQueryRoutes({ findProject }: RouteDeps): Router
         }
         throw err;
       }
+    },
+  );
+
+  // Manual "Clear logs" — purge every ingested record for the project. This is
+  // a destructive, project-wide reset of the raw log tail, so it is Admin-gated
+  // (matching log-source management) and ACL-scoped: a project the caller can't
+  // see returns 404, never leaking its existence. Grouped Issues are a separate
+  // surface and are intentionally left intact (see purgeProjectLogRecords).
+  router.delete(
+    '/api/projects/:projectId/logs',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const project = findProject(projectId);
+      if (!project || !canViewProject(project, resolveVisibilityCaller(req))) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const purged = purgeProjectLogRecords(projectId);
+      res.json({ purged });
     },
   );
 

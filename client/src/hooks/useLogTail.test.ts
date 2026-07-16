@@ -243,6 +243,59 @@ describe('useLogTail', () => {
     expect(result.current.records.map((r) => r.id)).toEqual([5]);
   });
 
+  it('reset() drops the old socket, empties the tail, and ignores stale in-flight frames', () => {
+    const { result } = renderHook(() => useLogTail('p1', opts));
+    const first = FakeSocket.instances[0];
+    act(() => first.open());
+    act(() =>
+      first.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [record(1), record(2)],
+        cursor: 2,
+        dropped: 5,
+      }),
+    );
+    expect(result.current.records).toHaveLength(2);
+    expect(result.current.dropped).toBe(5);
+
+    // Emulate a server-side purge. reset() must detach + close the old socket
+    // and reconnect a fresh one, not just clear local buffers.
+    act(() => result.current.reset());
+    expect(result.current.records).toHaveLength(0);
+    expect(result.current.dropped).toBe(0);
+    expect(first.readyState).toBe(3); // old socket closed
+
+    // A frame that was queued on the OLD socket before the purge must NOT
+    // reintroduce the now-deleted records (its handlers were detached).
+    act(() =>
+      first.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [record(1), record(2)],
+        cursor: 2,
+        dropped: 0,
+      }),
+    );
+    expect(result.current.records).toHaveLength(0);
+
+    // A fresh socket resubscribed from cursor 0 and now drives the live view.
+    const second = FakeSocket.instances[FakeSocket.instances.length - 1];
+    expect(second).not.toBe(first);
+    act(() => second.open());
+    expect(second.lastSubscribeCursor()).toBe(0);
+    act(() =>
+      second.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [record(10)],
+        cursor: 10,
+        dropped: 0,
+      }),
+    );
+    expect(result.current.records.map((r) => r.id)).toEqual([10]);
+  });
+
   it('ignores frames for a different project', () => {
     const { result } = renderHook(() => useLogTail('p1', opts));
     const sock = FakeSocket.instances[0];

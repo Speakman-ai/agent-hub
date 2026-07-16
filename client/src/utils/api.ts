@@ -786,6 +786,9 @@ export const api = {
     const qs = search.toString();
     return fetchJSON(`/projects/${projectId}/logs${qs ? `?${qs}` : ''}`);
   },
+  // Destructive "Clear logs" — purge every ingested record for the project.
+  // Admin-gated server-side; resolves to `{ purged: <count> }`.
+  clearLogs: (projectId: any) => fetchJSON(`/projects/${projectId}/logs`, { method: 'DELETE' }),
   // ── Grouped error issues (LOG-GROUP) ───────────────────────────────────
   listLogIssues: (projectId: any, params: Record<string, any> = {}) => {
     const search = new URLSearchParams();

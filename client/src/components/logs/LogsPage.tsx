@@ -79,7 +79,7 @@ export default function LogsPage({
 
       <div className="min-h-0 flex-1">
         {tab === 'live' ? (
-          <LiveLogsView projectId={projectId} tailOptions={tailOptions} />
+          <LiveLogsView projectId={projectId} tailOptions={tailOptions} showToast={showToast} />
         ) : tab === 'issues' ? (
           <IssuesView projectId={projectId} showToast={showToast} onOpenSession={onOpenSession} />
         ) : (

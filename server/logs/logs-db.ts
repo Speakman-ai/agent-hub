@@ -726,6 +726,34 @@ export function pruneExpiredLogRecords(nowMs: number, maxDeletes = 5000): number
 }
 
 /**
+ * Manual purge: delete EVERY log record (and its FTS row) for a single project
+ * in one transaction, returning the number of records removed. This backs the
+ * user-initiated "Clear logs" action in the Logs module — distinct from the
+ * age/quota reapers, which only evict a bounded oldest slice.
+ *
+ * Scope is deliberately the raw record stream (`log_records` + `log_records_fts`).
+ * Grouped error Issues (`log_issues`) are a separate surface with their own
+ * resolve/ignore lifecycle and links to live Fix/Analyze sessions, so they are
+ * intentionally left intact — clearing the tail must not silently tear down an
+ * in-flight investigation. The FTS rows are removed first (by the record ids
+ * about to be deleted) so the message index never dangles past the records.
+ */
+export function purgeProjectLogRecords(projectId: string): number {
+  const db = getLogsDb();
+  const delFts = ftsAvailable
+    ? db.prepare(
+        'DELETE FROM log_records_fts WHERE rowid IN (SELECT id FROM log_records WHERE project_id = ?)',
+      )
+    : null;
+  const delRec = db.prepare('DELETE FROM log_records WHERE project_id = ?');
+  const run = db.transaction((pid: string): number => {
+    if (delFts) delFts.run(pid);
+    return delRec.run(pid).changes;
+  });
+  return run(projectId);
+}
+
+/**
  * Quota reaper: for a single project, evict the oldest records until its
  * stored bytes drop to or below the resolved quota. Bounded per call by
  * `maxDeletes`. Returns the number of records deleted.

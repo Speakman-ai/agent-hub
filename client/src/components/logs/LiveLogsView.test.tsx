@@ -7,7 +7,10 @@ import { SEVERITY_NUMBER } from '../../utils/logStream';
 
 vi.mock('../../utils/connection', () => ({ getWsUrl: () => 'ws://test/ws' }));
 vi.mock('../../utils/api', () => ({
-  api: { queryLogs: vi.fn().mockResolvedValue({ records: [], nextCursor: null }) },
+  api: {
+    queryLogs: vi.fn().mockResolvedValue({ records: [], nextCursor: null }),
+    clearLogs: vi.fn().mockResolvedValue({ purged: 0 }),
+  },
 }));
 
 class FakeSocket implements SocketLike {
@@ -60,8 +63,8 @@ function record(id: number, over: Record<string, unknown> = {}) {
 
 const tailOptions = { createSocket: () => new FakeSocket(), reconnectBaseMs: 1_000_000 };
 
-function renderLive() {
-  const utils = render(<LiveLogsView projectId="p1" tailOptions={tailOptions} />);
+function renderLive(props: Partial<Parameters<typeof LiveLogsView>[0]> = {}) {
+  const utils = render(<LiveLogsView projectId="p1" tailOptions={tailOptions} {...props} />);
   const sock = FakeSocket.instances[FakeSocket.instances.length - 1];
   act(() => sock.open());
   return { ...utils, sock };
@@ -252,6 +255,51 @@ describe('LiveLogsView', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/3 records were dropped/i);
     fireEvent.click(screen.getByRole('button', { name: /Dismiss dropped-records notice/i }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('clears logs after a two-step confirm and reports the purged count', async () => {
+    (api.clearLogs as any).mockResolvedValue({ purged: 2 });
+    const showToast = vi.fn();
+    const { sock } = renderLive({ showToast });
+    act(() =>
+      sock.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [record(1, { body: 'doomed-a' }), record(2, { body: 'doomed-b' })],
+        cursor: 2,
+        dropped: 0,
+      }),
+    );
+    expect(screen.getByText('doomed-a')).toBeInTheDocument();
+
+    // First click asks for confirmation — no API call yet.
+    fireEvent.click(screen.getByRole('button', { name: /Clear all logs/i }));
+    expect(api.clearLogs).not.toHaveBeenCalled();
+    expect(screen.getByText('Clear all logs?')).toBeInTheDocument();
+
+    // Confirm purges via the API, empties the visible tail, and toasts.
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(api.clearLogs).toHaveBeenCalledWith('p1'));
+    await waitFor(() => expect(screen.queryByText('doomed-a')).not.toBeInTheDocument());
+    expect(screen.getByText(/No logs yet/i)).toBeInTheDocument();
+    expect(showToast).toHaveBeenCalledWith('Cleared 2 logs.', 'success');
+  });
+
+  it('cancels the clear confirmation without calling the API', () => {
+    renderLive();
+    fireEvent.click(screen.getByRole('button', { name: /Clear all logs/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText('Clear all logs?')).not.toBeInTheDocument();
+    expect(api.clearLogs).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an error toast when clearing fails', async () => {
+    (api.clearLogs as any).mockRejectedValue(new Error('nope'));
+    const showToast = vi.fn();
+    renderLive({ showToast });
+    fireEvent.click(screen.getByRole('button', { name: /Clear all logs/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith('nope', 'error'));
   });
 
   it('pauses and resumes the live stream', () => {

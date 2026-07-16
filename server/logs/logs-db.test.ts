@@ -19,6 +19,7 @@ import {
   clampQueryLimit,
   pruneExpiredLogRecords,
   enforceProjectQuota,
+  purgeProjectLogRecords,
   type LogRecordInput,
 } from './logs-db.js';
 import { runLogRetentionReaper } from './log-retention-reaper.js';
@@ -323,6 +324,49 @@ describe('enforceProjectQuota', () => {
   it('is a no-op when under quota', () => {
     insertLogRecords([rec()], NOW);
     expect(enforceProjectQuota('proj-a')).toBe(0);
+  });
+});
+
+describe('purgeProjectLogRecords', () => {
+  it('deletes every record for the project and returns the count', () => {
+    insertLogRecords([rec({ body: 'one' }), rec({ body: 'two' }), rec({ body: 'three' })], NOW);
+    expect(queryLogRecords({ projectId: 'proj-a' }).records).toHaveLength(3);
+
+    const deleted = purgeProjectLogRecords('proj-a');
+
+    expect(deleted).toBe(3);
+    expect(queryLogRecords({ projectId: 'proj-a' }).records).toHaveLength(0);
+    expect(getProjectByteSize('proj-a')).toBe(0);
+  });
+
+  it('only clears the target project, leaving other projects intact', () => {
+    insertLogRecords([rec({ body: 'a-1' }), rec({ body: 'a-2' })], NOW);
+    insertLogRecords([rec({ projectId: 'proj-b', body: 'b-1' })], NOW);
+
+    const deleted = purgeProjectLogRecords('proj-a');
+
+    expect(deleted).toBe(2);
+    expect(queryLogRecords({ projectId: 'proj-a' }).records).toHaveLength(0);
+    expect(queryLogRecords({ projectId: 'proj-b' }).records).toHaveLength(1);
+  });
+
+  it('drops the FTS message index rows alongside the records', () => {
+    if (!isLogFtsAvailable()) return; // FTS5 optional at the build level
+    insertLogRecords([rec({ body: 'purgeneedle apple' })], NOW);
+    expect(queryLogRecords({ projectId: 'proj-a', text: 'purgeneedle' }).records).toHaveLength(1);
+
+    purgeProjectLogRecords('proj-a');
+
+    expect(queryLogRecords({ projectId: 'proj-a', text: 'purgeneedle' }).records).toHaveLength(0);
+    // The raw FTS table must not retain an orphaned row for the deleted record.
+    const ftsRows = getLogsDb().prepare('SELECT COUNT(*) AS n FROM log_records_fts').get() as {
+      n: number;
+    };
+    expect(ftsRows.n).toBe(0);
+  });
+
+  it('returns 0 when the project has no records', () => {
+    expect(purgeProjectLogRecords('proj-empty')).toBe(0);
   });
 });
 

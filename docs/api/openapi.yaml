@@ -6906,6 +6906,14 @@ components:
           type: string
       required:
         - error
+    LogPurgeResponse:
+      type: object
+      properties:
+        purged:
+          type: integer
+          minimum: 0
+      required:
+        - purged
     LogSource:
       type: object
       properties:
@@ -27175,6 +27183,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogQueryErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogQueryErrorResponse"
+        "404":
+          description: Project not found or not visible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogQueryErrorResponse"
+    delete:
+      tags:
+        - Logs
+      summary: Clear all project logs
+      description: Purges every ingested log record (and its full-text index row) for the project in one transaction, returning the number removed. Destructive and Admin-gated. Grouped error Issues are a separate surface and are left intact.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Records purged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogPurgeResponse"
         "403":
           description: Insufficient role.
           content:
