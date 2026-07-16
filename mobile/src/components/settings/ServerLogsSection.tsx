@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 import { getWsUrl } from '../../utils/config';
 import { api } from '../../utils/api';
-import { formatServerLogLine } from '../../utils/serverLogs';
+import { formatServerLogLine, orderServerLogsNewestFirst } from '../../utils/serverLogs';
 import { colors } from '../../theme/colors';
 const MAX_LINES = 200;
 export default function ServerLogsSection() {
@@ -65,7 +65,7 @@ export default function ServerLogsSection() {
         </TouchableOpacity>
       </View>
       <ScrollView style={styles.logBox} nestedScrollEnabled>
-        {lines.length === 0 ? (<Text style={styles.muted}>Waiting for log lines…</Text>) : (lines.map((line: any, i: any) => (<Text key={`${i}-${line.slice(0, 20)}`} style={styles.logLine}>
+        {lines.length === 0 ? (<Text style={styles.muted}>Waiting for log lines…</Text>) : (orderServerLogsNewestFirst(lines).map((line: any, i: any) => (<Text key={`${i}-${line.slice(0, 20)}`} style={styles.logLine}>
               {line}
             </Text>)))}
       </ScrollView>

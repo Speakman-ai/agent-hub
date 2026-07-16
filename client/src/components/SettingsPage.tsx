@@ -21,6 +21,7 @@ import GlobalSkillsSection from './GlobalSkillsSection';
 import PerUserModelSelect from './PerUserModelSelect';
 import PerUserEngineSelect from './PerUserEngineSelect';
 import { effectiveEngine, modelOverrideIsStale } from '../utils/perUserModelOverride';
+import { orderServerLogsNewestFirst } from '../utils/serverLogs';
 import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
 import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection';
@@ -6766,7 +6767,7 @@ function ServerLogsSection({ wsRef }: any) {
   const [filter, setFilter] = useState('');
   const [levelFilter, setLevelFilter] = useState('all'); // 'all' | 'log' | 'warn' | 'error'
   const containerRef = useRef<any>(null);
-  const wasAtBottomRef = useRef(true);
+  const wasAtTopRef = useRef(true);
 
   // Fetch initial logs
   useEffect(() => {
@@ -6796,21 +6797,22 @@ function ServerLogsSection({ wsRef }: any) {
     }
   }, [wsRef]);
 
-  // Auto-scroll
+  // Auto-follow pins the newest line. Newest is rendered at the top, so
+  // following means keeping the scroll position at the top.
   useEffect(() => {
     if (autoFollow && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      containerRef.current.scrollTop = 0;
     }
   }, [logs, autoFollow]);
 
-  // Detect manual scroll
+  // Detect manual scroll: leaving the top pauses auto-follow; returning resumes.
   const handleScroll = () => {
     if (!containerRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
-    const atBottom = scrollHeight - scrollTop - clientHeight < 40;
-    wasAtBottomRef.current = atBottom;
-    if (atBottom && !autoFollow) setAutoFollow(true);
-    if (!atBottom && autoFollow) setAutoFollow(false);
+    const { scrollTop } = containerRef.current;
+    const atTop = scrollTop < 40;
+    wasAtTopRef.current = atTop;
+    if (atTop && !autoFollow) setAutoFollow(true);
+    if (!atTop && autoFollow) setAutoFollow(false);
   };
 
   const filteredLogs = logs.filter((entry: any) => {
@@ -6877,8 +6879,11 @@ function ServerLogsSection({ wsRef }: any) {
           </div>
         ) : (
           <div className="p-3">
-            {filteredLogs.map((entry: any, i: any) => (
-              <div key={i} className="hover:bg-gray-900/50 px-1 -mx-1 rounded">
+            {orderServerLogsNewestFirst(filteredLogs).map((entry: any, i: any) => (
+              <div
+                key={`${entry.ts ?? ''}-${i}`}
+                className="hover:bg-gray-900/50 px-1 -mx-1 rounded"
+              >
                 <span className={tsColor}>
                   {formatTime(entry.ts, {
                     hour12: false,

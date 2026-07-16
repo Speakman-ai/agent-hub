@@ -10,6 +10,19 @@
  * @param {string | { ts?: string, level?: string, message?: string, line?: string, text?: string } | null | undefined} entry
  * @returns {string}
  */
+/**
+ * Order server-log lines for display in the mobile Server Logs panel.
+ *
+ * Lines accumulate chronologically (oldest → newest, newest appended). The
+ * panel shows the newest line first, so display order is the reverse of
+ * insertion order. Returns a new array; the input is never mutated.
+ *
+ * @param {ReadonlyArray<T>} lines
+ * @returns {T[]}
+ */
+export function orderServerLogsNewestFirst(lines: any) {
+    return Array.isArray(lines) ? lines.slice().reverse() : [];
+}
 export function formatServerLogLine(entry: any) {
     if (entry == null)
         return '';

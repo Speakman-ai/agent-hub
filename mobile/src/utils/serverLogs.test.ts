@@ -1,6 +1,28 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { formatServerLogLine } from './serverLogs';
+import { formatServerLogLine, orderServerLogsNewestFirst } from './serverLogs';
+
+describe('orderServerLogsNewestFirst', () => {
+    it('returns lines newest-first (reverse of chronological insertion)', () => {
+        expect(orderServerLogsNewestFirst(['oldest', 'middle', 'newest'])).toEqual([
+            'newest',
+            'middle',
+            'oldest',
+        ]);
+    });
+    it('does not mutate the input array', () => {
+        const input = ['a', 'b', 'c'];
+        const out = orderServerLogsNewestFirst(input);
+        expect(input).toEqual(['a', 'b', 'c']);
+        expect(out).toEqual(['c', 'b', 'a']);
+        expect(out).not.toBe(input);
+    });
+    it('returns an empty array for empty or non-array input', () => {
+        expect(orderServerLogsNewestFirst([])).toEqual([]);
+        expect(orderServerLogsNewestFirst(null)).toEqual([]);
+        expect(orderServerLogsNewestFirst(undefined)).toEqual([]);
+    });
+});
 describe('formatServerLogLine', () => {
     it('formats a full LogEntry as "HH:MM:SS LEVEL  message"', () => {
         expect(formatServerLogLine({
