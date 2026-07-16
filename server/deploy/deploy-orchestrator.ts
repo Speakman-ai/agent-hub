@@ -44,6 +44,7 @@ import { existsSync, rmSync } from 'fs';
 import type { AppConfig, BroadcastFn, DeploymentRow } from '../types.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { resolveRunnerBackend } from '../finalize/runner-backend.js';
+import { acquireRunnerWithRetry } from './deploy-acquire-retry.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
 import { resolveRunsOnImage } from '../finalize/runner-images.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
@@ -1033,8 +1034,28 @@ export async function runDeployment(
       minimalEnv: true,
     };
 
-    lease = await backend.acquire(spec);
+    // Bounded auto-retry on TRANSIENT acquire failures (agent lost before
+    // attach, no agent claimed in time, Spot reclaim). The acquire runs before
+    // any deploy step, so retrying it can never cause a partial / double deploy.
+    // A deterministic failure (worktree bundle) short-circuits, and a cancelled
+    // deployment stops retrying. On final give-up the throw falls through to the
+    // catch → fail(), which releases the env lock (no leak). Mirrors Finalize's
+    // infra auto-retry (server/finalize/infra-retry.ts) for the deploy path.
+    lease = await acquireRunnerWithRetry(backend, spec, {
+      isCancelled: currentDeploymentIsCancelled,
+      onRetry: (retry, attempts, detail) => {
+        console.warn(
+          `[deploy-orchestrator] runner acquire failed for ${projectId}/${environment} ` +
+            `(deployment ${deploymentId}), retrying (${retry}/${attempts - 1}): ${detail}`,
+        );
+      },
+    });
   } catch (err) {
+    // `fail()` preserves a cancelled terminal: if the deployment was cancelled
+    // (at entry or between acquire attempts) `acquireRunnerWithRetry` throws, but
+    // `currentDeploymentIsCancelled()` is true, so fail()'s cancel branch keeps
+    // the `cancelled` status/error (set by cancelDeployment) and only releases
+    // the env lock — it never overwrites it with this generic `error` message.
     return fail(
       `failed to start deploy runner: ${err instanceof Error ? err.message : String(err)}`,
     );

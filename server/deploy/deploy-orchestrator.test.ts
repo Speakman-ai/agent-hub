@@ -6,7 +6,7 @@
  * fake lease's spawnStep drives an EventEmitter-backed child so the streaming /
  * exit-code logic runs end-to-end.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { EventEmitter, Readable } from 'stream';
 import { getDb, getStmts } from '../db.js';
@@ -47,7 +47,13 @@ const PROJECT = 'proj-deploy-orch';
 const OTHER_PROJECT = 'proj-deploy-other';
 const WORKTREE = '/tmp/deploy-orch-fake';
 
+let prevAcquireBackoff: string | undefined;
 beforeEach(() => {
+  // Zero the deploy runner-acquire retry backoff so tests that exercise an
+  // acquire FAILURE (which now auto-retries transient losses) don't sleep the
+  // real 2s default between attempts and blow past the fast `waitFor` polls.
+  prevAcquireBackoff = process.env.DEPLOY_ACQUIRE_BACKOFF_MS;
+  process.env.DEPLOY_ACQUIRE_BACKOFF_MS = '0';
   // wipeTables refuses to run against a non-scratch (non-tmpdir) database —
   // see server/test/destructive-db.ts and the 2026-07-01 prod wipe incident.
   wipeTables(getDb(), [
@@ -65,6 +71,11 @@ beforeEach(() => {
     'kanban_columns',
     'kanban_boards',
   ]);
+});
+
+afterEach(() => {
+  if (prevAcquireBackoff === undefined) delete process.env.DEPLOY_ACQUIRE_BACKOFF_MS;
+  else process.env.DEPLOY_ACQUIRE_BACKOFF_MS = prevAcquireBackoff;
 });
 
 const CONFIG = parseDeployConfig(`
@@ -471,6 +482,141 @@ describe('triggerDeployment — happy path', () => {
     expect(env.current_ref).toBe('sha-ok');
     expect(env.active_deployment_id).toBeNull();
     expect(broadcast).toHaveBeenCalled(); // it WAS called (and threw), but was swallowed
+  });
+});
+
+describe('triggerDeployment — runner acquire retry (transient fleet loss)', () => {
+  const LOST_BEFORE_ATTACH =
+    'runner-agent lost before attach for job production (abc): runner agent lost — ' +
+    'lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)';
+
+  // The global beforeEach zeroes DEPLOY_ACQUIRE_BACKOFF_MS so these acquire-
+  // failure tests don't sleep the real 2s default between retries.
+
+  /** Wrap a fake backend so its acquire throws `failFirst` transient losses first. */
+  function withTransientAcquireFailures(fb: FakeBackend, failFirst: number): RunnerBackend {
+    let acquireN = 0;
+    return {
+      kind: 'fake',
+      async acquire(spec) {
+        acquireN++;
+        if (acquireN <= failFirst) throw new Error(LOST_BEFORE_ATTACH);
+        return fb.backend.acquire(spec);
+      },
+    };
+  }
+
+  it('recovers a deploy when a transient loss precedes a successful acquire', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const backend = withTransientAcquireFailures(fb, 1); // lost once, then attaches
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-retry',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(backend),
+    );
+
+    // The retry attached and the pipeline ran to success.
+    expect(dep.status).toBe('success');
+    expect(listDeploymentSteps(dep.id).map((s) => s.status)).toEqual(['success', 'success']);
+    // Live ref recorded; env lock released.
+    const env = getDeploymentEnvironment(PROJECT, 'dev')!;
+    expect(env.current_ref).toBe('sha-retry');
+    expect(env.active_deployment_id).toBeNull();
+  });
+
+  it('terminalizes after exhausting attempts on a persistent loss, releasing the lock', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const backend = withTransientAcquireFailures(fb, 99); // never attaches
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-doomed',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(backend),
+    );
+
+    // Deployment errored with the surfaced acquire failure…
+    expect(dep.status).toBe('error');
+    expect(dep.error).toContain('failed to start deploy runner');
+    expect(dep.error).toContain('lost before attach');
+    // …the first unstarted step carries the error…
+    expect(listDeploymentSteps(dep.id)[0]).toMatchObject({ status: 'error' });
+    // …and the env lock is released (not stranded), so the env can deploy again.
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+    expect(acquireEnvironmentLock(PROJECT, 'dev', 'next-deploy')).toBe(true);
+  });
+
+  it('does NOT retry a deterministic worktree-bundle failure', async () => {
+    let acquireN = 0;
+    const backend: RunnerBackend = {
+      kind: 'fake',
+      async acquire() {
+        acquireN++;
+        throw new Error('fatal: Refusing to create empty bundle');
+      },
+    };
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-bundle',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(backend),
+    );
+
+    expect(dep.status).toBe('error');
+    expect(dep.error).toContain('Refusing to create empty bundle');
+    expect(acquireN).toBe(1); // fell through immediately, no retry
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+  });
+
+  it('preserves the cancelled terminal (not error) when cancelled during acquire retry', async () => {
+    // A transient loss on the first acquire, then the deployment is cancelled
+    // before the retry. `acquireRunnerWithRetry` throws (its pre-attempt guard),
+    // the orchestrator's catch calls `fail()` — which must KEEP the `cancelled`
+    // status rather than overwriting it with the generic acquire `error`.
+    let deps: DeployOrchestratorDeps;
+    let acquireN = 0;
+    const backend: RunnerBackend = {
+      kind: 'fake',
+      async acquire(spec) {
+        acquireN++;
+        // Cancel the in-flight deployment mid-acquire (spec.runId === deploymentId),
+        // then fail transiently so the loop would otherwise retry.
+        cancelDeployment({ deploymentId: spec.runId }, deps);
+        throw new Error(LOST_BEFORE_ATTACH);
+      },
+    };
+    deps = makeDeps(backend);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-cancel',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      deps,
+    );
+
+    // Cancelled state preserved — NOT converted to `error`.
+    expect(dep.status).toBe('cancelled');
+    expect(dep.error).not.toContain('failed to start deploy runner');
+    // The guard stopped the retry before a second acquire.
+    expect(acquireN).toBe(1);
+    // Env lock still released, so the environment is free to deploy again.
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+    expect(acquireEnvironmentLock(PROJECT, 'dev', 'after-cancel')).toBe(true);
   });
 });
 
