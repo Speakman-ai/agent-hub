@@ -1955,10 +1955,22 @@ type PositionCloneResult =
   | { kind: 'error'; message: string };
 
 /**
- * Probe origin for `<branch>` and, when the ref is present, fetch it shallowly
- * and check the fresh clone out onto it (`checkout -B <branch> origin/<branch>`).
- * Shared by the resolve-PR path and the user Branch-picker path in
+ * Probe origin for `<branch>` and, when the ref is present, fetch it and check
+ * the fresh clone out onto it (`checkout -B <branch> origin/<branch>`). Shared
+ * by the resolve-PR path and the user Branch-picker path in
  * {@link ensureSessionWorkspace}.
+ *
+ * Fetch depth is chosen so the positioned branch keeps a reachable merge-base
+ * with its base branch — the Finalize / pre-push rebase depends on it:
+ *   - **Full clone** (Agent Hub-hosted / local origin, `--depth` ignored): fetch
+ *     at FULL depth. A `--depth 1` fetch here would RE-SHALLOW an otherwise
+ *     complete repo at the head ref, so `merge-base(head, base)` vanishes and
+ *     the Finalize rebase aborts (`rebase_aborted`) — the resolve-PR bug this
+ *     guards against.
+ *   - **Shallow clone** (GitHub origin, `git clone --depth 1`): fetch the tip
+ *     shallowly (fast), then deepen head+default via {@link deepenBaseForMergeBase}
+ *     until their merge-base is reachable. `defaultBranch` must be supplied for
+ *     this to run; without it the shallow tip is left as-is.
  *
  * Returns a discriminated result instead of throwing so callers can apply their
  * own missing-ref policy: a resolve-PR session falls back to a fresh session
@@ -1971,8 +1983,15 @@ async function positionCloneOnExistingBranch(opts: {
   branch: string;
   authArgs: string[];
   userToken: string | null | undefined;
+  /**
+   * Repo default branch. On a shallow clone the positioned branch is deepened
+   * against it so `merge-base(branch, default)` resolves for the Finalize
+   * rebase. Omit only when the caller cannot cheaply resolve it — the shallow
+   * tip is then left un-deepened (pre-fix behavior).
+   */
+  defaultBranch?: string | null;
 }): Promise<PositionCloneResult> {
-  const { cloneDir, branch, authArgs, userToken } = opts;
+  const { cloneDir, branch, authArgs, userToken, defaultBranch } = opts;
   let headRefExists: boolean;
   try {
     const refs = await runGit([...authArgs, 'ls-remote', '--heads', 'origin', branch], {
@@ -1987,11 +2006,24 @@ async function positionCloneOnExistingBranch(opts: {
   }
   if (!headRefExists) return { kind: 'missing' };
   try {
+    // Only shallow-fetch when the repo is already shallow. On a full clone a
+    // `--depth 1` fetch would graft the head at depth 1 and strand it with no
+    // shared history against the base branch.
+    const shallow = await isShallowClone(cloneDir);
+    const refspec = `${branch}:refs/remotes/origin/${branch}`;
     await fetchWithRetry(
-      [...authArgs, 'fetch', 'origin', `${branch}:refs/remotes/origin/${branch}`, '--depth', '1'],
+      shallow
+        ? [...authArgs, 'fetch', 'origin', refspec, '--depth', '1']
+        : [...authArgs, 'fetch', 'origin', refspec],
       { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
     );
     await runGit(['checkout', '-B', branch, `origin/${branch}`], { cwd: cloneDir });
+    // Restore just enough history that the positioned branch shares a merge-base
+    // with the default branch, so the Finalize rebase onto the base succeeds.
+    // No-op on full clones (already resolved) or when branch === default.
+    if (shallow && defaultBranch) {
+      await deepenBaseForMergeBase(cloneDir, authArgs, branch, defaultBranch);
+    }
     const tip = await runGit(['rev-parse', `origin/${branch}`], { cwd: cloneDir });
     return { kind: 'positioned', tip };
   } catch (err: unknown) {
@@ -2050,6 +2082,7 @@ export async function switchSessionWorkspaceBranch(
     branch,
     authArgs,
     userToken,
+    defaultBranch,
   });
 
   if (positioned.kind === 'positioned') {
@@ -2381,6 +2414,7 @@ export async function ensureSessionWorkspace(
           branch: requestedExistingBranch,
           authArgs,
           userToken,
+          defaultBranch: repoDefaultBranch,
         });
         if (positioned.kind === 'positioned') {
           effectiveBranch = requestedExistingBranch;
@@ -2677,6 +2711,7 @@ export const __test = {
   defaultResolveInstallationToken,
   detectAndHandleBaseBranchDrift,
   deepenBaseForMergeBase,
+  positionCloneOnExistingBranch,
   isShallowClone,
   mergeBaseResolves,
   originHasBranch,

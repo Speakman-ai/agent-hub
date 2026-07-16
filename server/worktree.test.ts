@@ -1529,6 +1529,114 @@ describe('deepenBaseForMergeBase — shallow feature-branch merge-base recovery'
   });
 });
 
+describe('positionCloneOnExistingBranch — head keeps merge-base with base (Finalize rebase)', () => {
+  // Regression for "[Resolve PR] rebase_aborted": positioning the session
+  // worktree onto the PR head branch must leave a reachable
+  // merge-base(head, base) so the Finalize / pre-push rebase onto the base
+  // branch succeeds. The old code fetched the head with a blanket `--depth 1`,
+  // which RE-SHALLOWED an otherwise-full (hosted / local-origin) clone at the
+  // head ref and destroyed that merge-base — the rebase then aborted.
+  const { positionCloneOnExistingBranch, isShallowClone, mergeBaseResolves } = __test;
+
+  let tmpRoot: string;
+  let originBare: string;
+  let expectedMergeBase: string;
+
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
+  }
+
+  beforeEach(() => {
+    tmpRoot = path.join(os.tmpdir(), `pos-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpRoot, { recursive: true });
+    originBare = path.join(tmpRoot, 'origin.git');
+    mkdirSync(originBare, { recursive: true });
+    execSync('git init --bare --initial-branch=main', { cwd: originBare, stdio: 'pipe' });
+
+    const src = path.join(tmpRoot, 'source');
+    // Cloning the bare repo (HEAD -> refs/heads/main) leaves `src` on the
+    // unborn `main` branch, so the first commit creates it. Do NOT
+    // `git checkout -b main` here — on some git versions that fails with
+    // "a branch named 'main' already exists".
+    execSync(`git clone --quiet "${originBare}" "${src}"`, { stdio: 'pipe' });
+    git(src, 'config user.email "t@t.t"');
+    git(src, 'config user.name "T"');
+    for (let i = 1; i <= 3; i++) {
+      writeFileSync(path.join(src, 'f.txt'), `c${i}\n`);
+      git(src, 'add f.txt');
+      git(src, `commit -m "c${i}"`);
+    }
+    // PR head forks from c3 (the merge-base we expect to recover).
+    expectedMergeBase = git(src, 'rev-parse HEAD');
+    git(src, 'checkout -b feature/pr-head');
+    writeFileSync(path.join(src, 'pr.txt'), 'pr work\n');
+    git(src, 'add pr.txt');
+    git(src, 'commit -m "pr commit"');
+    // main advances past the fork so the base tip is well beyond the merge-base.
+    git(src, 'checkout main');
+    for (let i = 4; i <= 5; i++) {
+      writeFileSync(path.join(src, 'f.txt'), `c${i}\n`);
+      git(src, 'add f.txt');
+      git(src, `commit -m "c${i}"`);
+    }
+    git(src, 'push -u origin main');
+    git(src, 'push -u origin feature/pr-head');
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpRoot)) rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('does not re-shallow a full (hosted / local-origin) clone; merge-base survives', async () => {
+    // Local-path clone → full history, exactly like the Agent Hub-hosted
+    // bare-repo clone path.
+    const cloneDir = path.join(tmpRoot, 'work-full');
+    execSync(`git clone --quiet "${originBare}" "${cloneDir}"`, { stdio: 'pipe' });
+    git(cloneDir, 'config user.email "c@c.c"');
+    git(cloneDir, 'config user.name "C"');
+    expect(await isShallowClone(cloneDir)).toBe(false);
+
+    const result = await positionCloneOnExistingBranch({
+      cloneDir,
+      branch: 'feature/pr-head',
+      authArgs: [],
+      userToken: null,
+      defaultBranch: 'main',
+    });
+
+    expect(result.kind).toBe('positioned');
+    expect(git(cloneDir, 'rev-parse --abbrev-ref HEAD')).toBe('feature/pr-head');
+    // The clone must NOT have been re-shallowed, and merge-base must resolve so
+    // the Finalize rebase onto the base branch works.
+    expect(await isShallowClone(cloneDir)).toBe(false);
+    expect(await mergeBaseResolves(cloneDir, 'feature/pr-head', 'origin/main')).toBe(true);
+    expect(git(cloneDir, 'merge-base feature/pr-head origin/main')).toBe(expectedMergeBase);
+  });
+
+  it('deepens a shallow (GitHub-origin) clone so merge-base resolves', async () => {
+    // file:// honors --depth → genuinely shallow, like a GitHub clone.
+    const cloneDir = path.join(tmpRoot, 'work-shallow');
+    execSync(`git clone --quiet --depth 1 "file://${originBare}" "${cloneDir}"`, { stdio: 'pipe' });
+    git(cloneDir, 'config user.email "c@c.c"');
+    git(cloneDir, 'config user.name "C"');
+    expect(await isShallowClone(cloneDir)).toBe(true);
+
+    const result = await positionCloneOnExistingBranch({
+      cloneDir,
+      branch: 'feature/pr-head',
+      authArgs: [],
+      userToken: null,
+      defaultBranch: 'main',
+    });
+
+    expect(result.kind).toBe('positioned');
+    expect(git(cloneDir, 'rev-parse --abbrev-ref HEAD')).toBe('feature/pr-head');
+    // Deepened just enough that the head shares a merge-base with the base.
+    expect(await mergeBaseResolves(cloneDir, 'feature/pr-head', 'origin/main')).toBe(true);
+    expect(git(cloneDir, 'merge-base feature/pr-head origin/main')).toBe(expectedMergeBase);
+  });
+});
+
 describe('ensureFeatureBaseBranchOnOrigin — auto-create epic base from default', () => {
   const { ensureFeatureBaseBranchOnOrigin, originHasBranch } = __test;
 
