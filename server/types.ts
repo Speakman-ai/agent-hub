@@ -1087,6 +1087,10 @@ export interface KanbanCardRow {
    *  rows before backfill. */
   short_id: number | null;
   position: number;
+  /** ISO timestamp the card entered a Done column (NULL = not completed).
+   *  Maintained by the kanban_cards_set_completed_at_* triggers; drives the
+   *  per-project Stats "tickets completed" bucketing. */
+  completed_at?: string | null;
   epic_id: string | null;
   /** Optional phase subgroup within the parent epic. */
   phase_id?: string | null;
@@ -1227,6 +1231,10 @@ export interface KanbanEpicRow {
   description: string | null;
   /** Derived lifecycle from linked cards. Null means the epic has no linked cards. */
   state: 'not_started' | 'in_progress' | 'done' | null;
+  /** ISO timestamp the epic reached state='done' (NULL = not completed).
+   *  Maintained by the kanban_epics_set_completed_at_* triggers; drives the
+   *  per-project Stats "epics completed" bucketing. */
+  completed_at?: string | null;
   /** Comma-separated tags (same shape as kanban card labels). */
   labels: string | null;
   /** Org user id of the lead user for this epic. */
@@ -1475,6 +1483,11 @@ export interface SupportTicketRow {
   // Timestamp a human first viewed the ticket, or null when still unread.
   // Drives the per-project unread counter on the Support sidebar item.
   read_at: string | null;
+  // Timestamp the ticket reached a terminal/resolved status (converted/closed/
+  // duplicate/wont_do); null while open. Maintained by the
+  // support_tickets_set_resolved_at_* triggers; drives the per-project Stats
+  // "support tickets resolved" bucketing.
+  resolved_at: string | null;
   created_at: string;
   updated_at: string;
 }

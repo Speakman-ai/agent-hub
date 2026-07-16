@@ -1257,6 +1257,12 @@ export const api = {
     fetchJSON(`/projects/${projectId}/ci-runs/stats?range=${encodeURIComponent(range)}`),
   getCiRunDetail: (projectId: any, runId: any) =>
     fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
+  // Per-project Stats page — daily/weekly/monthly product metrics.
+  getProjectStats: (projectId: any, { granularity = 'day', buckets }: any = {}) => {
+    const qs = new URLSearchParams({ granularity });
+    if (buckets != null) qs.set('buckets', String(buckets));
+    return fetchJSON(`/projects/${projectId}/stats?${qs.toString()}`);
+  },
   getFinalizeStepOutput: (projectId: any, runId: any, stepIndex: any, opts: any = {}) =>
     fetchJSON(`/projects/${projectId}/finalize/${runId}/steps/${stepIndex}/output`, {
       signal: opts.signal,

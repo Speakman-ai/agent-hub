@@ -304,6 +304,7 @@ describe('support-tickets routes', () => {
         release_deployment_id: null,
         customer_notified_at: null,
         read_at: null,
+        resolved_at: null,
         created_at: '2026-06-29 00:00:00',
         updated_at: '2026-06-29 00:00:00',
       },

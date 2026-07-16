@@ -33,6 +33,7 @@ import ProjectCronsScreen from './src/screens/ProjectCronsScreen';
 import ProjectSecretsScreen from './src/screens/ProjectSecretsScreen';
 import DevServerScreen from './src/screens/DevServerScreen';
 import RunnersScreen from './src/screens/RunnersScreen';
+import StatsScreen from './src/screens/StatsScreen';
 import RumSettingsScreen from './src/screens/RumSettingsScreen';
 import LogSourcesScreen from './src/screens/LogSourcesScreen';
 import LogsScreen from './src/screens/LogsScreen';
@@ -229,6 +230,7 @@ function AppContent() {
             <Stack.Screen name="ProjectSecrets" component={ProjectSecretsScreen}/>
             <Stack.Screen name="DevServer" component={DevServerScreen}/>
             <Stack.Screen name="Runners" component={RunnersScreen}/>
+            <Stack.Screen name="Stats" component={StatsScreen}/>
             <Stack.Screen name="RumSettings" component={RumSettingsScreen}/>
             <Stack.Screen name="LogSources" component={LogSourcesScreen}/>
             <Stack.Screen name="Logs" component={LogsScreen}/>

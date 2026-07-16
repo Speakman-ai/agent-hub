@@ -29,6 +29,7 @@ import {
   KANBAN_CARD_SHORT_ID_TRIGGER_SQL,
   KANBAN_BOARD_CARD_SEQ_RECONCILE_SQL,
 } from './kanban-short-id.js';
+import { installStatsCompletionTimestamps } from './stats-completion.js';
 import type { Stmts } from './types.js';
 import { configureDbInstrumentation, instrumentStmts } from './db-instrumentation.js';
 
@@ -760,6 +761,11 @@ function initDb(dataDir: string): void {
       -- until backfilled).
       short_id INTEGER,
       position INTEGER NOT NULL DEFAULT 0,
+      -- Timestamp the card entered a Done column (NULL = not completed).
+      -- Maintained by the kanban_cards_set_completed_at_* triggers (see
+      -- stats-completion.ts) so day/week/month completion buckets are accurate
+      -- regardless of which code path moved the card. Cleared on move-out.
+      completed_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (column_id) REFERENCES kanban_columns(id) ON DELETE CASCADE,
@@ -798,6 +804,10 @@ function initDb(dataDir: string): void {
       autonomous_max_concurrent INTEGER NOT NULL DEFAULT 1,
       autonomous_model TEXT DEFAULT NULL,
       position INTEGER NOT NULL DEFAULT 0,
+      -- Timestamp the epic reached state='done' (NULL = not completed).
+      -- Maintained by the kanban_epics_set_completed_at_* triggers
+      -- (stats-completion.ts). Cleared if the epic leaves the done state.
+      completed_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (board_id) REFERENCES kanban_boards(id) ON DELETE CASCADE
@@ -1001,6 +1011,12 @@ function initDb(dataDir: string): void {
       released_to_prod_at TEXT,
       release_deployment_id TEXT,
       customer_notified_at TEXT,
+      -- Timestamp the ticket reached a terminal status (converted/closed/
+      -- duplicate/wont_do); NULL while still open. Maintained by the
+      -- support_tickets_set_resolved_at_* triggers (stats-completion.ts) so the
+      -- Stats page can bucket "tickets resolved" by day/week/month. Cleared if
+      -- the ticket is reopened to new/investigating.
+      resolved_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -2082,6 +2098,12 @@ function initDb(dataDir: string): void {
   // self-healing, so an interrupted prior backfill can't leave card_seq stale
   // and cause the trigger to mint a colliding human id. See the constant's doc.
   db.exec(KANBAN_BOARD_CARD_SEQ_RECONCILE_SQL);
+
+  // Completion / resolution timestamps for the per-project Stats page. Adds
+  // completed_at (cards, epics) + resolved_at (support tickets), the triggers
+  // that maintain them on every transition, and a one-time backfill of legacy
+  // rows from updated_at. Idempotent; safe on every init. See stats-completion.ts.
+  installStatsCompletionTimestamps(db);
 
   // Persist the card-id prefix on the board (the "AH" in "AH-123"). Derived
   // once from the immutable project slug — NOT the mutable display name — so

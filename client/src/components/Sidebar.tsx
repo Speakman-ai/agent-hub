@@ -296,6 +296,7 @@ export default function Sidebar({
     // toggle active — keep this in sync with the Cron Jobs link below.
     view === `project-crons:${pid}` ||
     view === `runners:${pid}` ||
+    view === `stats:${pid}` ||
     view === `preview:${pid}` ||
     view === `devserver:${pid}` ||
     view === `rum:${pid}` ||
@@ -1047,6 +1048,22 @@ export default function Sidebar({
                                 >
                                   <Play size={14} className="flex-shrink-0" />
                                   <span className="truncate">Runners</span>
+                                </button>
+                              )}
+
+                              {!workflowProject && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate(`stats:${project.id}`);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === `stats:${project.id}`,
+                                  )}
+                                >
+                                  <BarChart3 size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Stats</span>
                                 </button>
                               )}
 

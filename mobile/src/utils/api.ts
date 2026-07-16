@@ -397,6 +397,11 @@ export const api = {
     }),
     getCiRuns: (projectId: any, { trigger = 'all', limit = 30 }: any = {}) => fetchJSON(`/projects/${projectId}/ci-runs?trigger=${trigger}&limit=${limit}`),
     getCiRunDetail: (projectId: any, runId: any) => fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
+    getProjectStats: (projectId: any, { granularity = 'day', buckets }: any = {}) => {
+        const qs = new URLSearchParams({ granularity });
+        if (buckets != null) qs.set('buckets', String(buckets));
+        return fetchJSON(`/projects/${projectId}/stats?${qs.toString()}`);
+    },
     // Hub workflows
     getProjectWorkflows: (projectId: any) => fetchJSON(`/projects/${projectId}/workflows`),
     getProjectWorkflow: (projectId: any, workflowId: any) => fetchJSON(`/projects/${projectId}/workflows/${workflowId}`),

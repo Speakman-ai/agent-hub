@@ -82,6 +82,7 @@ import RepositoryPage from './components/RepositoryPage';
 import ProjectWorkflowsPage from './components/ProjectWorkflowsPage';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder';
 import FinalizeSettingsSection from './components/FinalizeSettingsSection';
+import ProjectStatsView from './components/ProjectStatsView';
 import PreviewSection from './components/PreviewSection';
 import DevServerSection from './components/DevServerSection';
 import RumSettingsSection from './components/RumSettingsSection';
@@ -4074,6 +4075,12 @@ export default function App({ initialView }: any = {}) {
     return projects.filter((p: any) => p.id === id);
   }, [currentView, projects]);
 
+  const statsScopedProjects = useMemo(() => {
+    if (!currentView.startsWith('stats:')) return [];
+    const id = currentView.slice('stats:'.length);
+    return projects.filter((p: any) => p.id === id);
+  }, [currentView, projects]);
+
   const previewScopedProjects = useMemo(() => {
     if (!currentView.startsWith('preview:')) return [];
     const id = currentView.slice('preview:'.length);
@@ -5043,6 +5050,7 @@ export default function App({ initialView }: any = {}) {
     if (currentView.startsWith('workflows:')) return currentView.slice('workflows:'.length);
     if (projectMenuRoute) return projectMenuRoute.projectId;
     if (currentView.startsWith('runners:')) return currentView.slice('runners:'.length);
+    if (currentView.startsWith('stats:')) return currentView.slice('stats:'.length);
     if (currentView.startsWith('preview:')) return currentView.slice('preview:'.length);
     if (currentView.startsWith('devserver:')) return currentView.slice('devserver:'.length);
     if (currentView.startsWith('aws:')) return currentView.slice('aws:'.length);
@@ -5648,6 +5656,10 @@ export default function App({ initialView }: any = {}) {
                       focusAgentSession(agentId, sessionId)
                     }
                   />
+                </div>
+              ) : currentView.startsWith('stats:') ? (
+                <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                  <ProjectStatsView projects={statsScopedProjects} />
                 </div>
               ) : currentView.startsWith('preview:') ? (
                 <div className="flex-1 overflow-y-auto p-4 md:p-6">

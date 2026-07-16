@@ -30330,6 +30330,151 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProjectAwsSsoLoginResponse"
+  /api/projects/{projectId}/stats:
+    get:
+      tags:
+        - Projects
+      summary: Per-project product metrics over time
+      description: Daily / weekly / monthly time series for PRs merged, support tickets resolved, tickets made, tickets completed, epics completed, and model usage. Completion metrics use the completed_at / resolved_at timestamps maintained by DB triggers.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - day
+              - week
+              - month
+          required: false
+          name: granularity
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+          required: false
+          name: buckets
+          in: query
+      responses:
+        "200":
+          description: Project stats time series.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  granularity:
+                    type: string
+                    enum:
+                      - day
+                      - week
+                      - month
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        start:
+                          type: string
+                        label:
+                          type: string
+                      required:
+                        - start
+                        - label
+                  series:
+                    type: object
+                    properties:
+                      prs_merged:
+                        type: array
+                        items:
+                          type: integer
+                      support_tickets_resolved:
+                        type: array
+                        items:
+                          type: integer
+                      tickets_made:
+                        type: array
+                        items:
+                          type: integer
+                      tickets_completed:
+                        type: array
+                        items:
+                          type: integer
+                      epics_completed:
+                        type: array
+                        items:
+                          type: integer
+                    required:
+                      - prs_merged
+                      - support_tickets_resolved
+                      - tickets_made
+                      - tickets_completed
+                      - epics_completed
+                  totals:
+                    type: object
+                    properties:
+                      prs_merged:
+                        type: integer
+                      support_tickets_resolved:
+                        type: integer
+                      tickets_made:
+                        type: integer
+                      tickets_completed:
+                        type: integer
+                      epics_completed:
+                        type: integer
+                    required:
+                      - prs_merged
+                      - support_tickets_resolved
+                      - tickets_made
+                      - tickets_completed
+                      - epics_completed
+                  model_usage:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        model:
+                          type: string
+                        count:
+                          type: integer
+                      required:
+                        - model
+                        - count
+                  top_model:
+                    type: string
+                    nullable: true
+                required:
+                  - granularity
+                  - buckets
+                  - series
+                  - totals
+                  - model_usage
+                  - top_model
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Stats could not be read.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/order:
     put:
       tags:
