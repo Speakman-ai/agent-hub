@@ -317,3 +317,41 @@ describe('buildBuildPayload — readyTimeoutMs', () => {
     expect(payload.envVars.map((e: any) => e.key)).toEqual(['DATABASE_URL']);
   });
 });
+
+describe('isPreviewConfigured', () => {
+  it('is true for the dev-server process model (prEnv.devServer with a startCommand)', () => {
+    expect(
+      isPreviewConfigured({
+        prEnv: {
+          preview: { enabled: true },
+          devServer: { startCommand: './quickstart', portMap: [] },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it('is true for a dev-server config even when the compose block is absent', () => {
+    expect(isPreviewConfigured({ prEnv: { devServer: { startCommand: 'npm run dev' } } })).toBe(
+      true,
+    );
+  });
+
+  it('is false when devServer.startCommand is empty/whitespace', () => {
+    expect(isPreviewConfigured({ prEnv: { devServer: { startCommand: '  ' } } })).toBe(false);
+    expect(isPreviewConfigured({ prEnv: { devServer: {} } })).toBe(false);
+  });
+
+  it('still recognizes the legacy compose model', () => {
+    expect(
+      isPreviewConfigured({
+        prEnv: { preview: { enabled: true, compose: { entryService: 'web', entryPort: 5173 } } },
+      }),
+    ).toBe(true);
+  });
+
+  it('is false when nothing is configured', () => {
+    expect(isPreviewConfigured({ prEnv: { preview: { enabled: false } } })).toBe(false);
+    expect(isPreviewConfigured({})).toBe(false);
+    expect(isPreviewConfigured(null)).toBe(false);
+  });
+});

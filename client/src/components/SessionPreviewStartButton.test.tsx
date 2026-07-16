@@ -35,6 +35,29 @@ describe('SessionPreviewStartButton', () => {
     expect(onStart!).toHaveBeenCalledWith('s1');
   });
 
+  // Regression: a project configured via the dev-server process model
+  // (`prEnv.devServer`, no compose block) must show Start preview, not
+  // Configure preview. The server gate treats any devServer with a
+  // startCommand as configured; the button must agree.
+  it('shows Start preview for a dev-server-configured project (no compose block)', () => {
+    const onStart = vi.fn();
+    const devServerProject = {
+      id: 'p1',
+      prEnv: {
+        preview: { enabled: true },
+        devServer: {
+          startCommand: './quickstart',
+          portMap: [{ internalPort: 4200, label: 'web', primary: true }],
+        },
+      },
+    };
+    render(
+      <SessionPreviewStartButton sessionId="s1" project={devServerProject} onStart={onStart} />,
+    );
+    fireEvent.click(screen.getByTestId('session-start-preview-button' as any) as any);
+    expect(onStart!).toHaveBeenCalledWith('s1');
+  });
+
   // Regression: the start/configure controls must remain reachable on mobile.
   // A `hidden` (display:none until the `sm` breakpoint) class removes the only
   // way to start or configure a preview from the chat action bar on phones.

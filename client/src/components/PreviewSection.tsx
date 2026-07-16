@@ -49,6 +49,16 @@ const DEFAULT_FORM = Object.freeze({
 });
 
 export function isPreviewConfigured(project: any) {
+  // Dev-server process model: a managed long-lived process configured under
+  // `prEnv.devServer` (start command, port map). This is the current model and
+  // is independent of the compose block — mirror the server gate in
+  // `start-session-preview.ts` / `preview-block.ts`, which treats any
+  // `prEnv.devServer` with a non-empty `startCommand` as configured.
+  const devServer = project?.prEnv?.devServer;
+  if (devServer && typeof devServer.startCommand === 'string' && devServer.startCommand.trim()) {
+    return true;
+  }
+  // Legacy compose app-wrapping model.
   const compose = project?.prEnv?.preview?.compose;
   return !!(
     project?.prEnv?.preview?.enabled &&
