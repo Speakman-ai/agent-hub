@@ -9,7 +9,7 @@ import { colors } from '../theme/colors';
 import { daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
-import { projectLifecycleEntries, projectSettingsEntries } from '../utils/projectMenu';
+import { projectNavGroups } from '../utils/projectMenu';
 import { shouldShowCalendarNav, shouldShowGmailNav } from '../utils/googleSurface';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
@@ -21,9 +21,9 @@ export default function DrawerContent({ navigation }: any) {
     const bugReportProjectId = activeAgent?.projectId || '';
     const [collapsedAgents, setCollapsedAgents] = useState<any>({});
     const [collapsedProjects, setCollapsedProjects] = useState<any>({});
-    // Per-project "<project> Settings" submenu — collapsed by default, mirroring
-    // the web sidebar (`collapsedProjectMenus[id] ?? true`).
-    const [collapsedProjectMenus, setCollapsedProjectMenus] = useState<any>({});
+    // Per-project nav-group collapse state, keyed by `${projectId}:${groupKey}`.
+    // Default expanded (mirrors the web sidebar's grouped nav).
+    const [collapsedNavGroups, setCollapsedNavGroups] = useState<any>({});
     const [archivedExpanded, setArchivedExpanded] = useState(false);
     const [showOrgPicker, setShowOrgPicker] = useState(false);
     // Server version / git hash for the footer (matches the web sidebar footer).
@@ -286,30 +286,29 @@ export default function DrawerContent({ navigation }: any) {
             </View>);
             })()}
     </TouchableOpacity>);
-    // Lifecycle nav (always visible) + collapsed "<project> Settings" submenu.
+    // Grouped nav (Git / Planning / Support / AI / Settings), each group a
+    // collapsible section (default expanded), mirroring the web sidebar.
     const renderProjectMenu = (project: any) => {
-        const isMenuCollapsed = collapsedProjectMenus[project.id] ?? true;
-        const lifecycle = projectLifecycleEntries(project);
-        const settings = projectSettingsEntries(project);
+        const groups = projectNavGroups(project);
         return (<View style={styles.projectMenu}>
-        <View style={styles.projectMenuItems}>
-          {lifecycle.map((entry: any) => renderMenuItem(project, entry))}
-        </View>
-
-        <TouchableOpacity style={styles.projectMenuToggle} onPress={() => setCollapsedProjectMenus((prev: any) => ({
-                ...prev,
-                [project.id]: !(prev[project.id] ?? true),
-            }))}>
-          <HubIcon name={isMenuCollapsed ? 'ChevronRight' : 'ChevronDown'} size={14} color={colors.gray500} style={styles.projectMenuChevron}/>
-          <HubIcon name="Settings" size={14} color={colors.gray500} style={styles.projectMenuGear}/>
-          <Text style={styles.projectMenuToggleText} numberOfLines={1}>
-            {project.name} Settings
-          </Text>
-        </TouchableOpacity>
-
-        {!isMenuCollapsed && (<View style={styles.projectMenuItems}>
-            {settings.map((entry: any) => renderMenuItem(project, entry))}
-          </View>)}
+        {groups.map((group: any) => {
+            const collapseKey = `${project.id}:${group.key}`;
+            const collapsed = collapsedNavGroups[collapseKey] ?? false;
+            return (<View key={group.key}>
+              <TouchableOpacity style={styles.projectMenuToggle} testID={`drawer-nav-group-${group.key}-${project.id}`} onPress={() => setCollapsedNavGroups((prev: any) => ({
+                    ...prev,
+                    [collapseKey]: !(prev[collapseKey] ?? false),
+                }))}>
+                <HubIcon name={collapsed ? 'ChevronRight' : 'ChevronDown'} size={14} color={colors.gray500} style={styles.projectMenuChevron}/>
+                <Text style={styles.projectMenuGroupLabel} numberOfLines={1}>
+                  {group.label}
+                </Text>
+              </TouchableOpacity>
+              {!collapsed && (<View style={styles.projectMenuItems}>
+                  {group.entries.map((entry: any) => renderMenuItem(project, entry))}
+                </View>)}
+            </View>);
+        })}
       </View>);
     };
     return (<SafeAreaView style={styles.container}>
@@ -969,12 +968,12 @@ const styles = StyleSheet.create({
     projectMenuChevron: {
         flexShrink: 0,
     },
-    projectMenuGear: {
-        flexShrink: 0,
-    },
-    projectMenuToggleText: {
+    projectMenuGroupLabel: {
         flex: 1,
-        fontSize: 12,
+        fontSize: 10,
+        fontWeight: '600',
+        letterSpacing: 1,
+        textTransform: 'uppercase',
         color: colors.gray500,
     },
     projectMenuItems: {

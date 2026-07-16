@@ -1,79 +1,126 @@
 /**
- * Per-project sidebar menu entries.
+ * Per-project sidebar menu, grouped into labeled sections.
  *
- * Mirrors the web sidebar (`client/src/components/Sidebar.jsx`):
- *  - `lifecycleEntries` — always visible when the project is expanded
- *  - `settingsEntries` — collapsed under "<project> Settings"
+ * Mirrors the web sidebar (`client/src/components/Sidebar.tsx`), which renders
+ * the per-project navigation as five collapsible groups:
+ *   - Git       — Repository, Pulls, Deployments
+ *   - Planning  — Board, Epics, Notes
+ *   - Support   — Customer Issues, Threads, Logs, RUM, Replays, AWS, Security
+ *   - AI        — Agents, Wiki
+ *   - Settings  — Project Configuration, Runners, Dev Server, Cron Jobs
  *
- * Previews are intentionally excluded (no mobile preview surfaces).
- * `icon` values are Lucide icon names (rendered via `HubIcon`).
+ * Mobile-specific divergences from web (intentional, no mobile surface exists):
+ *   - Previews, Reviewer, and per-project Skills are web-only and omitted here.
+ *   - `icon` values are Lucide icon names (rendered via `HubIcon`).
  */
 import { isWorkflowProject } from './project-mode';
 
-const WORKFLOW_EXCLUDED_LIFECYCLE_KEYS = new Set([
+/**
+ * Destinations hidden for workflow projects (dev/deploy surfaces that a
+ * workflow-only project has no use for). Mirrors the `!workflowProject` gates in
+ * the web sidebar. `repo` is intentionally NOT excluded — a workflow project can
+ * still be Agent Hub-hosted.
+ */
+const WORKFLOW_EXCLUDED_KEYS = new Set([
+    'pulls',
     'deployments',
+    'epics',
+    'stats',
     'support',
     'security',
     'replays',
+    'logs',
+    'rum',
+    'runners',
+    'dev-server',
 ]);
-const WORKFLOW_EXCLUDED_SETTINGS_KEYS = new Set(['runners', 'rum', 'logs', 'dev-server']);
+
 /**
  * @typedef {{ key: string, label: string, icon: string, screen: string, gate?: string }} MenuEntry
+ * @typedef {{ key: string, label: string, entries: MenuEntry[] }} MenuGroup
  */
+
 /**
- * Top-level lifecycle destinations (Board, Epics, Notes, etc.)
+ * The five labeled nav groups for a project, with per-item visibility applied
+ * and empty groups removed.
  *
  * @param {{ githubRepo?: string, gitHost?: string, mode?: string, awsEnabled?: boolean }|null|undefined} project
- * @returns {MenuEntry[]}
+ * @returns {MenuGroup[]}
  */
-export function projectLifecycleEntries(project: any) {
-    const entries = [];
-    if (project?.gitHost === 'agenthub') {
-        entries.push({ key: 'repo', label: 'Repository', icon: 'GitBranch', screen: 'Repository' });
-    }
-    if ((project?.githubRepo || project?.gitHost === 'agenthub') && !isWorkflowProject(project)) {
-        entries.push({ key: 'pulls', label: 'Pulls', icon: 'ListOrdered', screen: 'PullRequests' });
-    }
-    // Calendar is intentionally NOT a per-project entry: it's a per-USER Google
-    // surface that lives in the global Dashboard tier of the drawer. See card
-    // 1287 / the Google Workspace spec.
-    entries.push({ key: 'deployments', label: 'Deployments', icon: 'Cloud', screen: 'Deployments' }, { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' }, { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' }, { key: 'stats', label: 'Stats', icon: 'BarChart3', screen: 'Stats' }, { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' }, { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' }, { key: 'support', label: 'Support', icon: 'LifeBuoy', screen: 'CustomerSupport' }, { key: 'replays', label: 'Replays', icon: 'MonitorPlay', screen: 'Replays' }, { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' }, { key: 'wiki', label: 'Wiki', screen: 'Wiki', icon: 'BookOpen' });
-    if (isWorkflowProject(project)) {
-        return entries.filter((entry) => !WORKFLOW_EXCLUDED_LIFECYCLE_KEYS.has(entry.key));
-    }
-    return entries;
-}
-/**
- * Configuration submenu under "<project> Settings".
- *
- * @param {{ awsEnabled?: boolean }|null|undefined} project
- * @returns {MenuEntry[]}
- */
-export function projectSettingsEntries(project: any) {
-    const entries = [
+export function projectNavGroups(project: any) {
+    const workflow = isWorkflowProject(project);
+    const hasRepo = project?.gitHost === 'agenthub';
+    const hasPulls = project?.githubRepo || project?.gitHost === 'agenthub';
+
+    const groups = [
         {
-            key: 'project-settings',
-            label: 'Project Configuration',
-            icon: 'Settings',
-            screen: 'ProjectSettings',
+            key: 'git',
+            label: 'Git',
+            entries: [
+                hasRepo && {
+                    key: 'repo',
+                    label: 'Repository',
+                    icon: 'GitBranch',
+                    screen: 'Repository',
+                },
+                hasPulls && { key: 'pulls', label: 'Pulls', icon: 'ListOrdered', screen: 'PullRequests' },
+                { key: 'deployments', label: 'Deployments', icon: 'Cloud', screen: 'Deployments' },
+            ],
         },
-        { key: 'project-secrets', label: 'Secrets', icon: 'KeyRound', screen: 'ProjectSecrets' },
-        { key: 'dev-server', label: 'Dev Server', icon: 'Terminal', screen: 'DevServer' },
-        { key: 'project-agents', label: 'Agents', icon: 'Bot', screen: 'ProjectAgents' },
-        { key: 'runners', label: 'Runners', icon: 'Play', screen: 'Runners' },
-        { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
-        { key: 'logs', label: 'Logs', icon: 'ScrollText', screen: 'Logs' },
+        {
+            key: 'planning',
+            label: 'Planning',
+            entries: [
+                { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' },
+                { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' },
+                { key: 'stats', label: 'Stats', icon: 'BarChart3', screen: 'Stats' },
+                { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' },
+            ],
+        },
+        {
+            key: 'support',
+            label: 'Support',
+            entries: [
+                { key: 'support', label: 'Customer Issues', icon: 'LifeBuoy', screen: 'CustomerSupport' },
+                { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' },
+                { key: 'logs', label: 'Logs', icon: 'ScrollText', screen: 'Logs' },
+                { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
+                { key: 'replays', label: 'Replays', icon: 'MonitorPlay', screen: 'Replays' },
+                project?.awsEnabled && { key: 'aws', label: 'AWS', icon: 'Cloud', screen: 'AwsProfiles' },
+                { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' },
+            ],
+        },
+        {
+            key: 'ai',
+            label: 'AI',
+            entries: [
+                { key: 'project-agents', label: 'Agents', icon: 'Bot', screen: 'ProjectAgents' },
+                { key: 'wiki', label: 'Wiki', icon: 'BookOpen', screen: 'Wiki' },
+            ],
+        },
+        {
+            key: 'settings',
+            label: 'Settings',
+            entries: [
+                {
+                    key: 'project-settings',
+                    label: 'Project Configuration',
+                    icon: 'Settings',
+                    screen: 'ProjectSettings',
+                },
+                { key: 'runners', label: 'Runners', icon: 'Play', screen: 'Runners' },
+                { key: 'dev-server', label: 'Dev Server', icon: 'Terminal', screen: 'DevServer' },
+                { key: 'project-crons', label: 'Cron Jobs', icon: 'Clock', screen: 'ProjectCrons' },
+            ],
+        },
     ];
-    if (project?.awsEnabled) {
-        entries.push({ key: 'aws', label: 'AWS', icon: 'Cloud', screen: 'AwsProfiles' });
-    }
-    entries.push({ key: 'project-crons', label: 'Cron Jobs', icon: 'Clock', screen: 'ProjectCrons' });
-    if (isWorkflowProject(project)) {
-        return entries.filter((entry) => !WORKFLOW_EXCLUDED_SETTINGS_KEYS.has(entry.key));
-    }
-    return entries;
-}
-/** @deprecated Use projectLifecycleEntries — kept for tests migrating gradually */
-export function projectMenuEntries(project: any) {
-    return projectLifecycleEntries(project);
+
+    return groups
+        .map((group) => ({
+            ...group,
+            entries: group.entries
+                .filter(Boolean)
+                .filter((entry: any) => !(workflow && WORKFLOW_EXCLUDED_KEYS.has(entry.key))),
+        }))
+        .filter((group) => group.entries.length > 0);
 }

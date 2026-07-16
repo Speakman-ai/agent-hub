@@ -1037,8 +1037,8 @@ describe('Sidebar — reviewer agents are hidden from the agent list', () => {
     expect(screen.getByText('Primary Agent')).toBeInTheDocument();
     // The reviewer agent row is suppressed entirely (it runs as an in-session advisor).
     expect(screen.queryByText('PR Reviewer Bot')).not.toBeInTheDocument();
-    // The dedicated per-project Reviewer page link lives in the project menu.
-    fireEvent.click(screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}` as any) as any);
+    // The dedicated per-project Reviewer page link lives in the AI group,
+    // which is expanded by default.
     expect(screen.getByText('Reviewer')).toBeInTheDocument();
   });
 
@@ -1243,10 +1243,23 @@ describe('Sidebar — project reordering (drag & drop)', () => {
   });
 });
 
-describe('Sidebar — per-project settings menu', () => {
-  const expandMenu = () => {
-    fireEvent.click(screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}` as any) as any);
-  };
+describe('Sidebar — per-project nav groups', () => {
+  const collapseGroup = (key: string) =>
+    fireEvent.click(screen.getByTestId(`sidebar-nav-group-${key}-${PROJECT_ID}` as any) as any);
+
+  // A repo-backed project so the repo-only Pulls surface is expected to render.
+  const repoProjects = () => [
+    {
+      id: PROJECT_ID,
+      name: 'Test Project',
+      color: '#22d3ee',
+      githubRepo: 'acme/test-project',
+      agents: [
+        { id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true },
+        { id: OTHER_AGENT_ID, name: 'Secondary Agent', color: '#a78bfa', active: true },
+      ],
+    },
+  ];
 
   it('keeps project agents above the project menu in the sidebar', () => {
     render(<Sidebar {...buildProps()} />);
@@ -1256,36 +1269,104 @@ describe('Sidebar — per-project settings menu', () => {
     expect(screen.getByTestId(`sidebar-project-menu-wrap-${PROJECT_ID}`)).toHaveClass('order-2');
   });
 
-  it('shows lifecycle links top-level and keeps configuration collapsed by default', () => {
+  it('renders the five labeled nav-group headers', () => {
     render(<Sidebar {...buildProps()} />);
-    expect(screen.getByRole('button', { name: 'Test Project Settings' })).toBeInTheDocument();
+    for (const key of ['git', 'planning', 'support', 'ai', 'settings']) {
+      expect(screen.getByTestId(`sidebar-nav-group-${key}-${PROJECT_ID}`)).toBeInTheDocument();
+    }
+  });
 
-    // Lifecycle links are always visible (no Settings expand needed).
+  it('shows every group item expanded by default', () => {
+    render(<Sidebar {...buildProps({ projects: repoProjects() })} />);
+    // Git
+    expect(screen.getByRole('button', { name: 'Pulls' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Deployments' })).toBeInTheDocument();
+    // Planning
     expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Epics' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Skills' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stats' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Notes' })).toBeInTheDocument();
+    // Support (the ticket page is now labeled "Customer Issues")
+    expect(screen.getByRole('button', { name: 'Customer Issues' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'RUM' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Replays' })).toBeInTheDocument();
+    // AI
+    expect(screen.getByRole('button', { name: 'Agents' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Skills' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Pulls' })).toBeInTheDocument();
+    // Settings
+    expect(screen.getByRole('button', { name: 'Project Configuration' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Runners' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dev server' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previews' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cron Jobs' })).toBeInTheDocument();
+  });
 
-    // Configuration items stay hidden until the Settings menu is expanded.
-    expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Agents' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Project Configuration' })).toBeNull();
+  // Regression: Pulls is a repo-only surface. A standard (non-workflow) project
+  // that is neither GitHub-backed nor Agent Hub-hosted must NOT show a Pulls link
+  // (it would navigate to an empty/invalid PR view). The Git group still renders
+  // for its Deployments item. Web must match mobile's `hasPulls` gate.
+  it('hides Pulls (but keeps the Git group) for a non-workflow project without a repo', () => {
+    const bareProject = {
+      id: PROJECT_ID,
+      name: 'No-Repo Project',
+      color: '#22d3ee',
+      // No githubRepo, no gitHost === 'agenthub', not a workflow.
+      agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+    };
+    render(<Sidebar {...buildProps({ projects: [bareProject] })} />);
+
+    expect(screen.queryByRole('button', { name: 'Pulls' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Repository' })).toBeNull();
+    // Git group is still present because Deployments is visible for non-workflow.
+    expect(screen.getByTestId(`sidebar-nav-group-git-${PROJECT_ID}`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Deployments' })).toBeInTheDocument();
+  });
+
+  it('shows Pulls for an Agent Hub-hosted project without a GitHub repo', () => {
+    const hostedProject = {
+      id: PROJECT_ID,
+      name: 'Hosted Project',
+      color: '#22d3ee',
+      gitHost: 'agenthub',
+      agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+    };
+    render(<Sidebar {...buildProps({ projects: [hostedProject] })} />);
+
+    expect(screen.getByRole('button', { name: 'Pulls' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Repository' })).toBeInTheDocument();
+  });
+
+  it('collapses and re-expands a group when its header is clicked', () => {
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
+
+    collapseGroup('planning');
+    expect(screen.queryByRole('button', { name: 'Board' })).toBeNull();
+    // Collapsing one group leaves the others untouched.
+    expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
+
+    collapseGroup('planning');
+    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
   });
 
   it('shows the open pull request count beside Pulls', () => {
-    render(<Sidebar {...buildProps({ openPullCounts: { [PROJECT_ID]: 3 } })} />);
+    render(
+      <Sidebar
+        {...buildProps({ projects: repoProjects(), openPullCounts: { [PROJECT_ID]: 3 } })}
+      />,
+    );
 
     const pulls = screen.getByText('Pulls').closest('button');
     expect(pulls).not.toBeNull();
     expect(within(pulls as HTMLElement).getByText('3')).toBeInTheDocument();
   });
 
-  it('navigates from the top-level lifecycle links without expanding Settings', () => {
+  it('navigates from group items to the right view', () => {
     const onNavigate = vi.fn();
-    render(<Sidebar {...buildProps({ onNavigate })} />);
+    render(<Sidebar {...buildProps({ projects: repoProjects(), onNavigate })} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Board' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`kanban:${PROJECT_ID}`);
@@ -1302,12 +1383,24 @@ describe('Sidebar — per-project settings menu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pulls' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith('pulls', PROJECT_ID);
 
-    // Settings stays collapsed — config links never rendered.
-    expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Customer Issues' } as any) as any);
+    expect(onNavigate!).toHaveBeenCalledWith('support', PROJECT_ID);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Project Configuration' } as any) as any);
+    expect(onNavigate!).toHaveBeenCalledWith(`project-settings:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Runners' } as any) as any);
+    expect(onNavigate!).toHaveBeenCalledWith(`runners:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previews' } as any) as any);
+    expect(onNavigate!).toHaveBeenCalledWith(`preview:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' } as any) as any);
+    expect(onNavigate!).toHaveBeenCalledWith(`project-crons:${PROJECT_ID}`);
   });
 
   // Regression: Notes had no sidebar entry (keyboard-only) before this.
-  it('renders a top-level Notes link that navigates to the notes view', () => {
+  it('renders a Notes link that navigates to the notes view', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
 
@@ -1317,7 +1410,7 @@ describe('Sidebar — per-project settings menu', () => {
     expect(onNavigate!).toHaveBeenCalledWith('notes', PROJECT_ID);
   });
 
-  it('renders a top-level Wiki link that navigates to the wiki view', () => {
+  it('renders a Wiki link (AI group) that navigates to the wiki view', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
 
@@ -1327,7 +1420,7 @@ describe('Sidebar — per-project settings menu', () => {
     expect(onNavigate!).toHaveBeenCalledWith('wiki', PROJECT_ID);
   });
 
-  it('renders a top-level Skills link that navigates to the project skills view', () => {
+  it('renders a Skills link (AI group) that navigates to the project skills view', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
 
@@ -1380,28 +1473,7 @@ describe('Sidebar — per-project settings menu', () => {
     expect(screen.getByRole('button', { name: 'Notes' }).className).not.toContain('text-white');
   });
 
-  it('expands the Settings menu to reveal configuration links', () => {
-    const onNavigate = vi.fn();
-    render(<Sidebar {...buildProps({ onNavigate })} />);
-    expandMenu();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Project Configuration' } as any) as any);
-    expect(onNavigate!).toHaveBeenCalledWith(`project-settings:${PROJECT_ID}`);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Runners' } as any) as any);
-    expect(onNavigate!).toHaveBeenCalledWith(`runners:${PROJECT_ID}`);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Previews' } as any) as any);
-    expect(onNavigate!).toHaveBeenCalledWith(`preview:${PROJECT_ID}`);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Agents' } as any) as any);
-    expect(onNavigate!).toHaveBeenCalledWith(`project-agents:${PROJECT_ID}`);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' } as any) as any);
-    expect(onNavigate!).toHaveBeenCalledWith(`project-crons:${PROJECT_ID}`);
-  });
-
-  it('hides dev-only lifecycle and settings links for workflow projects', () => {
+  it('hides dev-only items and the whole Git group for workflow projects', () => {
     const workflowProject = {
       id: PROJECT_ID,
       name: 'Workflow Project',
@@ -1411,47 +1483,23 @@ describe('Sidebar — per-project settings menu', () => {
     };
     render(<Sidebar {...buildProps({ projects: [workflowProject] })} />);
 
+    // The Git group has no visible items (no repo/pulls/deployments) → header hidden.
+    expect(screen.queryByTestId(`sidebar-nav-group-git-${PROJECT_ID}`)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Deployments' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Support' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Pulls' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Customer Issues' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Replays' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Security' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Pulls' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
-
-    expandMenu();
     expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Previews' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'RUM' })).toBeNull();
+
+    // Non-dev items are still present.
+    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Agents' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cron Jobs' })).toBeInTheDocument();
-  });
-
-  // Regression: every configuration route (including Cron Jobs) must mark the
-  // "<project> Settings" toggle active, so the active page isn't hidden under a
-  // collapsed, inactive-looking group on initial render / reload. `text-gray-200`
-  // is applied only by the active branch of the toggle's class (inactive uses
-  // text-gray-500).
-  it('marks the Settings toggle active for every configuration route', () => {
-    const configRoutes = [
-      `project-settings:${PROJECT_ID}`,
-      `project-agents:${PROJECT_ID}`,
-      `runners:${PROJECT_ID}`,
-      `preview:${PROJECT_ID}`,
-      `project-crons:${PROJECT_ID}`,
-    ];
-    const { rerender } = render(<Sidebar {...buildProps({ currentView: configRoutes[0] })} />);
-    for (const view of configRoutes) {
-      rerender(<Sidebar {...buildProps({ currentView: view })} />);
-      const toggle = screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}`);
-      expect(toggle.className, `expected toggle active for ${view}`).toContain('text-gray-200');
-    }
-
-    // A lifecycle (top-level) route must NOT activate the Settings toggle.
-    rerender(<Sidebar {...buildProps({ currentView: `kanban:${PROJECT_ID}` })} />);
-    expect(screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}`).className).not.toContain(
-      'text-gray-200',
-    );
   });
 
   it('does not render the Workflows entry (temporarily hidden)', () => {
@@ -1459,13 +1507,12 @@ describe('Sidebar — per-project settings menu', () => {
     expect(screen.queryByRole('button', { name: 'Workflows' })).toBeNull();
   });
 
-  it('hides AWS inside the menu when the project has not enabled AWS', () => {
+  it('hides AWS when the project has not enabled AWS', () => {
     render(<Sidebar {...buildProps()} />);
-    expandMenu();
     expect(screen.queryByRole('button', { name: 'AWS' })).toBeNull();
   });
 
-  it('renders AWS inside the menu when awsEnabled', () => {
+  it('renders AWS in the Support group when awsEnabled', () => {
     const onNavigate = vi.fn();
     const projects = [
       {
@@ -1477,7 +1524,6 @@ describe('Sidebar — per-project settings menu', () => {
       },
     ];
     render(<Sidebar {...buildProps({ projects, onNavigate })} />);
-    expandMenu();
 
     fireEvent.click(screen.getByRole('button', { name: 'AWS' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`aws:${PROJECT_ID}`);
