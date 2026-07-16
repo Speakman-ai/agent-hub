@@ -4566,13 +4566,12 @@ export default function App({ initialView }: any = {}) {
     );
   };
 
-  const handleDequeue = (messageId: any, { cancelStream = false }: any = {}) => {
+  const handleDequeue = (messageId: any) => {
     if (activeSessionId) {
+      // Removing a queued message only discards that message. The in-flight
+      // turn keeps running — dropping a follow-up must never cancel the agent.
       send({ type: 'dequeue', sessionId: activeSessionId, messageId });
       setMessages((prev: any) => prev.filter((m: any) => m.id !== messageId));
-      if (cancelStream && (thinking || streamingContent)) {
-        handleCancel();
-      }
     }
   };
 

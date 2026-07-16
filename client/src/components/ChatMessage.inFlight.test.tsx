@@ -33,8 +33,12 @@ describe('ChatMessage in-flight user actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Interrupt' } as any) as any);
     expect(onInterrupt!).toHaveBeenCalledWith(baseMessage);
 
+    // Removing a queued message while streaming must NOT cancel the running
+    // turn — it only discards the follow-up. Regression: passing
+    // { cancelStream: true } here stopped the agent (support ticket d64bf873).
     fireEvent.click(screen.getByRole('button', { name: 'Remove' } as any) as any);
-    expect(onDequeue!).toHaveBeenCalledWith('msg-1', { cancelStream: true });
+    expect(onDequeue!).toHaveBeenCalledWith('msg-1');
+    expect(onDequeue!).not.toHaveBeenCalledWith('msg-1', { cancelStream: true });
   });
 
   it('keeps inline queued edit when not in-flight', () => {

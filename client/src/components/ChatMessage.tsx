@@ -544,7 +544,7 @@ function ChatMessage({
                 {onDequeue && (
                   <button
                     type="button"
-                    onClick={() => onDequeue(message.id, { cancelStream: true })}
+                    onClick={() => onDequeue(message.id)}
                     className="text-xs text-blue-400/50 hover:text-red-400 transition-colors"
                   >
                     Remove

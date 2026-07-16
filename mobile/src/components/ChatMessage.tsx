@@ -533,7 +533,7 @@ function ChatMessage({ message, agentColor, agentName, onDequeue, onEditQueued, 
                 {showInFlightActions && onInterrupt && (<TouchableOpacity onPress={() => onInterrupt(message)}>
                     <Text style={[styles.queuedActionText, { color: '#fbbf24' }]}>Interrupt</Text>
                   </TouchableOpacity>)}
-                <TouchableOpacity onPress={() => onDequeue?.(message.id, showInFlightActions ? { cancelStream: true } : undefined)}>
+                <TouchableOpacity onPress={() => onDequeue?.(message.id)}>
                   <Text style={[styles.queuedActionText, { color: colors.red400 }]}>Remove</Text>
                 </TouchableOpacity>
               </View>)}

@@ -1746,16 +1746,15 @@ export function AppProvider({ children }: any) {
         setSessionAgents(detail.agents || []);
         setSessions((prev: any) => prev.map((s: any) => (s.id === detail.id ? { ...s, ...detail } : s)));
     }, []);
-    const handleDequeue = useCallback((messageId: any, { cancelStream = false }: any = {}) => {
+    const handleDequeue = useCallback((messageId: any) => {
         const sid = activeSessionIdRef.current;
         if (sid) {
+            // Removing a queued message only discards that message. The in-flight
+            // turn keeps running — dropping a follow-up must never cancel the agent.
             send({ type: 'dequeue', sessionId: sid, messageId });
             setMessages((prev: any) => prev.filter((m: any) => m.id !== messageId));
-            if (cancelStream && (thinking || streamingContent)) {
-                handleCancel();
-            }
         }
-    }, [send, thinking, streamingContent, handleCancel]);
+    }, [send]);
     const handleEditQueuedMessage = useCallback((messageId: any, content: any) => {
         const sid = activeSessionIdRef.current;
         if (sid) {
