@@ -118,13 +118,56 @@ function outcome(
 const NO_TERMINAL_MARKDOWN = [
   '## Terminal tool',
   '',
-  'No terminal shell is running for this session. The shared terminal is',
-  'human-opened — ask the user to open the **Terminal** tab for this session,',
-  'then retry. (This tool never spawns a shell itself.)',
+  'This tool cannot see a shared terminal shell for this session **right now**.',
+  'That is a point-in-time reading, not proof one is absent: the shared terminal',
+  'is human-opened and can be opened (or reopened) at any moment, and this tool',
+  'never spawns one itself. Do **not** tell the user "there is no terminal" — ask',
+  'them to open (or reopen) the **Terminal** tab for this session, then retry.',
   '',
   'For your own scripted commands, use your normal Bash tool — the shared',
   'terminal is for co-observation and deliberate turn-taking with the human.',
 ].join('\n');
+
+/**
+ * Classify a non-`running` PTY status. A shell that is `exited`/`disposed` has
+ * ended and will not come back on its own — the human must reopen/restart the
+ * Terminal — whereas `idle`/`starting` is a transient boot state worth a retry.
+ * `disposed` shouldn't reach the tool (the host evicts on exit) but is treated
+ * as ended defensively so it never gets "still booting, retry shortly".
+ */
+function isEndedTerminalStatus(status: string): boolean {
+  return status === 'exited' || status === 'disposed';
+}
+
+/**
+ * A PTY entry exists for the session but its shell is not `running`. Distinct
+ * from {@link NO_TERMINAL_MARKDOWN} so the agent never reports "no terminal" for
+ * a terminal the human has open. Messaging branches on lifecycle: a transient
+ * boot state (`idle`/`starting`) is worth a retry, while an ended shell
+ * (`exited`/`disposed`) needs the human to reopen/restart the terminal.
+ */
+function terminalNotRunningMarkdown(status: string): string {
+  if (isEndedTerminalStatus(status)) {
+    return [
+      '## Terminal tool',
+      '',
+      `A terminal shell existed for this session but has **ended** (status:`,
+      `\`${status}\`); its shell is gone and will not resume on its own. Do **not**`,
+      'tell the user there is no terminal — its scrollback may still be on screen.',
+      'Ask them to **reopen/restart** the **Terminal** tab for this session, then',
+      'retry. This tool never spawns or restarts a shell itself.',
+    ].join('\n');
+  }
+  return [
+    '## Terminal tool',
+    '',
+    `A terminal shell **exists** for this session but is not at a live prompt yet`,
+    `(status: \`${status}\`). It is most likely still booting — the human may have`,
+    'the **Terminal** tab open and watching it come up. Do **not** tell the user',
+    'there is no terminal. Retry `{"tool":"terminal","op":"state"}` in a moment; it',
+    'reports the live lifecycle status. `read`/`inject` need a running shell.',
+  ].join('\n');
+}
 
 /**
  * Defang untrusted terminal bytes before embedding them in the model's
@@ -212,14 +255,22 @@ export async function runTerminalReActStep(
   }
 
   const view = deps.runtime.getSession(chatSessionId);
-  if (!view || !view.isRunning) {
-    return outcome(NO_TERMINAL_MARKDOWN, 2, 'no_terminal', 'No terminal running');
+  // Only a truly-absent PTY entry is "no terminal". An entry that exists but
+  // whose shell is not `running` yet (mid-boot, or a failed boot left idle) is
+  // reported truthfully by `state` below — collapsing it into no_terminal is
+  // exactly what made the tool say "there is no terminal" while the human had
+  // one open and booting.
+  if (!view) {
+    return outcome(NO_TERMINAL_MARKDOWN, 2, 'no_terminal', 'No terminal observed');
   }
 
   const now = (deps.now ?? (() => Date.now()))();
   const quietWindowMs = deps.quietWindowMs ?? DEFAULT_TERMINAL_INJECT_QUIET_WINDOW_MS;
 
   if (op === 'state') {
+    // Reports the real lifecycle status even when the shell is not `running`
+    // yet, so a mid-boot check yields "starting" rather than a false "no
+    // terminal". The idle gate already returns not-idle for a non-running shell.
     const gate = evaluateInjectIdle(view, now, quietWindowMs);
     const state = {
       status: view.status,
@@ -230,20 +281,36 @@ export async function runTerminalReActStep(
       promptLineDirty: view.promptLineDirty,
       msSinceOutput: view.lastOutputAt > 0 ? Math.max(0, now - view.lastOutputAt) : null,
     };
+    let readinessNote: string;
+    if (view.isRunning) {
+      readinessNote = gate.idle ? '' : `\nNot ready to inject: ${gate.reason}`;
+    } else if (isEndedTerminalStatus(view.status)) {
+      readinessNote =
+        `\nThe shell has **ended** (${view.status}) and will not resume on its own.` +
+        ' Do not tell the user there is no terminal — ask them to reopen/restart the' +
+        ' Terminal tab.';
+    } else {
+      readinessNote =
+        `\nThe shell is **${view.status}**, not yet at a live prompt (it may still be` +
+        ' booting). Retry shortly; do not tell the user there is no terminal.';
+    }
     return outcome(
-      [
-        '## Terminal: state',
-        '',
-        '```json',
-        JSON.stringify(state, null, 2),
-        '```',
-        gate.idle ? '' : `\nNot ready to inject: ${gate.reason}`,
-      ]
+      ['## Terminal: state', '', '```json', JSON.stringify(state, null, 2), '```', readinessNote]
         .join('\n')
         .trimEnd(),
       0,
       `state:${view.status}`,
-      `Terminal is ${view.status}${gate.idle ? ' (idle prompt)' : ' (busy)'}`,
+      `Terminal is ${view.status}${view.isRunning ? (gate.idle ? ' (idle prompt)' : ' (busy)') : ''}`,
+    );
+  }
+
+  // read / inject both require a live, running shell.
+  if (!view.isRunning) {
+    return outcome(
+      terminalNotRunningMarkdown(view.status),
+      2,
+      'terminal_not_running',
+      `Terminal shell is ${view.status}, not running`,
     );
   }
 

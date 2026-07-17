@@ -182,20 +182,79 @@ describe('runTerminalReActStep', () => {
     expect(r.hostDetail).toBe('runtime_unwired');
   });
 
-  it('reports no terminal when none is running (lifecycle stays human-only)', async () => {
+  it('reports no terminal only when no PTY entry exists at all', async () => {
     const r = await runTerminalReActStep(SESSION_ID, { op: 'state' }, deps(undefined));
     expect(r.hostExit).toBe(2);
     expect(r.hostDetail).toBe('no_terminal');
     expect(r.markdown).toMatch(/human-opened/i);
+    // Must not encourage the agent to flatly assert "there is no terminal".
+    expect(r.markdown).toMatch(/Do \*\*not\*\* tell the user "there is no terminal"/i);
   });
 
-  it('treats a present-but-exited shell as no terminal', async () => {
+  it('state reports the live status of a still-booting shell instead of "no terminal"', async () => {
+    // Regression: attach() awaits start()→#doStart(), which opens the PTY
+    // BEFORE flipping status to 'running'. A `state` check inside that boot
+    // window used to collapse to no_terminal (exit 2), so the agent told the
+    // user "there is no terminal" while the human had the tab open and booting.
     const r = await runTerminalReActStep(
       SESSION_ID,
-      { op: 'read' },
+      { op: 'state' },
+      deps(makeView({ isRunning: false, status: 'idle' })),
+    );
+    expect(r.hostExit).toBe(0);
+    expect(r.hostDetail).toBe('state:idle');
+    expect(r.markdown).toContain('"status": "idle"');
+    expect(r.markdown).toContain('"running": false');
+    expect(r.markdown).toMatch(/may still be\s+booting/i);
+    expect(r.markdown).not.toMatch(/no terminal shell is running/i);
+  });
+
+  it('read/inject on a booting (idle) shell report terminal_not_running with retry guidance', async () => {
+    for (const op of ['read', 'inject'] as const) {
+      const r = await runTerminalReActStep(
+        SESSION_ID,
+        { op, command: 'ls' },
+        deps(makeView({ isRunning: false, status: 'idle' })),
+      );
+      expect(r.hostExit).toBe(2);
+      expect(r.hostDetail).toBe('terminal_not_running');
+      expect(r.markdown).toMatch(/exists\*\* for this session but is not at a live prompt/i);
+      expect(r.markdown).toMatch(/still\s+booting/i);
+      expect(r.markdown).toMatch(/status: `idle`/);
+    }
+  });
+
+  it('read/inject on an ended (exited) shell tell the user to reopen, not "still booting"', async () => {
+    // Reviewer note: an exited/disposed PTY must not get transient-boot recovery
+    // guidance — its shell is gone and needs a human reopen/restart.
+    for (const status of ['exited', 'disposed'] as const) {
+      const r = await runTerminalReActStep(
+        SESSION_ID,
+        { op: 'read' },
+        deps(makeView({ isRunning: false, status })),
+      );
+      expect(r.hostExit).toBe(2);
+      expect(r.hostDetail).toBe('terminal_not_running');
+      expect(r.markdown).toMatch(/has \*\*ended\*\*/i);
+      expect(r.markdown).toMatch(/reopen\/restart/i);
+      expect(r.markdown).not.toMatch(/still\s+booting/i);
+      expect(r.markdown).toMatch(new RegExp(`status:\\s*\`${status}\``));
+    }
+  });
+
+  it('state on an ended (exited) shell reports the status without "still booting" guidance', async () => {
+    const r = await runTerminalReActStep(
+      SESSION_ID,
+      { op: 'state' },
       deps(makeView({ isRunning: false, status: 'exited' })),
     );
-    expect(r.hostDetail).toBe('no_terminal');
+    expect(r.hostExit).toBe(0);
+    expect(r.hostDetail).toBe('state:exited');
+    expect(r.markdown).toContain('"status": "exited"');
+    expect(r.markdown).toContain('"running": false');
+    expect(r.markdown).toMatch(/has \*\*ended\*\*/i);
+    expect(r.markdown).toMatch(/reopen\/restart/i);
+    expect(r.markdown).not.toMatch(/still\s+booting/i);
   });
 
   it('state reports idle when the prompt is quiet', async () => {
