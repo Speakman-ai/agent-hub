@@ -205,8 +205,10 @@ export async function exportDesignPdf({ designId, base, srcBase, filename, doc }
     );
     iframe.style.height = `${fullHeight}px`;
 
-    // 2. Rasterize via html2canvas — dynamic import mirrors bugReport.js.
-    const canvasMod = await import('html2canvas');
+    // 2. Rasterize via html2canvas-pro — dynamic import mirrors bugReport.ts.
+    // The pro fork parses modern oklch()/oklab()/color() values that Chrome
+    // emits in computed styles and stock html2canvas 1.4.1 chokes on.
+    const canvasMod = await import('html2canvas-pro');
     const html2canvas = canvasMod.default || canvasMod;
     const canvas = await html2canvas(inner.documentElement, {
       backgroundColor: '#ffffff',

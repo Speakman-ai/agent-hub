@@ -39,7 +39,7 @@ const saveMock = vi.fn();
 });
 
 const html2canvasMock = vi.fn();
-(vi as any).mock('html2canvas', () => ({
+(vi as any).mock('html2canvas-pro', () => ({
   default: (...args: any) => html2canvasMock(...args),
 }));
 

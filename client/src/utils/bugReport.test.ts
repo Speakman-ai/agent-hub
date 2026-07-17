@@ -1,10 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   submitBugReport,
+  captureScreenshot,
   BUG_REPORT_PROJECT_ID,
   defaultReporterEmail,
   resolveBugReportEndpoint,
 } from './bugReport';
+
+// captureScreenshot dynamically imports the canvas rasterizer. We must mock the
+// PRO fork (html2canvas-pro) because stock html2canvas 1.4.1 throws on the
+// oklch()/oklab()/color() values modern Chrome serializes into computed styles
+// — the exact "unsupported color function" failure this module was switched to
+// fix. Mocking 'html2canvas-pro' (not 'html2canvas') also asserts the import
+// target: if the source regressed back to the stock package the dynamic import
+// would resolve unmocked and the toBlob stub below would never run.
+const html2canvasProMock = vi.hoisted(() => vi.fn());
+vi.mock('html2canvas-pro', () => ({ default: html2canvasProMock }));
 
 // Configured endpoint used by the POST tests. The default (unset env) is
 // intentionally empty so self-hosted builds never phone home; each POST test
@@ -200,5 +211,59 @@ describe('submitBugReport', () => {
     } finally {
       (globalThis as any).window = prev;
     }
+  });
+});
+
+describe('captureScreenshot', () => {
+  const realWindow = globalThis.window;
+
+  beforeEach(() => {
+    html2canvasProMock.mockReset();
+  });
+
+  afterEach(() => {
+    (globalThis as any).window = realWindow;
+    vi.restoreAllMocks();
+  });
+
+  it('rasterizes document.body via html2canvas-pro and returns a PNG blob', async () => {
+    // No Electron bridge → the web fallback path runs the canvas rasterizer.
+    (globalThis as any).window = { devicePixelRatio: 2 };
+    const pngBlob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });
+    const fakeCanvas = {
+      toBlob: (cb: any, type: string) => {
+        expect(type).toBe('image/png');
+        cb(pngBlob);
+      },
+    };
+    html2canvasProMock.mockResolvedValue(fakeCanvas);
+
+    const blob = await captureScreenshot();
+
+    expect(blob).toBe(pngBlob);
+    expect(html2canvasProMock).toHaveBeenCalledTimes(1);
+    // document.body is handed to the pro fork, which parses oklch()/color()
+    // values stock html2canvas would reject.
+    expect(html2canvasProMock.mock.calls[0]![0]).toBe(document.body);
+  });
+
+  it('prefers the Electron capture bridge over the canvas rasterizer', async () => {
+    const dataUrl = `data:image/png;base64,${btoa('electron-bytes')}`;
+    (globalThis as any).window = {
+      electronAPI: { captureBugScreenshot: vi.fn().mockResolvedValue(dataUrl) },
+    };
+
+    const blob = await captureScreenshot();
+
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.type).toBe('image/png');
+    expect(html2canvasProMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the canvas cannot produce a blob', async () => {
+    (globalThis as any).window = {};
+    html2canvasProMock.mockResolvedValue({ toBlob: (cb: any) => cb(null) });
+
+    await expect(captureScreenshot()).rejects.toThrow(/Failed to produce screenshot blob/);
   });
 });

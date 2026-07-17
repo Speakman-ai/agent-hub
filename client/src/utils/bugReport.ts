@@ -61,18 +61,24 @@ function dataUrlToBlob(dataUrl: any) {
  * Capture a PNG screenshot of the current view.
  *
  * Prefers the Electron bridge (`window.electronAPI.captureBugScreenshot`) when
- * available; otherwise falls back to dynamically importing html2canvas and
+ * available; otherwise falls back to dynamically importing html2canvas-pro and
  * snapshotting `document.body`.
+ *
+ * html2canvas-pro (not the stock html2canvas) is required: modern Chrome
+ * serializes wide-gamut colors as `oklch()`/`oklab()`/`color()` in computed
+ * styles, which the 2022-era html2canvas 1.4.1 parser rejects with
+ * "unsupported color function", failing every capture. The pro fork keeps the
+ * same API and understands those color spaces.
  *
  * @returns {Promise<Blob>} PNG blob
  */
-export async function captureScreenshot() {
+export async function captureScreenshot(): Promise<Blob> {
   if (typeof window !== 'undefined' && window.electronAPI?.captureBugScreenshot) {
     const dataUrl = await window.electronAPI.captureBugScreenshot();
     return dataUrlToBlob(dataUrl);
   }
 
-  const mod = await import('html2canvas');
+  const mod = await import('html2canvas-pro');
   const html2canvas = mod.default || mod;
   const canvas = await html2canvas(document.body, {
     backgroundColor: '#0b0f17',
@@ -82,8 +88,8 @@ export async function captureScreenshot() {
     scale: Math.min(window.devicePixelRatio || 1, 2),
   });
 
-  return new Promise((resolve: any, reject: any) => {
-    canvas.toBlob((blob: any) => {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob: Blob | null) => {
       if (blob) resolve(blob);
       else reject(new Error('Failed to produce screenshot blob'));
     }, 'image/png');
