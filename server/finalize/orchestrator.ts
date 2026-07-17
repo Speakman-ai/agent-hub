@@ -60,6 +60,8 @@ import { FINALIZE_BUDGET_SECONDS, runRebasePhase } from './rebase.js';
 import type { RebasePhaseOutcome } from './rebase.js';
 import { loadCiConfigFromFile } from './ci-config.js';
 import type { AnyCiConfig, CiConfigParseResult } from './ci-config.js';
+import { resolveCiConfig, type CiConfigSource } from './ci-config-source.js';
+import { getServerCiConfig } from './ci-config-store.js';
 import { runReviewerDispatch } from './reviewer-dispatch.js';
 import type {
   ReviewerDispatchOutcome,
@@ -295,6 +297,8 @@ export interface OrchestratorDeps {
     | 'listFinalizeQuarantineForProject'
     | 'listReviewerThreadsForRun'
     | 'insertFinalizeMetric'
+    // Server-stored ci.yaml fallback — read when resolving the config source.
+    | 'getFinalizeServerCi'
   >;
   broadcast: BroadcastFn;
   /**
@@ -1116,9 +1120,30 @@ export async function runFinalize(
       // ── Phase 2: parse ci.yaml ──────────────────────────────────────
       // Always re-parse — the session may have edited ci.yaml during the
       // fix dispatch and the loop invariant demands we re-validate it.
-      let parseResult: CiConfigParseResult;
+      // Resolve the effective config source: a committed `.agent-hub/ci.yaml`
+      // wins if present (even when broken — an explicit committed config must
+      // fail, not fall through); otherwise fall back to a server-stored config
+      // (personal override first, then the project-scoped shared config). See
+      // `ci-config-source.ts`.
+      let parseResult: CiConfigParseResult | null;
+      let ciSource: CiConfigSource;
+      let ciShadowed = false;
       try {
-        parseResult = await loadCi(ciConfigPath);
+        const resolved = await resolveCiConfig(
+          {
+            loadCommitted: loadCi,
+            readServerConfig: (scope) =>
+              getServerCiConfig(
+                deps.stmts,
+                opts.project.id,
+                scope === 'personal' ? opts.triggeredByUserId : null,
+              )?.yaml_text ?? null,
+          },
+          { committedPath: ciConfigPath, hasUser: Boolean(opts.triggeredByUserId) },
+        );
+        parseResult = resolved.parseResult;
+        ciSource = resolved.source;
+        ciShadowed = resolved.shadowed;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return terminate(
@@ -1127,6 +1152,16 @@ export async function runFinalize(
           'failed',
           'ci_config_invalid',
           `ci.yaml load threw: ${msg}`,
+          log,
+        );
+      }
+      if (ciSource === 'none' || parseResult === null) {
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'ci_config_missing',
+          'No CI config found: no committed .agent-hub/ci.yaml and no server-stored config for this project. Set up Finalize — commit a ci.yaml or store one on the Agent Hub server.',
           log,
         );
       }
@@ -1158,6 +1193,11 @@ export async function runFinalize(
         ciVersion: parsedCi.version,
         timeoutMinutes: parsedCi.timeoutMinutes ?? null,
         budgetSeconds,
+        // Which config source won, and whether a server config was shadowed by
+        // a committed file. The run's trace is the audit trail for server
+        // configs (which, unlike a committed ci.yaml, are not visible in the PR).
+        ciSource,
+        ciShadowed,
       });
 
       if (opts.signal?.aborted) {

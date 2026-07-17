@@ -12,6 +12,7 @@ import {
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
+import { FINALIZE_SERVER_CI_SCHEMA } from './finalize/ci-config-store.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
@@ -1265,6 +1266,11 @@ function initDb(dataDir: string): void {
   // the Finalize verdict vs the GitHub Actions verdict + divergence class. See
   // `server/finalize/parity-store.ts`.
   db.exec(FINALIZE_PARITY_SCHEMA);
+
+  // Server-stored Finalize CI config — the fallback for repos that do not commit
+  // `.agent-hub/ci.yaml`. One row per (project, scope). See
+  // `server/finalize/ci-config-store.ts`.
+  db.exec(FINALIZE_SERVER_CI_SCHEMA);
 
   // Dependency security audit — vulnerable-dependency findings + operator
   // suppressions for Hub-hosted repos. See `server/security-audit/`.
@@ -6827,6 +6833,35 @@ function initDb(dataDir: string): void {
           AND observed_at >= ?
           AND observed_at < ?
         ORDER BY observed_at DESC`,
+    ),
+
+    // finalize_server_ci — server-stored ci.yaml fallback. One row per
+    // (project, scope). `owner_user_id` NULL = project scope, non-null =
+    // personal. Reads/upsert/delete key on (project_id, IFNULL(owner_user_id,'')).
+    // See `server/finalize/ci-config-store.ts`.
+    getFinalizeServerCi: db.prepare(
+      `SELECT id, project_id, owner_user_id, yaml_text, updated_by, updated_at
+         FROM finalize_server_ci
+        WHERE project_id = ? AND IFNULL(owner_user_id, '') = IFNULL(?, '')`,
+    ),
+    listFinalizeServerCiForProject: db.prepare(
+      `SELECT id, project_id, owner_user_id, yaml_text, updated_by, updated_at
+         FROM finalize_server_ci
+        WHERE project_id = ?
+        ORDER BY (owner_user_id IS NULL) DESC, updated_at DESC`,
+    ),
+    upsertFinalizeServerCi: db.prepare(
+      `INSERT INTO finalize_server_ci
+         (id, project_id, owner_user_id, yaml_text, updated_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, IFNULL(owner_user_id, '')) DO UPDATE SET
+         yaml_text = excluded.yaml_text,
+         updated_by = excluded.updated_by,
+         updated_at = excluded.updated_at`,
+    ),
+    deleteFinalizeServerCi: db.prepare(
+      `DELETE FROM finalize_server_ci
+        WHERE project_id = ? AND IFNULL(owner_user_id, '') = IFNULL(?, '')`,
     ),
 
     // pull_requests — native PRs for Agent Hub-hosted projects. Number

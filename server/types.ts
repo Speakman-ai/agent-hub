@@ -2760,6 +2760,24 @@ export interface Stmts {
    */
   listFinalizeParityInRange: Stmt;
 
+  // ── finalize_server_ci — server-stored ci.yaml fallback ───────────
+  /**
+   * Fetch one server-stored CI config by `(project_id, owner_user_id)`. A NULL
+   * `owner_user_id` bind reads the project-scoped (shared) row; a uid reads
+   * that user's personal override. See `server/finalize/ci-config-store.ts`.
+   */
+  getFinalizeServerCi: Stmt;
+  /** All server-stored CI configs for a project (project row first, then personal). */
+  listFinalizeServerCiForProject: Stmt;
+  /**
+   * Upsert a server-stored CI config. Binds
+   * `(id, project_id, owner_user_id, yaml_text, updated_by, updated_at)`;
+   * conflict target is `(project_id, IFNULL(owner_user_id, ''))`.
+   */
+  upsertFinalizeServerCi: Stmt;
+  /** Delete one scope's server-stored CI config by `(project_id, owner_user_id)`. */
+  deleteFinalizeServerCi: Stmt;
+
   // ── pull_requests — native PRs for Agent Hub-hosted projects ──────
   /** Insert an open PR row. Number allocation must be transactional — see `server/native-pr/store.ts`. */
   insertPullRequest: Stmt;

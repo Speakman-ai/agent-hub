@@ -189,8 +189,28 @@ const FinalizeSetupApplyRequest = registerComponent(
           description:
             'Optional project secrets to persist (same shape as preview setup-apply). Merged into Finalize step runs.',
         }),
+      storage: z.enum(['committed', 'server']).optional().openapi({
+        description:
+          "Where the config lives. Default 'committed' writes + commits `.agent-hub/ci.yaml`. 'server' stores it on the Agent Hub server (no file, no commit) — the response omits commit/branch fields.",
+      }),
+      server_scope: z.enum(['project', 'personal']).optional().openapi({
+        description:
+          "Only for `storage: 'server'`. 'project' (default) is the shared config; 'personal' is an override keyed to the calling user.",
+      }),
     })
     .openapi({ description: 'Apply payload for the Finalize ci.yaml wizard.' }),
+);
+
+const FinalizeSetupApplyServerResponse = registerComponent(
+  'FinalizeSetupApplyServerResponse',
+  z
+    .object({
+      ok: z.literal(true),
+      storage: z.literal('server'),
+      server_scope: z.enum(['project', 'personal']),
+      secrets_imported: z.number().int(),
+    })
+    .openapi({ description: 'Config stored on the Agent Hub server (no commit).' }),
 );
 
 const FinalizeSetupApplyResponse = registerComponent(
@@ -243,16 +263,16 @@ registerPath({
   },
   responses: {
     200: {
-      description: 'Committed.',
-      content: jsonContent(FinalizeSetupApplyResponse),
+      description: "Committed to the worktree, or stored on the server (`storage: 'server'`).",
+      content: jsonContent(z.union([FinalizeSetupApplyResponse, FinalizeSetupApplyServerResponse])),
     },
     400: {
       description:
-        'Payload invalid: missing content, invalid v1 schema, no worktree-bearing session found, or worktree path is unreadable.',
+        'Payload invalid: missing content, invalid v1 schema, bad server_scope, no worktree-bearing session found, or worktree path is unreadable.',
       content: jsonContent(z.union([ErrorResponse, FinalizeSetupApplyInvalidConfig])),
     },
     404: errorResponse('Project not found.'),
-    500: errorResponse('Write or commit failed.'),
+    500: errorResponse('Write, commit, or server store failed.'),
   },
 });
 

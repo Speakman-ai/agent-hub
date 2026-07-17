@@ -347,6 +347,11 @@ function makeStmts(): {
     insertFinalizeMetric: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['insertFinalizeMetric'],
+    // No server-stored CI config in these tests — the committed loader
+    // (injected per-test) is authoritative, so this read returns nothing.
+    getFinalizeServerCi: {
+      get: vi.fn(() => undefined),
+    } as unknown as OrchestratorDeps['stmts']['getFinalizeServerCi'],
   };
 
   return { stmts, rows, byKey, threads, phaseCalls, failCalls };
@@ -921,6 +926,51 @@ describe('runFinalize — ci.yaml invalid', () => {
     if (result.kind === 'failed') {
       expect(result.failureReason).toBe('ci_config_invalid');
       expect(result.detail).toContain('yaml_parse_error');
+    }
+  });
+});
+
+describe('runFinalize — server-stored CI config fallback', () => {
+  // A loader that reports the committed file is ABSENT (the fallback trigger).
+  const fakeAbsentCommitted = () =>
+    vi.fn().mockResolvedValue({
+      ok: false,
+      error: { code: 'ci_config_absent', message: 'file not found' },
+    }) as never;
+
+  it('terminates with ci_config_missing when no committed file and no server config', async () => {
+    const { deps } = makeDeps({ loadCiConfigFromFile: fakeAbsentCommitted() });
+    // Default getFinalizeServerCi mock returns undefined → nothing stored.
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('ci_config_missing');
+    }
+  });
+
+  it('falls back to a project-scoped server config when the committed file is absent', async () => {
+    const { deps } = makeDeps({ loadCiConfigFromFile: fakeAbsentCommitted() });
+    // Project-scoped row (owner_user_id === null); personal read returns nothing.
+    (deps.stmts.getFinalizeServerCi.get as ReturnType<typeof vi.fn>).mockImplementation(
+      (_projectId: string, ownerUserId: string | null) =>
+        ownerUserId === null
+          ? {
+              id: 'srv-1',
+              project_id: 'proj',
+              owner_user_id: null,
+              yaml_text: 'version: 1\non: [finalize]\nsteps:\n  - run: echo hi\n',
+              updated_by: null,
+              updated_at: 0,
+            }
+          : undefined,
+    );
+    const result = await runFinalize(deps, baseOpts());
+    // The server config parsed and drove the run — the config-resolution stage
+    // did NOT terminate the run. (Whatever happens downstream, it is not a
+    // config-source failure.)
+    if (result.kind === 'failed') {
+      expect(result.failureReason).not.toBe('ci_config_missing');
+      expect(result.failureReason).not.toBe('ci_config_invalid');
     }
   });
 });

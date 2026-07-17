@@ -703,12 +703,15 @@ describe('loadCiConfigFromFile — arbitrary path', () => {
     expect(result.config.steps[0]).toEqual({ name: 'Install', run: 'npm ci --include=dev' });
   });
 
-  it('returns yaml_parse_error when the file does not exist', async () => {
+  it('returns ci_config_absent when the file does not exist', async () => {
+    // Absence is signalled with a DEDICATED code (not yaml_parse_error) so the
+    // config resolver can fall back to a server-stored config only when the
+    // committed file is genuinely missing.
     const missing = path.join(tmpDir, 'does-not-exist', 'ci.yaml');
     const result = await loadCiConfigFromFile(missing);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.code).toBe('yaml_parse_error');
+    expect(result.error.code).toBe('ci_config_absent');
     expect(result.error.message).toMatch(/file not found/i);
   });
 

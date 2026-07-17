@@ -161,6 +161,13 @@ export type AnyCiConfig = CiConfigV1 | import('./ci-config-v2.js').CiConfigV2;
  */
 export type CiConfigErrorCode =
   | 'yaml_parse_error'
+  // The committed `.agent-hub/ci.yaml` does not exist on disk. Distinct from
+  // `yaml_parse_error` (which means the file IS there but unreadable/malformed)
+  // because absence is the ONLY signal the config resolver treats as "fall back
+  // to a server-stored config" (see ci-config-source.ts). Overloading
+  // `yaml_parse_error` for absence would make a broken committed file silently
+  // fall through to server config.
+  | 'ci_config_absent'
   | 'not_an_object'
   | 'missing_version'
   | 'invalid_version'
@@ -459,10 +466,15 @@ export async function loadCiConfigFromFile(absPath: string): Promise<CiConfigPar
     text = await fs.readFile(absPath, 'utf8');
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | null)?.code;
-    const detail =
-      code === 'ENOENT'
-        ? `file not found at ${absPath}`
-        : `could not read ${absPath}: ${err instanceof Error ? err.message : String(err)}`;
+    // ENOENT is reported with the dedicated `ci_config_absent` code so the
+    // config resolver can distinguish "no committed file → try server config"
+    // from "committed file present but unreadable/malformed → fail". Every
+    // other read error stays `yaml_parse_error` (the file exists but we could
+    // not read it — a real problem, not a fallback trigger).
+    if (code === 'ENOENT') {
+      return err_('ci_config_absent', `file not found at ${absPath}`);
+    }
+    const detail = `could not read ${absPath}: ${err instanceof Error ? err.message : String(err)}`;
     return err_('yaml_parse_error', detail);
   }
   return parseCiConfig(text);

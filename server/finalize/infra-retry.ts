@@ -57,6 +57,12 @@ export const CI_FAILURE_REASONS = [
   'reviewer_changes_requested',
   'rebase_aborted',
   'ci_config_invalid',
+  // No CI config resolved from any source (no committed `.agent-hub/ci.yaml` and
+  // no server-stored config). Deterministic — auto-retry would fail identically —
+  // so it is CI-class, never infra-retried. Distinct from `ci_config_invalid`
+  // (a config WAS found but failed to parse) so the UI can show "set up Finalize"
+  // rather than "your config is broken".
+  'ci_config_missing',
   'timeout',
   'stalled_no_response',
   // Phase-module CI-class codes

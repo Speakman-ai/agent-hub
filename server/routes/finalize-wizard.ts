@@ -54,6 +54,7 @@ import { resolveEffectiveModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { collectFinalizeSetupDraft, type FinalizeSetupDraft } from '../finalize-setup-draft.js';
 import { parseCiConfig } from '../finalize/ci-config.js';
+import { upsertServerCiConfig } from '../finalize/ci-config-store.js';
 import { applyWizardSecrets, type WizardApplySecrets } from '../wizard-secrets-apply.js';
 import {
   resolveApplyTarget,
@@ -103,6 +104,18 @@ interface ApplyBody {
   session_id?: string;
   /** Optional project secrets to persist alongside the ci.yaml commit. */
   secrets?: WizardApplySecrets;
+  /**
+   * Where the config should live. Defaults to `'committed'` (write + commit
+   * `.agent-hub/ci.yaml` into the worktree — the shared, PR-visible flow).
+   * `'server'` stores it on the Agent Hub server instead (no file, no commit) —
+   * for repos that use Agent Hub without committing Hub-specific CI config.
+   */
+  storage?: 'committed' | 'server';
+  /**
+   * Scope for `storage: 'server'`. `'project'` (default) is the shared config;
+   * `'personal'` stores an override keyed to the calling user.
+   */
+  server_scope?: 'project' | 'personal';
 }
 
 export type { ResolvedApplyTarget } from '../finalize/finalize-setup-apply-target.js';
@@ -329,6 +342,71 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         });
         return;
       }
+
+      // Server-storage branch: persist the validated config on the Hub instead
+      // of committing a file into the repo. No worktree/commit required. The
+      // config resolver still prefers any committed `.agent-hub/ci.yaml` at run
+      // time — this is the fallback for repos that don't commit CI config.
+      //
+      // Validate `storage` strictly (like `server_scope` below): an unknown
+      // value must 400, not silently fall through to the committed/commit path.
+      // `storage: 'server'` is explicitly the no-commit mode, so a typo like
+      // `'serverr'` writing + committing a file would be a surprising side effect.
+      const rawStorage = body.storage;
+      if (rawStorage !== undefined && rawStorage !== 'committed' && rawStorage !== 'server') {
+        res.status(400).json({ error: "storage must be 'committed' or 'server'" });
+        return;
+      }
+      const storage = rawStorage ?? 'committed';
+      if (storage === 'server') {
+        const rawScope = body.server_scope;
+        if (rawScope !== undefined && rawScope !== 'project' && rawScope !== 'personal') {
+          res.status(400).json({ error: "server_scope must be 'project' or 'personal'" });
+          return;
+        }
+        const scope = rawScope ?? 'project';
+        const uid = resolveOwnerUserId(req as AuthenticatedRequest);
+        if (scope === 'personal' && !uid) {
+          res.status(400).json({
+            error: 'no_user',
+            message: 'A personal server config requires an authenticated user.',
+          });
+          return;
+        }
+        let secretsImportedServer = 0;
+        if (body.secrets) {
+          const secretsResult = applyWizardSecrets(
+            project.id,
+            body.secrets,
+            (req as AuthenticatedRequest).authUserId ?? null,
+          );
+          if (!secretsResult.ok) {
+            res.status(secretsResult.statusCode).json({ error: secretsResult.error });
+            return;
+          }
+          secretsImportedServer = secretsResult.secretsImported;
+        }
+        try {
+          upsertServerCiConfig(stmts, {
+            projectId: project.id,
+            ownerUserId: scope === 'personal' ? uid : null,
+            yamlText: content,
+            updatedBy: uid,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          res.status(500).json({ error: 'ci_config_store_failed', message });
+          return;
+        }
+        res.json({
+          ok: true,
+          storage: 'server',
+          server_scope: scope,
+          secrets_imported: secretsImportedServer,
+        });
+        return;
+      }
+
       let target = await resolveApplyTarget(
         { stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },
         project,

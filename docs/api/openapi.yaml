@@ -5014,6 +5014,119 @@ components:
       additionalProperties:
         nullable: true
       description: A single escalation row.
+    FinalizeCiConfigErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        code:
+          type: string
+        path:
+          type: string
+          nullable: true
+      required:
+        - error
+      description: Error envelope for server-stored Finalize CI config routes.
+    FinalizeServerCiConfigView:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum:
+            - project
+            - personal
+        ci_yaml_content:
+          type: string
+          description: The stored ci.yaml text.
+        updated_by:
+          type: string
+          nullable: true
+          description: User id of the last writer.
+        updated_at:
+          type: number
+          description: Epoch ms of the last write.
+      required:
+        - scope
+        - ci_yaml_content
+        - updated_by
+        - updated_at
+      description: A server-stored ci.yaml config for one scope.
+    FinalizeServerCiConfigGetResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        project:
+          allOf:
+            - $ref: "#/components/schemas/FinalizeServerCiConfigView"
+            - nullable: true
+              description: The project-scoped (shared) config, or null when unset.
+        personal:
+          allOf:
+            - $ref: "#/components/schemas/FinalizeServerCiConfigView"
+            - nullable: true
+              description: The caller's personal override, or null when unset / no user.
+      required:
+        - project_id
+        - project
+        - personal
+      description: Server-stored ci.yaml configs visible to the caller.
+    FinalizeServerCiConfigPutRequest:
+      type: object
+      properties:
+        ci_yaml_content:
+          type: string
+          description: Verbatim ci.yaml. Validated against the ci.yaml schema before it is stored.
+        scope:
+          type: string
+          enum:
+            - project
+            - personal
+          description: Which scope to write. Defaults to 'project' (shared). 'personal' stores an override keyed to the calling user.
+      required:
+        - ci_yaml_content
+      description: Upsert a server-stored ci.yaml config.
+    FinalizeServerCiConfigPutResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        project_id:
+          type: string
+        config:
+          $ref: "#/components/schemas/FinalizeServerCiConfigView"
+      required:
+        - ok
+        - project_id
+        - config
+      description: The stored config after upsert.
+    FinalizeServerCiConfigDeleteResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        project_id:
+          type: string
+        scope:
+          type: string
+          enum:
+            - project
+            - personal
+        deleted:
+          type: boolean
+          description: True when a row was actually removed.
+      required:
+        - ok
+        - project_id
+        - scope
+        - deleted
+      description: Delete outcome.
     ParityError:
       type: object
       properties:
@@ -5595,9 +5708,45 @@ components:
           required:
             - env
           description: Optional project secrets to persist (same shape as preview setup-apply). Merged into Finalize step runs.
+        storage:
+          type: string
+          enum:
+            - committed
+            - server
+          description: Where the config lives. Default 'committed' writes + commits `.agent-hub/ci.yaml`. 'server' stores it on the Agent Hub server (no file, no commit) — the response omits commit/branch fields.
+        server_scope:
+          type: string
+          enum:
+            - project
+            - personal
+          description: "Only for `storage: 'server'`. 'project' (default) is the shared config; 'personal' is an override keyed to the calling user."
       required:
         - ci_yaml_content
       description: Apply payload for the Finalize ci.yaml wizard.
+    FinalizeSetupApplyServerResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        storage:
+          type: string
+          enum:
+            - server
+        server_scope:
+          type: string
+          enum:
+            - project
+            - personal
+        secrets_imported:
+          type: integer
+      required:
+        - ok
+        - storage
+        - server_scope
+        - secrets_imported
+      description: Config stored on the Agent Hub server (no commit).
     FinalizeSetupApplyResponse:
       type: object
       properties:
@@ -22934,6 +23083,130 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EscalationsErrorResponse"
+  /api/projects/{projectId}/finalize/ci-config:
+    get:
+      tags:
+        - Finalize
+      summary: Get the server-stored Finalize CI config(s)
+      description: Admin+. Returns the project-scoped server config and (when the caller has one) their personal override. These are the fallback used when a repo does not commit `.agent-hub/ci.yaml` — a committed file always takes precedence.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Stored configs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeServerCiConfigGetResponse"
+        "403":
+          description: Caller lacks the Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+    put:
+      tags:
+        - Finalize
+      summary: Upsert a server-stored Finalize CI config
+      description: Admin+. Validates the ci.yaml against the schema, then stores it on the Agent Hub server (not committed to the repo). Runs in the Finalize runner exactly like a committed config would.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinalizeServerCiConfigPutRequest"
+      responses:
+        "200":
+          description: Config stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeServerCiConfigPutResponse"
+        "400":
+          description: Missing/invalid ci_yaml_content, bad scope, or ci_config_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+        "403":
+          description: Caller lacks the Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+        "500":
+          description: Store write failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+    delete:
+      tags:
+        - Finalize
+      summary: Delete a server-stored Finalize CI config
+      description: Admin+. Removes one scope's server-stored ci.yaml (defaults to the project scope).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - project
+              - personal
+            description: Scope to delete. Defaults to 'project'.
+          required: false
+          description: Scope to delete. Defaults to 'project'.
+          name: scope
+          in: query
+      responses:
+        "200":
+          description: Delete processed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeServerCiConfigDeleteResponse"
+        "400":
+          description: Bad scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+        "403":
+          description: Caller lacks the Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
   /api/projects/{projectId}/finalize/parity:
     get:
       tags:
@@ -23307,13 +23580,15 @@ paths:
               $ref: "#/components/schemas/FinalizeSetupApplyRequest"
       responses:
         "200":
-          description: Committed.
+          description: "Committed to the worktree, or stored on the server (`storage: 'server'`)."
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FinalizeSetupApplyResponse"
+                anyOf:
+                  - $ref: "#/components/schemas/FinalizeSetupApplyResponse"
+                  - $ref: "#/components/schemas/FinalizeSetupApplyServerResponse"
         "400":
-          description: "Payload invalid: missing content, invalid v1 schema, no worktree-bearing session found, or worktree path is unreadable."
+          description: "Payload invalid: missing content, invalid v1 schema, bad server_scope, no worktree-bearing session found, or worktree path is unreadable."
           content:
             application/json:
               schema:
@@ -23327,7 +23602,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FinalizeWizardErrorResponse"
         "500":
-          description: Write or commit failed.
+          description: Write, commit, or server store failed.
           content:
             application/json:
               schema:
