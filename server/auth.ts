@@ -422,8 +422,15 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
           return;
         }
         if (!resolved.orgId) {
+          // The token is valid but its holder has no membership in the
+          // current active org (e.g. a token minted for a different org,
+          // or the active org changed under them). This is a dead session,
+          // not an ordinary "you lack permission for this resource" 403 —
+          // tag it so the client can clear the token and re-auth cleanly
+          // instead of stranding on a broken app.
           res.status(403).json({
             error: 'You are not a member of this org.',
+            code: 'no_active_org_membership',
           });
           return;
         }

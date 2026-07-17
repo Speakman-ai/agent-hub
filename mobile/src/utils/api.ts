@@ -13,22 +13,30 @@ async function fetchJSON(url: any, options: any = {}) {
         ...options,
         headers: { 'Content-Type': 'application/json', ...authHeaders, ...(options.headers || {}) },
     });
-    // JWT expired / revoked — drop the cached token so the next bootstrap
-    // surfaces the login screen. We don't force-reload here (no
-    // `window.location.reload` on RN) — the app-level gate re-renders
-    // when `needsAuth` flips on next `getAuthStatus` probe.
-    if (res.status === 401 && getJwt()) {
-        await clearToken().catch(() => { });
-    }
     if (!res.ok) {
-        let detail = '';
+        // Parse the error body once (it can only be read a single time) so
+        // both the dead-session check and the thrown detail can use it.
+        let errBody: any = null;
         try {
-            const body = await res.json();
-            detail = body.error || body.message || JSON.stringify(body);
+            errBody = await res.json();
         }
         catch {
             /* response wasn't JSON */
         }
+        // A 401 (JWT expired / revoked) and a `no_active_org_membership`
+        // 403 (token valid but no membership in the active org) both mean
+        // the cached session is dead — drop the token so the next bootstrap
+        // surfaces the login screen. We don't force-reload here (no
+        // `window.location.reload` on RN); the app-level gate re-renders
+        // when `needsAuth` flips on the next `getAuthStatus` probe. Ordinary
+        // permission 403s (not-Owner, cross-org resource) are left alone.
+        const deadSession =
+            res.status === 401 ||
+            (res.status === 403 && errBody?.code === 'no_active_org_membership');
+        if (deadSession && getJwt()) {
+            await clearToken().catch(() => { });
+        }
+        const detail = errBody ? errBody.error || errBody.message || JSON.stringify(errBody) : '';
         throw new Error(detail ? `${res.status}: ${detail}` : `API error: ${res.status}`);
     }
     return res.json();

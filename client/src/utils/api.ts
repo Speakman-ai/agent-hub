@@ -241,18 +241,27 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
     signal: fetchOpts.signal || (timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)),
   });
   if (!res.ok) {
-    if (res.status === 401 && typeof window !== 'undefined' && !recentlyReloadedFor401()) {
+    // The error body can only be read once — parse it up front so both
+    // the dead-session check and the thrown detail can use it.
+    let errBody: ApiErrorBody | null = null;
+    try {
+      errBody = (await res.json()) as ApiErrorBody;
+    } catch {
+      /* response wasn't JSON */
+    }
+    // A 401 (stale/invalid token) and a `no_active_org_membership` 403
+    // both mean the stored session is dead: clear the token and bounce
+    // to LoginScreen. The 403 is scoped by `code` so ordinary permission
+    // 403s (not-Owner, cross-org resource) are left untouched — those
+    // should surface as errors, not log the user out.
+    const deadSession =
+      res.status === 401 || (res.status === 403 && errBody?.code === 'no_active_org_membership');
+    if (deadSession && typeof window !== 'undefined' && !recentlyReloadedFor401()) {
       markReloadedFor401();
       if (getJwt()) clearToken();
       window.location.reload();
     }
-    let detail = '';
-    try {
-      const body = (await res.json()) as ApiErrorBody;
-      detail = body.error || body.message || JSON.stringify(body);
-    } catch {
-      /* response wasn't JSON */
-    }
+    const detail = errBody ? errBody.error || errBody.message || JSON.stringify(errBody) : '';
     throw new Error(detail ? `${res.status}: ${detail}` : `API error: ${res.status}`);
   }
   clearRecentReloadMarker();

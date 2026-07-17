@@ -6,6 +6,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
   login: vi.fn(),
   setup: vi.fn(),
   completeMfaLogin: vi.fn(),
+  forgotPassword: vi.fn(),
 }));
 
 (vi as any).mock('../utils/connection.js', () => ({
@@ -13,12 +14,13 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 }));
 
 import LoginScreen from './LoginScreen';
-import { completeMfaLogin, getAuthStatus, login } from '../utils/auth';
+import { completeMfaLogin, getAuthStatus, login, forgotPassword } from '../utils/auth';
 
 beforeEach(() => {
   (getAuthStatus as any).mockReset();
   (login as any).mockReset();
   (completeMfaLogin as any).mockReset();
+  (forgotPassword as any).mockReset();
 });
 
 afterEach(() => {
@@ -130,6 +132,47 @@ describe('LoginScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /Recovery code/i }));
     const recoveryField = (await screen.findByLabelText(/Recovery code/i)) as HTMLInputElement;
     expect(recoveryField.getAttribute('name')?.toLowerCase()).not.toContain('totp');
+  });
+
+  it('forgot mode hides the password field and submits the reset request with just the email', async () => {
+    // Regression: the shared login form kept rendering a `required` password
+    // field in forgot mode and the submit button stayed disabled until a
+    // password was typed, so "Forgot password?" appeared to do nothing.
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      email: 'owner@example.com',
+      needsEmailUpdate: false,
+    });
+    (forgotPassword as any).mockResolvedValue({ ok: true });
+
+    const { container } = render(<LoginScreen onAuthenticated={vi.fn()} />);
+    await screen.findByText(/Sign in to Agent Hub/i);
+
+    // Two inputs before forgot mode: email + password.
+    expect(container.querySelectorAll('input')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: /Forgot password\?/i }));
+    await screen.findByText(/Reset your password/i);
+
+    // Password field is gone in forgot mode — only the email input remains.
+    const inputs = container.querySelectorAll('input');
+    expect(inputs).toHaveLength(1);
+
+    // Submit is enabled with only an email and reads "Send reset link".
+    const submitBtn = screen.getByRole('button', { name: /Send reset link/i }) as HTMLButtonElement;
+    expect(submitBtn.disabled).toBe(false);
+
+    fireEvent.change(inputs[0], { target: { value: 'user@example.com' } });
+    fireEvent.submit(inputs[0].closest('form')!);
+
+    await waitFor(() =>
+      expect(forgotPassword).toHaveBeenCalledWith({
+        baseUrl: '/api',
+        email: 'user@example.com',
+      }),
+    );
+    // Confirmation state renders after a successful request.
+    expect(await screen.findByRole('button', { name: /Back to sign in/i })).toBeInTheDocument();
   });
 
   it('supports recovery-code fallback and shows MFA errors without clearing the challenge', async () => {

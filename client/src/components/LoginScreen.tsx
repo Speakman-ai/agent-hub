@@ -109,12 +109,16 @@ export default function LoginScreen({ onAuthenticated }: any) {
     ? 'Verify MFA'
     : isSetup
       ? 'Create your account'
-      : 'Sign in to Agent Hub';
+      : isForgot
+        ? 'Reset your password'
+        : 'Sign in to Agent Hub';
   const subtitle = pendingMfa
     ? 'Enter an authenticator code or use a recovery code.'
     : isSetup
       ? 'No user has been configured yet. Pick an email and password for this environment.'
-      : 'Enter your email and password to continue. Existing sign-in names still work during migration.';
+      : isForgot
+        ? 'Enter your account email and we will send you a link to set a new password.'
+        : 'Enter your email and password to continue. Existing sign-in names still work during migration.';
 
   return (
     <div className="min-h-screen bg-gray-900 flex items-center justify-center px-4">
@@ -204,24 +208,26 @@ export default function LoginScreen({ onAuthenticated }: any) {
                     className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
                   />
                 </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Password</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e: any) => setPassword(e.target.value)}
-                    autoComplete={isSetup ? 'new-password' : 'current-password'}
-                    required
-                    minLength={isSetup ? 12 : undefined}
-                    className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                  />
-                  {isSetup && (
-                    <p className="text-[10px] text-gray-500 mt-1">
-                      12-256 characters. This single credential protects everything served from this
-                      environment. Pick something strong.
-                    </p>
-                  )}
-                </div>
+                {!isForgot && (
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Password</label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e: any) => setPassword(e.target.value)}
+                      autoComplete={isSetup ? 'new-password' : 'current-password'}
+                      required
+                      minLength={isSetup ? 12 : undefined}
+                      className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                    />
+                    {isSetup && (
+                      <p className="text-[10px] text-gray-500 mt-1">
+                        12-256 characters. This single credential protects everything served from
+                        this environment. Pick something strong.
+                      </p>
+                    )}
+                  </div>
+                )}
               </>
             )}
 
@@ -234,7 +240,10 @@ export default function LoginScreen({ onAuthenticated }: any) {
 
             <button
               type="submit"
-              disabled={submitting || (pendingMfa ? !mfaCode : !username || !password)}
+              disabled={
+                submitting ||
+                (pendingMfa ? !mfaCode : isForgot ? !username.trim() : !username || !password)
+              }
               className="w-full flex items-center justify-center gap-2 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded transition-colors"
             >
               {submitting ? (
@@ -244,7 +253,13 @@ export default function LoginScreen({ onAuthenticated }: any) {
               ) : (
                 <KeyRound className="w-4 h-4" />
               )}
-              {pendingMfa ? 'Verify and sign in' : isSetup ? 'Create account' : 'Sign in'}
+              {pendingMfa
+                ? 'Verify and sign in'
+                : isSetup
+                  ? 'Create account'
+                  : isForgot
+                    ? 'Send reset link'
+                    : 'Sign in'}
             </button>
             {!isSetup && (
               <button
