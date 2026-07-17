@@ -126,6 +126,45 @@ describe('WebSocket log live tail', () => {
     }
   });
 
+  it('bounds the initial backfill to the sinceUnixNano window', async () => {
+    // Regression: an initial subscribe (cursor 0) replayed the entire retained
+    // history oldest-first, so the Live view filled with ancient records before
+    // the newest arrived. A time window must seed only recent rows.
+    insertLogRecords(
+      [{ projectId: 'project-a', sourceId: 'a', timeUnixNano: 1, body: 'ancient row' }],
+      1,
+    );
+    const recent = insertLogRecords(
+      [{ projectId: 'project-a', sourceId: 'a', timeUnixNano: 1000, body: 'recent row' }],
+      1,
+    ).records[0]!;
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const messages = bufferMessages(ws);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      ws.send(
+        JSON.stringify({
+          type: 'logs_subscribe',
+          projectId: 'project-a',
+          cursor: 0,
+          sinceUnixNano: 500,
+        }),
+      );
+      const backfill = await messages.waitFor((message) => message.type === 'logs_tail_backfill');
+      expect(backfill.records).toEqual([
+        expect.objectContaining({ id: recent.id, body: 'recent row' }),
+      ]);
+      expect(JSON.stringify(backfill)).not.toContain('ancient row');
+    } finally {
+      ws.close();
+    }
+  });
+
   it('finishes every backfill page before a queued live cursor can advance', async () => {
     const historical = Array.from({ length: 1000 }, (_, index) => ({
       projectId: 'project-a',

@@ -10,6 +10,9 @@ import {
   severityTone,
   nanoToMillis,
   resolveTailCursor,
+  resolveSinceUnixNano,
+  DEFAULT_TIME_RANGE_MS,
+  TIME_RANGES,
   SEVERITY_NUMBER,
   type LogRecord,
 } from './logStream';
@@ -197,6 +200,26 @@ describe('severity helpers', () => {
   it('nanoToMillis floors nanoseconds to millis and guards non-finite', () => {
     expect(nanoToMillis(1_700_000_000_000_000)).toBe(1_700_000_000);
     expect(nanoToMillis(Number.NaN)).toBe(0);
+  });
+
+  it('resolveSinceUnixNano converts a window + now into a nanosecond lower bound', () => {
+    const nowMs = 1_800_000_000_000;
+    // 24h window → (now - 24h) in nanoseconds.
+    expect(resolveSinceUnixNano(DEFAULT_TIME_RANGE_MS, nowMs)).toBe(
+      (nowMs - DEFAULT_TIME_RANGE_MS) * 1e6,
+    );
+    // "All time" (0) and degenerate widths → no lower bound.
+    expect(resolveSinceUnixNano(0, nowMs)).toBeUndefined();
+    expect(resolveSinceUnixNano(-1, nowMs)).toBeUndefined();
+    expect(resolveSinceUnixNano(Number.NaN, nowMs)).toBeUndefined();
+    // A window wider than the epoch collapses to no bound rather than a negative.
+    expect(resolveSinceUnixNano(nowMs + 1, nowMs)).toBeUndefined();
+  });
+
+  it('TIME_RANGES defaults to a 24h option and includes an unbounded "All time"', () => {
+    expect(DEFAULT_TIME_RANGE_MS).toBe(86_400_000);
+    expect(TIME_RANGES.some((r) => r.value === DEFAULT_TIME_RANGE_MS)).toBe(true);
+    expect(TIME_RANGES.some((r) => r.value === 0)).toBe(true);
   });
 
   it('resolveTailCursor prefers the backfill nextCursor continue-token', () => {

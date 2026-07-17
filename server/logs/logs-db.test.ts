@@ -11,6 +11,7 @@ import {
   insertLogRecords,
   insertLogSource,
   queryLogRecords,
+  queryLogRecordsSince,
   getProjectByteSize,
   getRetentionConfig,
   setRetentionConfig,
@@ -221,6 +222,40 @@ describe('queryLogRecords', () => {
     expect(() => queryLogRecords({ projectId: 'proj-a', limit: Number.NaN })).not.toThrow();
     const { records } = queryLogRecords({ projectId: 'proj-a', limit: Number.NaN });
     expect(records).toHaveLength(3);
+  });
+});
+
+describe('queryLogRecordsSince', () => {
+  it('returns rows newer than the cursor, oldest-first', () => {
+    insertLogRecords([rec({ body: 'one' }), rec({ body: 'two' }), rec({ body: 'three' })], NOW);
+    const page = queryLogRecordsSince('proj-a', 0);
+    expect(page.records.map((r) => r.body)).toEqual(['one', 'two', 'three']);
+  });
+
+  it('bounds the initial seed to the sinceUnixNano window (newest window, not full history)', () => {
+    // Regression: on the initial subscribe (cursor 0) the live tail replayed the
+    // entire retained history oldest-first, so the Live view filled with ancient
+    // records before the newest arrived. A time window must exclude old rows.
+    insertLogRecords(
+      [
+        rec({ body: 'ancient', timeUnixNano: nanoAgo(10) }),
+        rec({ body: 'recent-a', timeUnixNano: nanoAgo(0) }),
+        rec({ body: 'recent-b', timeUnixNano: nanoAgo(0) }),
+      ],
+      NOW,
+    );
+    const windowed = queryLogRecordsSince('proj-a', 0, undefined, nanoAgo(1));
+    expect(windowed.records.map((r) => r.body)).toEqual(['recent-a', 'recent-b']);
+    // Without the window, the ancient row is still replayed from cursor 0.
+    const unbounded = queryLogRecordsSince('proj-a', 0);
+    expect(unbounded.records.some((r) => r.body === 'ancient')).toBe(true);
+  });
+
+  it('scopes strictly to the project even with a window', () => {
+    insertLogRecords([rec({ body: 'a-1' })], NOW);
+    insertLogRecords([rec({ projectId: 'proj-b', body: 'b-1' })], NOW);
+    const page = queryLogRecordsSince('proj-a', 0, undefined, nanoAgo(1));
+    expect(page.records.every((r) => r.project_id === 'proj-a')).toBe(true);
   });
 });
 

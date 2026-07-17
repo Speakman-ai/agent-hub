@@ -69,6 +69,38 @@ export const SEVERITY_BUCKETS: ReadonlyArray<{ label: string; value: number }> =
   { label: 'Fatal', value: SEVERITY_NUMBER.FATAL },
 ];
 
+/**
+ * Selectable time windows for the Live tail. `value` is the window width in
+ * milliseconds; `0` means "All time" (no lower bound). Defaulting to 24h keeps
+ * the Live view seeded with recent records instead of replaying the entire
+ * retained history oldest-first.
+ */
+export const TIME_RANGES: ReadonlyArray<{ label: string; value: number }> = [
+  { label: 'Last hour', value: 3_600_000 },
+  { label: 'Last 6 hours', value: 21_600_000 },
+  { label: 'Last 24 hours', value: 86_400_000 },
+  { label: 'Last 7 days', value: 604_800_000 },
+  { label: 'All time', value: 0 },
+];
+
+/** Default Live-tail window: the last 24 hours. */
+export const DEFAULT_TIME_RANGE_MS = 86_400_000;
+
+/**
+ * Resolve a time-window width (ms) + a `now` anchor (ms epoch) to a lower-bound
+ * `time_unix_nano` for the log query / subscription. Returns `undefined` for
+ * "All time" (`rangeMs <= 0`) or a non-positive/degenerate boundary, meaning no
+ * lower bound. Nanosecond epochs exceed `Number.MAX_SAFE_INTEGER`; the ~256ns
+ * double coarseness is irrelevant for a window boundary.
+ */
+export function resolveSinceUnixNano(rangeMs: number, nowMs: number): number | undefined {
+  if (!Number.isFinite(rangeMs) || rangeMs <= 0) return undefined;
+  if (!Number.isFinite(nowMs)) return undefined;
+  const sinceMs = nowMs - rangeMs;
+  if (sinceMs <= 0) return undefined;
+  return sinceMs * 1e6;
+}
+
 /** Coarse label for a severity number (falls back to the raw number). */
 export function severityLabel(severityNumber: number, severityText?: string | null): string {
   if (severityText && severityText.trim()) return severityText.trim().toUpperCase();

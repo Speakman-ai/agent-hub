@@ -41,6 +41,13 @@ export interface UseLogTailOptions {
   maxReconnectMs?: number;
   /** Socket factory — defaults to the real browser WebSocket at the /ws URL. */
   createSocket?: (url: string) => SocketLike;
+  /**
+   * Lower bound (nanoseconds) on the initial backfill window. Seeds the tail
+   * with only recent records instead of the full retained history. Changing it
+   * tears the socket down and re-seeds from the new window. Undefined = full
+   * history ("All time").
+   */
+  sinceUnixNano?: number;
 }
 
 export interface UseLogTailResult {
@@ -79,6 +86,7 @@ export function useLogTail(
   const reconnectBaseMs = options.reconnectBaseMs ?? 500;
   const maxReconnectMs = options.maxReconnectMs ?? 8000;
   const createSocket = options.createSocket ?? defaultCreateSocket;
+  const sinceUnixNano = options.sinceUnixNano;
 
   const [records, setRecords] = useState<LogRecord[]>([]);
   const [status, setStatus] = useState<LogTailStatus>('connecting');
@@ -112,6 +120,8 @@ export function useLogTail(
   maxReconnectMsRef.current = maxReconnectMs;
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
+  const sinceUnixNanoRef = useRef(sinceUnixNano);
+  sinceUnixNanoRef.current = sinceUnixNano;
 
   // Mutually-recursive connect/scheduleReconnect, kept stable via refs so the
   // cycle needs no dependency array and no handler ever outlives its context.
@@ -159,9 +169,18 @@ export function useLogTail(
       setStatus('open');
       setError(null);
       try {
-        socket.send(
-          JSON.stringify({ type: 'logs_subscribe', projectId: pid, cursor: cursorRef.current }),
-        );
+        const frame: Record<string, unknown> = {
+          type: 'logs_subscribe',
+          projectId: pid,
+          cursor: cursorRef.current,
+        };
+        // Only bound the window on the initial seed (cursor 0). After the tail
+        // has advanced, every id > cursor is already newer than the window, so
+        // resubscribing with the (now-stale) bound would be a no-op anyway.
+        if (sinceUnixNanoRef.current != null && cursorRef.current === 0) {
+          frame.sinceUnixNano = sinceUnixNanoRef.current;
+        }
+        socket.send(JSON.stringify(frame));
       } catch {
         // A send failure on a freshly-open socket is a transport fault; the
         // close handler will schedule a reconnect from the same cursor.
@@ -304,7 +323,9 @@ export function useLogTail(
         }
       }
     };
-  }, [projectId]);
+    // `sinceUnixNano` is a primitive, so a changed time window tears the socket
+    // down (cursor rewinds to 0 above) and re-seeds from the new window.
+  }, [projectId, sinceUnixNano]);
 
   return {
     records,

@@ -112,6 +112,53 @@ describe('useLogTail', () => {
     expect(result.current.status).toBe('open');
   });
 
+  it('includes sinceUnixNano in the initial subscribe when a window is set', () => {
+    renderHook(() => useLogTail('p1', { ...opts, sinceUnixNano: 1_700_000_000_000_000 }));
+    const sock = FakeSocket.instances[0];
+    act(() => sock.open());
+    expect(JSON.parse(sock.sent[0])).toMatchObject({
+      type: 'logs_subscribe',
+      projectId: 'p1',
+      cursor: 0,
+      sinceUnixNano: 1_700_000_000_000_000,
+    });
+  });
+
+  it('omits sinceUnixNano for the unbounded ("All time") window', () => {
+    renderHook(() => useLogTail('p1', opts));
+    const sock = FakeSocket.instances[0];
+    act(() => sock.open());
+    expect(JSON.parse(sock.sent[0]).sinceUnixNano).toBeUndefined();
+  });
+
+  it('re-seeds from a fresh cursor-0 window when sinceUnixNano changes', () => {
+    const { rerender } = renderHook(
+      ({ since }: { since?: number }) => useLogTail('p1', { ...opts, sinceUnixNano: since }),
+      { initialProps: { since: 1_000_000 as number | undefined } },
+    );
+    const first = FakeSocket.instances[0];
+    act(() => first.open());
+    act(() =>
+      first.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [record(1), record(2)],
+        cursor: 2,
+        dropped: 0,
+      }),
+    );
+    // Change the window: the old socket tears down and a new one seeds from
+    // cursor 0 with the new bound (not the advanced cursor).
+    act(() => rerender({ since: 2_000_000 }));
+    const second = FakeSocket.instances[1];
+    expect(second).toBeTruthy();
+    act(() => second.open());
+    expect(JSON.parse(second.sent[0])).toMatchObject({
+      cursor: 0,
+      sinceUnixNano: 2_000_000,
+    });
+  });
+
   it('reconnects from the last cursor and dedupes replayed backfill', () => {
     vi.useFakeTimers();
     const { result } = renderHook(() => useLogTail('p1', opts));

@@ -571,20 +571,33 @@ export function queryLogRecords(q: LogQuery): LogQueryPage {
  * client can advance its last-seen cursor without reordering the live stream.
  * The project predicate is deliberately first: a cursor obtained from another
  * project can never reveal that project's rows.
+ *
+ * `sinceUnixNano` bounds the seed to a recent time window. On the initial
+ * subscribe (`cursor = 0`) this stops the backfill from replaying the entire
+ * retained history oldest-first (which made the Live view fill with ancient
+ * records before the newest arrived); paging from a recent cursor it is a
+ * no-op, since those rows are already newer than the window.
  */
 export function queryLogRecordsSince(
   projectId: string,
   cursor: number,
   limit?: number,
+  sinceUnixNano?: number,
 ): LogQuerySincePage {
   const effectiveLimit = clampQueryLimit(limit);
+  const where = ['project_id = ?', 'id > ?'];
+  const params: Array<string | number> = [projectId, cursor];
+  if (sinceUnixNano != null) {
+    where.push('time_unix_nano >= ?');
+    params.push(sinceUnixNano);
+  }
   const rows = getLogsDb()
     .prepare(
       `SELECT * FROM log_records
-        WHERE project_id = ? AND id > ?
+        WHERE ${where.join(' AND ')}
         ORDER BY id ASC LIMIT ?`,
     )
-    .all(projectId, cursor, effectiveLimit + 1) as LogRecordRow[];
+    .all(...params, effectiveLimit + 1) as LogRecordRow[];
   let nextCursor: number | null = null;
   if (rows.length > effectiveLimit) {
     rows.length = effectiveLimit;

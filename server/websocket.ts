@@ -42,6 +42,13 @@ interface LogTailSubscription {
   scheduled: boolean;
   /** Live records queue here until every reconnect-backfill page is sent. */
   backfillInProgress: boolean;
+  /**
+   * Optional lower bound (nanoseconds) on the initial backfill window. Bounds
+   * the seed to recent records so the Live view does not replay the entire
+   * retained history oldest-first. Undefined = full history (client picked
+   * "All time").
+   */
+  sinceUnixNano?: number;
 }
 
 /**
@@ -273,7 +280,7 @@ export default function createWebSocket(
       }
       let page: ReturnType<typeof queryLogRecordsSince>;
       try {
-        page = queryLogRecordsSince(sub.projectId, cursor, MAX_QUERY_LIMIT);
+        page = queryLogRecordsSince(sub.projectId, cursor, MAX_QUERY_LIMIT, sub.sinceUnixNano);
       } catch {
         requireLogTailRecovery(
           ws,
@@ -576,6 +583,18 @@ export default function createWebSocket(
       } else if (type === 'logs_subscribe') {
         const projectId = typeof msg.projectId === 'string' ? msg.projectId : '';
         const cursor = typeof msg.cursor === 'number' ? msg.cursor : 0;
+        // Optional recent-window lower bound (ns). A malformed value is ignored
+        // rather than rejected — the subscription still succeeds, unbounded.
+        // Nanosecond epochs (~1.76e18) exceed MAX_SAFE_INTEGER, so this is a
+        // finite/positive check, not `isSafeInteger`; ~256ns double coarseness
+        // is irrelevant for a window boundary and matches how the REST query
+        // and ingest already treat these timestamps.
+        const sinceUnixNano =
+          typeof msg.sinceUnixNano === 'number' &&
+          Number.isFinite(msg.sinceUnixNano) &&
+          msg.sinceUnixNano > 0
+            ? msg.sinceUnixNano
+            : undefined;
         if (
           projectId.length === 0 ||
           projectId.length > 200 ||
@@ -605,6 +624,7 @@ export default function createWebSocket(
           records: [],
           scheduled: false,
           backfillInProgress: true,
+          sinceUnixNano,
         };
         // Install before reading the backfill: concurrent commits can produce a
         // duplicate (the client dedupes by id), but never an unrecoverable gap.

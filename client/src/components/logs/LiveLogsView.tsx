@@ -11,7 +11,10 @@ import {
   filterLogRecords,
   distinctValues,
   mergeTailRecords,
+  resolveSinceUnixNano,
   SEVERITY_BUCKETS,
+  TIME_RANGES,
+  DEFAULT_TIME_RANGE_MS,
   type LogRecord,
   type LogFilter,
 } from '../../utils/logStream';
@@ -55,6 +58,11 @@ export default function LiveLogsView({
   tailOptions,
   showToast,
 }: LiveLogsViewProps): React.ReactElement {
+  const [rangeMs, setRangeMs] = useState(DEFAULT_TIME_RANGE_MS);
+  // Anchor the window's lower bound to when the range was last chosen. Recomputes
+  // only when `rangeMs` changes, so live re-renders don't churn the subscription.
+  const sinceUnixNano = useMemo(() => resolveSinceUnixNano(rangeMs, Date.now()), [rangeMs]);
+
   const {
     records,
     status,
@@ -66,7 +74,7 @@ export default function LiveLogsView({
     resume,
     reset,
     error,
-  } = useLogTail(projectId, tailOptions);
+  } = useLogTail(projectId, { ...tailOptions, sinceUnixNano });
 
   const [minSeverityNumber, setMinSeverityNumber] = useState(0);
   const [sourceId, setSourceId] = useState('');
@@ -99,7 +107,7 @@ export default function LiveLogsView({
     setOlderExhausted(false);
     setOlderError(null);
     setLoadingOlder(false);
-  }, [minSeverityNumber, sourceId, environment, text]);
+  }, [minSeverityNumber, sourceId, environment, text, sinceUnixNano]);
 
   // Live tail + any explicitly loaded older pages, deduped, newest-first.
   const combined = useMemo(
@@ -127,6 +135,9 @@ export default function LiveLogsView({
       if (sourceId) params.sourceId = sourceId;
       if (environment) params.environment = environment;
       if (text.trim()) params.text = text.trim();
+      // Keep "Load older" inside the selected window so paging stops at the
+      // boundary (and marks the pager exhausted) instead of walking all history.
+      if (sinceUnixNano != null) params.startTimeUnixNano = sinceUnixNano;
       const page = (await api.queryLogs(projectId, params)) as {
         records: LogRecord[];
         nextCursor: number | null;
@@ -150,6 +161,7 @@ export default function LiveLogsView({
     sourceId,
     environment,
     text,
+    sinceUnixNano,
   ]);
 
   const clearLogs = useCallback(async () => {
@@ -234,6 +246,18 @@ export default function LiveLogsView({
         )}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          <select
+            aria-label="Time range"
+            value={rangeMs}
+            onChange={(e) => setRangeMs(Number(e.target.value))}
+            className="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200"
+          >
+            {TIME_RANGES.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.label}
+              </option>
+            ))}
+          </select>
           <select
             aria-label="Minimum severity"
             value={minSeverityNumber}

@@ -34,6 +34,9 @@ import { LogSourcesPanel } from './LogSourcesScreen';
 import { useLogTail, type LogTailStatus } from '../hooks/useLogTail';
 import {
   SEVERITY_BUCKETS,
+  TIME_RANGES,
+  DEFAULT_TIME_RANGE_MS,
+  resolveSinceUnixNano,
   severityLabel,
   severityToneKey,
   nanoToMillis,
@@ -313,6 +316,11 @@ export function LiveLogsView({
   projectId: string;
   showToast?: (message: string, kind?: string) => void;
 }) {
+  const [rangeMs, setRangeMs] = useState(DEFAULT_TIME_RANGE_MS);
+  // Anchor the window's lower bound to when the range was last chosen. Recomputes
+  // only when `rangeMs` changes, so live re-renders don't churn the subscription.
+  const sinceUnixNano = useMemo(() => resolveSinceUnixNano(rangeMs, Date.now()), [rangeMs]);
+
   const {
     records,
     status,
@@ -324,7 +332,7 @@ export function LiveLogsView({
     resume,
     reset,
     error,
-  } = useLogTail(projectId);
+  } = useLogTail(projectId, { sinceUnixNano });
 
   const [minSeverityNumber, setMinSeverityNumber] = useState(0);
   const [sourceId, setSourceId] = useState('');
@@ -352,7 +360,7 @@ export function LiveLogsView({
     setOlderExhausted(false);
     setOlderError(null);
     setLoadingOlder(false);
-  }, [minSeverityNumber, sourceId, environment, text]);
+  }, [minSeverityNumber, sourceId, environment, text, sinceUnixNano]);
 
   const combined = useMemo(
     () => mergeTailRecords(older, records, records.length + older.length + 1),
@@ -380,6 +388,9 @@ export function LiveLogsView({
       if (sourceId) params.sourceId = sourceId;
       if (environment) params.environment = environment;
       if (text.trim()) params.text = text.trim();
+      // Keep "Load older" inside the selected window so paging stops at the
+      // boundary (and marks the pager exhausted) instead of walking all history.
+      if (sinceUnixNano != null) params.startTimeUnixNano = sinceUnixNano;
       const page = (await api.queryLogs(projectId, params)) as {
         records: LogRecord[];
         nextCursor: number | null;
@@ -394,7 +405,17 @@ export function LiveLogsView({
     } finally {
       if (gen === filterGenRef.current) setLoadingOlder(false);
     }
-  }, [loadingOlder, olderExhausted, combined, projectId, minSeverityNumber, sourceId, environment, text]);
+  }, [
+    loadingOlder,
+    olderExhausted,
+    combined,
+    projectId,
+    minSeverityNumber,
+    sourceId,
+    environment,
+    text,
+    sinceUnixNano,
+  ]);
 
   const runClear = useCallback(async () => {
     setClearing(true);
@@ -465,6 +486,12 @@ export function LiveLogsView({
           </TouchableOpacity>
         </View>
 
+        <ChipRow
+          options={TIME_RANGES}
+          value={rangeMs}
+          onChange={setRangeMs}
+          testID="logs-range-chips"
+        />
         <ChipRow
           options={SEVERITY_BUCKETS}
           value={minSeverityNumber}
