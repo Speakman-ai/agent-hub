@@ -1,5 +1,6 @@
 import type { AppConfig } from './types.js';
 import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
+import { RAG_ONLY_ENGINES, type SupportedEngine } from './engine-availability.js';
 
 export { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 
@@ -44,6 +45,13 @@ export function buildAuthenticatedModelConfig(
   const cursorHub = new Set<string>(CURSOR_AGENT_HUB_MODEL_ALLOWLIST);
 
   for (const [engine, models] of Object.entries(cfg.engineValidModels)) {
+    // RAG-only engines (gemini-cli) are reserved for host embeddings and must
+    // never be advertised as a selectable picker engine, even when a Gemini
+    // RAG key makes them "authenticated". Skip them regardless of config source
+    // so `/api/config/models` can't leak gemini-cli into the web/mobile/Design
+    // pickers. See RAG_ONLY_ENGINES in engine-availability.ts.
+    if (RAG_ONLY_ENGINES.has(engine as SupportedEngine)) continue;
+
     const enabled = !!auth[engine as keyof EngineAuthState];
     const source =
       engine === 'codex-cli' && opts?.codexSelectableModels ? opts.codexSelectableModels : models;

@@ -113,6 +113,27 @@ describe('DesignView', () => {
     });
   });
 
+  it('never offers gemini-cli as a Design Studio engine, even if the config advertises it', async () => {
+    // Gemini is RAG-only. Simulate a server (or stale config) that still lists a
+    // gemini-cli model list — the picker must NOT surface it as a selectable
+    // engine (the interactive Gemini CLI is unusable / hard-429s).
+    (api.getModelConfig as any).mockResolvedValueOnce({
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8', 'gemini-cli': 'gemini-2.5-pro' },
+      engineValidModels: {
+        'claude-code': ['claude-opus-4-8'],
+        'gemini-cli': ['gemini-2.5-pro', 'gemini-2.5-flash'],
+      },
+    });
+    render(<DesignView {...baseProps} />);
+    const engineSelect = (await screen.findByTestId('design-studio-engine')) as HTMLSelectElement;
+    const optionValues = Array.from(engineSelect.querySelectorAll('option')).map(
+      (o) => (o as HTMLOptionElement).value,
+    );
+    expect(optionValues).not.toContain('gemini-cli');
+    expect(optionValues).toContain('claude-code');
+  });
+
   it('fetches index.html with the reloadToken cache-buster and renders a sandboxed srcdoc iframe', async () => {
     const { container } = render(<DesignView {...baseProps} reloadToken={0} />);
 

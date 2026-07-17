@@ -16,10 +16,13 @@ import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './clau
 import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
 import type { AppConfig, DesignMessageRow } from './types.js';
 
+// `gemini-cli` is intentionally excluded — Gemini is RAG-only (see
+// RAG_ONLY_ENGINES in engine-availability.ts) and the interactive Gemini CLI is
+// unusable (Pro free tier zeroed to `limit: 0` on 2026-04-01). Keep aligned
+// with SELECTABLE_ENGINES / the web DESIGN_STUDIO_ENGINES list.
 export const DESIGN_CHAT_ENGINES = [
   'claude-code',
   'cursor-agent',
-  'gemini-cli',
   'codex-cli',
   'grok-cli',
 ] as const;
@@ -174,18 +177,9 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     };
   }
 
-  if (engine === 'gemini-cli') {
-    const prompt = `${systemPrompt}\n\n${promptWithHistory}`;
-    const args = ['-p', prompt, '--output-format', 'stream-json'];
-    if (model && model !== 'auto') {
-      args.push('--model', model);
-    }
-    // Design Studio has no Ask/plan mode (unlike chat.ts, which omits --yolo
-    // when `session.ask_mode` is set). Always auto-approve tools for parity
-    // with Claude's bypassPermissions default.
-    args.push('--yolo');
-    return { bin: bins.gemini, args };
-  }
+  // NOTE: no `gemini-cli` branch — Gemini is RAG-only and not a Design Studio
+  // engine (see DESIGN_CHAT_ENGINES / RAG_ONLY_ENGINES). The route rejects it
+  // before we ever plan a spawn.
 
   if (engine === 'grok-cli') {
     // Grok Build CLI is stateless here (like Gemini) — no resume flag, so the

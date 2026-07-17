@@ -40,8 +40,14 @@ describe('normalizeDesignEngine / isDesignChatEngine', () => {
 
   it('accepts known engine ids', () => {
     expect(normalizeDesignEngine('codex-cli')).toBe('codex-cli');
-    expect(isDesignChatEngine('gemini-cli')).toBe(true);
     expect(isDesignChatEngine('gpt-5')).toBe(false);
+  });
+
+  it('rejects the RAG-only gemini-cli engine (retired from Design Studio)', () => {
+    // Gemini is RAG-only — no longer a selectable Design Studio engine, so it
+    // fails the allowlist check and normalizes to the claude-code default.
+    expect(isDesignChatEngine('gemini-cli')).toBe(false);
+    expect(normalizeDesignEngine('gemini-cli')).toBe('claude-code');
   });
 });
 
@@ -190,7 +196,9 @@ describe('buildDesignSpawnArgs', () => {
     expect(args[pIdx + 1]).toBe('Second turn');
   });
 
-  it('gemini-cli: merges system + user prompt and adds --yolo', () => {
+  it('gemini-cli is retired: never plans a Gemini spawn (falls through to the claude default)', () => {
+    // Gemini is RAG-only. Even if buildDesignSpawnArgs were somehow called with
+    // it, there is no Gemini branch — it must not produce a Gemini CLI spawn.
     const { bin, args } = buildDesignSpawnArgs({
       ...baseInput,
       engine: 'gemini-cli',
@@ -198,22 +206,9 @@ describe('buildDesignSpawnArgs', () => {
       engineSessionId: null,
       isNewEngineSession: true,
     });
-    expect(bin).toBe(bins.gemini);
-    expect(args[0]).toBe('-p');
-    expect(args[1]).toContain('SYS');
-    expect(args[1]).toContain('Do the thing');
-    expect(args).toContain('--yolo');
-  });
-
-  it('gemini-cli: skips --model when auto', () => {
-    const { args } = buildDesignSpawnArgs({
-      ...baseInput,
-      engine: 'gemini-cli',
-      model: 'auto',
-      engineSessionId: null,
-      isNewEngineSession: true,
-    });
-    expect(args.includes('--model')).toBe(false);
+    expect(bin).not.toBe(bins.gemini);
+    expect(bin).toBe(bins.claude);
+    expect(args).not.toContain('--yolo');
   });
 
   it('grok-cli: merges system + user prompt and adds streaming-json + always-approve', () => {

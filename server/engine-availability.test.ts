@@ -270,3 +270,31 @@ describe('probeAllEngineAvailability', () => {
     expect(all['grok-cli'].available).toBe(false);
   });
 });
+
+const { ALL_SUPPORTED_ENGINES, RAG_ONLY_ENGINES, SELECTABLE_ENGINES } =
+  await import('./engine-availability.js');
+
+describe('RAG_ONLY_ENGINES / SELECTABLE_ENGINES', () => {
+  it('reserves gemini-cli as RAG-only', () => {
+    expect(RAG_ONLY_ENGINES.has('gemini-cli')).toBe(true);
+  });
+
+  it('omits every RAG-only engine from the selectable set', () => {
+    for (const engine of RAG_ONLY_ENGINES) {
+      expect(SELECTABLE_ENGINES).not.toContain(engine);
+    }
+    expect(SELECTABLE_ENGINES).not.toContain('gemini-cli');
+  });
+
+  it('is exactly ALL_SUPPORTED_ENGINES minus the RAG-only engines', () => {
+    const expected = ALL_SUPPORTED_ENGINES.filter((e) => !RAG_ONLY_ENGINES.has(e));
+    expect([...SELECTABLE_ENGINES]).toEqual(expected);
+    // The interactive engines a user can actually pick today.
+    expect([...SELECTABLE_ENGINES]).toEqual([
+      'claude-code',
+      'cursor-agent',
+      'codex-cli',
+      'grok-cli',
+    ]);
+  });
+});

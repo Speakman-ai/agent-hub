@@ -483,13 +483,11 @@ export async function handleDesignChat(
             const configKey =
               engine === 'cursor-agent'
                 ? 'cursorBin'
-                : engine === 'gemini-cli'
-                  ? 'geminiBin'
-                  : engine === 'codex-cli'
-                    ? 'codexBin'
-                    : engine === 'grok-cli'
-                      ? 'grokBin'
-                      : 'claudeBin';
+                : engine === 'codex-cli'
+                  ? 'codexBin'
+                  : engine === 'grok-cli'
+                    ? 'grokBin'
+                    : 'claudeBin';
             const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
             errorMsg =
               `${engine} binary ${reason} at ${bin}. ` +

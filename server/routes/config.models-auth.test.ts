@@ -46,6 +46,8 @@ describe('GET /api/config/models — authenticated engine contract', () => {
       defaultModel: string;
     };
     expect(typeof body.defaultModel).toBe('string');
+    // engineAuth still reports gemini presence (drives RAG-configured status),
+    // even though gemini-cli is never a selectable picker engine.
     expect(body.engineAuth).toEqual(
       expect.objectContaining({
         'claude-code': expect.any(Boolean),
@@ -55,9 +57,13 @@ describe('GET /api/config/models — authenticated engine contract', () => {
         'grok-cli': expect.any(Boolean),
       }),
     );
-    for (const engine of ['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli', 'grok-cli']) {
+    // Selectable engines carry a model array; gemini-cli is RAG-only and must
+    // NOT appear in the picker feed at all (not even as an empty list).
+    for (const engine of ['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']) {
       expect(Array.isArray(body.engineValidModels[engine])).toBe(true);
     }
+    expect(body.engineValidModels).not.toHaveProperty('gemini-cli');
+    expect(body.engineDefaultModels).not.toHaveProperty('gemini-cli');
   });
 
   it('does NOT grant cursor-agent auth from a host CLI login when the caller has no per-account identity', async () => {

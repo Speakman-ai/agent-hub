@@ -88,10 +88,32 @@ describe('buildAuthenticatedModelConfig', () => {
     expect(out.engineValidModels['claude-code']).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
     expect(out.engineValidModels['codex-cli']).toEqual(['gpt-5.3-codex']);
     expect(out.engineValidModels['cursor-agent']).toEqual([]);
-    expect(out.engineValidModels['gemini-cli']).toEqual([]);
+    // gemini-cli is RAG-only — never advertised as a selectable engine, so it
+    // is omitted from the maps entirely (not an empty list).
+    expect(out.engineValidModels['gemini-cli']).toBeUndefined();
     expect(out.engineDefaultModels['cursor-agent']).toBe('');
-    expect(out.engineDefaultModels['gemini-cli']).toBe('');
+    expect(out.engineDefaultModels['gemini-cli']).toBeUndefined();
     expect(out.engineDefaultModels['claude-code']).toBe('claude-opus-4-8');
+  });
+
+  it('never advertises the RAG-only gemini-cli engine, even when authenticated', () => {
+    // A host with a Gemini RAG key makes gemini-cli "authenticated". It must
+    // still be filtered out of the picker feed so it can't be selected as an
+    // interactive engine (the CLI free tier is `limit: 0` and hard-429s).
+    const out = buildAuthenticatedModelConfig(makeConfig(), {
+      'claude-code': true,
+      'cursor-agent': true,
+      'gemini-cli': true,
+      'codex-cli': true,
+      'grok-cli': true,
+    });
+
+    expect(out.engineValidModels).not.toHaveProperty('gemini-cli');
+    expect(out.engineDefaultModels).not.toHaveProperty('gemini-cli');
+    // Other engines are unaffected.
+    expect(out.engineValidModels['claude-code']).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
+    // engineAuth still reports gemini presence (used for RAG status display).
+    expect(out.engineAuth['gemini-cli']).toBe(true);
   });
 
   it('uses codexSelectableModels override for the codex engine when provided', () => {

@@ -16,12 +16,14 @@ import { api } from '../utils/api';
  * emits a `design_updated` WS event for the active design id, so the agent's
  * file writes show up immediately on the canvas.
  */
-const DESIGN_STUDIO_ENGINES = ['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli'];
+// `gemini-cli` is intentionally excluded — Gemini is RAG-only (server:
+// RAG_ONLY_ENGINES / DESIGN_CHAT_ENGINES) and the interactive Gemini CLI is
+// unusable (Pro free tier zeroed to `limit: 0` on 2026-04-01).
+const DESIGN_STUDIO_ENGINES = ['claude-code', 'cursor-agent', 'codex-cli'];
 
 const DESIGN_ENGINE_LABELS = {
   'claude-code': 'Claude',
   'cursor-agent': 'Cursor',
-  'gemini-cli': 'Gemini',
   'codex-cli': 'Codex',
 } as Record<string, any>;
 

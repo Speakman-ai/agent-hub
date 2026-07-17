@@ -56,6 +56,33 @@ export const ALL_SUPPORTED_ENGINES: readonly SupportedEngine[] = [
   'grok-cli',
 ] as const;
 
+/**
+ * Engines reserved for host RAG/embeddings + transcription only — they call the
+ * Gemini API key directly and must NEVER be offered as a selectable agent /
+ * session / Design Studio engine, nor selected for a one-shot background spawn.
+ *
+ * `gemini-cli` is the lone member: the interactive Gemini CLI is unusable
+ * (Google zeroed the Pro free tier to `limit: 0` on 2026-04-01, so every spawn
+ * hard-429s), and a host that configures a Gemini key *for RAG* would otherwise
+ * make the gemini-cli availability probe report `available: true` — leaking it
+ * into every picker and background resolver. This set is the single source of
+ * truth consumed by `engine-resolver` (background) and `buildAuthenticatedModelConfig`
+ * (the `/api/config/models` picker feed). If a future engine should also be
+ * RAG-only, add it here.
+ */
+export const RAG_ONLY_ENGINES: ReadonlySet<SupportedEngine> = new Set<SupportedEngine>([
+  'gemini-cli',
+]);
+
+/**
+ * Engines a user may pick for an interactive agent / session / Design Studio
+ * run — `ALL_SUPPORTED_ENGINES` minus the RAG-only engines. Derived so it can
+ * never drift from the two lists above.
+ */
+export const SELECTABLE_ENGINES: readonly SupportedEngine[] = ALL_SUPPORTED_ENGINES.filter(
+  (engine) => !RAG_ONLY_ENGINES.has(engine),
+);
+
 interface ProbeOptions {
   /** Override env reads — primarily for tests. */
   env?: NodeJS.ProcessEnv;

@@ -202,11 +202,12 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // cursor-agent: only IDs the Hub passes through to `agent --model` (see
   // CURSOR_AGENT_HUB_MODEL_ALLOWLIST). Codex/GPT variants belong on codex-cli.
   'cursor-agent': [...CURSOR_AGENT_HUB_MODEL_ALLOWLIST],
-  // Gemini model IDs per https://geminicli.com/docs/cli/cli-reference (--model flag).
-  // `auto` lets the CLI pick; other IDs are the first-party Google models the CLI
-  // currently accepts. We only list stable IDs — experimental/preview aliases are
-  // left out of the allowlist so sessions don't stream with an unsupported name.
-  'gemini-cli': ['auto', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+  // NOTE: `gemini-cli` is intentionally NOT listed. Gemini is reserved for host
+  // RAG/embeddings (see RAG_ONLY_ENGINES in engine-availability.ts and
+  // wiki-embeddings.ts) and is not a selectable agent engine — the interactive
+  // Gemini CLI is unusable anyway (Pro free tier zeroed to `limit: 0` on
+  // 2026-04-01). `buildAuthenticatedModelConfig` also filters RAG-only engines
+  // defensively, so a stray file-config entry can't re-advertise it either.
   // Codex model IDs per https://developers.openai.com/codex/models.
   // IMPORTANT: the list below is the intersection of models accepted under
   // BOTH auth modes (ChatGPT OAuth and API-key). Under ChatGPT OAuth the
@@ -239,7 +240,7 @@ const mergedEngineValidModels = normalizeCursorAgentEngineModels(mergedEngineVal
 const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
-  'gemini-cli': 'gemini-2.5-pro',
+  // No `gemini-cli` default — Gemini is RAG-only, not a selectable engine.
   // Codex: Luna is the preferred model when the installed CLI advertises the
   // capability-gated gpt-5.6 family. Older CLIs keep the baseline list and
   // runtime forwarding drops Luna when its metadata is unavailable.

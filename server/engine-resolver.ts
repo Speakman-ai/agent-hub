@@ -22,6 +22,7 @@ import type { AppConfig } from './types.js';
 import {
   probeAllEngineAvailability,
   ALL_SUPPORTED_ENGINES,
+  RAG_ONLY_ENGINES,
   type EngineAvailability,
   type SupportedEngine,
 } from './engine-availability.js';
@@ -119,10 +120,13 @@ export const DEFAULT_FALLBACK_CHAIN: readonly SupportedEngine[] = [
  * Excluding it from the fallback chain alone is not enough; the `preferred`
  * path bypassed the chain. Keep this aligned with DEFAULT_FALLBACK_CHAIN's
  * "Gemini is deliberately EXCLUDED" rationale above.
+ *
+ * This is the same `RAG_ONLY_ENGINES` source of truth that
+ * `buildAuthenticatedModelConfig` uses to keep gemini-cli out of the
+ * `/api/config/models` picker feed, so the background resolver and the
+ * interactive picker can never disagree about which engines are RAG-only.
  */
-const NON_SELECTABLE_ENGINES: ReadonlySet<SupportedEngine> = new Set<SupportedEngine>([
-  'gemini-cli',
-]);
+const NON_SELECTABLE_ENGINES: ReadonlySet<SupportedEngine> = RAG_ONLY_ENGINES;
 
 /**
  * Thrown when no engine in the fallback chain is available. Carries
