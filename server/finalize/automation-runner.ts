@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import type {
   FinalizeRunRow,
   KanbanCardRow,
+  KanbanEpicRow,
   Project,
   PullRequestRow,
   RouteDeps,
@@ -29,6 +30,7 @@ import {
   shouldEnableAutoMergeForAutomation,
 } from './automation.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { resolveFinalizeGateBase } from './resolve-base-branch.js';
 import { flakeGateBlocksAutoPush, parseFlakeGate } from './flake-recovery.js';
 import { sessionBlocksFinalize } from '../project-mode-guards.js';
 
@@ -232,7 +234,16 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
   const level = resolveSessionFinalizeAutomation(ctx.session);
   if (!shouldAutoStartFinalize(level)) return;
 
-  const committable = await getSessionCommittableChanges(ctx.session.worktree_path!);
+  const gateBase = resolveFinalizeGateBase({
+    card: ctx.card,
+    worktreePath: ctx.session.worktree_path,
+    getEpic: (epicId) => routeDeps!.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+  });
+  // Fail closed for auto-start: an unresolved authoritative base or an empty
+  // net diff vs the real target must not silently kick off Finalize.
+  const committable = await getSessionCommittableChanges(ctx.session.worktree_path!, {
+    base: gateBase,
+  });
   if (!committable.ok) return;
 
   const latest = routeDeps.stmts.getLatestFinalizeRunForSession.get(sessionId) as

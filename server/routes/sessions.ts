@@ -68,7 +68,10 @@ import type {
   Project,
   FinalizeRunRow,
 } from '../types.js';
-import { resolveFinalizeBaseBranchForCard } from '../finalize/resolve-base-branch.js';
+import {
+  resolveFinalizeBaseBranchForCard,
+  resolveFinalizeGateBase,
+} from '../finalize/resolve-base-branch.js';
 import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
@@ -76,7 +79,7 @@ import { buildExtractSkillKickoffPrompt, buildExtractSkillSessionName } from '..
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { checkWorktreeChanges } from '../auto-git.js';
-import { hasPublishableChanges } from '../finalize/net-diff.js';
+import { hasPublishableChanges, makeNetDiffProbe } from '../finalize/net-diff.js';
 import { cleanupOrphanCardForClosedSession } from '../card-orphan-cleanup.js';
 import {
   computeSessionChanges,
@@ -1013,7 +1016,29 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       // reachability with a net-diff probe so a branch that adds nothing to base
       // (already integrated / net-zero commits) doesn't offer Finalize for an
       // empty diff — keeping the button in lockstep with the Changes-pane count.
-      const committable = await hasPublishableChanges(session.worktree_path, changes);
+      // Probe against the session's real PR base (card/epic pr_base_branch), not
+      // just the repo default, so an empty-vs-feature-branch session doesn't
+      // offer Finalize (the stacked-PR zero-diff merge case). An authoritative
+      // base that cannot be resolved/proven fails closed here, in lockstep with
+      // the Finalize action gate (getSessionCommittableChanges).
+      const gateCard = stmts.getKanbanCardBySession.get(session.id) as KanbanCardRow | undefined;
+      const gateBase = resolveFinalizeGateBase({
+        card: gateCard,
+        worktreePath: session.worktree_path,
+        getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+      });
+      let committable: boolean;
+      if (gateBase.kind === 'unresolved') {
+        committable = false;
+      } else {
+        const explicitBase = gateBase.kind === 'explicit';
+        committable = await hasPublishableChanges(
+          session.worktree_path,
+          changes,
+          makeNetDiffProbe(explicitBase ? gateBase.baseBranch : null),
+          { explicitBase },
+        );
+      }
       res.json({
         branch: changes.branch,
         hasUncommitted: changes.hasUncommitted,

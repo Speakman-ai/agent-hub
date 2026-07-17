@@ -25,7 +25,10 @@ import type { CardLifecycle } from './card-lifecycle.js';
 import { NOOP_CARD_LIFECYCLE } from './card-lifecycle.js';
 import { createPushAndCreatePr } from './push-and-create-pr.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
-import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
+import {
+  resolveFinalizeBaseBranchForCard,
+  resolveFinalizeGateBase,
+} from './resolve-base-branch.js';
 import { readFinalizeLoopRound, writeFinalizeRunTerminalTimeline } from './timeline-message.js';
 import type { ReviewerVerdict } from './reviewer-dispatch.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
@@ -403,7 +406,14 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
-  const committable = await getSessionCommittableChanges(session.worktree_path);
+  const gateBase = resolveFinalizeGateBase({
+    card,
+    worktreePath: session.worktree_path,
+    getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+  });
+  const committable = await getSessionCommittableChanges(session.worktree_path, {
+    base: gateBase,
+  });
   if (!committable.ok) {
     return {
       ok: false,
@@ -584,7 +594,14 @@ export async function runSessionPushToGithub(
     };
   }
 
-  const committable = await getSessionCommittableChanges(session.worktree_path);
+  const gateBase = resolveFinalizeGateBase({
+    card,
+    worktreePath: session.worktree_path,
+    getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+  });
+  const committable = await getSessionCommittableChanges(session.worktree_path, {
+    base: gateBase,
+  });
   if (!committable.ok) {
     return {
       ok: false,

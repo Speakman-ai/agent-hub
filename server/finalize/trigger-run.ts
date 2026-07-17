@@ -18,7 +18,10 @@ import type {
 import { computeIdempotencyKey, runFinalize } from './orchestrator.js';
 import { buildOrchestratorDeps } from './orchestrator-deps.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
-import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
+import {
+  resolveFinalizeBaseBranchForCard,
+  resolveFinalizeGateBase,
+} from './resolve-base-branch.js';
 import {
   createFinalizeRunSignal,
   registerFinalizeRunAbort,
@@ -170,7 +173,14 @@ async function kickoffFinalizeRunBody(
     return { kind: 'error', error: 'no_branch', message: 'Session has no worktree_branch.' };
   }
 
-  const committable = await getSessionCommittableChanges(session.worktree_path);
+  const gateBase = resolveFinalizeGateBase({
+    card,
+    worktreePath: session.worktree_path,
+    getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+  });
+  const committable = await getSessionCommittableChanges(session.worktree_path, {
+    base: gateBase,
+  });
   if (!committable.ok) {
     return { kind: 'error', error: committable.error, message: committable.message };
   }

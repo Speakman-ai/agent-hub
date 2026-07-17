@@ -14,6 +14,15 @@
  * land on the base branch, matching the merge-base basis the "N files changed"
  * Changes badge already uses (`computeSessionChanges`). The probe is injectable
  * so tests never spawn real `git`.
+ *
+ * **Base branch = the session's real PR base, not just the repo default.** A
+ * stacked session whose card/epic sets a `pr_base_branch` (a feature branch)
+ * can be empty vs that feature branch while still being non-empty vs `master`.
+ * Probing only against the repo default lets such a branch pass the gate and
+ * ship an empty merge (the surveytracker PR #308 "Retire Employee role"
+ * zero-diff merge). `makeNetDiffProbe(baseBranch)` targets the caller-resolved
+ * base first; `defaultNetDiffProbe` keeps the auto-detect-default behavior for
+ * callers with no resolved base.
  */
 import { execFile } from 'child_process';
 import { resolveDefaultBranch } from '../git-default-branch.js';
@@ -25,8 +34,11 @@ interface GitResult {
   code: number;
 }
 
-function runGit(args: string[], cwd: string): Promise<GitResult> {
-  return new Promise((resolve) => {
+/** Injectable `git` runner — real spawn by default, faked in tests. */
+export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
+
+const runGitReal: GitRunner = (args, cwd) =>
+  new Promise((resolve) => {
     execFile(
       'git',
       args,
@@ -46,6 +58,28 @@ function runGit(args: string[], cwd: string): Promise<GitResult> {
       },
     );
   });
+
+/**
+ * Ordered list of candidate base refs to diff HEAD against.
+ *
+ * - An explicit `baseBranch` (the session's resolved PR base) is authoritative:
+ *   try `origin/<base>` then the local `<base>`, and nothing else. We do NOT
+ *   fall back to the repo default here — silently reverting to `master` is the
+ *   exact bug this guard exists to close (empty-vs-feature-branch would pass).
+ * - With no explicit base, auto-detect the repo default and fall back to the
+ *   usual `origin/HEAD` → `main`/`master` chain (legacy behavior).
+ */
+export function candidateBaseRefs(
+  explicitBase: string | null,
+  resolvedDefault: string | null,
+): string[] {
+  if (explicitBase) {
+    const b = explicitBase.replace(/^origin\//, '');
+    return [`origin/${b}`, b];
+  }
+  return resolvedDefault
+    ? [`origin/${resolvedDefault}`, resolvedDefault]
+    : ['origin/HEAD', 'origin/main', 'origin/master', 'main', 'master'];
 }
 
 /**
@@ -59,28 +93,71 @@ function runGit(args: string[], cwd: string): Promise<GitResult> {
  */
 export type NetDiffProbe = (worktreePath: string) => Promise<boolean | null>;
 
-export const defaultNetDiffProbe: NetDiffProbe = async (worktreePath) => {
-  let base: string | null = null;
-  try {
-    base = await resolveDefaultBranch(worktreePath);
-  } catch {
-    base = null;
-  }
-  const refs = base
-    ? [`origin/${base}`, base]
-    : ['origin/HEAD', 'origin/main', 'origin/master', 'main', 'master'];
-  for (const ref of refs) {
-    const exists = await runGit(['rev-parse', '--verify', '--quiet', ref], worktreePath);
-    if (exists.code !== 0 || !exists.stdout.trim()) continue;
-    // Three-dot diff = merge-base(ref, HEAD)..HEAD — exactly the PR/Changes-pane
-    // view. `--quiet` exits 0 when identical, 1 when differences exist.
-    const diff = await runGit(['diff', '--quiet', `${ref}...HEAD`], worktreePath);
-    if (diff.code === 0) return false;
-    if (diff.code === 1) return true;
-    return null; // unexpected git error — undeterminable, fail open
-  }
-  return null; // no base ref resolvable — undeterminable, fail open
-};
+export interface NetDiffProbeDeps {
+  /** Injectable git runner (tests). */
+  runGit?: GitRunner;
+  /** Injectable default-branch resolver (tests). */
+  resolveDefault?: (cwd: string) => Promise<string | null>;
+}
+
+/**
+ * Build a net-diff probe. Pass the session's resolved PR base branch so the
+ * gate measures what would actually land on that branch; omit it to keep the
+ * auto-detect-repo-default behavior.
+ */
+export function makeNetDiffProbe(
+  baseBranch?: string | null,
+  deps: NetDiffProbeDeps = {},
+): NetDiffProbe {
+  const runGit = deps.runGit ?? runGitReal;
+  const resolveDefault = deps.resolveDefault ?? resolveDefaultBranch;
+  const explicitBase = baseBranch ?? null;
+  return async (worktreePath) => {
+    let resolvedDefault: string | null = null;
+    if (!explicitBase) {
+      try {
+        resolvedDefault = await resolveDefault(worktreePath);
+      } catch {
+        resolvedDefault = null;
+      }
+    }
+    const refs = candidateBaseRefs(explicitBase, resolvedDefault);
+    for (const ref of refs) {
+      const exists = await runGit(['rev-parse', '--verify', '--quiet', ref], worktreePath);
+      if (exists.code !== 0 || !exists.stdout.trim()) continue;
+      // Three-dot diff = merge-base(ref, HEAD)..HEAD — exactly the PR/Changes-pane
+      // view. `--quiet` exits 0 when identical, 1 when differences exist.
+      const diff = await runGit(['diff', '--quiet', `${ref}...HEAD`], worktreePath);
+      if (diff.code === 0) return false;
+      if (diff.code === 1) return true;
+      return null; // unexpected git error — undeterminable, fail open
+    }
+    return null; // no base ref resolvable — undeterminable, fail open
+  };
+}
+
+/** Repo-default-branch probe (no resolved PR base). */
+export const defaultNetDiffProbe: NetDiffProbe = makeNetDiffProbe();
+
+/**
+ * Turn a probe verdict into a publish decision, honoring the base's authority.
+ *
+ *  - `true`  (real net diff)  → publishable
+ *  - `false` (empty diff)     → NOT publishable
+ *  - `null`  (undeterminable) → the crux: an **explicit** PR base fails CLOSED
+ *    (we have NOT proven anything would land on the real target, so blocking is
+ *    correct — a stale/missing feature-base fetch must not let an empty stacked
+ *    change through), while the legacy repo-default auto-detect path fails OPEN
+ *    (never worse than the prior reachability-only behavior).
+ */
+export function isPublishableVerdict(
+  net: boolean | null,
+  opts: { explicitBase: boolean },
+): boolean {
+  if (net === true) return true;
+  if (net === false) return false;
+  return !opts.explicitBase; // null: fail closed for explicit base, open for default
+}
 
 /**
  * True when the session worktree has changes worth shipping.
@@ -89,16 +166,18 @@ export const defaultNetDiffProbe: NetDiffProbe = async (worktreePath) => {
  * -but-unpushed commits qualify only when they produce a real net diff against
  * the base branch — a branch whose commits are net-zero / already integrated is
  * NOT publishable, so Finalize / changes_ready / push are not offered for an
- * empty diff. When the net diff can't be determined the probe returns `null`
- * and we fail open, never worse than the prior reachability-only behavior.
+ * empty diff. When the net diff can't be determined, `opts.explicitBase`
+ * decides: an authoritative PR base fails closed; the repo-default path fails
+ * open (see `isPublishableVerdict`).
  */
 export async function hasPublishableChanges(
   worktreePath: string,
   changes: { hasUncommitted: boolean; hasUnpushed: boolean },
   probe: NetDiffProbe = defaultNetDiffProbe,
+  opts: { explicitBase?: boolean } = {},
 ): Promise<boolean> {
   if (changes.hasUncommitted) return true;
   if (!changes.hasUnpushed) return false;
   const net = await probe(worktreePath);
-  return net !== false;
+  return isPublishableVerdict(net, { explicitBase: opts.explicitBase ?? false });
 }

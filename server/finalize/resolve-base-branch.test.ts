@@ -6,6 +6,7 @@ import os from 'os';
 import {
   resolveFinalizeBaseBranch,
   resolveFinalizeBaseBranchForCard,
+  resolveFinalizeGateBase,
 } from './resolve-base-branch.js';
 import type { KanbanCardRow, KanbanEpicRow } from '../types.js';
 
@@ -60,5 +61,73 @@ describe('resolveFinalizeBaseBranchForCard', () => {
     });
     expect(getEpic).toHaveBeenCalledWith('epic-1');
     expect(branch).toBe('master');
+  });
+});
+
+describe('resolveFinalizeGateBase', () => {
+  it('no card → default (legacy repo-default probe path)', () => {
+    expect(resolveFinalizeGateBase({ card: null, worktreePath: '/wt' })).toEqual({
+      kind: 'default',
+    });
+  });
+
+  it('no worktree → default', () => {
+    expect(
+      resolveFinalizeGateBase({
+        card: { pr_base_branch: 'feature/x', epic_id: null } as KanbanCardRow,
+        worktreePath: null,
+      }),
+    ).toEqual({ kind: 'default' });
+  });
+
+  it('card override → explicit (authoritative base)', () => {
+    expect(
+      resolveFinalizeGateBase({
+        card: { pr_base_branch: 'feature/epic', epic_id: null } as KanbanCardRow,
+        worktreePath: '/wt',
+      }),
+    ).toEqual({ kind: 'explicit', baseBranch: 'feature/epic' });
+  });
+
+  it('epic override → explicit', () => {
+    const getEpic = vi.fn(() => ({ pr_base_branch: 'feature/from-epic' }) as KanbanEpicRow);
+    expect(
+      resolveFinalizeGateBase({
+        card: { pr_base_branch: null, epic_id: 'epic-1' } as KanbanCardRow,
+        worktreePath: '/wt',
+        getEpic,
+      }),
+    ).toEqual({ kind: 'explicit', baseBranch: 'feature/from-epic' });
+  });
+
+  it('card with no override → default (its real base IS the repo default)', () => {
+    expect(
+      resolveFinalizeGateBase({
+        card: { pr_base_branch: null, epic_id: null } as KanbanCardRow,
+        worktreePath: '/wt',
+      }),
+    ).toEqual({ kind: 'default' });
+  });
+
+  it('malformed override → unresolved (block, never silent default)', () => {
+    expect(
+      resolveFinalizeGateBase({
+        card: { pr_base_branch: 'bad branch; rm -rf', epic_id: null } as KanbanCardRow,
+        worktreePath: '/wt',
+      }),
+    ).toEqual({ kind: 'unresolved' });
+  });
+
+  it('card-backed but base resolution throws → unresolved (block)', () => {
+    const getEpic = vi.fn(() => {
+      throw new Error('epic lookup failed');
+    });
+    expect(
+      resolveFinalizeGateBase({
+        card: { pr_base_branch: null, epic_id: 'epic-1' } as KanbanCardRow,
+        worktreePath: '/wt',
+        getEpic,
+      }),
+    ).toEqual({ kind: 'unresolved' });
   });
 });

@@ -1,5 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
-import { hasPublishableChanges, type NetDiffProbe } from './net-diff.js';
+import {
+  candidateBaseRefs,
+  hasPublishableChanges,
+  isPublishableVerdict,
+  makeNetDiffProbe,
+  type GitRunner,
+  type NetDiffProbe,
+} from './net-diff.js';
+
+/**
+ * A fake `git` runner. `existing` are refs `rev-parse --verify` resolves; for a
+ * resolved ref, `diffCode(ref)` decides `git diff --quiet <ref>...HEAD` (0 =
+ * identical/empty, 1 = differs).
+ */
+function fakeGit(existing: Set<string>, diffCode: (ref: string) => number): GitRunner {
+  return vi.fn<GitRunner>(async (args) => {
+    if (args[0] === 'rev-parse') {
+      const ref = args[args.length - 1] as string;
+      return existing.has(ref) ? { stdout: 'deadbeef\n', code: 0 } : { stdout: '', code: 1 };
+    }
+    if (args[0] === 'diff') {
+      // args = ['diff','--quiet', `${ref}...HEAD`]
+      const ref = (args[2] as string).replace(/\.\.\.HEAD$/, '');
+      return { stdout: '', code: diffCode(ref) };
+    }
+    return { stdout: '', code: 0 };
+  });
+}
 
 describe('hasPublishableChanges', () => {
   const clean = { hasUncommitted: false, hasUnpushed: false };
@@ -30,5 +57,108 @@ describe('hasPublishableChanges', () => {
 
   it('fails open (true) when the net diff is undeterminable', async () => {
     expect(await hasPublishableChanges('/wt', unpushed, async () => null)).toBe(true);
+  });
+});
+
+describe('candidateBaseRefs', () => {
+  it('targets only the explicit base (origin/<base> then <base>), never the default', () => {
+    expect(candidateBaseRefs('feature/epic', 'main')).toEqual([
+      'origin/feature/epic',
+      'feature/epic',
+    ]);
+  });
+
+  it('strips a leading origin/ from the explicit base', () => {
+    expect(candidateBaseRefs('origin/feature/epic', null)).toEqual([
+      'origin/feature/epic',
+      'feature/epic',
+    ]);
+  });
+
+  it('uses the resolved repo default when there is no explicit base', () => {
+    expect(candidateBaseRefs(null, 'master')).toEqual(['origin/master', 'master']);
+  });
+
+  it('falls back to the legacy ref chain when no base is resolvable', () => {
+    expect(candidateBaseRefs(null, null)).toEqual([
+      'origin/HEAD',
+      'origin/main',
+      'origin/master',
+      'main',
+      'master',
+    ]);
+  });
+});
+
+describe('makeNetDiffProbe — base-aware', () => {
+  const FEATURE = 'feature/accountability-role-remap';
+
+  it('measures against the resolved PR base, not the repo default', async () => {
+    // Regression for the surveytracker PR #308 zero-diff merge: the branch is
+    // EMPTY vs its real feature base but NON-EMPTY vs master. Probing the repo
+    // default let it pass the committable gate and ship an empty merge.
+    const existing = new Set([`origin/${FEATURE}`, 'origin/main']);
+    const diffCode = (ref: string) => (ref === `origin/${FEATURE}` ? 0 : 1);
+    const resolveDefault = vi.fn(async () => 'main');
+
+    // Base-aware probe → empty vs feature base → NOT publishable (blocks).
+    const baseAware = makeNetDiffProbe(FEATURE, {
+      runGit: fakeGit(existing, diffCode),
+      resolveDefault,
+    });
+    expect(await baseAware('/wt')).toBe(false);
+    // It must not consult the repo default at all when an explicit base is given.
+    expect(resolveDefault).not.toHaveBeenCalled();
+
+    // Same worktree, default-only probe → non-empty vs master → the old,
+    // buggy "looks publishable" verdict. Confirms the two disagree.
+    const defaultOnly = makeNetDiffProbe(null, {
+      runGit: fakeGit(existing, diffCode),
+      resolveDefault,
+    });
+    expect(await defaultOnly('/wt')).toBe(true);
+  });
+
+  it('returns true when the branch has a real net diff vs its PR base', async () => {
+    const existing = new Set([`origin/${FEATURE}`]);
+    const probe = makeNetDiffProbe(FEATURE, { runGit: fakeGit(existing, () => 1) });
+    expect(await probe('/wt')).toBe(true);
+  });
+
+  it('does NOT silently fall back to the default when the explicit base ref is missing', async () => {
+    // origin/main exists and differs, but the explicit feature base does not.
+    // We must return null (undeterminable → fail open), never check master.
+    const existing = new Set(['origin/main']);
+    const resolveDefault = vi.fn(async () => 'main');
+    const runGit = fakeGit(existing, () => 1);
+    const probe = makeNetDiffProbe(FEATURE, { runGit, resolveDefault });
+    expect(await probe('/wt')).toBeNull();
+    expect(resolveDefault).not.toHaveBeenCalled();
+  });
+
+  it('propagates an unexpected git error as undeterminable (null)', async () => {
+    const runGit: GitRunner = async (args) =>
+      args[0] === 'rev-parse' ? { stdout: 'x\n', code: 0 } : { stdout: '', code: 129 };
+    const probe = makeNetDiffProbe(FEATURE, { runGit });
+    expect(await probe('/wt')).toBeNull();
+  });
+});
+
+describe('isPublishableVerdict — explicit bases fail closed', () => {
+  it('true diff / false diff are decided the same regardless of base authority', () => {
+    expect(isPublishableVerdict(true, { explicitBase: true })).toBe(true);
+    expect(isPublishableVerdict(true, { explicitBase: false })).toBe(true);
+    expect(isPublishableVerdict(false, { explicitBase: true })).toBe(false);
+    expect(isPublishableVerdict(false, { explicitBase: false })).toBe(false);
+  });
+
+  it('an undeterminable EXPLICIT base fails CLOSED (not publishable)', () => {
+    // We have not proven a net diff against the real target, so a stale/missing
+    // feature-base fetch must not let an empty stacked change through.
+    expect(isPublishableVerdict(null, { explicitBase: true })).toBe(false);
+  });
+
+  it('an undeterminable repo-DEFAULT base fails OPEN (legacy behavior)', () => {
+    expect(isPublishableVerdict(null, { explicitBase: false })).toBe(true);
   });
 });
