@@ -469,7 +469,15 @@ export function shouldShowSessionPreviewPane({
   paneOpenBySession,
 }: any = {}) {
   if (!activeSessionId) return false;
-  if (!project?.prEnv?.preview?.compose?.entryService) return false;
+  // Mirror `isPreviewConfigured` (the Start-button gate): open the pane for
+  // the current dev-server process model (`prEnv.devServer.startCommand`) as
+  // well as the legacy compose app-wrapping model. Gating only on
+  // `compose.entryService` left dev-server projects with a Start button that
+  // streamed boot/terminal logs the pane never rendered.
+  const devServerCmd = project?.prEnv?.devServer?.startCommand;
+  const hasDevServer = typeof devServerCmd === 'string' && devServerCmd.trim().length > 0;
+  const hasComposeEntry = !!project?.prEnv?.preview?.compose?.entryService;
+  if (!hasDevServer && !hasComposeEntry) return false;
   if (!activePreviewEvent) return false;
   if (paneOpenBySession && paneOpenBySession[activeSessionId] === false) return false;
   return true;

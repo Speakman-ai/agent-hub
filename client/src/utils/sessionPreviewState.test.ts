@@ -538,6 +538,69 @@ describe('shouldShowSessionPreviewPane', () => {
     expect(shouldShowSessionPreviewPane()).toBe(false);
     expect(shouldShowSessionPreviewPane({})).toBe(false);
   });
+
+  // Regression: dev-server projects (`prEnv.devServer`, the current process
+  // model) have no compose `entryService`, so the pane gate used to reject
+  // them and Start preview opened nothing — the streamed boot/terminal log
+  // had no surface to render in. The gate now mirrors `isPreviewConfigured`.
+  describe('dev-server project (no compose block)', () => {
+    const devServerProject = { prEnv: { devServer: { startCommand: 'npm run dev' } } };
+
+    it('opens the pane while the dev server is booting (preview_starting)', () => {
+      expect(
+        shouldShowSessionPreviewPane({
+          activeSessionId: 's-1',
+          project: devServerProject,
+          activePreviewEvent: startingEvent,
+          paneOpenBySession: {},
+        }),
+      ).toBe(true);
+    });
+
+    it('opens the pane once the dev server is ready (preview)', () => {
+      expect(
+        shouldShowSessionPreviewPane({
+          activeSessionId: 's-1',
+          project: devServerProject,
+          activePreviewEvent: readyEvent,
+          paneOpenBySession: {},
+        }),
+      ).toBe(true);
+    });
+
+    it('still honors an explicit user-close for a dev-server project', () => {
+      expect(
+        shouldShowSessionPreviewPane({
+          activeSessionId: 's-1',
+          project: devServerProject,
+          activePreviewEvent: readyEvent,
+          paneOpenBySession: { 's-1': false },
+        }),
+      ).toBe(false);
+    });
+
+    it('stays hidden when the dev-server startCommand is blank', () => {
+      expect(
+        shouldShowSessionPreviewPane({
+          activeSessionId: 's-1',
+          project: { prEnv: { devServer: { startCommand: '  ' } } },
+          activePreviewEvent: readyEvent,
+          paneOpenBySession: {},
+        }),
+      ).toBe(false);
+    });
+  });
+
+  it('returns false when the project has neither dev-server nor compose config', () => {
+    expect(
+      shouldShowSessionPreviewPane({
+        activeSessionId: 's-1',
+        project: { prEnv: { preview: {} } },
+        activePreviewEvent: readyEvent,
+        paneOpenBySession: {},
+      }),
+    ).toBe(false);
+  });
 });
 
 describe('previewStateApiPath', () => {
