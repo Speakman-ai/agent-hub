@@ -10,6 +10,11 @@ import { daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectNavGroups } from '../utils/projectMenu';
+import {
+  loadNavGroupCollapsed,
+  saveNavGroupCollapsed,
+  mergeHydratedNavGroups,
+} from '../utils/navGroupCollapse';
 import { shouldShowCalendarNav, shouldShowGmailNav } from '../utils/googleSurface';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
@@ -22,8 +27,32 @@ export default function DrawerContent({ navigation }: any) {
     const [collapsedAgents, setCollapsedAgents] = useState<any>({});
     const [collapsedProjects, setCollapsedProjects] = useState<any>({});
     // Per-project nav-group collapse state, keyed by `${projectId}:${groupKey}`.
-    // Default expanded (mirrors the web sidebar's grouped nav).
+    // Default COLLAPSED (mirrors the web sidebar). Hydrated from AsyncStorage on
+    // mount and persisted on change so the user's choices survive app restarts.
     const [collapsedNavGroups, setCollapsedNavGroups] = useState<any>({});
+    const [navGroupsHydrated, setNavGroupsHydrated] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+        loadNavGroupCollapsed().then((stored) => {
+            if (!cancelled) {
+                // Merge stored state UNDER any toggles the user made before the
+                // async load resolved — `prev` (their taps) wins over `stored` so
+                // an early interaction is neither discarded nor lost to storage
+                // (the post-hydration persist effect then saves the merged result).
+                setCollapsedNavGroups((prev: any) => mergeHydratedNavGroups(stored, prev));
+                setNavGroupsHydrated(true);
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+    useEffect(() => {
+        // Skip until hydration so we don't clobber storage with the empty initial
+        // state before the stored map has been merged in.
+        if (!navGroupsHydrated) return;
+        saveNavGroupCollapsed(collapsedNavGroups);
+    }, [collapsedNavGroups, navGroupsHydrated]);
     const [archivedExpanded, setArchivedExpanded] = useState(false);
     const [showOrgPicker, setShowOrgPicker] = useState(false);
     // Server version / git hash for the footer (matches the web sidebar footer).
@@ -287,17 +316,17 @@ export default function DrawerContent({ navigation }: any) {
             })()}
     </TouchableOpacity>);
     // Grouped nav (Git / Planning / Support / AI / Settings), each group a
-    // collapsible section (default expanded), mirroring the web sidebar.
+    // collapsible section (default collapsed), mirroring the web sidebar.
     const renderProjectMenu = (project: any) => {
         const groups = projectNavGroups(project);
         return (<View style={styles.projectMenu}>
         {groups.map((group: any) => {
             const collapseKey = `${project.id}:${group.key}`;
-            const collapsed = collapsedNavGroups[collapseKey] ?? false;
+            const collapsed = collapsedNavGroups[collapseKey] ?? true;
             return (<View key={group.key}>
               <TouchableOpacity style={styles.projectMenuToggle} testID={`drawer-nav-group-${group.key}-${project.id}`} onPress={() => setCollapsedNavGroups((prev: any) => ({
                     ...prev,
-                    [collapseKey]: !(prev[collapseKey] ?? false),
+                    [collapseKey]: !(prev[collapseKey] ?? true),
                 }))}>
                 <HubIcon name={collapsed ? 'ChevronRight' : 'ChevronDown'} size={14} color={colors.gray500} style={styles.projectMenuChevron}/>
                 <Text style={styles.projectMenuGroupLabel} numberOfLines={1}>

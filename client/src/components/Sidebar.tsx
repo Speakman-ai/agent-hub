@@ -55,6 +55,7 @@ import { deriveSessionState } from '../utils/deriveSessionState';
 import BugReportButton from './BugReportButton';
 import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
 import { isWorkflowProject } from '../utils/projectMode';
+import { readNavGroupCollapsed, writeNavGroupCollapsed } from '../utils/sidebarNavGroupCollapse';
 
 export default function Sidebar({
   /** When true, shows a loading overlay on the nav body (org switcher stays usable). */
@@ -188,10 +189,12 @@ export default function Sidebar({
   const [expandedAgents, setExpandedAgents] = useState<Record<string, any>>({});
   /**
    * Collapse state for the labeled project-nav groups (Git / Planning / Support
-   * / AI / Settings). Keyed by `${projectId}:${groupKey}`; default expanded
-   * (`undefined` → expanded) so the grouping is visible on first render.
+   * / AI / Settings). Keyed by `${projectId}:${groupKey}`; default collapsed
+   * (`undefined` → collapsed). Seeded from localStorage and persisted on change
+   * so the user's expand/collapse choices survive reloads.
    */
-  const [collapsedNavGroups, setCollapsedNavGroups] = useState<Record<string, boolean>>({});
+  const [collapsedNavGroups, setCollapsedNavGroups] =
+    useState<Record<string, boolean>>(readNavGroupCollapsed);
   // Project drag-and-drop state. `draggedProjectId` is the row the user
   // is currently dragging; `dragOverProjectId` is whichever other row has
   // a pending drop indicator. Both reset on dragend / drop / cancel.
@@ -213,6 +216,11 @@ export default function Sidebar({
       prev[activeAgentId] ? prev : { ...prev, [activeAgentId]: true },
     );
   }, [activeAgentId]);
+
+  // Persist nav-group collapse choices so they survive reloads.
+  useEffect(() => {
+    writeNavGroupCollapsed(collapsedNavGroups);
+  }, [collapsedNavGroups]);
 
   const focusSession = (agentId: any, sessionId: any) => {
     if (onFocusSession) {
@@ -277,15 +285,15 @@ export default function Sidebar({
     archivedSessionsByAgentId[agentId] ??
     (agentId === loadedArchivedAgentId ? archivedSessions : []);
 
-  // A project-nav group is expanded unless explicitly collapsed by the user.
+  // A project-nav group is collapsed unless the user has explicitly expanded it.
   const isNavGroupCollapsed = (projectId: any, groupKey: string) =>
-    collapsedNavGroups[`${projectId}:${groupKey}`] ?? false;
+    collapsedNavGroups[`${projectId}:${groupKey}`] ?? true;
 
   const toggleNavGroup = (projectId: any, groupKey: string, e: any) => {
     if (e) e.stopPropagation();
     setCollapsedNavGroups((prev) => {
       const k = `${projectId}:${groupKey}`;
-      return { ...prev, [k]: !(prev[k] ?? false) };
+      return { ...prev, [k]: !(prev[k] ?? true) };
     });
   };
 

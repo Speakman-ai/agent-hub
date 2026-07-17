@@ -13,6 +13,9 @@ import Sidebar from './Sidebar';
 
 // getServerBase is invoked from a useEffect that fetches /api/health. Stub fetch.
 beforeEach(() => {
+  // Sidebar now persists nav-group collapse state to localStorage; clear it
+  // between tests so persisted state never leaks across cases.
+  localStorage.clear();
   (globalThis as any).fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: async () => ({ version: 'test', gitHash: 'abc' }) as any,
@@ -85,6 +88,16 @@ const buildProps = (overrides: any = {}) => {
   };
 };
 
+// Nav groups default to COLLAPSED. Tests that assert on items *inside* a group
+// (visibility, navigation, active highlight) seed localStorage with every group
+// expanded before render. Collapse-by-default / persistence has dedicated tests.
+const NAV_GROUP_KEYS = ['git', 'planning', 'support', 'ai', 'settings'];
+const seedNavGroupsExpanded = (projectId = PROJECT_ID) => {
+  const state: Record<string, boolean> = {};
+  for (const key of NAV_GROUP_KEYS) state[`${projectId}:${key}`] = false;
+  localStorage.setItem('sidebarNavGroupsCollapsed', JSON.stringify(state));
+};
+
 describe('Sidebar — loading overlay', () => {
   it('renders a loading indicator when isLoading is true', () => {
     render(<Sidebar {...buildProps({ isLoading: true })} />);
@@ -144,6 +157,11 @@ describe('Sidebar — global Todos nav (per-user, no Google dependency)', () => 
 });
 
 describe('Sidebar — per-project Epics nav', () => {
+  // Epics lives in the (collapsed-by-default) Planning group; expand it first.
+  beforeEach(() => {
+    seedNavGroupsExpanded();
+  });
+
   it('renders an Epics link in the project menu and navigates to the epics view', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
@@ -1011,6 +1029,11 @@ describe('Sidebar — org switcher gating (Electron-only)', () => {
 });
 
 describe('Sidebar — reviewer agents are hidden from the agent list', () => {
+  // The Reviewer page link lives in the (collapsed-by-default) AI group.
+  beforeEach(() => {
+    seedNavGroupsExpanded();
+  });
+
   it('does not render the reviewer agent row, but exposes the per-project Reviewer page link', () => {
     const reviewerId = 'reviewer-agent';
     const props = buildProps({
@@ -1037,8 +1060,8 @@ describe('Sidebar — reviewer agents are hidden from the agent list', () => {
     expect(screen.getByText('Primary Agent')).toBeInTheDocument();
     // The reviewer agent row is suppressed entirely (it runs as an in-session advisor).
     expect(screen.queryByText('PR Reviewer Bot')).not.toBeInTheDocument();
-    // The dedicated per-project Reviewer page link lives in the AI group,
-    // which is expanded by default.
+    // The dedicated per-project Reviewer page link lives in the AI group
+    // (seeded expanded above).
     expect(screen.getByText('Reviewer')).toBeInTheDocument();
   });
 
@@ -1244,6 +1267,15 @@ describe('Sidebar — project reordering (drag & drop)', () => {
 });
 
 describe('Sidebar — per-project nav groups', () => {
+  const GROUP_KEYS = NAV_GROUP_KEYS;
+
+  // Most tests in this block assert on items *inside* a group, so seed every
+  // group as expanded before render. Collapse-by-default and persistence have
+  // their own dedicated tests below (which clear this seed first).
+  beforeEach(() => {
+    seedNavGroupsExpanded();
+  });
+
   const collapseGroup = (key: string) =>
     fireEvent.click(screen.getByTestId(`sidebar-nav-group-${key}-${PROJECT_ID}` as any) as any);
 
@@ -1276,7 +1308,7 @@ describe('Sidebar — per-project nav groups', () => {
     }
   });
 
-  it('shows every group item expanded by default', () => {
+  it('shows every group item when the groups are expanded', () => {
     render(<Sidebar {...buildProps({ projects: repoProjects() })} />);
     // Git
     expect(screen.getByRole('button', { name: 'Pulls' })).toBeInTheDocument();
@@ -1302,6 +1334,40 @@ describe('Sidebar — per-project nav groups', () => {
     expect(screen.getByRole('button', { name: 'Dev server' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Previews' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cron Jobs' })).toBeInTheDocument();
+  });
+
+  it('collapses every nav group by default when there is no persisted state', () => {
+    // Drop the seeded-expanded state so we exercise the true default.
+    localStorage.clear();
+    render(<Sidebar {...buildProps({ projects: repoProjects() })} />);
+
+    // Group headers still render...
+    for (const key of GROUP_KEYS) {
+      expect(screen.getByTestId(`sidebar-nav-group-${key}-${PROJECT_ID}`)).toBeInTheDocument();
+    }
+    // ...but every group's items are hidden until the user expands it.
+    expect(screen.queryByRole('button', { name: 'Board' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Wiki' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Pulls' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cron Jobs' })).toBeNull();
+  });
+
+  it('persists a group expand across remounts and reflects it on reload', () => {
+    // Start from the true default (all collapsed).
+    localStorage.clear();
+    const { unmount } = render(<Sidebar {...buildProps()} />);
+    expect(screen.queryByRole('button', { name: 'Board' })).toBeNull();
+
+    // Expand the Planning group; its items appear.
+    fireEvent.click(screen.getByTestId(`sidebar-nav-group-planning-${PROJECT_ID}`) as any);
+    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
+
+    // Remount (simulates a reload) — the expanded choice is restored from storage.
+    unmount();
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
+    // Groups the user never touched stay collapsed.
+    expect(screen.queryByRole('button', { name: 'Wiki' })).toBeNull();
   });
 
   // Regression: Pulls is a repo-only surface. A standard (non-workflow) project
