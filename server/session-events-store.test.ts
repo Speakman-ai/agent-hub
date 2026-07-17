@@ -6,6 +6,7 @@ import {
   clampPayload,
   isTruncatedPayload,
   pruneOrphanSessionEvents,
+  rehydrateTruncatedEvent,
 } from './session-events-store.js';
 
 describe('clampPayload', () => {
@@ -42,6 +43,49 @@ describe('clampPayload', () => {
     expect(isTruncatedPayload(JSON.parse(clampPayload(huge)))).toBe(true);
     expect(isTruncatedPayload(null)).toBe(false);
     expect(isTruncatedPayload({})).toBe(false);
+  });
+});
+
+describe('rehydrateTruncatedEvent', () => {
+  function envelopeFor(event: unknown): any {
+    return JSON.parse(clampPayload(JSON.stringify(event)));
+  }
+
+  it('recovers a pairable tool_result from a truncated envelope', () => {
+    const env = envelopeFor({
+      type: 'tool_result',
+      toolUseId: 'toolu_abc123',
+      output: 'z'.repeat(MAX_PAYLOAD_BYTES * 2),
+      isError: false,
+    });
+    const ev = rehydrateTruncatedEvent(env);
+    expect(ev.type).toBe('tool_result');
+    // toolUseId must survive so the paired tool_use card doesn't hang on "running…".
+    expect(ev.toolUseId).toBe('toolu_abc123');
+    expect(ev.isError).toBe(false);
+    expect(ev.truncated).toBe(true);
+    expect(String(ev.output)).toContain('too large');
+  });
+
+  it('preserves isError=true from the truncated head', () => {
+    const env = envelopeFor({
+      type: 'tool_result',
+      toolUseId: 'toolu_err',
+      output: 'q'.repeat(MAX_PAYLOAD_BYTES * 2),
+      isError: true,
+    });
+    expect(rehydrateTruncatedEvent(env).isError).toBe(true);
+  });
+
+  it('falls back to the recovered type for non-tool_result events', () => {
+    const env = envelopeFor({
+      type: 'checkpoint',
+      uuid: 'u1',
+      raw: 'r'.repeat(MAX_PAYLOAD_BYTES * 2),
+    });
+    const ev = rehydrateTruncatedEvent(env);
+    expect(ev.type).toBe('checkpoint');
+    expect(ev.truncated).toBe(true);
   });
 });
 

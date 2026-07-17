@@ -8,6 +8,7 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { shouldPersistStreamEvent } from './benign-stream-events.js';
 import { clampPayload } from './session-events-store.js';
+import { offloadToolResultImages } from './tool-result-images.js';
 import config, { resolveAgentHubApiBaseForSpawn, resolveGrokSpawnModel } from './config.js';
 import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
@@ -3779,10 +3780,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } catch {}
       }
 
-      const handleEvent = (event: StreamEvent): void => {
-        if (!shouldPersistStreamEvent(event)) {
+      const handleEvent = (incoming: StreamEvent): void => {
+        if (!shouldPersistStreamEvent(incoming)) {
           return;
         }
+        // Offload any inline base64 images (image file reads) to the uploads
+        // store so the persisted + broadcast event stays under the payload cap
+        // and the client can render the image from its served URL.
+        const event: StreamEvent =
+          incoming.type === 'tool_result' && incoming.images?.length
+            ? offloadToolResultImages(incoming, uploadsDir)
+            : incoming;
         try {
           // Clamp the serialized payload to MAX_PAYLOAD_BYTES so a single
           // huge tool_result / tool_use cannot blow up the table. See

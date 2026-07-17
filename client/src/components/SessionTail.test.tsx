@@ -218,6 +218,78 @@ describe('eventsToBlocks — benign unknown stream events', () => {
   });
 });
 
+describe('SessionTail — tool_result image rendering', () => {
+  const wrap = (events: any) => events.map((event: any, i: any) => ({ seq: i, event }));
+
+  const renderTail = (events: any) =>
+    render(
+      <SessionTail
+        message={{
+          id: 'm1',
+          role: 'assistant',
+          engine: 'claude-code',
+          model: 'opus',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={events}
+        agentColor="#6366f1"
+      />,
+    );
+
+  it('renders an inline image for a Read tool_result carrying images[]', () => {
+    const events = wrap([
+      { type: 'tool_use', id: 'tu1', tool: 'Read', input: { file_path: '/tmp/preview.png' } },
+      {
+        type: 'tool_result',
+        toolUseId: 'tu1',
+        output: '[image: image/png]',
+        isError: false,
+        images: [{ mediaType: 'image/png', url: '/uploads/tool-image-abc.png' }],
+      },
+    ]);
+    renderTail(events);
+    const strip = screen.getByTestId('tool-result-images');
+    const img = strip.querySelector('img');
+    expect(img).toBeTruthy();
+    expect(img?.getAttribute('src')).toBe('/uploads/tool-image-abc.png');
+    expect(screen.queryByText(/unhandled event/i)).toBeNull();
+  });
+
+  it('falls back to a data URL when only base64 is present', () => {
+    const events = wrap([
+      { type: 'tool_use', id: 'tu2', tool: 'Read', input: { file_path: '/tmp/x.png' } },
+      {
+        type: 'tool_result',
+        toolUseId: 'tu2',
+        output: '[image: image/png]',
+        isError: false,
+        images: [{ mediaType: 'image/png', dataBase64: 'QUJD' }],
+      },
+    ]);
+    renderTail(events);
+    const img = screen.getByTestId('tool-result-images').querySelector('img');
+    expect(img?.getAttribute('src')).toBe('data:image/png;base64,QUJD');
+  });
+
+  it('renders a rehydrated truncated tool_result without an unhandled-event row', () => {
+    // Shape produced server-side by rehydrateTruncatedEvent for an oversized result.
+    const events = wrap([
+      { type: 'tool_use', id: 'tu3', tool: 'Read', input: { file_path: '/tmp/big.log' } },
+      {
+        type: 'tool_result',
+        toolUseId: 'tu3',
+        output: '⚠️ Output too large to display (1.2 MB truncated).',
+        isError: false,
+        truncated: true,
+      },
+    ]);
+    renderTail(events);
+    expect(screen.queryByText(/unhandled event/i)).toBeNull();
+    // The paired Read card resolves (no perpetual "running…").
+    expect(screen.queryByText(/running/i)).toBeNull();
+  });
+});
+
 describe('SessionTail reviewer verdict suppression', () => {
   const verdictJson = JSON.stringify({
     verdict: 'approved',

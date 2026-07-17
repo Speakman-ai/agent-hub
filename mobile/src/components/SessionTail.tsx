@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, memo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Image, Linking } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
@@ -9,11 +9,31 @@ import { shouldAutoLoadEvents } from '../utils/shouldAutoLoadEvents';
 import { applyLazyMessageEventsResult } from '../utils/sessionTailEventsLoad';
 import { deriveStreamingBrowserHint, mergeBrowserTimelineRows, } from '@shared/utils/browserActivityTimeline';
 import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
+import { resolveToolImageSrc } from '../utils/toolImageSrc';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
 import CredentialRequestPrompt from './CredentialRequestPrompt';
 import BrowserActivityPanel from './BrowserActivityPanel';
+/** Inline thumbnails for images returned in a tool_result (e.g. reading a PNG). */
+function ToolResultImages({ images }: any) {
+    const srcs = Array.isArray(images)
+        ? images.map(resolveToolImageSrc).filter((s: any): s is string => !!s)
+        : [];
+    if (srcs.length === 0)
+        return null;
+    return (<View style={toolImageStyles.row} testID="tool-result-images">
+      {srcs.map((src: string, i: number) => (<TouchableOpacity key={i} activeOpacity={0.8} onPress={() => Linking.openURL(src).catch(() => {})}>
+          <Image source={{ uri: src }} style={toolImageStyles.thumb} resizeMode="contain"/>
+        </TouchableOpacity>))}
+    </View>);
+}
+
+const toolImageStyles = StyleSheet.create({
+    row: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+    thumb: { width: 140, height: 140, borderRadius: 6, backgroundColor: '#00000022' },
+});
+
 const TOOL_COLORS: Record<string, any> = {
     Bash: colors.emerald400,
     Read: colors.blue400,
@@ -414,6 +434,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
                   {arg ? (<Text style={styles.argMono} numberOfLines={2}>
                       {arg}
                     </Text>) : null}
+                  {block.result?.images?.length > 0 && (<ToolResultImages images={block.result.images}/>)}
                   {isBlockExpanded && (<ScrollView style={styles.expandedContent} nestedScrollEnabled>
                       {use.tool === 'Bash' && typeof use.input?.command === 'string' ? (
                             // Cursor-style terminal view: `$ <command>` followed by

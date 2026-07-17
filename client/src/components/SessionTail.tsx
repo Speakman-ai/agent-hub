@@ -1079,6 +1079,44 @@ export function DiffView({ tool, input, toolResult }: any) {
   );
 }
 
+/** Resolve a renderable src for a tool_result image ref (served URL or inline data URL). */
+function toolImageSrc(img: any): string | null {
+  if (!img) return null;
+  if (typeof img.url === 'string' && img.url) return img.url;
+  if (typeof img.dataBase64 === 'string' && img.dataBase64) {
+    return `data:${img.mediaType || 'image/png'};base64,${img.dataBase64}`;
+  }
+  return null;
+}
+
+/**
+ * Inline thumbnails for images the AI returned in a tool_result (e.g. reading a
+ * PNG/JPEG). Rendered without needing to expand the tool card so the file the
+ * agent wanted to show you is visible at a glance.
+ */
+export function ToolResultImages({ images }: any) {
+  const srcs = Array.isArray(images)
+    ? images.map(toolImageSrc).filter((s: any): s is string => !!s)
+    : [];
+  if (srcs.length === 0) return null;
+  return (
+    <div
+      data-testid="tool-result-images"
+      className="border-t border-black/30 p-2 flex flex-wrap gap-2 bg-black/10"
+    >
+      {srcs.map((src: string, i: number) => (
+        <a key={i} href={src} target="_blank" rel="noreferrer" className="block">
+          <img
+            src={src}
+            alt="tool output"
+            className="max-h-64 max-w-full rounded border border-black/40 object-contain"
+          />
+        </a>
+      ))}
+    </div>
+  );
+}
+
 export function ToolCard({ use, result, defaultOpen }: any) {
   const [open, setOpen] = useState(defaultOpen ?? false);
   const style = TOOL_STYLES[use.tool] || {
@@ -1166,6 +1204,7 @@ export function ToolCard({ use, result, defaultOpen }: any) {
           </span>
         </span>
       </button>
+      {result?.images?.length > 0 && <ToolResultImages images={result.images} />}
       {open && isBash && (
         <div
           data-testid="bash-terminal"
@@ -1280,12 +1319,12 @@ export function ExploredChip({ items, defaultOpen }: any) {
           {items.map((it: any, i: any) => {
             const d = describeTool(it.use?.tool, it.use?.input);
             return (
-              <li
-                key={`ex${i}`}
-                className="text-[11px] text-gray-400 flex items-center gap-2 min-w-0"
-              >
-                <span className="text-gray-600 font-mono shrink-0">{it.use?.tool}</span>
-                <span className="text-gray-300 truncate">{d.headline}</span>
+              <li key={`ex${i}`} className="text-[11px] text-gray-400 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-gray-600 font-mono shrink-0">{it.use?.tool}</span>
+                  <span className="text-gray-300 truncate">{d.headline}</span>
+                </div>
+                {it.result?.images?.length > 0 && <ToolResultImages images={it.result.images} />}
               </li>
             );
           })}

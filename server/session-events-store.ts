@@ -111,6 +111,48 @@ export function isTruncatedPayload(parsed: unknown): parsed is TruncatedEnvelope
   );
 }
 
+/** Pull a top-level `"key":"value"` string out of a (possibly cut-off) JSON head. */
+function matchHeadString(head: string, key: string): string | undefined {
+  // Values are early in the serialized object (before the huge field that
+  // triggered truncation), so a non-greedy match on the un-cut prefix is safe.
+  const m = head.match(new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`));
+  return m ? m[1].replace(/\\"/g, '"') : undefined;
+}
+
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+/**
+ * Best-effort reconstruction of a renderable event from a truncation envelope.
+ *
+ * The original event's leading scalar fields (`type`, and for a tool_result its
+ * `toolUseId`) survive in `head`, so we recover them and hand back a compact
+ * event the UI can render and pair. Without this the client sees an object with
+ * no `type` and falls through to its "unhandled event" placeholder, and the
+ * paired tool_use card hangs on "running…" forever because the truncated result
+ * carried no `toolUseId` to pair against.
+ */
+export function rehydrateTruncatedEvent(env: TruncatedEnvelope): Record<string, unknown> {
+  const head = env.head ?? '';
+  const type = matchHeadString(head, 'type') ?? 'unknown';
+  if (type === 'tool_result') {
+    // `isError` is serialized after the (huge) `output`, so it survives in the
+    // envelope tail rather than the head.
+    const tail = env.tail ?? '';
+    return {
+      type: 'tool_result',
+      toolUseId: matchHeadString(head, 'toolUseId') ?? '',
+      output: `⚠️ Output too large to display (${formatBytes(env.originalBytes)} truncated).`,
+      isError: /"isError":true/.test(head) || /"isError":true/.test(tail),
+      truncated: true,
+    };
+  }
+  return { type, truncated: true, truncatedBytes: env.originalBytes };
+}
+
 export interface OrphanSweepResult {
   /** Rows deleted whose `parent_kind='message'` parent message is gone. */
   messageOrphans: number;

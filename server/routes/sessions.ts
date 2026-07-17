@@ -31,6 +31,7 @@ import {
   validateSessionModeForProject,
 } from '../project-mode-guards.js';
 import { listSessionDesignFiles } from '../session-design-files.js';
+import { isTruncatedPayload, rehydrateTruncatedEvent } from '../session-events-store.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { appendCodexShellEnvironmentPolicyArgs } from '../codex-exec-sandbox.js';
 import { markSessionTermination } from '../process-termination.js';
@@ -167,7 +168,12 @@ type CronSessionRow = SessionRow & {
 
 function safeParse(s: string): Record<string, unknown> {
   try {
-    return JSON.parse(s) as Record<string, unknown>;
+    const parsed = JSON.parse(s) as Record<string, unknown>;
+    // Rows clamped at insert time persist as a truncation envelope with no
+    // `type`. Rehydrate a renderable/pairable event so the UI doesn't fall
+    // through to its "unhandled event" placeholder on reload.
+    if (isTruncatedPayload(parsed)) return rehydrateTruncatedEvent(parsed);
+    return parsed;
   } catch {
     return { type: 'unknown', text: s };
   }

@@ -5,6 +5,7 @@ import type {
   ProgressStepStatus,
   StreamEvent,
   StreamParser,
+  ToolResultImageRef,
 } from './types.js';
 
 type NormalizeFn = (raw: Record<string, unknown>) => StreamEvent[];
@@ -438,7 +439,13 @@ function parseLine(line: string, normalize: NormalizeFn): StreamEvent[] {
   }
   try {
     const events = normalize(raw);
-    for (const e of events) e.raw = trimmed;
+    // Attach the original line only to `unknown` events, which surface it for
+    // debugging. Every other event already carries its parsed fields; copying
+    // the whole line onto them duplicated multi-hundred-KB tool_result / image
+    // payloads onto sibling events (e.g. the tiny checkpoint emitted from the
+    // same JSONL line as an image read), pushing them past the session_events
+    // payload cap so they persisted as an unrenderable truncation envelope.
+    for (const e of events) if (e.type === 'unknown') e.raw = trimmed;
     return events;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -516,11 +523,13 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
 
       for (const block of content) {
         if (block.type === 'tool_result') {
+          const { output, images } = extractToolResult(block.content);
           out.push({
             type: 'tool_result',
             toolUseId: block.tool_use_id as string,
-            output: stringifyToolResult(block.content),
+            output,
             isError: block.is_error === true,
+            ...(images.length > 0 ? { images } : {}),
           });
         }
       }
@@ -743,6 +752,11 @@ function normalizeCursor(
         const result = (detail.result ?? {}) as Record<string, unknown>;
         const success = (result.success as Record<string, unknown> | null) ?? null;
         const failure = (result.failure as string | Record<string, unknown> | null) ?? null;
+        // Cursor forwards MCP tool output under a `content` array; lift any
+        // images out of it (and use its text) so an MCP image read renders
+        // inline like Claude's instead of dumping the base64 into `output`.
+        const mcpContent = (success?.content as unknown) ?? (result.content as unknown) ?? null;
+        const extracted = extractToolResult(mcpContent);
         let output = '';
         let isError = false;
         if (success) {
@@ -753,6 +767,11 @@ function normalizeCursor(
             if (typeof success.exitCode === 'number' && success.exitCode !== 0) {
               isError = true;
             }
+          } else if (Array.isArray(mcpContent)) {
+            // MCP text content renders via extractToolResult; fall back to the
+            // JSON dump when the array yields no text (e.g. image-only or empty)
+            // so a successful result is never blank.
+            output = extracted.output || JSON.stringify(success, null, 2);
           } else {
             output = JSON.stringify(success, null, 2);
           }
@@ -767,6 +786,7 @@ function normalizeCursor(
           toolUseId: callId,
           output,
           isError,
+          ...(extracted.images.length > 0 ? { images: extracted.images } : {}),
         });
         return out;
       }
@@ -824,20 +844,109 @@ function normalizeCursor(
 
 // ─── Helpers ───────────────────────────────────────────────────────────
 
-function stringifyToolResult(content: unknown): string {
-  if (typeof content === 'string') return content;
+export interface ExtractedToolResult {
+  output: string;
+  images: ToolResultImageRef[];
+}
+
+/**
+ * Normalize a CLI tool_result `content` into a display string plus any embedded
+ * images pulled out for inline rendering. Image blocks (e.g. Claude reading a
+ * PNG) previously got `JSON.stringify`-dumped straight into `output`, so a
+ * single image read produced a 300KB–1MB base64 blob that blew past the
+ * session_events payload cap and vanished behind a truncation envelope. We now
+ * lift images into `images` (offloaded to the uploads store before persist) and
+ * leave a compact `[image: <type>]` placeholder in the text.
+ */
+/**
+ * Recognize an image content block across every CLI's tool_result shape and
+ * lift it into a `ToolResultImageRef`. Returns null for non-image blocks.
+ *
+ * Supported shapes:
+ *   - Anthropic / Claude Code: `{ type:'image', source:{ type:'base64',
+ *     media_type, data } }` (or `source:{ url }`).
+ *   - MCP / ACP (Codex MCP tools, grok-cli & gemini over ACP): `{ type:'image',
+ *     data:'<base64>', mimeType }` — base64 + mime at the top level.
+ */
+function imageRefFromBlock(obj: Record<string, unknown>): ToolResultImageRef | null {
+  if (obj.type !== 'image' && obj.type !== 'image_url') return null;
+
+  // Anthropic content-block shape: bytes/URL nested under `source`.
+  const src = obj.source as Record<string, unknown> | undefined;
+  if (src && typeof src === 'object') {
+    if (src.type === 'base64' && typeof src.data === 'string') {
+      const mediaType = typeof src.media_type === 'string' ? src.media_type : 'image/png';
+      return { mediaType, dataBase64: src.data };
+    }
+    if (typeof src.url === 'string') {
+      const mediaType = typeof src.media_type === 'string' ? src.media_type : 'image';
+      return { mediaType, url: src.url };
+    }
+  }
+
+  // MCP / ACP shape: base64 `data` + `mimeType` (camelCase) at the top level.
+  // Accept `media_type` as a fallback for lenient producers.
+  const topMime =
+    typeof obj.mimeType === 'string'
+      ? obj.mimeType
+      : typeof obj.media_type === 'string'
+        ? (obj.media_type as string)
+        : 'image/png';
+  if (typeof obj.data === 'string') {
+    return { mediaType: topMime, dataBase64: obj.data };
+  }
+  if (typeof obj.url === 'string') {
+    return { mediaType: topMime === 'image/png' ? 'image' : topMime, url: obj.url };
+  }
+  return null;
+}
+
+export function extractToolResult(content: unknown): ExtractedToolResult {
+  const images: ToolResultImageRef[] = [];
+  if (typeof content === 'string') return { output: content, images };
   if (Array.isArray(content)) {
-    return content
+    const output = content
       .map((b: unknown) => {
         if (typeof b === 'string') return b;
-        if (b && typeof b === 'object' && (b as Record<string, unknown>).type === 'text')
-          return ((b as Record<string, unknown>).text as string) ?? '';
+        if (b && typeof b === 'object') {
+          const outer = b as Record<string, unknown>;
+          // ACP (grok-cli, gemini over ACP) wraps the real ContentBlock in a
+          // `ToolCallContent`: `{ type:'content', content:<ContentBlock> }`.
+          const obj =
+            outer.type === 'content' && outer.content && typeof outer.content === 'object'
+              ? (outer.content as Record<string, unknown>)
+              : outer;
+          if (obj.type === 'text') return (obj.text as string) ?? '';
+          const img = imageRefFromBlock(obj);
+          if (img) {
+            images.push(img);
+            return `[image: ${img.url ?? img.mediaType}]`;
+          }
+        }
         return JSON.stringify(b);
       })
       .join('\n');
+    return { output, images };
   }
-  if (content == null) return '';
-  return JSON.stringify(content);
+  if (content == null) return { output: '', images };
+  // MCP `CallToolResult` wraps the blocks in a `content` array (Codex MCP tools,
+  // Cursor-forwarded MCP output). Recurse into it so images are lifted.
+  if (typeof content === 'object' && Array.isArray((content as Record<string, unknown>).content)) {
+    return extractToolResult((content as Record<string, unknown>).content);
+  }
+  return { output: JSON.stringify(content), images };
+}
+
+/** extractToolResult, returning the `images` spread ready for a tool_result event. */
+function toolResultImagesField(
+  content: unknown,
+): { images: ToolResultImageRef[] } | Record<string, never> {
+  const { images } = extractToolResult(content);
+  return images.length > 0 ? { images } : {};
+}
+
+function stringifyToolResult(content: unknown): string {
+  return extractToolResult(content).output;
 }
 
 const CURSOR_TOOL_MAP: Record<string, string> = {
@@ -953,13 +1062,14 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
       // Real gemini-cli pairs results via `tool_id`; older schema used `toolUseId`/`tool_use_id`.
       const toolUseId =
         (raw.tool_id as string) ?? (raw.toolUseId as string) ?? (raw.tool_use_id as string) ?? '';
-      const output = stringifyToolResult(raw.output ?? raw.content);
+      const { output, images } = extractToolResult(raw.output ?? raw.content);
       return [
         {
           type: 'tool_result',
           toolUseId,
           output,
           isError: raw.isError === true || raw.is_error === true || raw.status === 'error',
+          ...(images.length > 0 ? { images } : {}),
         },
       ];
     }
@@ -1237,6 +1347,7 @@ function normalizeGrok(
             toolUseId: id,
             output: stringifyToolResult(update.content),
             isError: status === 'failed',
+            ...toolResultImagesField(update.content),
           });
         }
         return out;
@@ -1251,6 +1362,7 @@ function normalizeGrok(
             toolUseId: id,
             output: stringifyToolResult(update.content),
             isError: status === 'failed',
+            ...toolResultImagesField(update.content),
           },
         ];
       }
@@ -1440,13 +1552,15 @@ function normalizeCodex(
             ];
           }
           if (type === 'item.completed') {
-            const output = stringifyToolResult(item.result ?? item.error ?? '');
+            const resultContent = item.result ?? item.error ?? '';
+            const output = stringifyToolResult(resultContent);
             return [
               {
                 type: 'tool_result',
                 toolUseId: id,
                 output,
                 isError: item.status === 'failed' || !!item.error,
+                ...toolResultImagesField(resultContent),
               },
             ];
           }

@@ -1,4 +1,9 @@
-import { createStreamParser, extractAskBlocks, extractStepMarkers } from './stream-parser.js';
+import {
+  createStreamParser,
+  extractAskBlocks,
+  extractStepMarkers,
+  extractToolResult,
+} from './stream-parser.js';
 import type {
   AskUserQuestionEvent,
   ProgressStepEvent,
@@ -127,6 +132,91 @@ describe('createStreamParser — Claude Code', () => {
     ]);
 
     expect((events[0] as { isError: boolean }).isError).toBe(true);
+  });
+
+  it('lifts base64 image content out of tool_result into images[]', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool-img',
+              content: [
+                { type: 'text', text: 'here is the file' },
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: 'image/png', data: 'AAAABBBBCCCC' },
+                },
+              ],
+              is_error: false,
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(events).toHaveLength(1);
+    const ev = events[0] as {
+      type: string;
+      output: string;
+      images?: Array<{ mediaType: string; dataBase64?: string }>;
+    };
+    expect(ev.type).toBe('tool_result');
+    // Base64 blob must NOT be inlined into output (that's what blew the payload cap).
+    expect(ev.output).not.toContain('AAAABBBBCCCC');
+    expect(ev.output).toContain('here is the file');
+    expect(ev.output).toContain('[image: image/png]');
+    expect(ev.images).toHaveLength(1);
+    expect(ev.images?.[0].mediaType).toBe('image/png');
+    expect(ev.images?.[0].dataBase64).toBe('AAAABBBBCCCC');
+  });
+
+  it('omits images[] for a plain-text tool_result', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'tool-txt', content: 'plain', is_error: false },
+          ],
+        },
+      }),
+    ]);
+    expect((events[0] as { images?: unknown }).images).toBeUndefined();
+  });
+
+  it('does not attach the raw line to known events (keeps checkpoints small)', () => {
+    const bigData = 'x'.repeat(200_000);
+    const events = parse([
+      JSON.stringify({
+        type: 'user',
+        uuid: 'chk-1',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool-big',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: 'image/png', data: bigData },
+                },
+              ],
+              is_error: false,
+            },
+          ],
+        },
+      }),
+    ]);
+    const checkpoint = events.find((e) => e.type === 'checkpoint') as
+      | (StreamEvent & { raw?: string })
+      | undefined;
+    expect(checkpoint).toBeDefined();
+    // The 200KB base64 must not ride along on the sibling checkpoint via `raw`.
+    expect(checkpoint?.raw).toBeUndefined();
+    expect(JSON.stringify(checkpoint).length).toBeLessThan(500);
   });
 
   it('parses stream_event text deltas', () => {
@@ -2045,5 +2135,194 @@ describe('createStreamParser — Codex CLI', () => {
       | undefined;
     expect(ask).toBeDefined();
     expect(ask?.questions[0].question).toBe('Library?');
+  });
+});
+
+describe('extractToolResult — image extraction across CLI shapes', () => {
+  it('lifts an Anthropic/Claude source-nested base64 image', () => {
+    const { output, images } = extractToolResult([
+      { type: 'text', text: 'the file' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'CLAUDE64' } },
+    ]);
+    expect(output).toContain('the file');
+    expect(output).toContain('[image: image/png]');
+    expect(output).not.toContain('CLAUDE64');
+    expect(images).toEqual([{ mediaType: 'image/png', dataBase64: 'CLAUDE64' }]);
+  });
+
+  it('lifts a flat MCP-shape image (data + mimeType)', () => {
+    const { output, images } = extractToolResult([
+      { type: 'image', data: 'MCP64', mimeType: 'image/jpeg' },
+    ]);
+    expect(output).toBe('[image: image/jpeg]');
+    expect(output).not.toContain('MCP64');
+    expect(images).toEqual([{ mediaType: 'image/jpeg', dataBase64: 'MCP64' }]);
+  });
+
+  it('lifts an ACP-wrapped image ({type:content, content:<block>})', () => {
+    const { output, images } = extractToolResult([
+      { type: 'content', content: { type: 'image', data: 'ACP64', mimeType: 'image/webp' } },
+    ]);
+    expect(output).toBe('[image: image/webp]');
+    expect(output).not.toContain('ACP64');
+    expect(images).toEqual([{ mediaType: 'image/webp', dataBase64: 'ACP64' }]);
+  });
+
+  it('recurses into an MCP CallToolResult { content: [...] } wrapper', () => {
+    const { output, images } = extractToolResult({
+      content: [{ type: 'image', data: 'WRAP64', mimeType: 'image/png' }],
+      isError: false,
+    });
+    expect(output).toBe('[image: image/png]');
+    expect(images).toEqual([{ mediaType: 'image/png', dataBase64: 'WRAP64' }]);
+  });
+
+  it('returns no images for plain-text / non-image content', () => {
+    expect(extractToolResult('just text').images).toEqual([]);
+    expect(extractToolResult([{ type: 'text', text: 'a' }]).images).toEqual([]);
+    expect(extractToolResult({ count: 3 }).images).toEqual([]);
+  });
+});
+
+describe('image tool_result wiring — per CLI', () => {
+  const IMG_B64 = 'iVBORw0KGgoAAAANS';
+
+  it('Grok (ACP tool_call_update): extracts image, keeps base64 out of output', () => {
+    const parser = createStreamParser('grok-cli');
+    const events = [
+      ...parser.feed(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: 'g1',
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 't1',
+              status: 'completed',
+              content: [
+                {
+                  type: 'content',
+                  content: { type: 'image', data: IMG_B64, mimeType: 'image/png' },
+                },
+              ],
+            },
+          },
+        }) + '\n',
+      ),
+      ...parser.flush(),
+    ];
+    const res = events.find((e) => e.type === 'tool_result') as any;
+    expect(res.images).toEqual([{ mediaType: 'image/png', dataBase64: IMG_B64 }]);
+    expect(res.output).not.toContain(IMG_B64);
+  });
+
+  it('Codex (mcp_tool_call): extracts image from a CallToolResult', () => {
+    const parser = createStreamParser('codex-cli');
+    const events = [
+      ...parser.feed(
+        JSON.stringify({
+          type: 'item.completed',
+          item: {
+            id: 'mcp_img',
+            type: 'mcp_tool_call',
+            server: 'imgsrv',
+            tool: 'render',
+            result: { content: [{ type: 'image', data: IMG_B64, mimeType: 'image/png' }] },
+            status: 'completed',
+          },
+        }) + '\n',
+      ),
+      ...parser.flush(),
+    ];
+    const res = events.find((e) => e.type === 'tool_result') as any;
+    expect(res.images).toEqual([{ mediaType: 'image/png', dataBase64: IMG_B64 }]);
+    expect(res.output).not.toContain(IMG_B64);
+  });
+
+  it('Gemini (generic tool_result): extracts an MCP-shape image', () => {
+    const parser = createStreamParser('gemini-cli');
+    const events = [
+      ...parser.feed(
+        JSON.stringify({
+          type: 'tool_result',
+          tool_id: 'g-img',
+          content: [{ type: 'image', data: IMG_B64, mimeType: 'image/png' }],
+        }) + '\n',
+      ),
+      ...parser.flush(),
+    ];
+    const res = events.find((e) => e.type === 'tool_result') as any;
+    expect(res.images).toEqual([{ mediaType: 'image/png', dataBase64: IMG_B64 }]);
+    expect(res.output).not.toContain(IMG_B64);
+  });
+
+  it('Cursor (forwarded MCP content): extracts image from result.success.content', () => {
+    const parser = createStreamParser('cursor-agent');
+    const events = [
+      ...parser.feed(
+        JSON.stringify({
+          type: 'tool_call',
+          subtype: 'completed',
+          call_id: 'c-img',
+          tool_call: {
+            mcpToolCall: {
+              args: {},
+              result: {
+                success: { content: [{ type: 'image', data: IMG_B64, mimeType: 'image/png' }] },
+              },
+            },
+          },
+        }) + '\n',
+      ),
+      ...parser.flush(),
+    ];
+    const res = events.find((e) => e.type === 'tool_result') as any;
+    expect(res).toBeDefined();
+    expect(res.images).toEqual([{ mediaType: 'image/png', dataBase64: IMG_B64 }]);
+    expect(res.output).not.toContain(IMG_B64);
+  });
+
+  it('Cursor (MCP text content): renders the text, not a blank output', () => {
+    const parser = createStreamParser('cursor-agent');
+    const events = [
+      ...parser.feed(
+        JSON.stringify({
+          type: 'tool_call',
+          subtype: 'completed',
+          call_id: 'c-txt',
+          tool_call: {
+            mcpToolCall: {
+              args: {},
+              result: { success: { content: [{ type: 'text', text: 'mcp says hi' }] } },
+            },
+          },
+        }) + '\n',
+      ),
+      ...parser.flush(),
+    ];
+    const res = events.find((e) => e.type === 'tool_result') as any;
+    expect(res.output).toBe('mcp says hi');
+    expect(res.images).toBeUndefined();
+  });
+
+  it('Cursor (empty MCP content): falls back to the JSON dump, never blank', () => {
+    const parser = createStreamParser('cursor-agent');
+    const events = [
+      ...parser.feed(
+        JSON.stringify({
+          type: 'tool_call',
+          subtype: 'completed',
+          call_id: 'c-empty',
+          tool_call: {
+            mcpToolCall: { args: {}, result: { success: { content: [], ok: true } } },
+          },
+        }) + '\n',
+      ),
+      ...parser.flush(),
+    ];
+    const res = events.find((e) => e.type === 'tool_result') as any;
+    expect(res.output.length).toBeGreaterThan(0);
+    expect(res.output).toContain('ok');
   });
 });

@@ -3939,11 +3939,30 @@ export interface ToolUseEvent extends BaseStreamEvent {
   input: Record<string, unknown>;
 }
 
+/**
+ * An image embedded in a tool_result (e.g. Claude reading a PNG/JPEG file).
+ * At parse time the raw base64 rides on `dataBase64`; before the event is
+ * persisted/broadcast the server offloads the bytes to the uploads store and
+ * rewrites it to a served `url` (see server/tool-result-images.ts) so the
+ * session_events payload stays small. The client renders `url` when present,
+ * otherwise reconstructs a data URL from `dataBase64` + `mediaType`.
+ */
+export interface ToolResultImageRef {
+  /** MIME type, e.g. "image/png". */
+  mediaType: string;
+  /** Base64 image bytes as emitted by the CLI. Stripped after offload. */
+  dataBase64?: string;
+  /** Served URL (e.g. "/uploads/tool-image-<id>.png") once offloaded. */
+  url?: string;
+}
+
 export interface ToolResultEvent extends BaseStreamEvent {
   type: 'tool_result';
   toolUseId: string;
   output: string;
   isError: boolean;
+  /** Images the tool returned (Read of an image file, etc.), rendered inline. */
+  images?: ToolResultImageRef[];
 }
 
 export interface ResultEvent extends BaseStreamEvent {
