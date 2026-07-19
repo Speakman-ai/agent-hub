@@ -13,6 +13,11 @@ import path from 'path';
 import config from './config.js';
 import { getDb, getStmts } from './db.js';
 import { resolveProjectSkillsDir, setProjectSkillsDataDir } from './project-skill-paths.js';
+import {
+  getProjectMode,
+  getWorkflowWorkspaceDir,
+  isPlaceholderWorkflowCwd,
+} from './project-mode.js';
 import type { Project, Agent, EnrichedAgent, AgentLookup } from './types.js';
 export { deleteProjectSkillsDir, resolveProjectSkillsDir } from './project-skill-paths.js';
 
@@ -33,8 +38,50 @@ function initProjects(dataDir?: string): void {
   }
   projects = JSON.parse(readFileSync(PROJECTS_PATH, 'utf-8')) as Project[];
   hydrateProjects();
+  migrateWorkflowProjectWorkspaces();
   migrateProjectSkillDirectories();
   migrateWebhookRepoToProject();
+}
+
+/**
+ * Repoint existing workflow (no-code) projects whose `cwd` is a legacy
+ * placeholder (`/tmp`, empty, or `config.defaultCwd`) at their durable
+ * managed workspace dir, and create it on disk. Older workflow-create
+ * paths stamped `/tmp` — shared across projects, wiped on reboot — so
+ * without this backfill a no-code project made before the fix keeps
+ * scattering agent resources into `/tmp`. Only known placeholders are
+ * touched; a cwd the user set deliberately is left alone. Persists once if
+ * anything changed.
+ */
+function migrateWorkflowProjectWorkspaces(): void {
+  let changed = false;
+  for (const p of projects) {
+    if (getProjectMode(p) !== 'workflow') continue;
+    if (!isPlaceholderWorkflowCwd(p.cwd, config.defaultCwd)) continue;
+    const workspaceDir = getWorkflowWorkspaceDir(getProjectDataDir(p.id));
+    try {
+      mkdirSync(workspaceDir, { recursive: true });
+    } catch (err) {
+      console.warn(
+        `[project-model] Failed to create workflow workspace for "${p.id}": ${(err as Error).message}`,
+      );
+      continue;
+    }
+    if (p.cwd !== workspaceDir) {
+      p.cwd = workspaceDir;
+      changed = true;
+      console.log(`[project-model] Repointed workflow project "${p.id}" cwd to ${workspaceDir}`);
+    }
+  }
+  if (changed) {
+    try {
+      saveProjects();
+    } catch (err) {
+      console.warn(
+        `[project-model] Failed to persist workflow workspace migration: ${(err as Error).message}`,
+      );
+    }
+  }
 }
 
 // ─── Core accessors ─────────────────────────────────────────────────
@@ -149,6 +196,7 @@ function reloadProjects(dataDir: string): void {
   }
   projects = JSON.parse(readFileSync(PROJECTS_PATH, 'utf-8')) as Project[];
   hydrateProjects();
+  migrateWorkflowProjectWorkspaces();
   migrateProjectSkillDirectories();
   // Auto-seeding Docs/Intake/Reviewer on reload is deprecated alongside the
   // sub-agent model (see CLAUDE.md "Flat Agent Model"). Context files are
@@ -642,6 +690,7 @@ export {
   initProjects,
   migrateAhwDirectories,
   migrateWebhookRepoToProject,
+  migrateWorkflowProjectWorkspaces,
   // State accessors
   getProjects,
   setProjects,

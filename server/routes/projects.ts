@@ -91,6 +91,7 @@ import {
 } from '../preview-detect-suggestion.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
+import { getWorkflowWorkspaceDir } from '../project-mode.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -2406,6 +2407,14 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       });
     }
     const dataDir = getProjectDataDir(id);
+    // Workflow (no-code) projects have no git repo and no per-session
+    // worktree — every session runs directly in `project.cwd`. Point that
+    // at a durable, project-scoped directory under the managed data dir so
+    // agent-produced resources live in one persistent place instead of the
+    // historical `/tmp` placeholder (shared across projects, wiped on
+    // reboot). Dev projects keep the caller-supplied cwd / defaultCwd.
+    const workflowWorkspaceDir =
+      createMode === 'workflow' ? getWorkflowWorkspaceDir(dataDir) : null;
     // Authenticated creators get a private durable staging state first.
     // Once their member ACL row exists, a shared project can be published
     // safely. If any post-save ACL/publish step fails, the project remains
@@ -2414,7 +2423,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const project: Project = {
       id,
       name: name || id,
-      cwd: cwd || config.defaultCwd,
+      cwd: workflowWorkspaceDir ?? (cwd || config.defaultCwd),
       ahw: dataDir,
       color: color || '#6b7280',
       visibility: initialVisibility,
@@ -2445,6 +2454,10 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
     mkdirSync(resolveProjectSkillsDir(project), { recursive: true });
     mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
+    // Create the no-code project's durable resource directory up front so
+    // it exists before the first chat spawn rather than relying on the
+    // just-in-time ensure step.
+    if (workflowWorkspaceDir) mkdirSync(workflowWorkspaceDir, { recursive: true });
 
     projects.push(project);
     try {

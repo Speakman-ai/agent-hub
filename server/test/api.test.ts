@@ -167,6 +167,36 @@ describe('Projects', () => {
       expect(res.body.githubRepo).toBeUndefined();
     });
 
+    it('points a workflow project cwd at a durable per-project resource dir (not /tmp)', async () => {
+      // No-code projects have no worktree — every session runs in project.cwd.
+      // The client's `/tmp` placeholder must be replaced server-side with a
+      // durable, project-scoped dir under the managed data dir, created on disk.
+      const { existsSync } = await import('fs');
+      const path = await import('path');
+      const projectId = `wf-cwd-${Date.now()}-${++_uniqueCounter}`;
+      const res = await request
+        .post('/api/projects')
+        .send({ id: projectId, name: 'WF Cwd', cwd: '/tmp', mode: 'workflow' })
+        .expect(201);
+      const expected = path.join(res.body.ahw as string, 'workspace');
+      expect(res.body.cwd).toBe(expected);
+      expect(res.body.cwd).not.toBe('/tmp');
+      expect(existsSync(res.body.cwd)).toBe(true);
+    });
+
+    it('leaves a dev project cwd as the caller-supplied path', async () => {
+      // Only workflow mode gets the managed-dir override; dev projects keep
+      // their explicit cwd (they run in a worktree derived from it anyway).
+      const path = await import('path');
+      const projectId = `dev-cwd-${Date.now()}-${++_uniqueCounter}`;
+      const res = await request
+        .post('/api/projects')
+        .send({ id: projectId, name: 'Dev Cwd', cwd: '/tmp/dev-explicit' })
+        .expect(201);
+      expect(res.body.cwd).toBe('/tmp/dev-explicit');
+      expect(res.body.cwd).not.toBe(path.join(res.body.ahw as string, 'workspace'));
+    });
+
     it('scaffolds a workflow project with board, primary agent + docs (intake retired), and context files', async () => {
       // Workflow projects must land the user on a fully-formed shell — not
       // a blank canvas. The wizard's `POST /api/projects { mode: 'workflow' }`

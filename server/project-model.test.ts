@@ -7,6 +7,8 @@ import {
   getProjects,
   saveProjects,
   migrateWebhookRepoToProject,
+  migrateWorkflowProjectWorkspaces,
+  getProjectDataDir,
   ensureReviewerAgents,
   ensureSkillBuilderAgents,
   retireIntakeAgents,
@@ -154,6 +156,74 @@ describe('migrateWebhookRepoToProject', () => {
 
       expect(findProject(projId)!.githubRepo, `${c.label} (${c.url})`).toBe(c.expected);
     }
+  });
+});
+
+describe('migrateWorkflowProjectWorkspaces', () => {
+  async function createWorkflowProject(projId: string): Promise<void> {
+    const request = await getRequest();
+    createdProjectIds.push(projId);
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name: `WF ${projId}`, cwd: '/tmp', mode: 'workflow' })
+      .expect(201);
+  }
+
+  it('repoints a placeholder /tmp cwd to the managed workspace dir and creates it', async () => {
+    const { existsSync } = await import('fs');
+    const projId = `wf-migrate-${Date.now()}`;
+    await createWorkflowProject(projId);
+
+    // Simulate a legacy row created before the fix: cwd stamped as /tmp.
+    const project = findProject(projId)!;
+    project.cwd = '/tmp';
+    saveProjects();
+
+    migrateWorkflowProjectWorkspaces();
+
+    const expected = path.join(getProjectDataDir(projId), 'workspace');
+    expect(findProject(projId)!.cwd).toBe(expected);
+    expect(existsSync(expected)).toBe(true);
+  });
+
+  it('leaves a workflow cwd the user set deliberately untouched', async () => {
+    const projId = `wf-keep-${Date.now()}`;
+    await createWorkflowProject(projId);
+
+    const project = findProject(projId)!;
+    project.cwd = '/var/data/deliberate';
+    saveProjects();
+
+    migrateWorkflowProjectWorkspaces();
+
+    expect(findProject(projId)!.cwd).toBe('/var/data/deliberate');
+  });
+
+  it('ignores dev-mode projects', async () => {
+    const request = await getRequest();
+    const projId = `dev-migrate-${Date.now()}`;
+    createdProjectIds.push(projId);
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name: 'Dev Migrate', cwd: '/tmp' })
+      .expect(201);
+
+    migrateWorkflowProjectWorkspaces();
+
+    // Dev project keeps its /tmp cwd — the override is workflow-only.
+    expect(findProject(projId)!.cwd).toBe('/tmp');
   });
 });
 

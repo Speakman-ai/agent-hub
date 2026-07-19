@@ -53,9 +53,11 @@ export async function createWorkflowProject(input: any) {
     throw err;
   }
 
-  // `cwd` is required by the server schema but unused in workflow mode
-  // (no worktrees, no git ops). Default to `/tmp` so the user isn't asked
-  // for a path that has no observable effect.
+  // `cwd` is unused in workflow mode: the server ignores whatever we send
+  // and points a workflow project's cwd at its own managed, durable
+  // resource dir (`<projectsDir>/<id>/workspace`). We still send `/tmp` so
+  // the body shape is unchanged and the user isn't asked for a path that
+  // has no observable effect.
   const body: Record<string, any> = {
     id,
     name,
