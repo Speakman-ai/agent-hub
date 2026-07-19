@@ -5,6 +5,7 @@ import {
   isDevProject,
   isWorkflowProject,
   sessionBlocksFinalize,
+  sessionCanUseDesignMode,
   validateFinalizeAutomationForProject,
   validateSessionModeForProject,
 } from './project-mode-guards.js';
@@ -21,22 +22,33 @@ describe('project-mode-guards', () => {
     expect(finalizeAllowedForProject(workflowProject)).toBe(false);
   });
 
-  it('allows non-shipping session modes on both dev and workflow projects', () => {
+  it('allows non-shipping session modes (incl. design) on both dev and workflow projects', () => {
     expect(validateSessionModeForProject(workflowProject, 'consult')).toBeNull();
     expect(validateSessionModeForProject(workflowProject, 'scoping')).toBeNull();
     expect(validateSessionModeForProject(workflowProject, 'skill-builder')).toBeNull();
+    // Design is now allowed on workflow projects (data-dir artifact store).
+    expect(validateSessionModeForProject(workflowProject, 'design')).toBeNull();
     expect(validateSessionModeForProject(devProject, 'consult')).toBeNull();
     expect(validateSessionModeForProject(devProject, 'scoping')).toBeNull();
     expect(validateSessionModeForProject(devProject, 'skill-builder')).toBeNull();
+    expect(validateSessionModeForProject(devProject, 'design')).toBeNull();
   });
 
-  it('blocks build/chat-style session modes on workflow projects', () => {
+  it('blocks build/chat-style (shipping) session modes on workflow projects', () => {
     expect(validateSessionModeForProject(workflowProject, 'chat')?.error).toBe(
       'session_mode_not_allowed_on_workflow_project',
     );
-    expect(validateSessionModeForProject(workflowProject, 'design')?.error).toBe(
-      'session_mode_not_allowed_on_workflow_project',
-    );
+  });
+
+  it('sessionCanUseDesignMode: worktree (dev) OR workflow project', () => {
+    const withWorktree = { worktree_path: '/ws/s1' };
+    const noWorktree = { worktree_path: null };
+    // Dev project: needs a worktree.
+    expect(sessionCanUseDesignMode(withWorktree, devProject)).toBe(true);
+    expect(sessionCanUseDesignMode(noWorktree, devProject)).toBe(false);
+    // Workflow project: allowed even without a worktree (data-dir store).
+    expect(sessionCanUseDesignMode(noWorktree, workflowProject)).toBe(true);
+    expect(sessionCanUseDesignMode(withWorktree, workflowProject)).toBe(true);
   });
 
   it('blocks ship automation on workflow projects only', () => {

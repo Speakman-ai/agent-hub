@@ -261,14 +261,21 @@ describe('sessionControlPatch', () => {
 });
 
 describe('sessionControlOptionsForProject / sessionControlValueForProject', () => {
-  it('offers only server-accepted workflow modes on workflow projects', () => {
+  it('offers only server-accepted workflow modes (incl. Design) on workflow projects', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'sub' });
-    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'scoping', 'skill-builder']);
+    // Design is offered on workflow projects (data-dir artifact store). Order
+    // follows SESSION_CONTROL_OPTIONS: consult, design, scoping, skill-builder.
+    expect(opts.map((o: any) => o.value)).toEqual([
+      'consult',
+      'design',
+      'scoping',
+      'skill-builder',
+    ]);
   });
 
   it('hides Skill Builder on workflow projects when the agent is a helper', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'docs' });
-    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'scoping']);
+    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'design', 'scoping']);
   });
 
   it('includes Consult and Build modes on dev projects', () => {

@@ -30,3 +30,15 @@ export function listSessionDesignFiles(
   const root = path.join(path.resolve(worktreePath), subdir);
   return listFilesUnder(root);
 }
+
+/**
+ * List design artifacts under an already-resolved absolute artifact `root` —
+ * e.g. the workflow data-dir store `<dataDir>/design-sessions/<sessionId>`, whose
+ * files live directly at the root (no `design/` subdir). Callers resolve the
+ * store via `resolveDesignArtifactLocation` and pass `location.root`. A blank
+ * root, or one that holds no files, yields `[]`.
+ */
+export function listSessionDesignFilesAtRoot(root: string | null | undefined): DesignFileEntry[] {
+  if (!root || typeof root !== 'string') return [];
+  return listFilesUnder(path.resolve(root));
+}

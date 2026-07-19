@@ -79,17 +79,13 @@ import {
 } from './skill-invoke.js';
 import { detectSkillImprovementBlock, handleSkillImprovement } from './skill-improvement.js';
 import { routeSkillsFromMessage } from './skill-router.js';
-import {
-  isDesignModeActive,
-  isConsultModeActive,
-  isScopingModeActive,
-  sessionHasUsableWorktree,
-} from './session-mode.js';
+import { isDesignModeActive, isConsultModeActive, isScopingModeActive } from './session-mode.js';
 import {
   buildDesignModePreamble,
   requiredSkillIdsForSession,
-  ensureRealDesignDir,
+  ensureRealArtifactDir,
 } from './design-mode-prompt.js';
+import { resolveDesignArtifactLocation } from './design-artifact-store.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
@@ -1699,24 +1695,28 @@ export function augmentChatTurnForDesignMode(args: {
   broadcast: BroadcastFn;
   /** When false, skip the skill force-load (preamble still built). */
   loadSkills: boolean;
+  /** Hub data dir — where workflow (no-code) design artifacts are stored. */
+  dataDir: string;
   /** Skill ids already injected this turn (router/pending) — used to dedupe. */
   alreadyLoadedSkillIds?: Set<string>;
 }): DesignModeTurnAugmentation {
-  const { session, project, paths, sessionId, stmts, broadcast, loadSkills } = args;
+  const { session, project, paths, sessionId, stmts, broadcast, loadSkills, dataDir } = args;
   if (!isDesignModeActive(session)) {
     return { skillInjections: [], preamble: '', artifactDirReady: null };
   }
 
-  // Design mode REQUIRES an isolated session worktree. Do NOT fall back to
-  // project.cwd: a non-worktree session would create `<project.cwd>/design`,
-  // polluting the shared project checkout and breaking the Design→Build handoff
-  // (which relies on artifacts living in the same worktree). When there is no
-  // worktree, disable design behavior — skip the skill force-load and emit a
-  // preamble explaining the mode is unavailable, never instructing a write.
-  if (!sessionHasUsableWorktree(session)) {
+  // Resolve WHERE this design session's artifacts live: a dev-project session
+  // uses its worktree `design/`; a workflow (no-code) session uses the
+  // Hub-managed data-dir store. `null` means design cannot run — a dev-project
+  // session with no worktree (falling back to project.cwd would pollute the
+  // shared checkout and break the Design→Build handoff). Disable design behavior
+  // there: no skill load, no dir creation, and a preamble explaining the mode is
+  // unavailable.
+  const location = resolveDesignArtifactLocation({ session, sessionId, project, dataDir });
+  if (!location) {
     console.warn(
-      `[design-mode] session ${sessionId} is in design mode but has no isolated ` +
-        `worktree — design behavior disabled (would pollute the project checkout).`,
+      `[design-mode] session ${sessionId} is in design mode but has no artifact store ` +
+        `(no worktree, non-workflow project) — design behavior disabled.`,
     );
     return {
       skillInjections: [],
@@ -1728,9 +1728,6 @@ export function augmentChatTurnForDesignMode(args: {
       artifactDirReady: false,
     };
   }
-
-  // Guaranteed non-empty by the sessionHasUsableWorktree guard above.
-  const worktree = (session.worktree_path ?? '').trim();
 
   const alreadyLoaded = args.alreadyLoadedSkillIds ?? new Set<string>();
   const skillInjections: string[] = [];
@@ -1750,26 +1747,36 @@ export function augmentChatTurnForDesignMode(args: {
     }
   }
 
-  // Neutralize a symlinked `design/` root BEFORE the preamble instructs the
-  // agent to write there. mkdirSync follows symlinks, so a `design -> /elsewhere`
-  // root would silently send design-mode writes outside the worktree; this
-  // removes the link (not its target) and creates a real dir, keeping artifacts
-  // in the checkout. See ensureRealDesignDir (unit-tested).
-  const prep = ensureRealDesignDir(worktree);
+  // Neutralize a symlinked artifact root BEFORE the preamble instructs the agent
+  // to write there. mkdirSync follows symlinks, so a `design -> /elsewhere` root
+  // would silently send design-mode writes outside the intended store; this
+  // removes the link (not its target) and creates a real dir. See
+  // ensureRealArtifactDir (unit-tested). `location.root` is the absolute artifact
+  // dir for both backends (`<worktree>/design` or `<dataDir>/design-sessions/<id>`).
+  const prep = ensureRealArtifactDir(location.root);
   if (!prep.ok) {
-    // A non-directory entry occupies `design/` (or mkdir failed) — do NOT send a
-    // prompt telling the agent to write into an impossible path. The preamble
-    // switches to an explicit error + recovery path (artifactDirReady: false).
+    // A non-directory entry occupies the artifact root (or mkdir failed) — do NOT
+    // send a prompt telling the agent to write into an impossible path. The
+    // preamble switches to an explicit error + recovery path (artifactDirReady:
+    // false).
     console.warn(
       `[design-mode] artifact dir not usable for session ${sessionId} at ${prep.dir} — ` +
         `prompting the agent to clear the conflicting entry before writing.`,
     );
   }
-  const preamble = buildDesignModePreamble({
-    worktreePath: worktree,
-    linkedProjects: [project],
-    artifactDirReady: prep.ok,
-  });
+  const preamble =
+    location.kind === 'data-dir'
+      ? buildDesignModePreamble({
+          worktreePath: '',
+          linkedProjects: [project],
+          artifactDirReady: prep.ok,
+          dataDirStore: { rootDir: location.root },
+        })
+      : buildDesignModePreamble({
+          worktreePath: (session.worktree_path ?? '').trim(),
+          linkedProjects: [project],
+          artifactDirReady: prep.ok,
+        });
   return { skillInjections, preamble, artifactDirReady: prep.ok };
 }
 
@@ -2526,6 +2533,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         stmts: stmts as Stmts,
         broadcast,
         loadSkills: !isAutoContinuation,
+        dataDir: config.dataDir,
         alreadyLoadedSkillIds: loadedRoutedSkillIds,
       });
       if (designTurn.skillInjections.length > 0) {

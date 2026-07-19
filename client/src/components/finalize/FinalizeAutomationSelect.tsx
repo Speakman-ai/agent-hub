@@ -59,7 +59,12 @@ export default function FinalizeAutomationSelect({
           : session?.session_mode === 'consult'
             ? 'consult'
             : 'chat';
-  const canDesign = !!session?.can_design_mode;
+  // Design mode runs when the session has an isolated worktree (dev projects) OR
+  // the project is workflow/no-code (artifacts go to the Hub data-dir store). The
+  // server's `can_design_mode` covers the worktree arm; we OR in the workflow arm
+  // here since the picker already has `project` and broadcast-sourced rows can
+  // carry a stale (worktree-only) capability. The server mode routes still enforce.
+  const canDesign = !!session?.can_design_mode || project?.mode === 'workflow';
   const [pending, setPending] = useState(false);
   const [open, setOpen] = useState(false);
 

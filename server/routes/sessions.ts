@@ -20,17 +20,18 @@ import {
 } from './sessions.openapi.js';
 import {
   normalizeSessionMode,
-  sessionHasUsableWorktree,
   isSkillBuilderEligibleAgent,
   defaultSessionModeForProject,
   type SessionMode,
 } from '../session-mode.js';
 import {
   isWorkflowProject,
+  sessionCanUseDesignMode,
   validateFinalizeAutomationForProject,
   validateSessionModeForProject,
 } from '../project-mode-guards.js';
-import { listSessionDesignFiles } from '../session-design-files.js';
+import { listSessionDesignFiles, listSessionDesignFilesAtRoot } from '../session-design-files.js';
+import { resolveDesignLocationForServe } from '../design-artifact-store.js';
 import { isTruncatedPayload, rehydrateTruncatedEvent } from '../session-events-store.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { appendCodexShellEnvironmentPolicyArgs } from '../codex-exec-sandbox.js';
@@ -512,7 +513,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     // sessions (reviewer threads spawned from GitHub webhooks) are
     // visible to everyone so all users can inspect a PR review.
     const sessions = all.filter((s) => userCanReadSession(req as AuthenticatedRequest, s.id));
-    res.json(sessions.map((s) => enrichSessionForClient(s, stmts)));
+    // All rows belong to this one agent → one project; resolve it once so
+    // `can_design_mode` reflects workflow (no-code) projects, not just worktrees.
+    const listProject = findAgent(String(req.params.agentId))?.project ?? null;
+    res.json(sessions.map((s) => enrichSessionForClient(s, stmts, listProject)));
   });
 
   router.post('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
@@ -596,7 +600,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (userDefault) markSessionFinalizeAutomation(stmts, id, userDefault);
     }
     const session = stmts.getSession.get(id) as SessionRow;
-    const sessionWire = enrichSessionForClient(session, stmts);
+    const sessionWire = enrichSessionForClient(session, stmts, found?.project ?? null);
     deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session: sessionWire });
     res.json(sessionWire);
   });
@@ -653,8 +657,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.get('/api/sessions/:sessionId', (req: Request, res: Response) => {
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
+    const sessionProject = findAgent(session.agent_id)?.project ?? null;
     res.json({
-      ...enrichSessionWithAgents(session, stmts, getEnrichedAgent),
+      ...enrichSessionWithAgents(session, stmts, getEnrichedAgent, sessionProject),
       orchestrationMeta: parseOrchestrationMetaJson(session.orchestration_meta ?? null),
     });
   });
@@ -1379,12 +1384,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     let nextMode: SessionMode | undefined;
     if (parsed.session_mode !== undefined) {
       nextMode = normalizeSessionMode(parsed.session_mode);
-      if (nextMode === 'design' && !sessionHasUsableWorktree(existing)) {
+      if (nextMode === 'design' && !sessionCanUseDesignMode(existing, sessionProject)) {
         return res.status(400).json({
           error: 'design_mode_requires_worktree',
           message:
-            'Design mode requires a session with an isolated worktree. This session has no ' +
-            'worktree, so design artifacts cannot be produced.',
+            'Design mode requires a session with an isolated worktree (dev projects) or a ' +
+            'workflow (no-code) project. This session has neither, so design artifacts cannot ' +
+            'be produced.',
         });
       }
       // Skill Builder is a dev-agent mode: chat.ts prepends a dev coach prompt
@@ -1466,7 +1472,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     })();
 
     const session = stmts.getSession.get(sessionId) as SessionRow;
-    const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent);
+    const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent, sessionProject);
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
   });
@@ -1778,7 +1784,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
     })();
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    res.json(enrichSessionForClient(updated, stmts));
+    res.json(enrichSessionForClient(updated, stmts, sessionProject));
   });
 
   // Session mode picker (chat | design). Persists the chosen mode; the spawn
@@ -1791,16 +1797,19 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (!session) return res.status(404).json({ error: 'Session not found' });
     const sessionProject = findAgent(session.agent_id)?.project ?? null;
     const mode = normalizeSessionMode(parsed.mode);
-    // Design mode requires an isolated worktree: the spawn path disables design
-    // behavior (no skill, no artifacts) for a worktree-less session rather than
-    // writing into the shared project checkout. Refuse to persist `design` here
-    // so API/UI state never claims a mode the session cannot actually run.
-    if (mode === 'design' && !sessionHasUsableWorktree(session)) {
+    // Design mode needs a place to write artifacts: a dev-project session uses
+    // its worktree `design/` dir; a workflow (no-code) session uses the
+    // Hub-managed data-dir store. A dev-project session with no worktree has
+    // neither — the spawn path disables design behavior there rather than
+    // polluting the shared checkout — so refuse to persist `design`, keeping
+    // API/UI state honest about what the session can actually run.
+    if (mode === 'design' && !sessionCanUseDesignMode(session, sessionProject)) {
       return res.status(400).json({
         error: 'design_mode_requires_worktree',
         message:
-          'Design mode requires a session with an isolated worktree. This session has no ' +
-          'worktree, so design artifacts cannot be produced.',
+          'Design mode requires a session with an isolated worktree (dev projects) or a ' +
+          'workflow (no-code) project. This session has neither, so design artifacts cannot ' +
+          'be produced.',
       });
     }
     // Skill Builder mode only runs on a dev agent (see the PATCH guard above and
@@ -1827,7 +1836,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
     })();
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    const enriched = enrichSessionForClient(updated, stmts);
+    const enriched = enrichSessionForClient(updated, stmts, sessionProject);
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
   });
@@ -1844,10 +1853,20 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.get('/api/sessions/:sessionId/design-files', (req: Request, res: Response) => {
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (!sessionHasUsableWorktree(session)) {
-      return res.json({ files: [] });
-    }
-    const files = listSessionDesignFiles(session.worktree_path);
+    // List from whichever artifact store backs this session — the worktree
+    // `design/` dir (dev projects) or the data-dir store (worktree-less workflow
+    // sessions). Independent of the CURRENT session_mode: artifacts persist even
+    // after flipping out of design mode, and a session that produced none yields
+    // an empty list either way.
+    const location = resolveDesignLocationForServe({
+      session,
+      sessionId: String(req.params.sessionId),
+      dataDir: config.dataDir,
+    });
+    const files =
+      location.kind === 'worktree'
+        ? listSessionDesignFiles(session.worktree_path)
+        : listSessionDesignFilesAtRoot(location.root);
     res.json({ files });
   });
 

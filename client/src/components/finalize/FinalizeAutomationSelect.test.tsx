@@ -261,5 +261,31 @@ describe('FinalizeAutomationSelect', () => {
       fireEvent.click(design as any);
       expect(onControlChange!).not.toHaveBeenCalled();
     });
+
+    it('enables Design on a workflow project even when can_design_mode is stale (no worktree)', async () => {
+      // Workflow (no-code) projects store design artifacts in the data-dir store,
+      // so Design is available without a worktree. A broadcast-sourced row may
+      // carry can_design_mode:false; the picker ORs in project.mode==='workflow'.
+      const onControlChange = vi.fn().mockResolvedValue(undefined);
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{
+            session_mode: 'consult',
+            can_design_mode: false,
+            finalize_automation: 'manual',
+          }}
+          project={{ mode: 'workflow' }}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select' as any) as any);
+      const design = screen.getByTestId('finalize-automation-option-design');
+      expect(design!).not.toBeDisabled();
+      fireEvent.click(design as any);
+      await waitFor(() =>
+        expect(onControlChange!).toHaveBeenCalledWith({ session_mode: 'design' }),
+      );
+    });
   });
 });

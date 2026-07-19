@@ -1,6 +1,6 @@
-import type { SessionRow, Stmts } from './types.js';
+import type { Project, SessionRow, Stmts } from './types.js';
 import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
-import { sessionHasUsableWorktree } from './session-mode.js';
+import { sessionCanUseDesignMode } from './project-mode-guards.js';
 
 /**
  * File-level checkpoint rewind is implemented by spawning the Claude Code CLI
@@ -41,11 +41,15 @@ export type SessionWireRow = SessionRow & {
   state: SessionState;
   /**
    * Whether this session can enter Design mode (`PUT /api/sessions/:id/mode`
-   * with `design`). Computed from the SAME `sessionHasUsableWorktree` helper the
-   * mode route and chat spawn path gate on, so the client's mode picker offers
+   * with `design`). Computed from the SAME `sessionCanUseDesignMode` helper the
+   * mode routes and chat spawn path gate on, so the client's mode picker offers
    * Design exactly when the server would accept it — never reimplementing the
-   * worktree check (which would drift if the helper's definition tightens). Not
-   * gated on `stmts`; derivable from the row alone.
+   * check (which would drift). True when the session has an isolated worktree
+   * (dev projects) OR belongs to a workflow (no-code) project (data-dir store).
+   * The workflow arm needs the `project` argument; without it this falls back to
+   * the worktree-only signal (a workflow session then reports `false` on the wire
+   * until a project-aware refetch — matching how `card_id` / `finalize_status`
+   * degrade on stmts-less broadcast paths).
    */
   can_design_mode: boolean;
 };
@@ -152,7 +156,11 @@ function isSessionFinalizeFullyValidated(stmts: Stmts, sessionId: string): boole
  * not by the type system (the optional is a back-compat affordance, not
  * a "use it or not" hint). When in doubt: pass `stmts`.
  */
-export function enrichSessionForClient(row: SessionRow, stmts?: Stmts): SessionWireRow {
+export function enrichSessionForClient(
+  row: SessionRow,
+  stmts?: Stmts,
+  project?: Project | null,
+): SessionWireRow {
   return {
     ...row,
     checkpoint_rewind_supported: engineSupportsCheckpointRewind(row.engine),
@@ -161,6 +169,6 @@ export function enrichSessionForClient(row: SessionRow, stmts?: Stmts): SessionW
     state: stmts
       ? computeSessionState(stmts, row.id)
       : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
-    can_design_mode: sessionHasUsableWorktree(row),
+    can_design_mode: sessionCanUseDesignMode(row, project ?? null),
   };
 }

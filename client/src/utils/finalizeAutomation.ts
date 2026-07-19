@@ -62,8 +62,18 @@ export const CONSULT_AUTOMATION_OPTION = {
     'Answer questions and update Agent Hub project data — board, wiki, workflows — without code ship or Finalize',
 } as Record<string, any>;
 
-/** Session-control values offered on workflow projects (no build/push/finalize). */
-export const WORKFLOW_SESSION_CONTROL_VALUES = new Set(['consult', 'scoping', 'skill-builder']);
+/**
+ * Session-control values offered on workflow projects (no build/push/finalize).
+ * Design is included: worktree-less workflow design sessions store artifacts in
+ * a Hub-managed data-dir store (server: design-artifact-store.ts), so the mode
+ * runs without a worktree and still ships nothing.
+ */
+export const WORKFLOW_SESSION_CONTROL_VALUES = new Set([
+  'consult',
+  'scoping',
+  'skill-builder',
+  'design',
+]);
 
 const SHIP_AUTOMATION_VALUES = new Set(['manual', 'review', 'push', 'merge']);
 

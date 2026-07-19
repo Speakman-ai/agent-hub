@@ -1,6 +1,6 @@
 import './setup.js';
 import { describe, it, expect, beforeAll } from 'vitest';
-import { getRequest, createAgent, createSession } from './helpers.js';
+import { getRequest, createAgent, createProject, createSession } from './helpers.js';
 import { routeDeps } from '../index.js';
 import type TestAgent from 'supertest/lib/agent.js';
 
@@ -86,6 +86,32 @@ describe('PUT /api/sessions/:sessionId/mode', () => {
       .send({ mode: 'chat' })
       .expect(200);
     expect(res.body.session_mode).toBe('chat');
+  });
+
+  it('accepts design mode on a workflow (no-code) session WITHOUT a worktree', async () => {
+    // Workflow projects never provision a worktree, but design artifacts go to
+    // the data-dir store — so design mode is allowed and can_design_mode is true.
+    const wfProject = await createProject({ name: 'WF Design', mode: 'workflow' });
+    const wfAgent = await createAgent({
+      name: 'WF Design Agent',
+      projectId: wfProject.id as string,
+      engine: 'claude-code',
+    });
+    const session = await createSession({
+      agentId: wfAgent.id as string,
+      name: 'wf-design',
+    });
+    const sessionId = session.id as string;
+
+    const res = await request
+      .put(`/api/sessions/${sessionId}/mode`)
+      .send({ mode: 'design' })
+      .expect(200);
+    expect(res.body.session_mode).toBe('design');
+    expect(res.body.can_design_mode).toBe(true);
+
+    const fetched = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    expect(fetched.body.session_mode).toBe('design');
   });
 
   it('allows skill-builder mode on a dev agent session', async () => {

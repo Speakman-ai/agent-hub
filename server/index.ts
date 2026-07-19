@@ -907,16 +907,19 @@ app.use('/design-files/:designId', (req: Request, res: Response, next) => {
   return express.static(root, { fallthrough: false })(req, res, next);
 });
 
-// Session design-mode artifact files: `<worktree>/design/*` →
-// `/session-files/<sessionId>/design/*`. Mirrors the `/design-files` mount but
-// sources from the session's *worktree* instead of the standalone designs root —
-// this is what the in-session Design-mode canvas pane renders (see
-// SessionDesignModePane / DesignCanvas on the web client). Handler + guards live
-// in session-files-mount.ts so they unit-test without booting the server.
+// Session design-mode artifact files → `/session-files/<sessionId>/design/*`.
+// Mirrors the `/design-files` mount but sources from the session's own store:
+// a dev-project session serves from its *worktree* `design/` dir; a workflow
+// (no-code) session serves from the Hub data-dir store
+// (`<dataDir>/design-sessions/<sessionId>/`). This is what the in-session
+// Design-mode canvas pane renders (see SessionDesignModePane / DesignCanvas on
+// the web client). Handler + guards live in session-files-mount.ts so they
+// unit-test without booting the server.
 app.use(
   '/session-files/:sessionId/design',
   createSessionDesignFilesHandler({
     getSession: (id) => stmts!.getSession.get(id) as SessionRow | undefined,
+    dataDir: config.dataDir,
   }),
 );
 

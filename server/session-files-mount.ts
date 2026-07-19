@@ -42,12 +42,17 @@
 import { type Request, type Response } from 'express';
 import path from 'path';
 import { openSync, fstatSync, closeSync, createReadStream, realpathSync, constants } from 'fs';
-import { DESIGN_MODE_SUBDIR } from './design-mode-prompt.js';
-import { sessionHasUsableWorktree } from './session-mode.js';
+import { resolveDesignLocationForServe } from './design-artifact-store.js';
 
 export interface SessionDesignFilesDeps {
   /** Resolve a session row (active-org DB) by id, or undefined if unknown. */
   getSession: (id: string) => { worktree_path?: string | null } | undefined;
+  /**
+   * Hub data dir — where workflow (no-code) design sessions store artifacts
+   * (`<dataDir>/design-sessions/<sessionId>/`). A worktree-backed session serves
+   * from its worktree `design/` dir instead and ignores this.
+   */
+  dataDir: string;
 }
 
 /**
@@ -104,25 +109,34 @@ export function createSessionDesignFilesHandler(deps: SessionDesignFilesDeps) {
     if (!session) {
       return res.status(404).json({ error: 'Not found' });
     }
-    // Design artifacts only exist for a session with an isolated worktree. A
-    // worktree-less session can never enter design mode (the mode route refuses
-    // to persist it), so there is nothing to serve.
-    if (!sessionHasUsableWorktree(session)) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-    // Resolve the worktree's PARENT (a platform-managed dir the agent doesn't
-    // own) to absorb any legitimate symlink in the data-dir prefix, WITHOUT ever
-    // resolving the worktree dir or anything under it. The design root is then
-    // `<canonical-parent>/<worktree-basename>/design`. realpath of a
-    // missing/unresolvable parent → 404.
-    const worktreeAbs = path.resolve(session.worktree_path as string);
-    let parentCanonical: string;
+    // Resolve the artifact store for this session: a worktree-backed session
+    // serves from `<worktree>/design`; a worktree-less session serves from the
+    // workflow data-dir store `<dataDir>/design-sessions/<sessionId>`. Either
+    // way we get an absolute artifact `root` and a `safeAnchorParent` — the
+    // deepest platform-managed ancestor (worktree's parent, or the
+    // `design-sessions` dir) that is safe to realpath. We resolve symlinks only
+    // down to that anchor and walk the remaining, agent-owned components
+    // no-follow, so a malicious symlink in the artifact dir is never followed.
+    // A non-design / worktree-less-dev session simply has no files under the
+    // resolved root, so the no-follow walk below 404s naturally.
+    const location = resolveDesignLocationForServe({
+      session,
+      sessionId,
+      dataDir: deps.dataDir,
+    });
+    let anchorCanonical: string;
     try {
-      parentCanonical = realpathSync(path.dirname(worktreeAbs));
+      anchorCanonical = realpathSync(location.safeAnchorParent);
     } catch {
       return res.status(404).json({ error: 'Not found' });
     }
-    const root = path.join(parentCanonical, path.basename(worktreeAbs), DESIGN_MODE_SUBDIR);
+    // Agent-owned tail below the safe anchor (e.g. `<worktree-basename>/design`,
+    // or `<sessionId>`). Joined onto the canonical anchor; never realpath'd.
+    const relTail = path
+      .relative(location.safeAnchorParent, location.root)
+      .split(path.sep)
+      .filter((s) => s.length > 0);
+    const root = path.join(anchorCanonical, ...relTail);
     const requested = path.resolve(root, '.' + (req.path || '/'));
     // Cheap lexical containment fast-fail (rejects `../` escapes before we walk).
     if (requested !== root && !requested.startsWith(root + path.sep)) {

@@ -47,7 +47,10 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
         // an in-flight optimistic selection.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId, session?.finalize_automation, session?.ask_mode, session?.session_mode]);
-    const canDesignMode = !!session?.can_design_mode;
+    // Worktree-backed (dev) OR workflow/no-code project (data-dir design store).
+    // Server `can_design_mode` covers the worktree arm; OR in the workflow arm
+    // here (the bar has `project`) so stale broadcast rows still enable Design.
+    const canDesignMode = !!session?.can_design_mode || project?.mode === 'workflow';
     // Skill Builder is a dev-agent mode; hide it from the picker when this
     // session's agent is a helper (the server rejects it for those roles too).
     const workflowProject = project?.mode === 'workflow';

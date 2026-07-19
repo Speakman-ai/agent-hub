@@ -58,6 +58,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: true,
+        dataDir: tmp,
       });
 
       // Skill force-loaded by id — independent of any message/router input.
@@ -94,6 +95,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: true,
+        dataDir: tmp,
         // Simulate the router/pending set already containing an UNRELATED skill.
         alreadyLoadedSkillIds: new Set(['kanban']),
       });
@@ -115,6 +117,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: true,
+        dataDir: tmp,
         alreadyLoadedSkillIds: new Set(['design']),
       });
       expect(out.skillInjections).toHaveLength(0);
@@ -137,6 +140,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: false,
+        dataDir: tmp,
       });
       expect(out.skillInjections).toHaveLength(0);
       expect(invocations).toHaveLength(0);
@@ -163,6 +167,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: true,
+        dataDir: tmp,
       });
 
       // design/ is now a REAL dir in the worktree, not a symlink-out.
@@ -197,6 +202,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: true,
+        dataDir: tmp,
       });
 
       // The post-condition is surfaced, not ignored.
@@ -226,6 +232,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: true,
+        dataDir: tmp,
       });
       expect(out.artifactDirReady).toBe(true);
     } finally {
@@ -244,6 +251,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: true,
+        dataDir: tmp,
       });
 
       // Design behavior is disabled: no skill load, post-condition surfaced.
@@ -260,6 +268,79 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
     }
   });
 
+  it('runs design mode for a WORKFLOW (no-code) project with no worktree, using the data-dir store', () => {
+    const { tmp, skillsRoot, project, broadcast, invocations, stmts } = setup();
+    try {
+      // Workflow projects have no per-session worktree; artifacts go to the
+      // Hub data-dir store instead of `<worktree>/design`.
+      const workflowProject = { ...project, mode: 'workflow' } as Project;
+      const dataDir = path.join(tmp, 'data');
+      mkdirSync(dataDir, { recursive: true });
+      const sessionId = 'sess-workflow';
+
+      const out = augmentChatTurnForDesignMode({
+        session: { session_mode: 'design', worktree_path: null },
+        project: workflowProject,
+        paths: { skillsDir: skillsRoot },
+        sessionId,
+        stmts,
+        broadcast,
+        loadSkills: true,
+        dataDir,
+      });
+
+      // Design behavior is ACTIVE (unlike a dev project with no worktree).
+      expect(out.skillInjections).toHaveLength(1);
+      expect(out.skillInjections[0]).toContain('## Loaded Skill: design');
+      expect(invocations).toHaveLength(1);
+      expect(out.artifactDirReady).toBe(true);
+
+      // The store dir is created under <dataDir>/design-sessions/<sessionId>.
+      const storeRoot = path.join(dataDir, 'design-sessions', sessionId);
+      expect(existsSync(storeRoot)).toBe(true);
+
+      // Preamble is the no-code variant: points at the absolute store path and
+      // omits the worktree/Build-handoff language.
+      expect(out.preamble).toContain('## Design Mode');
+      expect(out.preamble).toContain('no-code');
+      expect(out.preamble).toContain(storeRoot);
+      expect(out.preamble).not.toContain('unavailable (no session worktree)');
+      // The shared project checkout is NOT polluted with a design/ dir.
+      expect(existsSync(path.join(workflowProject.cwd as string, 'design'))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces a blocked data-dir store (non-directory entry) for a workflow project', () => {
+    const { tmp, skillsRoot, project, broadcast, stmts } = setup();
+    try {
+      const workflowProject = { ...project, mode: 'workflow' } as Project;
+      const dataDir = path.join(tmp, 'data');
+      const sessionId = 'sess-workflow-blocked';
+      // A regular FILE occupies the store path so the dir can't be created.
+      mkdirSync(path.join(dataDir, 'design-sessions'), { recursive: true });
+      writeFileSync(path.join(dataDir, 'design-sessions', sessionId), 'not a dir');
+
+      const out = augmentChatTurnForDesignMode({
+        session: { session_mode: 'design', worktree_path: null },
+        project: workflowProject,
+        paths: { skillsDir: skillsRoot },
+        sessionId,
+        stmts,
+        broadcast,
+        loadSkills: true,
+        dataDir,
+      });
+
+      expect(out.artifactDirReady).toBe(false);
+      expect(out.preamble).toContain('artifact directory unavailable');
+      expect(out.preamble).not.toContain('no-code project. Build');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('is a no-op for a non-design (chat) session', () => {
     const { tmp, skillsRoot, worktree, project, broadcast, invocations, stmts } = setup();
     try {
@@ -271,6 +352,7 @@ describe('augmentChatTurnForDesignMode (design-mode spawn wiring)', () => {
         stmts,
         broadcast,
         loadSkills: true,
+        dataDir: tmp,
       });
       expect(out.skillInjections).toHaveLength(0);
       expect(out.preamble).toBe('');

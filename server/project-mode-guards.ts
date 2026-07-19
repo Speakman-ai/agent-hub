@@ -4,12 +4,41 @@
  */
 import type { Project } from './types.js';
 import { getProjectMode } from './project-mode.js';
-import { isConsultBehaviorActive, type SessionMode } from './session-mode.js';
+import {
+  isConsultBehaviorActive,
+  sessionHasUsableWorktree,
+  type SessionMode,
+} from './session-mode.js';
 
-const WORKFLOW_SESSION_MODES = new Set<SessionMode>(['consult', 'scoping', 'skill-builder']);
+// Design is allowed on workflow projects: worktree-less design sessions write
+// artifacts to a Hub-managed data-dir store (see design-artifact-store.ts)
+// instead of a worktree, so the "no worktree" promise of workflow mode holds.
+const WORKFLOW_SESSION_MODES = new Set<SessionMode>([
+  'consult',
+  'scoping',
+  'skill-builder',
+  'design',
+]);
 
 export function isWorkflowProject(project: Project | null | undefined): boolean {
   return getProjectMode(project) === 'workflow';
+}
+
+/**
+ * Whether a session may enter/run Design mode, considering BOTH storage backends:
+ *   - a dev-project session with an isolated worktree (`<worktree>/design/`), or
+ *   - a workflow-project session (worktree-less; artifacts in the data-dir store).
+ *
+ * The single source of truth shared by the mode routes (accept-side), the
+ * `can_design_mode` capability the client picker reads, and the chat spawn path
+ * — so the option is offered exactly when a design turn can actually produce
+ * artifacts. A dev-project session with no worktree still cannot design.
+ */
+export function sessionCanUseDesignMode(
+  session: { worktree_path?: string | null } | null | undefined,
+  project: Project | null | undefined,
+): boolean {
+  return sessionHasUsableWorktree(session) || isWorkflowProject(project);
 }
 
 export function isDevProject(project: Project | null | undefined): boolean {

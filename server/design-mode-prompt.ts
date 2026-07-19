@@ -102,7 +102,17 @@ export function ensureRealDesignDir(
   worktreePath: string,
   subdir: string = DESIGN_MODE_SUBDIR,
 ): EnsureRealDesignDirResult {
-  const dir = path.join(worktreePath, subdir);
+  return ensureRealArtifactDir(path.join(worktreePath, subdir));
+}
+
+/**
+ * Ensure `dir` is a REAL directory (neutralizing a symlink planted at that
+ * path). The root-based core of {@link ensureRealDesignDir}, used directly for
+ * the workflow data-dir store where the artifact root is an absolute
+ * `<dataDir>/design-sessions/<sessionId>` path rather than `<worktree>/design`.
+ * Same symlink-neutralization contract; never throws.
+ */
+export function ensureRealArtifactDir(dir: string): EnsureRealDesignDirResult {
   let neutralizedSymlink = false;
   try {
     if (lstatSync(dir).isSymbolicLink()) {
@@ -151,7 +161,16 @@ export function listDesignModeFiles(
   worktreePath: string,
   subdir: string = DESIGN_MODE_SUBDIR,
 ): string[] {
-  const root = path.join(worktreePath, subdir);
+  return listArtifactFiles(path.join(worktreePath, subdir));
+}
+
+/**
+ * Root-based core of {@link listDesignModeFiles}: recursively list regular files
+ * under an absolute artifact `root`, returned as sorted forward-slash paths
+ * relative to `root`. Used directly for the workflow data-dir store. Same
+ * symlink-rejection and cycle guards; never throws.
+ */
+export function listArtifactFiles(root: string): string[] {
   if (!existsSync(root)) return [];
   // Reject a symlinked artifact root before walking — lstat the root itself, not
   // just its children. existsSync() follows links, so a `design` symlink passes
@@ -250,6 +269,15 @@ export interface DesignModePreambleOpts {
    * rather than instructing any writes. Takes precedence over `artifactDirReady`.
    */
   worktreeAvailable?: boolean;
+  /**
+   * When set, build the WORKFLOW (no-code) variant: artifacts live in a
+   * Hub-managed data-dir store at `rootDir` (absolute) rather than a worktree
+   * `design/` subdir. Workflow sessions run in the shared project checkout and
+   * never Build/ship, so the preamble instructs writing to this absolute path
+   * (the canvas reads from it) and omits the Design→Build handoff language.
+   * When present, `worktreePath`/`subdir`/`worktreeAvailable` are ignored.
+   */
+  dataDirStore?: { rootDir: string };
 }
 
 /**
@@ -264,6 +292,10 @@ export interface DesignModePreambleOpts {
  * recovery path, so the turn never instructs writing into an impossible path.
  */
 export function buildDesignModePreamble(opts: DesignModePreambleOpts): string {
+  // Workflow (no-code) variant: artifacts live in a Hub-managed data-dir store.
+  if (opts.dataDirStore) {
+    return buildDataDirDesignModePreamble(opts, opts.dataDirStore.rootDir);
+  }
   const subdir = opts.subdir || DESIGN_MODE_SUBDIR;
   const sections: string[] = [];
 
@@ -367,6 +399,81 @@ export function buildDesignModePreamble(opts: DesignModePreambleOpts): string {
     sections.push(
       `## Current files in \`${subdir}/\`\n\n(empty — create \`${subdir}/index.html\` to start)`,
     );
+  }
+
+  return sections.join('\n\n').trim();
+}
+
+/**
+ * Data-dir (workflow / no-code) variant of the design-mode preamble. Workflow
+ * sessions have no isolated worktree — they run in the shared project checkout
+ * and never Build/ship — so their design artifacts live in a Hub-managed store
+ * at an absolute path (`rootDir`, e.g. `<dataDir>/design-sessions/<id>`). The
+ * agent is told to write there with absolute paths, and the Design→Build handoff
+ * language is dropped (there is no Build for a no-code project). When
+ * `artifactDirReady === false` the store dir could not be prepared, so we emit
+ * the same error+recovery shape instead of write instructions.
+ */
+function buildDataDirDesignModePreamble(opts: DesignModePreambleOpts, rootDir: string): string {
+  const sections: string[] = [];
+  const entry = path.join(rootDir, 'index.html');
+
+  if (opts.artifactDirReady === false) {
+    sections.push(
+      [
+        '## Design Mode — artifact directory unavailable',
+        '',
+        'This session is in **Design mode** (no-code project), but its design',
+        `artifact directory could not be prepared at:`,
+        '',
+        `    ${rootDir}`,
+        '',
+        'A non-directory entry occupies that path, or it could not be created.',
+        '**Do not write any design files yet** until this is resolved — inspect and',
+        'clear the conflicting entry, then retry.',
+      ].join('\n'),
+    );
+    for (const project of opts.linkedProjects ?? []) {
+      const docs = readProjectDesignDocs(project);
+      if (docs) sections.push(`## Design System — ${project.name}\n\n${docs}`);
+    }
+    return sections.join('\n\n').trim();
+  }
+
+  sections.push(
+    [
+      '## Design Mode',
+      '',
+      'This session is in **Design mode** on a no-code (workflow) project. Build',
+      'self-contained HTML/CSS/JS prototypes in the Hub-managed design directory',
+      'for this session:',
+      '',
+      `    ${rootDir}`,
+      '',
+      '**Write design files there using absolute paths** — this directory is where',
+      'the live canvas reads from. Do NOT write design artifacts into the project',
+      'checkout (this is a shared, no-code workspace and must stay clean). Keep the',
+      'prototype self-contained: prefer vanilla HTML + CSS + a single JS file, and',
+      'pull any libraries from an allowlisted CDN (`https://cdn.tailwindcss.com`,',
+      '`https://unpkg.com`) rather than a build step.',
+      '',
+      `- Canonical entry point: \`${entry}\`. The live canvas renders this file.`,
+      '- Nothing ships from this session: there is no Build, commit, or Finalize step.',
+    ].join('\n'),
+  );
+
+  for (const project of opts.linkedProjects ?? []) {
+    const docs = readProjectDesignDocs(project);
+    if (docs) sections.push(`## Design System — ${project.name}\n\n${docs}`);
+  }
+
+  const files = listArtifactFiles(rootDir);
+  if (files.length > 0) {
+    sections.push(
+      `## Current design files\n\n${files.map((f) => `- ${path.join(rootDir, f)}`).join('\n')}`,
+    );
+  } else {
+    sections.push(`## Current design files\n\n(empty — create \`${entry}\` to start)`);
   }
 
   return sections.join('\n\n').trim();

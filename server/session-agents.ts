@@ -4,6 +4,7 @@ import type {
   SessionAgentRow,
   SessionAgentDetail,
   EnrichedAgent,
+  Project,
 } from './types.js';
 import { enrichSessionForClient, type SessionWireRow } from './session-checkpoint-rewind.js';
 
@@ -49,10 +50,14 @@ export function enrichSessionWithAgents(
   session: SessionRow,
   stmts: Stmts,
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null,
+  // Optional owning project — threaded so `can_design_mode` reflects workflow
+  // (no-code) projects (data-dir design store), not just worktree-backed dev
+  // sessions. Omitted → worktree-only fallback (see enrichSessionForClient).
+  project?: Project | null,
 ): SessionWireRow & { agents: SessionAgentDetail[]; advisor_count: number } {
   const agents = listSessionAgents(stmts, session, getEnrichedAgent);
   return {
-    ...enrichSessionForClient(session, stmts),
+    ...enrichSessionForClient(session, stmts, project),
     agents,
     advisor_count: Math.max(0, agents.length - 1),
   };

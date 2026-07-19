@@ -272,6 +272,48 @@ describe('buildDesignModePreamble', () => {
     expect(out).not.toMatch(/ls -la design/);
   });
 
+  describe('data-dir (workflow / no-code) variant', () => {
+    it('instructs writing to the absolute store path and drops worktree/Build language', () => {
+      const root = path.join(work, 'design-sessions', 'sess-1');
+      const out = buildDesignModePreamble({
+        worktreePath: '',
+        dataDirStore: { rootDir: root },
+      });
+      expect(out).toContain('## Design Mode');
+      expect(out).toContain('no-code');
+      expect(out).toContain(root);
+      expect(out).toContain(path.join(root, 'index.html'));
+      // No worktree/Build-handoff language, no worktree-unavailable message.
+      expect(out).not.toContain('session worktree');
+      expect(out).not.toContain('unavailable (no session worktree)');
+      expect(out).not.toContain('flip this session to Build mode');
+    });
+
+    it('lists current files from the store root (no design/ subdir)', () => {
+      const root = path.join(work, 'design-sessions', 'sess-2');
+      mkdirSync(root, { recursive: true });
+      writeFileSync(path.join(root, 'index.html'), '<html></html>');
+      const out = buildDesignModePreamble({
+        worktreePath: '',
+        dataDirStore: { rootDir: root },
+      });
+      expect(out).toContain('## Current design files');
+      expect(out).toContain(path.join(root, 'index.html'));
+    });
+
+    it('surfaces the blocked-store error instead of write instructions', () => {
+      const root = path.join(work, 'design-sessions', 'sess-3');
+      const out = buildDesignModePreamble({
+        worktreePath: '',
+        dataDirStore: { rootDir: root },
+        artifactDirReady: false,
+      });
+      expect(out).toContain('artifact directory unavailable');
+      expect(out).toContain(root);
+      expect(out).not.toContain('no-code project. Build');
+    });
+  });
+
   it('no-worktree state takes precedence over a blocked artifact dir', () => {
     const out = buildDesignModePreamble({
       worktreePath: '',

@@ -17,13 +17,14 @@ describe('createSessionDesignFilesHandler', () => {
   let tmp: string;
   let worktree: string;
   let designDir: string;
+  let dataDir: string;
   const SID = 'abc123-session';
 
   function buildApp(sessions: Record<string, { worktree_path?: string | null }>) {
     const app = express();
     app.use(
       '/session-files/:sessionId/design',
-      createSessionDesignFilesHandler({ getSession: (id) => sessions[id] }),
+      createSessionDesignFilesHandler({ getSession: (id) => sessions[id], dataDir }),
     );
     return app;
   }
@@ -32,6 +33,8 @@ describe('createSessionDesignFilesHandler', () => {
     tmp = mkdtempSync(path.join(os.tmpdir(), 'sessfiles-'));
     worktree = path.join(tmp, 'worktree');
     designDir = path.join(worktree, DESIGN_MODE_SUBDIR);
+    dataDir = path.join(tmp, 'data');
+    mkdirSync(dataDir, { recursive: true });
     mkdirSync(designDir, { recursive: true });
     writeFileSync(path.join(designDir, 'index.html'), '<html><body>hi</body></html>');
     writeFileSync(path.join(designDir, 'style.css'), 'body{color:red}');
@@ -94,10 +97,36 @@ describe('createSessionDesignFilesHandler', () => {
     expect(res.status).toBe(404);
   });
 
-  it('404s a session without a worktree', async () => {
+  it('404s a worktree-less session with no data-dir artifacts', async () => {
+    // A worktree-less session now falls back to the data-dir store; with nothing
+    // written there yet the no-follow walk finds no file → 404 (no worktree gate).
     const app = buildApp({ [SID]: { worktree_path: null } });
     const res = await request(app).get(`/session-files/${SID}/design/index.html`);
     expect(res.status).toBe(404);
+  });
+
+  it('serves a workflow (worktree-less) session from the data-dir store', async () => {
+    // Simulate a workflow design session: artifacts live at
+    // <dataDir>/design-sessions/<sessionId>/, served at the same design/ URL.
+    const storeRoot = path.join(dataDir, 'design-sessions', SID);
+    mkdirSync(storeRoot, { recursive: true });
+    writeFileSync(path.join(storeRoot, 'index.html'), '<html>workflow canvas</html>');
+    const app = buildApp({ [SID]: { worktree_path: null } });
+    const res = await request(app).get(`/session-files/${SID}/design/index.html`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('workflow canvas');
+  });
+
+  it('does not leak outside the data-dir store via a symlink (worktree-less session)', async () => {
+    const storeRoot = path.join(dataDir, 'design-sessions', SID);
+    mkdirSync(storeRoot, { recursive: true });
+    const secret = path.join(tmp, 'ddsecret.txt');
+    writeFileSync(secret, 'DATA DIR SECRET');
+    symlinkSync(secret, path.join(storeRoot, 'leak.txt'));
+    const app = buildApp({ [SID]: { worktree_path: null } });
+    const res = await request(app).get(`/session-files/${SID}/design/leak.txt`);
+    expect(res.status).toBe(404);
+    expect(res.text).not.toContain('DATA DIR SECRET');
   });
 
   it('404s a missing file inside the design root', async () => {
@@ -189,6 +218,7 @@ describe('createSessionDesignFilesHandler', () => {
     // itself we hand it a req.path that escapes the per-session design/ root.
     const handler = createSessionDesignFilesHandler({
       getSession: () => ({ worktree_path: worktree }),
+      dataDir,
     });
     let status = 0;
     let body: unknown;
