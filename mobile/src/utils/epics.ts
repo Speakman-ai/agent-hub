@@ -1,6 +1,26 @@
 // Pure helpers for kanban epic management (mobile).
 // Mirrors the semantics of client/src/components/KanbanBoard.jsx so that web
 // and mobile agree on what "autonomous", "card count", and filtering mean.
+import { parseCardLabels } from './kanbanLabels';
+
+/** Dedupe (case-insensitive) a comma-separated labels field into the server's
+ * canonical `a, b, c` string, or null when empty. Mirrors the web helper. */
+export function normalizeEpicLabels(raw: string | null | undefined): string | null {
+    const seen = new Set<string>();
+    const labels: string[] = [];
+    for (const label of parseCardLabels(raw)) {
+        const key = label.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        labels.push(label);
+    }
+    return labels.length > 0 ? labels.join(', ') : null;
+}
+
+/** Comma-separated labels string for epic form inputs. */
+export function labelsFieldFromInput(raw: string | null | undefined): string {
+    return parseCardLabels(raw).join(', ');
+}
 // Same palette as the web EPIC_COLORS constant.
 export const EPIC_COLORS = [
     '#6366F1', // indigo
@@ -46,6 +66,8 @@ export const DEFAULT_EPIC_FORM: Record<string, any> = {
     name: '',
     description: '',
     color: DEFAULT_EPIC_COLOR,
+    labels: '',
+    assigned_user_id: '',
     pr_base_branch: '',
     autonomous: 0,
     autonomous_interval: 5,
@@ -64,6 +86,8 @@ export function epicFormFromRow(epic: any) {
         name: epic.name || '',
         description: epic.description || '',
         color: epic.color || DEFAULT_EPIC_COLOR,
+        labels: labelsFieldFromInput(epic.labels),
+        assigned_user_id: epic.assigned_user_id || '',
         autonomous: epic.autonomous ? 1 : 0,
         autonomous_interval: epic.autonomous_interval || 5,
         autonomous_max_concurrent: epic.autonomous_max_concurrent || 1,
@@ -91,6 +115,8 @@ export function epicFormToUpdateBody(form: any) {
         autonomousModel,
         autonomousSendIt: autonomousOn && form.autonomous_send_it ? 1 : 0,
         prBaseBranch: prTrim || null,
+        labels: normalizeEpicLabels(form.labels),
+        assignedUserId: form.assigned_user_id || null,
         ...(form.orchestrationBudgets !== undefined
             ? { orchestrationBudgets: form.orchestrationBudgets }
             : {}),
@@ -108,6 +134,8 @@ export function epicFormToCreateBody(form: any) {
         name: (form.name || '').trim(),
         description: form.description || '',
         color: form.color || DEFAULT_EPIC_COLOR,
+        labels: normalizeEpicLabels(form.labels),
+        assignedUserId: form.assigned_user_id || null,
         ...(pr ? { prBaseBranch: pr } : {}),
     };
 }

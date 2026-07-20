@@ -47,6 +47,10 @@ export const colors = {
     indigo400: '#818CF8',
     indigo300: '#A5B4FC',
     indigo900_40: 'rgba(49, 46, 129, 0.4)',
+    // Sky (per-user filter chips)
+    sky400: '#38BDF8',
+    sky300: '#7DD3FC',
+    sky500_15: 'rgba(14, 165, 233, 0.15)',
     // Amber
     amber400: '#FBBF24',
     amber900_40: 'rgba(120, 53, 15, 0.4)',

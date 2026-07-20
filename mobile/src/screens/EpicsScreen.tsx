@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Switch, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
-import { EPIC_COLORS, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, EPIC_STATE_LABELS, epicStateLabel, epicBranchTogglePatch, } from '../utils/epics';
+import { EPIC_COLORS, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, EPIC_STATE_LABELS, epicStateLabel, epicBranchTogglePatch, } from '../utils/epics';
+import { applyEpicListFilters, collectDistinctEpicLabels, createDefaultEpicListFilters, type EpicListFilters, } from '../utils/epicListFilters';
 import { groupEpicsByState } from '../utils/epicBoard';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import LinkedTodosPanel from '../components/LinkedTodosPanel';
@@ -18,7 +19,7 @@ export default function EpicsScreen({ route, navigation }: any) {
     const [showForm, setShowForm] = useState(false);
     const [saving, setSaving] = useState(false);
     const [scopingId, setScopingId] = useState<any>(null);
-    const [stateFilter, setStateFilter] = useState(DEFAULT_EPIC_LIST_STATE_FILTER);
+    const [listFilters, setListFilters] = useState<EpicListFilters>(() => createDefaultEpicListFilters());
     const [viewMode, setViewMode] = useState<'list' | 'board'>('list');
     const { setActiveAgentId, setActiveSessionId } = useApp();
     const openScopingSession = useCallback(async (epicId: any) => {
@@ -60,10 +61,32 @@ export default function EpicsScreen({ route, navigation }: any) {
     useEffect(() => {
         loadBoard();
     }, [loadBoard]);
-    const epics = board?.epics || [];
-    const cards = board?.cards || [];
+    const epics = useMemo(() => board?.epics || [], [board]);
+    const cards = useMemo(() => board?.cards || [], [board]);
+    const assignableUsers = board?.assignableUsers || [];
     const doneColumnIds = new Set((board?.columns || []).filter((c: any) => /done/i.test(c.name || '')).map((c: any) => c.id));
-    const visibleEpics = epics.filter((epic: any) => stateFilter === 'all' || epic.state === stateFilter);
+    const availableEpicLabels = useMemo(() => collectDistinctEpicLabels(epics), [epics]);
+    const filteredEpics = useMemo(() => applyEpicListFilters(epics, listFilters, cards), [epics, listFilters, cards]);
+    // The board view groups epics by lifecycle state across its own sections, so
+    // the state chip is redundant there — force `state: 'all'` so every section
+    // has something to show regardless of the list view's default filter.
+    const boardEpics = useMemo(() => applyEpicListFilters(epics, { ...listFilters, state: 'all' }, cards), [epics, listFilters, cards]);
+    const toggleEpicListLabel = (label: string) => {
+        setListFilters((prev) => {
+            const next = new Set(prev.selectedLabels);
+            if (next.has(label)) next.delete(label);
+            else next.add(label);
+            return { ...prev, selectedLabels: next };
+        });
+    };
+    const toggleEpicListUser = (userId: string) => {
+        setListFilters((prev) => {
+            const next = new Set(prev.selectedUserIds);
+            if (next.has(userId)) next.delete(userId);
+            else next.add(userId);
+            return { ...prev, selectedUserIds: next };
+        });
+    };
     const openCreate = () => {
         setEditingEpic(null);
         setEpicForm(DEFAULT_EPIC_FORM);
@@ -185,7 +208,7 @@ export default function EpicsScreen({ route, navigation }: any) {
             </View>
           </TouchableOpacity>);
     };
-    const boardColumns = groupEpicsByState(epics);
+    const boardColumns = groupEpicsByState(boardEpics);
     return (<SafeAreaView style={styles.screen} edges={['top']}>
       <ProjectScreenHeader title="Epics" project={project} onBack={() => navigation.goBack()}/>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -218,6 +241,19 @@ export default function EpicsScreen({ route, navigation }: any) {
                     epicForm.color === c && styles.colorBtnActive,
                 ]} onPress={() => setEpicForm({ ...epicForm, color: c })}/>))}
             </View>
+            <Text style={styles.label}>Labels</Text>
+            <TextInput style={styles.input} value={epicForm.labels} onChangeText={(v: any) => setEpicForm({ ...epicForm, labels: v })} placeholder="platform, reliability" placeholderTextColor={colors.gray600} autoCapitalize="none" autoCorrect={false} testID="epic-labels-input"/>
+            {assignableUsers.length > 0 && (<>
+              <Text style={styles.label}>Lead user</Text>
+              <View style={styles.chipRow} testID="epic-lead-user-select">
+                {[{ id: '', username: 'Unassigned' }, ...assignableUsers].map((u: any) => {
+                    const active = (epicForm.assigned_user_id || '') === u.id;
+                    return (<TouchableOpacity key={u.id || 'unassigned'} style={[styles.filterChip, active && styles.filterChipActive]} onPress={() => setEpicForm({ ...epicForm, assigned_user_id: u.id })}>
+                        <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{u.username}</Text>
+                      </TouchableOpacity>);
+                })}
+              </View>
+            </>)}
             <TouchableOpacity style={[styles.primaryBtn, saving && { opacity: 0.5 }]} onPress={handleSave} disabled={saving}>
               <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : editingEpic ? 'Update' : 'Create'}</Text>
             </TouchableOpacity>
@@ -244,15 +280,53 @@ export default function EpicsScreen({ route, navigation }: any) {
             </TouchableOpacity>))}
         </View>
 
-        {viewMode === 'list' && (<View style={styles.stateFilterRow}>
-          {[
+        <View style={styles.searchRow}>
+          <TextInput style={styles.searchInput} value={listFilters.search} onChangeText={(v: any) => setListFilters((prev) => ({ ...prev, search: v }))} placeholder="Search epics…" placeholderTextColor={colors.gray600} autoCapitalize="none" autoCorrect={false} testID="epic-list-search"/>
+        </View>
+
+        <View style={styles.stateFilterRow} testID="epic-list-filter-scope">
+          {([
+            ['all', 'All epics'],
+            ['with-tickets', 'With tickets'],
+            ['empty', 'Empty'],
+        ] as const).map(([value, label]) => (<TouchableOpacity key={value} style={[styles.stateFilterBtn, listFilters.scope === value && styles.stateFilterBtnActive]} onPress={() => setListFilters((prev) => ({ ...prev, scope: value }))}>
+              <Text style={[styles.stateFilterText, listFilters.scope === value && styles.stateFilterTextActive]}>{label}</Text>
+            </TouchableOpacity>))}
+        </View>
+
+        {viewMode === 'list' && (<View style={styles.stateFilterRow} testID="epic-list-filter-state">
+          {([
             ['all', 'All states'],
             ['not_started', EPIC_STATE_LABELS.not_started],
             ['in_progress', EPIC_STATE_LABELS.in_progress],
             ['done', EPIC_STATE_LABELS.done],
-        ].map(([value, label]) => (<TouchableOpacity key={value} style={[styles.stateFilterBtn, stateFilter === value && styles.stateFilterBtnActive]} onPress={() => setStateFilter(value)}>
-              <Text style={[styles.stateFilterText, stateFilter === value && styles.stateFilterTextActive]}>{label}</Text>
+        ] as const).map(([value, label]) => (<TouchableOpacity key={value} style={[styles.stateFilterBtn, listFilters.state === value && styles.stateFilterBtnActive]} onPress={() => setListFilters((prev) => ({ ...prev, state: value }))}>
+              <Text style={[styles.stateFilterText, listFilters.state === value && styles.stateFilterTextActive]}>{label}</Text>
             </TouchableOpacity>))}
+        </View>)}
+
+        {availableEpicLabels.length > 0 && (<View style={styles.chipRow} testID="epic-list-label-filters">
+          {availableEpicLabels.map((label) => {
+              const active = listFilters.selectedLabels.has(label);
+              return (<TouchableOpacity key={label} style={[styles.filterChip, active && styles.filterChipActive]} onPress={() => toggleEpicListLabel(label)} testID={`epic-list-label-${label}`}>
+                  <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{label}</Text>
+                </TouchableOpacity>);
+          })}
+          {listFilters.selectedLabels.size > 0 && (<TouchableOpacity onPress={() => setListFilters((prev) => ({ ...prev, selectedLabels: new Set() }))} testID="epic-list-clear-labels">
+              <Text style={styles.clearFilterText}>Clear labels</Text>
+            </TouchableOpacity>)}
+        </View>)}
+
+        {assignableUsers.length > 0 && (<View style={styles.chipRow} testID="epic-list-user-filter-list">
+          {assignableUsers.map((user: any) => {
+              const active = listFilters.selectedUserIds.has(user.id);
+              return (<TouchableOpacity key={user.id} style={[styles.userChip, active && styles.userChipActive]} onPress={() => toggleEpicListUser(user.id)} testID={`epic-list-user-filter-${user.username}`}>
+                  <Text style={[styles.filterChipText, active && styles.userChipTextActive]}>{user.username}</Text>
+                </TouchableOpacity>);
+          })}
+          {listFilters.selectedUserIds.size > 0 && (<TouchableOpacity onPress={() => setListFilters((prev) => ({ ...prev, selectedUserIds: new Set() }))} testID="epic-list-user-filter-clear">
+              <Text style={styles.clearFilterText}>Clear users</Text>
+            </TouchableOpacity>)}
         </View>)}
 
         {loading ? (<ActivityIndicator color={colors.gray400} style={{ marginTop: 24 }}/>) : epics.length === 0 ? (<Text style={styles.empty}>No epics yet.</Text>) : viewMode === 'board' ? (<View>
@@ -263,7 +337,7 @@ export default function EpicsScreen({ route, navigation }: any) {
               </View>
               {column.epics.length === 0 ? (<Text style={styles.boardSectionEmpty}>No epics</Text>) : column.epics.map(renderEpicCard)}
             </View>))}
-          </View>) : visibleEpics.length === 0 ? (<Text style={styles.empty}>No epics match this state.</Text>) : (visibleEpics.map(renderEpicCard))}
+          </View>) : filteredEpics.length === 0 ? (<Text style={styles.empty}>No epics match these filters.</Text>) : (filteredEpics.map(renderEpicCard))}
       </ScrollView>
     </SafeAreaView>);
 }
@@ -339,6 +413,40 @@ const styles = StyleSheet.create({
     },
     stateFilterText: { color: colors.gray400, fontSize: 12, fontWeight: '600' },
     stateFilterTextActive: { color: colors.blue400 },
+    searchRow: { marginBottom: 12 },
+    searchInput: {
+        backgroundColor: colors.gray900,
+        borderWidth: 1,
+        borderColor: colors.gray800,
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        color: colors.white,
+        fontSize: 14,
+    },
+    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12, alignItems: 'center' },
+    filterChip: {
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: colors.gray800,
+        backgroundColor: colors.gray900,
+    },
+    filterChipActive: { borderColor: colors.indigo400, backgroundColor: colors.indigo900_40 },
+    filterChipText: { color: colors.gray400, fontSize: 11, fontWeight: '600' },
+    filterChipTextActive: { color: colors.indigo300 },
+    userChip: {
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: colors.gray800,
+        backgroundColor: colors.gray900,
+    },
+    userChipActive: { borderColor: colors.sky400, backgroundColor: colors.sky500_15 },
+    userChipTextActive: { color: colors.sky300 },
+    clearFilterText: { color: colors.gray500, fontSize: 11, paddingHorizontal: 4 },
     boardSection: { marginBottom: 20 },
     boardSectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
     boardSectionTitle: { fontSize: 13, fontWeight: '700', color: colors.gray200 },

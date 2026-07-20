@@ -54,6 +54,8 @@ describe('DEFAULT_EPIC_FORM', () => {
             name: '',
             description: '',
             color: DEFAULT_EPIC_COLOR,
+            labels: '',
+            assigned_user_id: '',
             pr_base_branch: '',
             autonomous: 0,
             autonomous_interval: 5,
@@ -82,6 +84,8 @@ describe('epicFormFromRow', () => {
             name: 'Ship the app',
             description: 'big epic',
             color: '#22C55E',
+            labels: '',
+            assigned_user_id: '',
             autonomous: 1,
             autonomous_interval: 10,
             autonomous_max_concurrent: 4,
@@ -128,6 +132,8 @@ describe('epicFormToUpdateBody', () => {
             autonomousModel: null,
             autonomousSendIt: 0,
             prBaseBranch: null,
+            labels: null,
+            assignedUserId: null,
         });
     });
     it('sends autonomousSendIt 1 when Auto Merge is on (and 0 once autonomous is off)', () => {
@@ -162,6 +168,8 @@ describe('epicFormToCreateBody', () => {
             name: 'New epic',
             description: 'desc',
             color: '#EAB308',
+            labels: null,
+            assignedUserId: null,
             prBaseBranch: 'feature/x',
         });
     });
@@ -177,7 +185,46 @@ describe('epicFormToCreateBody', () => {
             name: 'New epic',
             description: 'desc',
             color: '#EAB308',
+            labels: null,
+            assignedUserId: null,
         });
+    });
+});
+describe('epic labels + lead-user round trip', () => {
+    it('reads labels and assigned_user_id from a server row into the form', () => {
+        const form = epicFormFromRow({
+            name: 'x',
+            labels: 'platform, reliability',
+            assigned_user_id: 'u1',
+        });
+        expect(form.labels).toBe('platform, reliability');
+        expect(form.assigned_user_id).toBe('u1');
+    });
+    it('normalizes/dedupes labels and maps assignedUserId in the update body', () => {
+        const body = epicFormToUpdateBody({
+            name: 'x',
+            labels: ' Platform , platform, reliability ',
+            assigned_user_id: 'u2',
+        });
+        expect(body.labels).toBe('Platform, reliability');
+        expect(body.assignedUserId).toBe('u2');
+    });
+    it('sends null labels/assignedUserId when the form fields are empty', () => {
+        const body = epicFormToUpdateBody({ name: 'x', labels: '', assigned_user_id: '' });
+        expect(body.labels).toBe(null);
+        expect(body.assignedUserId).toBe(null);
+        const created = epicFormToCreateBody({ name: 'x', labels: '  ', assigned_user_id: '' });
+        expect(created.labels).toBe(null);
+        expect(created.assignedUserId).toBe(null);
+    });
+    it('carries labels/assignedUserId through the create body', () => {
+        const created = epicFormToCreateBody({
+            name: 'x',
+            labels: 'alpha',
+            assigned_user_id: 'u3',
+        });
+        expect(created.labels).toBe('alpha');
+        expect(created.assignedUserId).toBe('u3');
     });
 });
 describe('filterCardsByEpic', () => {
