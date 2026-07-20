@@ -1,4 +1,4 @@
-import { readFileSync, copyFileSync, cpSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -46,7 +46,8 @@ const HOME = os.homedir();
 // fell back to hand-rolled curl. `resolveSkillsDir` returns the skill root
 // when present so `buildSpawnEnv` can export it as `AGENT_HUB_SKILLS_DIR` and
 // prepend its `scripts/` dir to PATH (wrappers become callable by bare name).
-const AGENT_HUB_SKILL_DIR: string = path.join(__dirname, 'default-skills', 'agent-hub');
+const DEFAULT_SKILLS_DIR: string = path.join(__dirname, 'default-skills');
+const AGENT_HUB_SKILL_DIR: string = path.join(DEFAULT_SKILLS_DIR, 'agent-hub');
 
 /**
  * Absolute path to the bundled `agent-hub` skill directory, or null when it
@@ -55,6 +56,36 @@ const AGENT_HUB_SKILL_DIR: string = path.join(__dirname, 'default-skills', 'agen
  */
 export function resolveSkillsDir(): string | null {
   return existsSync(AGENT_HUB_SKILL_DIR) ? AGENT_HUB_SKILL_DIR : null;
+}
+
+/**
+ * Absolute paths to every bundled default-skill `scripts/` dir that exists on
+ * disk, `agent-hub` first. Each domain skill (aws-cli, gcloud, github, google,
+ * 1password, designs, …) documents its wrappers as bare-name commands
+ * (`aws-whoami.sh`, `gh-pr.sh`, …), but only `agent-hub/scripts` was ever put
+ * on PATH — so every other skill's wrappers failed with "command not found".
+ * Returning all of them lets `buildSpawnEnv` prepend each dir so the documented
+ * commands resolve regardless of CWD. `agent-hub` stays first so its canonical
+ * wrappers win any name tie; the remainder are sorted for deterministic PATH
+ * ordering. Same-named `_common.sh` files never collide because each skill
+ * sources its own copy by relative path (`${DIR}/_common.sh`), not via PATH.
+ */
+export function resolveSkillScriptsDirs(): string[] {
+  const dirs: string[] = [];
+  const agentHubScripts = path.join(AGENT_HUB_SKILL_DIR, 'scripts');
+  if (existsSync(agentHubScripts)) dirs.push(agentHubScripts);
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(DEFAULT_SKILLS_DIR);
+  } catch {
+    return dirs;
+  }
+  for (const name of entries.sort()) {
+    if (name === 'agent-hub') continue;
+    const scriptsDir = path.join(DEFAULT_SKILLS_DIR, name, 'scripts');
+    if (existsSync(scriptsDir)) dirs.push(scriptsDir);
+  }
+  return dirs;
 }
 
 // ─── Data directory ─────────────────────────────────────────────
@@ -742,21 +773,26 @@ export function buildSpawnEnv(
   // server/shell-path.ts for the full rationale.
   env.PATH = resolveSpawnPath(process.env.PATH);
 
-  // Skill-script contract: make the bundled agent-hub wrappers reachable on
-  // first call. Export the skill root as `AGENT_HUB_SKILLS_DIR` and prepend
-  // its `scripts/` dir to PATH so `board.sh`, `wiki-search.sh`, `server.sh`,
-  // etc. resolve by bare name regardless of the session's CWD or project.
-  // Without this the documented commands fail and agents fall back to
-  // hand-rolled curl (which then 401s on JWT deployments). Prepend (not
-  // append) so the canonical wrappers win over any same-named stragglers a
-  // project might carry.
+  // Skill-script contract: make the bundled skill wrappers reachable on first
+  // call. Export the agent-hub skill root as `AGENT_HUB_SKILLS_DIR` and prepend
+  // EVERY default-skill's `scripts/` dir to PATH so `board.sh`, `wiki-search.sh`
+  // AND the domain wrappers (`aws-whoami.sh`, `gh-pr.sh`, `gcloud-q.sh`,
+  // `google-cal.sh`, `op-read.sh`, …) all resolve by bare name regardless of
+  // the session's CWD or project. Without this the documented commands fail and
+  // agents fall back to hand-rolled curl (which then 401s on JWT deployments)
+  // or report the skill as broken. Prepend (not append) so the canonical
+  // wrappers win over any same-named stragglers a project might carry;
+  // `resolveSkillScriptsDirs` keeps `agent-hub/scripts` first so it wins ties.
   const skillsDir = resolveSkillsDir();
   if (skillsDir) {
     env.AGENT_HUB_SKILLS_DIR = skillsDir;
-    // Prepend via mergePaths so the scripts dir wins, appears exactly once
-    // (even if the host PATH already contained it), and the join uses the
-    // platform `path.delimiter` (`;` on Windows) rather than a hardcoded `:`.
-    env.PATH = mergePaths(path.join(skillsDir, 'scripts'), env.PATH);
+  }
+  // mergePaths keeps first-seen order, dedupes (even if the host PATH already
+  // contained a dir), and joins with the platform `path.delimiter` (`;` on
+  // Windows). scriptsDirs[0] is agent-hub, so it lands leftmost and wins ties.
+  const scriptsDirs = resolveSkillScriptsDirs();
+  if (scriptsDirs.length > 0) {
+    env.PATH = mergePaths(...scriptsDirs, env.PATH);
   }
   // Hub config must win over the server process env: spreading `process.env` would keep a stale
   // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN after the user clears keys in Settings or switches

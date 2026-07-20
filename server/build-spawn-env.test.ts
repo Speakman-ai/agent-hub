@@ -8,6 +8,7 @@ import config, {
   normalizeClaudeSetupToken,
   refreshShellPath,
   resolveSkillsDir,
+  resolveSkillScriptsDirs,
 } from './config.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import { perUserHomePath } from './per-user-home.js';
@@ -714,6 +715,47 @@ describe('buildSpawnEnv — agent-hub skill-script contract', () => {
     } finally {
       if (prevPath === undefined) delete process.env.PATH;
       else process.env.PATH = prevPath;
+    }
+  });
+
+  // Regression: the AWS/gcloud/github/google/1password domain skills each ship
+  // their own scripts/ dir whose wrappers are documented as bare-name commands,
+  // but only agent-hub/scripts was ever put on PATH — so `aws-whoami.sh` and
+  // friends failed with "command not found" ("AWS login skill doesn't work").
+  it('lists agent-hub scripts first, then every other default-skill scripts dir', () => {
+    const dirs = resolveSkillScriptsDirs();
+    const agentHubScripts = path.join(resolveSkillsDir() as string, 'scripts');
+    expect(dirs[0]).toBe(agentHubScripts); // canonical wrappers win name ties
+    // Every entry exists on disk and none is duplicated.
+    for (const d of dirs) expect(existsSync(d)).toBe(true);
+    expect(new Set(dirs).size).toBe(dirs.length);
+    // Includes the domain skills that regressed, not just agent-hub.
+    const names = dirs.map((d) => path.basename(path.dirname(d)));
+    expect(names).toContain('aws-cli');
+  });
+
+  it('makes the AWS wrappers resolvable by bare name on the spawn PATH', () => {
+    const env = buildSpawnEnv();
+    const segs = (env.PATH as string).split(path.delimiter);
+    // The "Project AWS" section tells agents to call these by bare name; before
+    // the fix neither lived on PATH and the AWS skill appeared broken.
+    for (const name of ['aws-whoami.sh', 'aws-q.sh']) {
+      const hit = segs
+        .map((d) => path.join(d, name))
+        .find((p) => existsSync(p) && (statSync(p).mode & 0o111) !== 0);
+      expect(hit, `${name} must be resolvable + executable on the spawn PATH`).toBeTruthy();
+    }
+  });
+
+  it('keeps every domain-skill wrapper resolvable, not just agent-hub', () => {
+    const env = buildSpawnEnv();
+    const segs = (env.PATH as string).split(path.delimiter);
+    // One representative wrapper from each non-agent-hub domain skill.
+    for (const name of ['gh-pr.sh', 'gcloud-q.sh', 'google-cal.sh', 'op-read.sh']) {
+      const hit = segs
+        .map((d) => path.join(d, name))
+        .find((p) => existsSync(p) && (statSync(p).mode & 0o111) !== 0);
+      expect(hit, `${name} must be resolvable + executable on the spawn PATH`).toBeTruthy();
     }
   });
 });
