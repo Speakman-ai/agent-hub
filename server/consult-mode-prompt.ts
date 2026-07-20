@@ -17,12 +17,17 @@ export function requiredConsultSkillIds(
 
 export function buildConsultModePreamble(args: {
   project: Pick<Project, 'id' | 'name' | 'mode'>;
+  /** Whether the host browser ReAct tool is enabled for this session's agent. */
+  browserToolsEnabled?: boolean;
 }): string {
-  const { project } = args;
+  const { project, browserToolsEnabled = true } = args;
   const workflow = project.mode === 'workflow';
   const shipNote = workflow
     ? 'This is a **workflow** project — there is no Finalize Code Changes flow or session PR automation.'
     : 'This is a **dev** project, but **this session is in Consult mode** — no code edits, git ship, or Finalize here. Switch to a **Build** mode when you are ready to change code and run Finalize.';
+  const browserLine = browserToolsEnabled
+    ? 'The `browser` ReAct tool (host Chromium: `navigate`, `click`, `type`, `extract`, `screenshot`, `read_page`, …) **is available in this session** — use it to open URLs, scrape pages, read live content, or fill forms when a question needs the web. Do not claim you lack web access.'
+    : 'Host browser tools are turned **off** for this agent, so omit `tool: browser` from ReAct blocks — `web` search and `wiki` retrieval still work.';
   return [
     '## Consult mode',
     '',
@@ -34,6 +39,12 @@ export function buildConsultModePreamble(args: {
     '- Answer questions clearly about this workspace, its board, wiki, workflows, agents, crons, and configuration.',
     '- Make **Agent Hub project changes** when asked: kanban cards/epics/phases, wiki pages, workflow definitions, cron rows, agent settings, project skills, and similar product data.',
     '- Use bundled Hub skills and `ah-api.sh` / board helpers — never hand-roll raw curl against the API.',
+    '',
+    '### Research tools stay available',
+    '',
+    '- Consult mode restricts **code ship**, not **investigation**. Use the read-only ReAct tools freely to answer questions: `web` (live web search), `wiki` (project wiki retrieval), and `skill` loading.',
+    `- ${browserLine}`,
+    '- Agent Hub has **no image-generation tool** — you cannot create, render, or edit images. Say so plainly if asked instead of pretending to produce one.',
     '',
     '### Spec questions up front',
     '',

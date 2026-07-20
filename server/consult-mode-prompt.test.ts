@@ -17,6 +17,38 @@ describe('consult-mode-prompt', () => {
     expect(legacyDev).toContain('Switch to a **Build** mode');
   });
 
+  it('affirms browser/web research tools and disavows image generation', () => {
+    const withBrowser = buildConsultModePreamble({
+      project: { id: 'ops', name: 'Ops', mode: 'workflow' },
+      browserToolsEnabled: true,
+    });
+    expect(withBrowser).toContain('### Research tools stay available');
+    expect(withBrowser).toContain('restricts **code ship**, not **investigation**');
+    expect(withBrowser).toContain('`browser` ReAct tool');
+    expect(withBrowser).toContain('is available in this session');
+    expect(withBrowser).toContain('no image-generation tool');
+    // Research affirmation sits above the Hard limits so the model reads
+    // "you can investigate" before "you cannot ship code".
+    expect(withBrowser.indexOf('### Research tools stay available')).toBeLessThan(
+      withBrowser.indexOf('### Hard limits'),
+    );
+
+    const noBrowser = buildConsultModePreamble({
+      project: { id: 'ops', name: 'Ops', mode: 'workflow' },
+      browserToolsEnabled: false,
+    });
+    expect(noBrowser).toContain('Host browser tools are turned **off**');
+    expect(noBrowser).not.toContain('is available in this session');
+    // web + wiki are still offered even when the browser is off.
+    expect(noBrowser).toContain('`web` search and `wiki` retrieval still work');
+    expect(noBrowser).toContain('no image-generation tool');
+  });
+
+  it('defaults to affirming the browser when the flag is omitted (back-compat)', () => {
+    const dflt = buildConsultModePreamble({ project: { id: 'app', name: 'App', mode: 'dev' } });
+    expect(dflt).toContain('is available in this session');
+  });
+
   it('requires unresolved spec questions to be asked up front with the picker', () => {
     const prompt = buildConsultModePreamble({
       project: { id: 'ops', name: 'Ops', mode: 'workflow' },

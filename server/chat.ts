@@ -2662,6 +2662,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         const consultPreamble = buildConsultModePreamble({
           project: project as Project,
+          browserToolsEnabled: effectiveBrowserToolsEnabled(agent, project),
         });
         enrichedPrompt = `${consultPreamble}\n\n${enrichedPrompt}`;
       }
