@@ -135,7 +135,7 @@ export function EpicSummary({ epic, phases, tickets, columns, specItems }: any) 
 }
 
 /** One spec decision — status pill, decision text, decide/write actions. */
-export function SpecItemRow({ item, saving, onDecideForMe, onUpdateSpecItem }: any) {
+export function SpecItemRow({ item, saving, onDecideForMe, onUpdateSpecItem, onOpenCard }: any) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.decision || '');
   const chosen = item.status === 'chosen';
@@ -211,6 +211,16 @@ export function SpecItemRow({ item, saving, onDecideForMe, onUpdateSpecItem }: a
           </View>
         </>
       )}
+
+      {!editing && item.spike_card_id ? (
+        <TouchableOpacity
+          style={styles.specLinkedRow}
+          onPress={() => onOpenCard?.(item)}
+          testID={`open-spec-card-${item.id}`}
+        >
+          <Text style={styles.link}>Open linked card →</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -680,6 +690,15 @@ export default function EpicDetailScreen({ route, navigation }: any) {
     [navigation, projectId, project, epicId],
   );
 
+  // Jump from a spec decision to its linked spike card on the board.
+  const openSpecCard = useCallback(
+    (specItem: any) => {
+      if (!specItem?.spike_card_id) return;
+      openCard({ id: specItem.spike_card_id });
+    },
+    [openCard],
+  );
+
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
       <ProjectScreenHeader
@@ -774,6 +793,7 @@ export default function EpicDetailScreen({ route, navigation }: any) {
               saving={specSavingId}
               onDecideForMe={handleDecideForMe}
               onUpdateSpecItem={handleUpdateSpecItem}
+              onOpenCard={openSpecCard}
             />
           ))}
 
@@ -1008,6 +1028,7 @@ const styles = StyleSheet.create({
   specEditBlock: { marginTop: 8 },
   specInput: { minHeight: 90, textAlignVertical: 'top' },
   specActionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10 },
+  specLinkedRow: { marginTop: 10 },
 
   // Phase
   phaseCard: {

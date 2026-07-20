@@ -89,6 +89,32 @@ describe('EpicDetailScreen — SpecItemRow', () => {
     expect(html).toContain('Decide for me');
     expect(html).toContain('Write decision');
   });
+
+  it('offers an Open-linked-card action when the item has a spike card', () => {
+    const html = renderToStaticMarkup(
+      <SpecItemRow
+        item={{ id: 's3', tag: 'nav', title: 'Which nav?', status: 'open', spike_card_id: 'k42' }}
+        saving={null}
+        onDecideForMe={noop}
+        onUpdateSpecItem={noop}
+        onOpenCard={noop}
+      />,
+    );
+    expect(html).toContain('Open linked card');
+  });
+
+  it('hides the Open-linked-card action when there is no spike card', () => {
+    const html = renderToStaticMarkup(
+      <SpecItemRow
+        item={{ id: 's4', tag: 'nav', title: 'Which nav?', status: 'open' }}
+        saving={null}
+        onDecideForMe={noop}
+        onUpdateSpecItem={noop}
+        onOpenCard={noop}
+      />,
+    );
+    expect(html).not.toContain('Open linked card');
+  });
 });
 
 describe('EpicDetailScreen — PhaseCard', () => {
