@@ -72,6 +72,7 @@ export function projectNavGroups(project: any) {
             label: 'Planning',
             entries: [
                 { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' },
+                { key: 'card-templates', label: 'Card Templates', icon: 'FileSpreadsheet', screen: 'KanbanCardTemplates' },
                 { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' },
                 { key: 'stats', label: 'Stats', icon: 'BarChart3', screen: 'Stats' },
                 { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' },

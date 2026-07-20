@@ -22,6 +22,7 @@ describe('projectNavGroups', () => {
     it('places core destinations in the expected groups', () => {
         expect(group({}, 'planning').entries.map((e) => e.key)).toEqual([
             'board',
+            'card-templates',
             'epics',
             'stats',
             'notes',

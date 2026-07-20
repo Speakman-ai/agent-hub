@@ -1,32 +1,26 @@
-/** Reusable defaults for new kanban cards on a project board. */
-export type KanbanCardTemplate = {
-  id: string;
-  name: string;
-  title: string;
-  description: string;
-  priority: 'low' | 'medium' | 'high' | 'urgent';
-  labels: string;
-  epicId: string;
-  updatedAt: string;
-};
+// Pure template logic (types, defaults, form-merge, API-body) lives in
+// `@shared/utils/kanbanCardTemplates` so web and mobile share one source. This
+// module re-exports it and adds the browser-only legacy-localStorage migration
+// helpers (the old client-only storage that predates the server-backed table).
+import {
+  normalizeCardTemplatePriority,
+  type KanbanCardTemplate,
+} from '@shared/utils/kanbanCardTemplates';
 
-export type KanbanCardTemplateInput = Omit<KanbanCardTemplate, 'id' | 'updatedAt'>;
-
-const PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
+export {
+  applyCardTemplateToDetailForm,
+  blankCardTemplateInput,
+  cardTemplateApiBody,
+  normalizeCardTemplate,
+  normalizeCardTemplatePriority,
+  templateCreateCardPayload,
+  type KanbanCardTemplate,
+  type KanbanCardTemplateInput,
+  type KanbanCardTemplatePriority,
+} from '@shared/utils/kanbanCardTemplates';
 
 export function kanbanCardTemplatesKey(projectId: string): string {
   return `kanbanCardTemplates:${projectId}`;
-}
-
-export function blankCardTemplateInput(name = ''): KanbanCardTemplateInput {
-  return {
-    name,
-    title: '',
-    description: '',
-    priority: 'medium',
-    labels: '',
-    epicId: '',
-  };
 }
 
 /** One-time migration source: legacy browser localStorage templates. */
@@ -46,7 +40,7 @@ export function readLegacyLocalCardTemplates(
         name: row.name,
         title: typeof row.title === 'string' ? row.title : '',
         description: typeof row.description === 'string' ? row.description : '',
-        priority: PRIORITIES.has(row.priority) ? row.priority : 'medium',
+        priority: normalizeCardTemplatePriority(row.priority),
         labels: typeof row.labels === 'string' ? row.labels : '',
         epicId: typeof row.epicId === 'string' ? row.epicId : '',
         updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : new Date(0).toISOString(),
@@ -62,25 +56,4 @@ export function clearLegacyLocalCardTemplates(projectId: string): void {
   } catch {
     // Best-effort cleanup.
   }
-}
-
-/** Merge template defaults into a card detail form object. */
-export function applyCardTemplateToDetailForm<T extends Record<string, any>>(
-  form: T,
-  template: KanbanCardTemplate,
-): T & {
-  title: string;
-  description: string;
-  priority: KanbanCardTemplate['priority'];
-  labels: string;
-  epic_id: string;
-} {
-  return {
-    ...form,
-    title: template.title,
-    description: template.description,
-    priority: template.priority,
-    labels: template.labels,
-    epic_id: template.epicId || '',
-  };
 }

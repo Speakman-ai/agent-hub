@@ -11,6 +11,7 @@ import ChatScreen from './src/screens/ChatScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import KanbanScreen from './src/screens/KanbanScreen';
+import KanbanCardTemplatesScreen from './src/screens/KanbanCardTemplatesScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import DashboardHomeScreen from './src/screens/DashboardHomeScreen';
 import TodosScreen from './src/screens/TodosScreen';
@@ -212,6 +213,7 @@ function AppContent() {
             <Stack.Screen name="Skills" component={SkillsScreen}/>
             <Stack.Screen name="Settings" component={SettingsScreen}/>
             <Stack.Screen name="Kanban" component={KanbanScreen}/>
+            <Stack.Screen name="KanbanCardTemplates" component={KanbanCardTemplatesScreen}/>
             <Stack.Screen name="Wiki" component={WikiScreen}/>
             <Stack.Screen name="Notes" component={NotesScreen}/>
             <Stack.Screen name="PullRequests" component={PullRequestsScreen}/>

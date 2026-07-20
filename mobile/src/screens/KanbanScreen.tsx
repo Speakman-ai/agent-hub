@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useContext, useRef, useMemo } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, FlatList, Modal, StyleSheet, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, Switch, Linking, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -18,6 +19,11 @@ import { copyToClipboard } from '../utils/clipboard';
 import { KANBAN_PAGE_SIZE, appendCardPage, pagingEntry, seedPagingFromBoard, loadedCountsByColumn, canLoadMore, } from '../utils/kanbanPagination';
 import KanbanColumnsModal from '../components/KanbanColumnsModal';
 import LinkedTodosPanel from '../components/LinkedTodosPanel';
+import {
+    normalizeCardTemplate,
+    templateCreateCardPayload,
+    type KanbanCardTemplate,
+} from '@shared/utils/kanbanCardTemplates';
 const DEFAULT_COLUMNS = [
     { id: 'todo', name: 'To Do', color: '#3B82F6' },
     { id: 'in-progress', name: 'In Progress', color: '#F59E0B' },
@@ -60,7 +66,7 @@ function CardAvatar({ initials, avatar, active }: any) {
     </View>);
 }
 export default function KanbanScreen({ route, navigation }: any) {
-    const { projectId, project, cardId: deepLinkCardId } = route.params || {};
+    const { projectId, project, cardId: deepLinkCardId, pendingTemplate } = route.params || {};
     const { agents, kanbanRefreshKey, kanbanRefreshProjectIds, acknowledgeKanbanRefresh, setActiveAgentId, setActiveSessionId } = useApp();
     const kanbanRefreshProjectIdsRef = useRef<Set<string>>(kanbanRefreshProjectIds || new Set());
     kanbanRefreshProjectIdsRef.current = kanbanRefreshProjectIds || new Set();
@@ -80,6 +86,8 @@ export default function KanbanScreen({ route, navigation }: any) {
     const [showAddCard, setShowAddCard] = useState(false);
     const [newCardTitle, setNewCardTitle] = useState('');
     const [newCardPriority, setNewCardPriority] = useState('medium');
+    const [selectedCreateTemplate, setSelectedCreateTemplate] = useState<KanbanCardTemplate | null>(null);
+    const [showTemplatePicker, setShowTemplatePicker] = useState(false);
     const [selectedCard, setSelectedCard] = useState<any>(null);
     // Long-press card action sheet. `actionCard` is the long-pressed card;
     // `actionSubmenu` is the selected top-level action whose options are shown in
@@ -130,6 +138,7 @@ export default function KanbanScreen({ route, navigation }: any) {
     const [epicSaving, setEpicSaving] = useState(false);
     const columns = board?.columns || DEFAULT_COLUMNS;
     const epics = board?.epics || [];
+    const templateOptions: KanbanCardTemplate[] = (board?.cardTemplates || []).map(normalizeCardTemplate);
     const doneColumnIds = new Set(columns.filter((c: any) => /done|complete|closed/i.test(c.name || c.id || '')).map((c: any) => c.id));
     const columnInitialized = useRef(false);
     // Refs mirroring async-read state so the FlatList onEndReached callback and
@@ -140,6 +149,7 @@ export default function KanbanScreen({ route, navigation }: any) {
     const cardsRef = useRef(cards);
     const columnPagingRef = useRef(columnPaging);
     const inflightRef = useRef<any>(new Set());
+    const boardLoadedRef = useRef(false);
     useEffect(() => {
         cardsRef.current = cards;
     }, [cards]);
@@ -194,6 +204,7 @@ export default function KanbanScreen({ route, navigation }: any) {
             setBoard(data);
             setCards(allCards);
             setColumnPaging(paging);
+            boardLoadedRef.current = true;
             if (data?.columns?.length > 0 && !columnInitialized.current) {
                 setActiveColumn(data.columns[0].id);
                 columnInitialized.current = true;
@@ -235,6 +246,16 @@ export default function KanbanScreen({ route, navigation }: any) {
     // Post-mutation refreshes (create / move / delete / assign) preserve each
     // column's scroll depth rather than collapsing back to the first page.
     const loadBoard = reconcileBoard;
+    // The template editor is pushed over this screen, and Android back/gesture
+    // navigation can reveal it without going through the editor's custom
+    // button. Refresh on every subsequent focus so all return paths reconcile
+    // the existing board and its cardTemplates payload.
+    useFocusEffect(useCallback(() => {
+        if (!boardLoadedRef.current)
+            return undefined;
+        void reconcileBoard();
+        return undefined;
+    }, [reconcileBoard]));
     // Initial mount / project switch.
     useEffect(() => {
         fetchBoard();
@@ -390,6 +411,18 @@ export default function KanbanScreen({ route, navigation }: any) {
             .then(setModelConfig)
             .catch(() => setModelConfig(null));
     }, []);
+    useEffect(() => {
+        if (!pendingTemplate || columns.length === 0) return;
+        const template = normalizeCardTemplate(pendingTemplate);
+        setSelectedCreateTemplate(template);
+        setNewCardTitle(template.title);
+        setNewCardPriority(template.priority);
+        setShowAddCard(true);
+        // This is a one-shot navigation command. Clearing it prevents a later
+        // board update that changes column count from reopening the form and
+        // overwriting the user's in-progress draft.
+        navigation.setParams({ pendingTemplate: undefined });
+    }, [navigation, pendingTemplate, columns.length]);
     const cardsForColumn = (columnId: any) => {
         const scoped = filterCardsByEpic(cards, selectedEpicId);
         return scoped
@@ -399,22 +432,31 @@ export default function KanbanScreen({ route, navigation }: any) {
     const selectedEpic = findEpic(epics, selectedEpicId);
     const activeColumnObj = columns.find((c: any) => c.id === activeColumn) || columns[0];
     const handleCreateCard = async () => {
-        if (!newCardTitle.trim())
+        const title = newCardTitle.trim() || selectedCreateTemplate?.title.trim() || '';
+        if (!title)
             return;
         setSaving(true);
         try {
-            const payload: Record<string, any> = {
-                title: newCardTitle.trim(),
-                priority: newCardPriority,
-                columnId: activeColumn,
-            };
-            // If the board is filtered to an epic, tag the new card with that epic
-            // (matches the web behaviour in KanbanBoard.jsx).
-            if (selectedEpicId)
-                payload.epicId = selectedEpicId;
+            const payload: Record<string, any> = selectedCreateTemplate
+                ? templateCreateCardPayload(selectedCreateTemplate, {
+                    columnId: activeColumn,
+                    title,
+                    epicId: selectedEpicId,
+                })
+                : {
+                    title,
+                    priority: newCardPriority,
+                    columnId: activeColumn,
+                    ...(selectedEpicId ? { epicId: selectedEpicId } : {}),
+                };
+            // Selecting a template supplies the initial priority, while the
+            // priority chips remain an explicit per-card override.
+            if (selectedCreateTemplate)
+                payload.priority = newCardPriority;
             await api.createKanbanCard(projectId, payload);
             setNewCardTitle('');
             setNewCardPriority('medium');
+            setSelectedCreateTemplate(null);
             setShowAddCard(false);
             await loadBoard();
         }
@@ -1399,6 +1441,13 @@ export default function KanbanScreen({ route, navigation }: any) {
         <Text style={styles.topBarTitle} numberOfLines={1}>
           {project?.name || 'Project'} Board
         </Text>
+        <TouchableOpacity
+          style={styles.templatesButton}
+          onPress={() => navigation.navigate('KanbanCardTemplates', { projectId, project })}
+          testID="kanban-open-templates"
+        >
+          <Text style={styles.templatesButtonText}>Templates</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Epic Filter Bar */}
@@ -1461,6 +1510,10 @@ export default function KanbanScreen({ route, navigation }: any) {
       {/* Add Card Inline Form */}
       {showAddCard && (<KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
           <View style={styles.addCardForm}>
+            <TouchableOpacity style={styles.templatePickerButton} onPress={() => setShowTemplatePicker(true)} testID="card-create-template">
+              <Text style={styles.templatePickerLabel}>Template</Text>
+              <Text style={styles.templatePickerValue} numberOfLines={1}>{selectedCreateTemplate?.name || 'None — choose defaults'}</Text>
+            </TouchableOpacity>
             <TextInput style={styles.addCardInput} value={newCardTitle} onChangeText={setNewCardTitle} placeholder="Card title..." placeholderTextColor={colors.gray600} autoFocus/>
             <View style={styles.addCardPriorityRow}>
               {PRIORITY_OPTIONS.map((p: any) => (<TouchableOpacity key={p.value} style={[
@@ -1483,6 +1536,50 @@ export default function KanbanScreen({ route, navigation }: any) {
             </View>
           </View>
         </KeyboardAvoidingView>)}
+
+      <Modal visible={showTemplatePicker} transparent animationType="fade" onRequestClose={() => setShowTemplatePicker(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowTemplatePicker(false)}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Apply a template</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                    setSelectedCreateTemplate(null);
+                    setNewCardTitle('');
+                    setNewCardPriority('medium');
+                    setShowTemplatePicker(false);
+                }}
+              >
+                <Text style={styles.modalOptionText}>None — blank card</Text>
+              </TouchableOpacity>
+              {templateOptions.map((template) => (
+                <TouchableOpacity
+                  key={template.id}
+                  style={styles.modalOption}
+                  onPress={() => {
+                      setSelectedCreateTemplate(template);
+                      setNewCardTitle(template.title);
+                      setNewCardPriority(template.priority);
+                      setShowTemplatePicker(false);
+                  }}
+                  testID={`card-create-template-${template.id}`}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.modalOptionText}>{template.name}</Text>
+                    <Text style={styles.templateOptionMeta}>{template.priority}{template.labels ? ` · ${template.labels}` : ''}</Text>
+                  </View>
+                  {selectedCreateTemplate?.id === template.id && <Text style={styles.actionCheck}>✓</Text>}
+                </TouchableOpacity>
+              ))}
+              {templateOptions.length === 0 && <Text style={styles.noTemplatesText}>No templates yet. Create one from the Templates screen.</Text>}
+            </ScrollView>
+            <TouchableOpacity style={styles.modalCancel} onPress={() => setShowTemplatePicker(false)}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Card Action Sheet (long-press) — mobile equivalent of the web
               right-click CardContextMenu. Top level lists the action groups; tapping
@@ -1682,6 +1779,8 @@ const styles = StyleSheet.create({
     menuIcon: { fontSize: 20, color: colors.gray400 },
     backArrow: { fontSize: 20, color: colors.gray400 },
     topBarTitle: { flex: 1, fontSize: 16, fontWeight: '600', color: colors.white },
+    templatesButton: { paddingHorizontal: 9, paddingVertical: 7, borderRadius: 6, backgroundColor: colors.gray800, borderWidth: 1, borderColor: colors.gray700 },
+    templatesButtonText: { fontSize: 11, color: colors.gray300, fontWeight: '500' },
     deleteBtn: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, backgroundColor: colors.red600 },
     deleteBtnText: { fontSize: 12, color: colors.white, fontWeight: '500' },
     // Tabs
@@ -1751,6 +1850,15 @@ const styles = StyleSheet.create({
         backgroundColor: colors.gray900, borderTopWidth: 1, borderTopColor: colors.gray800,
         padding: 12,
     },
+    templatePickerButton: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+        backgroundColor: colors.gray800, borderRadius: 8, borderWidth: 1, borderColor: colors.gray700,
+        paddingHorizontal: 10, paddingVertical: 9, marginBottom: 8,
+    },
+    templatePickerLabel: { color: colors.gray400, fontSize: 12, fontWeight: '600' },
+    templatePickerValue: { flex: 1, color: colors.gray200, fontSize: 12, textAlign: 'right' },
+    templateOptionMeta: { color: colors.gray500, fontSize: 10, marginTop: 3 },
+    noTemplatesText: { color: colors.gray500, fontSize: 12, paddingVertical: 12 },
     addCardInput: {
         backgroundColor: colors.gray800, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10,
         color: colors.white, fontSize: 14, marginBottom: 8,

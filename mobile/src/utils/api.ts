@@ -990,6 +990,20 @@ export const api = {
         body: JSON.stringify({ epicId }),
     }),
     getAutonomousEpic: (projectId: any) => fetchJSON(`/projects/${projectId}/board/autonomous`),
+    // Card templates — server-backed reusable defaults for new cards.
+    // Contracts in server/routes/board.ts (/board/card-templates).
+    getCardTemplates: (projectId: any) => fetchJSON(`/projects/${projectId}/board/card-templates`),
+    createCardTemplate: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/board/card-templates`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
+    updateCardTemplate: (projectId: any, templateId: any, data: any) => fetchJSON(`/projects/${projectId}/board/card-templates/${templateId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+    }),
+    deleteCardTemplate: (projectId: any, templateId: any) => fetchJSON(`/projects/${projectId}/board/card-templates/${templateId}`, {
+        method: 'DELETE',
+    }),
     // Phases — the epic detail (workbench) screen drives autonomous phase runs.
     // Mirrors the web client's phase methods; server contracts in
     // server/routes/board-phases.ts.
