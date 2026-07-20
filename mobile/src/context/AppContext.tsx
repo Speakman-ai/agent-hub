@@ -23,6 +23,7 @@ import { deriveSessionState } from '../utils/deriveSessionState';
 import { firstEngineWithAuthenticatedModels, defaultModelForAuthenticatedEngine, } from '../utils/authModelEngines';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
 import { buildInterruptQueuedMessageDispatch, isPersistedUploadAttachment, } from '@shared/utils/queuedMessageAttachments';
+import { appendImportEvent } from '@shared/utils/projectImportWizard';
 import { addKanbanRefreshProject, createRefreshScheduler } from '@shared/utils/kanbanRefresh';
 const AppContext = createContext<any>(null);
 export function AppProvider({ children }: any) {
@@ -110,6 +111,12 @@ export function AppProvider({ children }: any) {
     //   { type: 'finalize_wizard_started'|'finalize_wizard_complete',
     //     projectId, sessionId?, agentId?, bump }
     const [lastFinalizeWizardEvent, setLastFinalizeWizardEvent] = useState<any>(null);
+    // Project import wizard lifecycle events are exposed here because RN has
+    // no window CustomEvent bus. Keep a bounded history, not only the latest
+    // event: clone/analyze can complete before the start request's response
+    // commits its correlation id in the native screen.
+    const [projectImportEvents, setProjectImportEvents] = useState<any[]>([]);
+    const projectImportEventSeqRef = useRef(0);
     // Last `finalize_run_*` WS event — drives live FinalizeButton updates without polling.
     const [lastFinalizeRunEvent, setLastFinalizeRunEvent] = useState<any>(null);
     // Last deployment_update WS event. DeploymentsScreen consumes this to keep
@@ -852,6 +859,22 @@ export function AppProvider({ children }: any) {
                     agentId: data.agentId,
                     bump: Date.now(),
                 });
+                break;
+            case 'clone-progress':
+            case 'clone-complete':
+            case 'clone-error':
+            case 'clone-preview-defaults':
+            case 'analyze-progress':
+            case 'analyze-complete':
+            case 'analyze-error':
+                {
+                    const event = {
+                        ...data,
+                        bump: Date.now(),
+                        importEventId: ++projectImportEventSeqRef.current,
+                    };
+                    setProjectImportEvents((previous) => appendImportEvent(previous, event));
+                }
                 break;
             case 'deployment_update':
                 setLastDeploymentEvent({
@@ -2104,6 +2127,7 @@ export function AppProvider({ children }: any) {
         handleCredentialSubmit,
         // Finalize setup wizard (Settings → Finalize)
         lastFinalizeWizardEvent,
+        projectImportEvents,
         lastFinalizeRunEvent,
         // Deployments
         lastDeploymentEvent,

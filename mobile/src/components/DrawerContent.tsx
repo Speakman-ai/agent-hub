@@ -577,6 +577,13 @@ export default function DrawerContent({ navigation }: any) {
           <Text style={styles.navButtonText}>New Project</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.navButton} onPress={() => {
+            navigation.navigate('ImportProject');
+            navigation.closeDrawer();
+        }}>
+          <HubIcon name="FolderOpen" size={17} style={styles.navButtonIcon}/>
+          <Text style={styles.navButtonText}>Import Project</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.navButton} onPress={() => {
             navigation.navigate('Settings');
             navigation.closeDrawer();
         }}>

@@ -186,6 +186,27 @@ export const api = {
     getProjects: () => fetchJSON('/projects'),
     getProject: (projectId: any) => fetchJSON(`/projects/${projectId}`),
     createProject: (data: any) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
+    cloneProject: (data: { url: string; targetDir?: string }) => fetchJSON('/projects/clone', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
+    analyzeProject: (data: { cwd: string; engine?: string; model?: string }) => fetchJSON('/projects/analyze', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
+    onboardProject: (data: Record<string, unknown>) => fetchJSON('/projects/onboard', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
+    getGithubCliStatus: () => fetchJSON('/github/status'),
+    detectGithubRepo: (cwd: string) => fetchJSON('/github/detect-repo', {
+        method: 'POST',
+        body: JSON.stringify({ cwd }),
+    }),
+    testGithubConnection: (owner: string, repo: string) => fetchJSON('/github/test-connection', {
+        method: 'POST',
+        body: JSON.stringify({ owner, repo }),
+    }),
     suggestProjectSetup: (data: any) => fetchJSON('/projects/provision/suggest', { method: 'POST', body: JSON.stringify(data) }),
     provisionProject: (data: any) => fetchJSON('/projects/provision', { method: 'POST', body: JSON.stringify(data) }),
     updateProject: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),

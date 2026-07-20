@@ -175,6 +175,27 @@ describe('api updateProject — PATCH parity with web client', () => {
     });
 });
 
+describe('api project import wizard helpers', () => {
+    it('cloneProject sends the clone URL and optional target', async () => {
+        await api.cloneProject({ url: 'https://github.com/acme/tool.git', targetDir: '/tmp/projects' });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/clone');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ url: 'https://github.com/acme/tool.git', targetDir: '/tmp/projects' });
+    });
+
+    it('analyzeProject and onboardProject use the web wizard endpoints', async () => {
+        await api.analyzeProject({ cwd: '/tmp/tool', engine: 'codex-cli', model: 'gpt-5.5' });
+        expect(lastCall()[0]).toBe('https://example.test/api/projects/analyze');
+        expect(JSON.parse(lastCall()[1].body)).toEqual({ cwd: '/tmp/tool', engine: 'codex-cli', model: 'gpt-5.5' });
+
+        mockFetch.mockClear();
+        await api.onboardProject({ project: { id: 'tool' }, agents: [] });
+        expect(lastCall()[0]).toBe('https://example.test/api/projects/onboard');
+        expect(lastCall()[1].method).toBe('POST');
+    });
+});
+
 describe('api invite helpers — mobile parity with web client', () => {
     it('getInvites → GET /auth/invites', async () => {
         await api.getInvites();

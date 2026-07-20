@@ -28,6 +28,7 @@ import DesignsListScreen from './src/screens/DesignsListScreen';
 import DesignViewScreen from './src/screens/DesignViewScreen';
 import ReleasesScreen from './src/screens/ReleasesScreen';
 import NewProjectScreen from './src/screens/NewProjectScreen';
+import ImportProjectScreen from './src/screens/ImportProjectScreen';
 import ProjectSettingsScreen from './src/screens/ProjectSettingsScreen';
 import ProjectAgentsScreen from './src/screens/ProjectAgentsScreen';
 import ProjectCronsScreen from './src/screens/ProjectCronsScreen';
@@ -227,6 +228,7 @@ function AppContent() {
             <Stack.Screen name="DesignView" component={DesignViewScreen}/>
             <Stack.Screen name="Releases" component={ReleasesScreen}/>
             <Stack.Screen name="NewProject" component={NewProjectScreen}/>
+            <Stack.Screen name="ImportProject" component={ImportProjectScreen}/>
             <Stack.Screen name="ProjectSettings" component={ProjectSettingsScreen}/>
             <Stack.Screen name="ProjectAgents" component={ProjectAgentsScreen}/>
             <Stack.Screen name="ProjectCrons" component={ProjectCronsScreen}/>
