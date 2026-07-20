@@ -451,9 +451,11 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
                               {use.input.description.trim()}
                             </Text>) : null}
                           {isBackgroundBash ? (<Text style={styles.bashBackgroundNote} testID="bash-background-note">
-                              Launched in the background. Agent Hub runs a fresh CLI each turn, so this
-                              shell only lives for this turn. It can't be monitored or resumed after the
-                              turn ends.
+                              Launched in the background. This shell is a child of this turn's CLI, so
+                              it can't be monitored or resumed after the turn ends. To track work across
+                              turns, start it as a Hub-owned background shell (the bg.sh wrapper) — it
+                              appears in the Background shells panel with status/logs/stop — or use Start
+                              preview / the Terminal tab.
                             </Text>) : null}
                           {block.result?.output ? (<Text style={[styles.bashOutput, isError && { color: colors.red400 }]}>
                               {block.result.output.slice(0, 2000)}

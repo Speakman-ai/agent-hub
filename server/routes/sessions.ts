@@ -495,6 +495,17 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         }),
       );
     }
+    const backgroundShellRuntime = deps.getBackgroundShellRuntime?.();
+    if (backgroundShellRuntime) {
+      tasks.push(
+        backgroundShellRuntime.stopBySessionId(sessionId).catch((err) => {
+          console.warn(
+            `[sessions] background-shell stopBySessionId failed (${sessionId}):`,
+            (err as Error).message,
+          );
+        }),
+      );
+    }
     await Promise.all(tasks);
   }
 

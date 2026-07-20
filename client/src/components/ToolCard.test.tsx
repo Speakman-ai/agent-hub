@@ -106,7 +106,9 @@ describe('ToolCard — humanized headline', () => {
     );
     expect(screen.getByTestId('bash-background-badge')).toBeTruthy();
     const note = screen.getByTestId('bash-background-note');
-    expect(note.textContent).toMatch(/only\s+lives for this turn/i);
+    expect(note.textContent).toMatch(/can.?t be monitored or resumed/i);
+    // Points the user at the durable, monitorable alternative.
+    expect(note.textContent).toMatch(/bg\.sh/i);
   });
 
   it('does not flag a foreground Bash command as background', () => {

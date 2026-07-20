@@ -168,6 +168,28 @@ and files over 100 MB are rejected. Storage is S3 when the Hub is configured
 with an artifacts bucket, otherwise a local directory — either way you use the
 same script.
 
+## Background shells — run work that outlives the turn
+
+A normal `run_in_background: true` Bash shell is a grandchild of **this turn's**
+CLI process, which the Hub reaps when the turn ends — so you can't `BashOutput`
+it next turn. To run something you'll monitor across turns (a build, a watcher,
+a long test run), start it as a **Hub-owned background shell** with
+`scripts/bg.sh`. It runs in the session worktree, its output streams to the
+session's **Background shells panel**, and `status` / `logs` / `stop` keep
+working in later turns.
+
+```bash
+scripts/bg.sh start --label "prod build" npm run build  # start (prints shell JSON incl. id)
+scripts/bg.sh list                                       # this session's shells (JSON)
+scripts/bg.sh status <shellId>                           # one shell's status
+scripts/bg.sh logs <shellId> --limit 100                 # captured output tail
+scripts/bg.sh stop <shellId>                             # SIGTERM the process group
+```
+
+Everything is scoped to `$AGENT_HUB_SESSION_ID`. Statuses are `running`,
+`exited` (clean, code 0), `failed` (non-zero / crashed), or `stopped` (you
+stopped it). The Hub reaps every running shell when the session is archived.
+
 ## Workflows — worked examples
 
 Concrete recipes live under **[examples/](examples/)**:
@@ -190,20 +212,8 @@ Concrete recipes live under **[examples/](examples/)**:
 | Desktop | Electron wrapper (`electron/main.js`) | `electron/` |
 | Deployment | Self-hosted Node.js behind a TLS proxy | operator |
 
-**DB tables:** `sessions`, `messages`, `heartbeat_logs`, `crons`,
-`wiki_pages`, `kanban_boards`, `kanban_columns`, `kanban_cards`,
-`kanban_epics`, `kanban_card_blockers`, `skill_registry`, `webhook_configs`,
-`device_tokens`, `delegations`, `handoffs`.
-
-**Real-time:** WebSocket on the same port as HTTP. Events include
-`message`, `session_created`, `kanban_update`, `wiki_update`,
-`cron_session_update`, `auto_pr_created`. The `session_created` event
-carries `{ agentId, session }` for any new row (kanban assign,
-`POST /api/agents/:id/sessions`, delivered `<handoff>`, autonomous/reviewer
-dispatch, …) so sidebars stay live without a full refetch.
-
-**Electron desktop shell:** wraps the same Express server; Electron and
-mobile bypass CORS (no `Origin`). Packaged installs store configs under
-`app.getPath('userData')` — confirm build mode when debugging missing
-files. Releases are out-of-band (agents propose PRs; humans publish
-installers).
+**Persistence:** SQLite stores sessions, messages, wiki, kanban, schedules,
+artifacts, credentials, and integration state. **Real-time:** WebSocket shares
+the HTTP port and broadcasts chat, session, kanban, wiki, cron, and preview
+updates. **Desktop:** Electron wraps the server; packaged config lives under
+`app.getPath('userData')`. Releases are out-of-band; humans publish installers.

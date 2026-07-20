@@ -148,6 +148,7 @@ import createOrgRoutes from './routes/orgs.js';
 import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
 import createArtifactRoutes from './routes/artifacts.js';
+import createBackgroundShellRoutes from './routes/background-shells.js';
 import createTranscribeRoutes from './routes/transcribe.js';
 import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
 import createReleasesRoutes from './routes/releases.js';
@@ -252,6 +253,7 @@ import createChatHandler, {
 } from './chat.js';
 
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
+import { createBackgroundShellRuntime } from './background-shells/background-shell-runtime-setup.js';
 import {
   createPreviewUrlBase,
   resolveDevServerPortClientUrl,
@@ -1057,6 +1059,22 @@ const { previewRuntime, previewComposeRuntime, devServerRuntime } = createPrevie
   },
 });
 
+// Hub-owned background shells — long-running commands that survive across
+// chat turns (the durable answer to "background Bash can't be monitored
+// after the turn ends"). Reaped on session delete/archive via
+// `stopBySessionId` in routes/sessions.ts.
+const backgroundShellRuntime = createBackgroundShellRuntime({
+  db: getDb(),
+  dataDir: _activeDataDir,
+  broadcast: (event) => {
+    try {
+      broadcast(event as unknown as Record<string, unknown>);
+    } catch {
+      /* best-effort — never let a broadcast failure stall the runtime */
+    }
+  },
+});
+
 // One persistent terminal shell per Agent Hub session. When a managed dev
 // server is active, its SessionEnv is the terminal's isolation boundary too —
 // crucially, both enter the same Sysbox container and see the same backing
@@ -1330,6 +1348,7 @@ export const routeDeps: RouteDeps = {
   getPreviewRuntime: () => previewRuntime,
   getPreviewComposeRuntime: () => previewComposeRuntime,
   getDevServerRuntime: () => devServerRuntime,
+  getBackgroundShellRuntime: () => backgroundShellRuntime,
   provisionSessionWorkspace: async (sessionId: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {
@@ -1406,6 +1425,12 @@ app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
 app.use(createArtifactRoutes(routeDeps));
+app.use(
+  createBackgroundShellRoutes({
+    ...routeDeps,
+    getBackgroundShellRuntime: () => backgroundShellRuntime,
+  }),
+);
 app.use(createFinalizeRoutes(routeDeps));
 app.use(createFinalizeParityRoutes(routeDeps));
 app.use(createFinalizeQuarantineRoutes(routeDeps));

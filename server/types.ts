@@ -4296,6 +4296,16 @@ export interface RouteDeps {
     stopBySessionId: (sessionId: string) => Promise<number>;
   } | null;
   /**
+   * Hub-owned background shells (long-running commands monitorable across
+   * turns). The full runtime type lives in
+   * `background-shells/background-shell-runtime.ts`; base RouteDeps only
+   * needs the session-reap surface (the routes file extends this with the
+   * full getter). See `stopBackgroundShellsForSession` in routes/sessions.ts.
+   */
+  getBackgroundShellRuntime?: () => {
+    stopBySessionId: (sessionId: string) => Promise<number>;
+  } | null;
+  /**
    * Clone or attach the session git worktree before the first chat turn.
    * Wired from `index.ts` (`ensureWorktree`). Used by
    * `POST /api/sessions/:sessionId/workspace/ensure` so preview can start

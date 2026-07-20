@@ -753,6 +753,61 @@ components:
           minLength: 1
       required:
         - token
+    BackgroundShell:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        project_id:
+          type: string
+        command:
+          type: string
+        label:
+          type: string
+          nullable: true
+        cwd:
+          type: string
+          nullable: true
+        pid:
+          type: integer
+          nullable: true
+        pid_start_time:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - running
+            - exited
+            - failed
+            - stopped
+        exit_code:
+          type: integer
+          nullable: true
+        log_path:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - session_id
+        - project_id
+        - command
+        - label
+        - cwd
+        - pid
+        - pid_start_time
+        - status
+        - exit_code
+        - log_path
+        - created_at
+        - updated_at
+      description: A Hub-owned background shell — a long-running command that survives across chat turns.
     ReviewerThread:
       type: object
       properties:
@@ -15197,6 +15252,203 @@ paths:
                       - true
                 required:
                   - ok
+  /api/sessions/{sessionId}/background-shells:
+    get:
+      summary: List background shells for a session
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Background shells, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shells:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BackgroundShell"
+                required:
+                  - shells
+        "404":
+          description: Session not found
+        "503":
+          description: Background shells unavailable on this server
+    post:
+      summary: Start a background shell in the session worktree
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                command:
+                  type: string
+                  description: Shell command run via `sh -c`.
+                label:
+                  type: string
+                  description: Optional human label surfaced in the UI.
+              required:
+                - command
+      responses:
+        "201":
+          description: Background shell started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shell:
+                    $ref: "#/components/schemas/BackgroundShell"
+                required:
+                  - shell
+        "400":
+          description: Missing command or no directory to run in
+        "404":
+          description: Session not found
+        "503":
+          description: Background shells unavailable on this server
+  /api/sessions/{sessionId}/background-shells/{shellId}:
+    get:
+      summary: Get one background shell
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Background shell id.
+          required: true
+          description: Background shell id.
+          name: shellId
+          in: path
+      responses:
+        "200":
+          description: Background shell.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shell:
+                    $ref: "#/components/schemas/BackgroundShell"
+                required:
+                  - shell
+        "404":
+          description: Session or shell not found
+        "503":
+          description: Background shells unavailable on this server
+  /api/sessions/{sessionId}/background-shells/{shellId}/logs:
+    get:
+      summary: Get a background shell log tail
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Background shell id.
+          required: true
+          description: Background shell id.
+          name: shellId
+          in: path
+        - schema:
+            type: string
+            description: Max number of most-recent log lines to return.
+          required: false
+          description: Max number of most-recent log lines to return.
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Log tail (in-memory; empty for shells from a prior Hub process).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shell:
+                    $ref: "#/components/schemas/BackgroundShell"
+                  logs:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - shell
+                  - logs
+        "404":
+          description: Session or shell not found
+        "503":
+          description: Background shells unavailable on this server
+  /api/sessions/{sessionId}/background-shells/{shellId}/stop:
+    post:
+      summary: Stop a background shell
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Background shell id.
+          required: true
+          description: Background shell id.
+          name: shellId
+          in: path
+      responses:
+        "200":
+          description: Background shell stopped (or already terminal).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shell:
+                    allOf:
+                      - $ref: "#/components/schemas/BackgroundShell"
+                      - nullable: true
+                required:
+                  - shell
+        "404":
+          description: Session or shell not found
+        "503":
+          description: Background shells unavailable on this server
   /api/projects/{projectId}/finalize/{runId}/reviewer-threads:
     get:
       tags:

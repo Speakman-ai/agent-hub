@@ -1230,8 +1230,13 @@ export function ToolCard({ use, result, defaultOpen }: any) {
                 data-testid="bash-background-note"
                 className="mt-2 text-[10px] text-amber-300/90 bg-amber-950/30 border border-amber-800/40 rounded px-2 py-1.5 not-italic"
               >
-                Launched in the background. Agent Hub runs a fresh CLI each turn, so this shell only
-                lives for this turn. It can&apos;t be monitored or resumed after the turn ends.
+                Launched in the background. This shell is a child of this turn&apos;s CLI, so it
+                can&apos;t be monitored or resumed after the turn ends. To run something you&apos;ll
+                track across turns, start it as a Hub-owned background shell (the{' '}
+                <code className="text-amber-200">bg.sh</code> wrapper) — it shows up in the
+                Background shells panel and supports status/logs/stop next turn — or use{' '}
+                <span className="text-amber-200">Start preview</span> / the{' '}
+                <span className="text-amber-200">Terminal</span> tab.
               </div>
             )}
           </div>

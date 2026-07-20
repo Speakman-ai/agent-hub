@@ -10,6 +10,7 @@ import {
   MIGRATE_LEGACY_PREVIEWS_SQL,
 } from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
+import { BACKGROUND_SHELLS_SCHEMA } from './background-shells/background-shell-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { FINALIZE_SERVER_CI_SCHEMA } from './finalize/ci-config-store.js';
@@ -3300,6 +3301,12 @@ function initDb(dataDir: string): void {
   // Worktree-preview secrets: per-project encrypted env merged into
   // preview spawns. Schema is co-located with `preview-secrets-store.ts`.
   db.exec(WORKTREE_PREVIEW_SECRETS_SCHEMA);
+
+  // Hub-owned background shells: long-running commands that outlive the
+  // per-turn CLI so they can be monitored across turns. Distinct from the
+  // older `background_tasks` table (async agent prompt turns). Schema is
+  // co-located with the runtime so its unit test can use an in-memory DB.
+  db.exec(BACKGROUND_SHELLS_SCHEMA);
 
   // Deployment Module: deployments / steps / environments / approvals. Schema
   // is co-located with the deploy store so deployment-schema.test.ts can spin
