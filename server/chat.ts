@@ -3309,6 +3309,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           askMode: isAskMode,
           dangerBypass: !!config.codexDangerBypass,
           awsSsoEnabled: awsSsoEnabledForProject,
+          resume: !isNewEngineSession && !!engineSessionId,
         });
         if (awsSsoEnabledForProject && projectAwsFiles) {
           appendCodexAwsAccessDirs(args, {

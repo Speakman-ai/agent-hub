@@ -212,6 +212,7 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
       askMode: false,
       dangerBypass: !!codexDangerBypass,
       awsSsoEnabled: !!awsSsoEnabled,
+      resume: !isNewEngineSession && !!engineSessionId,
     });
     if (awsSsoEnabled && awsAccessEnv) {
       appendCodexAwsAccessDirs(args, awsAccessEnv);

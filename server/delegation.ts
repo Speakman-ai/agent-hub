@@ -1087,6 +1087,7 @@ export async function synthesizeResults(
           askMode: isAskMode,
           dangerBypass: !!cfg.codexDangerBypass,
           awsSsoEnabled: synthAwsSso,
+          resume: !!engineSessionId,
         });
         if (synthAwsSso) {
           appendCodexAwsAccessDirs(args, {

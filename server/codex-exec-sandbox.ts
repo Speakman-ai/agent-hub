@@ -3,8 +3,10 @@
  * design). Mirrors branches in `chat.ts`.
  *
  * Sandbox mode names verified against the installed Codex CLI:
- *   `codex exec --help` (codex-cli 0.132.0, 2026-05-26) lists
- *   `[possible values: read-only, workspace-write, danger-full-access]`.
+ *   `codex exec --help` lists `[possible values: read-only, workspace-write,
+ *   danger-full-access]`. The resume subcommand accepts the same settings
+ *   through `-c sandbox_mode=...`, but rejects the `--sandbox` and
+ *   `--full-auto` flags.
  * OpenAI docs: https://developers.openai.com/codex/cli/reference#codex-exec
  * Security overview: https://developers.openai.com/codex/agent-approvals-security
  *
@@ -15,16 +17,31 @@
 export interface CodexExecSandboxOpts {
   askMode: boolean;
   dangerBypass: boolean;
+  /** `codex exec resume` has a narrower flag set than a new exec. */
+  resume?: boolean;
   /**
    * Project has Hub-managed AWS IAM Identity Center profiles. When true and
-   * `dangerBypass` is false, use `--sandbox danger-full-access` instead of
-   * `--full-auto` so nested `aws` can read `AWS_CONFIG_FILE` and
-   * `~/.aws/sso/cache` outside the workspace cwd.
+   * `dangerBypass` is false, use `danger-full-access` instead of workspace
+   * write so nested `aws` can read `AWS_CONFIG_FILE` and `~/.aws/sso/cache`
+   * outside the workspace cwd. Resume turns apply this through config because
+   * the resume subcommand does not accept `--sandbox`.
    */
   awsSsoEnabled?: boolean;
 }
 
 export function appendCodexExecSandboxFlags(args: string[], opts: CodexExecSandboxOpts): void {
+  if (opts.resume) {
+    if (opts.dangerBypass) {
+      args.push('--dangerously-bypass-approvals-and-sandbox');
+    } else if (opts.askMode) {
+      args.push('-c', 'sandbox_mode=read-only');
+    } else if (opts.awsSsoEnabled) {
+      args.push('-c', 'sandbox_mode=danger-full-access');
+    } else {
+      args.push('-c', 'sandbox_mode=workspace-write', '-c', 'approval_policy=on-failure');
+    }
+    return;
+  }
   if (opts.askMode) {
     args.push('--sandbox', 'read-only');
     return;
@@ -70,12 +87,13 @@ export function appendCodexShellEnvironmentPolicyArgs(
  * Legacy hook for AWS config dirs outside the agent workspace.
  *
  * Previously pushed `--add-dir` (a Claude Code flag that Codex only accepts on
- * top-level `codex exec`, not `codex exec resume`). Resume turns failed with
- * clap exit code 2: `unexpected argument '--add-dir' found`.
+ * top-level `codex exec`, not `codex exec resume`). Resume turns also reject
+ * the top-level `--sandbox` and `--full-auto` flags. Resume sandbox policy is
+ * now passed through `-c sandbox_mode=...` by the shared helper.
  *
  * AWS access for Codex is handled elsewhere:
- * - `appendCodexExecSandboxFlags` → `--sandbox danger-full-access` when
- *   `awsSsoEnabled` (or full bypass when `dangerBypass`)
+ * - `appendCodexExecSandboxFlags` → `danger-full-access` when `awsSsoEnabled`
+ *   (or full bypass when `dangerBypass`)
  * - spawn env from `mergeProjectAwsSpawnEnv` (`AWS_CONFIG_FILE`, linked
  *   `HOME/.aws` SSO cache)
  *

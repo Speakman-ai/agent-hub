@@ -1023,13 +1023,16 @@ describe('synthesizeResults — engine routing', () => {
     await flushSynth();
     expect((spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('/bin/codex');
     const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
-    expect(argv.slice(0, 6)).toEqual([
+    expect(argv.slice(0, 9)).toEqual([
       'exec',
       'resume',
       'thread-resume-id',
       '--json',
       '--skip-git-repo-check',
-      '--full-auto',
+      '-c',
+      'sandbox_mode=workspace-write',
+      '-c',
+      'approval_policy=on-failure',
     ]);
 
     const codexLine = JSON.stringify({
@@ -1115,8 +1118,9 @@ describe('synthesizeResults — engine routing', () => {
 
     await flushSynth();
     const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
-    expect(argv).toContain('--sandbox');
-    expect(argv).toContain('read-only');
+    expect(argv).toContain('-c');
+    expect(argv).toContain('sandbox_mode=read-only');
+    expect(argv).not.toContain('--sandbox');
     expect(argv).not.toContain('--full-auto');
 
     fakeProcs[0].finish(0, {

@@ -44,6 +44,50 @@ describe('appendCodexExecSandboxFlags', () => {
     });
     expect(a).toEqual(['exec', '--json', '--dangerously-bypass-approvals-and-sandbox']);
   });
+
+  it('uses resume-safe config overrides instead of exec-only sandbox flags', () => {
+    const a: string[] = ['exec', 'resume', 'thread-abc', '--json', '--skip-git-repo-check'];
+    appendCodexExecSandboxFlags(a, {
+      askMode: false,
+      dangerBypass: false,
+      resume: true,
+    });
+
+    expect(a).toEqual([
+      'exec',
+      'resume',
+      'thread-abc',
+      '--json',
+      '--skip-git-repo-check',
+      '-c',
+      'sandbox_mode=workspace-write',
+      '-c',
+      'approval_policy=on-failure',
+    ]);
+    expect(a).not.toContain('--sandbox');
+    expect(a).not.toContain('--full-auto');
+  });
+
+  it('keeps resume ask mode read-only without the unsupported --sandbox flag', () => {
+    const a: string[] = ['exec', 'resume', 'thread-abc', '--json'];
+    appendCodexExecSandboxFlags(a, { askMode: true, dangerBypass: false, resume: true });
+
+    expect(a).toEqual(['exec', 'resume', 'thread-abc', '--json', '-c', 'sandbox_mode=read-only']);
+    expect(a).not.toContain('--sandbox');
+  });
+
+  it('keeps the valid bypass flag on resume', () => {
+    const a: string[] = ['exec', 'resume', 'thread-abc', '--json'];
+    appendCodexExecSandboxFlags(a, { askMode: false, dangerBypass: true, resume: true });
+
+    expect(a).toEqual([
+      'exec',
+      'resume',
+      'thread-abc',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ]);
+  });
 });
 
 describe('appendCodexAwsAccessDirs', () => {
@@ -104,6 +148,7 @@ function buildCodexChatResumeArgv(
     askMode: false,
     dangerBypass: opts.dangerBypass,
     awsSsoEnabled: true,
+    resume: true,
   });
   appendCodexAwsAccessDirs(args, {
     HOME: '/data/per-user-creds/u1/home',
@@ -143,5 +188,14 @@ describe('codex exec resume + AWS (regression)', () => {
     );
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
+  });
+
+  it('resume argv with sandboxing enabled does not pass exec-only flags', () => {
+    const argv = buildCodexChatResumeArgv('thread-abc', { dangerBypass: false });
+
+    expect(argv).not.toContain('--sandbox');
+    expect(argv).not.toContain('--full-auto');
+    expect(argv).not.toContain('--add-dir');
+    expect(argv).toContain('sandbox_mode=danger-full-access');
   });
 });
