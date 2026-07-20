@@ -36,6 +36,7 @@ const SessionTerminalPane = lazy(() => import('./components/SessionTerminalPane'
 import LinkDesignModal from './components/LinkDesignModal';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton';
 import SessionBranchPicker from './components/SessionBranchPicker';
+import AwsSsoLoginMenu from './components/AwsSsoLoginMenu';
 import {
   paneOpenStorageKey,
   clearSessionPreviewStorage,
@@ -6483,6 +6484,12 @@ export default function App({ initialView }: any = {}) {
                                     isResolveSession={isResolvePrSessionTitle(activeSession?.name)}
                                   />
                                 )}
+                                <AwsSsoLoginMenu
+                                  projectId={activeChatProject.id}
+                                  project={activeChatProject}
+                                  disabled={!connected}
+                                  onError={(msg: any) => showToast(msg, 'error', 8000)}
+                                />
                               </>
                             ) : null}
                           </div>
