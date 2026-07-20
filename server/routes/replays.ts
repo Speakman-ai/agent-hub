@@ -879,7 +879,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
       }
     }
 
-    const policy = resolveReplayPolicy(project?.replay ?? null);
+    const policy = resolveReplayPolicy(project?.replay ?? null, config.replayMaskAllEnforced);
     res.json(policy);
   });
 

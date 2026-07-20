@@ -65,6 +65,7 @@ function makeConfig(): AppConfig {
     artifactsBucket: null,
     artifactsBucketRegion: null,
     replayRetentionDays: 0,
+    replayMaskAllEnforced: true,
     previewComposeReadyTimeoutMs: 600_000,
     previewSubdomainBase: null,
     dbInstrumentation: { enabled: false, slowThresholdMs: 10, logSlow: true },

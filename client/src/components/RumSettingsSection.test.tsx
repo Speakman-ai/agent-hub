@@ -18,6 +18,7 @@ import {
     createRumClient: vi.fn(),
     revokeRumClient: vi.fn(),
     updateProject: vi.fn(),
+    getReplayConfig: vi.fn(),
   },
 }));
 
@@ -127,6 +128,21 @@ describe('RumSettingsSection', () => {
     render(<RumSettingsSection projects={projects} />);
     expect(screen.getByTestId('rum-mask-all-toggle')).toHaveAttribute('aria-checked', 'false');
     expect(screen.getByTestId('rum-mask-all-warning')).toBeInTheDocument();
+  });
+
+  it('reflects the environment mask-all default from the effective replay policy', async () => {
+    (api.getReplayConfig as any).mockResolvedValueOnce({ maskAllEnforced: false });
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 1, continuous: true } }]}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('rum-continuous-maskall-toggle')).toHaveAttribute(
+        'aria-checked',
+        'false',
+      ),
+    );
   });
 
   it('scans the repo and shows detected framework + injection target', async () => {

@@ -330,6 +330,19 @@ describe('resolveReplayPolicy', () => {
     });
   });
 
+  it('honours an environment default that disables mask-all for staging/test', () => {
+    expect(resolveReplayPolicy({ sampleRate: 1, continuous: true }, false).maskAllEnforced).toBe(
+      false,
+    );
+    // An explicit project opt-in remains stronger than the environment default.
+    expect(
+      resolveReplayPolicy({ sampleRate: 1, continuous: true, maskAllEnforced: true }, false)
+        .maskAllEnforced,
+    ).toBe(true);
+    // The production/default call remains mask-all-on.
+    expect(resolveReplayPolicy({ sampleRate: 1, continuous: true }).maskAllEnforced).toBe(true);
+  });
+
   it('treats maskAllEnforced:true the same as the default (enforced)', () => {
     expect(
       resolveReplayPolicy({ sampleRate: 1, continuous: true, maskAllEnforced: true })

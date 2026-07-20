@@ -51,6 +51,11 @@ enable_ci_ssm_deploy_after_ecr_push = false
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
 
+# ST/test replay policy: keep a bounded 14-day window, but leave continuous
+# replay content readable unless a project explicitly opts into mask-all.
+replay_retention_days    = 14
+replay_mask_all_enforced = false
+
 # Compute / storage — BIGGER than dev to run the Finalize matrix in parallel
 # without OOM (e2e is memory-bound: each shard is a full DinD stack ~5-6 GB).
 instance_type    = "r7i.2xlarge" # 8 vCPU / 64 GB

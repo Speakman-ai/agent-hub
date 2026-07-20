@@ -67,6 +67,11 @@ agent_hub_ahlog_token = "<AHLOG_INGEST_TOKEN>"
 # agent_hub_ahlog_service     = "agent-hub"
 # agent_hub_ahlog_environment = "production"
 
+# Production continuous replay keeps the strong mask-all default and expires
+# unlinked captures after the bounded platform window.
+replay_retention_days    = 14
+replay_mask_all_enforced = true
+
 # Hub no longer runs CI (the fleet does) → right-sized vs the test box.
 instance_type    = "m7i.2xlarge" # 8 vCPU / 32 GB
 root_volume_size = 150

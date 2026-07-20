@@ -604,3 +604,21 @@ variable "artifacts_bucket_name" {
   default     = ""
   description = "S3 bucket name for session artifacts + RUM replay segments. Required when enable_artifacts_bucket = true; injected as AGENT_HUB_ARTIFACTS_BUCKET (region = aws_region)."
 }
+
+# ── Session replay policy ────────────────────────────────────────────────────
+variable "replay_retention_days" {
+  type        = number
+  default     = 14
+  description = "Global session-replay retention window in days. Zero keeps replay rows/blobs indefinitely; project settings may tighten this window. Injected as AGENT_HUB_REPLAY_RETENTION_DAYS."
+
+  validation {
+    condition     = var.replay_retention_days >= 0 && var.replay_retention_days <= 400 && floor(var.replay_retention_days) == var.replay_retention_days
+    error_message = "replay_retention_days must be a whole number between 0 and 400 days."
+  }
+}
+
+variable "replay_mask_all_enforced" {
+  type        = bool
+  default     = true
+  description = "Default mask-all policy for continuous replay when a project has no explicit override. Set false for staging/test environments that need readable replay content. Injected as AGENT_HUB_REPLAY_MASK_ALL_ENFORCED."
+}

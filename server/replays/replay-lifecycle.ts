@@ -22,7 +22,7 @@
  *     rejects a transition on/after expiration), and transition days within a rule
  *     must strictly increase.
  * Transitions that can't fit before expiration are simply dropped, which is why
- * the 30-day default retention emits an expiration-only rule (there is no room to
+ * the short default retention window emits an expiration-only rule (there is no room to
  * tier a 30-day object). Note also that S3 does not transition objects < 128 KB by
  * default; a ~60 KB segment therefore expires under this rule but is unlikely to
  * be tiered — the transitions matter for extended-retention tenants (T62).

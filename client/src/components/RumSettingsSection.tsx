@@ -181,6 +181,25 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
     }
   }, []);
 
+  // Resolve the effective policy as well as the persisted project shape. The
+  // environment may provide a different mask-all default (for example ST/test
+  // opts out through Terraform), so reading only project.replay would make the
+  // admin control display the wrong state for projects without an explicit
+  // override.
+  const reloadReplayPolicy = useCallback(async (pid: any) => {
+    if (!pid || typeof api.getReplayConfig !== 'function') return;
+    try {
+      const policy = await api.getReplayConfig(pid);
+      if (activePidRef.current !== pid) return;
+      if (typeof policy?.maskAllEnforced === 'boolean') {
+        setEnforceMaskAll(policy.maskAllEnforced);
+      }
+    } catch {
+      // The project shape remains a safe fallback when the public policy read
+      // is unavailable during startup or on an older server.
+    }
+  }, []);
+
   useEffect(() => {
     if (!projectId) return;
     // Mark this project active BEFORE any async load so in-flight responses
@@ -203,7 +222,8 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
     setClientsError(null);
     void reloadDraft(projectId);
     void reloadClients(projectId);
-  }, [projectId, reloadDraft, reloadClients]);
+    void reloadReplayPolicy(projectId);
+  }, [projectId, reloadDraft, reloadClients, reloadReplayPolicy]);
 
   const project = projects.find((p: any) => p.id === projectId) || null;
 

@@ -113,6 +113,10 @@ locals {
     local.emit_default_owner_env && length(local.default_owner_username_trim) > 0 ? [
       join("", ["AGENT_HUB_DEFAULT_USERNAME=", jsonencode(local.default_owner_username_trim)]),
     ] : [],
+    [
+      "AGENT_HUB_REPLAY_RETENTION_DAYS=${tostring(var.replay_retention_days)}",
+      "AGENT_HUB_REPLAY_MASK_ALL_ENFORCED=${var.replay_mask_all_enforced ? "true" : "false"}",
+    ],
     # S3-backed artifacts + RUM replays (see artifacts.tf). Absent → local data dir.
     local.artifacts_bucket_enabled ? [
       join("", ["AGENT_HUB_ARTIFACTS_BUCKET=", jsonencode(var.artifacts_bucket_name)]),
@@ -160,6 +164,10 @@ locals {
     local.emit_default_owner_env && length(local.default_owner_username_trim) > 0 ? [
       "AGENT_HUB_DEFAULT_USERNAME=${replace(local.default_owner_username_trim, "\n", "")}",
     ] : [],
+    [
+      "AGENT_HUB_REPLAY_RETENTION_DAYS=${tostring(var.replay_retention_days)}",
+      "AGENT_HUB_REPLAY_MASK_ALL_ENFORCED=${var.replay_mask_all_enforced ? "true" : "false"}",
+    ],
     [
       "AGENT_HUB_CONTAINER_PROJECTS_DIR=/home/node/projects",
       "AGENT_HUB_CONTAINER_WORKSPACES_DIR=/home/node/.agent-hub/workspaces",

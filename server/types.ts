@@ -3825,13 +3825,20 @@ export interface AppConfig {
    * (server/replays/replay-retention-sweeper.ts) deletes UNLINKED replays whose
    * `created_at` is older than this many days, reclaiming their blobs. Linked
    * captures (attached to a support ticket or kanban card) are intentional
-   * triage artifacts and are never expired. `0` (the default) disables retention
-   * entirely — nothing is ever swept, matching the off/opt-in posture. This is a
-   * hard prerequisite for continuous (Datadog-parity) capture, which would
-   * otherwise grow storage without bound. Env:
+   * triage artifacts and are never expired. The default is 14 days; `0` disables
+   * retention entirely (keep-forever) for operators who explicitly choose that
+   * posture. This is a hard prerequisite for continuous (Datadog-parity) capture,
+   * which would otherwise grow storage without bound. Env:
    * `AGENT_HUB_REPLAY_RETENTION_DAYS`; config.json: `replayRetentionDays`.
    */
   replayRetentionDays: number;
+  /**
+   * Whether continuous replay defaults to masking all text and inputs when a
+   * project has not explicitly opted out. Env:
+   * `AGENT_HUB_REPLAY_MASK_ALL_ENFORCED`; config.json:
+   * `replayMaskAllEnforced`.
+   */
+  replayMaskAllEnforced: boolean;
   /**
    * Phase-1 async-DB instrumentation. When `enabled` is true at boot, every
    * prepared statement is wrapped to time its `run`/`get`/`all` calls

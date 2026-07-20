@@ -595,12 +595,27 @@ const config: AppConfig = {
     null,
   ),
 
-  // Session-replay retention in days. 0 (default) disables the retention
-  // sweeper entirely (off/opt-in posture). Negative values are clamped to 0.
+  // Session-replay retention in days. The platform default is intentionally
+  // bounded so continuous capture cannot grow storage forever. Set to 0 only
+  // when an operator explicitly wants keep-forever semantics.
   replayRetentionDays: Math.max(
     0,
-    resolveInt('AGENT_HUB_REPLAY_RETENTION_DAYS', 'replayRetentionDays', 0),
+    resolveInt('AGENT_HUB_REPLAY_RETENTION_DAYS', 'replayRetentionDays', 14),
   ),
+
+  // Continuous replay normally enforces mask-all as a strong privacy default.
+  // Terraform can turn that default off for a non-production environment (for
+  // example staging/test); a project-level explicit value still wins.
+  replayMaskAllEnforced: (() => {
+    const key = 'AGENT_HUB_REPLAY_MASK_ALL_ENFORCED' as const;
+    if (process.env[key] !== undefined) {
+      return (
+        envMeansTrue(key) ||
+        (!envMeansFalse(key) && coerceConfigBooleanLoose(process.env[key], true))
+      );
+    }
+    return coerceConfigBooleanLoose(fileConfig.replayMaskAllEnforced, true);
+  })(),
 
   // ── DB statement instrumentation (Phase 1 async-DB epic) ────────
   // Off by default: when disabled, prepared statements are never wrapped, so

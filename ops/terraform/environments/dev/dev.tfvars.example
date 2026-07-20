@@ -50,6 +50,10 @@ ci_ssm_deploy_instance_id           = "<DEV_SANDBOX_INSTANCE_ID>"
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
 
+# Session replay defaults. Per-project RUM settings may tighten retention.
+replay_retention_days      = 14
+replay_mask_all_enforced   = true
+
 # Compute / storage sizing — keep in lockstep with cloud reality. A plan that
 # reverts these would try to downsize the instance and shrink/recreate the root
 # volume, destroying the Hub data dir (sessions, workspaces, preview DBs).

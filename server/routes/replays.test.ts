@@ -1886,6 +1886,15 @@ describe('GET /api/replays/config', () => {
     });
   });
 
+  it('uses the configured environment mask-all default for continuous capture', async () => {
+    const { app, config } = makeApp({ projects: [PROJECT_WITH_REPLAY] });
+    config.replayMaskAllEnforced = false;
+    const res = await supertest(app)
+      .get('/api/replays/config?projectId=proj-continuous')
+      .expect(200);
+    expect(res.body.maskAllEnforced).toBe(false);
+  });
+
   it('pins a continuous-on/no-rate project to an explicit sampleRate:0', async () => {
     const { app } = makeApp({ projects: [PROJECT_CONTINUOUS_NO_RATE] });
     const res = await supertest(app).get('/api/replays/config?projectId=proj-cnr').expect(200);

@@ -545,6 +545,7 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
  */
 export function resolveReplayPolicy(
   cfg: ProjectReplayConfig | null | undefined,
+  defaultMaskAllEnforced = true,
 ): ResolvedReplayPolicy {
   if (!cfg || typeof cfg !== 'object') return DEFAULT_REPLAY_POLICY;
   const continuous = cfg.continuous === true;
@@ -586,7 +587,10 @@ export function resolveReplayPolicy(
     // Strong default: enforced whenever continuous capture is on, UNLESS an
     // Admin has explicitly opted the project out (`maskAllEnforced === false`).
     // With continuous off, mask-all is never enforced (per-browser choice wins).
-    maskAllEnforced: continuous && cfg.maskAllEnforced !== false,
+    maskAllEnforced:
+      continuous &&
+      (cfg.maskAllEnforced === true ||
+        (cfg.maskAllEnforced !== false && defaultMaskAllEnforced !== false)),
     // The segmented path lifts the sub-minute floor (O(1) append).
     flushIntervalMs: clampFlushIntervalMs(cfg.flushIntervalMs, { segmented }),
     sessionSampleRate,
