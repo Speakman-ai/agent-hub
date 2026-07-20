@@ -23,6 +23,7 @@ import {
   previewIframeSrc,
   previewProxySessionIdFromUrl,
   resolvePreviewBrowserUrl,
+  rewriteLoopbackPreviewUrl,
   withPreviewTicket,
 } from '../utils/sessionPreviewState';
 import { getApiBase, getAuthHeaders } from '../utils/connection';
@@ -248,8 +249,11 @@ export default function SessionPreviewPane({
     if (state.status !== 'ready' || !activeRawUrl) return '';
     // Local-dev URLs (`http://localhost:<port>`) bypass Hub proxy/subdomain
     // routing — safe to render immediately without waiting on /api/config.
+    // Rewrite a bare loopback host to the host the SPA is loaded from so a
+    // remote-host Hub (e.g. http://192.168.50.127:8080) doesn't hand the
+    // browser a `localhost` it can't reach.
     if (!previewProxySessionIdFromUrl(activeRawUrl)) {
-      return activeRawUrl;
+      return rewriteLoopbackPreviewUrl(activeRawUrl);
     }
     // Hub-proxied URLs need subdomain vs path-prefix resolution — block until
     // the /api/config fetch resolves so we don't race (SUBDOMAIN_LOADING).

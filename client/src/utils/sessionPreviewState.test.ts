@@ -11,6 +11,7 @@ import {
   previewIframeSrc,
   previewProxySessionIdFromUrl,
   resolvePreviewBrowserUrl,
+  rewriteLoopbackPreviewUrl,
   withPreviewTicket,
   shouldShowSessionPreviewPane,
   previewStateApiPath,
@@ -371,6 +372,53 @@ describe('resolvePreviewBrowserUrl', () => {
         { subdomainBase: 'preview.example.com' },
       ),
     ).toBe(`https://${sid}.preview.example.com/orders?status=open#row=42`);
+  });
+});
+
+describe('rewriteLoopbackPreviewUrl', () => {
+  it('rewrites a bare localhost preview URL to a remote browsing host', () => {
+    // originOverride is returned verbatim by resolvePreviewBrowsingOrigin,
+    // standing in for getServerBase()/window.location in a browser.
+    expect(rewriteLoopbackPreviewUrl('http://localhost:4100/', 'http://192.168.50.127:8080')).toBe(
+      'http://192.168.50.127:4100/',
+    );
+  });
+
+  it('preserves path, query, hash and scheme while swapping only the host', () => {
+    expect(
+      rewriteLoopbackPreviewUrl('http://localhost:4100/board?tab=x#row=1', 'http://10.0.0.5:8080'),
+    ).toBe('http://10.0.0.5:4100/board?tab=x#row=1');
+  });
+
+  it('rewrites 127.0.0.1 loopback URLs too', () => {
+    expect(rewriteLoopbackPreviewUrl('http://127.0.0.1:4200/', 'http://myhost.lan:8080')).toBe(
+      'http://myhost.lan:4200/',
+    );
+  });
+
+  it('is a no-op when the browsing host is itself loopback (local dev / Electron)', () => {
+    expect(rewriteLoopbackPreviewUrl('http://localhost:4100/', 'http://localhost:3050')).toBe(
+      'http://localhost:4100/',
+    );
+    expect(rewriteLoopbackPreviewUrl('http://localhost:4100/', 'http://127.0.0.1:3050')).toBe(
+      'http://localhost:4100/',
+    );
+  });
+
+  it('leaves a preview URL that is already a non-loopback host untouched', () => {
+    expect(
+      rewriteLoopbackPreviewUrl('http://192.168.50.127:4100/', 'http://192.168.50.127:8080'),
+    ).toBe('http://192.168.50.127:4100/');
+  });
+
+  it('never touches proxy URLs (handled by resolvePreviewBrowserUrl)', () => {
+    const proxy = '/api/sessions/sess-1/preview/proxy/';
+    expect(rewriteLoopbackPreviewUrl(proxy, 'http://192.168.50.127:8080')).toBe(proxy);
+  });
+
+  it('returns non-string / empty input unchanged', () => {
+    expect(rewriteLoopbackPreviewUrl('', 'http://192.168.50.127:8080')).toBe('');
+    expect(rewriteLoopbackPreviewUrl(null, 'http://192.168.50.127:8080')).toBe(null);
   });
 });
 

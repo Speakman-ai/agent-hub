@@ -126,6 +126,58 @@ export function resolvePreviewBrowsingOrigin(originOverride: any) {
 }
 
 /**
+ * Loopback hostnames a direct-port preview URL may carry. The server emits
+ * `http://localhost:<port>` (preview-public-url.ts) and dev-server ports come
+ * out as `http://localhost:<hostPort>`, but be liberal about what counts as
+ * loopback so an IPv4/IPv6 variant is handled too.
+ */
+function isLoopbackHostname(hostname: any) {
+  if (typeof hostname !== 'string') return false;
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h === '::1' || h === '0.0.0.0') return true;
+  return /^127(?:\.\d{1,3}){3}$/.test(h);
+}
+
+/**
+ * Direct-port preview URLs are emitted by the server as `http://localhost:<port>`
+ * (see server/preview/preview-public-url.ts). That literal only resolves to the
+ * Hub host when the SPA runs on the same machine as the server. When the Hub is
+ * opened from a remote host (e.g. http://192.168.50.127:8080), `localhost` points
+ * at the *browser's* machine and the preview shows "localhost refused to connect".
+ *
+ * Swap the loopback hostname for the host the SPA is actually talking to
+ * (`getServerBase()` / `window.location`), keeping the docker-published port and
+ * scheme. No-op when the browsing host is itself loopback (local dev / Electron)
+ * or when the URL isn't a bare loopback URL — proxy/subdomain URLs are handled by
+ * `resolvePreviewBrowserUrl` and must not be touched here.
+ */
+export function rewriteLoopbackPreviewUrl(url: any, originOverride?: any) {
+  if (!url || typeof url !== 'string') return url;
+  // Only bare direct-port URLs; proxy/subdomain URLs route through
+  // resolvePreviewBrowserUrl and carry a session id.
+  if (previewProxySessionIdFromUrl(url)) return url;
+  const browsingOrigin = resolvePreviewBrowsingOrigin(originOverride);
+  if (!browsingOrigin) return url;
+  let browsingHost: string;
+  try {
+    browsingHost = new URL(browsingOrigin).hostname;
+  } catch {
+    return url;
+  }
+  // SPA loaded on the same machine as the server — `localhost` already
+  // resolves correctly, leave the URL alone.
+  if (isLoopbackHostname(browsingHost)) return url;
+  try {
+    const u = new URL(url);
+    if (!isLoopbackHostname(u.hostname)) return url;
+    u.hostname = browsingHost;
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
  * UUID label check for subdomain-mode session ids — mirror of the server-
  * side `SESSION_ID_LABEL_RE` in `server/preview/preview-subdomain-host.ts`.
  * Kept in sync so a session id the server WILL parse out of the Host is
