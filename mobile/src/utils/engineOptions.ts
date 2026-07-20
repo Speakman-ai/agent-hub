@@ -19,7 +19,10 @@ export const ENGINE_MODELS: Record<string, any> = {
         { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
         { id: 'claude-sonnet-5', label: 'Sonnet', short: 'Sonnet' },
     ],
-    'cursor-agent': [{ id: 'composer-2.5', label: 'Composer 2.5', short: 'Composer 2.5' }],
+    'cursor-agent': [
+        { id: 'composer-2.5', label: 'Composer 2.5', short: 'Composer 2.5' },
+        { id: 'cursor-grok-4.5-high', label: 'Cursor Grok 4.5', short: 'Grok 4.5' },
+    ],
     // Codex — only models accepted under ChatGPT OAuth. Older IDs (gpt-5,
     // gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) plus gpt-5.3-codex
     // and the bare gpt-5.6 id are rejected with HTTP 400 by the ChatGPT backend.

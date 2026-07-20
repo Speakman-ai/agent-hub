@@ -77,9 +77,12 @@ describe('mobile engine picker constants', () => {
         expect(d.label).toBe('Sonnet 4.6');
         expect(d.short).toBe('Sonnet 4.6');
     });
-    it('exposes only composer-2.5 as the model for cursor-agent', () => {
+    it('exposes Composer 2.5 and Cursor Grok 4.5 for cursor-agent', () => {
         const models = ENGINE_MODELS['cursor-agent'].map((m: any) => m.id);
-        expect(models).toEqual(['composer-2.5']);
+        expect(models).toEqual(['composer-2.5', 'cursor-grok-4.5-high']);
+        const grok = ENGINE_MODELS['cursor-agent'].find((m: any) => m.id === 'cursor-grok-4.5-high');
+        expect(grok.label).toBe('Cursor Grok 4.5');
+        expect(grok.short).toBe('Grok 4.5');
     });
     it('defaults cursor-agent to composer-2.5 (matches the TopBar list)', () => {
         // Regression: mobile's ENGINE_DEFAULT_MODELS previously set

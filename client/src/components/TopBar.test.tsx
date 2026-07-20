@@ -177,12 +177,13 @@ describe('<TopBar /> engine picker', () => {
     expect(screen.queryByText(/GPT-5 Mini/)).toBeNull();
   });
 
-  it('shows only composer-2.5 as the model for cursor-agent', () => {
+  it('shows Composer 2.5 and Cursor Grok 4.5 for cursor-agent', () => {
     renderTopBar({ sessionEngine: 'cursor-agent', sessionModel: 'composer-2.5' });
     // The model trigger surfaces by its title attribute
     const modelTrigger = screen.getByTitle(/^Model: /);
     fireEvent.click(modelTrigger as any);
     expect(screen.getAllByText('Composer 2.5').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Cursor Grok 4.5').length).toBeGreaterThan(0);
     // No other cursor models (Codex variants, auto, composer-2-fast, legacy
     // composer-2) should be rendered.
     expect(screen.queryByText(/GPT-5.3 Codex/)).toBeNull();

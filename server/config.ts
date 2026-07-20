@@ -135,7 +135,7 @@ try {
   }
 }
 
-/** Strip legacy Cursor-IDE / Codex IDs from cursor-agent — Hub only spawns composer-2.5. */
+/** Strip legacy Cursor-IDE / Codex IDs from cursor-agent to Hub CLI models. */
 function normalizeCursorAgentEngineModels(map: Record<string, string[]>): Record<string, string[]> {
   const next = { ...map };
   const hub = new Set<string>(CURSOR_AGENT_HUB_MODEL_ALLOWLIST);
