@@ -23,6 +23,27 @@ export function isSessionWorktreeEnabled(session: any) {
   return Number(session?.use_worktree ?? 1) !== 0;
 }
 
+/**
+ * Whether the "Changes" (code diff) toolbar button should render.
+ *
+ * Consult mode only suppresses code-*ship* actions (Finalize / Push) — not
+ * read-only inspection of what a session already produced. A session that ships
+ * its work flips to Consult ("Pushed to Agent Hub"), and users still need to see
+ * the diff it pushed, so keep the button when the session has a worktree even in
+ * Consult. Workflow (no-code) projects never expose worktree diffs.
+ */
+export function shouldShowSessionChangesButton(args: {
+  isWorkflowProject: boolean;
+  consultActive: boolean;
+  session: any;
+}) {
+  if (args.isWorkflowProject) return false;
+  // Non-consult behavior is unchanged: the button always shows.
+  if (!args.consultActive) return true;
+  // In Consult, only surface it when the session has a worktree to diff.
+  return isSessionWorktreeEnabled(args.session);
+}
+
 /** True when the session row already has a provisioned worktree path (preview-safe). */
 export function isSessionWorkspaceReady(session: any) {
   if (!isSessionWorktreeEnabled(session)) return true;

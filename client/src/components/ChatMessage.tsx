@@ -380,6 +380,7 @@ function ChatMessage({
   onEditQueued,
   onEditInComposer,
   onInterrupt,
+  onOpenPrDetail,
   inFlightWhileStreaming = false,
 }: any) {
   const isSystem = message.role === 'system';
@@ -428,7 +429,9 @@ function ChatMessage({
       return <FinalizeReadyToPushBlock message={message} hosted={hosted} />;
     }
     if (finalizeKind === 'finalize_run_terminal') {
-      return <FinalizeTerminalBlock message={message} hosted={hosted} />;
+      return (
+        <FinalizeTerminalBlock message={message} hosted={hosted} onOpenPrDetail={onOpenPrDetail} />
+      );
     }
     if (finalizeKind === 'finalize_fix_dispatch') {
       return <FinalizeFixDispatchBlock message={message} />;

@@ -183,6 +183,7 @@ import {
   isSessionConsultModeEnabled,
   isSessionWorkspaceReady,
   isSessionWorktreeEnabled,
+  shouldShowSessionChangesButton,
   prependSessionDeduped,
   planCreatedSessionCaches,
 } from './utils/sessionDerivedState';
@@ -6126,6 +6127,7 @@ export default function App({ initialView }: any = {}) {
                                       agentColor={chatAccentColor}
                                       projectId={activeChatProject?.id}
                                       hosted={activeChatProject?.gitHost === 'agenthub'}
+                                      onOpenPrDetail={handleOpenPrDetail}
                                     />
                                   ),
                                 )}
@@ -6318,8 +6320,14 @@ export default function App({ initialView }: any = {}) {
                         <div className="shrink-0 border-t border-gray-800/80">
                           <div className="px-3 md:px-6 pb-2 flex flex-wrap justify-center gap-2 sm:flex-nowrap sm:justify-start sm:items-center pt-2">
                             {/* Changes (code diff) toggle — opens the diff pane on
-                            the right, replacing the preview pane if open. */}
-                            {!chatProjectIsWorkflow && !sessionConsultActive && (
+                            the right, replacing the preview pane if open. Stays
+                            visible in Consult mode when the session has a worktree
+                            so users can inspect the diff a pushed session shipped. */}
+                            {shouldShowSessionChangesButton({
+                              isWorkflowProject: chatProjectIsWorkflow,
+                              consultActive: sessionConsultActive,
+                              session: activeSession,
+                            }) && (
                               <button
                                 type="button"
                                 data-testid="toggle-changes-pane"

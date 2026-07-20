@@ -3,6 +3,7 @@ import {
   isSessionConsultModeEnabled,
   isSessionWorktreeEnabled,
   isSessionWorkspaceReady,
+  shouldShowSessionChangesButton,
   prependSessionDeduped,
   planCreatedSessionCaches,
 } from './sessionDerivedState';
@@ -71,6 +72,50 @@ describe('sessionDerivedState', () => {
           worktree_path: '/wt/session-abc',
         }),
       ).toBe(true);
+    });
+  });
+
+  describe('shouldShowSessionChangesButton', () => {
+    it('shows for a normal (non-consult) worktree session', () => {
+      expect(
+        shouldShowSessionChangesButton({
+          isWorkflowProject: false,
+          consultActive: false,
+          session: { id: 'x', use_worktree: 1 },
+        }),
+      ).toBe(true);
+    });
+
+    it('still shows for a consult session that has a worktree (the pushed-then-consult case)', () => {
+      // Regression: a session that ships flips to Consult ("Pushed to Agent Hub")
+      // but its diff must stay inspectable.
+      expect(
+        shouldShowSessionChangesButton({
+          isWorkflowProject: false,
+          consultActive: true,
+          session: { id: 'x', session_mode: 'consult', use_worktree: 1 },
+        }),
+      ).toBe(true);
+    });
+
+    it('hides for a consult session with no worktree (nothing to diff)', () => {
+      expect(
+        shouldShowSessionChangesButton({
+          isWorkflowProject: false,
+          consultActive: true,
+          session: { id: 'x', session_mode: 'consult', use_worktree: 0 },
+        }),
+      ).toBe(false);
+    });
+
+    it('never shows on a workflow (no-code) project', () => {
+      expect(
+        shouldShowSessionChangesButton({
+          isWorkflowProject: true,
+          consultActive: false,
+          session: { id: 'x', use_worktree: 1 },
+        }),
+      ).toBe(false);
     });
   });
 

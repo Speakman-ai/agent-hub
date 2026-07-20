@@ -1,7 +1,7 @@
 import { CheckCircle2, XCircle, AlertTriangle, GitPullRequest } from 'lucide-react';
 import { parseFinalizeTerminalMetadata } from '../../../utils/finalizeTimeline';
 import { describeFinalizeFailureReason } from '../../../utils/finalizeFailureReason';
-import { prNumberFromUrl } from '../../../utils/prFormatting';
+import { prNumberFromUrl, parseNativePrUrl } from '../../../utils/prFormatting';
 import { relativeTime } from '../../../utils/time';
 
 function labelForStatus(status: any, failureReason: any, hostLabel: any) {
@@ -21,7 +21,7 @@ function labelForStatus(status: any, failureReason: any, hostLabel: any) {
   }
 }
 
-export default function FinalizeTerminalBlock({ message, hosted = false }: any) {
+export default function FinalizeTerminalBlock({ message, hosted = false, onOpenPrDetail }: any) {
   const meta = parseFinalizeTerminalMetadata(message.metadata);
   if (!meta) return null;
 
@@ -41,6 +41,9 @@ export default function FinalizeTerminalBlock({ message, hosted = false }: any) 
 
   const prUrl = meta.status === 'pushed' ? meta.prUrl : null;
   const prNumber = prUrl ? prNumberFromUrl(prUrl) : null;
+  // Agent Hub-native PR URLs (`/projects/<id>/pulls/<n>`) resolve to an in-app
+  // route we can navigate to directly.
+  const nativeTarget = prUrl ? parseNativePrUrl(prUrl) : null;
   // Native PR URLs are in-app client routes (no http origin) — the push
   // landed on the Hub, not GitHub. When there's no PR URL to infer from
   // (failures, old messages), fall back to the live project state.
@@ -97,10 +100,23 @@ export default function FinalizeTerminalBlock({ message, hosted = false }: any) 
               <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
               {prNumber ? `View PR #${prNumber}` : 'View pull request'}
             </a>
-          ) : (
+          ) : nativeTarget && typeof onOpenPrDetail === 'function' ? (
             /* Agent Hub-native PR — a relative client route, not an external
-               page. Shown as a labelled chip; the Pull Requests page is the
-               in-app navigation surface. */
+               page. Open the in-app PR detail view directly instead of dumping
+               the user on the Pull Requests list. */
+            <button
+              type="button"
+              onClick={() => onOpenPrDetail(nativeTarget.projectId, nativeTarget.number)}
+              className={`mt-1.5 inline-flex items-center gap-1 text-sm font-medium underline ${linkTone}`}
+              data-testid="finalize-terminal-pr-link"
+              title={prUrl}
+            >
+              <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
+              {prNumber ? `View PR #${prNumber}` : 'View pull request'}
+            </button>
+          ) : (
+            /* No navigation handler wired (e.g. queued/preview render) — fall
+               back to a non-clickable chip pointing at the Pull Requests page. */
             <span
               className={`mt-1.5 inline-flex items-center gap-1 text-sm font-medium ${linkTone}`}
               data-testid="finalize-terminal-pr-link"

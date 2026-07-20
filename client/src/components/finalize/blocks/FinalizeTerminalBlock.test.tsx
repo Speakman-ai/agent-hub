@@ -1,11 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import FinalizeTerminalBlock from './FinalizeTerminalBlock';
 
-function renderTerminal(payload: any) {
+function renderTerminal(payload: any, props: any = {}) {
   return render(
     <FinalizeTerminalBlock
       message={{ metadata: JSON.stringify({ kind: 'finalize_run_terminal', ...payload }) }}
+      {...props}
     />,
   );
 }
@@ -40,6 +41,39 @@ describe('FinalizeTerminalBlock', () => {
     });
     const link = screen.getByTestId('finalize-terminal-pr-link');
     expect(link!).toHaveAttribute('href', 'https://github.com/acme/repo/pull/7');
+  });
+
+  it('opens the in-app PR detail for an Agent Hub-native PR URL', () => {
+    const onOpenPrDetail = vi.fn();
+    renderTerminal(
+      { status: 'pushed', prUrl: '/projects/surveytracker/pulls/356' },
+      { onOpenPrDetail },
+    );
+    const link = screen.getByTestId('finalize-terminal-pr-link');
+    // Clickable button (not a dead chip), labelled with the PR number.
+    expect(link.tagName).toBe('BUTTON');
+    expect(link).toHaveTextContent('View PR #356');
+    fireEvent.click(link);
+    expect(onOpenPrDetail).toHaveBeenCalledWith('surveytracker', 356);
+  });
+
+  it('falls back to a non-clickable native PR chip when no navigation handler is wired', () => {
+    renderTerminal({ status: 'pushed', prUrl: '/projects/surveytracker/pulls/356' });
+    const link = screen.getByTestId('finalize-terminal-pr-link');
+    expect(link.tagName).toBe('SPAN');
+    expect(link).toHaveTextContent('PR #356 (Pull Requests page)');
+  });
+
+  it('keeps GitHub PRs as external anchor links even when a nav handler is passed', () => {
+    const onOpenPrDetail = vi.fn();
+    renderTerminal(
+      { status: 'pushed', prUrl: 'https://github.com/acme/repo/pull/42' },
+      { onOpenPrDetail },
+    );
+    const link = screen.getByTestId('finalize-terminal-pr-link');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', 'https://github.com/acme/repo/pull/42');
+    expect(onOpenPrDetail).not.toHaveBeenCalled();
   });
 
   it('omits the PR link when no prUrl is present', () => {
