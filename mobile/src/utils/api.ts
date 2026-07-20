@@ -1127,6 +1127,13 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ mcpServers }),
     }),
+    updateMcpServer: (agentId: any, serverName: any, config: any) => fetchJSON(`/agents/${agentId}/mcp-servers/${encodeURIComponent(serverName)}`, {
+        method: 'PUT',
+        body: JSON.stringify(config),
+    }),
+    deleteMcpServer: (agentId: any, serverName: any) => fetchJSON(`/agents/${agentId}/mcp-servers/${encodeURIComponent(serverName)}`, {
+        method: 'DELETE',
+    }),
     // Support tickets — project-scoped queue, ordered by severity (server-side).
     // `status` is a comma-separated list of lifecycle states; omit for the
     // default open view. `type` optionally narrows to one request type.

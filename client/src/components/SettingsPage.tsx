@@ -9,6 +9,10 @@ import { relativeTime, relativeFuture, formatDateTime, formatTime } from '../uti
 import { hasRole, isLocalMode } from '../utils/auth';
 import humanCron from '@shared/utils/humanCron';
 import { localTimeZone } from '@shared/utils/calendarEvents';
+import {
+  buildServerConfig as buildMcpServerConfig,
+  mcpConfigToForm,
+} from '@shared/utils/mcpServerForm';
 import CronSchedulePicker from './CronSchedulePicker';
 import AgentAvatar from './AgentAvatar';
 import AccountSection, { OrganizationSection } from './AccountSection';
@@ -3681,47 +3685,10 @@ function McpServersSection({ agentId }: any) {
     });
   };
 
-  const parseArgs = (argsStr: any) => {
-    if (!argsStr.trim()) return [];
-    try {
-      const parsed = JSON.parse(argsStr);
-      return Array.isArray(parsed) ? parsed : [argsStr];
-    } catch {
-      return argsStr.split(/\s+/).filter(Boolean);
-    }
-  };
-
-  const parseEnv = (envStr: any) => {
-    if (!envStr.trim()) return {};
-    try {
-      return JSON.parse(envStr);
-    } catch {
-      // Parse KEY=VALUE format, one per line
-      const env: Record<string, any> = {};
-      for (const line of envStr.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.includes('=')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        env[trimmed.substring(0, eqIdx).trim()] = trimmed.substring(eqIdx + 1).trim();
-      }
-      return env;
-    }
-  };
-
-  const buildServerConfig = (form: any) => {
-    const config: Record<string, any> = {};
-    if (form.type === 'stdio') {
-      config.command = form.command;
-      const args = parseArgs(form.args);
-      if (args.length) config.args = args;
-    } else {
-      config.url = form.url;
-    }
-    const env = parseEnv(form.env);
-    if (Object.keys(env).length) config.env = env;
-    if (form.cwd?.trim()) config.cwd = form.cwd.trim();
-    return config;
-  };
+  // Pure form <-> config translation lives in @shared/utils/mcpServerForm so
+  // web + mobile can never drift. The web form state is loosely typed (`type`
+  // is a plain string), so cast into the shared strict form shape here.
+  const buildServerConfig = (form: any) => buildMcpServerConfig(form);
 
   const handleAddServer = async (e: any) => {
     e.preventDefault();
@@ -3938,23 +3905,7 @@ function McpServersSection({ agentId }: any) {
             const isStdio = !!config.command;
 
             if (isEditing) {
-              const editForm = {
-                name,
-                type: isStdio ? 'stdio' : 'sse',
-                command: config.command || '',
-                args: config.args
-                  ? config.args.some((a: any) => a.includes(' '))
-                    ? JSON.stringify(config.args)
-                    : config.args.join(' ')
-                  : '',
-                url: config.url || '',
-                env: config.env
-                  ? Object.entries(config.env)
-                      .map(([k, v]: any) => `${k}=${v}`)
-                      .join('\n')
-                  : '',
-                cwd: config.cwd || '',
-              };
+              const editForm = mcpConfigToForm(name, config);
 
               return (
                 <EditServerWrapper

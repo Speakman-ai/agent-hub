@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityInd
 import { api } from '../../utils/api';
 import { colors } from '../../theme/colors';
 import { groupAgentsByProject, resolveNewAgentForm, validateNewAgentForm, buildCreateAgentPayload, buildUpdateAgentPayload, settingsEngineChoices, settingsModelsForEngine, settingsDefaultModelForEngine, PER_USER_DEFAULT_MODEL, settingsSelectedModelChip, settingsResolveModelChip, settingsEffectiveEngine, settingsModelOverrideIsStale, isAutonomyLocked, isAutonomyLockedOn, agentAcceptsAutonomousTickets, } from '../../utils/settingsAgents';
+import McpServersSection from './McpServersSection';
 const EMPTY_NEW_FORM: Record<string, any> = {
     id: '',
     name: '',
@@ -439,6 +440,7 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
                       <Text style={styles.fieldLabel}>System prompt</Text>
                       <TextInput value={editForm.systemPrompt} onChangeText={(v: any) => setEditForm({ ...editForm, systemPrompt: v })} style={[styles.formInput, { minHeight: 80 }]} multiline textAlignVertical="top" placeholderTextColor={colors.gray500}/>
                       <DevToggle value={editForm.isDev} onChange={(isDev: any) => setEditForm({ ...editForm, isDev })} locked={isAutonomyLocked(agent)} lockedOn={isAutonomyLockedOn(agent)} fallbackOn={agentAcceptsAutonomousTickets(agent)}/>
+                      <McpServersSection agentId={agent.id}/>
                       <View style={styles.actionRow}>
                         <TouchableOpacity style={styles.dangerBtn} onPress={() => handleDelete(agent)}>
                           <Text style={styles.dangerBtnText}>Delete</Text>
