@@ -95,7 +95,7 @@ cmd_put() {
 
 cmd_list() {
   require_session
-  hub_api GET "/api/sessions/${AGENT_HUB_SESSION_ID}/artifacts"
+  ah_api GET "/api/sessions/${AGENT_HUB_SESSION_ID}/artifacts"
 }
 
 cmd_get() {
@@ -120,7 +120,7 @@ cmd_delete() {
   require_session
   local id="${1:-}"
   [[ -n "$id" ]] || die "delete: <artifactId> is required"
-  hub_api DELETE "/api/sessions/${AGENT_HUB_SESSION_ID}/artifacts/${id}"
+  ah_api DELETE "/api/sessions/${AGENT_HUB_SESSION_ID}/artifacts/${id}"
 }
 
 case "${1:-}" in

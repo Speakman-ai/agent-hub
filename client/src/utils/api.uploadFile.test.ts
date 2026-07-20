@@ -51,6 +51,23 @@ describe('api.uploadFile — auth headers', () => {
     expect(init.headers['X-Filename']).toBe('doc.pdf');
   });
 
+  // Regression: a Unicode filename (em-dash) must be percent-encoded into
+  // X-Filename — a raw non-ASCII byte throws "Invalid character in header
+  // content" in fetch's header validation, so the upload never leaves the
+  // browser. encodeURIComponent leaves plain ASCII names untouched.
+  it('percent-encodes a Unicode filename in X-Filename', async () => {
+    (fetchSpy as any).mockResolvedValue(okResponse());
+    const name = 'scrub — patch (v1).diff';
+    const file = new File([new Uint8Array([1])], name, { type: 'text/plain' });
+    await api.uploadFile(file);
+    const [, init] = (fetchSpy as any).mock.calls[0];
+    expect(init.headers['X-Filename']).toBe(encodeURIComponent(name));
+    expect(init.headers['X-Filename']).toContain('%E2%80%94'); // em-dash
+    // Header value is Latin-1 clean → fetch won't reject it.
+    // eslint-disable-next-line no-control-regex
+    expect(/[^\x00-\xff]/.test(init.headers['X-Filename'])).toBe(false);
+  });
+
   it('throws the server error message when the upload is rejected (401)', async () => {
     (fetchSpy as any).mockResolvedValue(
       new Response(

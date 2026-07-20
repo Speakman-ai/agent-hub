@@ -27,7 +27,9 @@ export async function uploadFile(fileRef: any, deps: any = {}) {
         : FileSystem.FileSystemUploadType?.BINARY_CONTENT ?? 'BINARY_CONTENT';
     const headers = {
         'Content-Type': fileRef.type || 'application/octet-stream',
-        'X-Filename': fileRef.name || 'upload.bin',
+        // Percent-encode so Unicode filenames survive the header's Latin-1
+        // charset limit; the server decodes it (decodeFilenameHeader).
+        'X-Filename': encodeURIComponent(fileRef.name || 'upload.bin'),
         ...getAuthHeaders(),
     };
     const result = await FileSystem.uploadAsync(`${base}/upload/file`, fileRef.uri, {

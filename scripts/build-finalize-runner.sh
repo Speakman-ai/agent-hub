@@ -40,6 +40,6 @@ case "$ARCH" in
 esac
 
 echo ""
-echo "Run surveytracker CI locally:"
+echo "Debug a Finalize run locally against a session worktree:"
 echo "  FINALIZE_RUNNER_IMAGE=agent-hub/finalize-runner:ubuntu-24.04-arm64 \\"
-echo "    ./scripts/run-surveytracker-master-ci.sh /tmp/surveytracker-master"
+echo "    ./scripts/debug-finalize-runner.sh start <worktree-path>"

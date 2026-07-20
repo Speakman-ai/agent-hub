@@ -80,6 +80,27 @@ function terraformModuleSource(): string[] {
     .filter((abs) => statSync(abs).isFile());
 }
 
+function trackedScriptFiles(): string[] {
+  // Operator tooling under scripts/ ships in the public repo. Private-project
+  // helpers leaked here before (surveytracker Finalize scripts, card #1401)
+  // because this surface was never scanned. Enumerate git-TRACKED shell/mjs/js
+  // files so an untracked local helper is ignored but a committed one is caught.
+  const dir = join(REPO_ROOT, 'scripts');
+  let out: string;
+  try {
+    out = execFileSync('git', ['ls-files', '-z', '--', dir], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    });
+  } catch {
+    return [];
+  }
+  return out
+    .split('\0')
+    .filter((rel) => /\.(sh|mjs|js|ts)$/.test(rel))
+    .map((rel) => join(REPO_ROOT, rel));
+}
+
 function trackedEnvFiles(): string[] {
   // Every git-TRACKED file under ops/terraform/environments must be
   // placeholder-clean. Enumerating via `git ls-files` (not the filesystem)
@@ -109,6 +130,7 @@ function publishableFiles(): string[] {
   md.forEach((f) => files.add(f));
   terraformModuleSource().forEach((f) => files.add(f));
   trackedEnvFiles().forEach((f) => files.add(f));
+  trackedScriptFiles().forEach((f) => files.add(f));
   // Example config templates must ship with placeholders only.
   const examples = [
     '.env.example',

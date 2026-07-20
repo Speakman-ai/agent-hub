@@ -1612,7 +1612,9 @@ export const api = {
       headers: {
         ...getAuthHeaders(),
         'Content-Type': file.type || 'application/octet-stream',
-        'X-Filename': file.name || 'upload',
+        // Percent-encode so Unicode filenames survive the header's Latin-1
+        // charset limit; the server decodes it (decodeFilenameHeader).
+        'X-Filename': encodeURIComponent(file.name || 'upload'),
       },
       body: file,
     });

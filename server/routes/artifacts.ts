@@ -82,10 +82,58 @@ function toArtifactView(row: ArtifactRow): ArtifactView {
   };
 }
 
-/** RFC 6266-safe Content-Disposition filename — strip quotes / control chars. */
+/**
+ * ASCII-only fallback token for the legacy `filename=` parameter. Strips quotes,
+ * backslashes, control chars, AND any non-ASCII byte — passing a raw non-ASCII
+ * filename (em-dash, emoji, accent) to res.setHeader throws ERR_INVALID_CHAR in
+ * Node's HTTP layer / resets the HTTP/2 stream, so the download fails with
+ * "Failed to fetch". Non-ASCII names are preserved via `filename*` (see below).
+ */
 function safeDispositionName(name: string): string {
-  const cleaned = name.replace(/[\r\n"\\]/g, '_').trim();
+  const cleaned = name
+    .replace(/[\r\n"\\]/g, '_')
+    .replace(/[^\x20-\x7e]/g, '_')
+    .trim();
   return cleaned.length > 0 ? cleaned : 'artifact';
+}
+
+/**
+ * Clients percent-encode the `X-Filename` upload header (via encodeURIComponent)
+ * so Unicode filenames survive the header's Latin-1 charset limit — a raw
+ * non-ASCII byte throws "Invalid character in header content" in the client's
+ * HTTP stack. Decode tolerantly; fall back to the raw value for legacy callers
+ * that sent an unencoded ASCII name (encodeURIComponent is a no-op on those).
+ */
+function decodeFilenameHeader(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/** RFC 5987 (ext-value) percent-encoding for the `filename*` parameter. */
+function encodeRFC5987(name: string): string {
+  return encodeURIComponent(name).replace(
+    /['()*]/g,
+    (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+}
+
+/**
+ * Build an RFC 6266 Content-Disposition value. Always emits an ASCII-safe
+ * `filename="…"`; when the original name carries non-ASCII characters it also
+ * emits `filename*=UTF-8''…` so modern clients recover the real name. This is
+ * what keeps downloads of Unicode-named artifacts from resetting the stream.
+ */
+function contentDisposition(disposition: string, name: string): string {
+  const cleaned = name.replace(/[\r\n"\\]/g, '_').trim();
+  let value = `${disposition}; filename="${safeDispositionName(name)}"`;
+  // eslint-disable-next-line no-control-regex
+  if (/[^\x00-\x7f]/.test(cleaned)) {
+    value += `; filename*=UTF-8''${encodeRFC5987(cleaned.length > 0 ? cleaned : 'artifact')}`;
+  }
+  return value;
 }
 
 export default function createArtifactRoutes(deps: RouteDeps): Router {
@@ -134,10 +182,9 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
           .json({ error: `File too large. Max size: ${MAX_ARTIFACT_SIZE / 1024 / 1024}MB` });
       }
 
-      const filename = ((req.headers['x-filename'] as string | undefined) || 'artifact').slice(
-        0,
-        255,
-      );
+      const filename = decodeFilenameHeader(
+        (req.headers['x-filename'] as string | undefined) || 'artifact',
+      ).slice(0, 255);
       const contentType =
         (req.headers['content-type'] as string | undefined) || 'application/octet-stream';
       const createdBy = (req.headers['x-agent-id'] as string | undefined) || null;
@@ -239,10 +286,7 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
         const buf = await store.getBuffer(row.storage_key);
         res.setHeader('Content-Type', contentType);
         res.setHeader('Content-Length', String(buf.length));
-        res.setHeader(
-          'Content-Disposition',
-          `${disposition}; filename="${safeDispositionName(row.filename)}"`,
-        );
+        res.setHeader('Content-Disposition', contentDisposition(disposition, row.filename));
         res.send(buf);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);

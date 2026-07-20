@@ -7,8 +7,8 @@
 #   ./scripts/debug-finalize-runner.sh shell <container-name>
 #   ./scripts/debug-finalize-runner.sh stop <container-name>
 #
-# Examples (surveytracker session worktree):
-#   WT=~/.agent-hub/data/.agent-hub/workspaces/surveytracker/session-0f88a496
+# Examples (a project's session worktree):
+#   WT=~/.agent-hub/data/.agent-hub/workspaces/<project>/session-<id>
 #   ./scripts/debug-finalize-runner.sh start "$WT"
 #   ./scripts/debug-finalize-runner.sh exec finalize-debug 'python3 -m venv /tmp/v && echo ok'
 #   ./scripts/debug-finalize-runner.sh exec finalize-debug 'cd frontend && npm ci'

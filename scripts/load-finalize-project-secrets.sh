@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Dump decrypted project secrets for local Finalize DinD runs (Hub parity).
 #
-# Usage: ./scripts/load-finalize-project-secrets.sh [project-id] [out-file]
+# Usage: ./scripts/load-finalize-project-secrets.sh <project-id> [out-file]
+#        PROJECT_ID=<id> ./scripts/load-finalize-project-secrets.sh
 #
 # Requires Agent Hub docker compose server running.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROJECT_ID="${1:-surveytracker}"
+PROJECT_ID="${1:-${PROJECT_ID:-}}"
+if [[ -z "$PROJECT_ID" ]]; then
+  echo "Usage: $0 <project-id> [out-file]  (or set PROJECT_ID)" >&2
+  exit 1
+fi
 OUT="${2:-/tmp/finalize-project-env.${PROJECT_ID}}"
 
 if ! docker compose -f "$ROOT/docker-compose.yml" ps --status running --services 2>/dev/null | grep -qx server; then

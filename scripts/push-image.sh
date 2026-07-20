@@ -3,8 +3,8 @@
 #
 # Requires:
 #   - Docker daemon running
-#   - AWS CLI configured with SSO creds (e.g. AWS_PROFILE=dev; dev account
-#     120569607241 owns the ECR Public repo)
+#   - AWS CLI configured with SSO creds (e.g. AWS_PROFILE=dev) for the account
+#     that owns the ECR Public repo below
 #   - Run from the repo root
 #
 # Usage:

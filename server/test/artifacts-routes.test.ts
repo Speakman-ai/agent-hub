@@ -178,4 +178,55 @@ describe('GET /api/sessions/:id/artifacts/:artifactId/content', () => {
     const id = await newSessionId();
     await request.get(`/api/sessions/${id}/artifacts/missing/content`).expect(404);
   });
+
+  // Regression: a filename with a non-ASCII char (em-dash) used to leak a raw
+  // non-Latin1 byte into the Content-Disposition header, which reset the HTTP
+  // stream (ERR_INVALID_CHAR) and surfaced in the browser as "Failed to fetch".
+  it('serves a Unicode filename via RFC 5987 filename* without breaking download', async () => {
+    const id = await newSessionId();
+    const unicodeName = 'AH-1401 surveytracker scrub — patch (v1).diff';
+    // Clients percent-encode X-Filename (a raw em-dash is rejected by the HTTP
+    // stack as an invalid header char); the server decodes it back.
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'text/plain')
+      .set('x-filename', encodeURIComponent(unicodeName))
+      .send(Buffer.from('diff --git a b\n'))
+      .expect(200);
+    const artifactId = upload.body.id as string;
+    // Server decoded the header back to the real Unicode name.
+    expect(upload.body.filename).toBe(unicodeName);
+
+    // The download must succeed (200) — not reset the stream.
+    const res = await request
+      .get(`/api/sessions/${id}/artifacts/${artifactId}/content?download=1`)
+      .expect(200);
+    const cd = res.headers['content-disposition'] as string;
+    expect(cd).toContain('attachment');
+    // ASCII fallback: non-ASCII replaced, quotes/backslashes safe, header is Latin-1 clean.
+    expect(cd).toMatch(/filename="[\x20-\x7e]+"/);
+    // eslint-disable-next-line no-control-regex
+    expect(/[^\x00-\xff]/.test(cd)).toBe(false);
+    // RFC 5987 param carries the real UTF-8 name (em-dash = %E2%80%94).
+    expect(cd).toContain("filename*=UTF-8''");
+    expect(cd).toContain('%E2%80%94');
+    expect(res.text).toBe('diff --git a b\n');
+  });
+
+  // ASCII-only names must NOT gain a redundant filename* parameter.
+  it('omits filename* for a plain ASCII filename', async () => {
+    const id = await newSessionId();
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'text/plain')
+      .set('x-filename', 'plain.txt')
+      .send(Buffer.from('hi'))
+      .expect(200);
+    const res = await request
+      .get(`/api/sessions/${id}/artifacts/${upload.body.id}/content?download=1`)
+      .expect(200);
+    const cd = res.headers['content-disposition'] as string;
+    expect(cd).toContain('filename="plain.txt"');
+    expect(cd).not.toContain('filename*');
+  });
 });
