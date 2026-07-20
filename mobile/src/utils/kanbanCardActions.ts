@@ -12,8 +12,38 @@
  * mapping (what's offered, what's checked, which leaves exist) is
  * unit-testable without rendering anything.
  */
-import { PRIORITIES, priorityMeta, cardLabelList } from './kanbanCard';
+import {
+    PRIORITIES,
+    priorityMeta,
+    cardLabelList,
+    cardMetaModel,
+    cardShareUrl,
+} from './kanbanCard';
 const cap = (s: any) => (s ? `${s[0].toUpperCase()}${s.slice(1)}` : s);
+
+/**
+ * Resolve the payload for a Copy submenu action. Keeping this next to the
+ * action model makes the mobile copy behavior testable without mounting the
+ * React Native modal and keeps the ID format in sync with the card renderer.
+ *
+ * A card without a configured server URL cannot produce a shareable link; in
+ * that case the ID is the safest useful fallback, matching the web menu's
+ * legacy-card behavior.
+ */
+export function cardCopyPayload(
+    card: any,
+    type: any,
+    { board, epics = [], baseUrl = '', projectId }: any = {},
+) {
+    if (type === 'copyId') {
+        const meta = cardMetaModel(card, { board, epics });
+        return meta.shortLabel || String(card?.id ?? '');
+    }
+    if (type === 'copyLink') {
+        return cardShareUrl(baseUrl, projectId, card?.id) || String(card?.id ?? '');
+    }
+    return '';
+}
 /**
  * @param {object} card - the long-pressed card row.
  * @param {object} ctx

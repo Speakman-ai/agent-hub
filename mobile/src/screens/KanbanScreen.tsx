@@ -10,10 +10,10 @@ import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, ep
 import { findAgentByName, hasActiveSession, buildAssigneeOptions, filterAgentsByProject, validModelsForAgent, engineEntriesWithModels, assignedSessionId, } from '../utils/kanbanAssign';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 import { isPrematureDoneMoveError, PREMATURE_DONE_MOVE_EXPLANATION, PREMATURE_DONE_MOVE_TITLE, } from '@shared/utils/prematureDoneMove';
-import { cardMetaModel, priorityMeta, cardShareUrl, toggleLabelCsv } from '../utils/kanbanCard';
+import { cardMetaModel, priorityMeta, toggleLabelCsv } from '../utils/kanbanCard';
 import { cardOriginLabel, cardOriginDeepLink } from '@shared/utils/captureCard';
 import { getServerBaseUrl } from '../utils/config';
-import { buildCardActions } from '../utils/kanbanCardActions';
+import { buildCardActions, cardCopyPayload } from '../utils/kanbanCardActions';
 import { shortDate } from '../utils/time';
 import { copyToClipboard } from '../utils/clipboard';
 import { KANBAN_PAGE_SIZE, appendCardPage, pagingEntry, seedPagingFromBoard, loadedCountsByColumn, canLoadMore, } from '../utils/kanbanPagination';
@@ -895,8 +895,7 @@ export default function KanbanScreen({ route, navigation }: any) {
                 break;
             case 'copyId': {
                 closeActionSheet();
-                const meta = cardMetaModel(card, { board, epics });
-                copyToClipboard(meta.shortLabel || String(card.id));
+                copyToClipboard(cardCopyPayload(card, action.type, { board, epics }));
                 break;
             }
             case 'copyLink': {
@@ -904,8 +903,10 @@ export default function KanbanScreen({ route, navigation }: any) {
                 // Canonical shareable deep-link (same format as the web card menu).
                 // Falls back to the card id when no server URL is configured yet, so
                 // we never copy a non-pasteable relative path.
-                const link = cardShareUrl(getServerBaseUrl(), projectId, card.id);
-                copyToClipboard(link || String(card.id));
+                copyToClipboard(cardCopyPayload(card, action.type, {
+                    baseUrl: getServerBaseUrl(),
+                    projectId,
+                }));
                 break;
             }
             case 'delete':

@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { buildCardActions } from './kanbanCardActions';
+import { buildCardActions, cardCopyPayload } from './kanbanCardActions';
 const columns = [
     { id: 'todo', name: 'To Do', color: '#1' },
     { id: 'doing', name: 'In Progress', color: '#2' },
@@ -101,6 +101,18 @@ describe('buildCardActions', () => {
     it('exposes copy id / copy link leaves', () => {
         const copy = group(buildCardActions({ id: 'c1' }, baseCtx), 'copy');
         expect(copy.options.map((o: any) => o.action.type)).toEqual(['copyId', 'copyLink']);
+    });
+    it('copies the rendered short ID and canonical card link', () => {
+        const card = { id: 'uuid-1', short_id: 42 };
+        expect(cardCopyPayload(card, 'copyId', { board: { card_prefix: 'AH' } })).toBe('AH-42');
+        expect(cardCopyPayload(card, 'copyLink', {
+            baseUrl: 'https://hub.example.com/',
+            projectId: 'agent-hub',
+        })).toBe('https://hub.example.com/projects/agent-hub/board?card=uuid-1');
+    });
+    it('falls back to the card ID when a shareable link cannot be built', () => {
+        expect(cardCopyPayload({ id: 'legacy-card' }, 'copyId')).toBe('legacy-card');
+        expect(cardCopyPayload({ id: 'legacy-card' }, 'copyLink', { projectId: 'agent-hub' })).toBe('legacy-card');
     });
     it('tolerates missing context', () => {
         const actions = buildCardActions({ id: 'c1' });
