@@ -1095,6 +1095,82 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, 'phase-front');
   });
 
+  it('does NOT start a later ready phase while the running phase has a card in flight', async () => {
+    // Regression for "phases are starting all at once". A running phase whose
+    // only card has already been dispatched (now In Progress, not Done) has an
+    // empty eligible set — but that is normal forward progress, not a deadlock.
+    // The readiness-aware heal must stay dormant here; otherwise every armed
+    // phase gets kicked off while its predecessor is still in flight.
+    const front = makePhase({
+      id: 'phase-front',
+      name: 'Front',
+      position: 0,
+      autonomous: 1,
+      autonomous_running: 1,
+      autonomous_enabled_by: 'owner-1',
+    });
+    const next = makePhase({
+      id: 'phase-next',
+      name: 'Next',
+      position: 1,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: null,
+    });
+    const byId: Record<string, KanbanPhaseRow> = {
+      [front.id]: front,
+      [next.id]: next,
+    };
+    // front's card is already In Progress (dispatched, not blocked, not Done):
+    // healthy progress, no To Do candidate remaining for front.
+    const frontCard = makeCard({
+      id: 'front-card',
+      phase_id: front.id,
+      column_id: 'col-progress',
+    });
+    // next has a ready, unblocked To Do card waiting.
+    const nextCard = makeCard({
+      id: 'next-card',
+      phase_id: next.id,
+      column_id: 'col-todo',
+    });
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, id: 'epic-1', autonomous: 1 })) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanPhase: { get: vi.fn((id: string) => byId[id]) },
+      getKanbanPhasesByEpic: { all: vi.fn(() => [front, next]) },
+      getKanbanCardsByPhase: {
+        all: vi.fn((id: string) => (id === front.id ? [frontCard] : [nextCard])),
+      },
+      // front has no To Do candidate (its card is In Progress); next has one.
+      getEligibleAutonomousCardsByPhase: {
+        all: vi.fn((id: string) => (id === front.id ? [] : [nextCard])),
+      },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      // No blockers anywhere → no deadlock signature.
+      getBlockersForBoard: { all: vi.fn(() => []) },
+      setPhaseAutonomousEnabledBy: { run: vi.fn() },
+      setPhaseAutonomousRunning: {
+        run: vi.fn((val: number, id: string) => {
+          if (byId[id]) byId[id] = { ...byId[id], autonomous_running: val };
+        }),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-front');
+
+    // The next phase must NOT be started — front is still making progress.
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, 'phase-next');
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'phase-next',
+    );
+  });
+
   it('skips dispatch when no session owner can be resolved', async () => {
     const card = makeCard();
     const stmts = makeStmts({

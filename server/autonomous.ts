@@ -945,12 +945,24 @@ async function runAutonomousLoopInner(
     console.log(
       `[Autonomous] No eligible cards for ${scopeLabel} (all assigned, done, or blocked)`,
     );
-    // Readiness-aware resilience: a running phase with nothing dispatchable is
-    // the deadlock signature when its cards are cross-phase-blocked. Kick the
-    // earliest armed phase that DOES have a ready card so the cascade makes
-    // forward progress instead of stalling on positional order.
+    // Readiness-aware resilience — but ONLY on a genuine cross-phase deadlock,
+    // not on the normal "my card is in flight" lull. `eligible.length === 0` is
+    // also true when this phase already dispatched its card and it's now In
+    // Progress / Review (not yet Done): that's healthy forward progress, and
+    // the cascade advances via `maybeAdvanceToNextPhase` once the card lands in
+    // Done. Kicking the next armed phase here would run every phase at once
+    // while their predecessors are still in flight (the "phases start all at
+    // once" bug). The deadlock signature is narrower: this phase HAS a To Do
+    // candidate that is held back solely by an unresolved blocker (typically a
+    // card in a later phase). Only then do we start the earliest ready phase to
+    // break the positional stall.
     if (phase) {
-      await maybeStartEarliestReadyPhase(projectId, epic, phase, blockerIndex);
+      const hasBlockedCandidate = [...rawEligible, ...rawSpikeEligible].some((c) =>
+        hasUnresolvedBlockers(c.id, blockerIndex),
+      );
+      if (hasBlockedCandidate) {
+        await maybeStartEarliestReadyPhase(projectId, epic, phase, blockerIndex);
+      }
     }
     return;
   }
