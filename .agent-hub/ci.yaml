@@ -70,6 +70,7 @@ jobs:
         - { suite: electron, label: 'electron' }
         - { suite: mobile, shard: '1', shards: '2', label: 'mobile 1/2' }
         - { suite: mobile, shard: '2', shards: '2', label: 'mobile 2/2' }
+        - { suite: shared, label: 'shared' }
     steps:
       - name: Tests (${FINALIZE_MATRIX_LABEL})
         run: |
@@ -100,6 +101,9 @@ jobs:
             (cd shared && npm ci --include=dev)
             (cd mobile && npm ci --include=dev)
             (cd mobile && npm test -- --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS")
+          elif [ "$FINALIZE_MATRIX_SUITE" = "shared" ]; then
+            (cd shared && npm ci --include=dev)
+            (cd shared && npm test)
           fi
 
   # ── GHA `lint` gate (main-checks.yml) ───────────────────────────────

@@ -42,7 +42,7 @@ export const UNIVERSAL_DEFAULT_TEMPLATE_ID: TemplateId = 'typescript-node-tsx';
 /**
  * Per-appType default template. Unknown app types fall through to
  * `UNIVERSAL_DEFAULT_TEMPLATE_ID`. The keys match values from
- * `client/src/utils/adaptiveQuestionnaire.js` `APP_TYPE_OPTIONS`.
+ * `shared/utils/adaptiveQuestionnaire.ts` `APP_TYPE_OPTIONS`.
  *
  * "Bot" isn't in APP_TYPE_OPTIONS today but the storyboard mentions it,
  * so we accept it as an alias for the API / service flavour.

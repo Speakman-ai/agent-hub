@@ -23,8 +23,8 @@
  *      finalize click.
  *
  *   3. Declares the GHA-parity jobs (build, test, lint)
- *      with a 12-way test matrix (server 1/6 through 6/6, client 1/3
- *      through 3/3, electron, and mobile 1/2 through 2/2): the whole
+ *      with a 13-way test matrix (server 1/6 through 6/6, client 1/3
+ *      through 3/3, electron, mobile 1/2 through 2/2, and shared): the whole
  *      point of v2 is concurrent per-job fan-out, so the test pins the job
  *      set and the matrix shape so an accidental grouping / serialization
  *      can't slip in.
@@ -94,7 +94,7 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     expect(result.config.on).toContain('manual');
   });
 
-  it('fans onto the GHA-parity jobs (build, test, lint, secret-scan) with a 12-way test matrix', async () => {
+  it('fans onto the GHA-parity jobs (build, test, lint, secret-scan) with a 13-way test matrix', async () => {
     const result = await loadCiConfigFromFile(CI_YAML_PATH);
     expect(result.ok).toBe(true);
     if (!result.ok || result.config.version !== 2) return;
@@ -113,13 +113,14 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
       expect(result.config.jobs[jobId].runsOn).toBe('ubuntu-24.04');
     }
 
-    // The `test` matrix expands to 12 concurrent instances: server 1/6
-    // through 6/6, client 1/3 through 3/3, electron, and mobile 1/2
-    // through 2/2. Asserting the shape here (rather than counting
-    // instances later) keeps the failure message tied to the ci.yaml
-    // authoring mistake, not to a downstream expansion bug.
+    // The `test` matrix expands to 13 concurrent instances: server 1/6
+    // through 6/6, client 1/3 through 3/3, electron, mobile 1/2
+    // through 2/2, and shared (unsharded). Asserting the shape here
+    // (rather than counting instances later) keeps the failure message
+    // tied to the ci.yaml authoring mistake, not to a downstream
+    // expansion bug.
     const testJob = result.config.jobs.test;
-    expect(testJob.matrixInclude).toHaveLength(12);
+    expect(testJob.matrixInclude).toHaveLength(13);
     const suites = testJob.matrixInclude.map((row) => row.suite).sort();
     expect(suites).toEqual([
       'client',
@@ -134,6 +135,7 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
       'server',
       'server',
       'server',
+      'shared',
     ]);
     const serverShards = testJob.matrixInclude
       .filter((row) => row.suite === 'server')
@@ -152,11 +154,11 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     expect(mobileShards).toEqual(['1', '2']);
 
     // The full expansion is what the orchestrator actually fans out.
-    // Single-instance jobs (build, lint, secret-scan) + 12 test shards = 15
+    // Single-instance jobs (build, lint, secret-scan) + 13 test shards = 16
     // concurrent runners. Pin it so a future "single global runner" refactor
     // surfaces here.
     const instances = expandJobInstances(result.config, {});
-    expect(instances).toHaveLength(15);
+    expect(instances).toHaveLength(16);
   });
 
   it('passes the matrix shard flag into sharded Vitest suites', async () => {
@@ -166,6 +168,19 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
         '--shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS"',
       );
     }
+  });
+
+  it('runs the shared package tests in the (unsharded) shared suite branch', async () => {
+    // The shared package is where the pure cross-surface engines live
+    // (e.g. the adaptive-questionnaire logic promoted out of client/src).
+    // client/mobile Vitest only glob their own src, so without a dedicated
+    // shared suite here those tests would run nowhere. Pin the branch so a
+    // future edit can't silently drop shared coverage again.
+    const raw = await readFile(CI_YAML_PATH, 'utf8');
+    const sharedBranch = suiteBranch(raw, 'shared');
+    expect(sharedBranch).toContain('cd shared && npm test');
+    // shared is unsharded — it must NOT receive a shard flag.
+    expect(sharedBranch).not.toContain('--shard=');
   });
 
   it('reconciles the optional rolldown binding before running the electron suite', async () => {

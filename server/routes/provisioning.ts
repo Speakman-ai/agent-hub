@@ -2,7 +2,7 @@
  * New-project provisioning endpoint.
  *
  *   POST /api/projects/provision
- *     body:  payload from client/src/utils/adaptiveQuestionnaire.toProvisioningPayload()
+ *     body:  payload from shared/utils/adaptiveQuestionnaire.toProvisioningPayload()
  *     201:   { jobId, wsUrl, projectId? }
  *     400:   { error } — payload validation failed
  *

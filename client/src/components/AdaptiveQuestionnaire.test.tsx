@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import AdaptiveQuestionnaire from './AdaptiveQuestionnaire';
-import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY, STEP_IDS } from '../utils/adaptiveQuestionnaire';
+import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY, STEP_IDS } from '@shared/utils/adaptiveQuestionnaire';
 
 describe('AdaptiveQuestionnaire', () => {
   beforeEach(() => {

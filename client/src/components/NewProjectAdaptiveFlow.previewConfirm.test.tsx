@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import NewProjectAdaptiveFlow from './NewProjectAdaptiveFlow';
-import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '../utils/adaptiveQuestionnaire';
+import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '@shared/utils/adaptiveQuestionnaire';
 
 (vi as any).mock('../utils/connection.js', () => ({
   getApiBase: () => '/api',

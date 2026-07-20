@@ -19,7 +19,7 @@ import {
   stackOptionsFor,
   recommendedStack,
   toProvisioningPayload,
-} from '../utils/adaptiveQuestionnaire';
+} from '@shared/utils/adaptiveQuestionnaire';
 import { api } from '../utils/api';
 
 /**

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import NewProjectAdaptiveFlow, { inferWithGithub } from './NewProjectAdaptiveFlow';
-import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '../utils/adaptiveQuestionnaire';
+import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '@shared/utils/adaptiveQuestionnaire';
 
 // Mock the audit transport layer so the flow test can drive Act IV and
 // transition into Act V (landing) without needing a live server.
