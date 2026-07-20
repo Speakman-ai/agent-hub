@@ -69,7 +69,7 @@ export default function CredentialRequestPrompt({
         [
           `${request.service} credentials were submitted securely for request \`${request.requestId}\`.`,
           '',
-          'They are available once through the session credential request API and then discarded.',
+          'They are available to this session through the credential request API until they expire, then discarded.',
         ].join('\n'),
       );
     } catch (err: any) {
@@ -100,8 +100,8 @@ export default function CredentialRequestPrompt({
         <div className="rounded-md border border-emerald-800/60 bg-black/20 px-3 py-2 text-xs text-emerald-100/75 flex items-start gap-2">
           <LockKeyhole size={14} className="text-emerald-300 shrink-0 mt-0.5" />
           <span>
-            Values are sent to Agent Hub directly, skipped from chat history, and discarded after
-            one use or expiration.
+            Values are sent to Agent Hub directly, skipped from chat history, and discarded when
+            they expire.
           </span>
         </div>
 

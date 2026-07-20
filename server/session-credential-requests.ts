@@ -153,21 +153,29 @@ function rowIsExpired(row: RawSessionCredentialRequestRow): boolean {
 }
 
 function rowStatus(row: RawSessionCredentialRequestRow): SessionCredentialRequestStatus['status'] {
-  if (row.consumed_at) return 'consumed';
+  // Expiry takes precedence over the consumed state. Consumed rows now retain
+  // their encrypted payload until they expire (see consume/eraseExpired), so
+  // ranking 'consumed' first would report an expired-after-consume row as
+  // 'consumed' and let read/list paths skip the expiry cleanup branch, leaving
+  // ciphertext past its TTL and contradicting the "discarded when they expire"
+  // contract.
   if (rowIsExpired(row)) return 'expired';
+  if (row.consumed_at) return 'consumed';
   return 'submitted';
 }
 
 function eraseExpiredCredentialValues(
   row: RawSessionCredentialRequestRow,
 ): RawSessionCredentialRequestRow {
-  if (row.consumed_at || !row.values_enc || !rowIsExpired(row)) return row;
+  // Values now linger (re-readable) after a consume, so an expired row must be
+  // erased regardless of whether it was already consumed once.
+  if (!row.values_enc || !rowIsExpired(row)) return row;
   const updatedAt = iso(nowMs());
   const result = getDb()
     .prepare(
       `UPDATE session_credential_requests
        SET values_enc = '', updated_at = ?
-       WHERE id = ? AND consumed_at IS NULL AND expires_at = ? AND values_enc = ?`,
+       WHERE id = ? AND expires_at = ? AND values_enc = ?`,
     )
     .run(updatedAt, row.id, row.expires_at, row.values_enc);
   if (result.changes !== 1) return row;
@@ -284,31 +292,55 @@ export function consumeSessionCredentialRequest(
   return db.transaction(() => {
     const row = getSessionCredentialRequestRow(sessionId, requestId);
     if (!row) return null;
-    if (rowStatus(row) === 'expired') {
+    // Expired requests never return plaintext, even if consumed once before
+    // expiry (rowStatus gives expiry precedence for the same reason).
+    if (rowIsExpired(row)) {
       eraseExpiredCredentialValues(row);
       return null;
     }
-    if (rowStatus(row) !== 'submitted' || !row.values_enc) return null;
+    if (!row.values_enc) return null;
+
+    // Stamp the first-use time once, but keep the encrypted payload
+    // retrievable until the request's TTL expires. A strictly one-time read
+    // turned a routine agent-sequencing mistake (consume the value inside a
+    // throwaway probe subprocess, then lose it when that process exits) into a
+    // "please re-enter your password" loop for the human. The secret is
+    // already encrypted at rest and bounded by the TTL the user chose, so
+    // allowing re-reads inside that same window does not widen exposure; it
+    // just lets the agent re-consume the same requestId instead of asking the
+    // user to resubmit. Expiry (eraseExpiredCredentialValues) and explicit
+    // delete remain the only paths that blank the value.
+    beforeConsumeUpdateForTests?.();
+    if (!row.consumed_at) {
+      const consumedAt = iso(nowMs());
+      db.prepare(
+        `UPDATE session_credential_requests
+         SET consumed_at = ?, updated_at = ?
+         WHERE id = ? AND consumed_at IS NULL`,
+      ).run(consumedAt, consumedAt, row.id);
+    }
+
+    // Re-read the row so a concurrent delete/expiry that blanked the payload
+    // between our initial read and here can never return stale plaintext.
+    const fresh = getSessionCredentialRequestRow(sessionId, requestId);
+    if (!fresh || !fresh.values_enc) return null;
+    // The request can cross its TTL between the initial rowIsExpired(row) check
+    // and here. Erase the ciphertext on that boundary instead of leaving it
+    // retained past TTL until some later status/consume path cleans it up.
+    if (rowIsExpired(fresh)) {
+      eraseExpiredCredentialValues(fresh);
+      return null;
+    }
     let values: Record<string, string>;
     try {
-      values = JSON.parse(decryptSecret(row.values_enc)) as Record<string, string>;
+      values = JSON.parse(decryptSecret(fresh.values_enc)) as Record<string, string>;
     } catch {
       throw new SessionCredentialRequestError('credential request cannot be decrypted', 500);
     }
-    const consumedAt = iso(nowMs());
-    beforeConsumeUpdateForTests?.();
-    const result = db
-      .prepare(
-        `UPDATE session_credential_requests
-         SET values_enc = '', consumed_at = ?, updated_at = ?
-         WHERE id = ? AND consumed_at IS NULL AND values_enc = ?`,
-      )
-      .run(consumedAt, consumedAt, row.id, row.values_enc);
-    if (result.changes !== 1) return null;
     return {
-      requestId: row.request_id,
-      service: row.service,
-      purpose: row.purpose,
+      requestId: fresh.request_id,
+      service: fresh.service,
+      purpose: fresh.purpose,
       values,
     };
   })();

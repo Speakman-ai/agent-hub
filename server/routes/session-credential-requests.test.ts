@@ -74,7 +74,7 @@ function mountCredentialRoutes(authUserId: string): supertest.Agent {
 }
 
 describe('session credential requests', () => {
-  it('stores credentials off-transcript and consumes them once', async () => {
+  it('stores credentials off-transcript and re-reads them until they expire', async () => {
     const sessionId = createSession();
     const requestId = 'survey-tracker-login';
 
@@ -130,18 +130,99 @@ describe('session credential requests', () => {
       },
     });
 
+    // First consume stamps consumed_at but keeps the payload retrievable, so a
+    // second consume of the SAME requestId returns the same values instead of
+    // forcing the user to resubmit the secret (the "asked multiple times" bug).
     const afterConsume = getDb()
       .prepare(
         `SELECT values_enc, consumed_at FROM session_credential_requests
          WHERE session_id = ? AND request_id = ?`,
       )
       .get(sessionId, requestId) as { values_enc: string; consumed_at: string | null };
-    expect(afterConsume.values_enc).toBe('');
+    expect(afterConsume.values_enc).not.toBe('');
     expect(afterConsume.consumed_at).toBeTruthy();
+
+    const reconsumed = await request
+      .post(`/api/sessions/${sessionId}/credential-requests/${requestId}/consume`)
+      .expect(200);
+    expect(reconsumed.body).toMatchObject({
+      requestId,
+      values: {
+        username: 'employee@example.com',
+        password: 'survey-secret-password',
+      },
+    });
+
+    // Once the request expires, the payload is erased and consume returns 404.
+    getDb()
+      .prepare(
+        `UPDATE session_credential_requests
+         SET expires_at = ?
+         WHERE session_id = ? AND request_id = ?`,
+      )
+      .run(new Date(Date.now() - 1000).toISOString(), sessionId, requestId);
 
     await request
       .post(`/api/sessions/${sessionId}/credential-requests/${requestId}/consume`)
       .expect(404);
+
+    const afterExpiry = getDb()
+      .prepare(
+        `SELECT values_enc FROM session_credential_requests
+         WHERE session_id = ? AND request_id = ?`,
+      )
+      .get(sessionId, requestId) as { values_enc: string };
+    expect(afterExpiry.values_enc).toBe('');
+  });
+
+  it('reports expired (not consumed) and erases the payload for a consumed-then-expired request', async () => {
+    const sessionId = createSession();
+    const requestId = 'survey-tracker-consumed-expired';
+    await request
+      .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
+      .send({
+        service: 'Survey Tracker',
+        purpose: 'Sign in to query work orders.',
+        fields: [{ key: 'password', label: 'Password', type: 'password' }],
+        values: { password: 'consumed-then-expired-secret' },
+      })
+      .expect(200);
+
+    // Consume once while still valid — the payload is retained (re-readable).
+    await request
+      .post(`/api/sessions/${sessionId}/credential-requests/${requestId}/consume`)
+      .expect(200);
+    const afterConsume = getDb()
+      .prepare(
+        `SELECT values_enc FROM session_credential_requests
+         WHERE session_id = ? AND request_id = ?`,
+      )
+      .get(sessionId, requestId) as { values_enc: string };
+    expect(afterConsume.values_enc).not.toBe('');
+
+    // Now expire it. Even though consumed_at is set, the shared status model
+    // must rank expiry first so the read path reports 'expired' and cleans up
+    // the ciphertext (rather than reporting 'consumed' and leaking it past TTL).
+    getDb()
+      .prepare(
+        `UPDATE session_credential_requests
+         SET expires_at = ?
+         WHERE session_id = ? AND request_id = ?`,
+      )
+      .run(new Date(Date.now() - 1000).toISOString(), sessionId, requestId);
+
+    const status = await request
+      .get(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
+      .expect(200);
+    expect(status.body.status).toBe('expired');
+
+    const afterStatus = getDb()
+      .prepare(
+        `SELECT values_enc FROM session_credential_requests
+         WHERE session_id = ? AND request_id = ?`,
+      )
+      .get(sessionId, requestId) as { values_enc: string };
+    expect(afterStatus.values_enc).toBe('');
   });
 
   it('does not return plaintext when another consume wins the row transition', async () => {
@@ -169,6 +250,43 @@ describe('session credential requests', () => {
     });
 
     expect(consumeSessionCredentialRequest(sessionId, requestId)).toBeNull();
+  });
+
+  it('erases the payload when the request expires between the initial check and the re-read', async () => {
+    const sessionId = createSession();
+    const requestId = 'survey-tracker-toctou-expiry';
+    await request
+      .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
+      .send({
+        service: 'Survey Tracker',
+        purpose: 'Sign in to query work orders.',
+        fields: [{ key: 'password', label: 'Password', type: 'password' }],
+        values: { password: 'toctou-secret' },
+      })
+      .expect(200);
+
+    // Fire between the initial rowIsExpired() check and the re-read: push the
+    // request past its TTL so the fresh row is expired. The consume must not
+    // return plaintext AND must erase the retained ciphertext on that boundary.
+    __setSessionCredentialConsumeBeforeUpdateForTests(() => {
+      getDb()
+        .prepare(
+          `UPDATE session_credential_requests
+           SET expires_at = ?
+           WHERE session_id = ? AND request_id = ?`,
+        )
+        .run(new Date(Date.now() - 1000).toISOString(), sessionId, requestId);
+    });
+
+    expect(consumeSessionCredentialRequest(sessionId, requestId)).toBeNull();
+
+    const raw = getDb()
+      .prepare(
+        `SELECT values_enc FROM session_credential_requests
+         WHERE session_id = ? AND request_id = ?`,
+      )
+      .get(sessionId, requestId) as { values_enc: string };
+    expect(raw.values_enc).toBe('');
   });
 
   it('erases encrypted payload when an expired request is observed', async () => {

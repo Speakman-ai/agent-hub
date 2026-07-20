@@ -328,7 +328,7 @@ const ConsumeSessionCredentialResponse = registerComponent(
     purpose: z.string(),
     values: z.record(z.string(), z.string()).openapi({
       description:
-        'Plaintext values. This response is available once; the encrypted payload is erased immediately after a successful consume.',
+        'Plaintext values. The same requestId can be consumed again until it expires (so an agent that loses the value can re-fetch it); the encrypted payload is erased when the request expires or is deleted.',
     }),
   }),
 );
@@ -653,13 +653,13 @@ registerPath({
   method: 'post',
   path: '/api/sessions/{sessionId}/credential-requests/{requestId}/consume',
   tags: ['Sessions'],
-  summary: 'Consume ephemeral session credentials once',
+  summary: 'Consume ephemeral session credentials',
   description:
-    'Returns plaintext values one time, then erases the encrypted payload. A second consume, an expired request, or a missing request returns 404.',
+    'Returns plaintext values for the owning session. The same requestId can be consumed repeatedly until it expires, so an agent that loses the value (for example inside a throwaway subprocess) can re-fetch it instead of asking the user to resubmit. An expired or missing request returns 404; the encrypted payload is erased on expiry or delete.',
   request: { params: sessionCredentialRequestParams },
   responses: {
     200: {
-      description: 'Plaintext values for this one consume call.',
+      description: 'Plaintext values for the requested credentials.',
       content: jsonContent(ConsumeSessionCredentialResponse),
     },
     404: errorResponse('Session or available credential request not found.'),

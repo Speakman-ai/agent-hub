@@ -1222,11 +1222,11 @@ When you need a secret from the user (a password, API key, login, token, or any 
 - \`fields\`: 1–6 entries, each with a unique \`key\`, a \`label\`, and a \`type\` of \`password\` (masked with a show/hide toggle), \`username\`, or \`text\`.
 - \`ttlSeconds\` (optional, 1–3600): how long the submitted secret stays retrievable before it expires.
 
-**Round-trip** — the user fills the card and submits directly to the API; you then receive a normal chat message like "<service> credentials were submitted securely for request \`<requestId>\`." When you see that, retrieve the plaintext **exactly once** with the bundled wrapper:
+**Round-trip** — the user fills the card and submits directly to the API; you then receive a normal chat message like "<service> credentials were submitted securely for request \`<requestId>\`." When you see that, retrieve the plaintext with the bundled wrapper:
 
     ah-api.sh POST "/api/sessions/$AGENT_HUB_SESSION_ID/credential-requests/<requestId>/consume"
 
-The consume call returns the values a single time, then immediately erases the stored copy. Hold them in process memory only for the call you needed them for — never echo them back to chat, log them, or write them to a file. If consume returns 404 or an \`expired\` status, the secret is gone: ask the user to resubmit by emitting a fresh \`agenthub:credential-request\` block.`;
+The submitted secret stays retrievable until the request's TTL expires, so you can call \`consume\` again with the **same \`requestId\`** if you lost the value (for example you fetched it inside a throwaway subprocess or a probe step that then exited). **Do that instead of asking the user to resubmit.** Consume the value in the same step that uses it, and hold it in process memory only as long as you need it— never echo it back to chat, log it, or write it to a file. Only when consume returns 404 or an \`expired\` status is the secret actually gone: then ask the user to resubmit by emitting a fresh \`agenthub:credential-request\` block.`;
   }
 
   // The <delegate>/<handoff> sub-agent system has been removed. We no longer

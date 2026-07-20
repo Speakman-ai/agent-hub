@@ -106,9 +106,18 @@ describe('buildEnrichedPrompt — credential-request guidance', () => {
     expect(prompt.toLowerCase()).toContain('never ask for it in plain prose');
   });
 
-  it('documents the consume-once retrieval path via the session API', () => {
+  it('documents the consume retrieval path via the session API', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
     expect(prompt).toContain('/credential-requests/<requestId>/consume');
+  });
+
+  it('tells the agent to re-consume the same requestId instead of asking the user to resubmit', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+    // Regression for "Had to be asked multiple times for credentials": an agent
+    // that burns the read in a throwaway probe must recover by re-consuming,
+    // not by re-prompting the user for their password.
+    expect(prompt).toContain('stays retrievable until');
+    expect(prompt).toContain('instead of asking the user to resubmit');
   });
 
   it('omits the section on follow-up (non-first) messages', () => {

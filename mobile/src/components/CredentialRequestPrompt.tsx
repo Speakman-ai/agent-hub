@@ -57,7 +57,7 @@ export default function CredentialRequestPrompt({ sessionId, request, onSubmit }
         [
           `${request.service} credentials were submitted securely for request \`${request.requestId}\`.`,
           '',
-          'They are available once through the session credential request API and then discarded.',
+          'They are available to this session through the credential request API until they expire, then discarded.',
         ].join('\n'),
       );
     } catch (err: any) {
@@ -77,8 +77,8 @@ export default function CredentialRequestPrompt({ sessionId, request, onSubmit }
         <Text style={styles.purpose}>{request.purpose}</Text>
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
-            Values are sent directly to Agent Hub, skipped from chat history, and discarded after
-            one use or expiration.
+            Values are sent directly to Agent Hub, skipped from chat history, and discarded when
+            they expire.
           </Text>
         </View>
         {(request.fields || []).map((field: any) => {
