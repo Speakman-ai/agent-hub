@@ -297,9 +297,35 @@ describe('DevServerRuntime helpers', () => {
     });
 
     expect(result).toEqual({
-      env: { APP_MODE: 'development', TOKEN: 'shh', PORT: '4510' },
+      env: {
+        APP_MODE: 'development',
+        TOKEN: 'shh',
+        // Dev-install defaults keep the Hub's NODE_ENV=production out of the
+        // dev server's `npm ci` so devDependencies (build tooling) install.
+        NODE_ENV: 'development',
+        NPM_CONFIG_INCLUDE: 'dev',
+        PORT: '4510',
+      },
       missingSecretKeys: ['MISSING'],
     });
+  });
+
+  it('lets an explicit dev-server env override the dev-install defaults', () => {
+    const result = buildDevServerSpawnEnv({
+      config: {
+        startCommand: 'npm run dev',
+        env: { NPM_CONFIG_INCLUDE: 'optional' },
+        secretKeys: [],
+        portMap: [],
+      },
+      projectSecrets: {},
+      envPort: 4600,
+    });
+
+    // Project-configured NPM_CONFIG_INCLUDE is preserved; NODE_ENV (a reserved
+    // key the project can never set) still defaults to development.
+    expect(result.env.NPM_CONFIG_INCLUDE).toBe('optional');
+    expect(result.env.NODE_ENV).toBe('development');
   });
 
   it('normalizes a primary port and disambiguates duplicate labels', () => {
@@ -345,7 +371,13 @@ describe('DevServerRuntime lifecycle', () => {
         command: 'npm run dev -- --host 127.0.0.1',
         opts: {
           cwd: 'client',
-          env: { APP_MODE: 'development', TOKEN: 'secret-value', PORT: '4500' },
+          env: {
+            APP_MODE: 'development',
+            TOKEN: 'secret-value',
+            NODE_ENV: 'development',
+            NPM_CONFIG_INCLUDE: 'dev',
+            PORT: '4500',
+          },
           name: 'dev-server:session-1',
         },
       },

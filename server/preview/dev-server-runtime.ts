@@ -38,6 +38,7 @@ import {
   type DevServerConfig,
   type DevServerPortMapEntry,
 } from '../dev-server-config.js';
+import { applyPreviewDevInstallDefaults } from './preview-dev-install-env.js';
 import type { SessionEnv, SessionEnvExit, SessionEnvProcess } from '../session-env/session-env.js';
 import { createSessionEnv } from '../session-env/select-session-env.js';
 import { getSessionEnvSelection } from '../session-env/sysbox-capability.js';
@@ -271,6 +272,10 @@ export function buildDevServerSpawnEnv(opts: {
     }
     env[key] = value;
   }
+  // The overlay wins over the host session-env baseEnv (process.env), so
+  // defaulting NODE_ENV here keeps the Hub's NODE_ENV=production out of the
+  // dev server's `npm ci` (which would otherwise omit devDependencies).
+  applyPreviewDevInstallDefaults(env, (key) => key in opts.config.env);
   env.PORT = String(opts.envPort);
   return { env, missingSecretKeys };
 }

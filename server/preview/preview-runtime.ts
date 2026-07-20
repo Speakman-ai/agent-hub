@@ -66,6 +66,7 @@ import type { Database } from 'better-sqlite3';
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { randomUUID } from 'crypto';
 import { resolvePreviewUpstreamHost } from './preview-public-url.js';
+import { applyPreviewDevInstallDefaults } from './preview-dev-install-env.js';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-port-reclaim.js';
@@ -923,15 +924,22 @@ export class PreviewRuntime {
       }
     }
     // Merge order: process.env → project env (preview secrets) →
-    // per-process envFile → forced PORT. PORT is last so a malicious /
-    // accidental PORT entry can't redirect the dev server off the
-    // allocated port and deadlock the health check forever.
+    // per-process envFile → dev-install defaults → forced PORT. PORT is last
+    // so a malicious / accidental PORT entry can't redirect the dev server
+    // off the allocated port and deadlock the health check forever.
     const spawnEnv: NodeJS.ProcessEnv = {
       ...process.env,
       ...projectEnv,
       ...perProcessFileEnv,
-      PORT: String(handle.port),
     };
+    // Keep the Hub's NODE_ENV=production out of the preview's `npm ci` unless
+    // the project explicitly set NODE_ENV via project env / envFile; otherwise
+    // npm omits devDependencies and dev-server build tooling never installs.
+    applyPreviewDevInstallDefaults(
+      spawnEnv,
+      (key) => key in projectEnv || key in perProcessFileEnv,
+    );
+    spawnEnv.PORT = String(handle.port);
 
     // Flip status to `starting` once we're about to spawn so the UI
     // can show "starting" instead of "pending" the moment a wave begins.

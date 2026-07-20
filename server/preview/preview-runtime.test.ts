@@ -1134,6 +1134,50 @@ describe('PreviewRuntime — multi-process startPreview', () => {
     expect(backendCall.env.PORT).toBeDefined();
   });
 
+  it('defaults NODE_ENV to development so preview npm ci keeps devDependencies', async () => {
+    // The Hub runs under NODE_ENV=production (PM2). Without a fix the preview
+    // child inherits it and `npm ci` omits devDependencies — the exact reason
+    // Angular's `ng serve` failed with a missing @angular-devkit builder.
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const db = freshDb();
+      const harness = makeSpawn();
+      const runtime = new PreviewRuntime({
+        db,
+        spawn: harness.spawn,
+        fetch: makeFetch({ alwaysFail: true }).fetch,
+        kill: harness.kill,
+        clock: makeClock(),
+        logSink: makeLogSink(),
+        config: { healthIntervalMs: 10_000, healthTimeoutMs: 10_000 },
+        loadProjectEnv: () => ({ SHARED_KEY: 'project-wide' }),
+        readEnvFile: (_worktreePath: string, relPath: string): Record<string, string> =>
+          relPath === 'frontend/.env' ? { NODE_ENV: 'production' } : {},
+      });
+
+      const project = multiProcessProject([
+        { name: 'backend', startScript: 'noop', cwd: 'backend' },
+        // frontend pins NODE_ENV=production via its own envFile — explicit
+        // project config must win over the dev-install default.
+        { name: 'frontend', startScript: 'noop', cwd: 'frontend', envFile: 'frontend/.env' },
+      ]);
+      await runtime.startPreview('sess-node-env', project, '/wt');
+
+      const backendCall = harness.calls.find((c) => c.cwd === '/wt/backend')!;
+      // No project-supplied NODE_ENV → dev-install default overrides the leaked
+      // production value, and dev deps get installed.
+      expect(backendCall.env.NODE_ENV).toBe('development');
+      expect(backendCall.env.NPM_CONFIG_INCLUDE).toBe('dev');
+
+      const frontendCall = harness.calls.find((c) => c.cwd === '/wt/frontend')!;
+      expect(frontendCall.env.NODE_ENV).toBe('production');
+    } finally {
+      if (prev === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prev;
+    }
+  });
+
   it('tears down a multi-process group on stopPreview, in reverse-dependency order', async () => {
     const db = freshDb();
     const harness = makeSpawn();
