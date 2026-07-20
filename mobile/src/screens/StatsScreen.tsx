@@ -41,6 +41,44 @@ const GRANULARITIES: Array<{ value: Granularity; label: string }> = [
   { value: 'month', label: 'Monthly' },
 ];
 
+const MONTH_ABBR = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+function fmtWindowEndpoint(startIso: string, granularity: Granularity): string {
+  const [y, m, d] = startIso.split('-').map((n) => Number.parseInt(n, 10));
+  if (!y || !m) return startIso;
+  const mon = MONTH_ABBR[m - 1] ?? '';
+  if (granularity === 'month') return `${mon} ${y}`;
+  return `${mon} ${d}, ${y}`;
+}
+
+/**
+ * Human label for the window the totals/series cover, e.g.
+ * "30 days · Jun 21, 2026 to Jul 20, 2026". Without it the window-scoped summary
+ * cards look frozen when toggling granularity on a young project whose data all
+ * falls inside the shortest (daily) window.
+ */
+export function formatStatsWindow(granularity: Granularity, buckets: StatBucket[]): string {
+  if (buckets.length === 0) return '';
+  const unit = granularity === 'day' ? 'days' : granularity === 'week' ? 'weeks' : 'months';
+  const count = `${buckets.length} ${unit}`;
+  const start = fmtWindowEndpoint(buckets[0].start, granularity);
+  const end = fmtWindowEndpoint(buckets[buckets.length - 1].start, granularity);
+  return start === end ? `${count} · ${start}` : `${count} · ${start} to ${end}`;
+}
+
 function BarRow({ values, color }: { values: number[]; color: string }) {
   const max = Math.max(1, ...values);
   return (
@@ -118,6 +156,7 @@ export default function StatsScreen({ route, navigation }: any) {
 
         {stats && (
           <>
+            <Text style={styles.windowLabel}>{formatStatsWindow(granularity, stats.buckets)}</Text>
             <View style={styles.totalsGrid}>
               {METRICS.map((m) => (
                 <View key={m.key} style={styles.totalCard}>
@@ -195,6 +234,7 @@ const styles = StyleSheet.create({
   granText: { color: colors.gray300, fontSize: 13 },
   granTextActive: { color: colors.white, fontWeight: '600' },
   error: { color: colors.red400, marginBottom: 12 },
+  windowLabel: { color: colors.gray500, fontSize: 11, marginBottom: 8 },
   totalsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
   totalCard: {
     width: '31%',

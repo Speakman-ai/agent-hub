@@ -43,6 +43,50 @@ const GRANULARITIES: Array<{ value: Granularity; label: string }> = [
   { value: 'month', label: 'Monthly' },
 ];
 
+const MONTH_ABBR = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+function fmtWindowEndpoint(startIso: string, granularity: Granularity): string {
+  const [y, m, d] = startIso.split('-').map((n) => Number.parseInt(n, 10));
+  if (!y || !m) return startIso;
+  const mon = MONTH_ABBR[m - 1] ?? '';
+  if (granularity === 'month') return `${mon} ${y}`;
+  return `${mon} ${d}, ${y}`;
+}
+
+/** Period length only, e.g. "30 days" / "12 weeks" / "12 months". */
+export function formatStatsWindowLength(granularity: Granularity, buckets: StatBucket[]): string {
+  if (buckets.length === 0) return '';
+  const unit = granularity === 'day' ? 'days' : granularity === 'week' ? 'weeks' : 'months';
+  return `${buckets.length} ${unit}`;
+}
+
+/**
+ * Human label for the window the totals/series cover, e.g.
+ * "30 days · Jun 21, 2026 to Jul 20, 2026". The summary cards are window-scoped
+ * sums, so without this the numbers look frozen when toggling granularity on a
+ * young project whose data all falls inside the shortest (daily) window.
+ */
+export function formatStatsWindow(granularity: Granularity, buckets: StatBucket[]): string {
+  const count = formatStatsWindowLength(granularity, buckets);
+  if (!count) return '';
+  const start = fmtWindowEndpoint(buckets[0].start, granularity);
+  const end = fmtWindowEndpoint(buckets[buckets.length - 1].start, granularity);
+  return start === end ? `${count} · ${start}` : `${count} · ${start} to ${end}`;
+}
+
 function MiniBarChart({
   buckets,
   values,
@@ -117,7 +161,14 @@ export default function ProjectStatsView({ projects }: { projects: any[] }) {
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <BarChart3 className="text-indigo-400" size={20} />
-          <h2 className="text-xl font-semibold text-gray-100">{project.name} · Stats</h2>
+          <div>
+            <h2 className="text-xl font-semibold text-gray-100">{project.name} · Stats</h2>
+            {stats && (
+              <div className="text-xs text-gray-500 mt-0.5">
+                {formatStatsWindow(granularity, stats.buckets)}
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex rounded-lg overflow-hidden border border-gray-700">
@@ -158,6 +209,9 @@ export default function ProjectStatsView({ projects }: { projects: any[] }) {
 
       {stats && (
         <>
+          <div className="text-xs text-gray-500 mb-2">
+            Totals over the last {formatStatsWindowLength(granularity, stats.buckets)}
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
             {METRICS.map((m) => (
               <div key={m.key} className="rounded-xl border border-gray-800 bg-gray-900/60 p-4">
