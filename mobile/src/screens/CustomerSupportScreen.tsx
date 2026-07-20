@@ -149,7 +149,9 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
         <Text style={styles.time}>{relativeTime(item.created_at)}</Text>
       </View>
 
-      <Text style={[styles.cardTitle, isUnread && styles.cardTitleUnread]}>{title}</Text>
+      <Text style={[styles.cardTitle, isUnread && styles.cardTitleUnread]} numberOfLines={2}>
+        {title}
+      </Text>
 
       {item.subject?.trim() && item.body?.trim() ? (<Text style={styles.cardBody} numberOfLines={3}>
           {item.body}

@@ -700,9 +700,13 @@ function SupportTicketCard({
                 isUnread ? 'text-gray-50 font-semibold' : 'text-gray-200 font-medium'
               }`}
             >
-              {title}
+              {/* line-clamp sets display:-webkit-box; keep these spans free of a
+                  sibling `block`/`flex` display class or the clamp is silently
+                  overridden and the full body renders (grows the card to the
+                  whole viewport). */}
+              <span className="line-clamp-2 break-words">{title}</span>
               {ticket.subject?.trim() && ticket.body?.trim() ? (
-                <span className="block text-xs text-gray-500 mt-1 line-clamp-3 whitespace-pre-wrap break-words font-normal">
+                <span className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-xs font-normal text-gray-500">
                   {ticket.body}
                 </span>
               ) : null}

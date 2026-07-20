@@ -282,6 +282,42 @@ describe('CustomerSupportPage — deep-linked ticket focus', () => {
   });
 });
 
+describe('CustomerSupportPage — list body truncation', () => {
+  it('clamps the body preview and keeps it free of a display class that would break line-clamp', async () => {
+    const longBody = Array.from({ length: 40 }, (_, i) => `body-marker-${i}`).join('\n');
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({ id: 't1', subject: 'Has a subject', body: longBody }),
+    ]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Has a subject')).toBeInTheDocument());
+
+    // The leaf span that carries the body text (ancestors return '' from
+    // getNodeText, so this resolves to the single preview span).
+    const bodyEl = screen.getByText(/body-marker-20/);
+    // The clamp must be present...
+    expect(bodyEl.className).toContain('line-clamp-3');
+    // ...and NOT co-exist with a `block`/`flex` display utility, which sets
+    // `display` and overrides line-clamp's `display:-webkit-box`, letting the
+    // full body render and blow the card up to the whole viewport (the bug).
+    expect(bodyEl.className.split(/\s+/)).not.toContain('block');
+    expect(bodyEl.className.split(/\s+/)).not.toContain('flex');
+  });
+
+  it('clamps the title when a bodiless-subject ticket falls back to showing the body as the title', async () => {
+    const longBody = Array.from({ length: 40 }, (_, i) => `title-fallback-${i}`).join('\n');
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({ id: 't1', subject: '', body: longBody }),
+    ]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+
+    // With no subject the body becomes the title; it must still be clamped (and
+    // rendered only once — the separate body-preview span is skipped).
+    const matches = await screen.findAllByText(/title-fallback-20/);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].className).toContain('line-clamp-2');
+  });
+});
+
 describe('CustomerSupportPage — ticket detail view', () => {
   it('opens a ticket when its visible content is clicked', async () => {
     const item = ticket({ id: 'content-click', subject: 'Click this ticket' });
