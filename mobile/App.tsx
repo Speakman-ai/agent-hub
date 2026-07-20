@@ -41,6 +41,7 @@ import ReplaysScreen from './src/screens/ReplaysScreen';
 import AwsProfilesScreen from './src/screens/AwsProfilesScreen';
 import ReviewerScreen from './src/screens/ReviewerScreen';
 import EpicsScreen from './src/screens/EpicsScreen';
+import EpicDetailScreen from './src/screens/EpicDetailScreen';
 import RepositoryScreen from './src/screens/RepositoryScreen';
 import DeploymentsScreen from './src/screens/DeploymentsScreen';
 import InviteAcceptScreen from './src/screens/InviteAcceptScreen';
@@ -238,6 +239,7 @@ function AppContent() {
             <Stack.Screen name="AwsProfiles" component={AwsProfilesScreen}/>
             <Stack.Screen name="Reviewer" component={ReviewerScreen}/>
             <Stack.Screen name="Epics" component={EpicsScreen}/>
+            <Stack.Screen name="EpicDetail" component={EpicDetailScreen}/>
             <Stack.Screen name="Repository" component={RepositoryScreen}/>
             <Stack.Screen name="Deployments" component={DeploymentsScreen}/>
             <Stack.Screen name="Invite" component={InviteAcceptScreen}/>

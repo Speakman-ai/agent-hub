@@ -976,6 +976,39 @@ export const api = {
         body: JSON.stringify({ epicId }),
     }),
     getAutonomousEpic: (projectId: any) => fetchJSON(`/projects/${projectId}/board/autonomous`),
+    // Phases — the epic detail (workbench) screen drives autonomous phase runs.
+    // Mirrors the web client's phase methods; server contracts in
+    // server/routes/board-phases.ts.
+    createPhase: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/board/phases`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
+    updatePhase: (projectId: any, phaseId: any, data: any) => fetchJSON(`/projects/${projectId}/board/phases/${phaseId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+    }),
+    deletePhase: (projectId: any, phaseId: any) => fetchJSON(`/projects/${projectId}/board/phases/${phaseId}`, { method: 'DELETE' }),
+    runPhase: (projectId: any, phaseId: any) => fetchJSON(`/projects/${projectId}/board/phases/${phaseId}/run`, { method: 'POST' }),
+    stopPhase: (projectId: any, phaseId: any) => fetchJSON(`/projects/${projectId}/board/phases/${phaseId}/stop`, { method: 'POST' }),
+    // Reorder an epic's phases. Pass `phaseIds` for an explicit order, or
+    // `sortByDependencies: true` to derive the order from the card blocker graph.
+    reorderPhases: (projectId: any, epicId: string, opts: { phaseIds?: string[]; sortByDependencies?: boolean }) => fetchJSON(`/projects/${projectId}/board/phases/reorder`, {
+        method: 'POST',
+        body: JSON.stringify({ epicId, ...opts }),
+    }),
+    // Epic spec decisions — the spec-first section of the epic detail screen.
+    createSpecItem: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/board/spec-items`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
+    updateSpecItem: (projectId: any, specItemId: any, data: any) => fetchJSON(`/projects/${projectId}/board/spec-items/${specItemId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+    }),
+    decideSpecForMe: (projectId: any, specItemId: any, data: { agentId?: string } = {}) => fetchJSON(`/projects/${projectId}/board/spec-items/${specItemId}/decide-for-me`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
     // Session insights — summary panel, skill invocations, worktree diffs.
     // `getSessionSummary` powers the session summary sheet (linked PR, agents,
     // skill usage); `getSessionChangesDiff` returns the unified diff for one

@@ -9,7 +9,7 @@ import { groupEpicsByState } from '../utils/epicBoard';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import LinkedTodosPanel from '../components/LinkedTodosPanel';
 export default function EpicsScreen({ route, navigation }: any) {
-    const { projectId, project: routeProject } = route.params || {};
+    const { projectId, project: routeProject, editEpicId } = route.params || {};
     const project = routeProject;
     const [board, setBoard] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -74,6 +74,20 @@ export default function EpicsScreen({ route, navigation }: any) {
         setEpicForm(epicFormFromRow(epic));
         setShowForm(true);
     };
+    // The EpicDetail screen's "Edit" button routes back here with `editEpicId`;
+    // open that epic's form once the board has loaded it, then consume the
+    // route param. Clearing the param (rather than a sticky ref) means tapping
+    // Edit again for the same epic re-opens the form even while this screen
+    // instance stays mounted.
+    useEffect(() => {
+        if (!editEpicId)
+            return;
+        const target = (board?.epics || []).find((e: any) => e.id === editEpicId);
+        if (target) {
+            openEdit(target);
+            navigation?.setParams?.({ editEpicId: undefined });
+        }
+    }, [editEpicId, board, navigation]);
     const handleSave = async () => {
         if (!epicForm.name.trim()) {
             Alert.alert('Error', 'Epic name is required');
@@ -151,7 +165,7 @@ export default function EpicsScreen({ route, navigation }: any) {
     const renderEpicCard = (epic: any) => {
         const { open, total } = cardCountFor(epic.id);
         const stateLabel = epicStateLabel(epic.state);
-        return (<TouchableOpacity key={epic.id} style={styles.epicCard} onPress={() => openEdit(epic)}>
+        return (<TouchableOpacity key={epic.id} style={styles.epicCard} onPress={() => navigation.navigate('EpicDetail', { projectId, project, epicId: epic.id })}>
             <View style={[styles.epicDot, { backgroundColor: epic.color || colors.indigo500 }]}/>
             <View style={styles.epicInfo}>
               <Text style={styles.epicName}>{epic.name}</Text>
