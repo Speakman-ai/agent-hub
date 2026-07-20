@@ -28,9 +28,17 @@ import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { parseRepoFullName } from './pr-list.js';
 import { handleGithubCardOnMerge } from '../github-card-on-merge.js';
+import { setGithubPrAutoMerge } from '../pr-auto-merge.js';
+import { postGraphql } from '../pr-pull-list-enrichment.js';
 
 interface PrActionBody {
   prUrl: string;
+  mergeMethod?: 'squash' | 'merge' | 'rebase';
+}
+
+interface AutoMergeBody {
+  prUrl: string;
+  enabled?: boolean;
   mergeMethod?: 'squash' | 'merge' | 'rebase';
 }
 
@@ -232,6 +240,71 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
       }
       return res.status(500).json({ error: `Merge failed: ${msg.split('\n')[0]}` });
+    }
+  });
+
+  // ─── Arm / disarm GitHub native auto-merge ──────────────────────
+  //
+  // Enables GitHub's native auto-merge so the PR merges itself once required
+  // checks pass and required reviews approve — the toggle on the PR pages.
+  // Uses the acting user's OAuth token (GraphQL); mirrors the manual merge
+  // button's per-user credential model. Native (Agent Hub-hosted) PRs are
+  // covered by the session Finalize automation level instead.
+
+  router.post('/api/pr/auto-merge', async (req: Request, res: Response) => {
+    const { prUrl, enabled, mergeMethod = 'squash' } = req.body as AutoMergeBody;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled (boolean) is required' });
+    }
+    if (!ALLOWED_MERGE_METHODS.has(mergeMethod)) {
+      return res.status(400).json({ error: 'Invalid merge method' });
+    }
+
+    const native = resolveNativePrRef(req, prUrl, deps);
+    if (native) {
+      return res.status(400).json({
+        error:
+          'Auto-merge toggle is not supported for Agent Hub-hosted PRs — use the session Finalize automation level instead.',
+      });
+    }
+
+    const pr = parsePrUrl(prUrl);
+    if (!pr) {
+      return res.status(400).json({ error: 'Invalid PR URL' });
+    }
+
+    const userToken = await resolveUserToken(req, config);
+    if (!userToken) {
+      return res.status(401).json({ error: CONNECT_GITHUB_HINT });
+    }
+
+    try {
+      const result = await setGithubPrAutoMerge({
+        owner: pr.owner,
+        repo: pr.repo,
+        number: Number.parseInt(pr.number, 10),
+        enabled,
+        mergeMethod,
+        deps: {
+          getPr: (owner, repo, number) =>
+            githubUserApiRequest<Record<string, unknown>>({
+              accessToken: userToken,
+              endpoint: `/repos/${owner}/${repo}/pulls/${number}`,
+            }),
+          graphql: (query, variables) => postGraphql(userToken, query, variables),
+        },
+      });
+      return res.json({
+        ok: true,
+        enabled: result.enabled,
+        mergeMethod: result.mergeMethod,
+        pr: pr.number,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(422).json({
+        error: `Auto-merge ${enabled ? 'enable' : 'disable'} failed: ${msg.split('\n')[0]}`,
+      });
     }
   });
 

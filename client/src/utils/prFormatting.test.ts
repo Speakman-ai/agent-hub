@@ -14,6 +14,7 @@ import {
   reviewsBadge,
   mergeableBadge,
   mergeButtonState,
+  autoMergeToggleState,
   reviewDecisionListBadge,
   mergePipelineListBadge,
   checkRowStyle,
@@ -642,6 +643,49 @@ describe('mergeButtonState', () => {
   it('null PR → disabled', () => {
     expect(mergeButtonState(null).enabled).toBe(false);
     expect(mergeButtonState(undefined).enabled).toBe(false);
+  });
+});
+
+describe('autoMergeToggleState', () => {
+  const ghUrl = 'https://github.com/acme/webapp/pull/42';
+
+  it('is available and off for an open GitHub PR with no auto_merge', () => {
+    const s = autoMergeToggleState({ state: 'open', html_url: ghUrl, auto_merge: null });
+    expect(s.available).toBe(true);
+    expect(s.enabled).toBe(false);
+    expect(s.method).toBeNull();
+  });
+
+  it('reflects armed auto-merge from the auto_merge object', () => {
+    const s = autoMergeToggleState({
+      state: 'open',
+      html_url: ghUrl,
+      auto_merge: { merge_method: 'squash', enabled_by: { login: 'me' } },
+    });
+    expect(s.available).toBe(true);
+    expect(s.enabled).toBe(true);
+    expect(s.method).toBe('squash');
+  });
+
+  it('is unavailable for native (non-github) PR URLs', () => {
+    const s = autoMergeToggleState({ state: 'open', html_url: '/projects/demo/pulls/3' });
+    expect(s.available).toBe(false);
+  });
+
+  it('is unavailable for merged, closed, or draft PRs', () => {
+    expect(
+      autoMergeToggleState({ state: 'open', html_url: ghUrl, merged_at: '2026-01-01T00:00:00Z' })
+        .available,
+    ).toBe(false);
+    expect(autoMergeToggleState({ state: 'closed', html_url: ghUrl }).available).toBe(false);
+    expect(autoMergeToggleState({ state: 'open', html_url: ghUrl, draft: true }).available).toBe(
+      false,
+    );
+  });
+
+  it('null PR → unavailable', () => {
+    expect(autoMergeToggleState(null).available).toBe(false);
+    expect(autoMergeToggleState(undefined).available).toBe(false);
   });
 });
 

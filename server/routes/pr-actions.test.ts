@@ -3,7 +3,10 @@ import express from 'express';
 import request from 'supertest';
 import type { Project, RouteDeps } from '../types.js';
 
-function buildApp(overrides: Partial<RouteDeps> = {}): Promise<express.Express> {
+function buildApp(
+  overrides: Partial<RouteDeps> = {},
+  preRouter?: express.RequestHandler,
+): Promise<express.Express> {
   return (async () => {
     vi.resetModules();
     const { default: createPrActionRoutes } = await import('./pr-actions.js');
@@ -30,6 +33,7 @@ function buildApp(overrides: Partial<RouteDeps> = {}): Promise<express.Express> 
     } as unknown as RouteDeps;
     const app = express();
     app.use(express.json());
+    if (preRouter) app.use(preRouter);
     app.use(createPrActionRoutes(mockDeps));
     return app;
   })();
@@ -116,6 +120,65 @@ describe('PR Actions route', () => {
       const res = await request(app).get(
         '/api/pr/status?prUrl=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F42',
       );
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/Connect your GitHub account/i);
+    });
+  });
+
+  describe('POST /api/pr/auto-merge', () => {
+    it('rejects a missing/non-boolean enabled flag', async () => {
+      const app = await buildApp();
+      const res = await request(app)
+        .post('/api/pr/auto-merge')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/enabled.*required/i);
+    });
+
+    it('rejects an invalid merge method', async () => {
+      const app = await buildApp();
+      const res = await request(app).post('/api/pr/auto-merge').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        enabled: true,
+        mergeMethod: 'squash --admin',
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Invalid merge method/);
+    });
+
+    it('rejects an invalid PR URL', async () => {
+      const app = await buildApp();
+      const res = await request(app)
+        .post('/api/pr/auto-merge')
+        .send({ prUrl: 'not-a-url', enabled: true });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Invalid PR URL/);
+    });
+
+    it('rejects native (Agent Hub-hosted) PRs with a clear message', async () => {
+      const app = await buildApp(
+        {
+          nativePr: { merge: vi.fn() } as never,
+          findProject: vi.fn(() => ({ id: 'demo', gitHost: 'agenthub' })) as never,
+        },
+        // Bypass the visibility ACL (as an authenticated Owner/api-key caller would).
+        (req, _res, next) => {
+          (req as unknown as { authViaApiKey: boolean }).authViaApiKey = true;
+          next();
+        },
+      );
+      const res = await request(app)
+        .post('/api/pr/auto-merge')
+        .send({ prUrl: '/projects/demo/pulls/3', enabled: true });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/not supported for Agent Hub-hosted PRs/i);
+    });
+
+    it('returns 401 with CONNECT_GITHUB_HINT when no user OAuth token is resolved', async () => {
+      const app = await buildApp();
+      const res = await request(app)
+        .post('/api/pr/auto-merge')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42', enabled: true });
       expect(res.status).toBe(401);
       expect(res.body.error).toMatch(/Connect your GitHub account/i);
     });

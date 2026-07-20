@@ -2565,6 +2565,12 @@ export const api = {
       body: JSON.stringify({ prUrl }),
       timeout: 30000,
     }),
+  setPrAutoMerge: (prUrl: any, enabled: boolean, mergeMethod: any = 'squash') =>
+    fetchJSON('/pr/auto-merge', {
+      method: 'POST',
+      body: JSON.stringify({ prUrl, enabled, mergeMethod }),
+      timeout: 30000,
+    }),
   getPrStatus: (prUrl: any) => fetchJSON(`/pr/status?prUrl=${encodeURIComponent(prUrl)}`),
 
   // Container pool observability (W4)

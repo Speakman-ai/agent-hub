@@ -295,6 +295,46 @@ export function mergeButtonState(pr: any) {
 }
 
 /**
+ * Decide whether the "Auto-merge" toggle should show for a PR, and its current
+ * on/off state. GitHub's native auto-merge (arm-and-wait) only applies to
+ * GitHub-hosted PRs — native (Agent Hub-hosted) PRs are covered by the session
+ * Finalize automation level, so the toggle is hidden for them.
+ *
+ * `available` gates whether the toggle renders at all; `enabled` reflects
+ * whether GitHub currently has auto-merge armed (from the REST `auto_merge`
+ * object surfaced by the server).
+ *
+ * @param {{state?:string, merged_at?:string|null, draft?:boolean,
+ *          html_url?:string|null, auto_merge?:object|null}} pr
+ * @returns {{available:boolean, enabled:boolean, method:string|null, reason:string}}
+ */
+export function autoMergeToggleState(pr: any) {
+  const off = (reason: string) => ({ available: false, enabled: false, method: null, reason });
+  if (!pr) return off('No PR data');
+  const url = String(pr.html_url || '');
+  // GitHub native auto-merge only — hide for native (Agent Hub-hosted) PRs.
+  if (!/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(url)) {
+    return off('Auto-merge is available for GitHub PRs only');
+  }
+  if (pr.merged_at) return off('Already merged');
+  const s = (pr.state || '').toLowerCase();
+  if (s && s !== 'open') return off(`PR is ${s}`);
+  if (pr.draft) return off('PR is a draft');
+
+  const auto = pr.auto_merge && typeof pr.auto_merge === 'object' ? pr.auto_merge : null;
+  const enabled = Boolean(auto);
+  const method = auto && typeof auto.merge_method === 'string' ? auto.merge_method : null;
+  return {
+    available: true,
+    enabled,
+    method,
+    reason: enabled
+      ? 'GitHub will merge automatically once required checks and reviews pass'
+      : 'Arm GitHub auto-merge: merge automatically once required checks and reviews pass',
+  };
+}
+
+/**
  * Aggregate check-runs into pass/fail/pending counts + an overall badge.
  * Mirrors GitHub's "Checks" strip logic.
  * @param {Array<{status?:string, conclusion?:string}>} checks

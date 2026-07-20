@@ -13,6 +13,8 @@ import {
   MessageSquare,
   Wrench,
   Eye,
+  Zap,
+  ZapOff,
 } from 'lucide-react';
 import { Pencil, Check, X, Sparkles, SquareKanban, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../utils/api';
@@ -33,6 +35,7 @@ import {
   checkRowStyle,
   reviewStateColor,
   mergeButtonState,
+  autoMergeToggleState,
   buildPrActivityTimeline,
 } from '../utils/prFormatting';
 
@@ -464,6 +467,7 @@ function PrDetail({
   const [closing, setClosing] = useState(false);
   const [reopening, setReopening] = useState(false);
   const [togglingReview, setTogglingReview] = useState(false);
+  const [togglingAutoMerge, setTogglingAutoMerge] = useState(false);
   const [reviewVerdict, setReviewVerdict] = useState('approved');
   const [reviewBody, setReviewBody] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
@@ -496,6 +500,27 @@ function PrDetail({
       toastErr(err);
     } finally {
       setReopening(false);
+    }
+  };
+
+  const handleToggleAutoMerge = async (nextEnabled: boolean) => {
+    setTogglingAutoMerge(true);
+    try {
+      await api.setPrAutoMerge(pr.html_url, nextEnabled, 'squash');
+      if (onToast) {
+        onToast(
+          nextEnabled
+            ? `Auto-merge armed for PR #${pr.number} — GitHub will merge once checks and reviews pass.`
+            : `Auto-merge disabled for PR #${pr.number}.`,
+          'success',
+          4000,
+        );
+      }
+      onRefresh();
+    } catch (err: any) {
+      toastErr(err);
+    } finally {
+      setTogglingAutoMerge(false);
     }
   };
 
@@ -612,6 +637,13 @@ function PrDetail({
       ? 'No PR URL available'
       : mergeState.reason;
 
+  const autoMergeState = autoMergeToggleState(pr);
+  const autoMergeTitle = togglingAutoMerge
+    ? 'Updating auto-merge…'
+    : autoMergeState.enabled
+      ? `${autoMergeState.reason} — click to disable`
+      : autoMergeState.reason;
+
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="w-full p-4 md:p-6">
@@ -692,6 +724,30 @@ function PrDetail({
             >
               {reopening ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
               Reopen
+            </button>
+          )}
+          {autoMergeState.available && (
+            <button
+              type="button"
+              onClick={() => handleToggleAutoMerge(!autoMergeState.enabled)}
+              disabled={togglingAutoMerge}
+              title={autoMergeTitle}
+              aria-pressed={autoMergeState.enabled}
+              data-testid="pr-auto-merge-toggle"
+              className={`flex items-center gap-1.5 text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                autoMergeState.enabled
+                  ? 'text-emerald-300 hover:text-emerald-100'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              {togglingAutoMerge ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : autoMergeState.enabled ? (
+                <Zap size={14} />
+              ) : (
+                <ZapOff size={14} />
+              )}
+              {autoMergeState.enabled ? 'Auto-merge on' : 'Auto-merge'}
             </button>
           )}
           {isOpen && (

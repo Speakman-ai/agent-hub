@@ -8165,6 +8165,51 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    PrAutoMergeRequest:
+      type: object
+      properties:
+        prUrl:
+          type: string
+          description: Full GitHub PR URL (`https://github.com/owner/repo/pull/N`).
+          example: https://github.com/acme/webapp/pull/42
+        enabled:
+          type: boolean
+          description: true arms GitHub native auto-merge (merge once required checks pass and required reviews approve); false disarms it.
+        mergeMethod:
+          type: string
+          enum:
+            - squash
+            - merge
+            - rebase
+          description: Merge strategy GitHub uses when auto-merge fires. Defaults to `squash`.
+      required:
+        - prUrl
+        - enabled
+      description: Arm or disarm GitHub native auto-merge on a PR, using the acting user’s connected GitHub credential.
+    PrAutoMergeResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        enabled:
+          type: boolean
+        mergeMethod:
+          type: string
+          enum:
+            - squash
+            - merge
+            - rebase
+        pr:
+          type: string
+          description: PR number as a string.
+      required:
+        - ok
+        - enabled
+        - mergeMethod
+        - pr
+      description: Auto-merge toggle result.
     ProjectPreviewInstance:
       type: object
       properties:
@@ -29936,6 +29981,57 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/pr/auto-merge:
+    post:
+      tags:
+        - PR Actions
+      summary: Arm or disarm GitHub native auto-merge on a PR
+      description: Enables or disables GitHub’s native auto-merge on a GitHub-hosted PR via the acting user’s OAuth token (GraphQL). Agent Hub-hosted (native) PRs are rejected with 400 — their auto-merge is controlled by the session Finalize automation level.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrAutoMergeRequest"
+      responses:
+        "200":
+          description: Auto-merge armed or disarmed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrAutoMergeResponse"
+        "400":
+          description: Missing/invalid `enabled`, invalid merge method, invalid PR URL, or a native (Agent Hub-hosted) PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Caller has not connected a GitHub account.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "422":
+          description: GitHub rejected the mutation (e.g. repo has "Allow auto-merge" disabled, or the PR is already mergeable with nothing to wait on).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/previews:
     get:
       summary: List active worktree previews for a project

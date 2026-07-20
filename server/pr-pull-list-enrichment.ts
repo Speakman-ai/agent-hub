@@ -69,7 +69,7 @@ export function normalizeCheckRollupItems(raw: unknown): CheckRollupItem[] {
   return out;
 }
 
-async function postGraphql(
+export async function postGraphql(
   bearerToken: string,
   query: string,
   variables: Record<string, unknown>,

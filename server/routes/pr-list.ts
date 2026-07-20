@@ -102,6 +102,13 @@ export function normalizePrSummary(raw: Record<string, unknown>): Record<string,
         ? null
         : String(raw.review_decision),
     check_rollup: Array.isArray(raw.check_rollup) ? raw.check_rollup : null,
+    // GitHub REST returns `auto_merge` as an object ({ enabled_by, merge_method,
+    // … }) when native auto-merge is armed, or null otherwise. Surface it so the
+    // PR page can reflect the toggle's current state.
+    auto_merge:
+      raw.auto_merge && typeof raw.auto_merge === 'object'
+        ? (raw.auto_merge as Record<string, unknown>)
+        : null,
   };
 }
 
