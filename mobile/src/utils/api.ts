@@ -186,6 +186,8 @@ export const api = {
     getProjects: () => fetchJSON('/projects'),
     getProject: (projectId: any) => fetchJSON(`/projects/${projectId}`),
     createProject: (data: any) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
+    suggestProjectSetup: (data: any) => fetchJSON('/projects/provision/suggest', { method: 'POST', body: JSON.stringify(data) }),
+    provisionProject: (data: any) => fetchJSON('/projects/provision', { method: 'POST', body: JSON.stringify(data) }),
     updateProject: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
     // Per-user, project-scoped settings (e.g. default Finalize automation level).
     getProjectUserSettings: (projectId: any) => fetchJSON(`/projects/${projectId}/user-settings`),
