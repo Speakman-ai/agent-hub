@@ -23,6 +23,13 @@
 # url/conclusion are surfaced on the Deployments page. A bare
 # `run: gh workflow run ...` fires-and-forgets — it reports success the instant
 # the dispatch is queued, without ever listening for whether the release passed.
+#
+# `mobile-production` is intentionally separate and contains no GitHub step. It
+# sends native iOS and Android builds to EAS Build and asks EAS Submit to deliver
+# each successful binary to its configured store destination. Set `EXPO_TOKEN` as
+# a project secret before using it; Apple and Google submission credentials must
+# also be configured for the EAS project/profile. EAS Submit's default targets
+# are TestFlight and Google Play internal testing, not automatic public release.
 version: 1
 environments:
   production:
@@ -37,3 +44,26 @@ environments:
           ref: main
           inputs:
             bump: patch
+  mobile-production:
+    # Gated: an Admin/Owner must approve before binaries are sent to EAS.
+    approval: true
+    runs-on: ubuntu-24.04
+    # EAS waits for remote iOS and Android builds, then submits both binaries.
+    timeout_minutes: 240
+    steps:
+      - name: build-and-submit-native-mobile
+        run: |
+          expo_token="${EXPO_TOKEN:-}"
+          unset EXPO_TOKEN
+          test -n "$expo_token" || {
+            echo "EXPO_TOKEN project secret is required for mobile-production." >&2
+            exit 1
+          }
+          cd mobile
+          npm ci --include=dev
+          eas_bin="$(env -u EXPO_TOKEN npx --yes --package=eas-cli@18.4.0 -- sh -c 'command -v eas')"
+          test -x "$eas_bin" || {
+            echo "Unable to resolve eas-cli@18.4.0." >&2
+            exit 1
+          }
+          EXPO_TOKEN="$expo_token" "$eas_bin" build --platform all --profile production --auto-submit --non-interactive

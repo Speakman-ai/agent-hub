@@ -244,6 +244,38 @@ describe("this repo's .agent-hub/deploy.yaml", () => {
     expect(step!.run).toContain('gh run watch');
     expect(step!.run).toContain('--exit-status');
   });
+
+  it('builds and submits native mobile binaries through EAS without GitHub', () => {
+    const cfg = parseDeployConfig(raw);
+    const mobile = resolveDeployEnvironment(cfg, 'mobile-production');
+
+    expect(mobile.approval).toBe(true);
+    expect(mobile.runsOn).toBe('ubuntu-24.04');
+    expect(mobile.timeoutMinutes).toBe(240);
+    expect(mobile.steps).toHaveLength(1);
+    expect(mobile.steps[0]).toMatchObject({ name: 'build-and-submit-native-mobile' });
+    expect(mobile.steps[0].githubWorkflow).toBeUndefined();
+    // npm lifecycle scripts must never inherit the deploy credential. The shell
+    // retains it as an unexported variable and only passes it to the EAS binary.
+    expect(mobile.steps[0].run).toContain('expo_token="${EXPO_TOKEN:-}"');
+    expect(mobile.steps[0].run).toContain('unset EXPO_TOKEN');
+    expect(mobile.steps[0].run).toContain('test -n "$expo_token"');
+    expect(mobile.steps[0].run).toContain('npm ci --include=dev');
+    expect(mobile.steps[0].run).toContain(
+      "env -u EXPO_TOKEN npx --yes --package=eas-cli@18.4.0 -- sh -c 'command -v eas'",
+    );
+    expect(mobile.steps[0].run).toContain('EXPO_TOKEN="$expo_token" "$eas_bin" build');
+    const tokenUnsetAt = mobile.steps[0].run.indexOf('unset EXPO_TOKEN');
+    const dependencyInstallAt = mobile.steps[0].run.indexOf('npm ci --include=dev');
+    const easRunAt = mobile.steps[0].run.indexOf('EXPO_TOKEN="$expo_token" "$eas_bin" build');
+    expect(tokenUnsetAt).toBeLessThan(dependencyInstallAt);
+    expect(dependencyInstallAt).toBeLessThan(easRunAt);
+    expect(mobile.steps[0].run.slice(tokenUnsetAt, easRunAt)).not.toMatch(/\bEXPO_TOKEN=/);
+    expect(mobile.steps[0].run).toContain('--profile production');
+    expect(mobile.steps[0].run).toContain('--auto-submit');
+    expect(mobile.steps[0].run).toContain('--non-interactive');
+    expect(mobile.steps[0].run).not.toMatch(/\b(?:gh|github)\b/i);
+  });
 });
 
 describe('resolveDeployEnvironment', () => {
