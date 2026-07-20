@@ -636,6 +636,12 @@ export const api = {
     getMyAuth: (provider: any) => fetchJSON(`/auth/me/${provider}-auth`),
     putMyAuth: (provider: any, data: any) => fetchJSON(`/auth/me/${provider}-auth`, { method: 'PUT', body: JSON.stringify(data) }),
     getGithubAuthStatus: () => fetchJSON('/auth/github/status'),
+    // Mints the GitHub authorize URL for the native OAuth flow. `returnTo`
+    // is the app deep-link the callback redirects back to (closes the
+    // in-app browser). Auth headers ride on this call, so it must be a
+    // JSON fetch — NOT the browser navigating to /start directly.
+    getGithubAuthStartUrl: (returnTo: string): Promise<{ authorizeUrl: string }> =>
+        fetchJSON(`/auth/github/start?returnTo=${encodeURIComponent(returnTo)}`),
     disconnectGithub: () => fetchJSON('/auth/github', { method: 'DELETE' }),
     // Cross-project personal todos (spec TODO-MODEL). Scoped server-side to the
     // authenticated user; every write broadcasts `user_todo_update` to the owner.

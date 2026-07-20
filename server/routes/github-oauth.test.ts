@@ -377,6 +377,45 @@ describe('GET /api/auth/github/callback', () => {
     expect(res.text).toContain('url=/');
   });
 
+  // Mobile (expo-auth-session) round-trip: the app passes its deep-link
+  // scheme as returnTo so the callback redirects the in-app browser back
+  // into the app, closing the OAuth session. See oauth-return-to.ts.
+  it('redirects back to the mobile deep-link scheme on success', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    // Mint the state the same way /start would for a mobile returnTo.
+    const start = await request(makeApp(buildDeps(), { authUserId: user.id })).get(
+      '/api/auth/github/start?returnTo=agenthub%3A%2F%2Foauth-callback',
+    );
+    expect(start.status).toBe(200);
+    const state = new URL(start.body.authorizeUrl).searchParams.get('state')!;
+    // The mobile scheme must survive the /start allowlist into the state JWT.
+    const [, payloadB64] = state.split('.');
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf8'));
+    expect(payload.returnTo).toBe('agenthub://oauth-callback');
+
+    mockExchange.mockResolvedValueOnce({
+      access_token: 'ghu_m',
+      refresh_token: 'ghr_m',
+      expires_in: 28800,
+      refresh_token_expires_in: 15724800,
+      token_type: 'bearer',
+      scope: '',
+    });
+    mockFetchUser.mockResolvedValueOnce({
+      id: 7,
+      login: 'mobileuser',
+      name: null,
+      avatar_url: null,
+      email: null,
+    });
+    const app = makeApp(buildDeps());
+    const res = await request(app).get(`/api/auth/github/callback?code=c&state=${state}`);
+    expect(res.status).toBe(200);
+    // The callback meta-refreshes to the app scheme, handing control back.
+    expect(res.text).toContain('url=agenthub://oauth-callback');
+    expect(getGithubConnection(user.id)?.login).toBe('mobileuser');
+  });
+
   it('HTML-escapes the error query param to prevent reflected XSS', async () => {
     const app = makeApp(buildDeps());
     const xssPayload = '<script>alert(1)</script>';

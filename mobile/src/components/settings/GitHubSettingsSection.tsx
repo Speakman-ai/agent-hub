@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, Linking } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { api } from '../../utils/api';
-import { getApiBaseUrl } from '../../utils/config';
+import { signInWithGithub } from '../../utils/oauthSignIn';
 import { colors } from '../../theme/colors';
 export default function GitHubSettingsSection() {
     const [status, setStatus] = useState<any>(null);
     const [loading, setLoading] = useState(true);
+    const [connecting, setConnecting] = useState(false);
     const load = async () => {
         setLoading(true);
         try {
@@ -22,9 +23,23 @@ export default function GitHubSettingsSection() {
     useEffect(() => {
         load();
     }, []);
-    const handleConnect = () => {
-        const base = getApiBaseUrl();
-        Linking.openURL(`${base}/auth/github/start`);
+    const handleConnect = async () => {
+        setConnecting(true);
+        try {
+            const outcome = await signInWithGithub();
+            if (outcome.ok) {
+                await load();
+            }
+            else if (!outcome.cancelled) {
+                Alert.alert('GitHub sign-in failed', 'The sign-in did not complete. Please try again.');
+            }
+        }
+        catch (err: any) {
+            Alert.alert('Error', err?.message || 'Failed to start GitHub sign-in');
+        }
+        finally {
+            setConnecting(false);
+        }
     };
     const handleDisconnect = () => {
         Alert.alert('Disconnect GitHub?', 'Agents will lose GitHub API access until reconnected.', [
@@ -58,8 +73,8 @@ export default function GitHubSettingsSection() {
       </View>
       {connected ? (<TouchableOpacity style={styles.dangerButton} onPress={handleDisconnect}>
           <Text style={styles.dangerText}>Disconnect</Text>
-        </TouchableOpacity>) : (<TouchableOpacity style={styles.primaryButton} onPress={handleConnect}>
-          <Text style={styles.primaryText}>Connect GitHub</Text>
+        </TouchableOpacity>) : (<TouchableOpacity style={[styles.primaryButton, connecting && styles.primaryButtonDisabled]} onPress={handleConnect} disabled={connecting}>
+          <Text style={styles.primaryText}>{connecting ? 'Connecting…' : 'Connect GitHub'}</Text>
         </TouchableOpacity>)}
     </View>);
 }
@@ -84,6 +99,7 @@ const styles = StyleSheet.create({
         padding: 12,
         alignItems: 'center',
     },
+    primaryButtonDisabled: { opacity: 0.6 },
     primaryText: { color: colors.white, fontWeight: '600' },
     dangerButton: {
         borderWidth: 1,

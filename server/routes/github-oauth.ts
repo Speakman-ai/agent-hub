@@ -36,6 +36,7 @@ import {
 import { resetRepoAccessCache } from '../repo-aware-token.js';
 import { resolveGithubConnectionUserId } from '../github-connection-user.js';
 import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
+import { sanitizeOAuthReturnTo } from '../oauth-return-to.js';
 import { registerPath, z } from '../openapi/registry.js';
 import {
   ErrorResponse,
@@ -296,12 +297,9 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
       // Pre-setup — nobody can be authenticated anyway, but belt-and-suspenders.
       return res.status(503).json({ error: 'Auth not initialized' });
     }
-    const returnToRaw = typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined;
-    // Reject absolute URLs and protocol-relative URLs (//evil.com) to prevent open-redirect.
-    const returnTo =
-      returnToRaw && returnToRaw.startsWith('/') && !returnToRaw.startsWith('//')
-        ? returnToRaw
-        : undefined;
+    // Accept same-origin web paths and the mobile app's deep-link scheme;
+    // reject absolute/protocol-relative URLs to prevent open-redirect.
+    const returnTo = sanitizeOAuthReturnTo(req.query.returnTo);
 
     const stateToken = signJwt(uid, record.jwtSecret, {
       expiresInSec: STATE_TOKEN_TTL_SEC,
@@ -446,8 +444,9 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
 
       // Defense-in-depth: re-validate returnTo at render time even though
       // the /start route already filters it before signing the state JWT.
-      const rawReturn = typeof payload.returnTo === 'string' ? payload.returnTo : '';
-      const returnTo = rawReturn.startsWith('/') && !rawReturn.startsWith('//') ? rawReturn : '/';
+      // A mobile deep-link scheme (agenthub://…) redirects the in-app
+      // browser back into the app, closing the OAuth session.
+      const returnTo = sanitizeOAuthReturnTo(payload.returnTo) ?? '/';
       return res
         .status(200)
         .type('html')

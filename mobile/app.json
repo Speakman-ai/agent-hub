@@ -3,6 +3,7 @@
     "name": "Agent Hub",
     "slug": "agent-hub-mobile",
     "version": "1.0.0",
+    "scheme": "agenthub",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -30,6 +31,7 @@
       }
     },
     "plugins": [
+      "expo-web-browser",
       [
         "expo-notifications",
         {
