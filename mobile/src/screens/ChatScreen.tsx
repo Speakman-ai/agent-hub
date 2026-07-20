@@ -17,6 +17,7 @@ import SessionAgentsPanel from '../components/SessionAgentsPanel';
 import ChangesReadyBox from '../components/ChangesReadyBox';
 import FinalizeBar from '../components/FinalizeBar';
 import SessionDesignFilesPanel from '../components/SessionDesignFilesPanel';
+import SessionArtifactsPanel from '../components/SessionArtifactsPanel';
 import MobileTerminalPane from '../components/MobileTerminalPane';
 import { SquareTerminal } from 'lucide-react-native';
 import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
@@ -26,7 +27,7 @@ import ResolveSessionPrBanner from '../components/ResolveSessionPrBanner';
 import { shouldShowViewChanges } from '../utils/sessionExtras';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle, parseResolvePrNumberFromTitle, } from '@shared/utils/sessionTitlePr';
 export default function ChatScreen() {
-    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, handleCredentialSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, } = useApp();
+    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, handleCredentialSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, artifactReloadBySession, } = useApp();
     // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
     // plain declaration here previously made this module fail to parse.
     const navigation = useNavigation<any>();
@@ -155,6 +156,7 @@ export default function ChatScreen() {
                 session: activeSession || null,
             })} showFinalize={showFinalizeBar} status={finalize.status} phase={finalize.phase} phases={finalize.phases} run={finalize.run} onChanged={finalize.refetch}/>) : null}
       {activeSessionId && activeSession?.session_mode === 'design' ? (<SessionDesignFilesPanel sessionId={activeSessionId} reloadNonce={isProcessing ? 0 : messages.length}/>) : null}
+      {activeSessionId ? (<SessionArtifactsPanel sessionId={activeSessionId} reloadNonce={artifactReloadBySession?.[activeSessionId] || 0}/>) : null}
       {activeSessionId ? (<SessionAgentsPanel sessionId={activeSessionId} sessionAgents={sessionAgents} maxTurns={activeSession?.max_turns} agents={agents} onUpdated={handleSessionAgentsUpdated}/>) : null}
       {activeSessionId && activeSession?.session_mode !== 'consult' ? (<>
         <View style={styles.terminalToggleRow}>

@@ -73,6 +73,10 @@ export function AppProvider({ children }: any) {
     const [eventsByMessage, setEventsByMessage] = useState<any>({});
     // Live browser screenshot previews: { [messageId]: { [actionId]: dataUrl } }
     const [browserScreensBySession, setBrowserScreensBySession] = useState<any>({});
+    // Per-session nonce bumped on each `artifact_created` / `artifact_deleted`
+    // WS event so the SessionArtifactsPanel reloads its list live. Shape:
+    //   { [sessionId]: number }
+    const [artifactReloadBySession, setArtifactReloadBySession] = useState<any>({});
     // Cron-linked sessions
     const [cronSessions, setCronSessions] = useState<any[]>([]);
     // Threads (persistent output logs for crons & heartbeats)
@@ -584,6 +588,17 @@ export function AppProvider({ children }: any) {
                 if (!sid || !mid || !aid || typeof shot !== 'string')
                     break;
                 setBrowserScreensBySession((prev: any) => mergeBrowserActivityScreenshot(prev, sid, mid, aid, shot));
+                break;
+            }
+            case 'artifact_created':
+            case 'artifact_deleted': {
+                // Bump the per-session reload nonce so an open SessionArtifactsPanel
+                // refetches the authoritative list. Mirrors the web App.tsx handler
+                // (which drives SessionArtifactsPane's reloadToken).
+                const sid = data.sessionId;
+                if (!sid)
+                    break;
+                setArtifactReloadBySession((prev: any) => ({ ...prev, [sid]: (prev[sid] || 0) + 1 }));
                 break;
             }
             // Cron session updates
@@ -2064,6 +2079,7 @@ export function AppProvider({ children }: any) {
         messageQueues,
         eventsByMessage,
         browserScreensBySession,
+        artifactReloadBySession,
         handleDequeue,
         handleInterruptQueuedMessage,
         handleEditQueuedMessage,

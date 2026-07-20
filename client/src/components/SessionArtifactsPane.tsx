@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { viewArtifact, downloadArtifact } from '../utils/artifactContent';
-import { formatBytes, isInlineViewable, artifactGlyph } from '../utils/artifactView';
+import { formatBytes, isInlineViewable, artifactGlyph } from '@shared/utils/artifactView';
 import { formatDateTime } from '../utils/time';
 
 /**

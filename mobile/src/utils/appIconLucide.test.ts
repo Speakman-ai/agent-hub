@@ -45,6 +45,9 @@ vi.mock('lucide-react-native', () => {
         Palette: stub,
         FolderOpen: stub,
         ExternalLink: stub,
+        Trash2: stub,
+        Download: stub,
+        Package: stub,
     };
 });
 import { APP_LUCIDE_ICONS, resolveAppLucideIcon } from './appIconLucide';
@@ -98,6 +101,10 @@ const USED_ICON_NAMES = [
     'color-palette-outline',
     'folder-open-outline',
     'open-outline',
+    'trash-outline',
+    'download-outline',
+    'cube-outline',
+    'archive-outline',
 ];
 describe('resolveAppLucideIcon', () => {
     it('maps every icon name used in the mobile app', () => {

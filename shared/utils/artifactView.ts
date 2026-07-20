@@ -1,5 +1,6 @@
 // Pure view-model helpers for the session Artifacts panel. No React / DOM /
-// network here so they're cheap to unit test (see artifactView.test.js).
+// network here so they're cheap to unit test and shared verbatim by the web
+// client (SessionArtifactsPane) and the mobile app (SessionArtifactsPanel).
 
 /** Human-readable byte size: 0 B, 512 B, 1.0 KB, 3.4 MB, … */
 export function formatBytes(bytes: any) {
@@ -26,11 +27,11 @@ export function extOf(filename: any) {
 }
 
 /**
- * Whether the browser can SAFELY render this artifact inline (so "View" opens
- * it in a tab rather than forcing a download).
+ * Whether the client can SAFELY render this artifact inline (so "View" opens
+ * it rather than forcing a download).
  *
- * Artifacts are agent-controlled and `viewArtifact` opens a same-origin blob
- * URL, so we must NEVER offer inline View for active/scriptable content —
+ * Artifacts are agent-controlled and the web `viewArtifact` opens a same-origin
+ * blob URL, so we must NEVER offer inline View for active/scriptable content —
  * HTML, SVG, XML, JS — which could run in the app origin on click. This is a
  * strict allowlist of non-active, natively-renderable types (no `text/*` /
  * `image/*` prefix matching, no `svg`). The server enforces the same boundary

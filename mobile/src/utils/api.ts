@@ -118,6 +118,14 @@ export const api = {
     // worktree `design/` dir. Returns `{ files: [{ path, size, mtime }] }`.
     // Mobile renders this flat list (no in-app iframe canvas) plus open-in-web.
     getSessionDesignFiles: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/design-files`),
+    // Session artifacts — documents the agent generated this session (PDFs,
+    // scripts, reports…). Mirrors the web SessionArtifactsPane data flow.
+    //   GET    /sessions/:id/artifacts               → { artifacts: [...] }
+    //   GET    /sessions/:id/artifacts/:aid/content  → bytes (via artifactContent util)
+    //   DELETE /sessions/:id/artifacts/:aid          → remove
+    getSessionArtifacts: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/artifacts`),
+    deleteSessionArtifact: (sessionId: any, artifactId: any) =>
+      fetchJSON(`/sessions/${sessionId}/artifacts/${artifactId}`, { method: 'DELETE' }),
     // `setSessionWorktree` was removed when Agent Hub locked to
     // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
     // endpoint no longer exists.

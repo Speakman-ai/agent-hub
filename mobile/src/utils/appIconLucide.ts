@@ -2,7 +2,7 @@
  * Maps Ionicons-style names (used across the mobile app) to Lucide components.
  * Native renders SVG via lucide-react-native — no font loading required (Expo Go safe).
  */
-import { AlertCircle, ArrowUpCircle, Bug, Check, CheckCircle, ChevronDown, ChevronRight, Circle, CloudUpload, FileText, FlaskConical, GitBranch, GitCompare, GitMerge, GitPullRequest, Hammer, HelpCircle, Info, Menu, MessageCircle, Mic, MinusCircle, Network, Paperclip, PlayCircle, Redo2, Send, Sparkles, Square, Video, Wrench, X, XCircle, Zap, Eye, Clock, Loader2, ScanEye, Ticket, Palette, FolderOpen, ExternalLink, } from 'lucide-react-native';
+import { AlertCircle, ArrowUpCircle, Bug, Check, CheckCircle, ChevronDown, ChevronRight, Circle, CloudUpload, FileText, FlaskConical, GitBranch, GitCompare, GitMerge, GitPullRequest, Hammer, HelpCircle, Info, Menu, MessageCircle, Mic, MinusCircle, Network, Paperclip, PlayCircle, Redo2, Send, Sparkles, Square, Video, Wrench, X, XCircle, Zap, Eye, Clock, Loader2, ScanEye, Ticket, Palette, FolderOpen, ExternalLink, Trash2, Download, Package, } from 'lucide-react-native';
 /** @type {Record<string, React.ComponentType<{ size?: number, color?: string, strokeWidth?: number, style?: object }>>} */
 export const APP_LUCIDE_ICONS: Record<string, any> = {
     menu: Menu,
@@ -55,6 +55,10 @@ export const APP_LUCIDE_ICONS: Record<string, any> = {
     'color-palette-outline': Palette,
     'folder-open-outline': FolderOpen,
     'open-outline': ExternalLink,
+    'trash-outline': Trash2,
+    'download-outline': Download,
+    'cube-outline': Package,
+    'archive-outline': Package,
 };
 /**
  * @param {string} name
