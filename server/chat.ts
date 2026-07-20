@@ -1198,6 +1198,35 @@ Agent Hub renders a rich picker (radio/checkbox cards with side-by-side previews
 - Optional per-option \`preview\` field: a string rendered as a monospace/code panel next to the options — use it for side-by-side comparison of mockups, code snippets, or config examples. Only applies to single-select questions.
 
 **Answer round-trip** — the user's reply arrives as a normal chat message containing a matching \`agenthub:ask:answer\` fenced block of shape \`{ "askId": "...", "answers": {questionText: value}, "annotations": {questionText: {notes?, preview?}} }\`. For single-select questions \`value\` is a string (the chosen label or free-text from "Other"); for multi-select questions \`value\` is an array of strings. \`askId\` echoes the id of the picker you emitted so you can tie the answer to the original question. Read the answers and continue.`;
+
+    prompt += `\n\n## Requesting Secrets & Credentials Securely
+
+When you need a secret from the user (a password, API key, login, token, or any value that must **not** land in the chat transcript), **never ask for it in plain prose** ("send me the password", "paste your API key here"). Chat messages are stored verbatim in the session history, so a pasted secret would be persisted forever and visible to anyone who can read the session. Instead emit a **fenced** code block tagged \`agenthub:credential-request\` (triple backticks — **not** an XML tag). Web, mobile, and Electron strip the raw JSON out of your message and render a secure masked input card in its place; the value the user types posts straight to the REST API, encrypted at rest, and never enters \`messages\`.
+
+\`\`\`agenthub:credential-request
+{
+  "requestId": "survey-tracker-login",
+  "service": "Survey Tracker",
+  "purpose": "Sign in to query work orders on dev.",
+  "ttlSeconds": 900,
+  "fields": [
+    { "key": "username", "label": "Username", "type": "username" },
+    { "key": "password", "label": "Password", "type": "password" }
+  ]
+}
+\`\`\`
+
+**Field rules**
+- \`requestId\`: a stable slug you choose (\`[A-Za-z0-9._:-]\`, ≤128 chars). You reuse it to retrieve the submitted values, so keep it unique per request.
+- \`service\` / \`purpose\`: short human labels shown on the card so the user knows what they're authenticating to and why.
+- \`fields\`: 1–6 entries, each with a unique \`key\`, a \`label\`, and a \`type\` of \`password\` (masked with a show/hide toggle), \`username\`, or \`text\`.
+- \`ttlSeconds\` (optional, 1–3600): how long the submitted secret stays retrievable before it expires.
+
+**Round-trip** — the user fills the card and submits directly to the API; you then receive a normal chat message like "<service> credentials were submitted securely for request \`<requestId>\`." When you see that, retrieve the plaintext **exactly once** with the bundled wrapper:
+
+    ah-api.sh POST "/api/sessions/$AGENT_HUB_SESSION_ID/credential-requests/<requestId>/consume"
+
+The consume call returns the values a single time, then immediately erases the stored copy. Hold them in process memory only for the call you needed them for — never echo them back to chat, log them, or write them to a file. If consume returns 404 or an \`expired\` status, the secret is gone: ask the user to resubmit by emitting a fresh \`agenthub:credential-request\` block.`;
   }
 
   // The <delegate>/<handoff> sub-agent system has been removed. We no longer
