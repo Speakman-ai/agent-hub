@@ -197,4 +197,68 @@ describe('EpicDetailScreen — PhaseCard', () => {
     expect(html).toContain('Running');
     expect(html).toContain('Stop');
   });
+
+  const modelConfig = {
+    engineValidModels: { claude: ['sonnet', 'opus'], codex: ['gpt-5'] },
+  };
+
+  it('renders the Session model selector even when auto-dispatch is off', () => {
+    // Mirrors web PhaseFlowchartView: the model selector shows regardless of
+    // the auto-dispatch toggle, while max-concurrent / Auto Merge stay hidden.
+    const html = renderToStaticMarkup(
+      <PhaseCard
+        phase={{ id: 'p1', name: 'Foundation', autonomous: 0 }}
+        index={0}
+        tickets={[]}
+        columns={columns}
+        form={{ autonomous: 0, autonomous_max_concurrent: 1, autonomous_send_it: 0, autonomous_model: 'opus' }}
+        modelConfig={modelConfig}
+        specReady
+        running={false}
+        stopping={false}
+        addingTicket={false}
+        onFormChange={noop}
+        onRun={noop}
+        onStop={noop}
+        onAddTicket={noop}
+        onOpenCard={noop}
+      />,
+    );
+    expect(html).toContain('Session model');
+    expect(html).toContain('opus');
+    // Auto-dispatch off => no autonomous-only controls.
+    expect(html).not.toContain('Tickets at once');
+    expect(html).not.toContain('Auto Merge');
+  });
+
+  it('keeps a saved model that is no longer in the options list visible', () => {
+    // A phase saved with a model the current config no longer offers must stay
+    // selectable, matching web's fallback <option value={selectedModel}>.
+    const html = renderToStaticMarkup(
+      <PhaseCard
+        phase={phase}
+        index={0}
+        tickets={[]}
+        columns={columns}
+        form={{
+          autonomous: 1,
+          autonomous_max_concurrent: 1,
+          autonomous_send_it: 1,
+          autonomous_model: 'legacy-model-x',
+        }}
+        modelConfig={modelConfig}
+        specReady
+        running={false}
+        stopping={false}
+        addingTicket={false}
+        onFormChange={noop}
+        onRun={noop}
+        onStop={noop}
+        onAddTicket={noop}
+        onOpenCard={noop}
+      />,
+    );
+    expect(html).toContain('legacy-model-x');
+    expect(html).toContain('sonnet');
+  });
 });

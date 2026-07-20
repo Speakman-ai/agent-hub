@@ -307,40 +307,50 @@ export function PhaseCard({
           </TouchableOpacity>
         ) : null}
 
+        {/* Session model — shown unconditionally to mirror web PhaseFlowchartView,
+            where the model selector renders regardless of the auto-dispatch toggle. */}
+        <Text style={styles.controlLabel}>Session model</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.modelRow}
+        >
+          <TouchableOpacity
+            style={[styles.modelChip, !selectedModel && styles.modelChipActive]}
+            onPress={() => onFormChange?.(phase.id, { autonomous_model: '' })}
+          >
+            <Text style={[styles.modelChipText, !selectedModel && styles.modelChipTextActive]}>
+              Default
+            </Text>
+          </TouchableOpacity>
+          {/* Keep a saved model that is no longer in the options list visible and
+              selected, matching web's fallback <option value={selectedModel}>. */}
+          {selectedModel && !modelOptions.includes(selectedModel) ? (
+            <TouchableOpacity
+              key={selectedModel}
+              style={[styles.modelChip, styles.modelChipActive]}
+              onPress={() => onFormChange?.(phase.id, { autonomous_model: selectedModel })}
+            >
+              <Text style={[styles.modelChipText, styles.modelChipTextActive]}>{selectedModel}</Text>
+            </TouchableOpacity>
+          ) : null}
+          {modelOptions.map((model: string) => (
+            <TouchableOpacity
+              key={model}
+              style={[styles.modelChip, selectedModel === model && styles.modelChipActive]}
+              onPress={() => onFormChange?.(phase.id, { autonomous_model: model })}
+            >
+              <Text
+                style={[styles.modelChipText, selectedModel === model && styles.modelChipTextActive]}
+              >
+                {model}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
         {autonomous ? (
           <>
-            <Text style={styles.controlLabel}>Session model</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.modelRow}
-            >
-              <TouchableOpacity
-                style={[styles.modelChip, !selectedModel && styles.modelChipActive]}
-                onPress={() => onFormChange?.(phase.id, { autonomous_model: '' })}
-              >
-                <Text style={[styles.modelChipText, !selectedModel && styles.modelChipTextActive]}>
-                  Default
-                </Text>
-              </TouchableOpacity>
-              {modelOptions.map((model: string) => (
-                <TouchableOpacity
-                  key={model}
-                  style={[styles.modelChip, selectedModel === model && styles.modelChipActive]}
-                  onPress={() => onFormChange?.(phase.id, { autonomous_model: model })}
-                >
-                  <Text
-                    style={[
-                      styles.modelChipText,
-                      selectedModel === model && styles.modelChipTextActive,
-                    ]}
-                  >
-                    {model}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
             <View style={styles.switchRow}>
               <Text style={styles.controlLabel}>Tickets at once</Text>
               <View style={styles.stepper}>
