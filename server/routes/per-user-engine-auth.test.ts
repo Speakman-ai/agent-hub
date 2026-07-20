@@ -25,7 +25,9 @@ function fakeSpawnProc(events: {
 }): EventEmitter {
   const stdout = new EventEmitter();
   const stderr = new EventEmitter();
+  const stdin = { write: vi.fn() };
   const proc = Object.assign(new EventEmitter(), {
+    stdin,
     stdout,
     stderr,
     kill: vi.fn(),
@@ -39,6 +41,7 @@ function fakeSpawnProc(events: {
 }
 
 function buildApp(opts: {
+  claudeBin?: string;
   cursorBin: string;
   codexBin: string;
   grokBin?: string;
@@ -49,6 +52,7 @@ function buildApp(opts: {
 }
 
 function buildAppWithDeps(opts: {
+  claudeBin?: string;
   cursorBin: string;
   codexBin: string;
   grokBin?: string;
@@ -71,6 +75,7 @@ function buildAppWithDeps(opts: {
   const grokBin = opts.grokBin ?? join(opts.dataDir, 'grok-default-missing');
   const deps = {
     config: {
+      claudeBin: opts.claudeBin ?? join(opts.dataDir, 'claude-default-missing'),
       cursorBin: opts.cursorBin,
       codexBin: opts.codexBin,
       grokBin,
@@ -79,6 +84,7 @@ function buildAppWithDeps(opts: {
     },
     broadcast,
     getCursorBin: () => opts.cursorBin,
+    getClaudeBin: () => opts.claudeBin ?? join(opts.dataDir, 'claude-default-missing'),
     getCodexBin: () => opts.codexBin,
     getGrokBin: () => grokBin,
   } as unknown as RouteDeps;
@@ -104,6 +110,7 @@ and enter this code:
 
 describe('per-user engine auth routes', () => {
   let tmpDir: string;
+  let claudeBin: string;
   let cursorBin: string;
   let codexBin: string;
   let grokBin: string;
@@ -111,9 +118,11 @@ describe('per-user engine auth routes', () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'per-user-auth-rt-'));
     cursorBin = join(tmpDir, 'cursor-agent');
+    claudeBin = join(tmpDir, 'claude');
     codexBin = join(tmpDir, 'codex');
     grokBin = join(tmpDir, 'grok');
     writeFileSync(cursorBin, '');
+    writeFileSync(claudeBin, '');
     writeFileSync(codexBin, '');
     writeFileSync(grokBin, '');
     spawnMock.mockReset();
@@ -133,15 +142,160 @@ describe('per-user engine auth routes', () => {
     const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId: null });
     const responses = await Promise.all([
       request(app).get('/api/auth/me/cursor-auth/browser'),
+      request(app).get('/api/auth/me/claude-auth/browser'),
       request(app).post('/api/auth/me/cursor-auth/browser/login'),
+      request(app).post('/api/auth/me/claude-auth/browser/login'),
       request(app).post('/api/auth/me/cursor-auth/browser/cancel-login'),
       request(app).delete('/api/auth/me/cursor-auth/browser'),
+      request(app).post('/api/auth/me/claude-auth/browser/cancel-login'),
+      request(app).delete('/api/auth/me/claude-auth/browser'),
       request(app).get('/api/auth/me/codex-auth/browser'),
       request(app).post('/api/auth/me/codex-auth/browser/device-login'),
       request(app).post('/api/auth/me/codex-auth/browser/cancel-login'),
       request(app).delete('/api/auth/me/codex-auth/browser'),
     ]);
     for (const res of responses) expect(res.status).toBe(401);
+  });
+
+  it('GET /api/auth/me/claude-auth/browser uses the per-user HOME cache', async () => {
+    const userId = 'claude-status-user';
+    const app = buildApp({ claudeBin, cursorBin, codexBin, dataDir: tmpDir, userId });
+    const home = join(tmpDir, 'per-user-creds', userId, 'home');
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.claude', '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'access-token',
+          refreshToken: 'refresh-token',
+          expiresAt: Date.now() + 60_000,
+        },
+      }),
+    );
+
+    const res = await request(app).get('/api/auth/me/claude-auth/browser').expect(200);
+    expect(res.body.uiStatus).toBe('authenticated');
+    expect(res.body.oauth.loggedIn).toBe(true);
+    expect(res.body.activeMethod).toBe('oauth');
+  });
+
+  it('GET Claude browser status does not activate OAuth when the binary is missing', async () => {
+    const userId = 'claude-missing-binary-user';
+    const missingClaudeBin = join(tmpDir, 'claude-missing');
+    const app = buildApp({
+      claudeBin: missingClaudeBin,
+      cursorBin,
+      codexBin,
+      dataDir: tmpDir,
+      userId,
+    });
+    const home = join(tmpDir, 'per-user-creds', userId, 'home');
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.claude', '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'access-token',
+          refreshToken: 'refresh-token',
+          expiresAt: Date.now() + 60_000,
+        },
+      }),
+    );
+
+    const res = await request(app).get('/api/auth/me/claude-auth/browser').expect(200);
+    expect(res.body.uiStatus).toBe('missing');
+    expect(res.body.oauth.loggedIn).toBeNull();
+    expect(res.body.activeMethod).toBe('none');
+  });
+
+  it.each([
+    ['', 'empty'],
+    ['not json', 'malformed'],
+    [
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'expired-access', expiresAt: Date.now() - 60_000 },
+      }),
+      'expired',
+    ],
+  ])('GET Claude browser status rejects a %s cache', async (raw) => {
+    const userId = `claude-invalid-${String(raw).length}`;
+    const app = buildApp({ claudeBin, cursorBin, codexBin, dataDir: tmpDir, userId });
+    const home = join(tmpDir, 'per-user-creds', userId, 'home');
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', '.credentials.json'), raw);
+
+    const res = await request(app).get('/api/auth/me/claude-auth/browser').expect(200);
+    expect(res.body.uiStatus).toBe('missing');
+    expect(res.body.oauth.loggedIn).toBe(false);
+    expect(res.body.activeMethod).toBe('none');
+  });
+
+  it('POST /api/auth/me/claude-auth/browser/login returns the CLI login URL', async () => {
+    const userId = 'claude-login-user';
+    const app = buildApp({ claudeBin, cursorBin, codexBin, dataDir: tmpDir, userId });
+    spawnMock.mockImplementation((cmd, args, opts) => {
+      expect(cmd).toBe(claudeBin);
+      expect(args).toEqual([]);
+      expect((opts as { stdio: unknown[] }).stdio).toEqual(['pipe', 'pipe', 'pipe']);
+      expect((opts as { env: Record<string, string> }).env.HOME).toBe(
+        join(tmpDir, 'per-user-creds', userId, 'home'),
+      );
+      const proc = fakeSpawnProc({
+        stdoutChunks: ['Open https://claude.ai/oauth/authorize?state=abc to continue'],
+        closeCode: 0,
+      });
+      expect(
+        (proc as unknown as { stdin: { write: ReturnType<typeof vi.fn> } }).stdin.write,
+      ).not.toHaveBeenCalled();
+      return proc;
+    });
+
+    const res = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.loginUrl).toBe('https://claude.ai/oauth/authorize?state=abc');
+    expect(spawnMock.mock.results[0]?.value.stdin.write).toHaveBeenCalledWith('/login\n');
+  });
+
+  it('does not report completion when Claude exits 0 without valid credentials', async () => {
+    const userId = 'claude-no-cache';
+    const app = buildApp({ claudeBin, cursorBin, codexBin, dataDir: tmpDir, userId });
+    spawnMock.mockImplementation(() =>
+      fakeSpawnProc({ stdoutChunks: ['Login cancelled'], closeCode: 0 }),
+    );
+
+    const res = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.completed).toBeUndefined();
+    expect(res.body.output).toBe('Login cancelled');
+  });
+
+  it('broadcasts Claude login failure when the CLI exits 0 without valid credentials', async () => {
+    const { app, broadcast } = buildAppWithDeps({
+      claudeBin,
+      cursorBin,
+      codexBin,
+      dataDir: tmpDir,
+      userId: 'claude-broadcast-no-cache',
+    });
+    spawnMock.mockImplementation(() =>
+      fakeSpawnProc({
+        stdoutChunks: ['Open https://claude.ai/oauth/authorize?state=abc to continue'],
+        closeCode: 0,
+      }),
+    );
+
+    const res = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+    expect(res.body.loginUrl).toContain('claude.ai/oauth/authorize');
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'per-user-claude-auth-update',
+        userId: 'claude-broadcast-no-cache',
+        status: 'failed',
+        loginId: res.body.loginId,
+      }),
+    );
   });
 
   // ── Cursor: status ─────────────────────────────────────────────────

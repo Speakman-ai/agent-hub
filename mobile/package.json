@@ -53,6 +53,7 @@
     "@babel/core": "^7.25.0",
     "@types/react": "~19.1.10",
     "@types/react-test-renderer": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
     "babel-preset-expo": "^54.0.10",
     "react-test-renderer": "^19.1.0",
     "typescript": "~5.9.2",

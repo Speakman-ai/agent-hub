@@ -2,7 +2,39 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, } from 'react-native';
 import { api } from '../../utils/api';
 import { colors } from '../../theme/colors';
+import MobileBrowserAuthCard from './MobileBrowserAuthCard';
+import { signInWithGithub } from '../../utils/oauthSignIn';
 import { CLI_KEY_PROVIDERS, providerKeyConfigured, providerStatusLabel, buildPutMyAuthBody, codexDeviceLoginLabel, githubStatusLabel, } from '../../utils/settingsCliKeys';
+
+const BROWSER_AUTH_PROVIDERS: Record<string, any> = {
+    claude: {
+        label: 'Claude Code',
+        description: 'Use your Claude account subscription instead of a pasted token.',
+        loginMode: 'url',
+        getStatus: api.getMyClaudeBrowserAuth,
+        startLogin: api.startMyClaudeBrowserLogin,
+        cancelLogin: api.cancelMyClaudeBrowserLogin,
+        logout: api.logoutMyClaudeBrowser,
+    },
+    cursor: {
+        label: 'Cursor Agent',
+        description: 'Use your Cursor account for sessions you own.',
+        loginMode: 'url',
+        getStatus: api.getMyCursorBrowserAuth,
+        startLogin: api.startMyCursorBrowserLogin,
+        cancelLogin: api.cancelMyCursorBrowserLogin,
+        logout: api.logoutMyCursorBrowser,
+    },
+    codex: {
+        label: 'Codex',
+        description: 'Sign in with your ChatGPT account using device authorization.',
+        loginMode: 'device',
+        getStatus: api.getMyCodexBrowserAuth,
+        startLogin: api.startMyCodexBrowserDeviceLogin,
+        cancelLogin: api.cancelMyCodexBrowserDeviceLogin,
+        logout: api.logoutMyCodexBrowser,
+    },
+};
 function ProviderCard({ provider }: any) {
     const [body, setBody] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -48,6 +80,7 @@ function ProviderCard({ provider }: any) {
     };
     const configured = providerKeyConfigured(provider.id, body);
     const codexStatus = provider.id === 'codex' ? codexDeviceLoginLabel(body) : null;
+    const browserAuth = BROWSER_AUTH_PROVIDERS[provider.id];
     return (<View style={styles.card}>
       <View style={styles.cardHeaderRow}>
         <View style={{ flex: 1 }}>
@@ -85,6 +118,15 @@ function ProviderCard({ provider }: any) {
                 <Text style={styles.dangerBtnText}>Remove</Text>
               </TouchableOpacity>)}
           </View>
+          {browserAuth && (<MobileBrowserAuthCard
+            label={browserAuth.label}
+            description={browserAuth.description}
+            loginMode={browserAuth.loginMode}
+            getStatus={browserAuth.getStatus}
+            startLogin={browserAuth.startLogin}
+            cancelLogin={browserAuth.cancelLogin}
+            logout={browserAuth.logout}
+          />)}
         </>)}
     </View>);
 }
@@ -109,6 +151,24 @@ function GithubCard() {
     useEffect(() => {
         load();
     }, [load]);
+    const handleConnect = async () => {
+        setBusy(true);
+        try {
+            const outcome = await signInWithGithub();
+            if (outcome.ok) {
+                await load();
+            }
+            else if (!outcome.cancelled) {
+                Alert.alert('GitHub sign-in failed', 'The sign-in did not complete. Please try again.');
+            }
+        }
+        catch (err: any) {
+            Alert.alert('GitHub sign-in failed', err?.message || 'Could not start GitHub sign-in.');
+        }
+        finally {
+            setBusy(false);
+        }
+    };
     const handleDisconnect = () => {
         Alert.alert('Disconnect GitHub', 'Sessions you own will no longer push or open PRs with your GitHub identity.', [
             { text: 'Cancel', style: 'cancel' },
@@ -152,10 +212,9 @@ function GithubCard() {
           </TouchableOpacity>
         </View>) : (<>
           <Text style={styles.statusDetail}>{githubStatusLabel(status)}</Text>
-          {!connected && (<Text style={styles.hintText}>
-              Connect from the web app — the browser-based GitHub sign-in flow isn't available on
-              mobile yet.
-            </Text>)}
+          {!connected && (<TouchableOpacity style={styles.primaryBtn} onPress={() => void handleConnect()} disabled={busy}>
+              <Text style={styles.primaryBtnText}>{busy ? 'Connecting…' : 'Connect GitHub'}</Text>
+            </TouchableOpacity>)}
           {connected && (<View style={styles.actionRow}>
               <TouchableOpacity style={[styles.dangerBtn, busy && { opacity: 0.4 }]} onPress={handleDisconnect} disabled={busy}>
                 <Text style={styles.dangerBtnText}>{busy ? 'Disconnecting…' : 'Disconnect'}</Text>

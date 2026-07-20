@@ -84,6 +84,25 @@ describe('api threads helpers — URL + method parity with web client', () => {
         expect(init?.method).toBeUndefined();
     });
 });
+
+describe('mobile CLI browser auth helpers', () => {
+    it('starts Claude browser login with an authenticated JSON POST', async () => {
+        await api.startMyClaudeBrowserLogin();
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/me/claude-auth/browser/login');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({});
+    });
+    it('uses per-user Cursor and Codex browser routes', async () => {
+        await api.getMyCursorBrowserAuth();
+        expect(lastCall()[0]).toBe('https://example.test/api/auth/me/cursor-auth/browser');
+        mockFetch.mockClear();
+        await api.startMyCodexBrowserDeviceLogin();
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/me/codex-auth/browser/device-login');
+        expect(init.method).toBe('POST');
+    });
+});
 describe('api session helpers — URL + method + body parity with web client', () => {
     it('createSession(agentId, name) omits use_worktree (worktree-only mode)', async () => {
         await api.createSession('agent-1', 'My session');
