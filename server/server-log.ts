@@ -15,6 +15,7 @@ const MAX_BUFFER = 2000;
 const buffer: LogEntry[] = [];
 
 let broadcast: BroadcastFn | null = null;
+let forwarder: ((entry: LogEntry) => void) | null = null;
 let installed = false;
 
 const origLog = console.log.bind(console);
@@ -37,6 +38,15 @@ function pushEntry(level: LogEntry['level'], args: unknown[]): void {
   }
   if (broadcast) {
     broadcast({ type: 'server-log', entry });
+  }
+  if (forwarder) {
+    // The forwarder must be non-throwing; guard anyway so a shipper bug can
+    // never break console output or re-enter this path.
+    try {
+      forwarder(entry);
+    } catch {
+      /* swallow — never let log-shipping crash the logger */
+    }
   }
 }
 
@@ -61,6 +71,16 @@ export function installLogCapture(): void {
 /** Wire up the WebSocket broadcast so new entries are pushed to clients. */
 export function setLogBroadcast(fn: BroadcastFn): void {
   broadcast = fn;
+}
+
+/**
+ * Register a forwarder invoked for every captured log entry (e.g. to ship the
+ * Hub's own logs to Agent Hub's log-ingest endpoint). Pass `null` to detach.
+ * The forwarder MUST NOT throw and MUST NOT emit via `console.*` (that would
+ * re-enter this capture path); `pushEntry` guards against throws regardless.
+ */
+export function setLogForwarder(fn: ((entry: LogEntry) => void) | null): void {
+  forwarder = fn;
 }
 
 /** Return a snapshot of the current buffer (for REST endpoint). */

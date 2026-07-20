@@ -54,6 +54,19 @@ ci_ssm_deploy_instance_id           = "<PROD_HUB_INSTANCE_ID>" # agenthub prod H
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
 
+# ── Self log-shipping (server/log-shipper.ts) ────────────────────────────────
+# Ship the Hub's own console output to Agent Hub's JSON-batch log-ingest. Mint
+# the token from a Hub log source (POST /api/projects/<slug>/log-sources → the
+# 201 `token` is the plaintext `ahlog_…`, shown once). SENSITIVE — keep it in
+# this gitignored prod.tfvars (delivered via the PROD_TFVARS secret), never in
+# the tracked tree. Empty/unset disables shipping. Endpoint/service/environment
+# default to the server's built-ins (own loopback ingest route / "agent-hub" /
+# "production") when omitted.
+agent_hub_ahlog_token = "<AHLOG_INGEST_TOKEN>"
+# agent_hub_ahlog_endpoint    = "https://<your-hub-domain>/api/logs/ingest"
+# agent_hub_ahlog_service     = "agent-hub"
+# agent_hub_ahlog_environment = "production"
+
 # Hub no longer runs CI (the fleet does) → right-sized vs the test box.
 instance_type    = "m7i.2xlarge" # 8 vCPU / 32 GB
 root_volume_size = 150

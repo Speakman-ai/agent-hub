@@ -82,3 +82,36 @@ variable "agent_hub_default_password" {
   default     = "auto"
   sensitive   = true
 }
+
+# ── Self log-shipping (server/log-shipper.ts) ──────────────────────────────────
+# When agent_hub_ahlog_token is set, the Hub forwards its own captured console
+# output to Agent Hub's JSON-batch log-ingest endpoint. Empty/null disables it
+# (the shipper is a no-op without a token). Mint the token from a Hub log source
+# (POST /api/projects/<slug>/log-sources — the 201 `token` is the plaintext
+# `ahlog_…`, shown once) and store it in the gitignored prod.tfvars delivered via
+# the PROD_TFVARS secret — never commit the token.
+
+variable "agent_hub_ahlog_token" {
+  description = "AHLOG_TOKEN for server/log-shipper.ts. The plaintext `ahlog_` ingest token minted from a Hub log source. Empty/null disables self log-shipping. Sensitive — supply via prod.tfvars (PROD_TFVARS secret), never commit it."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "agent_hub_ahlog_endpoint" {
+  description = "Optional AHLOG_ENDPOINT override (JSON-batch ingest URL, e.g. https://<your-hub-domain>/api/logs/ingest). Empty ships to the server's own loopback ingest route on AGENT_HUB_PORT."
+  type        = string
+  default     = ""
+}
+
+variable "agent_hub_ahlog_service" {
+  description = "Optional AHLOG_SERVICE override (service.name attribute on shipped logs). Empty uses the server default ('agent-hub')."
+  type        = string
+  default     = ""
+}
+
+variable "agent_hub_ahlog_environment" {
+  description = "Optional AHLOG_ENVIRONMENT override (deployment.environment attribute on shipped logs). Empty uses the server default ('production')."
+  type        = string
+  default     = ""
+}

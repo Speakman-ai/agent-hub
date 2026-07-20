@@ -1,5 +1,6 @@
 import { installLogCapture, setLogBroadcast } from './server-log.js';
 installLogCapture(); // Must be first — captures all subsequent console output
+import { initLogShipperFromEnv } from './log-shipper.js';
 
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
@@ -1519,6 +1520,10 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
+
+// Ship the Hub's own console output to Agent Hub's log-ingest endpoint when an
+// AHLOG_TOKEN is configured. No-op otherwise, so dev/test stay offline.
+initLogShipperFromEnv();
 
 const terminalWebSocket = attachTerminalWebSocket(server, {
   ptyHost,

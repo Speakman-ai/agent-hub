@@ -67,6 +67,36 @@ locals {
   default_owner_password_trim = trimspace(coalesce(var.agent_hub_default_password, ""))
   emit_default_owner_env      = length(local.default_owner_password_trim) > 0
 
+  # Self log-shipping (server/log-shipper.ts). AHLOG_TOKEN gates the whole group
+  # — the shipper no-ops without it, so the optional endpoint/service/environment
+  # overrides are only meaningful alongside a token. `ahlog_` tokens are
+  # URL-safe ([A-Za-z0-9_-]) with no quotes/newlines, but we still newline-strip
+  # for the raw docker `--env-file` path and jsonencode for the bash-sourced PM2
+  # path, consistent with the other secrets here.
+  # Null-safe trims: `coalesce(x, "")` errors when x is empty/null (all-empty arg
+  # list), so use the same ternary guard as agent_hub_allowed_origins_safe above.
+  agent_hub_ahlog_token_trim       = trimspace(var.agent_hub_ahlog_token == null ? "" : var.agent_hub_ahlog_token)
+  agent_hub_ahlog_endpoint_trim    = trimspace(var.agent_hub_ahlog_endpoint == null ? "" : var.agent_hub_ahlog_endpoint)
+  agent_hub_ahlog_service_trim     = trimspace(var.agent_hub_ahlog_service == null ? "" : var.agent_hub_ahlog_service)
+  agent_hub_ahlog_environment_trim = trimspace(var.agent_hub_ahlog_environment == null ? "" : var.agent_hub_ahlog_environment)
+  emit_ahlog_env                   = length(local.agent_hub_ahlog_token_trim) > 0
+
+  # KEY=VALUE lines for the docker `--env-file` path (raw values, newline-stripped).
+  agent_hub_ahlog_env_docker = local.emit_ahlog_env ? concat(
+    ["AHLOG_TOKEN=${replace(local.agent_hub_ahlog_token_trim, "\n", "")}"],
+    local.agent_hub_ahlog_endpoint_trim != "" ? ["AHLOG_ENDPOINT=${replace(local.agent_hub_ahlog_endpoint_trim, "\n", "")}"] : [],
+    local.agent_hub_ahlog_service_trim != "" ? ["AHLOG_SERVICE=${replace(local.agent_hub_ahlog_service_trim, "\n", "")}"] : [],
+    local.agent_hub_ahlog_environment_trim != "" ? ["AHLOG_ENVIRONMENT=${replace(local.agent_hub_ahlog_environment_trim, "\n", "")}"] : [],
+  ) : []
+
+  # Same pairs for the bash-sourced PM2 env file (jsonencode'd so quotes are stripped).
+  agent_hub_ahlog_env_pm2 = local.emit_ahlog_env ? concat(
+    [join("", ["AHLOG_TOKEN=", jsonencode(local.agent_hub_ahlog_token_trim)])],
+    local.agent_hub_ahlog_endpoint_trim != "" ? [join("", ["AHLOG_ENDPOINT=", jsonencode(local.agent_hub_ahlog_endpoint_trim)])] : [],
+    local.agent_hub_ahlog_service_trim != "" ? [join("", ["AHLOG_SERVICE=", jsonencode(local.agent_hub_ahlog_service_trim)])] : [],
+    local.agent_hub_ahlog_environment_trim != "" ? [join("", ["AHLOG_ENVIRONMENT=", jsonencode(local.agent_hub_ahlog_environment_trim)])] : [],
+  ) : []
+
   # Host PM2: small env file
   agent_hub_bootstrap_env = join("\n", concat(
     [
@@ -88,6 +118,8 @@ locals {
       join("", ["AGENT_HUB_ARTIFACTS_BUCKET=", jsonencode(var.artifacts_bucket_name)]),
       join("", ["AGENT_HUB_ARTIFACTS_BUCKET_REGION=", jsonencode(var.aws_region)]),
     ] : [],
+    # Self log-shipping (server/log-shipper.ts). Empty unless agent_hub_ahlog_token is set.
+    local.agent_hub_ahlog_env_pm2,
   ))
 
   # Docker: pass-through to container (server/Dockerfile + --env-file).
@@ -152,6 +184,8 @@ locals {
     # Remote Finalize fleet wiring (backend=remote, worktree bucket, autoscaler
     # cluster/service + bounds, fleet token) — empty unless enable_finalize_runners.
     local.finalize_hub_fleet_env,
+    # Self log-shipping (server/log-shipper.ts). Empty unless agent_hub_ahlog_token is set.
+    local.agent_hub_ahlog_env_docker,
   ))
 
   agent_hub_image_uri_trim = trimspace(var.agent_hub_image_uri)
