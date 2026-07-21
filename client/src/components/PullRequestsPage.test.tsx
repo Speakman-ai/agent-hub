@@ -916,12 +916,12 @@ describe('<PullRequestsPage /> — PR description markdown', () => {
   });
 });
 
-describe('<PullRequestsPage /> — commits section', () => {
+describe('<PullRequestsPage /> — commits in activity log', () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it('renders commits collapsed by default at the end of the detail page', async () => {
+  it('renders commits inline in the Activity timeline', async () => {
     (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
     (api.getProjectPullDetail as any).mockResolvedValue({
       ...detailResponse,
@@ -933,13 +933,13 @@ describe('<PullRequestsPage /> — commits section', () => {
     render(<PullRequestsPage projectId="proj-1" project={project} />);
     fireEvent.click(await screen.findByText('Fix the flaky test' as any));
 
-    const toggle = await screen.findByTestId('pr-commits-toggle');
-    expect(toggle!).toHaveTextContent('Commits (2)');
-    // Collapsed: no commit rows visible yet.
-    expect(screen.queryByText('feat: one')).toBeNull();
-
-    fireEvent.click(toggle as any);
-    expect(screen.getByText('feat: one')).toBeInTheDocument();
+    // Commits show directly in the activity feed (no collapse toggle).
+    expect(await screen.findByText('feat: one')).toBeInTheDocument();
     expect(screen.getByText('fix: two')).toBeInTheDocument();
+    expect(screen.getAllByTestId('pr-activity-commit')).toHaveLength(2);
+    // The old collapsed commits section is gone.
+    expect(screen.queryByTestId('pr-commits-toggle')).toBeNull();
+    // Short SHA is rendered.
+    expect(screen.getByText('abc1234d')).toBeInTheDocument();
   });
 });

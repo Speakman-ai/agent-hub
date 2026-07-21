@@ -608,13 +608,13 @@ function prActivityAtMs(iso: any) {
 
 /**
  * Build a single chronological activity feed for the PR detail view by merging
- * lifecycle milestones, reviews, issue comments, and check runs (using
- * completed_at, else started_at). Oldest events first — mirrors the GitHub PR
- * conversation ordering users expect from `/pulls/:id` data already returned by
+ * lifecycle milestones, commits, reviews, and issue comments. Oldest events
+ * first — mirrors the GitHub PR conversation ordering users expect from
+ * `/pulls/:id` data already returned by
  * `GET /api/projects/:projectId/pulls/:number`.
  *
  * @param {Record<string, unknown>} pr
- * @param {{ reviews?: unknown[]; comments?: unknown[]; checks?: unknown[] }|null|undefined} detail
+ * @param {{ reviews?: unknown[]; comments?: unknown[]; commits?: unknown[]; checks?: unknown[] }|null|undefined} detail
  * @returns {Array<Record<string, unknown>>}
  */
 export function buildPrActivityTimeline(pr: any, detail: any) {
@@ -644,6 +644,21 @@ export function buildPrActivityTimeline(pr: any, detail: any) {
       at: raw.submitted_at,
       atMs: ms,
       review: raw,
+    });
+  }
+
+  const commits = Array.isArray(detail?.commits) ? detail.commits : [];
+  for (const c of commits) {
+    const raw = /** @type {Record<string, unknown>} */ c;
+    const ms = prActivityAtMs(/** @type {string|undefined} */ raw.date);
+    if (ms === null) continue;
+    const sha = raw.sha != null ? String(raw.sha) : `c-${ms}`;
+    items.push({
+      id: `commit-${sha}`,
+      kind: 'commit',
+      at: raw.date,
+      atMs: ms,
+      commit: raw,
     });
   }
 
@@ -687,7 +702,7 @@ export function buildPrActivityTimeline(pr: any, detail: any) {
     }
   }
 
-  const kindOrder = { opened: 0, comment: 1, review: 2, merged: 3, closed: 4 } as Record<
+  const kindOrder = { opened: 0, commit: 1, comment: 2, review: 3, merged: 4, closed: 5 } as Record<
     string,
     any
   >;

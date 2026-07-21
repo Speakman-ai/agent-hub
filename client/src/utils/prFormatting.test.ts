@@ -709,6 +709,47 @@ describe('buildPrActivityTimeline', () => {
     expect(out.map((x: any) => x.kind)).toEqual(['opened', 'comment', 'review', 'merged']);
   });
 
+  it('interleaves commits chronologically and sorts them before same-ms comments/reviews', () => {
+    const t0 = '2026-05-01T10:00:00Z';
+    const t1 = '2026-05-01T11:00:00Z';
+    const t2 = '2026-05-01T12:00:00Z';
+    const pr = { created_at: t0, user: 'bob', merged_at: t2 };
+    const detail = {
+      commits: [
+        { sha: 'aaa111', subject: 'feat: one', author: 'ryan', date: t1 },
+        { sha: 'bbb222', subject: 'fix: two', author: 'ryan', date: t0 },
+      ],
+      comments: [{ id: 20, user: 'c1', body: 'hi', created_at: t1 }],
+      reviews: [{ id: 10, user: 'r1', state: 'APPROVED', submitted_at: t2 }],
+    };
+    const out = buildPrActivityTimeline(pr, detail);
+    // t0: opened(bob) then commit bbb222. t1: commit aaa111 then comment. t2: review then merged.
+    expect(out.map((x: any) => x.kind)).toEqual([
+      'opened',
+      'commit',
+      'commit',
+      'comment',
+      'review',
+      'merged',
+    ]);
+    const commitItem = out.find((x: any) => x.kind === 'commit' && x.commit.sha === 'aaa111');
+    expect(commitItem.id).toBe('commit-aaa111');
+    expect(commitItem.commit.subject).toBe('feat: one');
+  });
+
+  it('skips commits with an unparseable or missing date', () => {
+    const pr = { created_at: '2026-05-01T10:00:00Z', user: 'bob' };
+    const detail = {
+      commits: [
+        { sha: 'aaa111', subject: 'no date', author: 'ryan' },
+        { sha: 'bbb222', subject: 'bad date', author: 'ryan', date: 'not-a-date' },
+      ],
+    };
+    const out = buildPrActivityTimeline(pr, detail);
+    expect(out.some((x: any) => x.kind === 'commit')).toBe(false);
+    expect(out.map((x: any) => x.kind)).toEqual(['opened']);
+  });
+
   it('excludes CI check runs from the activity timeline (surfaced in CI Checks instead)', () => {
     const t0 = '2026-05-01T10:00:00Z';
     const pr = { created_at: t0, user: 'bob' };

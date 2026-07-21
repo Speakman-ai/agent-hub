@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   GitPullRequest,
   GitMerge,
+  GitCommit,
   CheckCircle2,
   XCircle,
   Clock,
@@ -16,7 +17,7 @@ import {
   Zap,
   ZapOff,
 } from 'lucide-react';
-import { Pencil, Check, X, Sparkles, SquareKanban, ChevronDown, ChevronRight } from 'lucide-react';
+import { Pencil, Check, X, Sparkles, SquareKanban } from 'lucide-react';
 import { api } from '../utils/api';
 import FileDiffView from './FileDiffView';
 import { MarkdownContent } from './MarkdownRenderer';
@@ -317,6 +318,8 @@ function ActivityKindIcon({ kind }: any) {
       return <GitPullRequest size={16} className={`${common} text-blue-400`} aria-hidden />;
     case 'merged':
       return <GitMerge size={16} className={`${common} text-purple-400`} aria-hidden />;
+    case 'commit':
+      return <GitCommit size={16} className={`${common} text-gray-400`} aria-hidden />;
     case 'closed':
       return <XCircle size={16} className={`${common} text-red-400`} aria-hidden />;
     case 'review':
@@ -362,6 +365,21 @@ function ActivityTimelineRow({ item }: any) {
         <span className="font-medium text-white">Closed</span> without merging
         {time ? <span className="text-gray-500"> · {time}</span> : null}
       </p>
+    );
+  }
+  if (k === 'commit' && item.commit) {
+    const c = item.commit;
+    return (
+      <div className="flex items-center gap-3 min-w-0" data-testid="pr-activity-commit">
+        <code className="text-[11px] text-gray-500 font-mono flex-shrink-0">
+          {String(c.sha || '').slice(0, 8)}
+        </code>
+        <span className="text-sm text-gray-200 truncate min-w-0 flex-1" title={c.subject}>
+          {c.subject}
+        </span>
+        {c.author ? <span className="text-xs text-gray-500 flex-shrink-0">{c.author}</span> : null}
+        {time ? <span className="text-xs text-gray-600 flex-shrink-0">{time}</span> : null}
+      </div>
     );
   }
   if (k === 'review' && item.review) {
@@ -1070,12 +1088,7 @@ function PrDetail({
           </div>
         )}
 
-        {/* Commits — deliberately LAST and collapsed by default: long
-            session branches accumulate dozens of commits that would
-            otherwise dominate the page. */}
-        {Array.isArray(detail.commits) && detail.commits.length > 0 && (
-          <PrCommitsSection commits={detail.commits} />
-        )}
+        {/* Commits now render inline in the Activity timeline above. */}
 
         {/* Files changed — last on the page: diffs can be very long and each
             file section starts collapsed so review/activity/checks stay in
@@ -1117,40 +1130,6 @@ function PrDetail({
 
         <div className="h-10" />
       </div>
-    </div>
-  );
-}
-
-/** Collapsed-by-default commit list for the PR detail tail. */
-function PrCommitsSection({ commits }: any) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="mt-6" data-testid="pr-commits-section">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        data-testid="pr-commits-toggle"
-        className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200 transition-colors"
-      >
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        Commits ({commits.length})
-      </button>
-      {open && (
-        <div className="mt-2 bg-gray-900/40 border border-gray-800 rounded-lg divide-y divide-gray-800 overflow-hidden">
-          {commits.map((c: any) => (
-            <div key={c.sha} className="flex items-center gap-3 px-3 py-2 text-sm">
-              <code className="text-[11px] text-gray-500 font-mono flex-shrink-0">
-                {String(c.sha || '').slice(0, 8)}
-              </code>
-              <span className="text-gray-200 truncate flex-1" title={c.subject}>
-                {c.subject}
-              </span>
-              <span className="text-xs text-gray-500 flex-shrink-0">{c.author}</span>
-              <span className="text-xs text-gray-600 flex-shrink-0">{relativePrTime(c.date)}</span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
