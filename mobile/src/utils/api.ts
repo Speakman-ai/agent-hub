@@ -1024,6 +1024,15 @@ export const api = {
     }),
     deleteEpic: (projectId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'DELETE' }),
     getEpicPulls: (projectId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}/pulls`),
+    // Epic-level start — sweeps the epic's phases left-to-right honoring each
+    // phase's auto-dispatch arming. Returns `{ outcome, phaseId?, phaseName? }`.
+    runEpic: (projectId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}/run`, { method: 'POST' }),
+    // Scheduled epic start (node-cron + IANA timezone).
+    setEpicStartSchedule: (projectId: any, epicId: any, data: { cron: string; timezone?: string | null; enabled?: boolean }) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}/start-schedule`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+    }),
+    clearEpicStartSchedule: (projectId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}/start-schedule`, { method: 'DELETE' }),
     scopeEpic: (projectId: any, epicId: any, data: { agentId?: string } = {}) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}/scope`, {
         method: 'POST',
         body: JSON.stringify(data),

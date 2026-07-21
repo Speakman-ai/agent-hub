@@ -2013,6 +2013,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // Epic-level start — sweep the epic's phases left-to-right, honoring each
+  // phase's auto-dispatch arming (halts at the first disabled phase). Returns
+  // `{ outcome, phaseId?, phaseName? }`.
+  runEpic: (projectId: any, epicId: any) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}/run`, { method: 'POST' }),
+  // Set / update the epic's scheduled start (node-cron + IANA timezone).
+  setEpicStartSchedule: (
+    projectId: any,
+    epicId: any,
+    data: { cron: string; timezone?: string | null; enabled?: boolean },
+  ) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}/start-schedule`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  clearEpicStartSchedule: (projectId: any, epicId: any) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}/start-schedule`, {
+      method: 'DELETE',
+    }),
 
   // Card templates
   getCardTemplates: (projectId: any) => fetchJSON(`/projects/${projectId}/board/card-templates`),

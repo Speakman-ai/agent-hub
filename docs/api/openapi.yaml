@@ -1986,6 +1986,21 @@ components:
         pr_base_branch:
           type: string
           nullable: true
+        scheduled_start_cron:
+          type: string
+          nullable: true
+          description: node-cron expression for the optional scheduled epic start (interpreted in scheduled_start_timezone). When it fires, the epic's phases start left-to-right honoring each phase's auto-dispatch arming.
+        scheduled_start_timezone:
+          type: string
+          nullable: true
+          description: IANA timezone the scheduled-start cron is interpreted in. Null = server default.
+        scheduled_start_enabled:
+          type: integer
+          description: Operator on/off switch for the scheduled start (1 = enabled). A disabled schedule is retained.
+        scheduled_start_enabled_by:
+          type: string
+          nullable: true
+          description: User id the scheduled sweep spawns under (credential owner).
         position:
           type: integer
         created_at:
@@ -17948,6 +17963,155 @@ paths:
                 $ref: "#/components/schemas/BoardErrorResponse"
         "409":
           description: Phase dependency graph has a cycle (auto sort only).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/epics/{epicId}/run:
+    post:
+      tags:
+        - Board
+      summary: Start an epic's phases left-to-right (honoring per-phase auto-dispatch)
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      responses:
+        "200":
+          description: Sweep outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outcome:
+                    type: string
+                    enum:
+                      - started
+                      - already_running
+                      - stopped_disabled
+                      - all_complete
+                      - no_phases
+                    description: "`started`: the leftmost phase with work was armed and kicked off (the completion cascade advances rightward from there). `already_running`: that phase was already running. `stopped_disabled`: the leftmost phase with work has auto-dispatch off, so the sweep halted there without starting it. `all_complete`: every phase is Done. `no_phases`: the epic has no phases."
+                  phaseId:
+                    type: string
+                  phaseName:
+                    type: string
+                required:
+                  - outcome
+                description: Outcome of an epic-level start sweep.
+        "400":
+          description: Epic could not be started (e.g. no resolvable owner).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project or epic not found on this board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/epics/{epicId}/start-schedule:
+    put:
+      tags:
+        - Board
+      summary: Set or update the epic's scheduled start (cron + timezone)
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cron:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: node-cron expression for when the epic's phases start (interpreted in `timezone`). Validated server-side.
+                  example: 0 9 * * 1
+                timezone:
+                  type: string
+                  nullable: true
+                  description: IANA timezone the cron is interpreted in (e.g. "America/New_York"). Null / omitted = server scheduler default (local server time).
+                  example: America/New_York
+                enabled:
+                  type: boolean
+                  description: Operator on/off switch. Defaults to true. A disabled schedule is retained (a pause, not a delete) and never fires.
+              required:
+                - cron
+      responses:
+        "200":
+          description: The epic with its updated schedule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpic"
+        "400":
+          description: Validation failed (invalid cron / timezone, or no resolvable owner).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Epic not found on this project board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    delete:
+      tags:
+        - Board
+      summary: Clear the epic's scheduled start
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      responses:
+        "200":
+          description: The epic with its schedule cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpic"
+        "404":
+          description: Epic not found on this project board.
           content:
             application/json:
               schema:

@@ -2710,6 +2710,37 @@ function initDb(dataDir: string): void {
     );
   }
 
+  // Scheduled epic start (autonomous phase sweep at a determined local time).
+  // A single optional schedule per epic — a node-cron expression interpreted in
+  // `scheduled_start_timezone` (IANA, null = server default), mirroring the
+  // deploy scheduler / crons / heartbeats pattern. When it fires, the epic's
+  // phases start left-to-right honoring each phase's auto-dispatch arming.
+  // `scheduled_start_enabled_by` is the identity the scheduled sweep spawns
+  // under (credential owner). `scheduled_start_enabled` is the operator on/off
+  // switch (a disabled schedule is retained, a pause not a delete).
+  try {
+    db.prepare('SELECT scheduled_start_cron FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN scheduled_start_cron TEXT DEFAULT NULL');
+  }
+  try {
+    db.prepare('SELECT scheduled_start_timezone FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN scheduled_start_timezone TEXT DEFAULT NULL');
+  }
+  try {
+    db.prepare('SELECT scheduled_start_enabled FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec(
+      'ALTER TABLE kanban_epics ADD COLUMN scheduled_start_enabled INTEGER NOT NULL DEFAULT 0',
+    );
+  }
+  try {
+    db.prepare('SELECT scheduled_start_enabled_by FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN scheduled_start_enabled_by TEXT DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT assigned_user_id FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -5344,6 +5375,17 @@ function initDb(dataDir: string): void {
     ),
     setKanbanEpicAssignedUser: db.prepare(
       `UPDATE kanban_epics SET assigned_user_id = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    // Scheduled epic-start setter — (cron, timezone, enabled, enabled_by). Kept
+    // standalone from updateKanbanEpic so the many existing epic-update call
+    // sites don't have to thread the scheduling fields.
+    setKanbanEpicStartSchedule: db.prepare(
+      `UPDATE kanban_epics SET scheduled_start_cron = ?, scheduled_start_timezone = ?, scheduled_start_enabled = ?, scheduled_start_enabled_by = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    // Every epic on a board with an ENABLED scheduled start. The boot-time
+    // ticker registration reads this per board (projectId resolved by caller).
+    getStartScheduledEpicsByBoard: db.prepare(
+      `SELECT * FROM kanban_epics WHERE board_id = ? AND scheduled_start_enabled = 1 AND scheduled_start_cron IS NOT NULL`,
     ),
     getKanbanCardTemplates: db.prepare(
       'SELECT * FROM kanban_card_templates WHERE board_id = ? ORDER BY name ASC, created_at ASC',

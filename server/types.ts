@@ -1268,6 +1268,20 @@ export interface KanbanEpicRow {
    * is on, else `push`).
    */
   autonomous_send_it?: number;
+  /**
+   * Optional scheduled epic start. `scheduled_start_cron` is a node-cron
+   * expression interpreted in `scheduled_start_timezone` (IANA, null = server
+   * default) — mirrors the deploy scheduler / crons / heartbeats pattern. When
+   * it fires, the epic's phases start left-to-right honoring each phase's
+   * auto-dispatch arming. `scheduled_start_enabled` is the operator on/off
+   * switch (a disabled schedule is retained, a pause not a delete).
+   * `scheduled_start_enabled_by` is the identity the scheduled sweep spawns
+   * under (credential owner).
+   */
+  scheduled_start_cron?: string | null;
+  scheduled_start_timezone?: string | null;
+  scheduled_start_enabled?: number;
+  scheduled_start_enabled_by?: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -2278,6 +2292,8 @@ export interface Stmts {
   setEpicAutonomousEnabledBy: Stmt;
   setEpicAutonomousSendIt: Stmt;
   setKanbanEpicAssignedUser: Stmt;
+  setKanbanEpicStartSchedule: Stmt;
+  getStartScheduledEpicsByBoard: Stmt;
   getKanbanCardTemplates: Stmt;
   getKanbanCardTemplate: Stmt;
   createKanbanCardTemplate: Stmt;
