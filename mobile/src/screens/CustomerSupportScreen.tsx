@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, releaseStateLabel, mergeTicketDetail, } from '../utils/supportTickets';
+import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, performTicketLink, releaseStateLabel, mergeTicketDetail, } from '../utils/supportTickets';
 import { SidebarContext } from '../context/SidebarContext';
 const SEVERITY_COLOR: Record<string, any> = {
     critical: colors.red500,
@@ -69,7 +69,7 @@ function notificationRecipientLabel(notification: any) {
 function notificationStatusLabel(notification: any) {
     return String(notification?.status || 'pending').replaceAll('_', ' ');
 }
-function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo, onReclassify }: any) {
+function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo, onReclassify, onConverted }: any) {
     const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
     const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
     const hasReplay = item.type === 'bug' && item.replay_ref;
@@ -88,6 +88,59 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
     const [convertComment, setConvertComment] = useState('');
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<any>(null);
+    // Link-to-existing-card state (the sibling of convert): the picker is lazy —
+    // cards load the first time the operator opens it.
+    const [linkOpen, setLinkOpen] = useState(false);
+    const [linkCards, setLinkCards] = useState<any[]>([]);
+    const [loadingLinkCards, setLoadingLinkCards] = useState(false);
+    const [linkCardId, setLinkCardId] = useState('');
+    const [linkComment, setLinkComment] = useState('');
+    const [linking, setLinking] = useState(false);
+    const [linkError, setLinkError] = useState<any>(null);
+    const loadLinkCards = async () => {
+        setLoadingLinkCards(true);
+        setLinkError(null);
+        try {
+            const board: any = await api.getProjectBoard(projectId, { limit: 200 });
+            const flat: any[] = [];
+            for (const col of board?.columns || []) {
+                for (const c of col?.cards || []) {
+                    flat.push({ id: c.id, title: c.title, shortId: c.short_id, column: col.name });
+                }
+            }
+            setLinkCards(flat);
+        }
+        catch (err: any) {
+            setLinkError(err.message || 'Failed to load board cards');
+        }
+        finally {
+            setLoadingLinkCards(false);
+        }
+    };
+    const handleOpenLink = () => {
+        setLinkOpen(true);
+        if (!linkCards.length)
+            void loadLinkCards();
+    };
+    const handleLink = async () => {
+        if (linking || !linkCardId)
+            return;
+        // Local-state update on success + error handling lives in a pure,
+        // unit-tested helper (performTicketLink in utils/supportTickets) so the
+        // "flip the ticket to converted without waiting on the WebSocket echo"
+        // behavior can't silently regress.
+        await performTicketLink({
+            projectId,
+            ticketId: item.id,
+            cardId: linkCardId,
+            comment: linkComment.trim() || undefined,
+            item,
+            linkCard: api.linkSupportTicketToCard,
+            setLinking,
+            setLinkError,
+            onConverted,
+        });
+    };
     const handleConvert = async () => {
         if (converting || isConverted)
             return;
@@ -205,12 +258,63 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
         </View>
       ) : null}
 
+      {!isConverted && linkOpen ? (
+        <View style={styles.linkOptions} testID="link-card-picker">
+          <Text style={styles.linkLabel}>Link to an existing card</Text>
+          {loadingLinkCards ? (
+            <Text style={styles.linkHint}>Loading cards…</Text>
+          ) : (
+            <ScrollView style={styles.linkCardList} nestedScrollEnabled>
+              {linkCards.map((c: any) => {
+                const active = linkCardId === c.id;
+                return (
+                  <TouchableOpacity
+                    key={c.id}
+                    testID={`link-card-option-${c.id}`}
+                    onPress={() => setLinkCardId(c.id)}
+                    style={[styles.linkCardOption, active && styles.linkCardOptionActive]}
+                  >
+                    <Text style={[styles.linkCardOptionText, active && styles.linkCardOptionTextActive]} numberOfLines={1}>
+                      {c.shortId ? `#${c.shortId} · ` : ''}{c.title} ({c.column})
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+              {!linkCards.length ? <Text style={styles.linkHint}>No cards on this board.</Text> : null}
+            </ScrollView>
+          )}
+          <TextInput
+            style={styles.convertComment}
+            value={linkComment}
+            onChangeText={setLinkComment}
+            placeholder="Note for the card (optional)"
+            placeholderTextColor={colors.gray500}
+            editable={!linking}
+            multiline
+            maxLength={4000}
+            testID="link-card-comment"
+          />
+          {linkError ? <Text style={styles.convertErrorText}>{linkError}</Text> : null}
+        </View>
+      ) : null}
+
       <View style={styles.actionRow}>
         {isConverted ? (<Text style={styles.convertedText}>{'✓'} Converted to card</Text>) : (<TouchableOpacity onPress={handleConvert} disabled={converting} style={[styles.convertButton, converting && styles.convertButtonDisabled]}>
             <Text style={styles.convertButtonText}>
               {converting ? 'Converting…' : '▤ Convert to card'}
             </Text>
           </TouchableOpacity>)}
+        {!isConverted ? (
+          linkOpen ? (
+            <TouchableOpacity onPress={handleLink} disabled={linking || !linkCardId} style={[styles.convertButton, (linking || !linkCardId) && styles.convertButtonDisabled]} testID="link-card-submit">
+              <Text style={styles.convertButtonText}>{linking ? 'Linking…' : '🔗 Link'}</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity onPress={handleOpenLink} style={styles.convertButton} testID="link-card-open">
+              <Text style={styles.convertButtonText}>🔗 Link to card</Text>
+            </TouchableOpacity>
+          )
+        ) : null}
         <TouchableOpacity onPress={handleDelete} disabled={deleting} style={[styles.deleteButton, deleting && styles.convertButtonDisabled]}>
           <Text style={styles.deleteButtonText}>{deleting ? 'Deleting…' : 'Delete'}</Text>
         </TouchableOpacity>
@@ -474,7 +578,7 @@ export default function CustomerSupportScreen({ route }: any) {
         deepLinkAppliedRef.current = deepLinkedTicketId;
         handleTicketPress(match);
     }, [deepLinkedTicketId, tickets, handleTicketPress]);
-    const renderItem = ({ item }: any) => (<TicketCard item={item} projectId={projectId} onOpenReplay={openReplay} onDeleted={removeTicket} onPress={handleTicketPress} onSetStatus={setStatus} onWontDo={handleWontDo} onReclassify={setReclassifyTicket}/>);
+    const renderItem = ({ item }: any) => (<TicketCard item={item} projectId={projectId} onOpenReplay={openReplay} onDeleted={removeTicket} onPress={handleTicketPress} onSetStatus={setStatus} onWontDo={handleWontDo} onReclassify={setReclassifyTicket} onConverted={upsertOrDrop}/>);
     if (selectedTicket) {
         const title = selectedTicket.subject?.trim() || selectedTicket.body?.trim() || '(no subject)';
         const screenshotUrl = resolveUploadUrl(selectedTicket.screenshot_ref);
@@ -781,6 +885,25 @@ const styles = StyleSheet.create({
         marginTop: 10,
     },
     convertOptions: { marginTop: 10, gap: 8 },
+    linkOptions: { marginTop: 10, gap: 8 },
+    linkLabel: { fontSize: 13, color: colors.gray300, fontWeight: '600' },
+    linkHint: { fontSize: 12, color: colors.gray500, paddingVertical: 6 },
+    linkCardList: {
+        maxHeight: 160,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 6,
+        backgroundColor: colors.gray800,
+    },
+    linkCardOption: {
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.gray700,
+    },
+    linkCardOptionActive: { backgroundColor: colors.gray700 },
+    linkCardOptionText: { fontSize: 12, color: colors.gray300 },
+    linkCardOptionTextActive: { color: colors.white, fontWeight: '600' },
     autoMergeRow: {
         flexDirection: 'row',
         alignItems: 'center',

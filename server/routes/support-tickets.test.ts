@@ -1226,4 +1226,259 @@ describe('support-tickets routes', () => {
     expect(detail.body.released_to_prod_at).toBeNull();
     expect(detail.body.customer_notified_at).toBeNull();
   });
+
+  // Helper: create a plain kanban card in the board's "To Do" column and return
+  // its id (the target for link-card tests).
+  async function createBoardCard(projectId: string, title: string): Promise<string> {
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const todo = board.body.columns.find((c: { name: string }) => c.name === 'To Do');
+    expect(todo).toBeTruthy();
+    const card = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title, columnId: todo.id })
+      .expect(200);
+    return card.body.id as string;
+  }
+
+  it('links a ticket to an existing card, stamping the back-link + a comment', async () => {
+    const projectId = await newProjectId();
+    const cardId = await createBoardCard(projectId, `fix already shipped ${Date.now()}`);
+
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'this bug is already fixed', severity: 'high', type: 'bug' })
+      .expect(201);
+    const ticketId = created.body.id as string;
+
+    const link = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/link-card`)
+      .send({ cardId, comment: 'already resolved by this card' })
+      .expect(200);
+
+    // Response reports the existing card (linked, not newly created) and the
+    // retained, now-converted ticket.
+    expect(link.body.linked).toBe(true);
+    expect(link.body.ticketId).toBe(ticketId);
+    expect(link.body.card.id).toBe(cardId);
+    expect(link.body.card.support_ticket_id).toBe(ticketId);
+    expect(link.body.card.customer_report_id).toBe(ticketId);
+    expect(link.body.ticket.status).toBe('converted');
+    expect(link.body.ticket.converted_card_id).toBe(cardId);
+
+    // The ticket dropped out of the default open queue but is retained.
+    const openQueue = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(openQueue.body.find((t: { id: string }) => t.id === ticketId)).toBeUndefined();
+    const done = await request
+      .get(`/api/projects/${projectId}/support-tickets?status=converted`)
+      .expect(200);
+    expect(done.body.find((t: { id: string }) => t.id === ticketId)?.status).toBe('converted');
+
+    // The operator note + a back-link footer landed as a card comment.
+    const comments = await request
+      .get(`/api/projects/${projectId}/board/cards/${cardId}/comments`)
+      .expect(200);
+    const text = JSON.stringify(comments.body);
+    expect(text).toContain('already resolved by this card');
+    expect(text).toContain(`Linked from support ticket \`${ticketId}\``);
+  });
+
+  it('404s linking to a card that is not on this project board', async () => {
+    const projectId = await newProjectId();
+    const otherProjectId = await newProjectId();
+    const foreignCardId = await createBoardCard(otherProjectId, `foreign card ${Date.now()}`);
+
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'link me somewhere invalid', severity: 'low', type: 'bug' })
+      .expect(201);
+
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/link-card`)
+      .send({ cardId: foreignCardId })
+      .expect(404);
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/link-card`)
+      .send({ cardId: 'does-not-exist' })
+      .expect(404);
+
+    // The ticket stays open on a failed link.
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
+      .expect(200);
+    expect(detail.body.status).toBe('new');
+    expect(detail.body.converted_card_id).toBeNull();
+  });
+
+  it('409s when the ticket is already converted, or the card is linked to another ticket', async () => {
+    const projectId = await newProjectId();
+    const cardId = await createBoardCard(projectId, `shared card ${Date.now()}`);
+
+    const first = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'first ticket', severity: 'medium', type: 'bug' })
+      .expect(201);
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${first.body.id}/link-card`)
+      .send({ cardId })
+      .expect(200);
+
+    // Re-linking the same (now converted) ticket 409s.
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${first.body.id}/link-card`)
+      .send({ cardId })
+      .expect(409);
+
+    // A different ticket cannot hijack a card already linked to the first.
+    const second = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'second ticket', severity: 'medium', type: 'bug' })
+      .expect(201);
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${second.body.id}/link-card`)
+      .send({ cardId })
+      .expect(409);
+  });
+
+  it('rejects a missing cardId (400) and an over-long comment (400)', async () => {
+    const projectId = await newProjectId();
+    const cardId = await createBoardCard(projectId, `validation card ${Date.now()}`);
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'validate me', severity: 'low', type: 'bug' })
+      .expect(201);
+
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/link-card`)
+      .send({})
+      .expect(400);
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/link-card`)
+      .send({ cardId, comment: 'x'.repeat(4001) })
+      .expect(400);
+
+    // Neither rejected attempt converted the ticket.
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
+      .expect(200);
+    expect(detail.body.status).toBe('new');
+  });
+
+  it('is race-safe — two tickets linking the same card: exactly one wins, no clobber', async () => {
+    const projectId = await newProjectId();
+    const cardId = await createBoardCard(projectId, `contested card ${Date.now()}`);
+    const first = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'first racer', severity: 'medium', type: 'bug' })
+      .expect(201);
+    const second = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'second racer', severity: 'medium', type: 'bug' })
+      .expect(201);
+
+    // Fire two links at the same card for DIFFERENT tickets at once. The
+    // in-transaction card re-read must let exactly one claim the card's
+    // back-link and 409 the other, so the winner's provenance is never
+    // clobbered.
+    const [a, b] = await Promise.all([
+      request
+        .post(`/api/projects/${projectId}/support-tickets/${first.body.id}/link-card`)
+        .send({ cardId }),
+      request
+        .post(`/api/projects/${projectId}/support-tickets/${second.body.id}/link-card`)
+        .send({ cardId }),
+    ]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+
+    // The card's back-link points at whichever ticket won, and that ticket is
+    // the only one flagged converted; the loser stays open (not clobbered).
+    const winnerId = a.status === 200 ? first.body.id : second.body.id;
+    const loserId = a.status === 200 ? second.body.id : first.body.id;
+
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const contested = board.body.cards.find((c: { id: string }) => c.id === cardId);
+    expect(contested.support_ticket_id).toBe(winnerId);
+    expect(contested.customer_report_id).toBe(winnerId);
+
+    const winner = await request
+      .get(`/api/projects/${projectId}/support-tickets/${winnerId}`)
+      .expect(200);
+    expect(winner.body.status).toBe('converted');
+    expect(winner.body.converted_card_id).toBe(cardId);
+    const loser = await request
+      .get(`/api/projects/${projectId}/support-tickets/${loserId}`)
+      .expect(200);
+    expect(loser.body.status).toBe('new');
+    expect(loser.body.converted_card_id).toBeNull();
+  });
+
+  it('claims the card with a conditional write — a card taken after the pre-guard 409s, no clobber', async () => {
+    // The single-process concurrent test above can't interleave (nothing awaits
+    // between the pre-transaction card guard and the synchronous transaction),
+    // so it passes with OR without the guarded write. This test drives the
+    // multi-process race deterministically: the card is genuinely claimed by
+    // another ticket in the DB, but the pre-transaction read is stubbed to see
+    // it unlinked so control reaches the compare-and-swap claim. The CAS must
+    // match 0 rows (card already claimed) and 409 rather than clobbering the
+    // real back-link. Fails if the claim write is made unconditional or the
+    // `changes === 0` check is dropped.
+    const projectId = await newProjectId();
+    const cardId = await createBoardCard(projectId, `contended card ${Date.now()}`);
+    const otherTicket = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'the real winner', severity: 'medium', type: 'bug' })
+      .expect(201);
+    const mineTicket = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'the loser', severity: 'medium', type: 'bug' })
+      .expect(201);
+
+    // Genuinely claim the card in the DB for `otherTicket` first.
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${otherTicket.body.id}/link-card`)
+      .send({ cardId })
+      .expect(200);
+
+    // Stub ONLY the pre-transaction guard read so `mineTicket` gets past it and
+    // reaches the CAS; the CAS itself runs against the real (already-claimed)
+    // row and the follow-up disambiguation read returns the real row.
+    const stmts = getStmts();
+    const realGet = stmts.getKanbanCard.get.bind(stmts.getKanbanCard);
+    const claimedRow = realGet(cardId) as Record<string, unknown>;
+    let cardReads = 0;
+    const spy = vi
+      .spyOn(stmts.getKanbanCard, 'get')
+      .mockImplementation((...args: unknown[]): unknown => {
+        if (args[0] === cardId) {
+          cardReads += 1;
+          // 1st read = pre-transaction guard: pretend the card is still unlinked
+          // so control falls through to the guarded CAS. Every later read (the
+          // post-CAS disambiguation) sees the real, already-claimed row.
+          if (cardReads === 1) {
+            return { ...claimedRow, support_ticket_id: null, customer_report_id: null };
+          }
+        }
+        return realGet(...(args as [unknown]));
+      });
+
+    try {
+      await request
+        .post(`/api/projects/${projectId}/support-tickets/${mineTicket.body.id}/link-card`)
+        .send({ cardId })
+        .expect(409);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The real claim was respected: our ticket was not converted, and the card's
+    // back-link still points at the real winner (never clobbered).
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${mineTicket.body.id}`)
+      .expect(200);
+    expect(detail.body.status).toBe('new');
+    expect(detail.body.converted_card_id).toBeNull();
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const realCard = board.body.cards.find((c: { id: string }) => c.id === cardId);
+    expect(realCard.support_ticket_id).toBe(otherTicket.body.id);
+    expect(realCard.customer_report_id).toBe(otherTicket.body.id);
+  });
 });

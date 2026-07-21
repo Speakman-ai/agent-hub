@@ -15,6 +15,7 @@ import {
   Trash2,
   Mail,
   RefreshCw,
+  Link2,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { getServerBase } from '../utils/connection';
@@ -589,6 +590,136 @@ function ConvertControl({
   );
 }
 
+// Link-to-existing-card control: the sibling of ConvertControl. Instead of
+// creating a fresh card, it attaches the ticket to a card that already exists
+// (e.g. the card whose fix already addressed the reported bug). Collapsed until
+// the operator opens it, at which point it lazily loads the board's cards into
+// a picker. On success the ticket flips to `converted` server-side and leaves
+// the open queue, so we reuse the same `onConverted(ticketId)` drop handler.
+function LinkToCardControl({
+  projectId,
+  ticketId,
+  stretched = false,
+  size = 'sm',
+  onConverted,
+}: any) {
+  const [open, setOpen] = useState(false);
+  const [cards, setCards] = useState<any[]>([]);
+  const [loadingCards, setLoadingCards] = useState(false);
+  const [cardId, setCardId] = useState('');
+  const [comment, setComment] = useState('');
+  const [linking, setLinking] = useState(false);
+  const [error, setError] = useState<any>(null);
+  const pe = stretched ? 'pointer-events-auto relative' : '';
+  const btnPad = size === 'md' ? 'px-2.5 py-1.5' : 'px-2 py-1';
+
+  const loadCards = async () => {
+    setLoadingCards(true);
+    setError(null);
+    try {
+      // Pull a generous page per column so the picker covers the whole board.
+      const board: any = await api.getBoard(projectId, { limit: 200 });
+      const flat: any[] = [];
+      for (const col of board?.columns || []) {
+        for (const c of col?.cards || []) {
+          flat.push({ id: c.id, title: c.title, shortId: c.short_id, column: col.name });
+        }
+      }
+      setCards(flat);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load board cards');
+    } finally {
+      setLoadingCards(false);
+    }
+  };
+
+  const handleOpen = () => {
+    setOpen(true);
+    if (!cards.length) void loadCards();
+  };
+
+  const handleLink = async () => {
+    if (linking || !cardId) return;
+    setLinking(true);
+    setError(null);
+    try {
+      await api.linkSupportTicketToCard(projectId, ticketId, {
+        cardId,
+        comment: comment.trim() || undefined,
+      });
+    } catch (err: any) {
+      setError(err?.message || 'Failed to link');
+      setLinking(false);
+      return;
+    }
+    onConverted?.(ticketId);
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={handleOpen}
+        title="Link this ticket to an existing kanban card"
+        className={`${pe} inline-flex items-center gap-1.5 text-xs ${btnPad} rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 transition-colors`}
+      >
+        <Link2 size={13} />
+        Link to card
+      </button>
+    );
+  }
+
+  return (
+    <span className={`${pe} inline-flex flex-col gap-1.5 items-start min-w-[14rem]`}>
+      <select
+        value={cardId}
+        onChange={(e: any) => setCardId(e.target.value)}
+        disabled={linking || loadingCards}
+        aria-label="Existing card to link the ticket to"
+        data-testid="link-card-select"
+        className={`${pe} w-full text-xs bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300 focus:outline-none focus:border-gray-600 disabled:opacity-50`}
+      >
+        <option value="">{loadingCards ? 'Loading cards…' : 'Select a card…'}</option>
+        {cards.map((c: any) => (
+          <option key={c.id} value={c.id}>
+            {c.shortId ? `#${c.shortId} · ` : ''}
+            {c.title} ({c.column})
+          </option>
+        ))}
+      </select>
+      <textarea
+        value={comment}
+        onChange={(e: any) => setComment(e.target.value)}
+        disabled={linking}
+        rows={2}
+        maxLength={4000}
+        placeholder="Note for the card (optional)"
+        aria-label="Note recorded on the linked card"
+        data-testid="link-card-comment"
+        className={`${pe} w-full text-xs bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300 placeholder-gray-600 focus:outline-none focus:border-gray-600 disabled:opacity-50 resize-y`}
+      />
+      <span className="inline-flex items-center gap-2">
+        <button
+          onClick={handleLink}
+          disabled={linking || !cardId}
+          data-testid="link-card-submit"
+          className={`${pe} inline-flex items-center gap-1.5 text-xs ${btnPad} rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
+        >
+          <Link2 size={13} />
+          {linking ? 'Linking…' : 'Link'}
+        </button>
+        <button
+          onClick={() => setOpen(false)}
+          disabled={linking}
+          className={`${pe} text-xs ${btnPad} rounded border border-gray-800 text-gray-500 hover:text-gray-300 disabled:opacity-50`}
+        >
+          Cancel
+        </button>
+      </span>
+      {error ? <span className="text-[11px] text-red-400">{error}</span> : null}
+    </span>
+  );
+}
+
 function TicketScreenshot({ src, scrollRoot }: any) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(() => typeof IntersectionObserver === 'undefined');
@@ -763,14 +894,22 @@ function SupportTicketCard({
                   Converted to card
                 </span>
               ) : (
-                <ConvertControl
-                  projectId={projectId}
-                  ticketId={ticket.id}
-                  agents={agents}
-                  stretched
-                  onConverted={onConverted}
-                  onNotify={onNotify}
-                />
+                <>
+                  <ConvertControl
+                    projectId={projectId}
+                    ticketId={ticket.id}
+                    agents={agents}
+                    stretched
+                    onConverted={onConverted}
+                    onNotify={onNotify}
+                  />
+                  <LinkToCardControl
+                    projectId={projectId}
+                    ticketId={ticket.id}
+                    stretched
+                    onConverted={onConverted}
+                  />
+                </>
               )}
               <DeleteTicketButton
                 projectId={projectId}
@@ -1128,21 +1267,34 @@ function SupportTicketDetailModal({
                 Converted to card{ticket.converted_card_id ? ` · ${ticket.converted_card_id}` : ''}
               </span>
             ) : (
-              <ConvertControl
-                projectId={projectId}
-                ticketId={ticket.id}
-                agents={agents}
-                size="md"
-                onNotify={onNotify}
-                onConverted={(id: any) => {
-                  // Full success — drop the ticket from the list and close this
-                  // modal (it has nothing left to show). On a partial failure
-                  // (assign failed) ConvertControl does NOT call this, so the
-                  // modal stays open with the inline error.
-                  if (onConverted) onConverted(id);
-                  onClose?.();
-                }}
-              />
+              <>
+                <ConvertControl
+                  projectId={projectId}
+                  ticketId={ticket.id}
+                  agents={agents}
+                  size="md"
+                  onNotify={onNotify}
+                  onConverted={(id: any) => {
+                    // Full success — drop the ticket from the list and close this
+                    // modal (it has nothing left to show). On a partial failure
+                    // (assign failed) ConvertControl does NOT call this, so the
+                    // modal stays open with the inline error.
+                    if (onConverted) onConverted(id);
+                    onClose?.();
+                  }}
+                />
+                <LinkToCardControl
+                  projectId={projectId}
+                  ticketId={ticket.id}
+                  size="md"
+                  onConverted={(id: any) => {
+                    // Linking flips the ticket to converted server-side, so drop
+                    // it from the list and close the modal on success.
+                    if (onConverted) onConverted(id);
+                    onClose?.();
+                  }}
+                />
+              </>
             )}
             <div className="ml-auto">
               <DeleteTicketButton

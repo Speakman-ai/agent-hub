@@ -998,3 +998,21 @@ describe('api replay-playlist helpers — URL + method parity with web client', 
         expect(JSON.parse(init.body)).toEqual({ extend: false });
     });
 });
+
+describe('api.linkSupportTicketToCard — mobile parity with web client', () => {
+    it('POSTs the trimmed cardId + comment to the link-card endpoint', async () => {
+        await api.linkSupportTicketToCard('agent-hub', 'tkt-1', {
+            cardId: '  card-9  ',
+            comment: '  already fixed  ',
+        });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-1/link-card');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ cardId: 'card-9', comment: 'already fixed' });
+    });
+    it('omits a blank comment', async () => {
+        await api.linkSupportTicketToCard('agent-hub', 'tkt-1', { cardId: 'card-9', comment: '   ' });
+        const [, init] = lastCall();
+        expect(JSON.parse(init.body)).toEqual({ cardId: 'card-9' });
+    });
+});

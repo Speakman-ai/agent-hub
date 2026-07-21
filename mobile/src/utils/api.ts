@@ -1260,6 +1260,19 @@ export const api = {
             body: JSON.stringify(body),
         });
     },
+    // Link a support ticket to an EXISTING kanban card (the sibling of convert).
+    // Stamps the ticket back-link + a comment on the target card, then flags the
+    // ticket `converted` (retained, not deleted). 404 if the card isn't on the
+    // board; 409 if the ticket is already converted or the card is already linked.
+    linkSupportTicketToCard: (projectId: any, id: any, opts: any = {}) => {
+        const body: Record<string, any> = { cardId: String(opts.cardId || '').trim() };
+        if (opts.comment != null && String(opts.comment).trim())
+            body.comment = String(opts.comment).trim();
+        return fetchJSON(`/projects/${projectId}/support-tickets/${id}/link-card`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+    },
     // Permanently delete a support ticket. The server emits a
     // support_ticket_deleted WebSocket event so open clients drop the row.
     deleteSupportTicket: (projectId: any, id: any) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`, { method: 'DELETE' }),

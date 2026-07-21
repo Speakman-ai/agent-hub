@@ -72,3 +72,39 @@ export async function performTicketDelete({ projectId, ticketId, deleteTicket, s
         return false;
     }
 }
+// Link-flow state machine for a support-ticket card, factored out of the RN
+// component (same rationale as performTicketDelete) so the success-path local
+// state update is unit-testable without mounting the tree.
+//
+//   - On a successful link: clear the `linking` flag and update local state via
+//     `onConverted(<converted ticket>)` immediately, WITHOUT waiting for the
+//     support_ticket_updated WebSocket echo. A delayed/dropped socket would
+//     otherwise leave the ticket looking open, letting the operator tap Link
+//     again and hit a confusing 409. Mirrors the web path's onConverted call;
+//     the WebSocket echo still reconciles other clients.
+//   - On a failed link: surface the error and re-enable the action.
+//
+// The linked ticket handed to onConverted is the server's returned `ticket`
+// (already flagged `converted`), falling back to the local row stamped
+// converted + converted_card_id when the response omits it. `linkCard` is
+// injected (the api.linkSupportTicketToCard wrapper) to keep this pure.
+export async function performTicketLink({ projectId, ticketId, cardId, comment, item, linkCard, setLinking, setLinkError, onConverted, }: any) {
+    setLinking(true);
+    setLinkError(null);
+    try {
+        const res: any = await linkCard(projectId, ticketId, { cardId, comment });
+        setLinking(false);
+        const linkedTicket = res?.ticket ?? {
+            ...item,
+            status: 'converted',
+            converted_card_id: res?.card?.id ?? cardId,
+        };
+        onConverted?.(linkedTicket);
+        return true;
+    }
+    catch (err: any) {
+        setLinkError(err?.message || 'Failed to link');
+        setLinking(false);
+        return false;
+    }
+}

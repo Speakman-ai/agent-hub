@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect, vi } from 'vitest';
-import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, releaseStateLabel, mergeTicketDetail, } from './supportTickets';
+import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, performTicketLink, releaseStateLabel, mergeTicketDetail, } from './supportTickets';
 vi.mock('./config', () => ({
     getServerBaseUrl: () => 'https://hub.example.com',
 }));
@@ -148,5 +148,88 @@ describe('performTicketDelete', () => {
         const { args } = makeHarness({ deleteTicket });
         args.onDeleted = undefined;
         await expect(performTicketDelete(args)).resolves.toBe(true);
+    });
+});
+
+describe('performTicketLink', () => {
+    function makeHarness({ linkCard, item }: any) {
+        const calls: any = { setLinking: [], setLinkError: [], onConverted: [] };
+        return {
+            args: {
+                projectId: 'proj-1',
+                ticketId: 'tkt-9',
+                cardId: 'card-3',
+                comment: 'already fixed',
+                item: item ?? { id: 'tkt-9', status: 'new' },
+                linkCard,
+                setLinking: (v: any) => calls.setLinking.push(v),
+                setLinkError: (v: any) => calls.setLinkError.push(v),
+                onConverted: (t: any) => calls.onConverted.push(t),
+            },
+            calls,
+        };
+    }
+    it('on success: flips the ticket to converted locally without waiting on a WS event', async () => {
+        const linkCard = vi.fn().mockResolvedValue({
+            linked: true,
+            card: { id: 'card-3' },
+            ticket: { id: 'tkt-9', status: 'converted', converted_card_id: 'card-3' },
+        });
+        const { args, calls } = makeHarness({ linkCard });
+        const ok = await performTicketLink(args);
+        expect(ok).toBe(true);
+        expect(linkCard).toHaveBeenCalledWith('proj-1', 'tkt-9', {
+            cardId: 'card-3',
+            comment: 'already fixed',
+        });
+        // Spinner on then off — action re-enabled, never stuck on "Linking…".
+        expect(calls.setLinking).toEqual([true, false]);
+        // Local state updated immediately from the server's converted ticket.
+        expect(calls.onConverted).toEqual([
+            { id: 'tkt-9', status: 'converted', converted_card_id: 'card-3' },
+        ]);
+        expect(calls.setLinkError).toEqual([null]);
+    });
+    it('falls back to stamping the local row converted when the response omits the ticket', async () => {
+        const linkCard = vi.fn().mockResolvedValue({ linked: true, card: { id: 'card-7' } });
+        const { args, calls } = makeHarness({
+            linkCard,
+            item: { id: 'tkt-9', status: 'investigating', subject: 'x' },
+        });
+        await performTicketLink(args);
+        // Uses the returned card id, marks the row converted so it leaves the open queue.
+        expect(calls.onConverted).toEqual([
+            { id: 'tkt-9', status: 'converted', subject: 'x', converted_card_id: 'card-7' },
+        ]);
+    });
+    it('falls back to the requested cardId when neither ticket nor card is returned', async () => {
+        const linkCard = vi.fn().mockResolvedValue({});
+        const { args, calls } = makeHarness({ linkCard, item: { id: 'tkt-9', status: 'new' } });
+        await performTicketLink(args);
+        expect(calls.onConverted).toEqual([
+            { id: 'tkt-9', status: 'converted', converted_card_id: 'card-3' },
+        ]);
+    });
+    it('on failure: surfaces the error, re-enables the action, and does NOT convert the row', async () => {
+        const linkCard = vi.fn().mockRejectedValue(new Error('Card is already linked to another support ticket'));
+        const { args, calls } = makeHarness({ linkCard });
+        const ok = await performTicketLink(args);
+        expect(ok).toBe(false);
+        expect(calls.setLinking).toEqual([true, false]);
+        expect(calls.setLinkError).toEqual([null, 'Card is already linked to another support ticket']);
+        expect(calls.onConverted).toEqual([]);
+    });
+    it('falls back to a generic message when the error has none', async () => {
+        const linkCard = vi.fn().mockRejectedValue({});
+        const { args, calls } = makeHarness({ linkCard });
+        await performTicketLink(args);
+        expect(calls.setLinkError).toEqual([null, 'Failed to link']);
+        expect(calls.onConverted).toEqual([]);
+    });
+    it('tolerates a missing onConverted callback on success', async () => {
+        const linkCard = vi.fn().mockResolvedValue({ ticket: { id: 'tkt-9', status: 'converted' } });
+        const { args } = makeHarness({ linkCard });
+        args.onConverted = undefined;
+        await expect(performTicketLink(args)).resolves.toBe(true);
     });
 });

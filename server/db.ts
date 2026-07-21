@@ -5055,6 +5055,21 @@ function initDb(dataDir: string): void {
           SET support_ticket_id = ?, customer_report_id = ?, updated_at = datetime('now')
         WHERE id = ?`,
     ),
+    // Compare-and-swap claim of a card's support-ticket back-link, used by the
+    // "link ticket to existing card" path. The claim is only stamped when the
+    // card is still on the target board AND unclaimed (or already claimed by
+    // this same ticket). Guarding the WRITE itself — not a preceding read — is
+    // what makes the claim race-safe across processes: two concurrent linkers
+    // serialize on the SQLite write lock and the loser's UPDATE matches 0 rows
+    // (checked via `changes`) instead of clobbering the winner's provenance.
+    // Params: (supportTicketId, customerReportId, cardId, boardId, supportTicketId).
+    claimKanbanCardForSupportTicket: db.prepare(
+      `UPDATE kanban_cards
+          SET support_ticket_id = ?, customer_report_id = ?, updated_at = datetime('now')
+        WHERE id = ?
+          AND board_id = ?
+          AND (support_ticket_id IS NULL OR support_ticket_id = ?)`,
+    ),
     // Stamp capture provenance on a card after create (spec CAPTURE-PROVENANCE).
     // Kept out of createKanbanCard's positional INSERT so the ~8 create callers
     // don't all have to thread three more args; the create/convert paths that

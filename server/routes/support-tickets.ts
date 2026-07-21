@@ -29,7 +29,10 @@ import { buildCardFieldsFromTicket } from '../support-ticket-convert.js';
 import { getOrCreateBoard, serializeCardForRequest } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
 import { getDb } from '../db.js';
-import { ConvertSupportTicketRequestSchema } from './support-tickets.openapi.js';
+import {
+  ConvertSupportTicketRequestSchema,
+  LinkSupportTicketToCardRequestSchema,
+} from './support-tickets.openapi.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { resolveEffectiveEngineAndModel } from '../effective-model.js';
 import type { SupportedEngine } from '../engine-availability.js';
@@ -648,6 +651,150 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         ticket: serializeForRequest(req, converted),
         ticketId: ticket.id,
         converted: true,
+      });
+    },
+  );
+
+  /**
+   * Link a support ticket to an **existing** kanban card.
+   *
+   * The sibling of `/convert`: instead of creating a fresh card, this ties the
+   * ticket to a card that already exists (e.g. the card whose fix already
+   * addressed the reported bug). It stamps `support_ticket_id` /
+   * `customer_report_id` on the target card, records a comment on that card
+   * preserving the ticket's back-link + screenshot, then flags the source
+   * ticket `converted` (recording `converted_card_id`) and marks it read — the
+   * same terminal state as convert, so the ticket drops out of the open queue
+   * but is retained.
+   *
+   * Returns `{ card, ticket, ticketId, linked: true }`. Idempotent-safe: a
+   * concurrent/retried request that already converted the ticket 409s. The
+   * target card must live on this project's board (404 otherwise) and must not
+   * already be linked to a *different* ticket (409) so an existing card's
+   * provenance is never silently clobbered.
+   */
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/link-card',
+    async (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+      if (ticket.status === 'converted') {
+        return res.status(409).json({ error: 'Support ticket already converted' });
+      }
+
+      const parsed = LinkSupportTicketToCardRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid request body' });
+      }
+      const cardId = parsed.data.cardId.trim();
+      if (!cardId) return res.status(400).json({ error: 'cardId is required' });
+      const note = typeof parsed.data.comment === 'string' ? parsed.data.comment.trim() : '';
+
+      const { board } = getOrCreateBoard(stmts, project.id);
+      const target = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+      if (!target || target.board_id !== board.id) {
+        return res.status(404).json({ error: 'Target card not found on this board' });
+      }
+      // Never clobber the back-link of a card already tied to another ticket.
+      if (target.support_ticket_id && target.support_ticket_id !== ticket.id) {
+        return res.status(409).json({ error: 'Card is already linked to another support ticket' });
+      }
+
+      // Preserve the ticket context on the existing card as a comment: an
+      // optional operator note, plus a footer linking back to the source ticket
+      // and (if present) the reporter screenshot as a markdown image. The ref is
+      // stored server-relative (/uploads/…) so the card renderer resolves it the
+      // same way the convert path's baked-in screenshot is resolved.
+      const footer = `Linked from support ticket \`${ticket.id}\` (${ticket.type}, ${ticket.severity}).`;
+      const screenshotLine = ticket.screenshot_ref
+        ? `\n\n**Screenshot:** ![screenshot](${ticket.screenshot_ref})`
+        : '';
+      const linkComment = note
+        ? `${note}\n\n---\n${footer}${screenshotLine}`
+        : `${footer}${screenshotLine}`;
+
+      // Atomic stamp-card + flip-ticket-to-converted. The ticket re-read bails if
+      // it was converted by a concurrent/retried request (linked once only). The
+      // card back-link is claimed with a CONDITIONAL (compare-and-swap) UPDATE
+      // that only matches while the card is still on this board AND unclaimed (or
+      // already ours) — guarding the WRITE itself, not a preceding read, so the
+      // claim is race-safe across processes: concurrent linkers serialize on the
+      // SQLite write lock and the loser's UPDATE matches 0 rows (checked via
+      // `changes`) rather than clobbering the winner's provenance or surfacing a
+      // busy/snapshot 500. A 0-row claim is disambiguated into card-gone (404)
+      // vs card-taken (409) by a follow-up read.
+      const link = getDb().transaction(
+        ():
+          | { kind: 'ok'; card: KanbanCardRow }
+          | { kind: 'gone' }
+          | { kind: 'already' }
+          | { kind: 'card-taken' }
+          | { kind: 'card-gone' } => {
+          const fresh = getSupportTicket(ticket.id);
+          if (!fresh) return { kind: 'gone' };
+          if (fresh.status === 'converted') return { kind: 'already' };
+          const claim = stmts.claimKanbanCardForSupportTicket.run(
+            ticket.id,
+            ticket.id,
+            cardId,
+            board.id,
+            ticket.id,
+          );
+          if (claim.changes === 0) {
+            // The CAS matched nothing: either the card vanished / left the board
+            // (404) or another ticket won the claim (409). Read to disambiguate.
+            const freshCard = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+            if (!freshCard || freshCard.board_id !== board.id) return { kind: 'card-gone' };
+            return { kind: 'card-taken' };
+          }
+          stmts.createKanbanCardComment.run(uuidv4(), cardId, 'support-ticket', linkComment);
+          convertSupportTicketToCard(ticket.id, cardId);
+          markSupportTicketRead(ticket.id);
+          // Linking flips status to 'converted'; a leftover wont_do_reason must
+          // be cleared to keep the invariant (reason non-null only while wont_do).
+          if (fresh.wont_do_reason) setSupportTicketWontDoReason(ticket.id, null);
+          return { kind: 'ok', card: stmts.getKanbanCard.get(cardId) as KanbanCardRow };
+        },
+      );
+
+      const result = link();
+      if (result.kind === 'gone') {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+      if (result.kind === 'card-gone') {
+        return res.status(404).json({ error: 'Target card not found on this board' });
+      }
+      if (result.kind === 'already') {
+        return res.status(409).json({ error: 'Support ticket already converted' });
+      }
+      if (result.kind === 'card-taken') {
+        return res.status(409).json({ error: 'Card is already linked to another support ticket' });
+      }
+      const { card } = result;
+
+      // Carry the replay attribution onto the linked card (best-effort).
+      if (ticket.replay_ref) {
+        await tryLinkReplay(stmts, ticket.replay_ref, {
+          projectId: project.id,
+          supportTicketId: ticket.id,
+          cardId,
+        });
+      }
+
+      const linked = getSupportTicket(ticket.id)!;
+      broadcast({ type: 'kanban_update', projectId: project.id });
+      broadcastTicket('support_ticket_updated', project.id, { ticket: linked });
+
+      res.status(200).json({
+        card: serializeCardForRequest(req, stmts, board.id, card),
+        ticket: serializeForRequest(req, linked),
+        ticketId: ticket.id,
+        linked: true,
       });
     },
   );

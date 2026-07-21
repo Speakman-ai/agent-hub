@@ -11685,6 +11685,29 @@ components:
         - ticketId
         - converted
       description: The kanban card the ticket became, plus the retained source ticket (now converted).
+    LinkSupportTicketToCardResponse:
+      type: object
+      properties:
+        card:
+          $ref: "#/components/schemas/KanbanCard"
+        ticket:
+          allOf:
+            - $ref: "#/components/schemas/SupportTicket"
+            - description: The source ticket, now retained and flagged 'converted', linked to the card.
+        ticketId:
+          type: string
+          description: Id of the linked source ticket.
+        linked:
+          type: boolean
+          enum:
+            - true
+          description: Always true — the ticket was linked to the existing card and flagged converted.
+      required:
+        - card
+        - ticket
+        - ticketId
+        - linked
+      description: The existing kanban card the ticket was linked to, plus the retained source ticket.
     SupportTicketOverviewErrorResponse:
       type: object
       properties:
@@ -36233,6 +36256,71 @@ paths:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
         "500":
           description: Board has no columns to place the card in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/link-card:
+    post:
+      tags:
+        - Support
+      summary: Link a support ticket to an existing kanban card
+      description: "Ties the ticket to an existing card instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cardId:
+                  type: string
+                  minLength: 1
+                  description: Id of an existing kanban card on this project board to link the ticket to. Must live on the project board and not already be linked to another ticket.
+                comment:
+                  type: string
+                  nullable: true
+                  maxLength: 4000
+                  description: Optional note (max 4000 characters) recorded as a comment on the linked card, above an auto-generated footer that links back to the source ticket.
+              required:
+                - cardId
+              description: Existing card to link the ticket to, plus an optional note recorded on that card.
+      responses:
+        "200":
+          description: Ticket linked to the existing card; the source ticket is retained as converted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkSupportTicketToCardResponse"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project, ticket, or target card not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "409":
+          description: Ticket already converted, or the card is already linked to another ticket.
           content:
             application/json:
               schema:

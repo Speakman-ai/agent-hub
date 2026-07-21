@@ -396,6 +396,74 @@ registerPath({
   },
 });
 
+export const LinkSupportTicketToCardRequestSchema = z
+  .object({
+    cardId: z.string().min(1).openapi({
+      description:
+        'Id of an existing kanban card on this project board to link the ticket to. Must live on the project board and not already be linked to another ticket.',
+    }),
+    comment: z
+      .string()
+      .max(
+        MAX_ASSIGNMENT_COMMENT_LEN,
+        `comment must be ${MAX_ASSIGNMENT_COMMENT_LEN} characters or fewer`,
+      )
+      .nullable()
+      .optional()
+      .openapi({
+        description: `Optional note (max ${MAX_ASSIGNMENT_COMMENT_LEN} characters) recorded as a comment on the linked card, above an auto-generated footer that links back to the source ticket.`,
+      }),
+  })
+  .openapi({
+    description:
+      'Existing card to link the ticket to, plus an optional note recorded on that card.',
+  });
+
+const LinkSupportTicketToCardResponse = registerComponent(
+  'LinkSupportTicketToCardResponse',
+  z
+    .object({
+      card: KanbanCardComponent,
+      ticket: SupportTicketComponent.openapi({
+        description: "The source ticket, now retained and flagged 'converted', linked to the card.",
+      }),
+      ticketId: z.string().openapi({ description: 'Id of the linked source ticket.' }),
+      linked: z.literal(true).openapi({
+        description:
+          'Always true — the ticket was linked to the existing card and flagged converted.',
+      }),
+    })
+    .openapi({
+      description:
+        'The existing kanban card the ticket was linked to, plus the retained source ticket.',
+    }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/link-card',
+  tags: ['Support'],
+  summary: 'Link a support ticket to an existing kanban card',
+  description:
+    'Ties the ticket to an existing card instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s.',
+  request: {
+    params: ticketParams,
+    body: { required: true, content: jsonContent(LinkSupportTicketToCardRequestSchema) },
+  },
+  responses: {
+    200: {
+      description:
+        'Ticket linked to the existing card; the source ticket is retained as converted.',
+      content: jsonContent(LinkSupportTicketToCardResponse),
+    },
+    400: errorResponse('Invalid request body.'),
+    404: errorResponse('Project, ticket, or target card not found.'),
+    409: errorResponse(
+      'Ticket already converted, or the card is already linked to another ticket.',
+    ),
+  },
+});
+
 registerPath({
   method: 'delete',
   path: '/api/projects/{projectId}/support-tickets/{id}',

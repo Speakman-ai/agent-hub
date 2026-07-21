@@ -2232,6 +2232,7 @@ export interface Stmts {
   getKanbanCard: Stmt;
   createKanbanCard: Stmt;
   linkKanbanCardSupportTicket: Stmt;
+  claimKanbanCardForSupportTicket: Stmt;
   setKanbanCardProvenance: Stmt;
   getLinkedSupportTicketsForBoard: Stmt;
   updateKanbanCard: Stmt;
