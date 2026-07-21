@@ -360,15 +360,29 @@ let active: LogShipper | null = null;
 export function initLogShipperFromEnv(env: NodeJS.ProcessEnv = process.env): LogShipper | null {
   if (active) return active;
   const token = (env.AHLOG_TOKEN ?? '').trim();
-  if (!token) return null;
+  if (!token) {
+    // Announce the disabled state at boot. Without this line the no-op is
+    // completely silent, so a missing/unpersisted AHLOG_TOKEN (e.g. dropped on a
+    // restart) presents downstream only as an indefinitely-empty Logs module
+    // with no trace of the cause. One boot line turns that blackout into a grep.
+    console.warn(
+      '[log-shipper] self log-shipping DISABLED: AHLOG_TOKEN not set — the Hub will not ship its own console logs to the Logs module',
+    );
+    return null;
+  }
+  const endpoint = (env.AHLOG_ENDPOINT ?? '').trim() || defaultBatchEndpoint(env);
   const shipper = new LogShipper({
     token,
-    endpoint: (env.AHLOG_ENDPOINT ?? '').trim() || defaultBatchEndpoint(env),
+    endpoint,
     service: (env.AHLOG_SERVICE ?? '').trim() || 'agent-hub',
     environment: (env.AHLOG_ENVIRONMENT ?? '').trim() || 'production',
   });
   shipper.start();
   active = shipper;
+  // Confirm the enabled state and where records go (endpoint only — never the
+  // token). This is also the first line the just-started shipper captures, so a
+  // healthy pipe self-verifies as the first shipped record.
+  console.log(`[log-shipper] self log-shipping ENABLED → ${endpoint}`);
   return shipper;
 }
 

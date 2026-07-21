@@ -297,6 +297,27 @@ describe('initLogShipperFromEnv', () => {
     expect(initLogShipperFromEnv({} as NodeJS.ProcessEnv)).toBeNull();
   });
 
+  it('warns at boot (not silently) when AHLOG_TOKEN is missing, so an empty Logs module is diagnosable', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(initLogShipperFromEnv({} as NodeJS.ProcessEnv)).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/self log-shipping DISABLED: AHLOG_TOKEN not set/);
+  });
+
+  it('logs the enabled endpoint at boot without ever logging the token', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const shipper = initLogShipperFromEnv({
+      AHLOG_TOKEN: 'ahlog_secret_value',
+      AGENT_HUB_PORT: '4100',
+    } as NodeJS.ProcessEnv);
+    expect(shipper).not.toBeNull();
+    const enabledLine = log.mock.calls.map((c) => String(c[0])).find((m) => /ENABLED/.test(m));
+    expect(enabledLine).toBeDefined();
+    expect(enabledLine).toContain('http://127.0.0.1:4100/api/logs/ingest');
+    // The secret token must never appear in any boot log line.
+    expect(enabledLine).not.toContain('ahlog_secret_value');
+  });
+
   it('starts a shipper when AHLOG_TOKEN is set and forwards captured entries', () => {
     const shipper = initLogShipperFromEnv({ AHLOG_TOKEN: 'ahlog_abc' } as NodeJS.ProcessEnv);
     expect(shipper).not.toBeNull();
