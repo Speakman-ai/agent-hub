@@ -101,6 +101,49 @@ function trackedScriptFiles(): string[] {
     .map((rel) => join(REPO_ROOT, rel));
 }
 
+function trackedWorkflowFiles(): string[] {
+  // GitHub Actions workflows under .github/ are fully public once the repo is
+  // open. A real EC2 instance-id fallback leaked here before (card #1598)
+  // because neither hygiene guard scanned this surface. Enumerate git-TRACKED
+  // workflow definitions so an untracked local file is ignored but a committed
+  // one is caught.
+  const dir = join(REPO_ROOT, '.github');
+  let out: string;
+  try {
+    out = execFileSync('git', ['ls-files', '-z', '--', dir], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    });
+  } catch {
+    return [];
+  }
+  return out
+    .split('\0')
+    .filter((rel) => /\.(ya?ml)$/.test(rel))
+    .map((rel) => join(REPO_ROOT, rel));
+}
+
+function trackedAppSourceFiles(): string[] {
+  // Shipped client/mobile source (excluding tests, which legitimately use
+  // sample usernames as fixtures). Personal home-dir paths leaked into mobile
+  // source before (card #1598).
+  const dirs = [join(REPO_ROOT, 'client', 'src'), join(REPO_ROOT, 'mobile', 'src')];
+  let out: string;
+  try {
+    out = execFileSync('git', ['ls-files', '-z', '--', ...dirs], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    });
+  } catch {
+    return [];
+  }
+  return out
+    .split('\0')
+    .filter((rel) => /\.(ts|tsx|js|jsx)$/.test(rel))
+    .filter((rel) => !/\.(test|spec)\.[jt]sx?$/.test(rel))
+    .map((rel) => join(REPO_ROOT, rel));
+}
+
 function trackedEnvFiles(): string[] {
   // Every git-TRACKED file under ops/terraform/environments must be
   // placeholder-clean. Enumerating via `git ls-files` (not the filesystem)
@@ -131,6 +174,7 @@ function publishableFiles(): string[] {
   terraformModuleSource().forEach((f) => files.add(f));
   trackedEnvFiles().forEach((f) => files.add(f));
   trackedScriptFiles().forEach((f) => files.add(f));
+  trackedWorkflowFiles().forEach((f) => files.add(f));
   // Example config templates must ship with placeholders only.
   const examples = [
     '.env.example',
@@ -182,6 +226,28 @@ describe('public-repo hygiene', () => {
         `ops/terraform/environments/${env}/backend.hcl.example`,
       );
     }
+  });
+
+  it('shipped client/mobile source has no personal /home/<user> paths', () => {
+    // Generic placeholders are fine; a maintainer's real home dir is not.
+    const ALLOWED_HOME = new Set(['user', 'node', 'runner', 'agent']);
+    const homePath = /\/home\/([a-z][a-z0-9_-]*)/g;
+    const offenders: string[] = [];
+    for (const abs of trackedAppSourceFiles()) {
+      const rel = relative(REPO_ROOT, abs);
+      const text = readFileSync(abs, 'utf8');
+      text.split('\n').forEach((line, i) => {
+        for (const m of line.matchAll(homePath)) {
+          if (!ALLOWED_HOME.has(m[1])) {
+            offenders.push(`${rel}:${i + 1} [personal home path] ${line.trim().slice(0, 120)}`);
+          }
+        }
+      });
+    }
+    expect(
+      offenders,
+      `Personal home-dir paths found in shipped source:\n${offenders.join('\n')}`,
+    ).toEqual([]);
   });
 
   it('publishable docs + example configs contain no internal-only identifiers', () => {

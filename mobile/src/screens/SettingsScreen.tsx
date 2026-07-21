@@ -1486,7 +1486,7 @@ function AgentConfigSection() {
         name: '',
         engine: 'claude-code',
         model: '',
-        cwd: '/home/ryan',
+        cwd: '',
         workspace: '',
         color: '#6b7280',
         systemPrompt: '',
@@ -1591,7 +1591,7 @@ function AgentConfigSection() {
         try {
             await api.createAgent(newForm);
             setShowNew(false);
-            setNewForm({ id: '', name: '', engine: 'claude-code', model: '', cwd: '/home/ryan', workspace: '', color: '#6b7280', systemPrompt: '' });
+            setNewForm({ id: '', name: '', engine: 'claude-code', model: '', cwd: '', workspace: '', color: '#6b7280', systemPrompt: '' });
             refreshAgents();
         }
         catch (e: any) {

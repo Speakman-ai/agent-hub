@@ -250,7 +250,7 @@ jobs:
       # pull is fine — the registry is public), so the digest assertion still holds.
       AWS_ROLE_TO_ASSUME: ${{ vars.DOCKER_DEPLOY_ROLE_ARN || vars.ECR_PUSH_ROLE_ARN }}
       AWS_DEPLOY_REGION: ${{ vars.DOCKER_DEPLOY_REGION || 'us-east-2' }}
-      DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID || 'i-066e44ff85ec24d8e' }}
+      DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}
       EXPECTED_DIGEST: ${{ needs.push.outputs.digest }}
 
     steps:
@@ -265,6 +265,10 @@ jobs:
           RESET_INSTANCE: ${{ inputs.reset_instance }}
         run: |
           set -euo pipefail
+          if [ -z "$DEPLOY_INSTANCE_ID" ]; then
+            echo "::error::DOCKER_DEPLOY_INSTANCE_ID repo variable is not set; cannot SSM the deploy target." >&2
+            exit 1
+          fi
           DATA_ROOT="/var/lib/agent-hub"
           BOOL_RESET="${RESET_INSTANCE,,}"
           if [[ "$BOOL_RESET" == "true" ]]; then

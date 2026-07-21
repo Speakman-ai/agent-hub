@@ -12,24 +12,33 @@ const pushImageWorkflowPath = path.join(workflowsDir, 'push-image.yml');
  * workflow; the thin `push-image.yml` entrypoint stays manual-only.
  */
 describe('ECR publish + push-image deploy contract', () => {
-  // The deploy target is parameterized via repo Variables with a fallback
-  // default — e.g. `DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID || 'i-...' }}`.
-  // Parse the fallback default (the instance used when the repo vars are unset).
-  function parseSandboxInstanceFromEcrWorkflow(workflowYaml: string): string {
+  // The deploy target is parameterized via repo Variables ONLY — no literal
+  // instance-id fallback. A real `i-...` fallback used to ship here and leaked a
+  // private EC2 instance id into the public tree (card #1598). The DEPLOY_INSTANCE_ID
+  // line must resolve purely from `vars.DOCKER_DEPLOY_INSTANCE_ID`; the job's own
+  // preflight fails loudly when that repo Variable is unset.
+  function deployInstanceIdLine(workflowYaml: string): string {
     const line = workflowYaml.match(/^\s*DEPLOY_INSTANCE_ID:.*$/m);
     expect(line?.[0], 'DEPLOY_INSTANCE_ID in ecr-publish-rollout-docker-dev.yml').toBeTruthy();
-    const id = line![0].match(/i-[a-f0-9]+/);
-    expect(id?.[0], 'fallback instance id on the DEPLOY_INSTANCE_ID line').toBeTruthy();
-    return id![0];
+    return line![0];
   }
 
-  it('defines deploy-dev-sandbox with SSM restart and a DEPLOY_INSTANCE_ID target', () => {
+  it('defines deploy-dev-sandbox with SSM restart and a var-sourced DEPLOY_INSTANCE_ID target', () => {
     const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
     expect(yml).toContain('deploy-dev-sandbox:');
     expect(yml).toContain('systemctl restart agenthub-server');
     expect(yml).toContain('DEPLOY_INSTANCE_ID');
-    const id = parseSandboxInstanceFromEcrWorkflow(yml);
-    expect(id).toMatch(/^i-[a-f0-9]{8,}$/);
+    const line = deployInstanceIdLine(yml);
+    // Sourced from the repo Variable...
+    expect(line, 'DEPLOY_INSTANCE_ID must resolve from vars.DOCKER_DEPLOY_INSTANCE_ID').toMatch(
+      /vars\.DOCKER_DEPLOY_INSTANCE_ID/,
+    );
+    // ...with NO literal instance-id fallback (regression guard for card #1598).
+    expect(line.match(/i-[a-f0-9]+/)?.[0], 'no hardcoded instance id may ship').toBeFalsy();
+    // The job must fail closed when the variable is unset, rather than SSM an empty id.
+    expect(yml, 'deploy step must preflight an empty DEPLOY_INSTANCE_ID').toMatch(
+      /if \[ -z "\$DEPLOY_INSTANCE_ID" \]/,
+    );
   });
 
   // Previously this asserted the dev-sandbox `ci_ssm_deploy_instance_id` in
