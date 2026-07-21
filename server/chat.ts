@@ -204,6 +204,7 @@ import {
   evaluateReactContinuationBudgets,
 } from './orchestration-budgets.js';
 import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
+import { clearReactChainCancel, isReactChainCancelRequested } from './react-chain-cancel.js';
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import {
   getProjectMode,
@@ -1985,6 +1986,26 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const { agentId, content, images, hookSpecificOutput } = msg;
       const isAutoContinuation = msg._autoContinuation === true;
       const continuationDepth = msg._continuationDepth || 0;
+
+      // ReAct chain-cancel gate. A Stop can land in the setImmediate/setTimeout
+      // gap after a turn deregistered its CLI process and before this
+      // continuation spawns a new one — the SIGTERM path found nothing to kill,
+      // so this queued continuation is the only thing left carrying the chain.
+      // Drop it. A genuine user/system turn (not a continuation) is fresh intent
+      // that supersedes any pending Stop, so clear the stale flag.
+      if (isAutoContinuation) {
+        if (isReactChainCancelRequested(sessionId)) {
+          clearReactChainCancel(sessionId);
+          console.info(
+            `[auto-continuation] session ${sessionId}: run cancelled by user; dropping continuation.`,
+          );
+          drainQueue(sessionId);
+          return;
+        }
+      } else {
+        clearReactChainCancel(sessionId);
+      }
+
       const attachments: string | null =
         images && images.length > 0 ? JSON.stringify(images) : null;
 
@@ -4643,6 +4664,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             }
           }
           for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
+            // A Stop landing mid-chain (the process already deregistered, so
+            // SIGTERM was a no-op) must halt the remaining host actions rather
+            // than run a slow browser/web queue to completion after the user
+            // asked it to stop.
+            if (isReactChainCancelRequested(sessionId)) {
+              const remaining = boundedActions.length - actionIdx;
+              reactObservations.push(
+                `- ${remaining} remaining host action(s) skipped: run cancelled by user.`,
+              );
+              break;
+            }
             const action = boundedActions[actionIdx]!;
             const hostStepStart = Date.now();
             let hostExit = 0;
@@ -5111,7 +5143,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           nowMs: Date.now(),
           budgets: orchestrationBudgets,
         });
-        shouldAutoContinue = budgetResult.ok;
+        // A Stop that landed after the CLI closed cleanly (SIGTERM found no
+        // process to kill) still cancels the chain: never schedule the next
+        // turn once cancel is requested, regardless of budget.
+        const chainCancelled = isReactChainCancelRequested(sessionId);
+        shouldAutoContinue = budgetResult.ok && !chainCancelled;
 
         if (
           continuationDepth > 0 ||
@@ -5125,15 +5161,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             stepId: `${assistantMsgId}:chain_gate`,
             phase: 'chain_gate',
             tool: 'chain',
-            exitCode: budgetResult.ok ? 0 : 2,
+            exitCode: shouldAutoContinue ? 0 : 2,
             durationMs: 0,
             continuationDepth,
             chainElapsedMs: Date.now() - chainStartedAtMs,
-            detail: budgetResult.ok
-              ? 'continuation_allowed'
-              : budgetResult.reasons.length
-                ? budgetResult.reasons.join('; ')
-                : 'blocked_or_ineligible',
+            detail: chainCancelled
+              ? 'continuation_cancelled_by_user'
+              : budgetResult.ok
+                ? 'continuation_allowed'
+                : budgetResult.reasons.length
+                  ? budgetResult.reasons.join('; ')
+                  : 'blocked_or_ineligible',
           });
         }
 
@@ -5485,7 +5523,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           drainQueue(sessionId);
         };
 
-        if (shouldAutoContinue) {
+        if (shouldAutoContinue && !isReactChainCancelRequested(sessionId)) {
           await runWorktreeAutoCommitAndDrainTail(false);
           setImmediate(() => {
             handleChat(null, {

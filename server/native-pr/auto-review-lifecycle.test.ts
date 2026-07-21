@@ -140,7 +140,10 @@ describe('chat turn-end auto-review finalization ordering', () => {
     // Only inspect the turn-end region: between where shouldAutoContinue is
     // resolved and the auto-continuation branch that re-enters handleChat.
     const resolveIdx = src.indexOf('shouldAutoContinue = budgetResult.ok');
-    const autoBranchIdx = src.indexOf('if (shouldAutoContinue) {');
+    // Match the branch prefix only — the condition also guards on the ReAct
+    // chain-cancel flag (`&& !isReactChainCancelRequested(sessionId)`), so a
+    // literal `if (shouldAutoContinue) {` no longer appears.
+    const autoBranchIdx = src.indexOf('if (shouldAutoContinue');
     expect(resolveIdx).toBeGreaterThan(-1);
     expect(autoBranchIdx).toBeGreaterThan(resolveIdx);
     const region = src.slice(resolveIdx, autoBranchIdx);
