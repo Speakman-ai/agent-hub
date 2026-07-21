@@ -607,13 +607,11 @@ describe('runFinalize — split modes', () => {
     expect(stmts.stmts.setFinalizeRunFlakeRecoveredJobs.run).toHaveBeenCalled();
   });
 
-  it('withholds auto-push when a v2 shard recovered a flake via same-commit config retry', async () => {
-    // Reviewer regression: a shard that fails a genuine test then PASSES on a
-    // same-commit `retries:` rerun makes the round green, but that recovery is
-    // invisible to the cross-round attempt history (the retry overwrote the job
-    // state to `passed`). Without folding the intra-phase signal into the gate,
-    // the run would auto-push as clean — laundering the flake. The gate must be
-    // flake_recovered so automation is withheld.
+  // Shared fixture: a green v2 run whose only flake signal is one shard that
+  // passed on a same-commit `retries:` rerun (an intra-phase config-retry
+  // recovery). The cross-round attempt history is CLEAN (one passed row), so
+  // whether auto-push is withheld hinges entirely on the intra-phase fold.
+  const makeIntraPhaseRetryDeps = () => {
     const ciV2 = {
       ok: true as const,
       config: {
@@ -633,9 +631,8 @@ describe('runFinalize — split modes', () => {
         },
       },
     };
-    const { deps, stmts } = makeDeps({
+    const made = makeDeps({
       loadCiConfigFromFile: vi.fn().mockResolvedValue(ciV2) as never,
-      // Green phase, but one shard only passed after a config-retry rerun.
       runJobPhase: vi.fn().mockResolvedValue({
         status: 'success',
         stepResults: [],
@@ -643,9 +640,7 @@ describe('runFinalize — split modes', () => {
         flakeRecoveredInstances: [{ jobId: 'server', matrixKey: '', failureCount: 1 }],
       }) as never,
     });
-    // A CLEAN cross-round history (one passed attempt) so classifyRunFlakeRecovery
-    // itself returns `clean` — the intra-phase recovery is the ONLY flake signal.
-    (stmts.stmts.listFinalizeRunJobAttemptsForRun as unknown as { all: () => unknown }).all =
+    (made.stmts.stmts.listFinalizeRunJobAttemptsForRun as unknown as { all: () => unknown }).all =
       () => [
         {
           job_id: 'server',
@@ -656,18 +651,51 @@ describe('runFinalize — split modes', () => {
           head_sha: 'sha',
         },
       ];
+    return made;
+  };
 
-    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
-
-    // Run parks (a human may still push); it must NOT terminate.
-    expect(result.kind).toBe('ready_to_push');
-    // The gate persisted a NON-null flake_recovered verdict → auto-push withheld.
+  const lastFlakeGateWrite = (stmts: ReturnType<typeof makeDeps>['stmts']): string | null => {
     const calls = (
       stmts.stmts.setFinalizeRunFlakeRecoveredJobs.run as unknown as {
         mock: { calls: unknown[][] };
       }
     ).mock.calls;
-    const serialized = calls[calls.length - 1][0] as string | null;
+    return calls.length > 0 ? (calls[calls.length - 1][0] as string | null) : null;
+  };
+
+  it('does NOT withhold auto-push for a same-commit config-retry recovery by default', async () => {
+    // "Just because it had to retry doesn't mean it shouldn't push." Configuring
+    // `retries:` on a job is the operator's explicit acceptance that a
+    // rerun-to-green is a valid merge signal for it (GHA/Playwright/Jest parity).
+    // So by default an intra-phase config-retry recovery must land clean and
+    // auto-push, NOT be withheld.
+    const { deps, stmts } = makeIntraPhaseRetryDeps();
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+
+    expect(result.kind).toBe('ready_to_push');
+    // A clean gate serializes to NULL — no flake verdict was written.
+    expect(lastFlakeGateWrite(stmts)).toBeNull();
+  });
+
+  it('withholds auto-push for a same-commit config-retry recovery when FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH is set', async () => {
+    // Opt-in strict mode: an operator who wants a human in the loop on every
+    // rerun-to-green sets the env flag, and the intra-phase recovery is folded
+    // into the gate exactly like a cross-round laundered flake.
+    const { deps, stmts } = makeIntraPhaseRetryDeps();
+
+    const result = await runFinalize(
+      deps,
+      baseOpts({
+        mode: 'checks',
+        env: { ...process.env, FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH: '1' },
+      }),
+    );
+
+    // Run parks (a human may still push); it must NOT terminate.
+    expect(result.kind).toBe('ready_to_push');
+    // The gate persisted a NON-null flake_recovered verdict → auto-push withheld.
+    const serialized = lastFlakeGateWrite(stmts);
     expect(serialized).not.toBeNull();
     const gate = JSON.parse(serialized as string) as {
       status: string;

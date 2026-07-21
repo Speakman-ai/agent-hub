@@ -344,6 +344,31 @@ export function blockedGateResult(reason: string): FlakeGateResult {
 }
 
 /**
+ * Whether an intra-phase config-`retries:` recovery should WITHHOLD auto-push.
+ *
+ * An intra-phase recovery is a shard that failed a genuine test and then passed
+ * on a same-commit rerun WITHIN its configured `retries:` budget. Configuring
+ * `retries:` on a job is the operator's explicit declaration that a
+ * rerun-to-green is an acceptable merge signal for that job (GHA / Playwright /
+ * Jest parity) — so by DEFAULT this does NOT block the push. Blocking the very
+ * push a configured retry salvaged defeats the point of the knob.
+ *
+ * Set `FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH=1` (or `true` / `on` / `yes`) to
+ * restore the stricter keep-a-human-in-the-loop behaviour, where any
+ * same-commit retry recovery withholds automation.
+ *
+ * This governs ONLY same-commit configured retries. A CROSS-ROUND
+ * rerun-to-green (failed one fix-loop round, passed a later round with no fixer
+ * commit touching the job's paths) is still classified `flake_recovered` by
+ * {@link classifyJobRetryHistory} and still blocks — that is the genuine
+ * laundering the gate exists to catch, and nobody opted into it.
+ */
+export function retryRecoveryBlocksAutoPush(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
+}
+
+/**
  * Fold INTRA-PHASE recovered flakes into a gate result.
  *
  * A shard that fails a genuine test and then passes on a same-commit config
@@ -354,6 +379,10 @@ export function blockedGateResult(reason: string): FlakeGateResult {
  * retry is treated exactly like a cross-round laundered flake: auto-push is
  * withheld, the instances are listed, and the quarantine lane can still excuse
  * a known-flaky shard (the merge runs BEFORE quarantine).
+ *
+ * Only called when {@link retryRecoveryBlocksAutoPush} is true; the default
+ * treats a configured-retry recovery as an accepted green signal and never
+ * folds it into the gate.
  *
  * A `blocked` gate is returned unchanged — it already withholds automation
  * (fail-closed) and has no per-instance verdicts to reason about.

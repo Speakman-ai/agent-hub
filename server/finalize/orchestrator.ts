@@ -120,6 +120,7 @@ import {
 import { classifyRunFlakeRecovery, recordJobAttemptsForRound } from './flake-gate.js';
 import {
   blockedGateResult,
+  retryRecoveryBlocksAutoPush,
   serializeFlakeGate,
   withIntraPhaseFlakeRecovered,
   type FlakeGateResult,
@@ -1622,29 +1623,53 @@ export async function runFinalize(
           log(`[finalize-orchestrator] flake-recovery classification threw run=${runId}: ${msg}`);
           gate = blockedGateResult(`flake classification threw: ${msg}`);
         }
-        // Fold in intra-phase recovered flakes (a shard that passed only on a
-        // same-commit `retries:` rerun). The cross-round classifier can't see
-        // these — the retry left only a `passed` row — so without this a
-        // config-retry recovery would auto-push as clean, reopening the
-        // flake-laundering path. Merged BEFORE quarantine so a known-flaky shard
-        // can still be excused, exactly like a cross-round flake.
+        // Intra-phase recovered flakes: a shard that failed a genuine test then
+        // passed on a same-commit `retries:` rerun. The cross-round classifier
+        // can't see these — the retry left only a `passed` row.
+        //
+        // By default a configured-retry recovery is an ACCEPTED green signal
+        // (the operator opted into `retries:` precisely to ride out flakes), so
+        // we record it for observability but do NOT withhold auto-push — "just
+        // because it had to retry doesn't mean it shouldn't push". Set
+        // FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH=1 to restore the stricter behaviour
+        // where a same-commit retry recovery blocks automation (folded BEFORE
+        // quarantine so a known-flaky shard can still be excused, exactly like a
+        // cross-round flake). A CROSS-ROUND laundered flake still blocks either
+        // way via classifyRunFlakeRecovery above.
         if (intraPhaseFlakeRecovered.size > 0) {
-          const before = gate.status;
-          gate = withIntraPhaseFlakeRecovered(gate, [...intraPhaseFlakeRecovered.values()]);
-          if (gate.status !== before) {
+          const instances = [...intraPhaseFlakeRecovered.values()];
+          const instanceTrace = instances.map((v) => ({
+            jobId: v.jobId,
+            matrixKey: v.matrixKey,
+            failureCount: v.failureCount,
+          }));
+          if (retryRecoveryBlocksAutoPush(spawnEnv)) {
+            const before = gate.status;
+            gate = withIntraPhaseFlakeRecovered(gate, instances);
+            if (gate.status !== before) {
+              trace('intra_phase_flake_recovered', {
+                round: loopCount,
+                status: gate.status,
+                blockedAutoPush: true,
+                instances: instanceTrace,
+              });
+              log(
+                `[finalize-orchestrator] run=${runId} withholding auto-push: ` +
+                  `${intraPhaseFlakeRecovered.size} shard(s) passed only on a same-commit ` +
+                  `config-retry (recovered flake); FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH set`,
+              );
+            }
+          } else {
             trace('intra_phase_flake_recovered', {
               round: loopCount,
               status: gate.status,
-              instances: [...intraPhaseFlakeRecovered.values()].map((v) => ({
-                jobId: v.jobId,
-                matrixKey: v.matrixKey,
-                failureCount: v.failureCount,
-              })),
+              blockedAutoPush: false,
+              instances: instanceTrace,
             });
             log(
-              `[finalize-orchestrator] run=${runId} withholding auto-push: ` +
-                `${intraPhaseFlakeRecovered.size} shard(s) passed only on a same-commit ` +
-                `config-retry (recovered flake)`,
+              `[finalize-orchestrator] run=${runId} ${intraPhaseFlakeRecovered.size} shard(s) ` +
+                `passed on a same-commit config-retry; auto-push NOT withheld ` +
+                `(set FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH=1 to block)`,
             );
           }
         }

@@ -13,6 +13,7 @@ import {
   parseFlakeGate,
   flakeGateBlocksAutoPush,
   withIntraPhaseFlakeRecovered,
+  retryRecoveryBlocksAutoPush,
   type FlakeGateResult,
   type JobRoundAttempt,
   type ClassifyDeps,
@@ -426,5 +427,25 @@ describe('withIntraPhaseFlakeRecovered', () => {
       'e2e 2/4',
       'server 1/6',
     ]);
+  });
+});
+
+describe('retryRecoveryBlocksAutoPush', () => {
+  it('defaults to false — a configured-retry recovery does not block auto-push', () => {
+    expect(retryRecoveryBlocksAutoPush({})).toBe(false);
+    expect(retryRecoveryBlocksAutoPush({ FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH: '' })).toBe(false);
+    expect(retryRecoveryBlocksAutoPush({ FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH: '0' })).toBe(false);
+    expect(retryRecoveryBlocksAutoPush({ FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH: 'false' })).toBe(
+      false,
+    );
+    expect(retryRecoveryBlocksAutoPush({ FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH: 'nope' })).toBe(
+      false,
+    );
+  });
+
+  it('opts into strict blocking for truthy values (case/whitespace tolerant)', () => {
+    for (const raw of ['1', 'true', 'TRUE', 'on', 'On', 'yes', '  yes  ']) {
+      expect(retryRecoveryBlocksAutoPush({ FINALIZE_RETRY_RECOVERY_BLOCKS_PUSH: raw })).toBe(true);
+    }
   });
 });
