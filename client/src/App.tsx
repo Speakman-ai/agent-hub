@@ -3958,7 +3958,7 @@ export default function App({ initialView }: any = {}) {
   const stopSessionPreviewRuntime = useCallback(async (sessionId: any) => {
     if (!sessionId) return;
     try {
-      await fetch(`${getApiBase()}/api/sessions/${encodeURIComponent(sessionId)}/preview/stop`, {
+      await fetch(`${getApiBase()}/sessions/${encodeURIComponent(sessionId)}/preview/stop`, {
         method: 'POST',
         headers: getAuthHeaders(),
       });
