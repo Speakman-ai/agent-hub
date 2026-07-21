@@ -15,6 +15,18 @@ export function parseDate(val: any) {
     return new Date(`${str}Z`);
 }
 /**
+ * Format a server timestamp as an absolute local date+time string.
+ * UTC-aware (via parseDate) and null-safe — returns '' for falsy/unparseable
+ * input instead of the "Dec 31 1969" / "Invalid Date" that `new Date(null)`
+ * or `new Date('bad')` would produce. Mirrors `client/src/utils/time.ts#formatDateTime`.
+ */
+export function formatDateTime(val: any, opts?: Intl.DateTimeFormatOptions): string {
+    const d = parseDate(val);
+    if (!d || Number.isNaN(d.getTime()))
+        return '';
+    return d.toLocaleString(undefined, opts);
+}
+/**
  * Format a date string as relative time ("2 min ago", "1h ago", etc.)
  */
 export function relativeTime(dateStr: any) {

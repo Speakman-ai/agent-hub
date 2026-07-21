@@ -620,6 +620,11 @@ export const api = {
         body: JSON.stringify({ enabled }),
     }),
     getSkillOverrides: (agentId: any) => fetchJSON(`/agents/${agentId}/skills/overrides`),
+    // Per-user skill credentials — stored per signed-in user and merged into CLI
+    // spawns for enabled skills. Mirrors the web SkillsPage credential entry.
+    getSkillCredentials: (skillId?: any) => fetchJSON(`/auth/me/skill-credentials${skillId ? `?skillId=${encodeURIComponent(skillId)}` : ''}`),
+    putSkillCredential: (body: any) => fetchJSON('/auth/me/skill-credentials', { method: 'PUT', body: JSON.stringify(body) }),
+    deleteSkillCredential: (id: any) => fetchJSON(`/auth/me/skill-credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     // Upload
     uploadImage: (dataUrl: any, filename: any) => fetchJSON('/upload', {
         method: 'POST',

@@ -1,11 +1,18 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, Linking, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import Markdown from 'react-native-markdown-display';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { hasRole, getUserRole } from '../utils/auth';
+import { formatDateTime } from '../utils/time';
+import { safeHttpHref } from '../utils/safeHttpUrl';
+import {
+    findCredentialRow,
+    isSecretCredential,
+    validateCredentialValue,
+} from '@shared/utils/skillCredentialForm';
 import { colors } from '../theme/colors';
 const CATEGORY_STYLES: Record<string, any> = {
     platform: { bg: colors.indigo900_40, fg: colors.indigo400 },
@@ -122,33 +129,178 @@ export function PendingLessonsSection({ projectId, improvements, onReviewed, onO
         </View>))}
     </View>);
 }
+/**
+ * Per-user skill-credential entry (mobile parity with the web SkillsPage
+ * credential block). Renders one masked/plaintext input per declared credential
+ * spec, a saved-value preview, and Save / Revoke actions. Presentational: all
+ * fetch/save/delete state is owned by the parent `SkillCard`; the pure
+ * schema/row/validation decisions come from `@shared/utils/skillCredentialForm`
+ * so web and mobile cannot drift.
+ */
+export function SkillCredentialSection({ schema, rows, inputs, onChangeInput, onSave, onDelete, loading, error, saving, }: any) {
+    if (!schema?.length)
+        return null;
+    return (<View style={styles.credSection} testID="skill-credential-section">
+      <View style={styles.credHeaderRow}>
+        <Text style={styles.credHeaderIcon}>🛡️</Text>
+        <Text style={styles.credHeaderTitle}>Credentials</Text>
+      </View>
+      <Text style={styles.credHint}>
+        Stored per signed-in user, merged into CLI spawns for enabled skills. GitHub sign-in under
+        Settings wins over same-named skill vars (GH_TOKEN / GITHUB_TOKEN).
+      </Text>
+      {loading ? (<Text style={styles.credLoading}>Loading saved values…</Text>) : error ? (<Text style={styles.credError}>{error}</Text>) : (schema.map((spec: any) => {
+            const row = findCredentialRow(rows, spec.name);
+            const docsHref = safeHttpHref(spec.docs_url);
+            const secret = isSecretCredential(spec);
+            return (<View key={spec.name} style={styles.credRow}>
+              <View style={styles.credRowHeader}>
+                <View style={styles.credRowInfo}>
+                  <Text style={styles.credLabel}>{spec.label || spec.name}</Text>
+                  <Text style={styles.credKeyName}>{spec.name}</Text>
+                  {spec.description ? (<Text style={styles.credDescription}>{spec.description}</Text>) : null}
+                  {docsHref ? (<TouchableOpacity onPress={() => Linking.openURL(docsHref)} hitSlop={6}>
+                      <Text style={styles.credDocsLink}>Documentation ↗</Text>
+                    </TouchableOpacity>) : null}
+                </View>
+                {row?.masked_preview ? (<Text style={styles.credSaved}>
+                    Saved: <Text style={styles.credSavedValue}>{row.masked_preview}</Text>
+                  </Text>) : null}
+              </View>
+              <View style={styles.credInputRow}>
+                <TextInput secureTextEntry={secret} autoCapitalize="none" autoCorrect={false} spellCheck={false} placeholder={spec.required ? 'Required' : 'Optional — paste to set'} placeholderTextColor={colors.gray600} value={inputs[spec.name] ?? ''} onChangeText={(t: string) => onChangeInput(spec.name, t)} style={styles.credInput} testID={`cred-input-${spec.name}`}/>
+                <TouchableOpacity disabled={saving === spec.name} onPress={() => onSave(spec)} style={styles.credSaveButton} testID={`cred-save-${spec.name}`}>
+                  <Text style={styles.credSaveButtonText}>{saving === spec.name ? 'Saving…' : 'Save'}</Text>
+                </TouchableOpacity>
+                {row?.id ? (<TouchableOpacity disabled={saving === spec.name} onPress={() => onDelete(spec)} style={styles.credRevokeButton} testID={`cred-revoke-${spec.name}`}>
+                    <Text style={styles.credRevokeButtonText}>Revoke</Text>
+                  </TouchableOpacity>) : null}
+              </View>
+              {row?.last_used_at ? (<Text style={styles.credLastUsed}>
+                  Last used: {formatDateTime(row.last_used_at, { dateStyle: 'short', timeStyle: 'short' })}
+                </Text>) : null}
+            </View>);
+        }))}
+    </View>);
+}
 function SkillCard({ skill, agentId, projectId, overrides, onToggle, onUninstall, isInstalled, pendingCount = 0 }: any) {
     const [expanded, setExpanded] = useState(false);
     const [fullContent, setFullContent] = useState(skill.content || null);
     const [loading, setLoading] = useState(false);
+    const [schemaLoaded, setSchemaLoaded] = useState(false);
+    const [credentialSchema, setCredentialSchema] = useState<any[]>([]);
+    const [credentialRows, setCredentialRows] = useState<any[]>([]);
+    const [credLoading, setCredLoading] = useState(false);
+    const [credError, setCredError] = useState<any>(null);
+    const [credSaving, setCredSaving] = useState<any>(null);
+    const [credentialInputs, setCredentialInputs] = useState<Record<string, any>>({});
     const override = overrides?.find((o: any) => o.skill_id === skill.id);
     const isEnabled = override ? !!override.enabled : true;
+    const credentialSchemaKey = useMemo(() => JSON.stringify(credentialSchema ?? []), [credentialSchema]);
+    // Load the per-user saved credential rows once the schema is known, the card
+    // is expanded, and an agent is in focus (credentials are per-user but keyed
+    // through the agent-scoped save). Keyed on the schema so it refetches if the
+    // schema changes.
+    useEffect(() => {
+        if (!expanded || credentialSchemaKey === '[]' || !agentId)
+            return;
+        let cancelled = false;
+        (async () => {
+            setCredLoading(true);
+            setCredError(null);
+            try {
+                const pack = await api.getSkillCredentials(skill.id);
+                if (!cancelled)
+                    setCredentialRows(pack.credentials || []);
+            }
+            catch (err: any) {
+                if (!cancelled) {
+                    setCredError(err?.message || String(err));
+                    setCredentialRows([]);
+                }
+            }
+            finally {
+                if (!cancelled)
+                    setCredLoading(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [expanded, skill.id, agentId, credentialSchemaKey]);
+    const handleChangeInput = useCallback((name: string, value: string) => {
+        setCredentialInputs((prev: any) => ({ ...prev, [name]: value }));
+    }, []);
+    const saveCredential = useCallback(async (spec: any) => {
+        const val = credentialInputs[spec.name] ?? '';
+        const validationError = validateCredentialValue(spec, val);
+        if (validationError) {
+            setCredError(validationError);
+            return;
+        }
+        setCredSaving(spec.name);
+        setCredError(null);
+        try {
+            await api.putSkillCredential({
+                skill_id: skill.id,
+                key_name: spec.name,
+                value: String(val),
+                agent_id: agentId,
+            });
+            const pack = await api.getSkillCredentials(skill.id);
+            setCredentialRows(pack.credentials || []);
+            setCredentialInputs((prev: any) => ({ ...prev, [spec.name]: '' }));
+        }
+        catch (err: any) {
+            setCredError(err?.message || String(err));
+        }
+        finally {
+            setCredSaving(null);
+        }
+    }, [credentialInputs, skill.id, agentId]);
+    const deleteCredential = useCallback(async (spec: any) => {
+        const row = findCredentialRow(credentialRows, spec.name);
+        if (!row?.id)
+            return;
+        setCredSaving(spec.name);
+        setCredError(null);
+        try {
+            await api.deleteSkillCredential(row.id);
+            const pack = await api.getSkillCredentials(skill.id);
+            setCredentialRows(pack.credentials || []);
+        }
+        catch (err: any) {
+            setCredError(err?.message || String(err));
+        }
+        finally {
+            setCredSaving(null);
+        }
+    }, [credentialRows, skill.id]);
     const handleExpand = async () => {
         if (expanded) {
             setExpanded(false);
             return;
         }
         const canReadProject = skill.source === 'project' && projectId;
-        if (!fullContent && (agentId || skill.source === 'global' || canReadProject)) {
+        if ((agentId || skill.source === 'global' || canReadProject) && (!fullContent || !schemaLoaded)) {
             setLoading(true);
             try {
                 // Read from the tier the skill lives in: global → global tier;
                 // project → the project-owned read (works without an agent);
-                // otherwise → the agent-scoped merged read.
+                // otherwise → the agent-scoped merged read. The credential schema
+                // only comes from this read, so guard the refetch on schemaLoaded.
                 const data = skill.source === 'global'
                     ? await api.getGlobalSkill(skill.id)
                     : canReadProject
                         ? await api.getProjectSkill(projectId, skill.id)
                         : await api.getSkill(agentId, skill.id);
                 setFullContent(data.content);
+                setCredentialSchema(Array.isArray(data.credentials) ? data.credentials : []);
+                setSchemaLoaded(true);
             }
             catch {
                 setFullContent('Failed to load skill content.');
+                setCredentialSchema([]);
             }
             finally {
                 setLoading(false);
@@ -197,9 +349,12 @@ function SkillCard({ skill, agentId, projectId, overrides, onToggle, onUninstall
         </View>
       </TouchableOpacity>
       {expanded && (<View style={styles.cardBody}>
-          {loading ? (<ActivityIndicator size="small" color={colors.gray500}/>) : (<ScrollView style={styles.cardScroll} nestedScrollEnabled>
-              <Markdown style={markdownStyles as any}>{fullContent || ''}</Markdown>
-            </ScrollView>)}
+          {loading ? (<ActivityIndicator size="small" color={colors.gray500}/>) : (<>
+              <ScrollView style={styles.cardScroll} nestedScrollEnabled>
+                <Markdown style={markdownStyles as any}>{fullContent || ''}</Markdown>
+              </ScrollView>
+              {credentialSchema.length > 0 && agentId ? (<SkillCredentialSection schema={credentialSchema} rows={credentialRows} inputs={credentialInputs} onChangeInput={handleChangeInput} onSave={saveCredential} onDelete={deleteCredential} loading={credLoading} error={credError} saving={credSaving}/>) : null}
+            </>)}
         </View>)}
     </View>);
 }
@@ -678,6 +833,133 @@ const styles = StyleSheet.create({
     categoryBadgeText: {
         fontSize: 10,
         fontWeight: '500',
+    },
+    // Per-user skill credential entry
+    credSection: {
+        marginTop: 16,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        backgroundColor: 'rgba(17, 24, 39, 0.35)',
+        borderRadius: 10,
+        padding: 12,
+    },
+    credHeaderRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginBottom: 6,
+    },
+    credHeaderIcon: {
+        fontSize: 13,
+    },
+    credHeaderTitle: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: colors.gray200,
+    },
+    credHint: {
+        fontSize: 10,
+        color: colors.gray500,
+        lineHeight: 14,
+        marginBottom: 10,
+    },
+    credLoading: {
+        fontSize: 12,
+        color: colors.gray500,
+    },
+    credError: {
+        fontSize: 12,
+        color: colors.amber400,
+    },
+    credRow: {
+        borderTopWidth: 1,
+        borderTopColor: colors.gray800,
+        paddingTop: 12,
+        marginTop: 12,
+    },
+    credRowHeader: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        justifyContent: 'space-between',
+        gap: 8,
+    },
+    credRowInfo: {
+        flex: 1,
+        minWidth: 0,
+    },
+    credLabel: {
+        fontSize: 12,
+        fontWeight: '500',
+        color: colors.gray200,
+    },
+    credKeyName: {
+        fontSize: 10,
+        fontFamily: 'monospace',
+        color: colors.gray500,
+    },
+    credDescription: {
+        fontSize: 11,
+        color: colors.gray400,
+        marginTop: 2,
+    },
+    credDocsLink: {
+        fontSize: 11,
+        color: colors.indigo400,
+        marginTop: 2,
+    },
+    credSaved: {
+        fontSize: 10,
+        color: colors.gray500,
+    },
+    credSavedValue: {
+        fontFamily: 'monospace',
+        color: colors.gray300,
+    },
+    credInputRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 8,
+    },
+    credInput: {
+        flex: 1,
+        minWidth: 160,
+        borderWidth: 1,
+        borderColor: colors.gray600,
+        backgroundColor: colors.gray900,
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 8,
+        fontSize: 12,
+        color: colors.gray100,
+    },
+    credSaveButton: {
+        backgroundColor: colors.indigo600,
+        borderRadius: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    credSaveButtonText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: colors.white,
+    },
+    credRevokeButton: {
+        borderWidth: 1,
+        borderColor: colors.gray600,
+        borderRadius: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    credRevokeButtonText: {
+        fontSize: 11,
+        color: colors.gray300,
+    },
+    credLastUsed: {
+        fontSize: 10,
+        color: colors.gray600,
+        marginTop: 6,
     },
     // Pending-lessons review queue (skill improvements)
     lessonsSection: {
