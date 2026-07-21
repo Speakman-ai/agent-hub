@@ -4,7 +4,7 @@
  * pause/resume, a reconnect-status badge, a dropped-count warning, and
  * cursor-paginated "load older" history.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Pause, Play, AlertTriangle, Loader2, RadioTower, Plug, X, Trash2 } from 'lucide-react';
 import { api } from '../../utils/api';
 import {
@@ -12,6 +12,8 @@ import {
   distinctValues,
   mergeTailRecords,
   resolveSinceUnixNano,
+  isNearBottom,
+  nextScrollTop,
   SEVERITY_BUCKETS,
   TIME_RANGES,
   DEFAULT_TIME_RANGE_MS,
@@ -109,15 +111,40 @@ export default function LiveLogsView({
     setLoadingOlder(false);
   }, [minSeverityNumber, sourceId, environment, text, sinceUnixNano]);
 
-  // Live tail + any explicitly loaded older pages, deduped, newest-first.
+  // Live tail + any explicitly loaded older pages, deduped, ascending id order
+  // (oldest→newest). The stream renders in this order so the newest record sits
+  // at the bottom like a terminal tail, and the container auto-scrolls to follow
+  // it (see the scroll-stickiness effect below).
   const combined = useMemo(
     () => mergeTailRecords(older, records, records.length + older.length + 1),
     [older, records],
   );
-  const visible = useMemo(
-    () => filterLogRecords(combined, filter).slice().reverse(),
-    [combined, filter],
-  );
+  const visible = useMemo(() => filterLogRecords(combined, filter), [combined, filter]);
+
+  // Auto-scroll stickiness: keep the newest record in view while the user is
+  // pinned to the bottom, but never yank the viewport when they've scrolled up
+  // to read history or when "Load older" prepends rows above.
+  const streamRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const prevScrollRef = useRef({ firstId: null as number | null, scrollHeight: 0, scrollTop: 0 });
+
+  const onStreamScroll = useCallback(() => {
+    const el = streamRef.current;
+    if (el) stickToBottomRef.current = isNearBottom(el);
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    const firstId = visible.length > 0 ? visible[0].id : null;
+    const target = nextScrollTop(
+      prevScrollRef.current,
+      { firstId, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight },
+      stickToBottomRef.current,
+    );
+    if (target != null) el.scrollTop = target;
+    prevScrollRef.current = { firstId, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+  }, [visible]);
 
   const sources = useMemo(() => distinctValues(combined, 'sourceId'), [combined]);
   const environments = useMemo(() => distinctValues(combined, 'environment'), [combined]);
@@ -356,7 +383,11 @@ export default function LiveLogsView({
       </div>
 
       {/* Stream */}
-      <div className="mt-2 min-h-0 flex-1 overflow-y-auto rounded border border-gray-800 bg-gray-950/40">
+      <div
+        ref={streamRef}
+        onScroll={onStreamScroll}
+        className="mt-2 min-h-0 flex-1 overflow-y-auto rounded border border-gray-800 bg-gray-950/40"
+      >
         {visible.length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-500">
             {combined.length === 0

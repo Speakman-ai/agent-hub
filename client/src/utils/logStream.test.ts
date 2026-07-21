@@ -11,6 +11,8 @@ import {
   nanoToMillis,
   resolveTailCursor,
   resolveSinceUnixNano,
+  isNearBottom,
+  nextScrollTop,
   DEFAULT_TIME_RANGE_MS,
   TIME_RANGES,
   SEVERITY_NUMBER,
@@ -179,6 +181,76 @@ describe('extractStackTrace', () => {
   it('returns null when no stack attribute is present', () => {
     expect(extractStackTrace(JSON.stringify({ foo: 'bar' }))).toBeNull();
     expect(extractStackTrace(null)).toBeNull();
+  });
+});
+
+describe('isNearBottom', () => {
+  it('is true at the exact bottom', () => {
+    expect(isNearBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 })).toBe(true);
+  });
+
+  it('is true within the threshold of the bottom', () => {
+    expect(isNearBottom({ scrollTop: 480, scrollHeight: 1000, clientHeight: 500 })).toBe(true);
+  });
+
+  it('is false when scrolled up past the threshold', () => {
+    expect(isNearBottom({ scrollTop: 200, scrollHeight: 1000, clientHeight: 500 })).toBe(false);
+  });
+
+  it('honors a custom threshold', () => {
+    const geom = { scrollTop: 400, scrollHeight: 1000, clientHeight: 500 };
+    expect(isNearBottom(geom, 50)).toBe(false);
+    expect(isNearBottom(geom, 100)).toBe(true);
+  });
+});
+
+describe('nextScrollTop', () => {
+  it('follows the newest record to the real maximum scroll top when pinned', () => {
+    // Max reachable scrollTop is scrollHeight - clientHeight, not scrollHeight.
+    const target = nextScrollTop(
+      { firstId: 1, scrollHeight: 800, scrollTop: 300 },
+      { firstId: 1, scrollHeight: 1000, clientHeight: 400 },
+      true,
+    );
+    expect(target).toBe(600);
+  });
+
+  it('floors the pinned scroll top at 0 when content is shorter than the viewport', () => {
+    const target = nextScrollTop(
+      { firstId: 1, scrollHeight: 100, scrollTop: 0 },
+      { firstId: 1, scrollHeight: 200, clientHeight: 500 },
+      true,
+    );
+    expect(target).toBe(0);
+  });
+
+  it('preserves the viewport when older history is prepended above', () => {
+    // First visible id dropped from 10 → 1 (a "Load older" prepend) and the
+    // content grew by 400px; shift down by that delta so the read row stays put.
+    const target = nextScrollTop(
+      { firstId: 10, scrollHeight: 600, scrollTop: 0 },
+      { firstId: 1, scrollHeight: 1000, clientHeight: 400 },
+      false,
+    );
+    expect(target).toBe(400);
+  });
+
+  it('leaves the scroll untouched when records append below while scrolled up', () => {
+    const target = nextScrollTop(
+      { firstId: 1, scrollHeight: 800, scrollTop: 100 },
+      { firstId: 1, scrollHeight: 1000, clientHeight: 400 },
+      false,
+    );
+    expect(target).toBeNull();
+  });
+
+  it('does not adjust on the first render (no prior firstId)', () => {
+    const target = nextScrollTop(
+      { firstId: null, scrollHeight: 0, scrollTop: 0 },
+      { firstId: 5, scrollHeight: 1000, clientHeight: 400 },
+      false,
+    );
+    expect(target).toBeNull();
   });
 });
 

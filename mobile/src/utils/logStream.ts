@@ -182,6 +182,27 @@ export function filterLogRecords(records: readonly LogRecord[], filter: LogFilte
   return records.filter((r) => recordMatchesFilter(r, filter));
 }
 
+/** Scroll geometry of a FlatList (subset of a RN scroll `nativeEvent`). */
+export interface ListScrollGeometry {
+  /** `contentOffset.y` — how far the content is scrolled. */
+  offsetY: number;
+  /** `contentSize.height` — total scrollable content height. */
+  contentHeight: number;
+  /** `layoutMeasurement.height` — visible viewport height. */
+  viewportHeight: number;
+}
+
+/**
+ * Is the tail scrolled to (or within `threshold` px of) the bottom? The live
+ * tail renders oldest→newest, so "pinned to bottom" means the newest record is
+ * on screen and the list should keep auto-scrolling to the end as records
+ * arrive. A small threshold absorbs sub-pixel rounding and the height a
+ * just-appended row adds between the scroll event and the content-size change.
+ */
+export function isNearBottom(geom: ListScrollGeometry, threshold = 24): boolean {
+  return geom.contentHeight - geom.offsetY - geom.viewportHeight <= threshold;
+}
+
 /** Distinct non-empty values of a field across a tail, sorted, for facet menus. */
 export function distinctValues(
   records: readonly LogRecord[],

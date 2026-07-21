@@ -82,7 +82,7 @@ describe('LiveLogsView', () => {
     expect(screen.getByText('Live')).toBeInTheDocument();
   });
 
-  it('renders streamed records newest-first', () => {
+  it('renders streamed records oldest→newest (newest at the bottom)', () => {
     const { sock } = renderLive();
     act(() =>
       sock.emit({
@@ -93,8 +93,12 @@ describe('LiveLogsView', () => {
         dropped: 0,
       }),
     );
-    expect(screen.getByText('first')).toBeInTheDocument();
-    expect(screen.getByText('second')).toBeInTheDocument();
+    const first = screen.getByText('first');
+    const second = screen.getByText('second');
+    expect(first).toBeInTheDocument();
+    expect(second).toBeInTheDocument();
+    // The oldest record (id 1) must render before the newest (id 2) in the DOM.
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('filters the visible tail by minimum severity', () => {

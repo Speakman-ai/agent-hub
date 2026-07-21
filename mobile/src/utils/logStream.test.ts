@@ -12,6 +12,7 @@ import {
   extractStackTrace,
   recordHasDetail,
   resolveTailCursor,
+  isNearBottom,
   type LogRecord,
 } from './logStream';
 
@@ -203,5 +204,25 @@ describe('recordHasDetail', () => {
     expect(recordHasDetail(rec({ id: 1 }))).toBe(false);
     expect(recordHasDetail(rec({ id: 1, traceId: 't' }))).toBe(true);
     expect(recordHasDetail(rec({ id: 1, attributesJson: '{}' }))).toBe(true);
+  });
+});
+
+describe('isNearBottom — FlatList tail stickiness', () => {
+  it('is true at the exact bottom', () => {
+    expect(isNearBottom({ offsetY: 500, contentHeight: 1000, viewportHeight: 500 })).toBe(true);
+  });
+
+  it('is true within the threshold of the bottom', () => {
+    expect(isNearBottom({ offsetY: 480, contentHeight: 1000, viewportHeight: 500 })).toBe(true);
+  });
+
+  it('is false when scrolled up past the threshold (reading older history)', () => {
+    expect(isNearBottom({ offsetY: 100, contentHeight: 1000, viewportHeight: 500 })).toBe(false);
+  });
+
+  it('honors a custom threshold', () => {
+    const geom = { offsetY: 400, contentHeight: 1000, viewportHeight: 500 };
+    expect(isNearBottom(geom, 50)).toBe(false);
+    expect(isNearBottom(geom, 100)).toBe(true);
   });
 });

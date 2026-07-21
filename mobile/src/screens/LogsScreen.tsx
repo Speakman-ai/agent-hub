@@ -23,6 +23,8 @@ import {
   ActivityIndicator,
   Alert,
   StyleSheet,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
@@ -46,6 +48,7 @@ import {
   mergeTailRecords,
   filterLogRecords,
   distinctValues,
+  isNearBottom,
   type SeverityTone,
   type LogRecord,
   type LogFilter,
@@ -366,11 +369,28 @@ export function LiveLogsView({
     () => mergeTailRecords(older, records, records.length + older.length + 1),
     [older, records],
   );
-  // Newest-first for display.
-  const visible = useMemo(
-    () => filterLogRecords(combined, filter).slice().reverse(),
-    [combined, filter],
-  );
+  // Ascending id order (oldest→newest) so the stream reads top-to-bottom like a
+  // terminal tail: oldest near the "Load older" pager at the top, newest at the
+  // bottom. The list auto-scrolls to the end to follow new records while the
+  // user is pinned to the bottom (see the scroll-stickiness handlers below).
+  const visible = useMemo(() => filterLogRecords(combined, filter), [combined, filter]);
+
+  // Auto-scroll stickiness: follow the newest record while the user is pinned to
+  // the bottom, but never yank the viewport when they've scrolled up to read
+  // history or when "Load older" prepends rows above the viewport.
+  const listRef = useRef<FlatList<LogRecord>>(null);
+  const stickToBottomRef = useRef(true);
+  const onListScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    stickToBottomRef.current = isNearBottom({
+      offsetY: contentOffset.y,
+      contentHeight: contentSize.height,
+      viewportHeight: layoutMeasurement.height,
+    });
+  }, []);
+  const onListContentSizeChange = useCallback(() => {
+    if (stickToBottomRef.current) listRef.current?.scrollToEnd({ animated: false });
+  }, []);
 
   const sources = useMemo(() => distinctValues(combined, 'sourceId'), [combined]);
   const environments = useMemo(() => distinctValues(combined, 'environment'), [combined]);
@@ -561,11 +581,18 @@ export function LiveLogsView({
         </Text>
       ) : (
         <FlatList
+          ref={listRef}
           data={visible}
           keyExtractor={(r) => String(r.id)}
           renderItem={({ item }) => <LogRecordRow record={item} />}
           style={styles.stream}
           contentContainerStyle={styles.streamContent}
+          onScroll={onListScroll}
+          scrollEventThrottle={16}
+          onContentSizeChange={onListContentSizeChange}
+          // Keep the viewport anchored when "Load older" prepends rows above, so
+          // the row the user is reading doesn't jump.
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
         />
       )}
     </View>

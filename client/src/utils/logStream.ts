@@ -154,6 +154,57 @@ export function mergeTailRecords(
   return bounded;
 }
 
+/** Scroll geometry of the tail container (subset of a DOM element). */
+export interface ScrollGeometry {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+/**
+ * Is the tail scrolled to (or within `threshold` px of) the bottom? The live
+ * tail renders oldest→newest, so "pinned to bottom" means the newest record is
+ * in view and the stream should keep auto-scrolling as records arrive. A small
+ * threshold absorbs sub-pixel rounding and the height a just-appended row adds
+ * between the scroll event and the layout effect.
+ */
+export function isNearBottom(geom: ScrollGeometry, threshold = 24): boolean {
+  const distance = geom.scrollHeight - geom.scrollTop - geom.clientHeight;
+  return distance <= threshold;
+}
+
+/**
+ * Desired `scrollTop` after the tail's content changed, or `null` to leave the
+ * scroll position untouched.
+ *
+ *  - Pinned to the bottom → follow the newest record by returning the real
+ *    maximum scroll top (`scrollHeight - clientHeight`, floored at 0). This is
+ *    the exact value the DOM clamps `scrollTop` to at the bottom, so the helper
+ *    encodes a reachable position rather than relying on the browser to clamp an
+ *    out-of-range `scrollHeight`.
+ *  - Older history prepended above the viewport (the first visible id got
+ *    smaller) → shift down by the added height so the row the user was reading
+ *    stays put instead of jumping.
+ *  - Otherwise (records appended below while scrolled up) → leave it, so reading
+ *    history is never interrupted.
+ */
+export function nextScrollTop(
+  prev: { firstId: number | null; scrollHeight: number; scrollTop: number },
+  next: { firstId: number | null; scrollHeight: number; clientHeight: number },
+  stickToBottom: boolean,
+): number | null {
+  if (stickToBottom) return Math.max(0, next.scrollHeight - next.clientHeight);
+  if (
+    prev.firstId != null &&
+    next.firstId != null &&
+    next.firstId < prev.firstId &&
+    next.scrollHeight > prev.scrollHeight
+  ) {
+    return prev.scrollTop + (next.scrollHeight - prev.scrollHeight);
+  }
+  return null;
+}
+
 /** Does a record pass the client-side Live filter? */
 export function recordMatchesFilter(record: LogRecord, filter: LogFilter): boolean {
   if (
