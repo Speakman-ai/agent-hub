@@ -4,7 +4,7 @@ import {
   stepRunMapByStepId,
   buildWorkflowStepDots,
   dotKindForStep,
-} from './workflowProgressDots';
+} from './workflowProgressDots.js';
 
 describe('workflowProgressDots', () => {
   it('orders steps by step_order', () => {

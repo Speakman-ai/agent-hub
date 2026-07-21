@@ -15,7 +15,7 @@ import {
   Minus,
   Terminal,
 } from 'lucide-react';
-import { buildWorkflowRunTimeline, isWorkflowRunActive } from '../utils/workflowRunTimeline';
+import { buildWorkflowRunTimeline, isWorkflowRunActive } from '@shared/utils/workflowRunTimeline';
 
 const WORKFLOW_WS = 'agenthub-workflow-ws';
 

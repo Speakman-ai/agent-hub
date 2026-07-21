@@ -1,16 +1,34 @@
 /**
  * Pure helpers for Hub workflow list — map definition steps + latest run step_runs
  * to a stable ordered list for progress-dot rendering.
+ *
+ * Consumed by both web (`ProjectWorkflowsPage`, `WorkflowRunsSection`) and mobile
+ * (`WorkflowsScreen`) so the timeline logic never drifts between surfaces.
  */
 
-export function orderedStepsFromWorkflow(workflow: any) {
+export type WorkflowDotKind =
+  | 'inactive'
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'error'
+  | 'cancelled'
+  | 'skipped';
+
+export interface WorkflowStepDot {
+  id: string;
+  title: string;
+  kind: WorkflowDotKind;
+}
+
+export function orderedStepsFromWorkflow(workflow: any): any[] {
   const steps = Array.isArray(workflow?.steps) ? [...workflow.steps] : [];
   steps.sort((a: any, b: any) => (a.step_order ?? 0) - (b.step_order ?? 0));
   return steps;
 }
 
-export function stepRunMapByStepId(stepRuns: any) {
-  const m = new Map();
+export function stepRunMapByStepId(stepRuns: any): Map<string, any> {
+  const m = new Map<string, any>();
   for (const sr of stepRuns || []) {
     const sid = sr?.workflow_step_id;
     if (sid) m.set(String(sid), sr);
@@ -18,17 +36,11 @@ export function stepRunMapByStepId(stepRuns: any) {
   return m;
 }
 
-/**
- * @typedef {'inactive'|'pending'|'running'|'success'|'error'|'cancelled'|'skipped'} WorkflowDotKind
- */
-
-/**
- * @param {object} workflow — API workflow row with `steps`
- * @param {object[]|null|undefined} stepRuns — from GET …/runs/:runId
- * @param {boolean} hasRun — whether a parent run exists (even with empty step_runs)
- * @returns {{ id: string, title: string, kind: WorkflowDotKind }[]}
- */
-export function buildWorkflowStepDots(workflow: any, stepRuns: any, hasRun: any) {
+export function buildWorkflowStepDots(
+  workflow: any,
+  stepRuns: any,
+  hasRun: any,
+): WorkflowStepDot[] {
   const steps = orderedStepsFromWorkflow(workflow);
   const byStep = stepRunMapByStepId(stepRuns);
   return steps.map((s: any) => {
@@ -43,12 +55,7 @@ export function buildWorkflowStepDots(workflow: any, stepRuns: any, hasRun: any)
   });
 }
 
-/**
- * @param {object|undefined} stepRun
- * @param {boolean} hasRun
- * @returns {WorkflowDotKind}
- */
-export function dotKindForStep(stepRun: any, hasRun: any) {
+export function dotKindForStep(stepRun: any, hasRun: any): WorkflowDotKind {
   if (!hasRun) return 'inactive';
   if (!stepRun) return 'pending';
   const st = String(stepRun.status || '').toLowerCase();

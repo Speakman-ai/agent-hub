@@ -4,7 +4,7 @@
  * Mirrors the web sidebar (`client/src/components/Sidebar.tsx`), which renders
  * the per-project navigation as five collapsible groups:
  *   - Git       — Repository, Pulls, Deployments
- *   - Planning  — Board, Epics, Notes
+ *   - Planning  — Board, Workflows, Epics, Notes
  *   - Support   — Customer Issues, Threads, Logs, RUM, Replays, AWS, Security
  *   - AI        — Agents, Wiki
  *   - Settings  — Project Configuration, Runners, Dev Server, Cron Jobs
@@ -73,6 +73,7 @@ export function projectNavGroups(project: any) {
             entries: [
                 { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' },
                 { key: 'card-templates', label: 'Card Templates', icon: 'FileSpreadsheet', screen: 'KanbanCardTemplates' },
+                { key: 'workflows', label: 'Workflows', icon: 'ListOrdered', screen: 'Workflows' },
                 { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' },
                 { key: 'stats', label: 'Stats', icon: 'BarChart3', screen: 'Stats' },
                 { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' },

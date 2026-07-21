@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '../utils/api';
-import { buildWorkflowStepDots } from '../utils/workflowProgressDots';
+import { buildWorkflowStepDots } from '@shared/utils/workflowProgressDots';
 import { toWorkflowEditView } from '../utils/workflowEditView';
 import WorkflowRunsSection from './WorkflowRunsSection';
 

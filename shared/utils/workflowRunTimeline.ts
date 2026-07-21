@@ -1,14 +1,29 @@
-import { orderedStepsFromWorkflow, stepRunMapByStepId } from './workflowProgressDots';
+import { orderedStepsFromWorkflow, stepRunMapByStepId } from './workflowProgressDots.js';
 
-/** @param {object|null|undefined} run */
-export function isWorkflowRunActive(run: any) {
+export interface WorkflowTimelineRow {
+  key: string;
+  step: any;
+  stepRun: any | null;
+  displayStatus: string;
+  index: number;
+  orphan: boolean;
+}
+
+export interface WorkflowRunTimeline {
+  rows: WorkflowTimelineRow[];
+  totalSteps: number;
+  completedSteps: number;
+  runningRow: { step: any; stepRun: any; index: number } | null;
+  progressPct: number;
+}
+
+export function isWorkflowRunActive(run: any): boolean {
   if (!run) return false;
   const s = String(run.status || '').toLowerCase();
   return s === 'pending' || s === 'running';
 }
 
-/** @param {string|undefined|null} status */
-export function isStepTerminalStatus(status: any) {
+export function isStepTerminalStatus(status: any): boolean {
   const s = String(status || '').toLowerCase();
   return s === 'success' || s === 'error' || s === 'cancelled' || s === 'skipped';
 }
@@ -16,31 +31,20 @@ export function isStepTerminalStatus(status: any) {
 /**
  * Merge workflow definition steps with run detail `step_runs` for timeline UI.
  *
- * @param {object|null|undefined} workflow — workflow row with `steps` (from list or GET one)
- * @param {object[]|null|undefined} stepRuns — `detail.step_runs`
- * @param {object|null|undefined} run — `detail.run`
- * @returns {{
- *   rows: Array<{
- *     key: string,
- *     step: object,
- *     stepRun: object|null,
- *     displayStatus: string,
- *     index: number,
- *     orphan: boolean,
- *   }>,
- *   totalSteps: number,
- *   completedSteps: number,
- *   runningRow: { step: object, stepRun: object, index: number }|null,
- *   progressPct: number,
- * }}
+ * @param workflow — workflow row with `steps` (from list or GET one)
+ * @param stepRuns — `detail.step_runs`
+ * @param run — `detail.run`
  */
-export function buildWorkflowRunTimeline(workflow: any, stepRuns: any, run: any) {
+export function buildWorkflowRunTimeline(
+  workflow: any,
+  stepRuns: any,
+  run: any,
+): WorkflowRunTimeline {
   const defSteps = orderedStepsFromWorkflow(workflow || {});
   const byStep = stepRunMapByStepId(stepRuns);
   const runTerminal = Boolean(run && !isWorkflowRunActive(run));
 
-  /** @type {ReturnType<typeof buildWorkflowRunTimeline>['rows']} */
-  const rows = defSteps.map((step: any, index: any) => {
+  const rows: WorkflowTimelineRow[] = defSteps.map((step: any, index: number) => {
     const sid = String(step.id ?? '');
     const sr = sid ? byStep.get(sid) : undefined;
     const displayStatus = sr
@@ -59,8 +63,7 @@ export function buildWorkflowRunTimeline(workflow: any, stepRuns: any, run: any)
   });
 
   const seen = new Set(defSteps.map((s: any) => String(s.id ?? '')));
-  /** @type {typeof rows} */
-  const orphans: any[] = [];
+  const orphans: WorkflowTimelineRow[] = [];
   for (const sr of stepRuns || []) {
     const sid = String(sr.workflow_step_id || '');
     if (!sid || seen.has(sid)) continue;
@@ -81,7 +84,7 @@ export function buildWorkflowRunTimeline(workflow: any, stepRuns: any, run: any)
   }
   orphans.sort((a: any, b: any) => (a.step.step_order ?? 0) - (b.step.step_order ?? 0));
   rows.push(...orphans);
-  rows.forEach((r: any, i: any) => {
+  rows.forEach((r, i) => {
     r.index = i;
   });
 
@@ -93,7 +96,7 @@ export function buildWorkflowRunTimeline(workflow: any, stepRuns: any, run: any)
   }
 
   const runningEntry = rows.find(
-    (r: any) => r.stepRun && String(r.stepRun.status || '').toLowerCase() === 'running',
+    (r) => r.stepRun && String(r.stepRun.status || '').toLowerCase() === 'running',
   );
   const runningRow = runningEntry
     ? { step: runningEntry.step, stepRun: runningEntry.stepRun, index: runningEntry.index }

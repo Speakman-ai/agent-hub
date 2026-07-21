@@ -46,6 +46,7 @@ import EpicsScreen from './src/screens/EpicsScreen';
 import EpicDetailScreen from './src/screens/EpicDetailScreen';
 import RepositoryScreen from './src/screens/RepositoryScreen';
 import DeploymentsScreen from './src/screens/DeploymentsScreen';
+import WorkflowsScreen from './src/screens/WorkflowsScreen';
 import InviteAcceptScreen from './src/screens/InviteAcceptScreen';
 import DrawerContent from './src/components/DrawerContent';
 import SetupWizard from './src/components/SetupWizard';
@@ -246,6 +247,7 @@ function AppContent() {
             <Stack.Screen name="EpicDetail" component={EpicDetailScreen}/>
             <Stack.Screen name="Repository" component={RepositoryScreen}/>
             <Stack.Screen name="Deployments" component={DeploymentsScreen}/>
+            <Stack.Screen name="Workflows" component={WorkflowsScreen}/>
             <Stack.Screen name="Invite" component={InviteAcceptScreen}/>
           </Stack.Navigator>
         </NavigationContainer>

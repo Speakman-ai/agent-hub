@@ -3,7 +3,7 @@ import {
   buildWorkflowRunTimeline,
   isWorkflowRunActive,
   isStepTerminalStatus,
-} from './workflowRunTimeline';
+} from './workflowRunTimeline.js';
 
 describe('isWorkflowRunActive', () => {
   it('is true for pending and running', () => {

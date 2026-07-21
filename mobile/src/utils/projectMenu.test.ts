@@ -23,6 +23,7 @@ describe('projectNavGroups', () => {
         expect(group({}, 'planning').entries.map((e) => e.key)).toEqual([
             'board',
             'card-templates',
+            'workflows',
             'epics',
             'stats',
             'notes',
@@ -111,6 +112,7 @@ describe('projectNavGroups', () => {
         }
         for (const kept of [
             'board',
+            'workflows',
             'notes',
             'threads',
             'wiki',
