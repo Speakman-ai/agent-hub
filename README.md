@@ -9,7 +9,7 @@ Think of it as the dashboard your agents work *inside*, instead of a chat box
 bolted onto your editor.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-![Node](https://img.shields.io/badge/node-%3E%3D22.14-brightgreen.svg)
+![Node](https://img.shields.io/badge/node-%3E%3D22.14%20%3C23-brightgreen.svg)
 ![Self-hosted](https://img.shields.io/badge/deploy-self--hosted-6f42c1.svg)
 
 ![Agent Hub dashboard](docs/media/dashboard.png)
