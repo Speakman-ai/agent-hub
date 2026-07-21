@@ -72,7 +72,10 @@ in-hub review, and runs your test suite on an isolated Docker-in-Docker runner
 sized to match a GitHub-hosted runner. You see the review notes and each check
 pass or fail, then decide whether to push or merge.
 
-![Finalize Code Changes](docs/media/finalize.png)
+<img width="1470" height="803" alt="Screenshot 2026-07-21 at 9 52 45 AM" src="https://github.com/user-attachments/assets/f6992a9b-6283-41b8-b2ed-5ab06c122e4f" />
+<img width="1472" height="803" alt="Screenshot 2026-07-21 at 9 52 32 AM" src="https://github.com/user-attachments/assets/367a6dcc-c117-4973-b410-e46651c3747b" />
+
+
 
 ### Session replay (RUM)
 
@@ -81,7 +84,7 @@ Agent Hub can record real user sessions of your app with
 clicks, dead clicks, error clicks). Watch a replay, link it to a ticket — a
 self-hosted alternative to LogRocket or FullStory.
 
-![Session replays](docs/media/replay.png)
+<img width="1161" height="901" alt="Screenshot 2026-07-21 at 9 57 14 AM" src="https://github.com/user-attachments/assets/94090463-6e7a-4456-871b-f6469691829a" />
 
 ### Security scanning
 
