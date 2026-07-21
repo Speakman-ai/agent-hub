@@ -65,7 +65,7 @@ export default function EpicBoardView({
             ) : (
               column.epics.map((epic: any) => {
                 const epicPhases = phasesForEpic(phases, epic.id);
-                const epicTickets = ticketsForEpic(cards, epic.id);
+                const epicTickets = ticketsForEpic(cards, epic.id, columns);
                 const done = countDoneTickets(epicTickets, colMap);
                 const epicLabels = parseCardLabels(epic.labels);
                 const leadUser = usernameForUserId(assignableUsers, epic.assigned_user_id);

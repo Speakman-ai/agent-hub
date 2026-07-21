@@ -1,4 +1,4 @@
-import { isColumnDone } from './kanban-blockers.js';
+import { isColumnCancelled, isColumnDone } from './kanban-blockers.js';
 import type { KanbanCardRow, KanbanColumnRow, KanbanEpicRow, Stmts } from './types.js';
 
 export const EPIC_STATES = ['not_started', 'in_progress', 'done'] as const;
@@ -15,11 +15,15 @@ export function computeEpicState(
   cards: Pick<KanbanCardRow, 'column_id'>[],
   columns: Pick<KanbanColumnRow, 'id' | 'name'>[],
 ): EpicLifecycleState {
-  if (cards.length === 0) return null;
   const columnNameById = new Map(columns.map((column) => [column.id, column.name]));
-  const allDone = cards.every((card) => isColumnDone(columnNameById.get(card.column_id)));
+  // Cancelled cards are dropped work; they must not drive epic state. An epic
+  // whose only non-cancelled cards are all Done should read `done`, not sit
+  // `in_progress` forever behind a cancelled ticket.
+  const liveCards = cards.filter((card) => !isColumnCancelled(columnNameById.get(card.column_id)));
+  if (liveCards.length === 0) return null;
+  const allDone = liveCards.every((card) => isColumnDone(columnNameById.get(card.column_id)));
   if (allDone) return 'done';
-  const anyStarted = cards.some((card) => {
+  const anyStarted = liveCards.some((card) => {
     const columnName = columnNameById.get(card.column_id);
     return isColumnDone(columnName) || !isNotStartedColumn(columnName);
   });

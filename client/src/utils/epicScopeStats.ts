@@ -8,8 +8,28 @@ export function isColumnDone(name: string): boolean {
   return String(name || '').toLowerCase() === 'done';
 }
 
-export function ticketsForEpic(cards: any[], epicId: string) {
-  return (cards || []).filter((c: any) => c.epic_id === epicId);
+/**
+ * A card in a "Canceled" / "Cancelled" column is dropped work, not a live epic
+ * ticket. Cancelled tickets must not appear anywhere in the epic scope UI
+ * (counts, unassigned list, phase columns, progress). Matches both spellings on
+ * a word boundary so custom names like "Won't do / Cancelled" still qualify
+ * without misclassifying unrelated columns.
+ */
+export function isColumnCancelled(name: string): boolean {
+  return /\bcancell?ed\b/i.test(String(name || '').trim());
+}
+
+/**
+ * Tickets belonging to an epic. When `columns` is supplied, cards sitting in a
+ * cancelled column are excluded so cancelled work never surfaces in the epic.
+ */
+export function ticketsForEpic(cards: any[], epicId: string, columns?: any[]) {
+  const nameById = columns ? columnNameById(columns) : null;
+  return (cards || []).filter((c: any) => {
+    if (c.epic_id !== epicId) return false;
+    if (nameById && isColumnCancelled(nameById[c.column_id] || '')) return false;
+    return true;
+  });
 }
 
 export function phasesForEpic(phases: any[], epicId: string) {

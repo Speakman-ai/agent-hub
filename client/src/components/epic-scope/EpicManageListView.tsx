@@ -58,7 +58,7 @@ export default function EpicManageListView({
         <div className="space-y-3">
           {epics.map((epic: any) => {
             const epicPhases = phasesForEpic(phases, epic.id);
-            const epicTickets = ticketsForEpic(cards, epic.id);
+            const epicTickets = ticketsForEpic(cards, epic.id, columns);
             const done = countDoneTickets(epicTickets, colMap);
             const isActive = epic.id === activeEpicId;
             const isEmpty = epicTickets.length === 0;

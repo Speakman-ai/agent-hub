@@ -30,7 +30,7 @@ import {
 import EpicLeadUserField from './EpicLeadUserField';
 import KanbanUserFilterChips from './KanbanUserFilterChips';
 import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
-import { specProgress } from '../utils/epicScopeStats';
+import { specProgress, ticketsForEpic } from '../utils/epicScopeStats';
 import type { AssignableUser } from '../utils/kanbanUserFilter';
 import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
 import LinkedTodosPanel from './kanban/LinkedTodosPanel';
@@ -209,16 +209,14 @@ export default function EpicView({
 
   const epicTickets = useMemo(() => {
     if (!epicId) return [];
-    return cards
-      .filter((c: any) => c.epic_id === epicId)
-      .sort((a: any, b: any) => {
-        const colA = columns.find((c: any) => c.id === a.column_id);
-        const colB = columns.find((c: any) => c.id === b.column_id);
-        const posA = colA?.position ?? 0;
-        const posB = colB?.position ?? 0;
-        if (posA !== posB) return posA - posB;
-        return (a.position ?? 0) - (b.position ?? 0);
-      });
+    return ticketsForEpic(cards, epicId, columns).sort((a: any, b: any) => {
+      const colA = columns.find((c: any) => c.id === a.column_id);
+      const colB = columns.find((c: any) => c.id === b.column_id);
+      const posA = colA?.position ?? 0;
+      const posB = colB?.position ?? 0;
+      if (posA !== posB) return posA - posB;
+      return (a.position ?? 0) - (b.position ?? 0);
+    });
   }, [cards, columns, epicId]);
 
   const epicPhases = useMemo(() => {
@@ -245,16 +243,16 @@ export default function EpicView({
   }, [epicPhases]);
 
   const filteredEpics = useMemo(
-    () => applyEpicListFilters(epics, listFilters, cards),
-    [epics, listFilters, cards],
+    () => applyEpicListFilters(epics, listFilters, cards, columns),
+    [epics, listFilters, cards, columns],
   );
 
   // The board groups epics by lifecycle state across its own columns, so the
   // state dropdown is redundant there — force `state: 'all'` so every column
   // has something to show regardless of the list view's default filter.
   const boardEpics = useMemo(
-    () => applyEpicListFilters(epics, { ...listFilters, state: 'all' }, cards),
-    [epics, listFilters, cards],
+    () => applyEpicListFilters(epics, { ...listFilters, state: 'all' }, cards, columns),
+    [epics, listFilters, cards, columns],
   );
 
   const availableEpicLabels = useMemo(() => collectDistinctEpicLabels(epics), [epics]);

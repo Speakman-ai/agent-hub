@@ -7,6 +7,7 @@ import {
   phaseFormToUpdateBody,
 } from '../utils/epics';
 import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
+import { ticketsForEpic } from '../utils/epicScopeStats';
 import { useResizablePaneWidth } from '../hooks/useResizablePaneWidth';
 import {
   DEFAULT_DESIGN_PANE_WIDTH,
@@ -117,8 +118,8 @@ export default function SessionScopingModePane({
     [phases, epic],
   );
   const epicTickets = useMemo(
-    () => (epic ? cards.filter((c: any) => c.epic_id === epic.id) : []),
-    [cards, epic],
+    () => (epic ? ticketsForEpic(cards, epic.id, columns) : []),
+    [cards, epic, columns],
   );
 
   // Auto-select a newly created epic. When the agent (or user) creates an epic

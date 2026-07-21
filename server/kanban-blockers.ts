@@ -42,6 +42,17 @@ export function isSystemLockedColumnName(columnName: string | null | undefined):
 }
 
 /**
+ * A "Canceled" / "Cancelled" column holds dropped work, not live tickets.
+ * Matches both spellings on a word boundary so custom names like
+ * "Won't do / Cancelled" still qualify without misclassifying unrelated
+ * columns. Used to keep cancelled cards out of epic ticket sets and epic-state.
+ */
+export function isColumnCancelled(columnName: string | null | undefined): boolean {
+  if (!columnName) return false;
+  return /\bcancell?ed\b/i.test(columnName.trim());
+}
+
+/**
  * Shipped / release lanes count as closed for org headline metrics (`openCards`,
  * `openPRs`, priority breakdown). Uses a word-boundary match on `shipped` so
  * **"Unshipped"** is not misclassified (a naive `includes('shipped')` would).

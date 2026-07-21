@@ -34,18 +34,18 @@ export function createDefaultEpicListFilters(): EpicListFilters {
   };
 }
 
-export function epicTicketCount(epicId: string, cards: any[]): number {
-  return ticketsForEpic(cards, epicId).length;
+export function epicTicketCount(epicId: string, cards: any[], columns?: any[]): number {
+  return ticketsForEpic(cards, epicId, columns).length;
 }
 
 export function collectDistinctEpicLabels(epics: Array<{ labels?: string | null }>): string[] {
   return collectDistinctLabels(epics);
 }
 
-export function sortEpicsWithEmptyLast(epics: EpicRow[], cards: any[]): EpicRow[] {
+export function sortEpicsWithEmptyLast(epics: EpicRow[], cards: any[], columns?: any[]): EpicRow[] {
   return [...epics].sort((a, b) => {
-    const aEmpty = epicTicketCount(a.id, cards) === 0;
-    const bEmpty = epicTicketCount(b.id, cards) === 0;
+    const aEmpty = epicTicketCount(a.id, cards, columns) === 0;
+    const bEmpty = epicTicketCount(b.id, cards, columns) === 0;
     if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
     return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
   });
@@ -55,10 +55,11 @@ export function filterEpicsForList(
   epics: EpicRow[],
   filters: EpicListFilters,
   cards: any[],
+  columns?: any[],
 ): EpicRow[] {
   const q = filters.search.trim().toLowerCase();
   return epics.filter((epic) => {
-    const count = epicTicketCount(epic.id, cards);
+    const count = epicTicketCount(epic.id, cards, columns);
     if (filters.scope === 'with-tickets' && count === 0) return false;
     if (filters.scope === 'empty' && count > 0) return false;
     if (filters.state !== 'all' && epic.state !== filters.state) return false;
@@ -77,6 +78,7 @@ export function applyEpicListFilters(
   epics: EpicRow[],
   filters: EpicListFilters,
   cards: any[],
+  columns?: any[],
 ): EpicRow[] {
-  return sortEpicsWithEmptyLast(filterEpicsForList(epics, filters, cards), cards);
+  return sortEpicsWithEmptyLast(filterEpicsForList(epics, filters, cards, columns), cards, columns);
 }

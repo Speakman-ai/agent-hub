@@ -29,6 +29,26 @@ describe('epicListFilters', () => {
     expect(sorted.map((e) => e.id)).toEqual(['e-full', 'e-todo', 'e-other', 'e-empty']);
   });
 
+  it('treats an epic with only cancelled cards as empty when columns are supplied', () => {
+    const boardColumns = [
+      { id: 'col-todo', name: 'To Do' },
+      { id: 'col-cancel', name: 'Canceled' },
+    ];
+    const epicsCanc = [
+      { id: 'e-live', name: 'Live', labels: '', state: 'not_started' },
+      { id: 'e-cancelled', name: 'All cancelled', labels: '', state: 'in_progress' },
+    ];
+    const cardsCanc = [
+      { id: 'k1', epic_id: 'e-live', column_id: 'col-todo' },
+      { id: 'k2', epic_id: 'e-cancelled', column_id: 'col-cancel' },
+    ];
+    const filters = createDefaultEpicListFilters();
+    filters.scope = 'with-tickets';
+    filters.state = 'all';
+    const filtered = applyEpicListFilters(epicsCanc as any, filters, cardsCanc, boardColumns);
+    expect(filtered.map((e) => e.id)).toEqual(['e-live']);
+  });
+
   it('filters by scope and search', () => {
     const filtered = applyEpicListFilters(
       epics as any,
