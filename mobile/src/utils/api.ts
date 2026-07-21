@@ -1023,6 +1023,7 @@ export const api = {
         body: JSON.stringify(data),
     }),
     deleteEpic: (projectId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'DELETE' }),
+    getEpicPulls: (projectId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}/pulls`),
     scopeEpic: (projectId: any, epicId: any, data: { agentId?: string } = {}) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}/scope`, {
         method: 'POST',
         body: JSON.stringify(data),

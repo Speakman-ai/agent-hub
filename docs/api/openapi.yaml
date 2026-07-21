@@ -11942,6 +11942,83 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    EpicPullsResponse:
+      type: object
+      properties:
+        epicId:
+          type: string
+        featureBranch:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum:
+            - agenthub
+            - github
+        pulls:
+          type: array
+          items:
+            $ref: "#/components/schemas/EpicPullSummary"
+      required:
+        - epicId
+        - featureBranch
+        - source
+        - pulls
+    EpicPullSummary:
+      type: object
+      properties:
+        number:
+          type: number
+        title:
+          type: string
+        state:
+          type: string
+          description: "'open' or 'closed'."
+        merged:
+          type: boolean
+        draft:
+          type: boolean
+        html_url:
+          type: string
+          nullable: true
+        head:
+          type: string
+          nullable: true
+        base:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          nullable: true
+        updated_at:
+          type: string
+          nullable: true
+        merged_at:
+          type: string
+          nullable: true
+        closed_at:
+          type: string
+          nullable: true
+        relation:
+          type: string
+          enum:
+            - targets
+            - integration
+          description: "`targets` = PR merges into the epic feature branch; `integration` = PR ships the feature branch (its head) onward."
+      required:
+        - number
+        - title
+        - state
+        - merged
+        - draft
+        - html_url
+        - head
+        - base
+        - created_at
+        - updated_at
+        - merged_at
+        - closed_at
+        - relation
     SessionDesignFile:
       type: object
       properties:
@@ -16775,6 +16852,40 @@ paths:
                 $ref: "#/components/schemas/KanbanEpic"
         "400":
           description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/epics/{epicId}/pulls:
+    get:
+      tags:
+        - Board
+      summary: List pull requests related to a feature's branch
+      description: "Native (Agent Hub-hosted) PRs whose base branch merges into, or whose head branch ships, the epic's `pr_base_branch`. GitHub-repo projects return an empty list with `source: 'github'`."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      responses:
+        "200":
+          description: Related pull requests for the feature branch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpicPullsResponse"
+        "404":
+          description: Project or feature not found.
           content:
             application/json:
               schema:

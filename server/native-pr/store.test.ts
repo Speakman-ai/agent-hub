@@ -5,6 +5,7 @@ import {
   createOrGetOpenPullRequest,
   getPullRequest,
   listPullRequests,
+  listPullRequestsForBranch,
   markClosed,
   markMerged,
 } from './store.js';
@@ -103,6 +104,61 @@ describe('native-pr store', () => {
     expect(listPullRequests(stmts, projectId, 'all', 50)).toHaveLength(2);
     expect(getPullRequest(stmts, projectId, a.number)?.status).toBe('closed');
     expect(getPullRequest(stmts, projectId, 999)).toBeNull();
+  });
+
+  it('listPullRequestsForBranch returns branch matches even beyond a 200-PR page', async () => {
+    const projectId = `np-${uuidv4().slice(0, 8)}`;
+    const featureBranch = 'feature/big-epic';
+
+    // A ticket PR that targets the feature branch, and the epic's integration
+    // PR whose head IS the feature branch.
+    const targetsPr = createOrGetOpenPullRequest(
+      stmts,
+      freshArgs(projectId, { baseBranch: featureBranch }),
+    ).row;
+    const integrationPr = createOrGetOpenPullRequest(
+      stmts,
+      freshArgs(projectId, { headBranch: featureBranch, baseBranch: 'main' }),
+    ).row;
+
+    // Force the two matches to be the OLDEST rows so a `updated_at DESC LIMIT
+    // 200` page provably sorts them out (deterministic, no timestamp-tie flake).
+    const { getDb } = await import('../db.js');
+    const bump = getDb().prepare('UPDATE pull_requests SET updated_at = ? WHERE id = ?');
+    bump.run(1, targetsPr.id);
+    bump.run(1, integrationPr.id);
+
+    // 205 unrelated, newer PRs — enough to bury the two matches outside the old
+    // 200-row page that the endpoint used to fetch-then-filter in memory.
+    for (let i = 0; i < 205; i++) {
+      createOrGetOpenPullRequest(stmts, freshArgs(projectId));
+    }
+
+    // The old approach: fetch the newest 200 then filter — drops the matches.
+    const paged = listPullRequests(stmts, projectId, 'all', 200);
+    expect(paged).toHaveLength(200);
+    const pagedNumbers = new Set(paged.map((p) => p.number));
+    expect(pagedNumbers.has(targetsPr.number)).toBe(false);
+    expect(pagedNumbers.has(integrationPr.number)).toBe(false);
+
+    // The fix: branch-scoped storage query returns both, regardless of paging.
+    const branchPrs = listPullRequestsForBranch(stmts, projectId, featureBranch);
+    const branchNumbers = new Set(branchPrs.map((p) => p.number));
+    expect(branchNumbers).toEqual(new Set([targetsPr.number, integrationPr.number]));
+  });
+
+  it('listPullRequestsForBranch trims the query branch and ignores blank', () => {
+    const projectId = `np-${uuidv4().slice(0, 8)}`;
+    const branch = 'feature/trimmed';
+    const pr = createOrGetOpenPullRequest(stmts, freshArgs(projectId, { baseBranch: branch })).row;
+
+    // A whitespace-padded query still matches the stored (trimmed) branch —
+    // agrees with the in-memory matchers instead of missing the row.
+    expect(
+      listPullRequestsForBranch(stmts, projectId, `  ${branch}  `).map((p) => p.number),
+    ).toEqual([pr.number]);
+    // Blank-after-trim → no query, empty result.
+    expect(listPullRequestsForBranch(stmts, projectId, '   ')).toEqual([]);
   });
 });
 

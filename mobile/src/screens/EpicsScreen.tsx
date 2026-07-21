@@ -9,6 +9,7 @@ import { applyEpicListFilters, collectDistinctEpicLabels, createDefaultEpicListF
 import { groupEpicsByState } from '../utils/epicBoard';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import LinkedTodosPanel from '../components/LinkedTodosPanel';
+import EpicPullsSection from '../components/EpicPullsSection';
 export default function EpicsScreen({ route, navigation }: any) {
     const { projectId, project: routeProject, editEpicId } = route.params || {};
     const project = routeProject;
@@ -269,6 +270,7 @@ export default function EpicsScreen({ route, navigation }: any) {
             {/* Reverse (bidirectional) display: the caller's own personal todos
                 linked to this epic. Renders nothing when there are none. */}
             {editingEpic ? (<LinkedTodosPanel targetType="epic" entity={editingEpic} projectId={projectId} />) : null}
+            {editingEpic ? (<EpicPullsSection projectId={projectId} epicId={editingEpic.id} onOpenPull={(prNumber: any) => navigation?.navigate?.('PullRequests', { projectId, project, prNumber })} />) : null}
           </View>)}
 
         <View style={styles.stateFilterRow}>

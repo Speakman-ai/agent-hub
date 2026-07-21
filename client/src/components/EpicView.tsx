@@ -19,6 +19,7 @@ import { labelsFieldFromInput } from '../utils/epics';
 import { maybePromptAssignLeadToEpicCards } from '../utils/epicLeadUserCards';
 import EpicDetailsPanel, { EMPTY_EPIC_FORM } from './EpicDetailsPanel';
 import FeatureBranchPanel from './FeatureBranchPanel';
+import EpicPullsSection from './EpicPullsSection';
 import EpicCreateDialog from './epic-scope/EpicCreateDialog';
 import EpicManageListView from './epic-scope/EpicManageListView';
 import EpicBoardView from './epic-scope/EpicBoardView';
@@ -64,6 +65,7 @@ export default function EpicView({
   onOpenEpic,
   onOpenEpicsList,
   onNavigateToSession,
+  onOpenPull,
 }: any) {
   const [columns, setColumns] = useState<any[]>([]);
   const [cards, setCards] = useState<any[]>([]);
@@ -1041,6 +1043,8 @@ export default function EpicView({
                   ) : null}
                 </SectionCard>
               </div>
+
+              <EpicPullsSection projectId={projectId} epicId={epicId} onOpenPull={onOpenPull} />
 
               <EpicScopeWorkbench
                 variant="page"

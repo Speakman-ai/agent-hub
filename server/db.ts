@@ -6908,6 +6908,14 @@ function initDb(dataDir: string): void {
         ORDER BY updated_at DESC
         LIMIT ?`,
     ),
+    // Every PR (any state) touching a branch as base or head. Unbounded on
+    // purpose: the epic-pulls endpoint filters by an epic's feature branch, so
+    // an in-memory page limit could silently drop related PRs.
+    listPullRequestsForBranch: db.prepare(
+      `SELECT * FROM pull_requests
+        WHERE project_id = ? AND (base_branch = ? OR head_branch = ?)
+        ORDER BY updated_at DESC`,
+    ),
     getOpenPullRequestByHeadBranch: db.prepare(
       `SELECT * FROM pull_requests
         WHERE project_id = ? AND head_branch = ? AND status = 'open'

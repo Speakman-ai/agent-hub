@@ -283,4 +283,45 @@ describe('NativePrService', () => {
     ).toThrow(NativePrError);
     await expect(service.getDetail({ project, number: 99 })).rejects.toThrow('not found');
   });
+
+  it('listPullsForBranch: branch-scoped rows carry linked_epic; non-hosted throws', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'feature/reliability';
+    const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
+    const service = createNativePrService({ stmts, broadcast: () => {} });
+
+    // Epic whose feature branch IS the pushed branch.
+    const board = getOrCreateBoard(stmts, projectId);
+    const epicId = uuidv4();
+    stmts.createKanbanEpic.run(epicId, board.board.id, 'Reliability', null, '#111', 0, null);
+    const { getDb } = await import('../db.js');
+    getDb().prepare('UPDATE kanban_epics SET pr_base_branch = ? WHERE id = ?').run(branch, epicId);
+
+    // PR whose head IS the feature branch → relation `integration`.
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Ship reliability',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+
+    const rows = service.listPullsForBranch({ project, branch });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ number: 1, head: branch, base: 'main' });
+    expect(rows[0].linked_epic).toMatchObject({
+      id: epicId,
+      relation: 'integration',
+      feature_branch: branch,
+    });
+
+    // Guard: a non-hosted project throws rather than returning []. The board
+    // endpoint relies on this surfacing (5xx) instead of masking as "no PRs".
+    expect(() =>
+      service.listPullsForBranch({ project: { ...project, gitHost: 'github' }, branch }),
+    ).toThrow(NativePrError);
+  });
 });

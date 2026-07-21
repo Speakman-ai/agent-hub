@@ -2787,6 +2787,12 @@ export interface Stmts {
   getPullRequestByNumber: Stmt;
   /** Params: (project_id, state, state, state, limit) where state ∈ 'open'|'closed'|'all'. */
   listPullRequestsForProject: Stmt;
+  /**
+   * All PRs (any state) whose base OR head branch equals a given branch.
+   * Params: (project_id, branch, branch). Unbounded — the result is naturally
+   * scoped to one feature branch, so no page limit can drop related PRs.
+   */
+  listPullRequestsForBranch: Stmt;
   /** Newest open PR for (project_id, head_branch) — finalize idempotent reuse. */
   getOpenPullRequestByHeadBranch: Stmt;
   /** Refresh head_sha/title/body on reuse. Params: (head_sha, title, body, updated_at, id). */

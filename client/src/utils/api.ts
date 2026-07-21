@@ -2006,6 +2006,8 @@ export const api = {
     }),
   deleteEpic: (projectId: any, epicId: any) =>
     fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'DELETE' }),
+  getEpicPulls: (projectId: any, epicId: any) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}/pulls`),
   assignEpicLeadToCards: (projectId: any, epicId: any) =>
     fetchJSON(`/projects/${projectId}/board/epics/${epicId}/assign-lead-to-cards`, {
       method: 'POST',

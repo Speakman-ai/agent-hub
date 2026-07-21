@@ -5601,6 +5601,12 @@ export default function App({ initialView }: any = {}) {
                       : currentView.split(':')[1];
                     setCurrentView(`epic:${projectId}:${epicId}`);
                   }}
+                  onOpenPull={(prNumber: any) => {
+                    const projectId = currentView.startsWith('epics:')
+                      ? currentView.slice('epics:'.length)
+                      : currentView.split(':')[1];
+                    handleOpenPrDetail(projectId, prNumber);
+                  }}
                 />
               ) : workflowEditRoute ? (
                 <ProjectWorkflowBuilder
@@ -5863,6 +5869,7 @@ export default function App({ initialView }: any = {}) {
                   onOpenSession={handleOpenHandoffSession}
                   onToast={showToast}
                   onOpenCard={() => setCurrentView(`kanban:${pullsProjectId}`)}
+                  onOpenEpic={(epicId: any) => setCurrentView(`epic:${pullsProjectId}:${epicId}`)}
                 />
               ) : currentView.startsWith('repo:') ? (
                 <RepositoryPage

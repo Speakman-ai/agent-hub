@@ -95,6 +95,25 @@ export function listPullRequests(
 }
 
 /**
+ * Every PR (any state) whose base or head branch is `branch`. Unbounded — the
+ * set is naturally scoped to a single branch, so nothing gets paged out.
+ *
+ * The branch is trimmed before matching so it agrees with the in-memory
+ * matchers (`matchEpicForPrBranches` / `prsForEpicFeatureBranch`), which treat
+ * blank-after-trim as "no branch". A blank branch returns `[]` rather than
+ * running a predicate that could never match a stored (trimmed) branch.
+ */
+export function listPullRequestsForBranch(
+  stmts: Stmts,
+  projectId: string,
+  branch: string,
+): PullRequestRow[] {
+  const normalized = branch.trim();
+  if (!normalized) return [];
+  return stmts.listPullRequestsForBranch.all(projectId, normalized, normalized) as PullRequestRow[];
+}
+
+/**
  * Guarded open → merged transition. Returns the updated row, or null when
  * the row wasn't open anymore (someone else merged/closed it first).
  */

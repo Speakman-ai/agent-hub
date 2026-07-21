@@ -13,10 +13,12 @@
 import type { BroadcastFn, Project, PullRequestRow, Stmts } from '../types.js';
 import { bareRepoPath, hostedRepoExists, isAgentHubHosted } from './host.js';
 import { buildNativePrUrl } from './url.js';
+import { matchEpicForPrBranches, type EpicBranchRef, type LinkedEpic } from './epic-branch-link.js';
 import {
   createOrGetOpenPullRequest,
   getPullRequest,
   listPullRequests,
+  listPullRequestsForBranch,
   markClosed,
   markMerged,
   type PrListState,
@@ -118,6 +120,12 @@ export interface NativePrService {
     state: PrListState;
     limit: number;
   }): Array<Record<string, unknown>>;
+  /**
+   * All PRs (any state) whose base or head branch equals `branch`, summarized.
+   * Filtered in storage (no page limit) — used by the epic-pulls endpoint so a
+   * feature branch's PRs are never paged out. Includes `linked_epic`.
+   */
+  listPullsForBranch(args: { project: Project; branch: string }): Array<Record<string, unknown>>;
   getDetail(args: { project: Project; number: number }): Promise<{
     source: 'agenthub';
     pr: Record<string, unknown>;
@@ -507,6 +515,25 @@ function linkedCardFor(
   return card ? { id: card.id, title: card.title, column_id: card.column_id ?? null } : null;
 }
 
+/**
+ * Feature-branch epics for a project, loaded ONCE per list/detail operation.
+ * `linkedEpicForRow` matches individual PR rows against this set — callers must
+ * not reload it per row (the list endpoint maps up to 200 PRs).
+ */
+function epicsForProject(stmts: Stmts, projectId: string): EpicBranchRef[] {
+  const board = stmts.getKanbanBoard.get(projectId) as { id: string } | undefined;
+  if (!board) return [];
+  return stmts.getKanbanEpics.all(board.id) as EpicBranchRef[];
+}
+
+/**
+ * Epic whose feature branch (`pr_base_branch`) matches this PR's base or head
+ * branch, if any. Pure over a pre-loaded epic set — see `epicsForProject`.
+ */
+function linkedEpicForRow(epics: EpicBranchRef[], row: PullRequestRow): LinkedEpic | null {
+  return matchEpicForPrBranches(epics, { head: row.head_branch, base: row.base_branch });
+}
+
 /** Inline diff comments, raw (for in-diff rendering) and folded. */
 function inlineComments(
   stmts: Stmts,
@@ -611,6 +638,8 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       if (!isAgentHubHosted(project)) {
         throw new NativePrError('Project is not Agent Hub-hosted', 400);
       }
+      // Load the board's feature-branch epics once, not per row.
+      const epics = epicsForProject(stmts, project.id);
       return listPullRequests(stmts, project.id, state, limit).map((row) =>
         summarize(project.id, row, {
           review_decision: reviewDecisionFor(stmts, project.id, row),
@@ -618,6 +647,20 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
           // per-row git call); the detail view resolves the live head.
           check_rollup: checksForSha(stmts, project.id, row.head_sha),
           linked_card: linkedCardFor(stmts, project.id, row.number),
+          linked_epic: linkedEpicForRow(epics, row),
+        }),
+      );
+    },
+
+    listPullsForBranch({ project, branch }) {
+      if (!isAgentHubHosted(project)) {
+        throw new NativePrError('Project is not Agent Hub-hosted', 400);
+      }
+      // Load the board's feature-branch epics once, not per row.
+      const epics = epicsForProject(stmts, project.id);
+      return listPullRequestsForBranch(stmts, project.id, branch).map((row) =>
+        summarize(project.id, row, {
+          linked_epic: linkedEpicForRow(epics, row),
         }),
       );
     },
@@ -678,6 +721,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
           finalize_validated: finalizeValidated,
           merge_blocked_reason: blockedReason,
           linked_card: linkedCardFor(stmts, project.id, row.number),
+          linked_epic: linkedEpicForRow(epicsForProject(stmts, project.id), row),
         }),
         reviews: normalizedReviews(stmts, project.id, number),
         // Fold inline comments into the issue-comment shape so the

@@ -1362,3 +1362,71 @@ describe('review reviewer-name override', () => {
     expect(detail.body.pr.review_decision).toBe('CHANGES_REQUESTED');
   });
 });
+
+describe('epic ↔ PR feature-branch linkage', () => {
+  it('links PRs to an epic by feature branch and lists them on the epic', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+
+    // Epic whose feature branch IS the pushed branch.
+    const epicRes = await authedPost(`/api/projects/${id}/board/epics`)
+      .send({ name: 'Reliability', prBaseBranch: branch })
+      .expect(200);
+    const epicId = epicRes.body.id as string;
+
+    // PR #1: head = feature branch, base = main → ships the feature branch (integration).
+    await postPulls(id).send({ headBranch: branch, title: 'Ship reliability' }).expect(201);
+
+    // PR #2: a ticket branched off the feature branch, PR'd INTO it (targets).
+    const ticket = 'agent-hub/dev/session-cafe0002';
+    git(work, `checkout -b ${ticket}`);
+    writeFileSync(path.join(work, 'c.txt'), 'c\n');
+    git(work, 'add c.txt');
+    git(work, 'commit -m "add c"');
+    git(work, `push -u origin ${ticket}`);
+    await postPulls(id)
+      .send({ headBranch: ticket, baseBranch: branch, title: 'Ticket work' })
+      .expect(201);
+
+    // List rows carry linked_epic with the right relation.
+    const list = await authedGet(`/api/projects/${id}/pulls?state=all`).expect(200);
+    const byNum: Record<number, any> = Object.fromEntries(
+      list.body.pulls.map((p: any) => [p.number, p]),
+    );
+    expect(byNum[1].linked_epic).toMatchObject({
+      id: epicId,
+      relation: 'integration',
+      feature_branch: branch,
+    });
+    expect(byNum[2].linked_epic).toMatchObject({ id: epicId, relation: 'targets' });
+
+    // Detail carries linked_epic too.
+    const detail = await authedGet(`/api/projects/${id}/pulls/2`).expect(200);
+    expect(detail.body.pr.linked_epic).toMatchObject({ id: epicId, relation: 'targets' });
+
+    // The epic-pulls endpoint returns both PRs, tagged with their relation.
+    const epicPulls = await authedGet(`/api/projects/${id}/board/epics/${epicId}/pulls`).expect(
+      200,
+    );
+    expect(epicPulls.body).toMatchObject({ epicId, featureBranch: branch, source: 'agenthub' });
+    const relByNum: Record<number, string> = Object.fromEntries(
+      epicPulls.body.pulls.map((p: any) => [p.number, p.relation]),
+    );
+    expect(relByNum).toEqual({ 1: 'integration', 2: 'targets' });
+  });
+
+  it('returns an empty list when the epic has no feature branch', async () => {
+    const { id } = await hostedProjectWithBranch();
+    const epicRes = await authedPost(`/api/projects/${id}/board/epics`)
+      .send({ name: 'No branch' })
+      .expect(200);
+    const res = await authedGet(`/api/projects/${id}/board/epics/${epicRes.body.id}/pulls`).expect(
+      200,
+    );
+    expect(res.body).toMatchObject({ featureBranch: null, pulls: [] });
+  });
+
+  it('404s for an unknown epic', async () => {
+    const { id } = await hostedProjectWithBranch();
+    await authedGet(`/api/projects/${id}/board/epics/does-not-exist/pulls`).expect(404);
+  });
+});

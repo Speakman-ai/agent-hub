@@ -17,7 +17,7 @@ import {
   Zap,
   ZapOff,
 } from 'lucide-react';
-import { Pencil, Check, X, Sparkles, SquareKanban } from 'lucide-react';
+import { Pencil, Check, X, Sparkles, SquareKanban, Layers } from 'lucide-react';
 import { api } from '../utils/api';
 import FileDiffView from './FileDiffView';
 import { MarkdownContent } from './MarkdownRenderer';
@@ -53,6 +53,49 @@ function Badge({ label, color, bg, title }: any) {
   );
 }
 
+/** Label for a PR's epic association (relation is from the PR's point of view). */
+function epicRelationLabel(epic: any): string {
+  const name = epic?.name || 'epic';
+  return epic?.relation === 'integration' ? `Ships ${name}` : `Part of ${name}`;
+}
+
+/**
+ * Chip surfacing the epic whose feature branch this PR merges into (`targets`)
+ * or ships onward (`integration`). Navigates to the epic when `onOpenEpic` is
+ * wired, otherwise renders as a static, titled label.
+ */
+function LinkedEpicChip({ epic, onOpenEpic, prNumber }: any) {
+  if (!epic) return null;
+  const label = epicRelationLabel(epic);
+  const title = epic.feature_branch ? `Epic feature branch: ${epic.feature_branch}` : 'Linked epic';
+  const cls =
+    'mt-1 inline-flex items-center gap-1.5 text-xs text-indigo-300 bg-indigo-500/10 px-2 py-1 rounded-lg transition-colors';
+  if (typeof onOpenEpic === 'function') {
+    return (
+      <button
+        type="button"
+        onClick={(e: any) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onOpenEpic(epic.id);
+        }}
+        title={title}
+        data-testid={`pr-linked-epic-${prNumber}`}
+        className={`${cls} hover:bg-indigo-500/20 hover:text-indigo-100`}
+      >
+        <Layers size={12} className="flex-shrink-0" />
+        <span className="truncate max-w-[20rem]">{label}</span>
+      </button>
+    );
+  }
+  return (
+    <div className={cls} title={title} data-testid={`pr-linked-epic-${prNumber}`}>
+      <Layers size={12} className="flex-shrink-0" />
+      <span className="truncate max-w-[20rem]">{label}</span>
+    </div>
+  );
+}
+
 const CHECK_ICONS = {
   success: CheckCircle2,
   failure: XCircle,
@@ -79,6 +122,7 @@ function PrListItem({
   bulkResolving,
   spawnedSessionId,
   onOpenSession,
+  onOpenEpic,
 }: any) {
   const state = prStateBadge(pr);
   const diff = diffSummary(pr);
@@ -131,6 +175,9 @@ function PrListItem({
             <SquareKanban size={12} className="flex-shrink-0" />
             <span className="truncate">{pr.linked_card.title}</span>
           </div>
+        )}
+        {pr.linked_epic && (
+          <LinkedEpicChip epic={pr.linked_epic} onOpenEpic={onOpenEpic} prNumber={pr.number} />
         )}
         {diff && <div className="mt-1 text-xs text-gray-400 tabular-nums">{diff}</div>}
         {(ciBadge || reviewB || mBadge.show || pipeB) && (
@@ -472,6 +519,7 @@ function PrDetail({
   projectId,
   onToast,
   onOpenCard,
+  onOpenEpic,
 }: any) {
   const pr = detail?.pr;
   const isNative = detail?.source === 'agenthub';
@@ -874,6 +922,11 @@ function PrDetail({
             <SquareKanban size={12} />
             <span className="truncate max-w-[28rem]">{pr.linked_card.title}</span>
           </button>
+        )}
+        {pr.linked_epic && (
+          <div>
+            <LinkedEpicChip epic={pr.linked_epic} onOpenEpic={onOpenEpic} prNumber={pr.number} />
+          </div>
         )}
 
         {Array.isArray(pr.labels) && pr.labels.length > 0 && (
@@ -1598,6 +1651,8 @@ export default function PullRequestsPage({
   onToast,
   /** Navigate to the kanban board (linked-card chip). */
   onOpenCard = null,
+  /** Navigate to an epic page (linked-epic chip). */
+  onOpenEpic = null,
   /** Bumped from App when GitHub/kanban activity should re-sync the open PR list. */
   listRefreshNonce = 0,
   /** When set, opens this PR's detail view on mount (e.g. from session summary). */
@@ -2062,6 +2117,7 @@ export default function PullRequestsPage({
           projectId={projectId}
           onToast={onToast}
           onOpenCard={onOpenCard}
+          onOpenEpic={onOpenEpic}
         />
       );
     }
@@ -2215,6 +2271,7 @@ export default function PullRequestsPage({
                 bulkResolving={bulkResolving}
                 spawnedSessionId={sessionSpawnedByPr[pr.number] || null}
                 onOpenSession={onOpenSession}
+                onOpenEpic={onOpenEpic}
               />
             ))}
           </div>

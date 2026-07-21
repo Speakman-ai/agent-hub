@@ -1102,6 +1102,54 @@ registerPath({
   },
 });
 
+// GET /board/epics/:epicId/pulls
+const EpicPullSummary = z
+  .object({
+    number: z.number(),
+    title: z.string(),
+    state: z.string().openapi({ description: "'open' or 'closed'." }),
+    merged: z.boolean(),
+    draft: z.boolean(),
+    html_url: z.string().nullable(),
+    head: z.string().nullable(),
+    base: z.string().nullable(),
+    created_at: z.string().nullable(),
+    updated_at: z.string().nullable(),
+    merged_at: z.string().nullable(),
+    closed_at: z.string().nullable(),
+    relation: z.enum(['targets', 'integration']).openapi({
+      description:
+        '`targets` = PR merges into the epic feature branch; `integration` = PR ships the feature branch (its head) onward.',
+    }),
+  })
+  .openapi('EpicPullSummary');
+
+const EpicPullsResponse = z
+  .object({
+    epicId: z.string(),
+    featureBranch: z.string().nullable(),
+    source: z.enum(['agenthub', 'github']),
+    pulls: z.array(EpicPullSummary),
+  })
+  .openapi('EpicPullsResponse');
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/board/epics/{epicId}/pulls',
+  tags: ['Board'],
+  summary: "List pull requests related to a feature's branch",
+  description:
+    "Native (Agent Hub-hosted) PRs whose base branch merges into, or whose head branch ships, the epic's `pr_base_branch`. GitHub-repo projects return an empty list with `source: 'github'`.",
+  request: { params: projectEpicIdParams },
+  responses: {
+    200: {
+      description: 'Related pull requests for the feature branch.',
+      content: jsonContent(EpicPullsResponse),
+    },
+    404: errorResponse('Project or feature not found.'),
+  },
+});
+
 // POST /board/epics
 registerPath({
   method: 'post',

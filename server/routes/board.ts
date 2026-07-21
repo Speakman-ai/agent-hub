@@ -37,6 +37,8 @@ import {
 } from '../kanban-pagination.js';
 import { maybeRenameSessionForLinkedCard, resolveCardSessionId } from '../kanban-caller-session.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
+import { isAgentHubHosted } from '../native-pr/host.js';
+import { prsForEpicFeatureBranch } from '../native-pr/epic-branch-link.js';
 import { loadAssignableUsers, normalizeAssignedUserId } from '../kanban-assigned-user.js';
 import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-templates.js';
 import { getDb } from '../db.js';
@@ -594,6 +596,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     autonomousCrons,
     runAutonomousLoop,
     config,
+    nativePr,
   } = deps;
 
   const router = Router();
@@ -1751,6 +1754,62 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const data = getOrCreateBoard(stmts, req.params.projectId as string);
     res.json(epicsWithComputedState(data.epics, data.cards, data.columns));
   });
+
+  // Pull requests related to an epic's feature branch: PRs that merge INTO it
+  // (relation `targets`) or ship it onward (relation `integration`). Native PRs
+  // only — GitHub-repo projects return an empty list with source: 'github'.
+  router.get(
+    '/api/projects/:projectId/board/epics/:epicId/pulls',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const board = stmts.getKanbanBoard.get(req.params.projectId) as { id: string } | undefined;
+      const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
+      if (!epic || !board || epic.board_id !== board.id) {
+        return res.status(404).json({ error: 'Epic not found' });
+      }
+
+      // Normalize once at the boundary so blank-after-trim agrees with the
+      // matcher semantics (blank = no branch) instead of running a misleading
+      // whitespace branch query. `null` is echoed for a blank/absent branch.
+      const trimmed = (epic.pr_base_branch ?? '').trim();
+      const featureBranch = trimmed || null;
+      if (!featureBranch || !isAgentHubHosted(project) || !nativePr) {
+        return res.json({
+          epicId: epic.id,
+          featureBranch,
+          source: isAgentHubHosted(project) ? 'agenthub' : 'github',
+          pulls: [],
+        });
+      }
+
+      // Filter by branch in storage (unbounded) rather than paging the full PR
+      // list and filtering in memory — otherwise related PRs beyond the page
+      // limit would silently vanish from the epic. Expected non-native / no-branch
+      // cases are handled above; any error here is unexpected, so let it propagate
+      // to the error handler (5xx) rather than masking it as "no related PRs".
+      const rows = nativePr.listPullsForBranch({ project, branch: featureBranch });
+      const pulls = prsForEpicFeatureBranch(
+        rows as Array<{ head?: string | null; base?: string | null } & Record<string, unknown>>,
+        featureBranch,
+      ).map((p) => ({
+        number: p.number,
+        title: p.title,
+        state: p.state,
+        merged: p.merged ?? false,
+        draft: p.draft ?? false,
+        html_url: p.html_url,
+        head: p.head,
+        base: p.base,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        merged_at: p.merged_at ?? null,
+        closed_at: p.closed_at ?? null,
+        relation: p.epic_relation,
+      }));
+      res.json({ epicId: epic.id, featureBranch, source: 'agenthub', pulls });
+    },
+  );
 
   router.post('/api/projects/:projectId/board/epics', (req: Request, res: Response) => {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
