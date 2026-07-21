@@ -103,7 +103,13 @@ describe('startSessionPreview', () => {
       prEnv: {
         ...project.prEnv,
         // Keep the legacy compose config present to pin dev-server precedence.
-        devServer: { startCommand: 'npm run dev', env: {}, secretKeys: [], portMap: [] },
+        devServer: {
+          startCommand: 'npm run dev',
+          env: {},
+          secretKeys: [],
+          portMap: [],
+          aptPackages: [],
+        },
       },
     } as Project;
 

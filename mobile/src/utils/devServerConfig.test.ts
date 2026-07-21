@@ -307,3 +307,46 @@ describe('buildSecretsPutPayload', () => {
     expect(payload).toContainEqual({ key: 'NEW_ONE', value: 'fresh', kind: 'secret' });
   });
 });
+
+describe('aptPackages', () => {
+  it('maps a saved aptPackages array into newline-joined text', () => {
+    const form = devServerFormFromProject({
+      prEnv: { devServer: { aptPackages: ['imagemagick', 'libmagickwand-dev'] } },
+    });
+    expect(form.aptPackagesText).toBe('imagemagick\nlibmagickwand-dev');
+  });
+
+  it('includes parsed apt packages in the built config (space/newline separated)', () => {
+    const cfg = buildDevServerConfig(
+      baseForm({ aptPackagesText: 'imagemagick  libmagickwand-dev\ngdal-bin' }),
+    );
+    expect(cfg.aptPackages).toEqual(['imagemagick', 'libmagickwand-dev', 'gdal-bin']);
+  });
+
+  it('omits aptPackages when the field is blank', () => {
+    const cfg = buildDevServerConfig(baseForm({ aptPackagesText: '   ' }));
+    expect(cfg).not.toHaveProperty('aptPackages');
+  });
+
+  it('round-trips a wizard-authored aptPackages list through the form without dropping it', () => {
+    const project = { prEnv: { devServer: { aptPackages: ['imagemagick'] } } };
+    const form = devServerFormFromProject(project);
+    expect(buildDevServerConfig(form).aptPackages).toEqual(['imagemagick']);
+  });
+
+  it('rejects an apt package name with shell metacharacters', () => {
+    const err = validateDevServerForm(baseForm({ aptPackagesText: 'imagemagick; rm -rf /' }));
+    expect(err?.field).toBe('aptPackages');
+    expect(err?.error).toContain('not a valid apt package name');
+  });
+
+  it('rejects duplicate apt packages', () => {
+    const err = validateDevServerForm(baseForm({ aptPackagesText: 'imagemagick imagemagick' }));
+    expect(err?.field).toBe('aptPackages');
+    expect(err?.error).toContain('more than once');
+  });
+
+  it('accepts a valid versioned apt package', () => {
+    expect(validateDevServerForm(baseForm({ aptPackagesText: 'libpq-dev=16.4-1' }))).toBeNull();
+  });
+});

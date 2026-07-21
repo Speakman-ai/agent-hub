@@ -28,9 +28,21 @@ export const MAX_HEALTH_PATH_LEN = 256;
 export const MAX_CWD_LEN = 512;
 export const READY_TIMEOUT_MIN_MS = 5_000;
 export const READY_TIMEOUT_MAX_MS = 3_600_000;
+export const MAX_APT_PACKAGES = 64;
+export const MAX_APT_PACKAGE_LEN = 128;
 
 /** POSIX env var name: leading [A-Za-z_], rest [A-Za-z0-9_]. */
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** apt package name (+ optional `=version`) — mirrors `APT_PACKAGE_RE` server-side. */
+const APT_PACKAGE_RE = /^[a-z0-9][a-z0-9+.-]*(=[A-Za-z0-9.+:~-]+)?$/;
+
+/** Split an apt-packages textarea into tokens (whitespace- or comma-separated). */
+export function parseAptPackagesText(text: string): string[] {
+  return (text || '')
+    .split(/[\s,]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+}
 /** Server-injected namespace — mirrors `server/preview/reserved-env-keys.ts`. */
 const RESERVED_KEY_RE = /^(AGENT_HUB_|NODE_|PATH$|HOME$)/;
 /** PORT is derived from the primary portMap entry and injected by the runtime. */
@@ -66,6 +78,8 @@ export interface DevServerForm {
   /** Empty = no override (server default). */
   readyTimeoutMs: string;
   cwd: string;
+  /** Whitespace/comma-separated apt package names. Empty = none. */
+  aptPackagesText: string;
 }
 
 export interface DevServerValidationError {
@@ -90,6 +104,7 @@ export function emptyDevServerForm(): DevServerForm {
     healthPath: '',
     readyTimeoutMs: '',
     cwd: '',
+    aptPackagesText: '',
   };
 }
 
@@ -127,6 +142,7 @@ export function devServerFormFromProject(
         ? String(ds.readyTimeoutMs)
         : '',
     cwd: typeof ds.cwd === 'string' ? ds.cwd : '',
+    aptPackagesText: (Array.isArray(ds.aptPackages) ? ds.aptPackages : []).join('\n'),
   };
 }
 
@@ -332,6 +348,41 @@ export function validateDevServerForm(form: DevServerForm): DevServerValidationE
     }
   }
 
+  // aptPackages
+  const aptPackages = parseAptPackagesText(form.aptPackagesText);
+  if (aptPackages.length > MAX_APT_PACKAGES) {
+    return {
+      field: 'aptPackages',
+      error: `At most ${MAX_APT_PACKAGES} apt packages are supported.`,
+    };
+  }
+  const seenApt = new Set<string>();
+  for (let i = 0; i < aptPackages.length; i++) {
+    const pkg = aptPackages[i];
+    if (pkg.length > MAX_APT_PACKAGE_LEN) {
+      return {
+        field: 'aptPackages',
+        index: i,
+        error: `apt package "${pkg}" exceeds ${MAX_APT_PACKAGE_LEN} chars.`,
+      };
+    }
+    if (!APT_PACKAGE_RE.test(pkg)) {
+      return {
+        field: 'aptPackages',
+        index: i,
+        error: `"${pkg}" is not a valid apt package name (allowed: a-z, 0-9, "+.-", optional "=version").`,
+      };
+    }
+    if (seenApt.has(pkg)) {
+      return {
+        field: 'aptPackages',
+        index: i,
+        error: `apt package "${pkg}" is listed more than once.`,
+      };
+    }
+    seenApt.add(pkg);
+  }
+
   return null;
 }
 
@@ -379,6 +430,9 @@ export function buildDevServerConfig(form: DevServerForm): Record<string, unknow
 
   const cwd = (form.cwd || '').trim();
   if (cwd) config.cwd = cwd;
+
+  const aptPackages = parseAptPackagesText(form.aptPackagesText);
+  if (aptPackages.length > 0) config.aptPackages = aptPackages;
 
   return config;
 }

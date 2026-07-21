@@ -53,6 +53,11 @@ import { parseDbTime } from './preview-reaper.js';
 import type { Clock, HealthFetchFn, PortRange } from './preview-runtime.js';
 import { systemClock } from './preview-runtime.js';
 import { appendPreviewLogTailLine, DEFAULT_PREVIEW_LOG_TAIL_LINES } from './preview-log-tail.js';
+import {
+  installDevServerSystemDeps,
+  describeSystemDepsExit,
+  SYSTEM_DEPS_PROCESS_NAME,
+} from './dev-server-system-deps.js';
 import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
@@ -811,6 +816,49 @@ export class DevServerRuntime {
       this.logger.warn(
         `[dev-server ${groupId}] secretKeys not found in project secrets: ${missingSecretKeys.join(', ')}`,
       );
+    }
+
+    // Install OS-level packages (apt) before the app starts. Runs only on the
+    // sysbox backend (isolated rootless container); the host backend skips
+    // with a warning rather than mutating the shared host. Runs AFTER secret
+    // resolution so an install that needs registry/proxy credentials or
+    // `APT_*` from `prEnv.devServer` gets the same env the dev server does. A
+    // failed install fails the start — the app declared it needs these libs.
+    if (cfg.aptPackages.length > 0) {
+      try {
+        const depsResult = await installDevServerSystemDeps({
+          env,
+          aptPackages: cfg.aptPackages,
+          spawnEnv,
+          logger: this.logger,
+          onLine: (line, stream) => {
+            appendPreviewLogTailLine(record.tail, line, this.logTailLines);
+            if (this.notifyLog) {
+              try {
+                this.notifyLog({
+                  sessionId,
+                  groupId,
+                  processName: SYSTEM_DEPS_PROCESS_NAME,
+                  line,
+                  stream,
+                });
+              } catch (err) {
+                this.logger.warn(
+                  `[dev-server ${groupId}] notifyLog threw: ${(err as Error).message}`,
+                );
+              }
+            }
+          },
+        });
+        if (depsResult.ran && depsResult.exit && depsResult.exit.code !== 0) {
+          throw new Error(
+            `system dependency install failed: ${describeSystemDepsExit(depsResult.exit)}`,
+          );
+        }
+      } catch (err) {
+        await this.rollbackStart(groupId, record);
+        throw err;
+      }
     }
 
     const processName = primaryEntry.name;

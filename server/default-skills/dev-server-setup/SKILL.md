@@ -63,6 +63,7 @@ Key fields:
 | `healthPath` | Optional readiness path on the primary port. Must start with `/`. |
 | `readyTimeoutMs` | Optional int, 5000–3600000. Max wait for `healthPath` 2xx before the preview flips to failed. |
 | `cwd` | Optional worktree-relative subdir (monorepo). No leading `/`, no `..`. |
+| `aptPackages` | Optional array of OS-level (apt) package names the app needs at runtime but pip/npm can't supply — e.g. `imagemagick`, `libmagickwand-dev` (Python Wand / ImageMagick), `gdal-bin`, `libpq-dev`. Installed via `apt-get` **before** `startCommand`. Names are charset-validated (`a-z0-9`, `+.-`, optional `=version`); no shell metacharacters. **Only** installs when the Hub runs the **sysbox** session backend (isolated rootless per-session container). On the host backend the install is skipped with a loud warning in the preview logs — apt would need root and mutate the shared host. Up to 64 entries. |
 
 ## Walkthrough
 
@@ -71,6 +72,7 @@ Key fields:
 3. **Port map** — ask for each internal port + short label; mark one primary. Seed defaults from `portGuesses`.
 4. **Health path** — ask (default `draft.healthPathGuess`); optional.
 5. **Env vs secrets** — scan `process.env` / `import.meta.env` usage (`Read`/`grep` the source). For each var, ask whether it is non-secret (→ `env`) or a secret (→ `secretKeys` + a value stored via `secrets.env`). Never echo secret values back.
+6. **System dependencies** — check whether the app needs native OS libraries that pip/npm can't install (a `MagickWand shared library not found` / `libGL.so` / `ImportError: lib*` crash at import is the tell). If so, add the apt package names to `aptPackages` (e.g. `imagemagick`, `libmagickwand-dev`). Tell the user these install only under the sysbox session backend; on the host backend they'll see a skip warning and must instead bake the libs into a compose image.
 
 ## Persist
 
@@ -84,7 +86,8 @@ curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/dev-server/setup-apply"
       "env": { "API_BASE_URL": "http://localhost:4000" },
       "secretKeys": ["STRIPE_SECRET_KEY"],
       "portMap": [{ "internalPort": 3000, "label": "web", "primary": true }],
-      "healthPath": "/"
+      "healthPath": "/",
+      "aptPackages": ["imagemagick", "libmagickwand-dev"]
     },
     "secrets": { "env": "STRIPE_SECRET_KEY=sk_test_...", "defaultKind": "secret" }
   }'

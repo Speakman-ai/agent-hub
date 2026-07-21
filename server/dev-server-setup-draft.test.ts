@@ -109,6 +109,7 @@ describe('collectDevServerSetupDraft', () => {
       env: {},
       secretKeys: [],
       portMap: [{ internalPort: 3000, label: 'web', primary: true }],
+      aptPackages: [],
     };
     const draft = collectDevServerSetupDraft(cwd, { existing });
     expect(draft.startCommandCandidates).toEqual([]);

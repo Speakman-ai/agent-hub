@@ -25,6 +25,7 @@ describe('parseDevServerConfig — defaults', () => {
       env: {},
       secretKeys: [],
       portMap: [],
+      aptPackages: [],
     });
   });
 
@@ -186,5 +187,56 @@ describe('parseDevServerConfig — rejections', () => {
 
   it('prefixes errors with the prEnv.devServer path', () => {
     expect(parseErr({ startCommand: '' })).toMatch(/^prEnv\.devServer\.startCommand/);
+  });
+});
+
+describe('parseDevServerConfig — aptPackages', () => {
+  it('defaults to an empty list', () => {
+    expect(parseOk({}).aptPackages).toEqual([]);
+  });
+
+  it('accepts valid package names, including versioned pins', () => {
+    const value = parseOk({
+      aptPackages: ['imagemagick', 'libmagickwand-dev', 'gdal-bin', 'libpq-dev=16.4-1'],
+    });
+    expect(value.aptPackages).toEqual([
+      'imagemagick',
+      'libmagickwand-dev',
+      'gdal-bin',
+      'libpq-dev=16.4-1',
+    ]);
+  });
+
+  it('rejects a package name carrying shell metacharacters (command injection)', () => {
+    expect(parseErr({ aptPackages: ['imagemagick; rm -rf /'] })).toContain(
+      'is not a valid apt package name',
+    );
+    expect(parseErr({ aptPackages: ['$(curl evil)'] })).toContain(
+      'is not a valid apt package name',
+    );
+    expect(parseErr({ aptPackages: ['pkg && wget x'] })).toContain(
+      'is not a valid apt package name',
+    );
+    expect(parseErr({ aptPackages: ['a`b`'] })).toContain('is not a valid apt package name');
+  });
+
+  it('rejects names that do not start with an alphanumeric', () => {
+    expect(parseErr({ aptPackages: ['-flag'] })).toContain('is not a valid apt package name');
+    expect(parseErr({ aptPackages: ['.hidden'] })).toContain('is not a valid apt package name');
+  });
+
+  it('rejects duplicate packages', () => {
+    expect(parseErr({ aptPackages: ['imagemagick', 'imagemagick'] })).toContain(
+      'listed more than once',
+    );
+  });
+
+  it('rejects more than the maximum number of packages', () => {
+    const many = Array.from({ length: 65 }, (_, i) => `pkg${i}`);
+    expect(parseErr({ aptPackages: many })).toMatch(/aptPackages/);
+  });
+
+  it('prefixes apt package errors with the indexed prEnv.devServer path', () => {
+    expect(parseErr({ aptPackages: ['ok', 'bad;x'] })).toMatch(/^prEnv\.devServer\.aptPackages\.1/);
   });
 });

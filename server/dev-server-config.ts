@@ -34,6 +34,22 @@ const MAX_START_COMMAND_LEN = 2000;
 const MAX_LABEL_LEN = 64;
 const MAX_HEALTH_PATH_LEN = 256;
 const MAX_CWD_LEN = 512;
+const MAX_APT_PACKAGES = 64;
+const MAX_APT_PACKAGE_LEN = 128;
+
+/**
+ * Debian/Ubuntu package name, optionally pinned to a `=version`.
+ *
+ * Deliberately conservative: the names are interpolated into an
+ * `apt-get install` command that the dev-server runtime runs **inside the
+ * sysbox session container**, so the charset must exclude every shell
+ * metacharacter. A real package name is `[a-z0-9]` then
+ * `[a-z0-9+.-]*` (see Debian Policy §5.6.1); the optional `=<version>`
+ * tail allows the usual version charset. No spaces, `;`, `|`, `&`, `$`,
+ * backticks, or quotes can pass — so a package list can never smuggle a
+ * second command into the install step.
+ */
+const APT_PACKAGE_RE = /^[a-z0-9][a-z0-9+.-]*(=[A-Za-z0-9.+:~-]+)?$/;
 
 // PORT is reserved: the runtime derives it from the primary portMap entry
 // and injects `PORT=<internalPort>` itself, same contract as the PR-env
@@ -102,6 +118,19 @@ export const devServerConfigSchema = z
      * subdir). Absolute paths and `..` segments are rejected.
      */
     cwd: z.string().trim().min(1).max(MAX_CWD_LEN).optional(),
+    /**
+     * OS-level packages (apt) the app needs at runtime but pip/npm cannot
+     * provide — e.g. `imagemagick`/`libmagickwand-dev` for Python Wand,
+     * `gdal-bin`, `libpq-dev`. The runtime installs these via `apt-get`
+     * **before** `startCommand`, and **only** when the session runs on the
+     * sysbox backend (an isolated, rootless per-session container). On the
+     * host backend the install is skipped with a loud warning — apt would
+     * need root and would mutate the shared host, which is never safe.
+     */
+    aptPackages: z
+      .array(z.string().trim().min(1).max(MAX_APT_PACKAGE_LEN))
+      .max(MAX_APT_PACKAGES)
+      .default([]),
   })
   .superRefine((cfg, ctx) => {
     const envKeys = Object.keys(cfg.env);
@@ -168,6 +197,25 @@ export const devServerConfigSchema = z
         message: 'portMap allows at most one primary entry',
       });
     }
+
+    const seenPackages = new Set<string>();
+    cfg.aptPackages.forEach((pkg, i) => {
+      if (!APT_PACKAGE_RE.test(pkg)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['aptPackages', i],
+          message: `"${pkg}" is not a valid apt package name (allowed: a-z, 0-9, "+.-", optional "=version")`,
+        });
+      }
+      if (seenPackages.has(pkg)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['aptPackages', i],
+          message: `apt package "${pkg}" is listed more than once`,
+        });
+      }
+      seenPackages.add(pkg);
+    });
 
     if (cfg.cwd !== undefined) {
       if (cfg.cwd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(cfg.cwd)) {

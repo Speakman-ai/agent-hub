@@ -409,6 +409,28 @@ export default function DevServerSection({ projects = [], onProjectsChange, onOp
         </div>
       </section>
 
+      {/* System (apt) packages */}
+      <section className="rounded-lg border border-gray-800 p-4">
+        <label htmlFor="dev-server-apt-packages" className="block text-xs text-gray-400 mb-1">
+          System packages (apt, optional)
+        </label>
+        <textarea
+          id="dev-server-apt-packages"
+          rows={2}
+          value={form.aptPackagesText}
+          onChange={(e) => setField('aptPackagesText', e.target.value)}
+          placeholder="imagemagick libmagickwand-dev"
+          className={`${inputClass} font-mono`}
+          data-testid="dev-server-apt-packages"
+        />
+        <p className="text-[11px] text-gray-500 mt-2 max-w-2xl">
+          OS-level libraries the app needs that pip/npm can&apos;t install (e.g. ImageMagick for
+          Python Wand). Separate names with spaces or newlines. Installed with <code>apt-get</code>{' '}
+          before the start command — but only when this Hub runs the sysbox session backend; on the
+          host backend the install is skipped with a warning in the preview logs.
+        </p>
+      </section>
+
       {/* Env vars */}
       <section
         className="rounded-lg border border-gray-800 p-4 space-y-3"

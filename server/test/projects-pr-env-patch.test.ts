@@ -618,6 +618,7 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
         env: { LOG_LEVEL: 'debug' },
         secretKeys: ['DATABASE_URL'],
         portMap: [{ internalPort: 5173, label: 'vite', primary: true }],
+        aptPackages: [],
       },
     });
   });
@@ -675,6 +676,7 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
       env: {},
       secretKeys: [],
       portMap: [],
+      aptPackages: [],
     });
   });
 

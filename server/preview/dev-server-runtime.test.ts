@@ -12,6 +12,7 @@ import type {
   SessionEnv,
   SessionEnvDisposeOpts,
   SessionEnvExit,
+  SessionEnvKind,
   SessionEnvPortMapping,
   SessionEnvProcess,
   SessionEnvPty,
@@ -101,7 +102,7 @@ class FakeProcess implements SessionEnvProcess {
 }
 
 class FakeSessionEnv implements SessionEnv {
-  readonly kind = 'host' as const;
+  kind: SessionEnvKind = 'host';
   readonly sessionId: string;
   readonly createdAtMs = 0;
   lastActivityAtMs = 0;
@@ -112,6 +113,8 @@ class FakeSessionEnv implements SessionEnv {
   mapCalls: number[] = [];
   proc: FakeProcess | null = null;
   throwOnSpawn: Error | null = null;
+  /** When set, the NEXT spawned proc is created already-exited with this result. */
+  preExitNextSpawn: SessionEnvExit | null = null;
   private readonly mappings = new Map<number, SessionEnvPortMapping>();
   private readonly disposeHooks = new Set<() => void>();
 
@@ -129,8 +132,15 @@ class FakeSessionEnv implements SessionEnv {
   spawn(command: string, opts: SessionEnvSpawnOpts = {}): SessionEnvProcess {
     if (this.throwOnSpawn) throw this.throwOnSpawn;
     this.spawnCalls.push({ command, opts });
-    this.proc = new FakeProcess(7000 + this.spawnCalls.length, opts.name ?? command);
-    return this.proc;
+    const proc = new FakeProcess(7000 + this.spawnCalls.length, opts.name ?? command);
+    if (this.preExitNextSpawn) {
+      // Pre-exit BEFORE any listener attaches, so a later onExit fires
+      // synchronously — the already-exited contract the runner must handle.
+      proc.exit(this.preExitNextSpawn);
+      this.preExitNextSpawn = null;
+    }
+    this.proc = proc;
+    return proc;
   }
 
   openPty(_opts?: SessionEnvPtyOpts): Promise<SessionEnvPty> {
@@ -291,6 +301,7 @@ describe('DevServerRuntime helpers', () => {
         env: { APP_MODE: 'development' },
         secretKeys: ['TOKEN', 'MISSING'],
         portMap: [],
+        aptPackages: [],
       },
       projectSecrets: { TOKEN: 'shh', UNUSED: 'not-selected' },
       envPort: 4510,
@@ -317,6 +328,7 @@ describe('DevServerRuntime helpers', () => {
         env: { NPM_CONFIG_INCLUDE: 'optional' },
         secretKeys: [],
         portMap: [],
+        aptPackages: [],
       },
       projectSecrets: {},
       envPort: 4600,
@@ -333,6 +345,7 @@ describe('DevServerRuntime helpers', () => {
       startCommand: 'npm run dev',
       env: {},
       secretKeys: [],
+      aptPackages: [],
       portMap: [
         { internalPort: 3000, label: 'web' },
         { internalPort: 3001, label: 'web' },
@@ -589,6 +602,31 @@ describe('DevServerRuntime lifecycle', () => {
       'spawn exploded',
     );
     expect(h.envs[0].disposed).toBe(true);
+    const groups = h.db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get() as {
+      n: number;
+    };
+    expect(groups.n).toBe(0);
+  });
+
+  it('disposes the env (no orphaned sysbox container) when a system-dep apt install fails', async () => {
+    const h = makeHarness({
+      envSetup: (env) => {
+        env.kind = 'sysbox';
+        // The apt spawn is the FIRST spawn; make it exit non-zero.
+        env.preExitNextSpawn = { code: 100, signal: null };
+      },
+    });
+
+    await expect(
+      h.runtime.start('session-apt-fail', makeProject({ aptPackages: ['badpkg'] }), '/worktree'),
+    ).rejects.toThrow(/system dependency install failed/);
+
+    // Env torn down via rollbackStart — the container acquired earlier in
+    // start() must not survive a pre-`proc` failure.
+    expect(h.envs[0].disposed).toBe(true);
+    // apt was the only spawn; the app start command never ran.
+    expect(h.envs[0].spawnCalls).toHaveLength(1);
+    expect(h.envs[0].spawnCalls[0].command).toContain('apt-get');
     const groups = h.db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get() as {
       n: number;
     };

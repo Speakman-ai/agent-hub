@@ -395,6 +395,7 @@ describe('handlePreviewBlock — gating', () => {
           env: {},
           secretKeys: [],
           portMap: [{ internalPort: 3000, label: 'web', primary: true }],
+          aptPackages: [],
         },
       },
     });

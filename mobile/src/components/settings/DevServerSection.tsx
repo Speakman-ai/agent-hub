@@ -447,6 +447,27 @@ export default function DevServerSection({
         />
       </View>
 
+      {/* System (apt) packages */}
+      <View style={styles.card}>
+        <Text style={styles.fieldLabel}>System packages (apt, optional)</Text>
+        <TextInput
+          value={form.aptPackagesText}
+          onChangeText={(v) => setField('aptPackagesText', v)}
+          placeholder="imagemagick libmagickwand-dev"
+          placeholderTextColor={colors.gray500}
+          style={styles.monoInput}
+          multiline
+          autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel="apt packages"
+        />
+        <Text style={styles.hint}>
+          OS libraries pip/npm can’t install (e.g. ImageMagick for Python Wand). Space- or
+          newline-separated. Installed with apt-get before the start command — only on the sysbox
+          session backend; skipped with a warning on the host backend.
+        </Text>
+      </View>
+
       {/* Env vars */}
       <View style={styles.card}>
         <View style={styles.cardHeaderRow}>
