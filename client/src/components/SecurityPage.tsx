@@ -173,11 +173,10 @@ function DismissButton({ projectId, finding, onDismissed, onNotify }: any) {
   );
 }
 
-// Per-finding Fix: opens (or refreshes) the single Dependabot-style rolling
-// security PR. Clicking Fix materializes that one PR from EVERY open fixable
-// finding (not just this row), so all bumps live in one PR. Single click — the
-// server action is idempotent (re-clicking refreshes the same branch/PR rather
-// than duplicating it).
+// Per-finding Fix: dispatches an agent session to resolve the project's open
+// findings (not just this row — the session fixes them all in one branch → one
+// PR). The agent bumps + re-resolves the lockfile + runs tests; Finalize opens
+// the PR at session end. The new session appears in the sidebar.
 function FixButton({ projectId, finding, onFixed, onNotify }: any) {
   const [busy, setBusy] = useState(false);
 
@@ -186,29 +185,20 @@ function FixButton({ projectId, finding, onFixed, onNotify }: any) {
     setBusy(true);
     try {
       const result = await api.fixSecurityFinding(projectId, finding.id);
-      const openedBumps = result?.opened ?? [];
-      const opened = openedBumps[0];
-      const skipped = result?.skipped?.[0];
-      if (opened) {
-        const verb = opened.prCreated ? 'Opened' : 'Updated';
-        const count = openedBumps.length;
-        const summary =
-          count > 1 ? `${count} dependencies` : `${opened.packageName} to ${opened.toVersion}`;
-        onNotify?.(`${verb} PR #${opened.prNumber}: bump ${summary}`, 'success');
-      } else if (skipped) {
-        const why =
-          skipped.reason === 'lockfile_missing'
-            ? 'lockfile not found'
-            : skipped.reason === 'lockfile_unchanged'
-              ? 'already at the fixed version'
-              : skipped.detail || 'could not apply the bump';
-        onNotify?.(`No PR opened for ${finding.package_name}: ${why}`, 'info');
+      if (result?.sessionId) {
+        const n = result.findingCount ?? 0;
+        onNotify?.(
+          result.reused
+            ? 'A fix session is already running for this project — see the sidebar'
+            : `Started a session to resolve ${n} dependenc${n === 1 ? 'y' : 'ies'} — see the sidebar`,
+          result.reused ? 'info' : 'success',
+        );
       } else {
-        onNotify?.(`No fixable change for ${finding.package_name}`, 'info');
+        onNotify?.(`No findings to resolve for ${finding.package_name}`, 'info');
       }
       onFixed?.();
     } catch (err: any) {
-      onNotify?.(err.message || 'Failed to open fix PR', 'error');
+      onNotify?.(err.message || 'Failed to start a fix session', 'error');
     } finally {
       setBusy(false);
     }
@@ -219,11 +209,11 @@ function FixButton({ projectId, finding, onFixed, onNotify }: any) {
       onClick={handleFix}
       disabled={busy}
       data-testid="finding-fix-button"
-      title="Open a bump PR upgrading this package to its fixed version"
+      title="Start an agent session to resolve the open dependency findings"
       className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-emerald-700/60 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
     >
       <Wrench size={12} className={busy ? 'animate-pulse' : ''} />
-      {busy ? 'Opening PR…' : 'Fix'}
+      {busy ? 'Starting…' : 'Fix'}
     </button>
   );
 }
@@ -324,9 +314,9 @@ function FindingCard({ finding, projectId, onDismissed, onFixed, onNotify }: any
   );
 }
 
-// "Fix all ▾" split control: opens (or refreshes) the single rolling security
-// bump PR scoped to a chosen severity threshold. Distinct from Autofix, which
-// rescans first then fixes everything; this fixes the CURRENT findings without a
+// "Fix all ▾" split control: dispatches a session to resolve the open findings
+// scoped to a chosen severity threshold. Distinct from Autofix, which rescans
+// first then resolves everything; this acts on the CURRENT findings without a
 // rescan. The menu closes on pick or outside click; `busy` disables it while a
 // fix is in flight, `disabled` while any scan/fix is running.
 function FixAllMenu({ disabled, busy, onPick }: any) {
@@ -348,7 +338,7 @@ function FixAllMenu({ disabled, busy, onPick }: any) {
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
         data-testid="security-fixall"
-        title="Open a bump PR for all fixable findings, optionally by severity"
+        title="Start a session to resolve all open findings, optionally by severity"
         className="flex items-center gap-1 text-[11px] px-2 py-1 rounded text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         <Wrench size={12} className={busy ? 'animate-pulse' : ''} />
@@ -551,19 +541,25 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
     setScanMode(mode);
     try {
       const result = await api.runSecurityScan(projectId, { autoPr: mode === 'autofix' });
-      // All fixable bumps land in ONE combined PR; `opened` carries one entry
-      // per bumped dependency, all sharing the same PR number.
-      const openedBumps = result?.autoPr?.opened ?? [];
-      const bumps = openedBumps.length;
-      const prNumber = openedBumps[0]?.prNumber;
+      // Autofix scans, then dispatches ONE agent session over the open findings;
+      // Finalize opens the PR at session end.
+      const fixSession = result?.fixSession;
       if (mode === 'autofix') {
-        onNotify?.(
-          bumps > 0
-            ? `Autofix: ${prNumber ? `PR #${prNumber}` : 'opened a PR'} bumping ${bumps} ` +
-                `dependenc${bumps === 1 ? 'y' : 'ies'}`
-            : 'Autofix: no fixable findings to open a PR for',
-          bumps > 0 ? 'success' : 'info',
-        );
+        const n = fixSession?.findingCount ?? 0;
+        if (result?.fixSessionError) {
+          // Open findings exist but dispatch failed (e.g. no eligible agent) —
+          // surface the config problem rather than a false "nothing to resolve".
+          onNotify?.(`Autofix: ${result.fixSessionError}`, 'error');
+        } else {
+          onNotify?.(
+            fixSession
+              ? fixSession.reused
+                ? 'Autofix: a fix session is already running — see the sidebar'
+                : `Autofix: started a session to resolve ${n} dependenc${n === 1 ? 'y' : 'ies'} — see the sidebar`
+              : 'Autofix: no fixable findings to resolve',
+            fixSession && !fixSession.reused ? 'success' : 'info',
+          );
+        }
       } else {
         const next = (result?.newFindings ?? 0) + (result?.reopened ?? 0);
         onNotify?.(
@@ -579,31 +575,29 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
     }
   };
 
-  // Batch "fix all by severity": open/refresh the rolling bump PR scoped to a
-  // threshold (null = all fixable). Shares the `scanMode` mutex so it can't run
-  // alongside a rescan/autofix. Reports the combined PR like Autofix does.
+  // Batch "fix all by severity": dispatch a session over the open findings
+  // scoped to a threshold (null = all). Shares the `scanMode` mutex so it can't
+  // run alongside a rescan/autofix.
   const fixAll = async (minSeverity: any) => {
     if (scanMode) return;
     setScanMode('fixall');
     try {
       const result = await api.fixAllSecurityFindings(projectId, { minSeverity });
-      const openedBumps = result?.opened ?? [];
-      const bumps = openedBumps.length;
-      const opened = openedBumps[0];
+      const n = result?.findingCount ?? 0;
       const scope = minSeverity ? `${minSeverity}+ ` : '';
-      if (opened) {
-        const verb = opened.prCreated ? 'Opened' : 'Updated';
+      if (result?.sessionId) {
         onNotify?.(
-          `${verb} PR #${opened.prNumber}: bump ${bumps} ${scope}` +
-            `dependenc${bumps === 1 ? 'y' : 'ies'}`,
-          'success',
+          result.reused
+            ? 'A fix session is already running for this project — see the sidebar'
+            : `Started a session to resolve ${n} ${scope}dependenc${n === 1 ? 'y' : 'ies'} — see the sidebar`,
+          result.reused ? 'info' : 'success',
         );
       } else {
-        onNotify?.(`No fixable ${scope || ''}findings to open a PR for`, 'info');
+        onNotify?.(`No ${scope || ''}findings to resolve`, 'info');
       }
       await load();
     } catch (err: any) {
-      onNotify?.(err.message || 'Failed to open fix PR', 'error');
+      onNotify?.(err.message || 'Failed to start a fix session', 'error');
     } finally {
       setScanMode(null);
     }
@@ -643,7 +637,7 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
             onClick={() => runScan('autofix')}
             disabled={!!scanMode}
             data-testid="security-autofix"
-            title="Open Dependabot-style bump PRs for every fixable finding"
+            title="Rescan, then start a session to resolve every fixable finding"
             className="flex items-center gap-1 text-[11px] px-2 py-1 rounded text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             <Wrench size={12} className={scanMode === 'autofix' ? 'animate-pulse' : ''} />

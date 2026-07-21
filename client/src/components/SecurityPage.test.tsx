@@ -266,11 +266,10 @@ describe('SecurityPage', () => {
     expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Rescan complete'), 'success');
   });
 
-  it('Autofix triggers a scan with autoPr:true and reports the single combined PR', async () => {
+  it('Autofix triggers a scan with autoPr:true and reports the dispatched session', async () => {
     (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
-    // Two bumps both ride the ONE rolling PR (#7) — the combined-PR model.
     (api.runSecurityScan as any).mockResolvedValue({
-      autoPr: { opened: [{ prNumber: 7 }, { prNumber: 7 }], skipped: [] },
+      fixSession: { sessionId: 'sess-1', agentId: 'dev-1', findingCount: 2 },
     });
     const onNotify = vi.fn();
     render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
@@ -282,8 +281,28 @@ describe('SecurityPage', () => {
 
     expect(api.runSecurityScan).toHaveBeenCalledWith('proj-1', { autoPr: true });
     expect(onNotify).toHaveBeenCalledWith(
-      expect.stringContaining('PR #7 bumping 2 dependencies'),
+      expect.stringContaining('started a session to resolve 2 dependencies'),
       'success',
+    );
+  });
+
+  it('Autofix surfaces fixSessionError as an error, not a false no-op', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
+    (api.runSecurityScan as any).mockResolvedValue({
+      fixSession: null,
+      fixSessionError: 'No agent is available to resolve security findings for this project.',
+    });
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('security-autofix'));
+    });
+
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining('No agent is available'),
+      'error',
     );
   });
 
@@ -301,14 +320,16 @@ describe('SecurityPage', () => {
     expect(onNotify).toHaveBeenCalledWith('not hosted', 'error');
   });
 
-  it('per-finding Fix opens a bump PR and reports the opened PR via onNotify', async () => {
+  it('per-finding Fix dispatches a session and reports it via onNotify', async () => {
     (api.getSecurityFindings as any).mockResolvedValue({
       findings: [finding({ id: 'f1' })],
       openCounts: counts({ high: 1 }),
     });
     (api.fixSecurityFinding as any).mockResolvedValue({
-      opened: [{ prNumber: 21, packageName: 'lodash', toVersion: '4.17.12', prCreated: true }],
-      skipped: [],
+      sessionId: 'sess-1',
+      agentId: 'dev-1',
+      findingCount: 3,
+      session: { id: 'sess-1' },
     });
     const onNotify = vi.fn();
     render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
@@ -319,29 +340,9 @@ describe('SecurityPage', () => {
     });
 
     expect(api.fixSecurityFinding).toHaveBeenCalledWith('proj-1', 'f1');
-    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Opened PR #21'), 'success');
-  });
-
-  it('Fix reports a skip (no PR opened) via an info notice', async () => {
-    (api.getSecurityFindings as any).mockResolvedValue({
-      findings: [finding({ id: 'f1' })],
-      openCounts: counts({ high: 1 }),
-    });
-    (api.fixSecurityFinding as any).mockResolvedValue({
-      opened: [],
-      skipped: [{ reason: 'lockfile_unchanged' }],
-    });
-    const onNotify = vi.fn();
-    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
-    await waitFor(() => expect(screen.getByTestId('security-finding-card')).toBeInTheDocument());
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('finding-fix-button'));
-    });
-
     expect(onNotify).toHaveBeenCalledWith(
-      expect.stringContaining('already at the fixed version'),
-      'info',
+      expect.stringContaining('Started a session to resolve 3 dependencies'),
+      'success',
     );
   });
 
@@ -372,8 +373,10 @@ describe('SecurityPage', () => {
   it('Fix all → Critical & High calls fixAllSecurityFindings with minSeverity:high', async () => {
     (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
     (api.fixAllSecurityFindings as any).mockResolvedValue({
-      opened: [{ prNumber: 9, prCreated: true }],
-      skipped: [],
+      sessionId: 'sess-1',
+      agentId: 'dev-1',
+      findingCount: 2,
+      session: { id: 'sess-1' },
     });
     const onNotify = vi.fn();
     render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
@@ -385,7 +388,10 @@ describe('SecurityPage', () => {
     });
 
     expect(api.fixAllSecurityFindings).toHaveBeenCalledWith('proj-1', { minSeverity: 'high' });
-    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Opened PR #9'), 'success');
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining('Started a session to resolve 2 high+ dependencies'),
+      'success',
+    );
     // The menu closes after a pick.
     expect(screen.queryByTestId('security-fixall-menu')).not.toBeInTheDocument();
   });
@@ -393,11 +399,10 @@ describe('SecurityPage', () => {
   it('Fix all → All severities calls fixAllSecurityFindings with no minSeverity', async () => {
     (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
     (api.fixAllSecurityFindings as any).mockResolvedValue({
-      opened: [
-        { prNumber: 5, prCreated: false },
-        { prNumber: 5, prCreated: false },
-      ],
-      skipped: [],
+      sessionId: 'sess-1',
+      agentId: 'dev-1',
+      findingCount: 2,
+      session: { id: 'sess-1' },
     });
     const onNotify = vi.fn();
     render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
@@ -410,14 +415,19 @@ describe('SecurityPage', () => {
 
     expect(api.fixAllSecurityFindings).toHaveBeenCalledWith('proj-1', { minSeverity: null });
     expect(onNotify).toHaveBeenCalledWith(
-      expect.stringContaining('Updated PR #5: bump 2 dependencies'),
+      expect.stringContaining('Started a session to resolve 2 dependencies'),
       'success',
     );
   });
 
-  it('Fix all reports "no fixable findings" when nothing matched the threshold', async () => {
+  it('Fix all reports "no findings" when nothing matched the threshold', async () => {
     (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
-    (api.fixAllSecurityFindings as any).mockResolvedValue({ opened: [], skipped: [] });
+    (api.fixAllSecurityFindings as any).mockResolvedValue({
+      sessionId: null,
+      agentId: null,
+      findingCount: 0,
+      session: null,
+    });
     const onNotify = vi.fn();
     render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
     await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalled());
@@ -428,7 +438,7 @@ describe('SecurityPage', () => {
     });
 
     expect(api.fixAllSecurityFindings).toHaveBeenCalledWith('proj-1', { minSeverity: 'critical' });
-    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('No fixable'), 'info');
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('No critical+ findings'), 'info');
   });
 });
 

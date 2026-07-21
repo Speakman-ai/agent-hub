@@ -34500,7 +34500,7 @@ paths:
                   description: Open a card for new findings (default true).
                 autoPr:
                   type: boolean
-                  description: "Force-open Dependabot-style bump PRs for fixable findings, even when the project has not set securityAutoPr.enabled. An explicit Autofix click is its own opt-in. Still requires gitHost: agenthub and a wired native PR service; ignored otherwise."
+                  description: "Dispatch an agent session to resolve fixable findings after the scan, even when the project has not set securityAutoPr.enabled. An explicit Autofix click is its own opt-in. Requires gitHost: agenthub; ignored otherwise."
               additionalProperties: false
       responses:
         "200":
@@ -34546,87 +34546,29 @@ paths:
                   cardId:
                     type: string
                     nullable: true
-                  autoPr:
+                  fixSession:
                     type: object
                     nullable: true
                     properties:
-                      opened:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            branch:
-                              type: string
-                            manifestPath:
-                              type: string
-                            packageName:
-                              type: string
-                            fromVersions:
-                              type: array
-                              items:
-                                type: string
-                            toVersion:
-                              type: string
-                            advisoryIds:
-                              type: array
-                              items:
-                                type: string
-                            severity:
-                              type: string
-                              enum:
-                                - critical
-                                - high
-                                - medium
-                                - low
-                                - unknown
-                            prNumber:
-                              type: number
-                            prUrl:
-                              type: string
-                            prCreated:
-                              type: boolean
-                            branchUpdated:
-                              type: boolean
-                          required:
-                            - branch
-                            - manifestPath
-                            - packageName
-                            - fromVersions
-                            - toVersion
-                            - advisoryIds
-                            - severity
-                            - prNumber
-                            - prUrl
-                            - prCreated
-                            - branchUpdated
-                      skipped:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            manifestPath:
-                              type: string
-                            packageName:
-                              type: string
-                            toVersion:
-                              type: string
-                            reason:
-                              type: string
-                              enum:
-                                - lockfile_missing
-                                - lockfile_unchanged
-                                - error
-                            detail:
-                              type: string
-                          required:
-                            - manifestPath
-                            - packageName
-                            - toVersion
-                            - reason
+                      sessionId:
+                        type: string
+                      agentId:
+                        type: string
+                      findingCount:
+                        type: number
+                      reused:
+                        type: boolean
+                        description: True when an already-running security-fix session was reused instead of starting a new one (idempotency guard).
                     required:
-                      - opened
-                      - skipped
-                    description: "Auto-PR generation result when the project opted in (securityAutoPr.enabled) and the repo is Hub-hosted: native bump PRs opened/refreshed and bumps skipped (with reason). null when auto-PR was not requested or this was a dry run."
+                      - sessionId
+                      - agentId
+                      - findingCount
+                      - reused
+                    description: "Set when Autofix was requested (securityAutoPr.enabled or autoPr:true) on a Hub-hosted repo and the persisted scan found open findings: the agent session dispatched to resolve them. null when autofix was not requested, this was a dry run, there were no open findings, or dispatch failed (see fixSessionError)."
+                  fixSessionError:
+                    type: string
+                    nullable: true
+                    description: Set when Autofix wanted to dispatch (open findings exist) but could not — currently only "no eligible agent on the roster". Distinguishes a configuration problem from a legitimate no-op (no open findings), where it is null.
                 required:
                   - ref
                   - dryRun
@@ -34641,7 +34583,8 @@ paths:
                   - fixed
                   - suppressed
                   - cardId
-                  - autoPr
+                  - fixSession
+                  - fixSessionError
         "400":
           description: Invalid request body, or the requested ref does not resolve.
           content:
@@ -34701,8 +34644,8 @@ paths:
     post:
       tags:
         - Projects
-      summary: Open a Dependabot-style bump PR for a single finding
-      description: "Opens (or refreshes) one native Hub pull request that bumps the finding's package to its fixed version in the manifest the finding belongs to. Every open finding for the same package+manifest is bumped together in the single PR (so sibling vulnerable versions are not stranded). Requires gitHost: agenthub, a wired native PR service, the Admin role, and a published fixed version; npm lockfiles only (other ecosystems such as pip are detection-only and return 409 here until automated write-back ships). Idempotent: clicking again refreshes the existing bump branch/PR rather than opening a duplicate."
+      summary: Dispatch an agent session to resolve a finding
+      description: "Dispatches an agent session to resolve the project's open dependency findings (not just the clicked row — the session fixes them all in one branch → one PR). The agent bumps each package to its fixed version, re-resolves the lockfile with the real package manager, and runs the tests; Finalize opens the PR at session end. Works for any ecosystem (npm + pip). Idempotent: if a security-fix session is already running for the project, the existing one is returned (200, reused:true) instead of starting a duplicate. Requires gitHost: agenthub, the Admin role, an open finding, and an eligible agent on the roster."
       parameters:
         - schema:
             type: string
@@ -34716,88 +34659,63 @@ paths:
           in: path
       responses:
         "200":
-          description: Bump PR opened/refreshed, or skipped with a reason.
+          description: An already-running fix session was reused (reused:true).
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  opened:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        branch:
-                          type: string
-                        manifestPath:
-                          type: string
-                        packageName:
-                          type: string
-                        fromVersions:
-                          type: array
-                          items:
-                            type: string
-                        toVersion:
-                          type: string
-                        advisoryIds:
-                          type: array
-                          items:
-                            type: string
-                        severity:
-                          type: string
-                          enum:
-                            - critical
-                            - high
-                            - medium
-                            - low
-                            - unknown
-                        prNumber:
-                          type: number
-                        prUrl:
-                          type: string
-                        prCreated:
-                          type: boolean
-                        branchUpdated:
-                          type: boolean
-                      required:
-                        - branch
-                        - manifestPath
-                        - packageName
-                        - fromVersions
-                        - toVersion
-                        - advisoryIds
-                        - severity
-                        - prNumber
-                        - prUrl
-                        - prCreated
-                        - branchUpdated
-                  skipped:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        manifestPath:
-                          type: string
-                        packageName:
-                          type: string
-                        toVersion:
-                          type: string
-                        reason:
-                          type: string
-                          enum:
-                            - lockfile_missing
-                            - lockfile_unchanged
-                            - error
-                        detail:
-                          type: string
-                      required:
-                        - manifestPath
-                        - packageName
-                        - toVersion
-                        - reason
+                  sessionId:
+                    type: string
+                    nullable: true
+                  agentId:
+                    type: string
+                    nullable: true
+                  findingCount:
+                    type: number
+                  reused:
+                    type: boolean
+                    description: True when an already-running security-fix session was reused (200) instead of a new one being started (201).
+                  session:
+                    type: object
+                    nullable: true
+                    additionalProperties:
+                      nullable: true
                 required:
-                  - opened
-                  - skipped
+                  - sessionId
+                  - agentId
+                  - findingCount
+                  - reused
+                  - session
+        "201":
+          description: A new session was dispatched to resolve the findings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                    nullable: true
+                  agentId:
+                    type: string
+                    nullable: true
+                  findingCount:
+                    type: number
+                  reused:
+                    type: boolean
+                    description: True when an already-running security-fix session was reused (200) instead of a new one being started (201).
+                  session:
+                    type: object
+                    nullable: true
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - sessionId
+                  - agentId
+                  - findingCount
+                  - reused
+                  - session
         "403":
           description: Caller lacks the Admin role.
           content:
@@ -34821,18 +34739,7 @@ paths:
                 required:
                   - error
         "409":
-          description: Project is not Hub-hosted, native PRs are unavailable, the finding is not open, has no published fix, or is not an npm dependency.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "500":
-          description: Fix failed.
+          description: Project is not Hub-hosted, the finding is not open, or no eligible agent is available.
           content:
             application/json:
               schema:
@@ -34846,8 +34753,8 @@ paths:
     post:
       tags:
         - Projects
-      summary: Open a Dependabot-style bump PR for all fixable findings, optionally by severity
-      description: "Opens (or refreshes) the single rolling native bump PR carrying every open fixable npm finding for the project. Pass `minSeverity` to narrow to a severity threshold (`high` = critical AND high); omit it to fix every fixable finding. All bumps share one rolling branch, so each call sets the PR contents to its scope. Requires gitHost: agenthub, a wired native PR service, and the Admin role. Idempotent."
+      summary: Dispatch an agent session to resolve all findings, optionally by severity
+      description: "Dispatches an agent session to resolve every open finding for the project, optionally narrowed to a severity threshold (`high` = critical AND high; omit to include all). The agent bumps + re-resolves lockfiles + runs tests; Finalize opens the PR. Idempotent: an already-running fix session is reused (200, reused:true) rather than duplicated. Requires gitHost: agenthub and the Admin role. Returns 201 with a newly-dispatched session, or 200 when a session was reused or no finding matched the threshold (null session)."
       parameters:
         - schema:
             type: string
@@ -34872,88 +34779,63 @@ paths:
               additionalProperties: false
       responses:
         "200":
-          description: Bump PR opened/refreshed, or skips with reasons (empty when nothing matched).
+          description: An already-running session was reused (reused:true), or no finding matched the threshold (null session).
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  opened:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        branch:
-                          type: string
-                        manifestPath:
-                          type: string
-                        packageName:
-                          type: string
-                        fromVersions:
-                          type: array
-                          items:
-                            type: string
-                        toVersion:
-                          type: string
-                        advisoryIds:
-                          type: array
-                          items:
-                            type: string
-                        severity:
-                          type: string
-                          enum:
-                            - critical
-                            - high
-                            - medium
-                            - low
-                            - unknown
-                        prNumber:
-                          type: number
-                        prUrl:
-                          type: string
-                        prCreated:
-                          type: boolean
-                        branchUpdated:
-                          type: boolean
-                      required:
-                        - branch
-                        - manifestPath
-                        - packageName
-                        - fromVersions
-                        - toVersion
-                        - advisoryIds
-                        - severity
-                        - prNumber
-                        - prUrl
-                        - prCreated
-                        - branchUpdated
-                  skipped:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        manifestPath:
-                          type: string
-                        packageName:
-                          type: string
-                        toVersion:
-                          type: string
-                        reason:
-                          type: string
-                          enum:
-                            - lockfile_missing
-                            - lockfile_unchanged
-                            - error
-                        detail:
-                          type: string
-                      required:
-                        - manifestPath
-                        - packageName
-                        - toVersion
-                        - reason
+                  sessionId:
+                    type: string
+                    nullable: true
+                  agentId:
+                    type: string
+                    nullable: true
+                  findingCount:
+                    type: number
+                  reused:
+                    type: boolean
+                    description: True when an already-running security-fix session was reused (200) instead of a new one being started (201).
+                  session:
+                    type: object
+                    nullable: true
+                    additionalProperties:
+                      nullable: true
                 required:
-                  - opened
-                  - skipped
+                  - sessionId
+                  - agentId
+                  - findingCount
+                  - reused
+                  - session
+        "201":
+          description: A new session was dispatched to resolve the findings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                    nullable: true
+                  agentId:
+                    type: string
+                    nullable: true
+                  findingCount:
+                    type: number
+                  reused:
+                    type: boolean
+                    description: True when an already-running security-fix session was reused (200) instead of a new one being started (201).
+                  session:
+                    type: object
+                    nullable: true
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - sessionId
+                  - agentId
+                  - findingCount
+                  - reused
+                  - session
         "400":
           description: Invalid request body (e.g. an unknown key or bad minSeverity).
           content:
@@ -34988,18 +34870,7 @@ paths:
                 required:
                   - error
         "409":
-          description: Project is not Hub-hosted, native PRs are unavailable, or the repo is empty.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "500":
-          description: Fix failed.
+          description: Project is not Hub-hosted, or no eligible agent is available.
           content:
             application/json:
               schema:

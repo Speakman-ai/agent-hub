@@ -66,35 +66,31 @@ function FindingCard({ item, projectId, onDismissed, onFixed }: any) {
     const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
     const [dismissing, setDismissing] = useState(false);
     const [fixing, setFixing] = useState(false);
-    // Open (or refresh) a bump PR for this finding. Single tap — the server
-    // action is idempotent (re-tapping refreshes the same branch/PR).
+    // Dispatch an agent session to resolve the project's open findings (not just
+    // this row — the session fixes them all in one branch → one PR). The agent
+    // bumps + re-resolves the lockfile + runs tests; Finalize opens the PR.
     const handleFix = async () => {
         if (fixing)
             return;
         setFixing(true);
         try {
             const result: any = await api.fixSecurityFinding(projectId, item.id);
-            const opened = result?.opened?.[0];
-            const skipped = result?.skipped?.[0];
-            if (opened) {
-                const verb = opened.prCreated ? 'Opened' : 'Updated';
-                Alert.alert('Fix PR', `${verb} PR #${opened.prNumber}: bump ${opened.packageName} to ${opened.toVersion}.`);
-            }
-            else if (skipped) {
-                const why = skipped.reason === 'lockfile_missing'
-                    ? 'lockfile not found'
-                    : skipped.reason === 'lockfile_unchanged'
-                        ? 'already at the fixed version'
-                        : skipped.detail || 'could not apply the bump';
-                Alert.alert('No PR opened', `${item.package_name}: ${why}`);
+            if (result?.sessionId) {
+                const n = result.findingCount ?? 0;
+                if (result.reused) {
+                    Alert.alert('Fix session already running', 'A fix session is already running for this project. See the sessions list.');
+                }
+                else {
+                    Alert.alert('Fix session started', `Started a session to resolve ${n} dependenc${n === 1 ? 'y' : 'ies'}. See the sessions list.`);
+                }
             }
             else {
-                Alert.alert('No PR opened', `No fixable change for ${item.package_name}.`);
+                Alert.alert('Nothing to resolve', `No open findings to resolve for ${item.package_name}.`);
             }
             onFixed?.();
         }
         catch (err: any) {
-            Alert.alert('Fix failed', err?.message || 'Failed to open fix PR');
+            Alert.alert('Fix failed', err?.message || 'Failed to start a fix session');
         }
         finally {
             setFixing(false);
@@ -150,7 +146,7 @@ function FindingCard({ item, projectId, onDismissed, onFixed }: any) {
         <Text style={styles.manifest}>{item.manifest_path}</Text>
         {item.status === 'open' ? (<View style={styles.footerActions}>
             {item.fixed_version ? (<TouchableOpacity onPress={handleFix} disabled={fixing} testID="finding-fix-button" style={[styles.fixButton, fixing && styles.dismissButtonDisabled]}>
-                <Text style={styles.fixButtonText}>{fixing ? 'Opening PR…' : 'Fix'}</Text>
+                <Text style={styles.fixButtonText}>{fixing ? 'Starting…' : 'Fix'}</Text>
               </TouchableOpacity>) : null}
             <TouchableOpacity onPress={handleDismiss} disabled={dismissing} testID="dismiss-finding" style={[styles.dismissButton, dismissing && styles.dismissButtonDisabled]}>
               <Text style={styles.dismissText}>{dismissing ? 'Dismissing…' : 'Dismiss'}</Text>
@@ -259,10 +255,15 @@ export default function SecurityScreen({ route }: any) {
         try {
             const result: any = await api.runSecurityScan(projectId, { autoPr: mode === 'autofix' });
             if (mode === 'autofix') {
-                const opened = result?.autoPr?.opened?.length ?? 0;
-                Alert.alert('Autofix', opened > 0
-                    ? `Opened ${opened} bump PR${opened === 1 ? '' : 's'} for fixable findings.`
-                    : 'No fixable findings to open PRs for.');
+                const fs = result?.fixSession;
+                const n = fs?.findingCount ?? 0;
+                Alert.alert('Autofix', result?.fixSessionError
+                    ? result.fixSessionError
+                    : !fs
+                        ? 'No fixable findings to resolve.'
+                        : fs.reused
+                            ? 'A fix session is already running. See the sessions list.'
+                            : `Started a session to resolve ${n} dependenc${n === 1 ? 'y' : 'ies'}. See the sessions list.`);
             }
             await load();
         }
@@ -273,8 +274,8 @@ export default function SecurityScreen({ route }: any) {
             setScanMode(null);
         }
     }, [scanMode, projectId, load]);
-    // "Fix all by severity": open/refresh the rolling bump PR scoped to a
-    // threshold (null = all fixable). Shares the `scanMode` mutex so it can't run
+    // "Fix all by severity": dispatch a session over the open findings scoped to
+    // a threshold (null = all). Shares the `scanMode` mutex so it can't run
     // alongside a rescan/autofix. The web dropdown is a toggled button row here.
     const [fixMenuOpen, setFixMenuOpen] = useState(false);
     const fixAll = useCallback(async (minSeverity: any) => {
@@ -284,16 +285,17 @@ export default function SecurityScreen({ route }: any) {
         setScanMode('fixall');
         try {
             const result: any = await api.fixAllSecurityFindings(projectId, { minSeverity });
-            const bumps = result?.opened?.length ?? 0;
-            const prNumber = result?.opened?.[0]?.prNumber;
+            const n = result?.findingCount ?? 0;
             const scope = minSeverity ? `${minSeverity}+ ` : '';
-            Alert.alert('Fix all', bumps > 0
-                ? `${prNumber ? `PR #${prNumber}` : 'Opened a PR'}: bump ${bumps} ${scope}dependenc${bumps === 1 ? 'y' : 'ies'}.`
-                : `No fixable ${scope}findings to open a PR for.`);
+            Alert.alert('Fix all', !result?.sessionId
+                ? `No ${scope}findings to resolve.`
+                : result.reused
+                    ? 'A fix session is already running. See the sessions list.'
+                    : `Started a session to resolve ${n} ${scope}dependenc${n === 1 ? 'y' : 'ies'}. See the sessions list.`);
             await load();
         }
         catch (err: any) {
-            Alert.alert('Fix all failed', err?.message || 'Failed to open fix PR');
+            Alert.alert('Fix all failed', err?.message || 'Failed to start a fix session');
         }
         finally {
             setScanMode(null);

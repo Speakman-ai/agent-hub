@@ -53,99 +53,40 @@ export const FindingsListSchema = z.object({
   openCounts: SeverityCountsSchema,
 });
 
-export const AutoPrResultSchema = z
+/**
+ * Compact summary of the session dispatched by the scan-path Autofix. `null`
+ * when autofix was not requested, the repo is not Hub-hosted, the scan was a
+ * dry run, there were no open findings, or dispatch failed (the failure reason
+ * is reported separately in `fixSessionError`).
+ */
+export const FixSessionSummarySchema = z
   .object({
-    opened: z.array(
-      z.object({
-        branch: z.string(),
-        manifestPath: z.string(),
-        packageName: z.string(),
-        fromVersions: z.array(z.string()),
-        toVersion: z.string(),
-        advisoryIds: z.array(z.string()),
-        severity: SeveritySchema,
-        prNumber: z.number(),
-        prUrl: z.string(),
-        prCreated: z.boolean(),
-        branchUpdated: z.boolean(),
-      }),
-    ),
-    skipped: z.array(
-      z.object({
-        manifestPath: z.string(),
-        packageName: z.string(),
-        toVersion: z.string(),
-        reason: z.enum(['lockfile_missing', 'lockfile_unchanged', 'error']),
-        detail: z.string().optional(),
-      }),
-    ),
+    sessionId: z.string(),
+    agentId: z.string(),
+    findingCount: z.number(),
+    reused: z.boolean().openapi({
+      description:
+        'True when an already-running security-fix session was reused instead of starting a new one (idempotency guard).',
+    }),
   })
   .nullable();
 
 /**
- * Result of the per-finding Fix action. Shape mirrors {@link AutoPrResultSchema}
- * but is never null (the endpoint either opens/refreshes a bump PR or records a
- * skip reason). Typically a single entry — the finding's package is bumped in
- * one PR alongside any sibling open findings for the same package/manifest.
+ * Result of the per-finding Fix / batch "fix all" actions. Both dispatch an
+ * agent session to resolve the open findings (bump + re-resolve lockfile +
+ * tests); Finalize opens the PR at session end. `sessionId`/`agentId`/`session`
+ * are null only for the batch route when no finding matched the threshold
+ * (nothing to do — 200, not an error). `session` is the created session row.
  */
-export const FixFindingResultSchema = z.object({
-  opened: z.array(
-    z.object({
-      branch: z.string(),
-      manifestPath: z.string(),
-      packageName: z.string(),
-      fromVersions: z.array(z.string()),
-      toVersion: z.string(),
-      advisoryIds: z.array(z.string()),
-      severity: SeveritySchema,
-      prNumber: z.number(),
-      prUrl: z.string(),
-      prCreated: z.boolean(),
-      branchUpdated: z.boolean(),
-    }),
-  ),
-  skipped: z.array(
-    z.object({
-      manifestPath: z.string(),
-      packageName: z.string(),
-      toVersion: z.string(),
-      reason: z.enum(['lockfile_missing', 'lockfile_unchanged', 'error']),
-      detail: z.string().optional(),
-    }),
-  ),
-});
-
-/**
- * Result of the batch "fix all by severity" action. Identical shape to
- * {@link FixFindingResultSchema} (one rolling bump PR; `opened` carries one
- * entry per bumped package, all sharing the same PR number) — kept as its own
- * named schema so the endpoint documents its own response component.
- */
-export const BatchFixResultSchema = z.object({
-  opened: z.array(
-    z.object({
-      branch: z.string(),
-      manifestPath: z.string(),
-      packageName: z.string(),
-      fromVersions: z.array(z.string()),
-      toVersion: z.string(),
-      advisoryIds: z.array(z.string()),
-      severity: SeveritySchema,
-      prNumber: z.number(),
-      prUrl: z.string(),
-      prCreated: z.boolean(),
-      branchUpdated: z.boolean(),
-    }),
-  ),
-  skipped: z.array(
-    z.object({
-      manifestPath: z.string(),
-      packageName: z.string(),
-      toVersion: z.string(),
-      reason: z.enum(['lockfile_missing', 'lockfile_unchanged', 'error']),
-      detail: z.string().optional(),
-    }),
-  ),
+export const FixSessionResultSchema = z.object({
+  sessionId: z.string().nullable(),
+  agentId: z.string().nullable(),
+  findingCount: z.number(),
+  reused: z.boolean().openapi({
+    description:
+      'True when an already-running security-fix session was reused (200) instead of a new one being started (201).',
+  }),
+  session: z.record(z.string(), z.unknown()).nullable(),
 });
 
 export const ScanResultSchema = z.object({
@@ -173,9 +114,13 @@ export const ScanResultSchema = z.object({
   fixed: z.number(),
   suppressed: z.number(),
   cardId: z.string().nullable(),
-  autoPr: AutoPrResultSchema.openapi({
+  fixSession: FixSessionSummarySchema.openapi({
     description:
-      'Auto-PR generation result when the project opted in (securityAutoPr.enabled) and the repo is Hub-hosted: native bump PRs opened/refreshed and bumps skipped (with reason). null when auto-PR was not requested or this was a dry run.',
+      'Set when Autofix was requested (securityAutoPr.enabled or autoPr:true) on a Hub-hosted repo and the persisted scan found open findings: the agent session dispatched to resolve them. null when autofix was not requested, this was a dry run, there were no open findings, or dispatch failed (see fixSessionError).',
+  }),
+  fixSessionError: z.string().nullable().openapi({
+    description:
+      'Set when Autofix wanted to dispatch (open findings exist) but could not — currently only "no eligible agent on the roster". Distinguishes a configuration problem from a legitimate no-op (no open findings), where it is null.',
   }),
 });
 
@@ -227,10 +172,9 @@ export const ScanRequestSchema = z
       .optional()
       .openapi({
         description:
-          'Force-open Dependabot-style bump PRs for fixable findings, even when the ' +
-          'project has not set securityAutoPr.enabled. An explicit Autofix click is its ' +
-          'own opt-in. Still requires gitHost: agenthub and a wired native PR service; ' +
-          'ignored otherwise.',
+          'Dispatch an agent session to resolve fixable findings after the scan, even ' +
+          'when the project has not set securityAutoPr.enabled. An explicit Autofix click ' +
+          'is its own opt-in. Requires gitHost: agenthub; ignored otherwise.',
       }),
   })
   .strict();
@@ -287,25 +231,28 @@ registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/security-audit/findings/{id}/fix',
   tags: ['Projects'],
-  summary: 'Open a Dependabot-style bump PR for a single finding',
+  summary: 'Dispatch an agent session to resolve a finding',
   description:
-    "Opens (or refreshes) one native Hub pull request that bumps the finding's package to its fixed version in the manifest the finding belongs to. Every open finding for the same package+manifest is bumped together in the single PR (so sibling vulnerable versions are not stranded). Requires gitHost: agenthub, a wired native PR service, the Admin role, and a published fixed version; npm lockfiles only (other ecosystems such as pip are detection-only and return 409 here until automated write-back ships). Idempotent: clicking again refreshes the existing bump branch/PR rather than opening a duplicate.",
+    "Dispatches an agent session to resolve the project's open dependency findings (not just the clicked row — the session fixes them all in one branch → one PR). The agent bumps each package to its fixed version, re-resolves the lockfile with the real package manager, and runs the tests; Finalize opens the PR at session end. Works for any ecosystem (npm + pip). Idempotent: if a security-fix session is already running for the project, the existing one is returned (200, reused:true) instead of starting a duplicate. Requires gitHost: agenthub, the Admin role, an open finding, and an eligible agent on the roster.",
   request: {
     params: z.object({ projectId: z.string(), id: z.string() }),
   },
   responses: {
     200: {
-      description: 'Bump PR opened/refreshed, or skipped with a reason.',
-      content: jsonContent(FixFindingResultSchema),
+      description: 'An already-running fix session was reused (reused:true).',
+      content: jsonContent(FixSessionResultSchema),
+    },
+    201: {
+      description: 'A new session was dispatched to resolve the findings.',
+      content: jsonContent(FixSessionResultSchema),
     },
     403: { description: 'Caller lacks the Admin role.', content: jsonContent(ErrorResponse) },
     404: { description: 'Unknown project or finding.', content: jsonContent(ErrorResponse) },
     409: {
       description:
-        'Project is not Hub-hosted, native PRs are unavailable, the finding is not open, has no published fix, or is not an npm dependency.',
+        'Project is not Hub-hosted, the finding is not open, or no eligible agent is available.',
       content: jsonContent(ErrorResponse),
     },
-    500: { description: 'Fix failed.', content: jsonContent(ErrorResponse) },
   },
 });
 
@@ -313,17 +260,22 @@ registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/security-audit/fix',
   tags: ['Projects'],
-  summary: 'Open a Dependabot-style bump PR for all fixable findings, optionally by severity',
+  summary: 'Dispatch an agent session to resolve all findings, optionally by severity',
   description:
-    'Opens (or refreshes) the single rolling native bump PR carrying every open fixable npm finding for the project. Pass `minSeverity` to narrow to a severity threshold (`high` = critical AND high); omit it to fix every fixable finding. All bumps share one rolling branch, so each call sets the PR contents to its scope. Requires gitHost: agenthub, a wired native PR service, and the Admin role. Idempotent.',
+    'Dispatches an agent session to resolve every open finding for the project, optionally narrowed to a severity threshold (`high` = critical AND high; omit to include all). The agent bumps + re-resolves lockfiles + runs tests; Finalize opens the PR. Idempotent: an already-running fix session is reused (200, reused:true) rather than duplicated. Requires gitHost: agenthub and the Admin role. Returns 201 with a newly-dispatched session, or 200 when a session was reused or no finding matched the threshold (null session).',
   request: {
     params: z.object({ projectId: z.string() }),
     body: { required: false, content: jsonContent(BatchFixRequestSchema) },
   },
   responses: {
     200: {
-      description: 'Bump PR opened/refreshed, or skips with reasons (empty when nothing matched).',
-      content: jsonContent(BatchFixResultSchema),
+      description:
+        'An already-running session was reused (reused:true), or no finding matched the threshold (null session).',
+      content: jsonContent(FixSessionResultSchema),
+    },
+    201: {
+      description: 'A new session was dispatched to resolve the findings.',
+      content: jsonContent(FixSessionResultSchema),
     },
     400: {
       description: 'Invalid request body (e.g. an unknown key or bad minSeverity).',
@@ -332,10 +284,9 @@ registerPath({
     403: { description: 'Caller lacks the Admin role.', content: jsonContent(ErrorResponse) },
     404: { description: 'Unknown project.', content: jsonContent(ErrorResponse) },
     409: {
-      description: 'Project is not Hub-hosted, native PRs are unavailable, or the repo is empty.',
+      description: 'Project is not Hub-hosted, or no eligible agent is available.',
       content: jsonContent(ErrorResponse),
     },
-    500: { description: 'Fix failed.', content: jsonContent(ErrorResponse) },
   },
 });
 

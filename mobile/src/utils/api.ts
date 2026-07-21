@@ -1279,25 +1279,25 @@ export const api = {
         return fetchJSON(`/projects/${projectId}/security-audit/findings${qs}`);
     },
     // Run a dependency security scan now. Admin-only, Hub-hosted projects only.
-    // Pass { autoPr: true } (the "Autofix" action) to also force-open
-    // Dependabot-style bump PRs for fixable findings regardless of the project's
-    // securityAutoPr.enabled setting. Returns the scan summary (incl. autoPr).
+    // Pass { autoPr: true } (the "Autofix" action) to also dispatch an agent
+    // session that resolves the fixable findings, regardless of the project's
+    // securityAutoPr.enabled setting. Returns the scan summary (incl. fixSession).
     runSecurityScan: (projectId: any, { autoPr }: any = {}) =>
         fetchJSON(`/projects/${projectId}/security-audit/scan`, {
             method: 'POST',
             body: JSON.stringify(autoPr ? { autoPr: true } : {}),
         }),
-    // Open (or refresh) a Dependabot-style bump PR for a single finding. Admin-only,
-    // Hub-hosted projects only. Bumps the finding's package to its fixed version in
-    // one native PR. Returns { opened: [...], skipped: [...] }.
+    // Dispatch an agent session to resolve the project's open findings (bump +
+    // re-resolve lockfile + tests; Finalize opens the PR). Admin-only, Hub-hosted
+    // projects only. Returns { sessionId, agentId, findingCount, session }.
     fixSecurityFinding: (projectId: any, id: any) =>
         fetchJSON(`/projects/${projectId}/security-audit/findings/${id}/fix`, {
             method: 'POST',
         }),
-    // Open (or refresh) the single rolling bump PR for ALL open fixable findings,
-    // optionally scoped to a severity threshold. `minSeverity` is a threshold, not
-    // an exact match: 'high' fixes critical AND high. Omit it to fix everything.
-    // Admin-only, Hub-hosted projects only. Returns { opened: [...], skipped: [...] }.
+    // Dispatch a session to resolve ALL open findings, optionally scoped to a
+    // severity threshold. `minSeverity` is a threshold, not an exact match: 'high'
+    // covers critical AND high. Omit it to resolve everything. Admin-only,
+    // Hub-hosted projects only. Returns { sessionId, agentId, findingCount, session }.
     fixAllSecurityFindings: (projectId: any, { minSeverity }: any = {}) =>
         fetchJSON(`/projects/${projectId}/security-audit/fix`, {
             method: 'POST',

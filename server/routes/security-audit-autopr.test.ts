@@ -1,17 +1,25 @@
 /**
- * Route-level wiring for security auto-PR: the scan route builds and passes
- * the `openBumpPrs` closure to runScan ONLY when the project opted in
- * (securityAutoPr.enabled), the repo is Hub-hosted, AND a native PR service
- * is wired — and surfaces the scan's autoPr result in the response.
+ * Route-level wiring for security Autofix: after a real (non-dry-run) scan the
+ * scan route dispatches an agent SESSION to resolve the open findings — instead
+ * of opening a hand-edited bump PR — when the project opted in
+ * (securityAutoPr.enabled) OR the request set autoPr:true, AND the repo is
+ * Hub-hosted. The dispatched session is surfaced as `res.body.fixSession`.
  */
 import '../test/setup.js';
 import express from 'express';
 import request from 'supertest';
-import { describe, it, expect, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import createSecurityAuditRoutes from './security-audit.js';
+import {
+  SECURITY_AUDIT_SCHEMA,
+  createSecurityAuditStore,
+  type SecurityAuditStore,
+} from '../security-audit/findings-store.js';
 import type { RunSecurityScanResult } from '../security-audit/run.js';
-import type { NativePrService } from '../native-pr/service.js';
 import type { Project, RouteDeps } from '../types.js';
+
+type RouteOpts = NonNullable<Parameters<typeof createSecurityAuditRoutes>[1]>;
 
 const FAKE_RESULT: RunSecurityScanResult = {
   ref: 'main',
@@ -24,23 +32,80 @@ const FAKE_RESULT: RunSecurityScanResult = {
   dryRun: false,
   summary: { newFindings: [], reopenedFindings: [], updated: 0, fixed: 0, suppressed: 0 },
   cardId: null,
-  autoPr: { opened: [], skipped: [] },
+  autoPr: null,
 };
+
+/**
+ * Records dispatch calls; returns a session for a non-empty batch. Set
+ * `noAgent` to simulate a failed dispatch (null even for a non-empty batch) —
+ * the "open findings but no eligible agent" configuration problem.
+ */
+function fakeDispatch(opts: { noAgent?: boolean } = {}) {
+  const calls: Array<{ findings: unknown[] }> = [];
+  const dispatchFixSession = vi.fn((_deps: unknown, args: { findings: unknown[] }) => {
+    calls.push({ findings: args.findings });
+    if (opts.noAgent || args.findings.length === 0) return null;
+    return {
+      sessionId: 'sess-1',
+      agentId: 'dev-1',
+      findingCount: args.findings.length,
+      reused: false,
+      session: {},
+    };
+  }) as unknown as RouteOpts['dispatchFixSession'];
+  return { dispatchFixSession, calls };
+}
+
+let db: Database.Database;
+let store: SecurityAuditStore;
+
+beforeEach(() => {
+  db = new Database(':memory:');
+  db.exec(SECURITY_AUDIT_SCHEMA);
+  store = createSecurityAuditStore(db);
+});
+
+/** Seed one open finding so the post-scan dispatch has something to act on. */
+function seedOpenFinding(s: SecurityAuditStore): void {
+  s.recordScanResults({
+    projectId: 'p1',
+    scannedManifests: ['package-lock.json'],
+    findings: [
+      {
+        dependency: {
+          ecosystem: 'npm',
+          name: 'lodash',
+          version: '4.17.11',
+          manifestPath: 'package-lock.json',
+        },
+        advisory: {
+          id: 'GHSA-a',
+          summary: 's',
+          severity: 'high',
+          aliases: [],
+          fixedVersion: '4.17.21',
+          url: '',
+        },
+      },
+    ],
+    ref: 'main',
+    now: 1000,
+  });
+}
 
 function makeApp(opts: {
   project: Project;
-  nativePr?: NativePrService;
-  onDeps: (deps: unknown) => void;
+  dispatch?: RouteOpts['dispatchFixSession'];
+  result?: RunSecurityScanResult;
 }): express.Express {
-  const runScan = vi.fn(async (scanDeps: unknown): Promise<RunSecurityScanResult> => {
-    opts.onDeps(scanDeps);
-    return FAKE_RESULT;
-  });
+  const runScan = vi.fn(async (): Promise<RunSecurityScanResult> => opts.result ?? FAKE_RESULT);
   const deps = {
     stmts: {} as RouteDeps['stmts'],
     broadcast: vi.fn(),
-    nativePr: opts.nativePr,
     findProject: (id: string) => (id === opts.project.id ? opts.project : null),
+    config: {} as RouteDeps['config'],
+    findAgent: vi.fn(),
+    handleChat: vi.fn(),
   } as unknown as RouteDeps;
   const app = express();
   app.use(express.json());
@@ -51,134 +116,162 @@ function makeApp(opts: {
   });
   app.use(
     createSecurityAuditRoutes(deps, {
-      runScan: runScan as unknown as NonNullable<
-        Parameters<typeof createSecurityAuditRoutes>[1]
-      >['runScan'],
+      store,
+      runScan: runScan as unknown as RouteOpts['runScan'],
+      dispatchFixSession: opts.dispatch,
     }),
   );
   return app;
 }
 
-const fakeNativePr = (): NativePrService =>
-  ({ createOrGetOpenPr: vi.fn() }) as unknown as NativePrService;
-
 function project(over: Partial<Project>): Project {
   return { id: 'p1', name: 'P1', gitHost: 'agenthub', ...over } as unknown as Project;
 }
 
-describe('POST /security-audit/scan — auto-PR gate', () => {
-  it('passes openBumpPrs when enabled + Hub-hosted + nativePr present, and returns autoPr', async () => {
-    let captured: { openBumpPrs?: unknown } = {};
+/** A scan result that surfaced a fresh (new) finding — arms the opt-in gate. */
+const RESULT_WITH_NEW: RunSecurityScanResult = {
+  ...FAKE_RESULT,
+  summary: { ...FAKE_RESULT.summary, newFindings: [{ id: 'x' }] as never },
+};
+
+describe('POST /security-audit/scan — Autofix gate', () => {
+  it('opt-in dispatches a session when the scan surfaced new findings', async () => {
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = fakeDispatch();
     const app = makeApp({
       project: project({ securityAutoPr: { enabled: true } }),
-      nativePr: fakeNativePr(),
-      onDeps: (d) => {
-        captured = d as { openBumpPrs?: unknown };
-      },
+      dispatch: dispatchFixSession,
+      result: RESULT_WITH_NEW,
     });
     const res = await request(app)
       .post('/api/projects/p1/security-audit/scan')
       .send({})
       .expect(200);
-    expect(typeof captured.openBumpPrs).toBe('function');
-    expect(res.body.autoPr).toEqual({ opened: [], skipped: [] });
+    expect(res.body.fixSession).toMatchObject({ sessionId: 'sess-1', findingCount: 1 });
+    expect(calls).toHaveLength(1);
   });
 
-  it('does NOT pass openBumpPrs when the setting is disabled', async () => {
-    let captured: { openBumpPrs?: unknown } = {};
-    const app = makeApp({
-      project: project({ securityAutoPr: { enabled: false } }),
-      nativePr: fakeNativePr(),
-      onDeps: (d) => {
-        captured = d as { openBumpPrs?: unknown };
-      },
-    });
-    await request(app).post('/api/projects/p1/security-audit/scan').send({}).expect(200);
-    expect(captured.openBumpPrs).toBeUndefined();
-  });
-
-  it('does NOT pass openBumpPrs when no native PR service is wired', async () => {
-    let captured: { openBumpPrs?: unknown } = {};
+  it('opt-in does NOT re-dispatch when the scan surfaced nothing new (idempotency)', async () => {
+    // A repeat scan: the finding is already open but not new/reopened this scan.
+    // Dispatching again would spawn a duplicate session for the same unresolved
+    // findings, so the opt-in path must skip it.
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = fakeDispatch();
     const app = makeApp({
       project: project({ securityAutoPr: { enabled: true } }),
-      nativePr: undefined,
-      onDeps: (d) => {
-        captured = d as { openBumpPrs?: unknown };
-      },
+      dispatch: dispatchFixSession,
+      result: FAKE_RESULT, // summary.newFindings/reopenedFindings both empty
     });
-    await request(app).post('/api/projects/p1/security-audit/scan').send({}).expect(200);
-    expect(captured.openBumpPrs).toBeUndefined();
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({})
+      .expect(200);
+    expect(res.body.fixSession).toBeNull();
+    expect(calls).toHaveLength(0);
   });
 
-  it('does NOT pass openBumpPrs for a non-Hub-hosted project', async () => {
-    let captured: { openBumpPrs?: unknown } = {};
+  it('explicit Autofix (autoPr:true) dispatches even with no new findings this scan', async () => {
+    // A deliberate one-off click acts on the CURRENT open findings regardless of
+    // whether this scan surfaced anything new — unlike the auto opt-in.
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = fakeDispatch();
     const app = makeApp({
-      project: project({ gitHost: 'github', securityAutoPr: { enabled: true } }),
-      nativePr: fakeNativePr(),
-      onDeps: (d) => {
-        captured = d as { openBumpPrs?: unknown };
-      },
+      project: project({ securityAutoPr: { enabled: true } }),
+      dispatch: dispatchFixSession,
+      result: FAKE_RESULT,
     });
-    await request(app).post('/api/projects/p1/security-audit/scan').send({}).expect(200);
-    expect(captured.openBumpPrs).toBeUndefined();
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({ autoPr: true })
+      .expect(200);
+    expect(res.body.fixSession).toMatchObject({ sessionId: 'sess-1', findingCount: 1 });
+    expect(calls).toHaveLength(1);
   });
 
-  // The "Autofix" button passes { autoPr: true } as its own opt-in — it must
-  // open bump PRs even when the project never set securityAutoPr.enabled.
-  it('passes openBumpPrs when the request body sets autoPr:true, even with the setting unset', async () => {
-    let captured: { openBumpPrs?: unknown } = {};
+  it('does NOT dispatch when the setting is disabled and autoPr not requested', async () => {
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = fakeDispatch();
     const app = makeApp({
-      project: project({}), // no securityAutoPr at all
-      nativePr: fakeNativePr(),
-      onDeps: (d) => {
-        captured = d as { openBumpPrs?: unknown };
-      },
+      project: project({ securityAutoPr: { enabled: false } }),
+      dispatch: dispatchFixSession,
     });
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({})
+      .expect(200);
+    expect(res.body.fixSession).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('dispatches when the request sets autoPr:true, even with the setting unset', async () => {
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ project: project({}), dispatch: dispatchFixSession });
     await request(app)
       .post('/api/projects/p1/security-audit/scan')
       .send({ autoPr: true })
       .expect(200);
-    expect(typeof captured.openBumpPrs).toBe('function');
+    expect(calls).toHaveLength(1);
   });
 
-  it('autoPr:true still does NOT open PRs for a non-Hub-hosted project', async () => {
-    let captured: { openBumpPrs?: unknown } = {};
-    const app = makeApp({
-      project: project({ gitHost: 'github' }),
-      nativePr: fakeNativePr(),
-      onDeps: (d) => {
-        captured = d as { openBumpPrs?: unknown };
-      },
-    });
-    await request(app)
+  it('does NOT dispatch for a non-Hub-hosted project even with autoPr:true', async () => {
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ project: project({ gitHost: 'github' }), dispatch: dispatchFixSession });
+    const res = await request(app)
       .post('/api/projects/p1/security-audit/scan')
       .send({ autoPr: true })
       .expect(200);
-    expect(captured.openBumpPrs).toBeUndefined();
+    expect(res.body.fixSession).toBeNull();
+    expect(calls).toHaveLength(0);
   });
 
-  it('autoPr:true still does NOT open PRs when no native PR service is wired', async () => {
-    let captured: { openBumpPrs?: unknown } = {};
+  it('does NOT dispatch on a dry-run scan', async () => {
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = fakeDispatch();
     const app = makeApp({
-      project: project({}),
-      nativePr: undefined,
-      onDeps: (d) => {
-        captured = d as { openBumpPrs?: unknown };
-      },
+      project: project({ securityAutoPr: { enabled: true } }),
+      dispatch: dispatchFixSession,
+      result: { ...FAKE_RESULT, dryRun: true },
     });
-    await request(app)
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({})
+      .expect(200);
+    expect(res.body.fixSession).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('surfaces a null fixSession AND null fixSessionError when there are no open findings', async () => {
+    // Explicit Autofix, but the store has no open findings → a legit no-op:
+    // both fixSession and fixSessionError are null (not a config problem).
+    const { dispatchFixSession } = fakeDispatch();
+    const app = makeApp({ project: project({}), dispatch: dispatchFixSession });
+    const res = await request(app)
       .post('/api/projects/p1/security-audit/scan')
       .send({ autoPr: true })
       .expect(200);
-    expect(captured.openBumpPrs).toBeUndefined();
+    expect(res.body.fixSession).toBeNull();
+    expect(res.body.fixSessionError).toBeNull();
+  });
+
+  it('surfaces fixSessionError (not a false no-op) when open findings exist but dispatch fails', async () => {
+    // Open findings ARE present, but no eligible agent can be dispatched → the
+    // scan route must report the config problem, not "nothing to resolve".
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = fakeDispatch({ noAgent: true });
+    const app = makeApp({ project: project({}), dispatch: dispatchFixSession });
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({ autoPr: true })
+      .expect(200);
+    expect(res.body.fixSession).toBeNull();
+    expect(res.body.fixSessionError).toMatch(/no agent/i);
+    expect(calls).toHaveLength(1); // dispatch WAS attempted (open.length > 0)
   });
 
   it('rejects a non-boolean autoPr with 400 (strict schema)', async () => {
-    const app = makeApp({
-      project: project({}),
-      nativePr: fakeNativePr(),
-      onDeps: () => {},
-    });
+    const app = makeApp({ project: project({}), dispatch: fakeDispatch().dispatchFixSession });
     await request(app)
       .post('/api/projects/p1/security-audit/scan')
       .send({ autoPr: 'yes' })

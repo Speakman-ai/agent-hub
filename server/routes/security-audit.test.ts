@@ -20,9 +20,9 @@ type RouteOpts = NonNullable<Parameters<typeof createSecurityAuditRoutes>[1]>;
 function makeApp(opts: {
   store?: SecurityAuditStore;
   runScan?: RouteOpts['runScan'];
-  fixDeps?: RouteOpts['fixDeps'];
+  dispatchFixSession?: RouteOpts['dispatchFixSession'];
   findProject?: (id: string) => Project | null;
-  /** Wire a native PR service into the route deps (fix route gate). */
+  /** Wire a native PR service into the route deps (kept for scan-path parity). */
   nativePr?: unknown;
   /** Override the project's gitHost (defaults to 'agenthub'). */
   gitHost?: string;
@@ -39,6 +39,9 @@ function makeApp(opts: {
     broadcast: vi.fn(),
     findProject: opts.findProject ?? ((id: string) => (id === 'p1' ? project : null)),
     nativePr: opts.nativePr,
+    config: {} as RouteDeps['config'],
+    findAgent: vi.fn(),
+    handleChat: vi.fn(),
   } as unknown as RouteDeps;
   const app = express();
   app.use(express.json());
@@ -54,10 +57,38 @@ function makeApp(opts: {
     createSecurityAuditRoutes(deps, {
       store: opts.store,
       runScan: opts.runScan,
-      fixDeps: opts.fixDeps,
+      dispatchFixSession: opts.dispatchFixSession,
     }),
   );
   return app;
+}
+
+/**
+ * A fake `dispatchSecurityFixSession` that records its calls. Returns a session
+ * result for a non-empty finding batch; `null` for an empty batch (mirroring
+ * the real "nothing to do" contract). Set `noAgent` to simulate a roster with
+ * no eligible agent (null even for a non-empty batch → route 409). Set `reused`
+ * to simulate the idempotency guard returning an already-running session.
+ */
+function fakeDispatch(opts: { noAgent?: boolean; reused?: boolean } = {}) {
+  const calls: Array<{ findings: unknown[]; ownerUserId: unknown }> = [];
+  const dispatchFixSession = vi.fn(
+    (_deps: unknown, args: { findings: unknown[]; ownerUserId?: unknown }) => {
+      calls.push({
+        findings: args.findings,
+        ownerUserId: args.ownerUserId ?? null,
+      });
+      if (opts.noAgent || args.findings.length === 0) return null;
+      return {
+        sessionId: 'sess-1',
+        agentId: 'dev-1',
+        findingCount: args.findings.length,
+        reused: opts.reused === true,
+        session: { id: 'sess-1', name: '[Security fix]' },
+      };
+    },
+  ) as unknown as RouteOpts['dispatchFixSession'];
+  return { dispatchFixSession, calls };
 }
 
 let db: Database.Database;
@@ -298,25 +329,12 @@ describe('POST /security-audit/scan', () => {
       .expect(500);
     expect(res.body.error).toContain('boom');
   });
-});
 
-describe('POST /security-audit/findings/:id/fix', () => {
-  const LOCK = JSON.stringify(
-    {
-      name: 'fixture',
-      lockfileVersion: 3,
-      packages: {
-        '': { name: 'fixture', version: '1.0.0' },
-        'node_modules/lodash': { version: '4.17.11', integrity: 'sha512-OLD' },
-      },
-    },
-    null,
-    2,
-  );
-
-  /** Seed one fixable open lodash finding and return its id. */
-  function seedFixable(s: SecurityAuditStore): string {
-    const r = s.recordScanResults({
+  it('autofix (autoPr:true) dispatches a session over the open findings after a real scan', async () => {
+    // Pre-seed an open finding the post-scan dispatch will pick up. The scan
+    // orchestrator is mocked (non-dry-run) so we exercise only the route's
+    // dispatch wiring, not OSV/git.
+    store.recordScanResults({
       projectId: 'p1',
       scannedManifests: ['package-lock.json'],
       findings: [
@@ -329,8 +347,102 @@ describe('POST /security-audit/findings/:id/fix', () => {
           },
           advisory: {
             id: 'GHSA-a',
-            summary: 'Prototype pollution',
+            summary: 's',
             severity: 'high',
+            aliases: [],
+            fixedVersion: '4.17.21',
+            url: '',
+          },
+        },
+      ],
+      ref: 'main',
+      now: 1000,
+    });
+    const runScan = vi.fn().mockResolvedValue({
+      ref: 'main',
+      dryRun: false,
+      scannedManifests: ['package-lock.json'],
+      failedManifests: [],
+      truncated: false,
+      dependencyCount: 1,
+      vulnerableFindings: 1,
+      summary: { newFindings: [], reopenedFindings: [], updated: 0, fixed: 0, suppressed: 0 },
+      cardId: null,
+    });
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, runScan, dispatchFixSession });
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({ autoPr: true })
+      .expect(200);
+    expect(res.body.fixSession).toMatchObject({ sessionId: 'sess-1', findingCount: 1 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].findings).toHaveLength(1);
+  });
+
+  it('does NOT dispatch a session on a dry-run scan even when autoPr:true', async () => {
+    const runScan = vi.fn().mockResolvedValue({
+      ref: 'dev',
+      dryRun: true,
+      scannedManifests: [],
+      failedManifests: [],
+      truncated: false,
+      dependencyCount: 0,
+      vulnerableFindings: 0,
+      summary: { newFindings: [], reopenedFindings: [], updated: 0, fixed: 0, suppressed: 0 },
+      cardId: null,
+    });
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, runScan, dispatchFixSession });
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({ autoPr: true, ref: 'dev' })
+      .expect(200);
+    expect(res.body.fixSession).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a plain rescan (no autoPr) never dispatches a session', async () => {
+    const runScan = vi.fn().mockResolvedValue({
+      ref: 'main',
+      dryRun: false,
+      scannedManifests: [],
+      failedManifests: [],
+      truncated: false,
+      dependencyCount: 0,
+      vulnerableFindings: 0,
+      summary: { newFindings: [], reopenedFindings: [], updated: 0, fixed: 0, suppressed: 0 },
+      cardId: null,
+    });
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, runScan, dispatchFixSession });
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({})
+      .expect(200);
+    expect(res.body.fixSession).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('POST /security-audit/findings/:id/fix', () => {
+  /** Seed one open high finding and return its id. */
+  function seedOpen(s: SecurityAuditStore, name = 'lodash', severity = 'high'): string {
+    const r = s.recordScanResults({
+      projectId: 'p1',
+      scannedManifests: ['package-lock.json'],
+      findings: [
+        {
+          dependency: {
+            ecosystem: 'npm',
+            name,
+            version: '4.17.11',
+            manifestPath: 'package-lock.json',
+          },
+          advisory: {
+            id: `GHSA-${name}`,
+            summary: 'Prototype pollution',
+            severity: severity as any,
             aliases: [],
             fixedVersion: '4.17.21',
             url: 'https://example.test/GHSA-a',
@@ -343,69 +455,48 @@ describe('POST /security-audit/findings/:id/fix', () => {
     return r.newFindings[0].id;
   }
 
-  function fakeFixDeps(files: Record<string, string | null>) {
-    const commitFiles = vi.fn(
-      async (_args: { branch: string; files: Record<string, string>; message: string }) => ({
-        headSha: 'deadbeef',
-        created: true,
-      }),
-    );
-    return {
-      fixDeps: {
-        resolveRepo: vi.fn(async () => ({
-          repoPath: '/bare/p1.git',
-          baseBranch: 'main',
-          baseSha: 'basesha',
-        })),
-        makeReader: () => ({
-          readFile: async (_ref: string, p: string) => (p in files ? files[p] : null),
-        }),
-        commitFiles,
-      } as unknown as Parameters<typeof makeApp>[0]['fixDeps'],
-      commitFiles,
-    };
-  }
-
-  function fakeNativePr() {
-    return {
-      createOrGetOpenPr: vi.fn((_args: Record<string, unknown>) => ({
-        row: { number: 42 },
-        prUrl: '/projects/p1/pulls/42',
-        created: true,
+  it('dispatches a session over ALL open findings and returns 201 with the session', async () => {
+    // Two open findings recorded in ONE scan (a second scan would sweep the
+    // first as vanished/fixed). The clicked row is lodash; the batch covers both.
+    const seeded = store.recordScanResults({
+      projectId: 'p1',
+      scannedManifests: ['package-lock.json'],
+      findings: ['lodash', 'express'].map((name) => ({
+        dependency: {
+          ecosystem: 'npm' as const,
+          name,
+          version: '4.17.11',
+          manifestPath: 'package-lock.json',
+        },
+        advisory: {
+          id: `GHSA-${name}`,
+          summary: 's',
+          severity: 'high' as any,
+          aliases: [],
+          fixedVersion: '4.17.21',
+          url: '',
+        },
       })),
-    };
-  }
-
-  it('opens a native bump PR for the finding and returns the opened entry', async () => {
-    const id = seedFixable(store);
-    const nativePr = fakeNativePr();
-    const { fixDeps, commitFiles } = fakeFixDeps({ 'package-lock.json': LOCK });
-    const app = makeApp({ store, nativePr, fixDeps });
+      ref: 'main',
+      now: 1000,
+    });
+    const id = seeded.newFindings.find((f) => f.package_name === 'lodash')!.id;
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession });
     const res = await request(app)
       .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
       .send()
-      .expect(200);
-    expect(res.body.opened).toHaveLength(1);
-    expect(res.body.opened[0]).toMatchObject({
-      packageName: 'lodash',
-      toVersion: '4.17.21',
-      prNumber: 42,
-      prUrl: '/projects/p1/pulls/42',
-      prCreated: true,
-    });
-    expect(res.body.skipped).toEqual([]);
-    expect(commitFiles).toHaveBeenCalledOnce();
-    expect(nativePr.createOrGetOpenPr).toHaveBeenCalledOnce();
-    // The PR is cut from the resolved base branch.
-    expect(nativePr.createOrGetOpenPr.mock.calls[0][0]).toMatchObject({ baseBranch: 'main' });
+      .expect(201);
+    expect(res.body).toMatchObject({ sessionId: 'sess-1', agentId: 'dev-1', findingCount: 2 });
+    expect(res.body.session).toMatchObject({ id: 'sess-1' });
+    // Every open finding was handed to the session (not just the clicked row),
+    // with no severity threshold and the caller as owner.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].findings).toHaveLength(2);
+    expect(calls[0].ownerUserId).toBe('u1');
   });
 
-  it('only bumps SUPPORTED siblings: a null-fixed advisory on the same package is excluded', async () => {
-    // The package is installed at three vulnerable versions in one manifest. Two
-    // advisories publish a fix (4.16.0 + 4.17.11 → 4.17.21); a third advisory on
-    // 4.13.0 has NO published fix. The per-finding Fix must bump only the two
-    // fixable copies and leave the unfixable one untouched — never letting the
-    // null-fixed sibling into the bump group.
+  it('returns 200 (not 201) when an already-running fix session is reused', async () => {
     const r = store.recordScanResults({
       projectId: 'p1',
       scannedManifests: ['package-lock.json'],
@@ -419,42 +510,10 @@ describe('POST /security-audit/findings/:id/fix', () => {
           },
           advisory: {
             id: 'GHSA-a',
-            summary: 'fixable',
+            summary: 's',
             severity: 'high',
             aliases: [],
             fixedVersion: '4.17.21',
-            url: '',
-          },
-        },
-        {
-          dependency: {
-            ecosystem: 'npm',
-            name: 'lodash',
-            version: '4.16.0',
-            manifestPath: 'package-lock.json',
-          },
-          advisory: {
-            id: 'GHSA-b',
-            summary: 'fixable sibling',
-            severity: 'high',
-            aliases: [],
-            fixedVersion: '4.17.21',
-            url: '',
-          },
-        },
-        {
-          dependency: {
-            ecosystem: 'npm',
-            name: 'lodash',
-            version: '4.13.0',
-            manifestPath: 'package-lock.json',
-          },
-          advisory: {
-            id: 'GHSA-c',
-            summary: 'no fix published',
-            severity: 'high',
-            aliases: [],
-            fixedVersion: null,
             url: '',
           },
         },
@@ -462,162 +521,16 @@ describe('POST /security-audit/findings/:id/fix', () => {
       ref: 'main',
       now: 1000,
     });
-    // Click the first (fixable) finding.
-    const clicked = r.newFindings.find((f) => f.package_version === '4.17.11')!.id;
-    const lock = JSON.stringify(
-      {
-        name: 'fixture',
-        lockfileVersion: 3,
-        packages: {
-          '': { name: 'fixture', version: '1.0.0' },
-          'node_modules/lodash': { version: '4.17.11', integrity: 'sha512-A' },
-          'node_modules/a/node_modules/lodash': { version: '4.16.0', integrity: 'sha512-B' },
-          'node_modules/b/node_modules/lodash': { version: '4.13.0', integrity: 'sha512-C' },
-        },
-      },
-      null,
-      2,
-    );
-    const nativePr = fakeNativePr();
-    const { fixDeps, commitFiles } = fakeFixDeps({ 'package-lock.json': lock });
-    const app = makeApp({ store, nativePr, fixDeps });
+    const { dispatchFixSession } = fakeDispatch({ reused: true });
+    const app = makeApp({ store, dispatchFixSession });
     const res = await request(app)
-      .post(`/api/projects/p1/security-audit/findings/${clicked}/fix`)
+      .post(`/api/projects/p1/security-audit/findings/${r.newFindings[0].id}/fix`)
       .send()
       .expect(200);
-
-    expect(res.body.opened).toHaveLength(1);
-    // Only the two FIXABLE versions are in the bump; the null-fixed 4.13.0 is not.
-    expect(res.body.opened[0]).toMatchObject({
-      packageName: 'lodash',
-      fromVersions: ['4.16.0', '4.17.11'],
-      toVersion: '4.17.21',
-    });
-    // The committed lockfile reflects the same: fixable copies bumped, the
-    // unfixable copy left at its original version.
-    const committed = JSON.parse(commitFiles.mock.calls[0][0].files['package-lock.json']);
-    expect(committed.packages['node_modules/lodash'].version).toBe('4.17.21');
-    expect(committed.packages['node_modules/a/node_modules/lodash'].version).toBe('4.17.21');
-    expect(committed.packages['node_modules/b/node_modules/lodash'].version).toBe('4.13.0');
+    expect(res.body).toMatchObject({ sessionId: 'sess-1', reused: true });
   });
 
-  it('batches ALL open fixable packages into the single PR, not just the clicked one', async () => {
-    // Two distinct fixable packages are open. Clicking Fix on lodash must open
-    // ONE combined PR that also bumps express — the rolling security PR — rather
-    // than a lodash-only PR that would clobber express's bump on the shared
-    // branch.
-    const r = store.recordScanResults({
-      projectId: 'p1',
-      scannedManifests: ['package-lock.json'],
-      findings: [
-        {
-          dependency: {
-            ecosystem: 'npm',
-            name: 'lodash',
-            version: '4.17.11',
-            manifestPath: 'package-lock.json',
-          },
-          advisory: {
-            id: 'GHSA-a',
-            summary: 'lodash',
-            severity: 'high',
-            aliases: [],
-            fixedVersion: '4.17.21',
-            url: '',
-          },
-        },
-        {
-          dependency: {
-            ecosystem: 'npm',
-            name: 'express',
-            version: '4.17.0',
-            manifestPath: 'package-lock.json',
-          },
-          advisory: {
-            id: 'GHSA-b',
-            summary: 'express',
-            severity: 'high',
-            aliases: [],
-            fixedVersion: '4.19.2',
-            url: '',
-          },
-        },
-      ],
-      ref: 'main',
-      now: 1000,
-    });
-    const clicked = r.newFindings.find((f) => f.package_name === 'lodash')!.id;
-    const lock = JSON.stringify(
-      {
-        name: 'fixture',
-        lockfileVersion: 3,
-        packages: {
-          '': {
-            name: 'fixture',
-            version: '1.0.0',
-            dependencies: { lodash: '^4.17.11', express: '^4.17.0' },
-          },
-          'node_modules/lodash': { version: '4.17.11' },
-          'node_modules/express': { version: '4.17.0' },
-        },
-      },
-      null,
-      2,
-    );
-    const nativePr = fakeNativePr();
-    const { fixDeps, commitFiles } = fakeFixDeps({ 'package-lock.json': lock });
-    const app = makeApp({ store, nativePr, fixDeps });
-    const res = await request(app)
-      .post(`/api/projects/p1/security-audit/findings/${clicked}/fix`)
-      .send()
-      .expect(200);
-
-    // both packages opened in ONE PR (one commit, one createOrGetOpenPr)
-    expect(res.body.opened).toHaveLength(2);
-    expect(res.body.opened.map((o: { packageName: string }) => o.packageName).sort()).toEqual([
-      'express',
-      'lodash',
-    ]);
-    expect(commitFiles).toHaveBeenCalledOnce();
-    expect(nativePr.createOrGetOpenPr).toHaveBeenCalledOnce();
-    const committed = JSON.parse(commitFiles.mock.calls[0][0].files['package-lock.json']);
-    expect(committed.packages['node_modules/lodash'].version).toBe('4.17.21');
-    expect(committed.packages['node_modules/express'].version).toBe('4.19.2');
-  });
-
-  it('reports a skip (no PR) when the lockfile is missing, without 500ing', async () => {
-    const id = seedFixable(store);
-    const nativePr = fakeNativePr();
-    const { fixDeps } = fakeFixDeps({}); // reader returns null for every path
-    const app = makeApp({ store, nativePr, fixDeps });
-    const res = await request(app)
-      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
-      .send()
-      .expect(200);
-    expect(res.body.opened).toEqual([]);
-    expect(res.body.skipped[0]).toMatchObject({ reason: 'lockfile_missing' });
-    expect(nativePr.createOrGetOpenPr).not.toHaveBeenCalled();
-  });
-
-  it('409s when the project is not Hub-hosted', async () => {
-    const id = seedFixable(store);
-    const app = makeApp({ store, nativePr: fakeNativePr(), gitHost: 'github' });
-    await request(app)
-      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
-      .send()
-      .expect(409);
-  });
-
-  it('409s when no native PR service is wired', async () => {
-    const id = seedFixable(store);
-    const app = makeApp({ store }); // no nativePr
-    await request(app)
-      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
-      .send()
-      .expect(409);
-  });
-
-  it('409s when the advisory has no published fix', async () => {
+  it('dispatches even for a finding with no published fix (a check is a valid outcome)', async () => {
     const r = store.recordScanResults({
       projectId: 'p1',
       scannedManifests: ['package-lock.json'],
@@ -642,60 +555,103 @@ describe('POST /security-audit/findings/:id/fix', () => {
       ref: 'main',
       now: 1000,
     });
-    const app = makeApp({ store, nativePr: fakeNativePr() });
-    const res = await request(app)
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession });
+    await request(app)
       .post(`/api/projects/p1/security-audit/findings/${r.newFindings[0].id}/fix`)
       .send()
-      .expect(409);
-    expect(res.body.error).toMatch(/no fix/i);
+      .expect(201);
+    expect(calls[0].findings).toHaveLength(1);
   });
 
-  it('409s when the finding is already dismissed (not open)', async () => {
-    const id = seedFixable(store);
-    store.dismissFinding({ projectId: 'p1', id, reason: null, createdBy: null, suppress: true });
-    const app = makeApp({ store, nativePr: fakeNativePr() });
+  it('dispatches for a non-npm (pip) finding — sessions are not npm-only', async () => {
+    const r = store.recordScanResults({
+      projectId: 'p1',
+      scannedManifests: ['requirements.txt'],
+      findings: [
+        {
+          dependency: {
+            ecosystem: 'pip',
+            name: 'django',
+            version: '3.2.0',
+            manifestPath: 'requirements.txt',
+          },
+          advisory: {
+            id: 'GHSA-dj',
+            summary: 'sql injection',
+            severity: 'high',
+            aliases: [],
+            fixedVersion: '3.2.18',
+            url: '',
+          },
+        },
+      ],
+      ref: 'main',
+      now: 1000,
+    });
+    const { dispatchFixSession } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession });
+    await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${r.newFindings[0].id}/fix`)
+      .send()
+      .expect(201);
+  });
+
+  it('409s when the project is not Hub-hosted', async () => {
+    const id = seedOpen(store);
+    const app = makeApp({
+      store,
+      gitHost: 'github',
+      dispatchFixSession: fakeDispatch().dispatchFixSession,
+    });
     await request(app)
       .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
       .send()
       .expect(409);
   });
 
+  it('409s when no eligible agent is available to run the session', async () => {
+    const id = seedOpen(store);
+    const { dispatchFixSession } = fakeDispatch({ noAgent: true });
+    const app = makeApp({ store, dispatchFixSession });
+    const res = await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
+      .send()
+      .expect(409);
+    expect(res.body.error).toMatch(/no agent/i);
+  });
+
+  it('409s when the finding is already dismissed (not open)', async () => {
+    const id = seedOpen(store);
+    store.dismissFinding({ projectId: 'p1', id, reason: null, createdBy: null, suppress: true });
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession });
+    await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
+      .send()
+      .expect(409);
+    expect(calls).toHaveLength(0); // never dispatched
+  });
+
   it('404s for an unknown finding id', async () => {
-    const app = makeApp({ store, nativePr: fakeNativePr() });
+    const app = makeApp({ store, dispatchFixSession: fakeDispatch().dispatchFixSession });
     await request(app).post('/api/projects/p1/security-audit/findings/nope/fix').send().expect(404);
   });
 
-  it('requires the Admin role: a User is 403 and no PR is opened', async () => {
-    const id = seedFixable(store);
-    const nativePr = fakeNativePr();
-    const app = makeApp({ store, nativePr, role: 'User' });
+  it('requires the Admin role: a User is 403 and no session is dispatched', async () => {
+    const id = seedOpen(store);
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession, role: 'User' });
     await request(app)
       .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
       .send()
       .expect(403);
-    expect(nativePr.createOrGetOpenPr).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
   });
 });
 
 describe('POST /security-audit/fix (batch, by severity)', () => {
-  // A lockfile carrying three distinct packages installed at one vulnerable
-  // version each — one per severity tier we want to threshold on.
-  const LOCK = JSON.stringify(
-    {
-      name: 'fixture',
-      lockfileVersion: 3,
-      packages: {
-        '': { name: 'fixture', version: '1.0.0' },
-        'node_modules/critpkg': { version: '1.0.0', integrity: 'sha512-C' },
-        'node_modules/highpkg': { version: '1.0.0', integrity: 'sha512-H' },
-        'node_modules/medpkg': { version: '1.0.0', integrity: 'sha512-M' },
-      },
-    },
-    null,
-    2,
-  );
-
-  /** Seed one open fixable finding per severity (critical/high/medium). */
+  /** Seed one open finding per severity (critical/high/medium). */
   function seedTiers(s: SecurityAuditStore): void {
     const mk = (name: string, severity: string, id: string) => ({
       dependency: {
@@ -726,81 +682,44 @@ describe('POST /security-audit/fix (batch, by severity)', () => {
     });
   }
 
-  function fakeFixDeps(files: Record<string, string | null>) {
-    const commitFiles = vi.fn(
-      async (_args: { branch: string; files: Record<string, string>; message: string }) => ({
-        headSha: 'deadbeef',
-        created: true,
-      }),
-    );
-    return {
-      fixDeps: {
-        resolveRepo: vi.fn(async () => ({
-          repoPath: '/bare/p1.git',
-          baseBranch: 'main',
-          baseSha: 'basesha',
-        })),
-        makeReader: () => ({
-          readFile: async (_ref: string, p: string) => (p in files ? files[p] : null),
-        }),
-        commitFiles,
-      } as unknown as Parameters<typeof makeApp>[0]['fixDeps'],
-      commitFiles,
-    };
-  }
+  const sevOf = (calls: Array<{ findings: unknown[] }>) =>
+    (calls[0].findings as Array<{ severity: string }>).map((f) => f.severity).sort();
 
-  function fakeNativePr() {
-    return {
-      createOrGetOpenPr: vi.fn((_args: Record<string, unknown>) => ({
-        row: { number: 77 },
-        prUrl: '/projects/p1/pulls/77',
-        created: true,
-      })),
-    };
-  }
-
-  it('fixes every fixable finding when no minSeverity is given', async () => {
+  it('dispatches a session over every open finding when no minSeverity is given', async () => {
     seedTiers(store);
-    const nativePr = fakeNativePr();
-    const { fixDeps } = fakeFixDeps({ 'package-lock.json': LOCK });
-    const app = makeApp({ store, nativePr, fixDeps });
-    const res = await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(200);
-    const names = res.body.opened.map((o: any) => o.packageName).sort();
-    expect(names).toEqual(['critpkg', 'highpkg', 'medpkg']);
-    // One combined PR (one createOrGetOpenPr) regardless of package count.
-    expect(nativePr.createOrGetOpenPr).toHaveBeenCalledOnce();
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession });
+    const res = await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(201);
+    expect(res.body).toMatchObject({ sessionId: 'sess-1', findingCount: 3 });
+    expect(sevOf(calls)).toEqual(['critical', 'high', 'medium']);
   });
 
-  it('minSeverity:high fixes critical AND high but not medium (threshold, not exact)', async () => {
+  it('minSeverity:high scopes the batch to critical AND high (threshold, not exact)', async () => {
     seedTiers(store);
-    const nativePr = fakeNativePr();
-    const { fixDeps } = fakeFixDeps({ 'package-lock.json': LOCK });
-    const app = makeApp({ store, nativePr, fixDeps });
-    const res = await request(app)
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession });
+    await request(app)
       .post('/api/projects/p1/security-audit/fix')
       .send({ minSeverity: 'high' })
-      .expect(200);
-    const names = res.body.opened.map((o: any) => o.packageName).sort();
-    expect(names).toEqual(['critpkg', 'highpkg']);
+      .expect(201);
+    expect(sevOf(calls)).toEqual(['critical', 'high']);
   });
 
-  it('minSeverity:critical fixes only the critical finding', async () => {
+  it('minSeverity:critical scopes the batch to only the critical finding', async () => {
     seedTiers(store);
-    const nativePr = fakeNativePr();
-    const { fixDeps } = fakeFixDeps({ 'package-lock.json': LOCK });
-    const app = makeApp({ store, nativePr, fixDeps });
-    const res = await request(app)
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession });
+    await request(app)
       .post('/api/projects/p1/security-audit/fix')
       .send({ minSeverity: 'critical' })
-      .expect(200);
-    expect(res.body.opened.map((o: any) => o.packageName)).toEqual(['critpkg']);
+      .expect(201);
+    expect(sevOf(calls)).toEqual(['critical']);
   });
 
-  it('returns empty opened (no PR) when no finding meets the threshold', async () => {
-    seedTiers(store); // highest is critical; nothing is below "low" missing, but medpkg is medium
+  it('returns 200 with a null session when no finding meets the threshold', async () => {
+    seedTiers(store);
     // Dismiss every tier except medium, then threshold at critical → nothing.
-    const open = store.listFindings('p1', { status: 'open' });
-    for (const f of open) {
+    for (const f of store.listFindings('p1', { status: 'open' })) {
       if (f.severity !== 'medium') {
         store.dismissFinding({
           projectId: 'p1',
@@ -811,21 +730,18 @@ describe('POST /security-audit/fix (batch, by severity)', () => {
         });
       }
     }
-    const nativePr = fakeNativePr();
-    const { fixDeps } = fakeFixDeps({ 'package-lock.json': LOCK });
-    const app = makeApp({ store, nativePr, fixDeps });
+    const { dispatchFixSession } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession });
     const res = await request(app)
       .post('/api/projects/p1/security-audit/fix')
       .send({ minSeverity: 'critical' })
       .expect(200);
-    expect(res.body.opened).toEqual([]);
-    expect(res.body.skipped).toEqual([]);
-    expect(nativePr.createOrGetOpenPr).not.toHaveBeenCalled();
+    expect(res.body).toMatchObject({ sessionId: null, findingCount: 0, session: null });
   });
 
   it('400s on an invalid minSeverity', async () => {
     seedTiers(store);
-    const app = makeApp({ store, nativePr: fakeNativePr() });
+    const app = makeApp({ store, dispatchFixSession: fakeDispatch().dispatchFixSession });
     await request(app)
       .post('/api/projects/p1/security-audit/fix')
       .send({ minSeverity: 'bogus' })
@@ -833,7 +749,7 @@ describe('POST /security-audit/fix (batch, by severity)', () => {
   });
 
   it('400s on an unknown body key (strict schema)', async () => {
-    const app = makeApp({ store, nativePr: fakeNativePr() });
+    const app = makeApp({ store, dispatchFixSession: fakeDispatch().dispatchFixSession });
     await request(app)
       .post('/api/projects/p1/security-audit/fix')
       .send({ severity: 'high' })
@@ -842,30 +758,34 @@ describe('POST /security-audit/fix (batch, by severity)', () => {
 
   it('409s when the project is not Hub-hosted', async () => {
     seedTiers(store);
-    const app = makeApp({ store, nativePr: fakeNativePr(), gitHost: 'github' });
+    const app = makeApp({
+      store,
+      gitHost: 'github',
+      dispatchFixSession: fakeDispatch().dispatchFixSession,
+    });
     await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(409);
   });
 
-  it('409s when no native PR service is wired', async () => {
+  it('409s when a matching finding exists but no eligible agent is available', async () => {
     seedTiers(store);
-    const app = makeApp({ store }); // no nativePr
+    const { dispatchFixSession } = fakeDispatch({ noAgent: true });
+    const app = makeApp({ store, dispatchFixSession });
     await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(409);
   });
 
   it('404s for an unknown project', async () => {
-    const app = makeApp({ store, nativePr: fakeNativePr() });
+    const app = makeApp({ store, dispatchFixSession: fakeDispatch().dispatchFixSession });
     await request(app).post('/api/projects/nope/security-audit/fix').send({}).expect(404);
   });
 
-  it('requires the Admin role: a User is 403 and no PR is opened', async () => {
+  it('requires the Admin role: a User is 403 and no session is dispatched', async () => {
     seedTiers(store);
-    const nativePr = fakeNativePr();
-    const app = makeApp({ store, nativePr, role: 'User' });
+    const { dispatchFixSession, calls } = fakeDispatch();
+    const app = makeApp({ store, dispatchFixSession, role: 'User' });
     await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(403);
-    expect(nativePr.createOrGetOpenPr).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
   });
 });
-
 describe('POST /security-audit/findings/:id/dismiss', () => {
   it('dismisses a finding and records a suppression by default', async () => {
     const s = store.recordScanResults({

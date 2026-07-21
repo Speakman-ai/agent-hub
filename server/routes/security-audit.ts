@@ -23,69 +23,18 @@ import {
   type SecurityFindingRow,
 } from '../security-audit/findings-store.js';
 import { OsvAdvisorySource } from '../security-audit/osv.js';
-import type { AdvisorySource } from '../security-audit/types.js';
+import type { AdvisorySource, Severity } from '../security-audit/types.js';
 import { runSecurityScan, SecurityScanError } from '../security-audit/run.js';
-import { openSecurityBumpPrs } from '../security-audit/auto-pr.js';
-import { fetchNpmDistMetadata } from '../security-audit/registry-metadata.js';
-import { commitFilesToBareBranch } from '../security-audit/git-write.js';
-import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
-import config from '../config.js';
 import {
-  gitHostRepoPath,
-  hostedRepoDefaultBranch,
-  hostedRepoExists,
-} from '../git-host/repo-store.js';
-import { gitRepoFileReader, type RepoFileReader } from '../security-audit/scanner.js';
-import { revParse } from '../native-pr/git-read.js';
-import type { DependencyFinding, Ecosystem } from '../security-audit/types.js';
-import { isAtOrAboveSeverity } from '../security-audit/severity.js';
+  dispatchSecurityFixSession,
+  selectFixableFindings,
+} from '../security-audit/fix-session.js';
 import {
   BatchFixRequestSchema,
   DismissRequestSchema,
   FindingsQuerySchema,
   ScanRequestSchema,
 } from './security-audit.openapi.js';
-
-/** Resolved base for writing a bump branch into a project's bare hosted repo. */
-interface FixRepoBase {
-  repoPath: string;
-  baseBranch: string;
-  baseSha: string;
-}
-
-/**
- * Injectable seam for the per-finding Fix route so it is unit-testable without
- * a real git repo. Production defaults resolve the project's hosted bare repo,
- * read files from the default-branch tip, and commit to a bare branch.
- */
-export interface SecurityFixDeps {
-  /** Resolve repo path + default branch + tip SHA; `null` when not available. */
-  resolveRepo: (project: Project) => Promise<FixRepoBase | null>;
-  /** Build a file reader for the bare repo. */
-  makeReader: (repoPath: string) => RepoFileReader;
-  /** Commit `files` onto `branch` based on `baseSha`; returns the new head. */
-  commitFiles: typeof commitFilesToBareBranch;
-}
-
-/** Reconstruct the rich {@link DependencyFinding} a bump plan needs from a stored row. */
-export function findingRowToDependencyFinding(row: SecurityFindingRow): DependencyFinding {
-  return {
-    dependency: {
-      ecosystem: row.ecosystem as Ecosystem,
-      name: row.package_name,
-      version: row.package_version,
-      manifestPath: row.manifest_path,
-    },
-    advisory: {
-      id: row.advisory_id,
-      summary: row.summary,
-      severity: row.severity,
-      aliases: [],
-      fixedVersion: row.fixed_version,
-      url: row.advisory_url,
-    },
-  };
-}
 
 /** Public finding shape: the persisted row minus internal-only columns. */
 export type SecurityFindingDto = Omit<SecurityFindingRow, 'last_scan_id'>;
@@ -125,8 +74,8 @@ export interface SecurityAuditRouteOptions {
   advisorySource?: AdvisorySource;
   /** Override the scan orchestrator (tests). Defaults to {@link runSecurityScan}. */
   runScan?: typeof runSecurityScan;
-  /** Override the per-finding Fix git collaborators (tests). Defaults to git-backed. */
-  fixDeps?: SecurityFixDeps;
+  /** Override session dispatch (tests). Defaults to {@link dispatchSecurityFixSession}. */
+  dispatchFixSession?: typeof dispatchSecurityFixSession;
 }
 
 export default function createSecurityAuditRoutes(
@@ -143,66 +92,28 @@ export default function createSecurityAuditRoutes(
   };
   const advisorySource: AdvisorySource = opts.advisorySource ?? new OsvAdvisorySource();
   const runScan = opts.runScan ?? runSecurityScan;
-  const fixDeps: SecurityFixDeps = opts.fixDeps ?? {
-    // Resolve the project's bare hosted repo and pin the default-branch tip. The
-    // bump branch is cut from this SHA, matching the scan-path auto-PR base.
-    resolveRepo: async (project: Project): Promise<FixRepoBase | null> => {
-      const dataDir = config.dataDir;
-      if (!hostedRepoExists(project.id, dataDir)) return null;
-      const repoPath = gitHostRepoPath(project.id, dataDir);
-      const defaultBranch = await hostedRepoDefaultBranch(project.id, dataDir);
-      if (!defaultBranch) return null;
-      const baseSha = await revParse(repoPath, defaultBranch);
-      if (!baseSha) return null;
-      return { repoPath, baseBranch: defaultBranch, baseSha };
-    },
-    makeReader: (repoPath: string) => gitRepoFileReader(repoPath),
-    commitFiles: commitFilesToBareBranch,
-  };
+  const dispatchFixSession = opts.dispatchFixSession ?? dispatchSecurityFixSession;
 
-  // Open/refresh the single rolling security bump PR from a pre-filtered group
-  // of dependency findings. Shared by the per-finding Fix route and the batch
-  // "fix all by severity" route so both converge on the SAME branch/PR
-  // (SECURITY_BUMP_BRANCH) with identical commit/PR wiring — the only thing that
-  // differs between callers is which findings end up in `group`. Never throws:
-  // openSecurityBumpPrs records per-plan failures in `skipped`.
-  const openBumpPrsForGroup = (
+  // Dispatch a session to resolve a group of open findings. Shared by the
+  // per-finding Fix route, the batch "fix all by severity" route, and the
+  // scan-path Autofix so all three converge on the same behavior: hand the
+  // findings to an agent session (bump + re-resolve lockfile + tests), which
+  // Finalize then turns into a PR. Threading `deps.config`/`findAgent`/
+  // `handleChat` here keeps the dispatch collaborators in one place.
+  const dispatchFix = (
     project: Project,
-    repo: FixRepoBase,
-    author: string,
-    group: DependencyFinding[],
-  ) => {
-    const nativePr = deps.nativePr;
-    // Callers gate on this before resolving the repo; assert so the closure is
-    // total even though it's never reached with a null service.
-    if (!nativePr) throw new Error('native PR service unavailable');
-    const reader = fixDeps.makeReader(repo.repoPath);
-    return openSecurityBumpPrs(group, {
-      fetchDistMetadata: (name, version, registryUrl) =>
-        fetchNpmDistMetadata(name, version, { registryUrl }),
-      readFile: (p) => reader.readFile(repo.baseSha, p),
-      commitFiles: ({ branch, files, message }) =>
-        fixDeps.commitFiles({
-          repoPath: repo.repoPath,
-          baseSha: repo.baseSha,
-          branch,
-          files,
-          message,
-        }),
-      createOrGetOpenPr: ({ headBranch, headSha, title, body }) => {
-        const r = nativePr.createOrGetOpenPr({
-          project,
-          headBranch,
-          baseBranch: repo.baseBranch,
-          headSha,
-          title,
-          body,
-          author,
-        });
-        return { prNumber: r.row.number, prUrl: r.prUrl, prCreated: r.created };
+    findings: SecurityFindingRow[],
+    ownerUserId: string | null,
+  ) =>
+    dispatchFixSession(
+      {
+        stmts: deps.stmts,
+        config: deps.config,
+        findAgent: deps.findAgent,
+        handleChat: deps.handleChat,
       },
-    });
-  };
+      { project, findings, ownerUserId },
+    );
 
   // Project ACCESS (view) is enforced upstream by the project-visibility gate
   // mounted at `/api/projects/:projectId` (server/project-visibility-middleware.ts),
@@ -254,56 +165,21 @@ export default function createSecurityAuditRoutes(
       const ref = parsed.data.ref;
       const generateCard = parsed.data.generateCard !== false;
       const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
-      // Opt-in auto-PR: only for Hub-hosted projects that enabled the setting
-      // AND when a native PR service is wired. The closure binds the git write
-      // + PR open; run.ts invokes it after a successful (non-dry-run) scan,
-      // reusing the findings it just computed. Author resolution / git failures
-      // are swallowed by run.ts so they never fail the scan.
-      const nativePr = deps.nativePr;
-      // Auto-PR fires when EITHER the project opted in (securityAutoPr.enabled)
-      // OR this request explicitly asked for it (the "Autofix" button passes
-      // autoPr:true — an explicit click is its own opt-in). Both still require a
-      // Hub-hosted repo and a wired native PR service.
-      const autoPrRequested =
-        parsed.data.autoPr === true || project.securityAutoPr?.enabled === true;
-      const autoPrEnabled = project.gitHost === 'agenthub' && autoPrRequested && !!nativePr;
-      const openBumpPrs = autoPrEnabled
-        ? async (ctx: {
-            project: Project;
-            findings: Parameters<typeof openSecurityBumpPrs>[0];
-            repoPath: string;
-            reader: { readFile(ref: string, p: string): Promise<string | null> };
-            baseBranch: string;
-            baseSha: string;
-          }) => {
-            const author = resolveNativePrAuthorUserId({ explicitUserId: createdBy });
-            return openSecurityBumpPrs(ctx.findings, {
-              fetchDistMetadata: (name, version, registryUrl) =>
-                fetchNpmDistMetadata(name, version, { registryUrl }),
-              readFile: (p) => ctx.reader.readFile(ctx.baseSha, p),
-              commitFiles: ({ branch, files, message }) =>
-                commitFilesToBareBranch({
-                  repoPath: ctx.repoPath,
-                  baseSha: ctx.baseSha,
-                  branch,
-                  files,
-                  message,
-                }),
-              createOrGetOpenPr: ({ headBranch, headSha, title, body }) => {
-                const r = nativePr!.createOrGetOpenPr({
-                  project: ctx.project,
-                  headBranch,
-                  baseBranch: ctx.baseBranch,
-                  headSha,
-                  title,
-                  body,
-                  author,
-                });
-                return { prNumber: r.row.number, prUrl: r.prUrl, prCreated: r.created };
-              },
-            });
-          }
-        : undefined;
+      // Autofix (Hub-hosted only — findings exist only there) dispatches an
+      // agent session over the open findings AFTER the scan persists them,
+      // instead of opening a hand-edited bump PR. Two trigger kinds, gated
+      // differently for idempotency:
+      //   - explicitAutofix: the "Autofix" button (autoPr:true) is a deliberate
+      //     one-off click, so it always acts on the CURRENT open findings.
+      //   - optInAutofix: securityAutoPr.enabled fires on EVERY scan of the
+      //     project (including plain Rescans and any future scheduled trigger
+      //     that routes through here). Dispatching unconditionally would spawn a
+      //     duplicate session for the same unresolved findings on every scan
+      //     until one lands, so it only dispatches when the scan surfaced NEW or
+      //     reopened findings — mirroring the card-generation idempotency.
+      const explicitAutofix = parsed.data.autoPr === true;
+      const optInAutofix = project.securityAutoPr?.enabled === true;
+      const autofixRequested = (explicitAutofix || optInAutofix) && project.gitHost === 'agenthub';
       try {
         const result = await runScan(
           {
@@ -311,10 +187,40 @@ export default function createSecurityAuditRoutes(
             broadcast: deps.broadcast,
             advisorySource,
             store: store(),
-            openBumpPrs,
           },
           { project, ref, generateCard, createdBy },
         );
+        // Dispatch the fix session only for a real (persisted) scan — a dry run
+        // wrote nothing, so there is no authoritative open-finding set to act on.
+        // For the auto opt-in, additionally require fresh findings this scan so
+        // repeated scans don't re-dispatch for the same unresolved set.
+        const freshFindings =
+          result.summary.newFindings.length + result.summary.reopenedFindings.length > 0;
+        let fixSession = null;
+        // Set when autofix WANTED to dispatch (open findings exist) but couldn't
+        // — currently only "no eligible agent on the roster". Distinct from a
+        // legit no-op (no open findings), which leaves both null. Surfaced so the
+        // UI reports the config problem instead of a false "nothing to resolve".
+        let fixSessionError: string | null = null;
+        if (autofixRequested && !result.dryRun && (explicitAutofix || freshFindings)) {
+          const open = selectFixableFindings(store().listFindings(project.id, { status: 'open' }));
+          if (open.length > 0) {
+            const dispatched = dispatchFix(project, open, createdBy);
+            if (dispatched) {
+              fixSession = {
+                sessionId: dispatched.sessionId,
+                agentId: dispatched.agentId,
+                findingCount: dispatched.findingCount,
+                reused: dispatched.reused,
+              };
+            } else {
+              // open findings but dispatch returned null → no eligible agent
+              // (the only remaining null cause once open.length > 0).
+              fixSessionError =
+                'No agent is available to resolve security findings for this project.';
+            }
+          }
+        }
         res.json({
           ref: result.ref,
           dryRun: result.dryRun,
@@ -329,7 +235,8 @@ export default function createSecurityAuditRoutes(
           fixed: result.summary.fixed,
           suppressed: result.summary.suppressed,
           cardId: result.cardId,
-          autoPr: result.autoPr,
+          fixSession,
+          fixSessionError,
         });
       } catch (err: unknown) {
         if (err instanceof SecurityScanError) {
@@ -347,17 +254,14 @@ export default function createSecurityAuditRoutes(
   router.post(
     '/api/projects/:projectId/security-audit/findings/:id/fix',
     requireRole('Admin'),
-    async (req: Request, res: Response) => {
+    (req: Request, res: Response) => {
       const project = findProjectOr404(req, res);
       if (!project) return;
-      const nativePr = deps.nativePr;
-      // Native bump PRs only exist for Hub-hosted repos with the native PR
-      // service wired. Same gate as the scan-path auto-PR — a mirror/GitHub repo
-      // has nowhere to open a native PR.
-      if (project.gitHost !== 'agenthub' || !nativePr) {
-        return res.status(409).json({
-          error: 'Project is not Agent Hub-hosted or native pull requests are unavailable.',
-        });
+      // Findings only exist for Hub-hosted repos. A session resolves any
+      // ecosystem (npm + pip), so the npm-only / native-PR gates the old bump-PR
+      // path needed are gone — the session commits and Finalize opens the PR.
+      if (project.gitHost !== 'agenthub') {
+        return res.status(409).json({ error: 'Project is not Agent Hub-hosted.' });
       }
       const finding = store().getFinding(project.id, req.params.id as string);
       if (!finding) return res.status(404).json({ error: 'Finding not found' });
@@ -366,110 +270,82 @@ export default function createSecurityAuditRoutes(
           .status(409)
           .json({ error: `Finding is ${finding.status}; only open findings can be fixed.` });
       }
-      if (finding.ecosystem !== 'npm') {
+
+      // Hand the agent EVERY open finding for the project (not just the clicked
+      // row): the session resolves them in one branch → one PR, matching the
+      // "all fixes together" model and avoiding a per-package session pile-up.
+      const open = selectFixableFindings(store().listFindings(project.id, { status: 'open' }));
+      const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
+      const dispatched = dispatchFix(project, open, createdBy);
+      if (!dispatched) {
         return res.status(409).json({
-          error: `Automated fix is not supported for ${finding.ecosystem} dependencies yet.`,
+          error: 'No agent is available to resolve security findings for this project.',
         });
       }
-      if (!finding.fixed_version) {
-        return res.status(409).json({ error: 'No fix has been published for this advisory yet.' });
-      }
-
-      const repo = await fixDeps.resolveRepo(project);
-      if (!repo) {
-        return res
-          .status(409)
-          .json({ error: 'Hosted repository is unavailable; cannot open a bump PR.' });
-      }
-
-      // The security bump PR is a SINGLE rolling PR per project (one branch,
-      // SECURITY_BUMP_BRANCH). The Fix button materializes/refreshes that one PR
-      // from EVERY open fixable finding — not just the clicked package — for two
-      // reasons: (1) it matches the "all fixes in one PR" model the scheduled
-      // scan uses, and (2) committing only the clicked package onto the shared
-      // branch (cut from baseSha) would clobber the other packages' bumps the
-      // scan path already placed there. The clicked finding is validated as
-      // npm + open + fixed (409s above), so it's always included.
-      //
-      // Filter to the SUPPORTED set up front — npm ecosystem AND a published
-      // fixed_version — rather than relying on planSecurityBumps to silently
-      // skip the rest. A finding with fixed_version: null or a non-npm ecosystem
-      // is not actionable for a bump, and letting it in is misleading (it would
-      // just be dropped). The planner groups the survivors by (manifest,
-      // package) and picks the MAX fixed version per group — Dependabot
-      // semantics: one bump resolves every vulnerable copy of each package, and
-      // every fixable package lands in the one combined PR.
-      const group = store()
-        .listFindings(project.id, { status: 'open' })
-        .filter((r) => r.ecosystem === 'npm' && r.fixed_version != null)
-        .map(findingRowToDependencyFinding);
-
-      const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
-      const author = resolveNativePrAuthorUserId({ explicitUserId: createdBy });
-      try {
-        const result = await openBumpPrsForGroup(project, repo, author, group);
-        res.json({ opened: result.opened, skipped: result.skipped });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        res.status(500).json({ error: `Fix failed: ${msg.split('\n')[0]}` });
-      }
+      // 200 when an already-running fix session was reused (idempotency guard),
+      // 201 when a new one was started.
+      res.status(dispatched.reused ? 200 : 201).json({
+        sessionId: dispatched.sessionId,
+        agentId: dispatched.agentId,
+        findingCount: dispatched.findingCount,
+        reused: dispatched.reused,
+        session: dispatched.session,
+      });
     },
   );
 
-  // Batch "fix all by severity": open/refresh the single rolling bump PR from
-  // EVERY open fixable finding, optionally narrowed to a severity threshold.
+  // Batch "fix all by severity": dispatch a session over EVERY open finding,
+  // optionally narrowed to a severity threshold.
   //
-  //   {}                      → fix all fixable findings (any severity)
+  //   {}                      → fix all open findings (any severity)
   //   { minSeverity: 'high' } → fix critical AND high (threshold, not exact)
   //
   // Threshold (vs. exact-severity) semantics are deliberate: you would never
-  // want to fix all high while leaving the more-urgent criticals stranded, and
-  // because all bumps share ONE rolling branch, each call SETS the PR contents
-  // to its scope (a narrower threshold narrows the PR; a wider one widens it).
-  // Same Admin / Hub-hosted / native-PR gate as the per-finding Fix route.
+  // want to fix all high while leaving the more-urgent criticals stranded. Same
+  // Admin / Hub-hosted gate as the per-finding Fix route.
   router.post(
     '/api/projects/:projectId/security-audit/fix',
     requireRole('Admin'),
-    async (req: Request, res: Response) => {
+    (req: Request, res: Response) => {
       const project = findProjectOr404(req, res);
       if (!project) return;
-      const nativePr = deps.nativePr;
-      if (project.gitHost !== 'agenthub' || !nativePr) {
-        return res.status(409).json({
-          error: 'Project is not Agent Hub-hosted or native pull requests are unavailable.',
-        });
+      if (project.gitHost !== 'agenthub') {
+        return res.status(409).json({ error: 'Project is not Agent Hub-hosted.' });
       }
       const parsed = BatchFixRequestSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
       }
-      const repo = await fixDeps.resolveRepo(project);
-      if (!repo) {
-        return res
-          .status(409)
-          .json({ error: 'Hosted repository is unavailable; cannot open a bump PR.' });
-      }
-
-      // Same SUPPORTED filter as the per-finding route — npm ecosystem AND a
-      // published fixed_version — then the optional severity threshold. The
-      // planner groups survivors by (manifest, package) and picks the MAX fixed
-      // version per group (Dependabot semantics).
-      const minSeverity = parsed.data.minSeverity;
-      const group = store()
-        .listFindings(project.id, { status: 'open' })
-        .filter((r) => r.ecosystem === 'npm' && r.fixed_version != null)
-        .filter((r) => (minSeverity ? isAtOrAboveSeverity(r.severity, minSeverity) : true))
-        .map(findingRowToDependencyFinding);
-
+      const minSeverity = (parsed.data.minSeverity ?? null) as Severity | null;
+      const group = selectFixableFindings(store().listFindings(project.id, { status: 'open' }), {
+        minSeverity,
+      });
       const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
-      const author = resolveNativePrAuthorUserId({ explicitUserId: createdBy });
-      try {
-        const result = await openBumpPrsForGroup(project, repo, author, group);
-        res.json({ opened: result.opened, skipped: result.skipped });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        res.status(500).json({ error: `Fix failed: ${msg.split('\n')[0]}` });
+      const dispatched = dispatchFix(project, group, createdBy);
+      if (!dispatched) {
+        // No agent → 409; no matching finding → 200 with a null session (nothing
+        // to do is not an error, mirroring the old empty-`opened` response).
+        if (group.length === 0) {
+          return res.json({
+            sessionId: null,
+            agentId: null,
+            findingCount: 0,
+            reused: false,
+            session: null,
+          });
+        }
+        return res.status(409).json({
+          error: 'No agent is available to resolve security findings for this project.',
+        });
       }
+      // 200 when an already-running fix session was reused, 201 when new.
+      res.status(dispatched.reused ? 200 : 201).json({
+        sessionId: dispatched.sessionId,
+        agentId: dispatched.agentId,
+        findingCount: dispatched.findingCount,
+        reused: dispatched.reused,
+        session: dispatched.session,
+      });
     },
   );
 
