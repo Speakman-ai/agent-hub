@@ -55,6 +55,7 @@
     "@types/react-test-renderer": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "babel-preset-expo": "^54.0.10",
+    "brace-expansion": "5.0.8",
     "react-test-renderer": "^19.1.0",
     "typescript": "~5.9.2",
     "vitest": "^4.1.4"
