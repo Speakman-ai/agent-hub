@@ -132,7 +132,13 @@ describe('dependency security guards (high-severity advisory floors)', () => {
    * assertion to a single major when older majors are legitimately still in
    * the tree (see the brace-expansion note below).
    */
-  const FLOORS: Array<{ pkg: string; min: string; advisory: string; line?: string }> = [
+  const FLOORS: Array<{
+    pkg: string;
+    min: string;
+    advisory: string;
+    line?: string;
+    only?: ReadonlyArray<(typeof LOCKFILES)[number]['name']>;
+  }> = [
     // GHSA-6g55-p6wh-862q (8.5.12) + GHSA-r28c-9q8g-f849 (8.5.18): sourceMappingURL
     // path traversal / arbitrary .map file disclosure.
     { pkg: 'postcss', min: '8.5.18', advisory: 'GHSA-r28c-9q8g-f849' },
@@ -150,12 +156,63 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // cannot be forced to 5.x without breaking them at runtime. Guard the 5.x
     // line only; the older copies are assessed, not fixed.
     { pkg: 'brace-expansion', min: '5.0.8', advisory: 'GHSA-mh99-v99m-4gvg', line: '5.x' },
+
+    // --- 33-finding audit (electron / uuid / qs / protobufjs / hono / ...) ---
+
+    // GHSA-4p4r-m79c-wq3v (39.8.3) response-header injection, GHSA-xwr5-m59h-vwqr
+    // (39.8.4) nodeIntegrationInWorker scoping, GHSA-f3pv-wv63-48x8 +
+    // GHSA-f37v-82c4-4x64 + GHSA-8x5q-pvf5-64mp (39.8.5). 39.8.5 clears all five.
+    { pkg: 'electron', min: '39.8.5', advisory: 'GHSA-f3pv-wv63-48x8' },
+    // GHSA-w5hq-g745-h8pq: missing buffer bounds check in v3/v5/v6. Patched only
+    // on the 11.x line, so mobile's xcode@3 (uuid ^7) and server's
+    // @langchain/core (uuid ^10) both need the `uuid` override to reach it.
+    { pkg: 'uuid', min: '11.1.1', advisory: 'GHSA-w5hq-g745-h8pq' },
+    // GHSA-q8mj-m7cp-5q26: qs.stringify TypeError crash on null entries in
+    // comma-format arrays. Reached in-range once express@4 moved to `qs ~6.15.1`.
+    { pkg: 'qs', min: '6.15.2', advisory: 'GHSA-q8mj-m7cp-5q26' },
+    // GHSA-f38q-mgvj-vph7 (7.6.3) property shadowing + GHSA-j3f2-48v5-ccww
+    // (7.6.5) infinite loop in .proto option parsing.
+    { pkg: 'protobufjs', min: '7.6.5', advisory: 'GHSA-j3f2-48v5-ccww' },
+    // GHSA-q6x5-8v7m-xcrf: overlong UTF-8 decoding.
+    { pkg: '@protobufjs/utf8', min: '1.1.1', advisory: 'GHSA-q6x5-8v7m-xcrf' },
+    // GHSA-hvrm-45r6-mjfj (cross-request JSX context leak), GHSA-w62v-xxxg-mg59
+    // (cx() escaping bypass), GHSA-xgm2-5f3f-mvvc (header de-dup drop).
+    { pkg: 'hono', min: '4.12.27', advisory: 'GHSA-hvrm-45r6-mjfj' },
+    // GHSA-frvp-7c67-39w9: serve-static path traversal via encoded backslash.
+    // Backported to the 1.x line at 1.19.15, which stays inside
+    // @modelcontextprotocol/sdk's `^1.19.9` range -- no override needed.
+    { pkg: '@hono/node-server', min: '1.19.15', advisory: 'GHSA-frvp-7c67-39w9' },
+    // GHSA-r4q5-vmmm-2653: Authorization header leaked across a cross-domain redirect.
+    { pkg: 'follow-redirects', min: '1.16.0', advisory: 'GHSA-r4q5-vmmm-2653' },
+    // GHSA-v2v4-37r5-5v8g: XSS in the Address6 HTML-emitting methods.
+    { pkg: 'ip-address', min: '10.1.1', advisory: 'GHSA-v2v4-37r5-5v8g' },
+    // GHSA-v422-hmwv-36x6: an invalid `limit` silently disables size enforcement.
+    // Patched separately on each supported line, and both lines are live here
+    // (express@4 pulls 1.x, express@5 under @slack/bolt + MCP SDK pulls 2.x).
+    { pkg: 'body-parser', min: '1.20.6', advisory: 'GHSA-v422-hmwv-36x6', line: '1.x' },
+    { pkg: 'body-parser', min: '2.3.0', advisory: 'GHSA-v422-hmwv-36x6', line: '2.x' },
+    // GHSA-r292-9mhp-454m: uncatchable stack-overflow DoS via a crafted long-path tar.
+    { pkg: 'tar', min: '7.5.21', advisory: 'GHSA-r292-9mhp-454m' },
+    // GHSA-c2j3-45gr-mqc4: CUSTOM_ELEMENT_HANDLING bypasses afterSanitizeElements.
+    { pkg: 'dompurify', min: '3.4.12', advisory: 'GHSA-c2j3-45gr-mqc4' },
+    // GHSA-4x5r-pxfx-6jf8: arbitrary file read via a sourceMappingURL comment.
+    { pkg: '@babel/core', min: '7.29.6', advisory: 'GHSA-4x5r-pxfx-6jf8' },
+    // GHSA-6vfc-qv3f-vr6c (12.3.2) + GHSA-6v5v-wf23-fmfq (>14.1.1, i.e. 14.2.0).
+    // react-native-markdown-display@7 declares `markdown-it ^10.0.0` and has no
+    // newer release, so mobile forces 14.x via an override. The renderer's call
+    // surface is guarded by mobile/src/utils/markdownItRendererContract.test.ts.
+    { pkg: 'markdown-it', min: '14.2.0', advisory: 'GHSA-6v5v-wf23-fmfq' },
+    // GHSA-g7r4-m6w7-qqqr: arbitrary file read from the Windows dev server.
+    // Scoped to `server`: the advisory covers the 0.27.x line that tsx pulled in,
+    // and client's esbuild@0.25 (via vite@6) is outside the affected range.
+    { pkg: 'esbuild', min: '0.28.1', advisory: 'GHSA-g7r4-m6w7-qqqr', only: ['server'] },
   ];
 
-  for (const { pkg, min, advisory, line } of FLOORS) {
+  for (const { pkg, min, advisory, line, only } of FLOORS) {
     it(`resolves every ${line ? `${line} ` : ''}${pkg} copy at or above ${min} (${advisory})`, () => {
       let checked = 0;
       for (const { name, lock } of LOCKFILES) {
+        if (only && !only.includes(name)) continue;
         for (const [key, meta] of Object.entries(lockPackages(lock))) {
           if (packageNameOf(key) !== pkg || !meta.version) continue;
           if (line && !satisfies(meta.version, line)) continue;
