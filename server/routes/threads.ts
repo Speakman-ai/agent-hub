@@ -207,6 +207,7 @@ export default function createThreadRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: targetAgent.model,
         ownerUserId: ownerUid,
+        agentId: targetAgentId,
       });
       const useWorktree = defaultSessionUseWorktreeFlag(targetFound.project);
       stmts.createSession.run(

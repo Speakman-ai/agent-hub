@@ -40,12 +40,11 @@ describe('GET /api/config/models — authenticated engine contract', () => {
   it('returns engineAuth booleans and engineValidModels keyed by engine', async () => {
     const res = await request.get('/api/config/models').expect(200);
     const body = res.body as {
+      defaultModel: string;
       engineAuth: Record<string, boolean>;
       engineValidModels: Record<string, string[]>;
       engineDefaultModels: Record<string, string>;
-      defaultModel: string;
     };
-    expect(typeof body.defaultModel).toBe('string');
     // engineAuth still reports gemini presence (drives RAG-configured status),
     // even though gemini-cli is never a selectable picker engine.
     expect(body.engineAuth).toEqual(
@@ -64,6 +63,7 @@ describe('GET /api/config/models — authenticated engine contract', () => {
     }
     expect(body.engineValidModels).not.toHaveProperty('gemini-cli');
     expect(body.engineDefaultModels).not.toHaveProperty('gemini-cli');
+    expect(typeof body.defaultModel).toBe('string');
   });
 
   it('does NOT grant cursor-agent auth from a host CLI login when the caller has no per-account identity', async () => {

@@ -347,6 +347,8 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       geminiBin: config.geminiBin,
       codexBin: config.codexBin,
       grokBin: config.grokBin,
+      // Kept for older clients that still read AppConfig.defaultModel. New
+      // model resolution never consults this host-wide legacy value.
       defaultModel: config.defaultModel,
       defaultCwd: config.defaultCwd,
       port: config.port,
@@ -517,6 +519,8 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'geminiBin',
       'codexBin',
       'grokBin',
+      // Compatibility-only: accepted below as an explicit no-op so older
+      // clients do not receive a misleading success from an unknown field.
       'defaultModel',
       'defaultCwd',
       'port',
@@ -528,10 +532,12 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'codexDangerBypass',
       'codexProfile',
     ] as const;
+    const body = (req.body || {}) as Record<string, unknown>;
+    const legacyDefaultModelRequested = Object.prototype.hasOwnProperty.call(body, 'defaultModel');
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
-      if ((req.body as Record<string, unknown>)[key] !== undefined)
-        updates[key] = (req.body as Record<string, unknown>)[key];
+      if (key === 'defaultModel') continue;
+      if (body[key] !== undefined) updates[key] = body[key];
     }
     if (updates.codexDangerBypass !== undefined) {
       updates.codexDangerBypass = coerceConfigBooleanLoose(updates.codexDangerBypass, false);
@@ -585,6 +591,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       }
     }
     if (Object.keys(updates).length === 0) {
+      if (legacyDefaultModelRequested) {
+        return res.json({
+          ok: true,
+          updated: { defaultModel: config.defaultModel },
+          deprecations: {
+            defaultModel:
+              'Ignored for compatibility. Model selection is now configured per user and agent.',
+          },
+        });
+      }
       return res.status(400).json({ error: 'No valid config fields provided' });
     }
 
@@ -634,7 +650,11 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       deps.setGrokBin(updates.grokBin);
     }
 
-    res.json({
+    const response: {
+      ok: true;
+      updated: Record<string, unknown>;
+      deprecations?: Record<string, string>;
+    } = {
       ok: true,
       updated: Object.fromEntries(
         Object.entries(updates).map(([key, value]) => [
@@ -642,7 +662,15 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           key === 'openaiApiKey' || key === 'xaiApiKey' ? (value ? '••••••••' : null) : value,
         ]),
       ),
-    });
+    };
+    if (legacyDefaultModelRequested) {
+      response.updated.defaultModel = config.defaultModel;
+      response.deprecations = {
+        defaultModel:
+          'Ignored for compatibility. Model selection is now configured per user and agent.',
+      };
+    }
+    res.json(response);
   });
 
   // ─── DB statement instrumentation stats (Phase 1 async-DB epic) ─────────

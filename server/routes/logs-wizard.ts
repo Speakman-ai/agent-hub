@@ -193,6 +193,7 @@ export default function createLogsWizardRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: agentLookup.agent.model,
         ownerUserId: ownerUid,
+        agentId,
       });
       const sessionName = `[Logs Setup] ${project.name || project.id}`;
       // use_worktree=1: the wizard edits app code on its own branch and uses

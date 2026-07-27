@@ -439,6 +439,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
   const model = resolveEffectiveModel(config, engine, {
     agentModel: advisor.model as string | undefined,
     ownerUserId: roomOwnerId,
+    agentId: advisor.id,
   });
 
   d.broadcast({

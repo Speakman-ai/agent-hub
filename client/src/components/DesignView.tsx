@@ -75,8 +75,8 @@ function DesignStudioEngineModelSelect({
   const engineValue = engineOptions.includes(storedEngine) ? storedEngine : engineOptions[0];
 
   const allowed = modelConfig.engineValidModels[engineValue] || [];
-  const hubDefault =
-    modelConfig.engineDefaultModels?.[engineValue] || modelConfig.defaultModel || '';
+  const configuredDefault = modelConfig.engineDefaultModels?.[engineValue];
+  const hubDefault = allowed.includes(configuredDefault) ? configuredDefault : allowed[0] || '';
 
   const trimmedOverride = modelOverride?.trim();
   const modelValue =

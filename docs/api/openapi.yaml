@@ -3027,6 +3027,8 @@ components:
           type: string
         defaultModel:
           type: string
+          deprecated: true
+          description: Legacy compatibility field. The server no longer uses this host-wide value for model selection.
         defaultCwd:
           type: string
         port:
@@ -3129,10 +3131,14 @@ components:
       description: Aggregated server configuration. Sensitive fields are masked (`••••••••`); `_file` reflects what is actually persisted to `config.json`.
     ModelsConfig:
       type: object
-      properties: {}
+      properties:
+        defaultModel:
+          type: string
+          deprecated: true
+          description: Legacy compatibility field. New model resolution ignores this host-wide value.
       additionalProperties:
         nullable: true
-      description: Per-engine model availability. Shape owned by `buildAuthenticatedModelConfig`.
+      description: Per-engine model availability. The deprecated `defaultModel` field remains for legacy clients; new selection is per-user and per-agent.
     SpawnPath:
       type: object
       properties:
@@ -17729,7 +17735,7 @@ paths:
                 autonomousModel:
                   type: string
                   nullable: true
-                  description: Optional phase autonomous model. Omit to seed from agentId when supplied, otherwise from config.defaultModel only when that model is currently listed in engineValidModels; pass null to leave the phase model unset.
+                  description: Optional phase autonomous model. Omit to seed from the selected agent and session owner when agentId is supplied; otherwise the phase model remains unset. Pass null to leave the phase model unset.
               required:
                 - epicId
                 - name
@@ -20802,7 +20808,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `codexProfile`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
       requestBody:
         content:
           application/json:
@@ -20821,6 +20827,8 @@ paths:
                   type: string
                 defaultModel:
                   type: string
+                  deprecated: true
+                  description: Accepted but ignored for compatibility. Configure model selection per user and agent instead.
                 defaultCwd:
                   type: string
                 port:
@@ -20863,6 +20871,10 @@ paths:
                     type: object
                     additionalProperties:
                       nullable: true
+                  deprecations:
+                    type: object
+                    additionalProperties:
+                      type: string
                 required:
                   - ok
                   - updated

@@ -9,7 +9,7 @@ import { Loader2 } from 'lucide-react';
  * `agent.model` row or any other user. Persistence lives in the parent
  * (`/api/auth/me/agent-model-overrides`); this component just renders the
  * `<select>` and calls `onSelect(model)` (with `''` meaning "use the
- * shared/engine default").
+ * engine fallback").
  *
  * The blank option is labeled with the effective fallback model so a user
  * can see what "default" resolves to for the agent's current engine.
@@ -30,8 +30,8 @@ export default function PerUserModelSelect({
     () => modelConfig?.engineValidModels?.[engine] || [],
     [modelConfig, engine],
   );
-  const defaultModel =
-    modelConfig?.engineDefaultModels?.[engine] || modelConfig?.defaultModel || '';
+  const configuredDefault = modelConfig?.engineDefaultModels?.[engine];
+  const defaultModel = models.includes(configuredDefault) ? configuredDefault : models[0] || '';
 
   // Don't render a stale value that isn't valid for the current engine — it
   // would otherwise show as a blank/ghost option. Fall back to "" (default).

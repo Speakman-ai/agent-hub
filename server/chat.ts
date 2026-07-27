@@ -2541,6 +2541,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         resolveEffectiveModel(config, engine, {
           agentModel: (agent as AgentWithModel).model,
           ownerUserId: sessOwnerUid,
+          agentId,
         });
       const paths = resolveProjectPaths(project as Project, agent as Agent);
       const slashAug = augmentChatTurnForSlashSkill({

@@ -4,10 +4,10 @@
  * Order: explicit (request / session picker) → per-user **per-agent** model
  * override (`agentModelOverrides` on `preferences_json`, only when `agentId` +
  * `ownerUserId` are supplied and the picked model is valid for `engine`) →
- * shared `agent.model` (only if allowed for `engine`) →
- * `cfg.engineDefaultModels[engine]` (else `cfg.defaultModel`; if `cfg` is
- * partial in tests or legacy mocks, falls back to process
- * `defaultModelForEngine(engine)` — same singleton as startup).
+ * `cfg.engineDefaultModels[engine]` (or the first model advertised for that
+ * engine). The legacy top-level `cfg.defaultModel` is deliberately not part
+ * of agent resolution: it is a host-wide setting and can make one user's
+ * agent unexpectedly run under another user's model choice.
  *
  * The per-user model tier is what backs the agent / reviewer "default model"
  * dropdown: selecting a model writes the caller's own `agentModelOverrides`
@@ -20,7 +20,6 @@
  * the override applies it picks the engine first, then walks model resolution
  * through the override engine — never the agent's shared engine.
  */
-import { defaultModelForEngine } from './config.js';
 import {
   readCodexModelsCacheForUser,
   resolveSelectableCodexModels,
@@ -147,10 +146,10 @@ export function resolveEffectiveModel(
         )
       : staticAllowed;
 
-  // Per-user "default model" pick (from the agent / reviewer model dropdown).
+  // Per-user model pick (from the agent / reviewer model dropdown).
   // Only honored when it's still a valid model for the resolved engine, so a
   // stale pick after an engine change falls through to the shared / default
-  // tiers instead of spawning an invalid model id.
+  // engine fallback instead of spawning an invalid model id.
   const uid = opts.ownerUserId;
   if (uid && opts.agentId) {
     let userModel: string | undefined;
@@ -163,13 +162,21 @@ export function resolveEffectiveModel(
     if (trimmed && Array.isArray(allowed) && allowed.includes(trimmed)) return trimmed;
   }
 
+  // Shared agent rows are retained for backwards-compatible project data and
+  // for system-owned work, but never override a user's selected model. An
+  // owned agent with no personal pick falls through to the engine catalogue.
   const agentM = opts.agentModel?.trim();
-  if (agentM) {
-    if (Array.isArray(allowed) && allowed.includes(agentM)) return agentM;
+  if (
+    (!opts.ownerUserId || !opts.agentId) &&
+    agentM &&
+    Array.isArray(allowed) &&
+    allowed.includes(agentM)
+  ) {
+    return agentM;
   }
 
   const configuredDefault =
-    cfg.engineDefaultModels?.[engine] ?? cfg.defaultModel ?? defaultModelForEngine(engine);
+    cfg.engineDefaultModels?.[engine]?.trim() || (Array.isArray(allowed) ? allowed[0] : '');
   if (
     engine === 'codex-cli' &&
     Array.isArray(allowed) &&

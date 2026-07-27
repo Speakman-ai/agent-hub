@@ -95,6 +95,7 @@ describe('buildAuthenticatedModelConfig', () => {
     expect(out.engineDefaultModels['cursor-agent']).toBe('');
     expect(out.engineDefaultModels['gemini-cli']).toBeUndefined();
     expect(out.engineDefaultModels['claude-code']).toBe('claude-opus-4-8');
+    expect(out.defaultModel).toBe('claude-opus-4-8');
   });
 
   it('never advertises the RAG-only gemini-cli engine, even when authenticated', () => {

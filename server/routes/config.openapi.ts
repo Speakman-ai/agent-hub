@@ -47,7 +47,11 @@ export const AppConfigComponent = registerComponent(
       geminiBin: z.string().optional(),
       codexBin: z.string().optional(),
       grokBin: z.string().optional(),
-      defaultModel: z.string().optional(),
+      defaultModel: z.string().optional().openapi({
+        deprecated: true,
+        description:
+          'Legacy compatibility field. The server no longer uses this host-wide value for model selection.',
+      }),
       defaultCwd: z.string(),
       port: z.number().int(),
       publicUrl: z.string(),
@@ -102,9 +106,19 @@ export const AppConfigComponent = registerComponent(
 
 export const ModelsConfigComponent = registerComponent(
   'ModelsConfig',
-  z.object({}).passthrough().openapi({
-    description: 'Per-engine model availability. Shape owned by `buildAuthenticatedModelConfig`.',
-  }),
+  z
+    .object({
+      defaultModel: z.string().optional().openapi({
+        deprecated: true,
+        description:
+          'Legacy compatibility field. New model resolution ignores this host-wide value.',
+      }),
+    })
+    .passthrough()
+    .openapi({
+      description:
+        'Per-engine model availability. The deprecated `defaultModel` field remains for legacy clients; new selection is per-user and per-agent.',
+    }),
 );
 
 export const SpawnPathComponent = registerComponent(
@@ -311,7 +325,11 @@ export const PatchConfigRequestSchema = z
     geminiBin: z.string().optional(),
     codexBin: z.string().optional(),
     grokBin: z.string().optional(),
-    defaultModel: z.string().optional(),
+    defaultModel: z.string().optional().openapi({
+      deprecated: true,
+      description:
+        'Accepted but ignored for compatibility. Configure model selection per user and agent instead.',
+    }),
     defaultCwd: z.string().optional(),
     port: z.number().int().optional(),
     apiKey: z.string().nullable().optional(),
@@ -536,7 +554,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `codexProfile`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {
@@ -545,6 +563,7 @@ registerPath({
         z.object({
           ok: z.boolean(),
           updated: z.record(z.string(), z.unknown()),
+          deprecations: z.record(z.string(), z.string()).optional(),
         }),
       ),
     },

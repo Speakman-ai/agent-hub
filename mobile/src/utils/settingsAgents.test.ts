@@ -158,9 +158,13 @@ describe('engine/model option helpers', () => {
         expect(settingsModelsForEngine(modelConfig, 'nope')).toEqual([]);
         expect(settingsModelsForEngine(null, 'claude-code')).toEqual([]);
     });
-    it('settingsDefaultModelForEngine falls back through defaults', () => {
+    it('settingsDefaultModelForEngine uses the engine default or first advertised model', () => {
         expect(settingsDefaultModelForEngine(modelConfig, 'claude-code')).toBe('m1');
-        expect(settingsDefaultModelForEngine(modelConfig, 'codex-cli')).toBe('fallback');
+        expect(settingsDefaultModelForEngine(modelConfig, 'codex-cli')).toBe('');
+        expect(settingsDefaultModelForEngine({
+            engineValidModels: { 'cursor-agent': ['cursor-fallback'] },
+            engineDefaultModels: {},
+        }, 'cursor-agent')).toBe('cursor-fallback');
         expect(settingsDefaultModelForEngine(null, 'claude-code')).toBe('');
     });
 });

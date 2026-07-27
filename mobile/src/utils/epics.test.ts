@@ -353,7 +353,13 @@ describe('autonomous model helpers', () => {
             'gpt-5.4',
         ]);
     });
-    it('uses the configured default model when it is available', () => {
-        expect(defaultAutonomousModel(modelConfig)).toBe('gpt-5.5');
+    it('uses the first configured engine default when no agent is preferred', () => {
+        expect(defaultAutonomousModel(modelConfig)).toBe('claude-opus-4-8');
+    });
+    it('uses the first advertised model when no engine default is available', () => {
+        expect(defaultAutonomousModel({
+            engineDefaultModels: {},
+            engineValidModels: { 'cursor-agent': ['cursor-fallback', 'cursor-other'] },
+        })).toBe('cursor-fallback');
     });
 });

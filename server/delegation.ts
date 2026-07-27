@@ -200,6 +200,7 @@ function buildDelegateCliSpec(
   const model = resolveEffectiveModel(cfg, engine, {
     agentModel: subAgent.model as string | undefined,
     ownerUserId,
+    agentId: subAgent.id,
   });
   const combined = `${subPrompt}\n\n${taskText}`;
 
@@ -979,6 +980,7 @@ export async function synthesizeResults(
     resolveEffectiveModel(cfg as AppConfig, sessionEngine, {
       agentModel: (enrichedAgent?.model as string | undefined) ?? null,
       ownerUserId: synthOwnerId,
+      agentId: enrichedAgent?.id,
     });
 
   // Synthesis runs as the lead session's engine; honor its reasoning preset

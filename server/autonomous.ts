@@ -494,6 +494,7 @@ function sessionEngineAndModelForAutonomousDispatch(
     model: resolveEffectiveModel(cfg, agentEngine, {
       agentModel: agent.model,
       ownerUserId,
+      agentId: agent.id,
     }),
   };
 }

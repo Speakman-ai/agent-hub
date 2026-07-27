@@ -168,17 +168,10 @@ function collectAvailableCardLabels(cards: KanbanCardRow[]): string[] {
   return [...labels].sort((a, b) => a.localeCompare(b));
 }
 
-function defaultPhaseAutonomousModel(
-  cfg: Pick<RouteDeps['config'], 'defaultModel' | 'engineValidModels'>,
-): string | null {
-  const defaultModel =
-    typeof cfg.defaultModel === 'string' && cfg.defaultModel.trim()
-      ? cfg.defaultModel.trim()
-      : null;
-  if (!defaultModel) return null;
-  for (const models of Object.values(cfg.engineValidModels || {})) {
-    if (Array.isArray(models) && models.includes(defaultModel)) return defaultModel;
-  }
+function defaultPhaseAutonomousModel(): string | null {
+  // A phase must never capture the host-wide legacy model. When no per-user
+  // agent model was supplied, autonomous dispatch resolves the model for the
+  // session owner at spawn time instead.
   return null;
 }
 
@@ -190,12 +183,7 @@ function defaultPhaseAutonomousModel(
  * never picks it up. Returns the epic's first phase by position, materializing a
  * default phase when the epic has none so we never leave an epic phase-less.
  */
-function resolvePhaseForEpicLink(
-  stmts: Stmts,
-  cfg: Pick<RouteDeps['config'], 'defaultModel' | 'engineValidModels'>,
-  boardId: string,
-  epicId: string,
-): string {
+function resolvePhaseForEpicLink(stmts: Stmts, boardId: string, epicId: string): string {
   const phases = stmts.getKanbanPhasesByEpic.all(epicId) as KanbanPhaseRow[];
   if (phases.length > 0) {
     return [...phases].sort((a, b) => a.position - b.position)[0].id;
@@ -204,7 +192,7 @@ function resolvePhaseForEpicLink(
   // ("never leave an epic with zero phases") and drop the ticket into it.
   const id = uuidv4();
   stmts.createKanbanPhase.run(id, epicId, boardId, 'Phase 1', null, 0);
-  const defaultPhaseModel = defaultPhaseAutonomousModel(cfg);
+  const defaultPhaseModel = defaultPhaseAutonomousModel();
   if (defaultPhaseModel) {
     const created = stmts.getKanbanPhase.get(id) as KanbanPhaseRow;
     stmts.updateKanbanPhase.run(
@@ -972,7 +960,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         // An epic-linked card with no explicit phase must still land in a
         // phase (scoping contract) — otherwise it's orphaned from the phase
         // flowchart and never dispatched. Auto-resolve the epic's phase.
-        resolvedPhaseId = resolvePhaseForEpicLink(stmts, config, board.id, resolvedEpicId);
+        resolvedPhaseId = resolvePhaseForEpicLink(stmts, board.id, resolvedEpicId);
       }
     }
 
@@ -1125,7 +1113,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
       const explicitlyCleared = hasPhaseId && phaseId == null;
       if (!nextPhaseId && !explicitlyCleared) {
-        nextPhaseId = resolvePhaseForEpicLink(stmts, config, card.board_id, nextEpicId);
+        nextPhaseId = resolvePhaseForEpicLink(stmts, card.board_id, nextEpicId);
       }
     } else {
       // No epic → no phase (a phase belongs to an epic).
@@ -2251,7 +2239,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const maxPos = existing.length > 0 ? Math.max(...existing.map((p) => p.position)) + 1 : 0;
     const id = uuidv4();
     stmts.createKanbanPhase.run(id, epicId, board.id, name, description || null, maxPos);
-    const defaultPhaseModel = defaultAgentModel ?? defaultPhaseAutonomousModel(config);
+    const defaultPhaseModel = defaultAgentModel;
     const nextAutonomousModel =
       autonomousModel !== undefined
         ? autonomousModel && String(autonomousModel).trim()
@@ -3052,7 +3040,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           keepPhase = !!cur && String(cur.epic_id) === String(epicId);
         }
         if (!keepPhase) {
-          const resolvedPhase = resolvePhaseForEpicLink(stmts, config, card.board_id, epicId);
+          const resolvedPhase = resolvePhaseForEpicLink(stmts, card.board_id, epicId);
           stmts.updateKanbanCardPhase.run(resolvedPhase, req.params.cardId);
         }
       }

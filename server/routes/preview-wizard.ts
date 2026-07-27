@@ -429,6 +429,7 @@ export default function createPreviewWizardRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: agentLookup.agent.model,
         ownerUserId: wizOwnerUid,
+        agentId,
       });
       const sessionName = `[Preview Setup] ${project.name || project.id}`;
       // Preview setup edits repo files such as compose YAML. Run the wizard

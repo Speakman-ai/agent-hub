@@ -753,6 +753,7 @@ export default function createDeploymentRoutes(
       const model = resolveEffectiveModel(deps.config, engine, {
         agentModel: agentLookup.agent.model,
         ownerUserId: ownerUid,
+        agentId,
       });
       const sessionName = `[Deploy Setup] ${project.name || project.id}`;
       const useWorktree = 1;

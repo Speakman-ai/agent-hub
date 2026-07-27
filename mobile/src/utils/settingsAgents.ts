@@ -166,10 +166,12 @@ export function settingsModelsForEngine(modelConfig: any, engine: any) {
 export function settingsDefaultModelForEngine(modelConfig: any, engine: any) {
     if (!modelConfig)
         return '';
-    return modelConfig.engineDefaultModels?.[engine] || modelConfig.defaultModel || '';
+    const models = modelConfig.engineValidModels?.[engine] || [];
+    const configuredDefault = modelConfig.engineDefaultModels?.[engine];
+    return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
 }
 /**
- * Sentinel chip value for "use the shared/engine default model" in the
+ * Sentinel chip value for "use the engine fallback model" in the
  * per-user model picker. Selecting it clears the caller's personal override
  * (the parent maps `''` → DELETE /api/auth/me/agent-model-overrides/:id), so
  * the agent tracks the server default again — even if that default later

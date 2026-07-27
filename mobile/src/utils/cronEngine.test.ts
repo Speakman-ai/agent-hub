@@ -74,6 +74,12 @@ describe('modelsForCronEngine / defaultModelForCronEngine', () => {
         expect(modelsForCronEngine(MODEL_CONFIG, 'codex-cli')).toEqual(['gpt-5-codex', 'gpt-5']);
         expect(defaultModelForCronEngine(MODEL_CONFIG, 'codex-cli')).toBe('gpt-5-codex');
     });
+    it('uses the first advertised model when an engine default is absent', () => {
+        expect(defaultModelForCronEngine({
+            engineValidModels: { 'cursor-agent': ['cursor-fallback', 'cursor-other'] },
+            engineDefaultModels: {},
+        }, 'cursor-agent')).toBe('cursor-fallback');
+    });
 });
 describe('resolveCronSkillPrincipalEngine — server-parity resolution', () => {
     it('uses the cron row’s skill_principal_agent_id when set', () => {

@@ -32,7 +32,9 @@ export function modelsForCronEngine(modelConfig: any, engine: any) {
 }
 export function defaultModelForCronEngine(modelConfig: any, engine: any) {
     const key = engine || CRON_DEFAULT_ENGINE;
-    return modelConfig?.engineDefaultModels?.[key] || '';
+    const models = modelConfig?.engineValidModels?.[key] || [];
+    const configuredDefault = modelConfig?.engineDefaultModels?.[key];
+    return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
 }
 /**
  * Mirror `resolveCronSkillPrincipalAgentId` on the server: pick the

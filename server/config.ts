@@ -679,7 +679,7 @@ const config: AppConfig = {
 };
 
 export function defaultModelForEngine(engine: string): string {
-  return config.engineDefaultModels[engine] || config.defaultModel;
+  return config.engineDefaultModels[engine] || config.engineValidModels[engine]?.[0] || '';
 }
 
 /** Retired Grok CLI slugs → current `grok models` ids. */

@@ -304,6 +304,7 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: found.agent.model,
         ownerUserId: resolverUid,
+        agentId,
       });
       const title = typeof pr.title === 'string' ? pr.title : '';
       const sessionName = `[Resolve PR #${num}] ${title}`.slice(0, 100);

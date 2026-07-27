@@ -138,6 +138,7 @@ export function kickoffInitialBuild(opts: InitialBuildOpts): void {
     const model = resolveEffectiveModel(deps.config, agent.engine || 'claude-code', {
       agentModel: agent.model,
       ownerUserId: opts.requestingUserId ?? null,
+      agentId: agent.id,
     });
     const wt = defaultSessionUseWorktreeFlag(project);
     deps.stmts.createSession.run(

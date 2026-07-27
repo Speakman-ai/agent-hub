@@ -57,6 +57,8 @@ export interface RunOneShotWithFailoverInput extends Omit<
   model: string;
   /** Acting user whose per-account creds decide which engines can take over. */
   userId?: string | null;
+  /** Agent whose per-user model override should survive an engine failover. */
+  agentId?: string | null;
   /**
    * Build the spawn env for a given engine. Called once per attempt — the
    * fallback engine needs its own credentials, not the failed engine's.
@@ -198,7 +200,10 @@ export async function runOneShotPromptWithFailover(
       };
     }
 
-    const toModel = resolveEffectiveModel(cfg, plan.toEngine, { ownerUserId: userId ?? null });
+    const toModel = resolveEffectiveModel(cfg, plan.toEngine, {
+      ownerUserId: userId ?? null,
+      agentId: input.agentId ?? null,
+    });
     console.warn(
       formatFailoverLogLine(scope, {
         trigger: plan.trigger,

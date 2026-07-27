@@ -266,7 +266,8 @@ export function buildSummarizeSpawnArgs(
   const CLAUDE_BIN = config.claudeBin;
   const CURSOR_BIN = config.cursorBin;
   const GEMINI_BIN = config.geminiBin;
-  const DEFAULT_MODEL = config.defaultModel;
+  const DEFAULT_MODEL =
+    config.engineDefaultModels?.[engine] || config.engineValidModels?.[engine]?.[0] || '';
   const systemPrompt = SUMMARIZE_SYSTEM_PROMPT;
   // The transcript itself is provided by the caller; here we only need a
   // placeholder positional arg so non-cursor branches keep the same shape.
@@ -1731,6 +1732,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         const fallbackModel = resolveEffectiveModel(config, engine, {
           agentModel,
           ownerUserId: ownerUid,
+          agentId: existing.agent_id,
         });
         stmts.updateSessionModel.run(fallbackModel, sessionId);
       }
@@ -2391,6 +2393,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: coachAgent.model,
         ownerUserId: ownerUid,
+        agentId: coachAgentId,
       });
       const sessionName = buildExtractSkillSessionName(source.name);
       // No worktree: the coach saves skills via the write API, not git.
@@ -2759,6 +2762,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: targetAgent.model,
         ownerUserId: fwdOwnerUid,
+        agentId: targetAgentId,
       });
       const wt = defaultSessionUseWorktreeFlag(targetFound.project);
       stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, wt, 0, 1);

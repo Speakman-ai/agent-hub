@@ -209,4 +209,19 @@ describe('PATCH /api/config — engine bin paths', () => {
     const res = await request.patch('/api/config').send({ madeUpField: 'nope' }).expect(400);
     expect(res.body.error).toMatch(/No valid config fields/);
   });
+
+  it('keeps the legacy defaultModel API field and accepts writes as an explicit no-op', async () => {
+    const before = await request.get('/api/config').expect(200);
+    const fileBefore = readFileConfig();
+
+    expect(before.body).toHaveProperty('defaultModel');
+    const res = await request
+      .patch('/api/config')
+      .send({ defaultModel: 'legacy-client-model' })
+      .expect(200);
+
+    expect(res.body.updated.defaultModel).toBe(before.body.defaultModel);
+    expect(res.body.deprecations.defaultModel).toMatch(/ignored for compatibility/i);
+    expect(readFileConfig().defaultModel).toBe(fileBefore.defaultModel);
+  });
 });

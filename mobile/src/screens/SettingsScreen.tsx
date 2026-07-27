@@ -1505,7 +1505,9 @@ function AgentConfigSection() {
     const getDefaultModel = (engine: any) => {
         if (!modelConfig)
             return '';
-        return modelConfig.engineDefaultModels[engine] || modelConfig.defaultModel || '';
+        const models = modelConfig.engineValidModels?.[engine] || [];
+        const configuredDefault = modelConfig.engineDefaultModels?.[engine];
+        return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
     };
     const engineChoices = useMemo<any>(() => {
         if (!modelConfig)

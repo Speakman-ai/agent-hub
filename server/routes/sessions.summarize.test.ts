@@ -18,6 +18,13 @@ const fakeConfig = {
   geminiBin: '/usr/local/bin/gemini',
   codexBin: '/usr/local/bin/codex',
   defaultModel: 'claude-sonnet-4',
+  engineDefaultModels: { 'cursor-agent': 'cursor-default', 'claude-code': 'claude-default' },
+  engineValidModels: {
+    'cursor-agent': ['cursor-default'],
+    'claude-code': ['claude-default'],
+    'gemini-cli': ['gemini-default'],
+    'codex-cli': ['codex-default'],
+  },
   defaultTimeoutMs: 60_000,
 } as unknown as AppConfig;
 
@@ -45,9 +52,9 @@ describe('buildSummarizeSpawnArgs — cursor-agent', () => {
     expect(args[args.indexOf('--system-prompt') + 1]).toBe(SUMMARIZE_SYSTEM_PROMPT);
   });
 
-  it('falls back to defaultModel when no model is supplied', () => {
+  it('falls back to the engine default when no model is supplied', () => {
     const { args } = buildSummarizeSpawnArgs({ engine: 'cursor-agent' }, fakeConfig);
-    expect(args[args.indexOf('--model') + 1]).toBe('claude-sonnet-4');
+    expect(args[args.indexOf('--model') + 1]).toBe('cursor-default');
   });
 });
 

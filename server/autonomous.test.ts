@@ -1474,7 +1474,7 @@ describe('runAutonomousLoop — dispatch', () => {
       'dev-1',
       'Build feature',
       'claude-code',
-      'mock-model',
+      'claude-sonnet-4-6',
       1,
       0,
       1,
@@ -1679,7 +1679,7 @@ describe('runAutonomousLoop — dispatch', () => {
     );
   });
 
-  it('still falls back to agent default when the model is in no configured engine allowlist', async () => {
+  it('falls back to the first advertised model when the model is in no configured engine allowlist', async () => {
     const card = makeCard();
     const epicWithModel = {
       ...ACTIVE_EPIC,
@@ -1704,15 +1704,14 @@ describe('runAutonomousLoop — dispatch', () => {
 
     await runAutonomousLoop('proj-1');
 
-    // Model isn't recognised by any engine — keep the agent's engine and
-    // use the agent-default model (defaultModelForEngine returns 'mock-model'
-    // per the top-of-file mock).
+    // Model isn't recognised by any engine — keep the agent's engine and use
+    // the first model advertised for that engine.
     expect(stmts.createSession.run).toHaveBeenCalledWith(
       expect.any(String),
       'dev-1',
       'Build feature',
       'claude-code',
-      'mock-model',
+      'claude-sonnet-4-6',
       1,
       0,
       1,

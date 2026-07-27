@@ -683,7 +683,7 @@ export const CreatePhaseRequestSchema = z.preprocess(
     }),
     autonomousModel: z.string().nullable().optional().openapi({
       description:
-        'Optional phase autonomous model. Omit to seed from agentId when supplied, otherwise from config.defaultModel only when that model is currently listed in engineValidModels; pass null to leave the phase model unset.',
+        'Optional phase autonomous model. Omit to seed from the selected agent and session owner when agentId is supplied; otherwise the phase model remains unset. Pass null to leave the phase model unset.',
     }),
   }),
 );

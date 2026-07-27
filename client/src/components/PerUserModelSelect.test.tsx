@@ -59,4 +59,21 @@ describe('<PerUserModelSelect>', () => {
     );
     expect(screen.getByTestId('per-user-model-select')).toHaveValue('');
   });
+
+  it('labels the default with the first advertised model when no engine default is set', () => {
+    render(
+      <PerUserModelSelect
+        engine="cursor-agent"
+        modelConfig={{
+          engineDefaultModels: {},
+          engineValidModels: { 'cursor-agent': ['cursor-fallback', 'cursor-other'] },
+        }}
+        value=""
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(
+      (screen.getByTestId('per-user-model-select') as HTMLSelectElement).options[0].textContent,
+    ).toBe('Default (cursor-fallback)');
+  });
 });

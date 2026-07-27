@@ -182,6 +182,7 @@ export default function createDevServerWizardRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: agentLookup.agent.model,
         ownerUserId: ownerUid,
+        agentId,
       });
       const sessionName = `[Dev Server Setup] ${project.name || project.id}`;
       // use_worktree=1: consistent with the sibling setup wizards, and it lets

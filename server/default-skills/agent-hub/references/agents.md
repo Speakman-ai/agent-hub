@@ -8,7 +8,7 @@ session surface in depth.
 Back to [SKILL.md](../SKILL.md).
 
 **Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Agents>
-(request/response shapes, every field). This page is the *how*.
+(request/response shapes, every field). This page is the _how_.
 
 ## Contents
 
@@ -59,15 +59,16 @@ agents are skipped with a per-id status, not a 4xx on the whole batch.
 
 ### Effective CLI model (`server/effective-model.ts`)
 
-Model selection for spawned CLIs resolves in strict order:
+For an owned agent, model selection for spawned CLIs resolves in strict order:
 
 1. **Explicit** model on the incoming request / session picker (when provided).
-2. **Shared agent row** `agents.model`, only when that model is allowed for
-   the active engine.
-3. **Fallbacks:** server `engineDefaultModels[engine]`, then `defaultModel`, then the
-   process-wide startup default from `defaultModelForEngine(engine)`.
+2. **Per-user agent override** `users.preferences_json.agentModelOverrides[agentId]`,
+   when valid for the active engine.
+3. **Fallback:** the active engine's configured default, or its first
+   advertised model. The legacy top-level `defaultModel` and shared
+   `agents.model` are not used for owned agent sessions.
 
-Per-user *engine* selection is layered on top by
+Per-user _engine_ selection is layered on top by
 `resolveEffectiveEngineAndModel`, which consults
 `users.preferences_json.agentEngineOverrides[agentId]` (see the auth
 reference for the REST surface). When an override applies the model

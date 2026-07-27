@@ -325,7 +325,8 @@ let saveErrorMessage:
       errorText: string,
     ) => string)
   | undefined;
-const DEFAULT_MODEL: string = config.defaultModel;
+const DEFAULT_MODEL: string =
+  config.engineDefaultModels['claude-code'] || config.engineValidModels['claude-code']?.[0] || '';
 const ENGINE_VALID_MODELS: Record<string, string[]> = config.engineValidModels;
 const ALL_VALID_MODELS: string[] = config.allValidModels;
 

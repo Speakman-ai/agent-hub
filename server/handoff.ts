@@ -714,6 +714,7 @@ export async function handleHandoff(
     const model = resolveEffectiveModel(cfg, engine, {
       agentModel: (targetAgent as EnrichedAgent & { model?: string }).model,
       ownerUserId: getSessionOwner(srcSessionId),
+      agentId: targetAgent.id,
     });
     // Derive a readable session title from the handoff note so that — when
     // this session later opens a PR without a linked kanban card — the PR

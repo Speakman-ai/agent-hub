@@ -428,6 +428,7 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
       preferred: preferredEngine,
       preferredModel: heartbeatModel,
       userId: heartbeatOwnerId,
+      agentId: agent.id,
     });
     // Rebuilt per attempt: if the run fails over to another engine, that CLI
     // needs its own per-account credentials and engine-specific env.
@@ -468,6 +469,7 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
         engine: resolved.engine,
         model: resolved.model,
         userId: heartbeatOwnerId,
+        agentId: agent.id,
         prompt: agent.heartbeat.prompt,
         systemPrompt: agent.systemPrompt,
         cwd: heartbeatCwd,
@@ -662,6 +664,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       preferred: preferredCronEngine,
       preferredModel: requestedModel,
       userId: cronOwnerId,
+      agentId: cronSkillAgentId ?? null,
     });
     // Rebuilt per attempt: a failover engine needs its own per-account
     // credentials and engine-specific env.
@@ -704,6 +707,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         engine: resolved.engine,
         model: resolved.model,
         userId: cronOwnerId,
+        agentId: cronSkillAgentId ?? null,
         prompt: cronJob.prompt,
         cwd: cronCwd,
         timeoutMs,

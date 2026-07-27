@@ -303,6 +303,7 @@ export default function createRumWizardRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: agentLookup.agent.model,
         ownerUserId: ownerUid,
+        agentId,
       });
       const sessionName = `[RUM Setup] ${project.name || project.id}`;
       // use_worktree=1: the wizard authors the recorder init and CSP edits
@@ -396,6 +397,7 @@ export default function createRumWizardRoutes(deps: RouteDeps): Router {
           const model = resolveEffectiveModel(config, engine, {
             agentModel: agentLookup.agent.model,
             ownerUserId: ownerUid,
+            agentId,
           });
           target = await createAndProvisionCommitTarget(
             { stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },

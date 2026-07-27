@@ -13,6 +13,7 @@ export interface EngineAuthState {
 }
 
 export interface PublicModelConfig {
+  /** Legacy host-wide field kept for clients that still read this response. */
   defaultModel: string;
   engineDefaultModels: Record<string, string>;
   engineValidModels: Record<string, string[]>;
@@ -77,6 +78,8 @@ export function buildAuthenticatedModelConfig(
   }
 
   return {
+    // Compatibility only. New model resolution is per-user/per-agent and
+    // deliberately ignores this host-wide legacy value.
     defaultModel: cfg.defaultModel,
     engineDefaultModels,
     engineValidModels,

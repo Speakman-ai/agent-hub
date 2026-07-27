@@ -989,8 +989,6 @@ export function GeneralSection() {
           <span className="text-gray-300 font-mono">{config.port}</span>
           <span className="text-gray-500">Default CWD</span>
           <span className="text-gray-300 font-mono truncate">{config.defaultCwd}</span>
-          <span className="text-gray-500">Default Model</span>
-          <span className="text-gray-300 font-mono">{config.defaultModel}</span>
         </div>
       </div>
     </div>
@@ -1921,7 +1919,9 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
 
   const defaultModelForEngine = (engine: any) => {
     const key = engine || DEFAULT_ENGINE;
-    return modelConfig?.engineDefaultModels?.[key] || '';
+    const models = modelConfig?.engineValidModels?.[key] || [];
+    const configuredDefault = modelConfig?.engineDefaultModels?.[key];
+    return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
   };
 
   /**
@@ -4305,7 +4305,9 @@ export function AgentConfigSection({
 
   const getDefaultModel = (engine: any) => {
     if (!modelConfig) return '';
-    return modelConfig.engineDefaultModels[engine] || modelConfig.defaultModel || '';
+    const models = modelConfig.engineValidModels?.[engine] || [];
+    const configuredDefault = modelConfig.engineDefaultModels?.[engine];
+    return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
   };
 
   /** Engines come only from `GET /api/config/models` so new server engines appear automatically. */

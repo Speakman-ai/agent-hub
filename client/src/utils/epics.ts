@@ -223,11 +223,8 @@ export function defaultAutonomousModel(modelConfig: any, opts: any = {}) {
     ) {
       return preferredDefault;
     }
+    if (Array.isArray(preferredModels) && preferredModels.length > 0) return preferredModels[0];
   }
-
-  const defaultModel =
-    typeof modelConfig?.defaultModel === 'string' ? modelConfig.defaultModel.trim() : '';
-  if (defaultModel && options.has(defaultModel)) return defaultModel;
 
   for (const [engine, models] of Object.entries(modelConfig?.engineValidModels || {}) as any[]) {
     const engineDefault = typeof defaults[engine] === 'string' ? defaults[engine].trim() : '';
@@ -235,5 +232,5 @@ export function defaultAutonomousModel(modelConfig: any, opts: any = {}) {
       return engineDefault;
     }
   }
-  return '';
+  return autonomousModelOptions(modelConfig)[0] || '';
 }

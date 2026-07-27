@@ -253,6 +253,7 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: agentLookup.agent.model,
         ownerUserId: ownerUid,
+        agentId,
       });
       const sessionName = `${SESSION_NAME_PREFIX} ${project.name || project.id}`;
       // use_worktree=1: the setup session runs like a normal coding
@@ -427,6 +428,7 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
           const model = resolveEffectiveModel(config, engine, {
             agentModel: agentLookup.agent.model,
             ownerUserId: ownerUid,
+            agentId,
           });
           target = await createAndProvisionCommitTarget(
             { stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },

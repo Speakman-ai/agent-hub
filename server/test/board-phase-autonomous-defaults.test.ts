@@ -40,9 +40,9 @@ describe('Phase autonomous defaults', () => {
     // But not running — arming must never spontaneously start dispatch; that
     // only happens via Run phase or the auto-advance cascade.
     expect(phase.autonomous_running ?? 0).toBe(0);
-    expect((res.body as { autonomous_model?: string | null }).autonomous_model).toBe(
-      config.defaultModel,
-    );
+    // A newly created phase does not inherit the removed global model setting.
+    // Its model is resolved for the user and agent when dispatch starts.
+    expect((res.body as { autonomous_model?: string | null }).autonomous_model).toBeNull();
   });
 
   it('does not persist a stale default model when autonomousModel is omitted', async () => {

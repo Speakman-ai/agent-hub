@@ -27,6 +27,7 @@ import {
   type SupportedEngine,
 } from './engine-availability.js';
 import { failoverChainFor } from './engine-failover.js';
+import { resolveEffectiveModel } from './effective-model.js';
 
 export interface ResolveOneShotEngineInput {
   /**
@@ -60,6 +61,8 @@ export interface ResolveOneShotEngineInput {
    * host-configured Gemini engine can resolve.
    */
   userId?: string | null;
+  /** Agent whose per-user model override should be used when no row model is set. */
+  agentId?: string | null;
 }
 
 export interface ResolvedOneShotEngine {
@@ -202,7 +205,7 @@ export async function resolveOneShotEngine(
     if (probe?.available) {
       return {
         engine: preferred,
-        model: pickModel(cfg, preferred, input.preferredModel),
+        model: pickModel(cfg, preferred, input.preferredModel, input.userId, input.agentId),
         fallbackUsed: false,
         availability,
       };
@@ -217,7 +220,7 @@ export async function resolveOneShotEngine(
       if (candidate?.available) {
         return {
           engine,
-          model: pickModel(cfg, engine, null),
+          model: pickModel(cfg, engine, null, input.userId, input.agentId),
           fallbackUsed: true,
           fallbackFromReason: `${preferred}:${preferredReason}`,
           availability,
@@ -233,7 +236,7 @@ export async function resolveOneShotEngine(
     if (candidate?.available) {
       return {
         engine,
-        model: pickModel(cfg, engine, null),
+        model: pickModel(cfg, engine, null, input.userId, input.agentId),
         fallbackUsed: false,
         availability,
       };
@@ -247,11 +250,12 @@ function pickModel(
   cfg: AppConfig,
   engine: SupportedEngine,
   preferredModel: string | null | undefined,
+  userId?: string | null,
+  agentId?: string | null,
 ): string {
-  if (typeof preferredModel === 'string' && preferredModel.trim()) {
-    return preferredModel.trim();
-  }
-  // Read defaults off the passed-in config so callers (and tests) can
-  // resolve against an arbitrary AppConfig instead of the singleton.
-  return cfg.engineDefaultModels[engine] || cfg.defaultModel;
+  return resolveEffectiveModel(cfg, engine, {
+    explicitModel: preferredModel,
+    ownerUserId: userId ?? null,
+    agentId: agentId ?? null,
+  });
 }

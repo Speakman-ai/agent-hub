@@ -226,15 +226,11 @@ export function autonomousModelOptions(modelConfig: any) {
     return out;
 }
 export function defaultAutonomousModel(modelConfig: any) {
-    const options = new Set(autonomousModelOptions(modelConfig));
-    const defaultModel = typeof modelConfig?.defaultModel === 'string' ? modelConfig.defaultModel.trim() : '';
-    if (defaultModel && options.has(defaultModel))
-        return defaultModel;
     const defaults = modelConfig?.engineDefaultModels || {};
     for (const [engine, models] of Object.entries(modelConfig?.engineValidModels || {}) as any[]) {
         const engineDefault = typeof defaults[engine] === 'string' ? defaults[engine].trim() : '';
         if (engineDefault && Array.isArray(models) && models.includes(engineDefault))
             return engineDefault;
     }
-    return '';
+    return autonomousModelOptions(modelConfig)[0] || '';
 }

@@ -142,6 +142,19 @@ describe('resolveEffectiveModel', () => {
     expect(m).toBe('allowed-a2');
   });
 
+  it('does not use the shared agent or legacy global model for an owned agent', () => {
+    const cfg = makeCfg();
+    cfg.engineValidModels['claude-code'] = ['catalogue-fallback', 'shared-agent-model'];
+    cfg.engineDefaultModels['claude-code'] = '';
+    cfg.defaultModel = 'legacy-global-model';
+    const m = resolveEffectiveModel(cfg, 'claude-code', {
+      agentId: 'agent-x',
+      ownerUserId: 'u1',
+      agentModel: 'shared-agent-model',
+    });
+    expect(m).toBe('catalogue-fallback');
+  });
+
   it('explicit model still beats the per-user model override', () => {
     const cfg = makeCfg();
     mockGet.mockReturnValue({ agentModelOverrides: { 'agent-x': 'allowed-a' } });
@@ -174,7 +187,7 @@ describe('resolveEffectiveEngineAndModel', () => {
     mockGet.mockReturnValue({});
   });
 
-  it('returns the agent default engine + model when no override exists', () => {
+  it('uses the engine catalogue instead of the shared model for an owned agent', () => {
     const cfg = makeCfg();
     const r = resolveEffectiveEngineAndModel(cfg, {
       agentId: 'agent-x',
@@ -183,7 +196,7 @@ describe('resolveEffectiveEngineAndModel', () => {
       ownerUserId: 'u1',
     });
     expect(r.engine).toBe('claude-code');
-    expect(r.model).toBe('allowed-a');
+    expect(r.model).toBe('claude-hub');
     expect(r.overrideApplied).toBe(false);
   });
 

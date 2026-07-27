@@ -445,6 +445,7 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
       const model = resolveEffectiveModel(config, engine, {
         agentModel: targetAgent.model,
         ownerUserId: fwdUid,
+        agentId: targetAgentId,
       });
       stmts.createSession.run(newSessionId, targetAgentId, sessionName, engine, model, 1, 0, 1);
       setSessionOwner(newSessionId, resolveOwnerUserId(req as AuthenticatedRequest));
@@ -544,6 +545,7 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
             const model = resolveEffectiveModel(config, engine, {
               agentModel: found?.agent?.model ?? null,
               ownerUserId: ownerUid,
+              agentId,
             });
             return { engine, model };
           },
