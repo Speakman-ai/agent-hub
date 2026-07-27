@@ -28,7 +28,9 @@ import { setSessionOwner } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { resolveCronEngine } from './cron-engine.js';
-import { runOneShotPrompt, type OneShotDetailed } from './one-shot-spawn.js';
+import { type OneShotDetailed } from './one-shot-spawn.js';
+import { runOneShotPromptWithFailover, formatFailoverSummary } from './one-shot-failover.js';
+import type { SupportedEngine } from './engine-availability.js';
 import type {
   EnrichedAgent,
   Agent,
@@ -427,43 +429,56 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
       preferredModel: heartbeatModel,
       userId: heartbeatOwnerId,
     });
-    const heartbeatEnv = buildSpawnEnv(config, {
-      userId: heartbeatOwnerId,
-      // Inject the owner's stored per-account AI credentials. Without this the
-      // spawned CLI runs logged-out for DB-stored-credential users (no host
-      // fallback for claude/cursor/codex/grok). Null owner => host behavior.
-      userOverride: resolveUserCliCredOverride(heartbeatOwnerId),
-      engine: resolved.engine,
-    });
-    if (hbProject) {
-      mergeSkillCredentialSpawnEnv(heartbeatEnv, {
-        ownerId: heartbeatOwnerId,
-        agentId: agent.id,
-        project: hbProject,
+    // Rebuilt per attempt: if the run fails over to another engine, that CLI
+    // needs its own per-account credentials and engine-specific env.
+    const buildHeartbeatEnv = (engine: SupportedEngine): NodeJS.ProcessEnv => {
+      const heartbeatEnv = buildSpawnEnv(config, {
+        userId: heartbeatOwnerId,
+        // Inject the owner's stored per-account AI credentials. Without this the
+        // spawned CLI runs logged-out for DB-stored-credential users (no host
+        // fallback for claude/cursor/codex/grok). Null owner => host behavior.
+        userOverride: resolveUserCliCredOverride(heartbeatOwnerId),
+        engine,
       });
-      // sessionId: null — heartbeats are scheduled, not driven by an
-      // interactive chat session; decrypt-failure audit entries attribute to
-      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
-      mergeProjectSecretsSpawnEnv(heartbeatEnv, { projectId: hbProject.id, sessionId: null });
-      mergeProjectAwsSpawnEnv(heartbeatEnv, hbProject);
-    }
+      if (hbProject) {
+        mergeSkillCredentialSpawnEnv(heartbeatEnv, {
+          ownerId: heartbeatOwnerId,
+          agentId: agent.id,
+          project: hbProject,
+        });
+        // sessionId: null — heartbeats are scheduled, not driven by an
+        // interactive chat session; decrypt-failure audit entries attribute to
+        // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
+        mergeProjectSecretsSpawnEnv(heartbeatEnv, { projectId: hbProject.id, sessionId: null });
+        mergeProjectAwsSpawnEnv(heartbeatEnv, hbProject);
+      }
+      return heartbeatEnv;
+    };
     if (resolved.fallbackUsed) {
       console.warn(
         `[Heartbeat] ${agent.name}: preferred engine "${preferredEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
       );
     }
-    const result = await runOneShotPrompt(
+    // Pre-flight resolution above only proves the engine was authenticated
+    // when the run STARTED. If it runs out of quota mid-run, hand off to the
+    // next engine in its chain instead of logging a dead heartbeat.
+    const runOutcome = await runOneShotPromptWithFailover(
       {
+        scope: `heartbeat "${agent.name}"`,
         engine: resolved.engine,
         model: resolved.model,
+        userId: heartbeatOwnerId,
         prompt: agent.heartbeat.prompt,
         systemPrompt: agent.systemPrompt,
         cwd: heartbeatCwd,
         timeoutMs,
-        env: heartbeatEnv,
+        buildEnv: buildHeartbeatEnv,
       },
       config,
     );
+    // The log records the substitute engine so a user reading the heartbeat
+    // history can see it did not run on the engine they configured.
+    const result = runOutcome.output + formatFailoverSummary(runOutcome.failovers);
     stmts.updateHeartbeatLog.run(result, 'success', logId);
     console.log(`[Heartbeat] ${agent.name} completed successfully`);
 
@@ -648,48 +663,62 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       preferredModel: requestedModel,
       userId: cronOwnerId,
     });
-    const cronEnv = buildSpawnEnv(config, {
-      userId: cronOwnerId,
-      // Inject the owner's stored per-account AI credentials. Without this the
-      // spawned CLI runs logged-out for DB-stored-credential users (no host
-      // fallback for claude/cursor/codex/grok). Null owner => host behavior.
-      userOverride: resolveUserCliCredOverride(cronOwnerId),
-      engine: resolved.engine,
-    });
-    if (cronProject) {
-      if (cronSkillAgentId) {
-        mergeSkillCredentialSpawnEnv(cronEnv, {
-          ownerId: cronOwnerId,
-          agentId: cronSkillAgentId,
-          project: cronProject,
-        });
-        // sessionId: null — crons are scheduled, not driven by an interactive
-        // chat session; decrypt-failure audit entries attribute to
-        // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
-        mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
+    // Rebuilt per attempt: a failover engine needs its own per-account
+    // credentials and engine-specific env.
+    const buildCronEnv = (engine: SupportedEngine): NodeJS.ProcessEnv => {
+      const cronEnv = buildSpawnEnv(config, {
+        userId: cronOwnerId,
+        // Inject the owner's stored per-account AI credentials. Without this the
+        // spawned CLI runs logged-out for DB-stored-credential users (no host
+        // fallback for claude/cursor/codex/grok). Null owner => host behavior.
+        userOverride: resolveUserCliCredOverride(cronOwnerId),
+        engine,
+      });
+      if (cronProject) {
+        if (cronSkillAgentId) {
+          mergeSkillCredentialSpawnEnv(cronEnv, {
+            ownerId: cronOwnerId,
+            agentId: cronSkillAgentId,
+            project: cronProject,
+          });
+          // sessionId: null — crons are scheduled, not driven by an interactive
+          // chat session; decrypt-failure audit entries attribute to
+          // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
+          mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
+        }
+        mergeProjectAwsSpawnEnv(cronEnv, cronProject);
       }
-      mergeProjectAwsSpawnEnv(cronEnv, cronProject);
-    }
+      return cronEnv;
+    };
     if (resolved.fallbackUsed) {
       console.warn(
         `[Cron] "${cronJob.name}": preferred engine "${preferredCronEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
       );
     }
-    detailed = await runOneShotPrompt(
+    // Pre-flight resolution only proves the engine was authenticated at
+    // START. Quota can run out mid-run, and nobody is watching a cron — so
+    // hand off to the next engine in its chain rather than logging a failure.
+    const cronOutcome = await runOneShotPromptWithFailover(
       {
+        scope: `cron "${cronJob.name}"`,
         engine: resolved.engine,
         model: resolved.model,
+        userId: cronOwnerId,
         prompt: cronJob.prompt,
         cwd: cronCwd,
         timeoutMs,
-        env: cronEnv,
+        buildEnv: buildCronEnv,
         detailed: true,
       },
       config,
     );
-    const cronModel = resolved.model;
+    detailed = cronOutcome.detailed;
+    // Record the engine/model that actually produced the result, not the one
+    // the row asked for.
+    const cronEngine = cronOutcome.engine;
+    const cronModel = cronOutcome.model;
     const durationMs = Date.now() - startTime;
-    const result = detailed.stdout || detailed.stderr || '(empty response)';
+    const result = cronOutcome.output + formatFailoverSummary(cronOutcome.failovers);
     stmts.updateCronResult.run(result, cronJob.id);
     stmts.updateCronLog.run(result, 'success', durationMs, logId);
     console.log(`[Cron] "${cronJob.name}" completed successfully (${durationMs}ms)`);
@@ -736,18 +765,9 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         const sessionId = uuidv4();
         const sessionName = `Cron: ${cronJob.name}`;
         // Persist the engine actually used so the session row matches reality
-        // when fallback kicked in (otherwise the row reads "claude-code"
-        // even when the run resolved to e.g. cursor-agent).
-        stmts.createSession.run(
-          sessionId,
-          '_cron',
-          sessionName,
-          resolved.engine,
-          cronModel,
-          0,
-          0,
-          1,
-        );
+        // when fallback kicked in — whether that was pre-flight resolution
+        // (engine not authenticated) or a runtime failover mid-run.
+        stmts.createSession.run(sessionId, '_cron', sessionName, cronEngine, cronModel, 0, 0, 1);
         // Cron sessions belong to the cron creator. Shared visibility on the
         // cron does not change whose CLI credentials pay for the run.
         setSessionOwner(sessionId, cronOwnerId);
@@ -765,7 +785,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         session!.id,
         'assistant',
         result,
-        resolved.engine,
+        cronEngine,
         null,
         null,
         null,

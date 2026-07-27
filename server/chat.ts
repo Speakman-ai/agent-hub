@@ -66,6 +66,13 @@ import {
   buildTransientRetryNotice,
   buildTurnErrorHaltNotice,
 } from './turn-error.js';
+import {
+  planEngineFailover,
+  buildEngineFailoverNotice,
+  buildNoFailoverEngineNotice,
+  formatFailoverLogLine,
+} from './engine-failover.js';
+import { probeAllEngineAvailability, type SupportedEngine } from './engine-availability.js';
 import { sessionHasActiveUserPreview } from './preview/preview-worktree-sync.js';
 import { syncPreviewAfterWorktreeTurnIfDirty } from './code-change-tracker.js';
 import type { PreviewRuntime } from './preview/preview-runtime.js';
@@ -395,6 +402,12 @@ interface InternalChatMessage extends ChatMessage {
    * `server/turn-error.ts`.
    */
   _transientErrorRetry?: number;
+  /**
+   * Engines this turn chain has already failed over FROM (see
+   * `server/engine-failover.ts`). Bounds the walk to one pass through the
+   * chain so a provider-wide outage can't ping-pong the session forever.
+   */
+  _engineFailoverTried?: string[];
 }
 
 interface ProjectWithCommands extends Project {
@@ -1938,6 +1951,115 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         created_at: new Date().toISOString(),
       };
       broadcast({ type: 'message_added', sessionId, message: fallback });
+    }
+  }
+
+  /**
+   * Runtime engine failover for an in-session turn.
+   *
+   * A turn can start on a healthy engine and die mid-flight because the
+   * provider's quota window closed or its credentials stopped working. Same-
+   * engine retry (`turn-error.ts`) cannot fix either case — the window resets
+   * in hours. Rather than stranding the session on an error and waiting for a
+   * human to switch the picker, we move the session to the next authenticated
+   * engine in its chain and re-drive the turn.
+   *
+   * Mirrors `PUT /api/sessions/:id/engine`: engine + model are rewritten and
+   * `engine_session_id` is cleared, because a resume id from Claude means
+   * nothing to Codex. The new engine therefore starts a fresh CLI conversation
+   * — which is exactly why this posts a loud transcript notice instead of
+   * switching silently.
+   *
+   * Returns the chosen engine/model when the session was switched, or `null`
+   * when the caller should fall through to its normal error/halt handling.
+   */
+  async function attemptSessionEngineFailover(params: {
+    sessionId: string;
+    agentId: string | null;
+    agentModel?: string | null;
+    currentEngine: string;
+    currentModel: string;
+    errorText: string;
+    transientRetries: number;
+    triedEngines: readonly string[];
+  }): Promise<{ engine: SupportedEngine; model: string; tried: string[] } | null> {
+    const {
+      sessionId,
+      agentId,
+      currentEngine,
+      currentModel,
+      errorText,
+      transientRetries,
+      triedEngines,
+    } = params;
+    try {
+      const ownerUserId = getSessionOwner(sessionId);
+      const availability = await probeAllEngineAvailability(config, { userId: ownerUserId });
+      const plan = planEngineFailover({
+        errorText,
+        currentEngine,
+        transientRetries,
+        triedEngines,
+        availability,
+      });
+
+      if (!plan.failover) {
+        // Only announce the dead end when a switch was actually warranted;
+        // a `retry-first` / `not-failoverable` outcome is not news.
+        if (plan.reason === 'no-engine-available' && plan.trigger) {
+          persistCloseCardGateSystemMessage(
+            sessionId,
+            buildNoFailoverEngineNotice(plan.trigger, currentEngine, availability),
+            { kind: 'engine_failover_unavailable', trigger: plan.trigger, from: currentEngine },
+          );
+        }
+        return null;
+      }
+
+      const toModel = resolveEffectiveModel(config, plan.toEngine, {
+        agentModel: params.agentModel ?? null,
+        ownerUserId,
+        agentId,
+      });
+
+      getDb().transaction(() => {
+        stmts.updateSessionEngine.run(plan.toEngine, sessionId);
+        stmts.updateSessionModel.run(toModel, sessionId);
+        // A resume id is engine-specific — carrying it across would make the
+        // new CLI fail to resume a conversation it never had.
+        stmts.updateSessionEngineSessionId.run(null, sessionId);
+      })();
+
+      const noticeInput = {
+        trigger: plan.trigger,
+        fromEngine: currentEngine,
+        fromModel: currentModel,
+        toEngine: plan.toEngine,
+        toModel,
+        errorText,
+      };
+      console.warn(formatFailoverLogLine(`session ${sessionId}`, noticeInput));
+      persistCloseCardGateSystemMessage(sessionId, buildEngineFailoverNotice(noticeInput), {
+        kind: 'engine_failover',
+        trigger: plan.trigger,
+        from: currentEngine,
+        fromModel: currentModel,
+        to: plan.toEngine,
+        toModel,
+        errorText: errorText.slice(0, 500),
+      });
+
+      const updated = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (updated) {
+        broadcast({ type: 'session-updated', session: enrichSessionForClient(updated, stmts) });
+      }
+      return { engine: plan.toEngine, model: toModel, tried: plan.tried };
+    } catch (err: unknown) {
+      // Failover is best-effort: a probe or DB hiccup must never swallow the
+      // original turn error, so fall through to the normal halt path.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[engine-failover] Failover attempt failed:', message);
+      return null;
     }
   }
 
@@ -4331,6 +4453,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   ...msg,
                   _transientErrorRetry: attempt,
                   _spawnCwd: effectiveCwd,
+                  // Re-driving the ORIGINAL message is right here (this branch
+                  // is `!assembled` — the engine produced nothing, so there is
+                  // no partial work to resume and the user's request still
+                  // needs running). But handleChat persists a user message for
+                  // every non-continuation turn, so without this flag the
+                  // retry writes the user's text into the transcript a second
+                  // time and re-broadcasts it.
+                  _skipUserMessagePersist: true,
                 } as InternalChatMessage).catch((err: unknown) => {
                   const message = err instanceof Error ? err.message : String(err);
                   console.error('[turn-error-retry] Retry dispatch failed:', message);
@@ -4339,6 +4469,51 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               }, retryPlan.delayMs);
               return;
             }
+
+            // Same-engine retry can't help (quota window closed, credentials
+            // rejected, or the retry budget is spent). Move the session to the
+            // next authenticated engine in its chain and re-drive the turn —
+            // no user intervention, with a transcript notice naming the swap.
+            const failover = await attemptSessionEngineFailover({
+              sessionId,
+              agentId: agent?.id ?? null,
+              agentModel: (agent as AgentWithModel | undefined)?.model ?? null,
+              currentEngine: engine,
+              currentModel: model,
+              errorText: errorMsg,
+              transientRetries,
+              triedEngines: msg._engineFailoverTried ?? [],
+            });
+            if (failover) {
+              if (delegationWorkPromise) {
+                handleDelegationCancel(sessionId);
+                delegationWorkPromise = null;
+              }
+              setImmediate(() => {
+                void handleChat(null, {
+                  ...msg,
+                  // The new engine gets its own transient-retry budget.
+                  _transientErrorRetry: 0,
+                  _engineFailoverTried: failover.tried,
+                  _spawnCwd: effectiveCwd,
+                  // This branch is `!assembled`: the dead engine produced no
+                  // output, so the replacement must run the user's ORIGINAL
+                  // request — a "resume your interrupted work" continuation
+                  // (what the turnEndError path below sends) would strand the
+                  // actual ask, since there is no partial work and the new
+                  // engine has no context. Re-sending the same content means
+                  // suppressing the duplicate user-message persist/broadcast
+                  // that handleChat performs for every non-continuation turn.
+                  _skipUserMessagePersist: true,
+                } as InternalChatMessage).catch((err: unknown) => {
+                  const message = err instanceof Error ? err.message : String(err);
+                  console.error('[engine-failover] Failover dispatch failed:', message);
+                  drainQueue(sessionId);
+                });
+              });
+              return;
+            }
+
             if (transientRetries > 0) {
               // Retries exhausted — make the give-up explicit in the
               // transcript (the ⚠️ Error message below carries the error
@@ -5812,19 +5987,59 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 _chainStartedAtMs: chainStartedAtMs,
                 _spawnCwd: effectiveCwd,
                 _transientErrorRetry: attempt,
+                // Carry the failover history across same-engine retries so a
+                // later switch doesn't revisit an engine already exhausted.
+                _engineFailoverTried: msg._engineFailoverTried,
               } as InternalChatMessage).catch((err: unknown) => {
                 const message = err instanceof Error ? err.message : String(err);
                 console.error('[turn-error-retry] Continuation dispatch failed:', message);
                 drainQueue(sessionId);
               });
             }, retryPlan.delayMs);
-          } else {
-            persistCloseCardGateSystemMessage(
-              sessionId,
-              buildTurnErrorHaltNotice(turnEndError.errorText, transientRetries),
-              { kind: 'turn_error_halt', retries: transientRetries },
-            );
+            return;
           }
+
+          // Same-engine retry is out (or was never viable): switch engines and
+          // continue the interrupted work there. The continuation prompt tells
+          // the new engine to verify in-flight work rather than assume it
+          // finished — it cannot see the dead engine's internal context.
+          const failover = await attemptSessionEngineFailover({
+            sessionId,
+            agentId: agent?.id ?? null,
+            agentModel: (agent as AgentWithModel | undefined)?.model ?? null,
+            currentEngine: engine,
+            currentModel: model,
+            errorText: turnEndError.errorText,
+            transientRetries,
+            triedEngines: msg._engineFailoverTried ?? [],
+          });
+          if (failover) {
+            setImmediate(() => {
+              void handleChat(null, {
+                type: 'chat',
+                agentId,
+                sessionId,
+                content: buildTurnErrorContinuationPrompt(turnEndError.errorText),
+                _autoContinuation: true,
+                _continuationDepth: continuationDepth + 1,
+                _chainStartedAtMs: chainStartedAtMs,
+                _spawnCwd: effectiveCwd,
+                _transientErrorRetry: 0,
+                _engineFailoverTried: failover.tried,
+              } as InternalChatMessage).catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                console.error('[engine-failover] Continuation dispatch failed:', message);
+                drainQueue(sessionId);
+              });
+            });
+            return;
+          }
+
+          persistCloseCardGateSystemMessage(
+            sessionId,
+            buildTurnErrorHaltNotice(turnEndError.errorText, transientRetries),
+            { kind: 'turn_error_halt', retries: transientRetries },
+          );
           return;
         }
 

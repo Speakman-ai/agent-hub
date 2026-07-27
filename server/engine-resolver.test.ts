@@ -234,11 +234,51 @@ describe('resolveOneShotEngine', () => {
   });
 
   it('exports the default fallback chain as a named constant (gemini excluded, grok included)', () => {
+    // Sourced from engine-failover's claude-code chain: Cursor sits last
+    // because it proxies the same upstream models as the engines above it.
     expect(DEFAULT_FALLBACK_CHAIN).toEqual([
       'claude-code',
-      'cursor-agent',
       'codex-cli',
       'grok-cli',
+      'cursor-agent',
     ]);
+  });
+
+  it('backs up a preferred engine with that engine’s own chain, not the global default', async () => {
+    // A Codex user who loses Codex should land on Claude — the global
+    // default order would be wrong for them.
+    const r = await resolveOneShotEngine(CFG, {
+      preferred: 'codex-cli',
+      availability: makeAvailability({
+        'claude-code': ok('claude-code'),
+        'cursor-agent': ok('cursor-agent'),
+        'grok-cli': ok('grok-cli'),
+      }),
+    });
+    expect(r.engine).toBe('claude-code');
+    expect(r.fallbackUsed).toBe(true);
+  });
+
+  it('walks the cursor chain when cursor is the unavailable preference', async () => {
+    const r = await resolveOneShotEngine(CFG, {
+      preferred: 'cursor-agent',
+      availability: makeAvailability({
+        'codex-cli': ok('codex-cli'),
+        'grok-cli': ok('grok-cli'),
+      }),
+    });
+    expect(r.engine).toBe('codex-cli');
+  });
+
+  it('still honours an explicit caller-supplied fallbackChain over the preferred engine’s chain', async () => {
+    const r = await resolveOneShotEngine(CFG, {
+      preferred: 'codex-cli',
+      fallbackChain: ['grok-cli', 'claude-code'],
+      availability: makeAvailability({
+        'claude-code': ok('claude-code'),
+        'grok-cli': ok('grok-cli'),
+      }),
+    });
+    expect(r.engine).toBe('grok-cli');
   });
 });

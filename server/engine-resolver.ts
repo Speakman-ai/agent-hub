@@ -26,6 +26,7 @@ import {
   type EngineAvailability,
   type SupportedEngine,
 } from './engine-availability.js';
+import { failoverChainFor } from './engine-failover.js';
 
 export interface ResolveOneShotEngineInput {
   /**
@@ -80,10 +81,11 @@ export interface ResolvedOneShotEngine {
 }
 
 /**
- * Default priority order. Claude Code first because it's the most
- * common install and the historical default for these surfaces (this
- * minimizes behaviour drift for existing users); the rest follow in
- * rough order of UI prominence in the engine picker.
+ * Default priority order, used when the caller expresses no preference.
+ * Sourced from `engine-failover.ts` so the pre-flight resolver and the
+ * runtime failover walker can never disagree about priority: Claude Code
+ * first because it's the most common install and the historical default for
+ * these surfaces, then Codex, Grok, and Cursor last.
  *
  * Gemini is deliberately EXCLUDED — it is reserved for RAG/embeddings
  * (wiki + code search), which call the Gemini API key directly and never go
@@ -100,12 +102,7 @@ export interface ResolvedOneShotEngine {
  * `NoEnginesAvailableError` for userless background work instead of silently
  * running on a host key — that is the intended behaviour.
  */
-export const DEFAULT_FALLBACK_CHAIN: readonly SupportedEngine[] = [
-  'claude-code',
-  'cursor-agent',
-  'codex-cli',
-  'grok-cli',
-] as const;
+export const DEFAULT_FALLBACK_CHAIN: readonly SupportedEngine[] = failoverChainFor('claude-code');
 
 /**
  * Engines this resolver must NEVER select, even when a caller passes one as
@@ -178,12 +175,6 @@ export async function resolveOneShotEngine(
   const availability =
     input.availability ?? (await probeAllEngineAvailability(cfg, { userId: input.userId ?? null }));
 
-  // Drop any non-selectable engine (e.g. gemini-cli) from the chain — defends
-  // against a caller-supplied fallbackChain that includes it.
-  const chain = (input.fallbackChain ?? DEFAULT_FALLBACK_CHAIN).filter(
-    (engine) => !NON_SELECTABLE_ENGINES.has(engine),
-  );
-
   // Try the caller's preferred engine first when supplied + supported. A
   // non-selectable engine (gemini-cli) is ignored here so a `preferred:
   // "gemini-cli"` row falls through to the agent fallback chain instead of
@@ -196,6 +187,15 @@ export async function resolveOneShotEngine(
   ) {
     preferred = input.preferred;
   }
+
+  // Backup order is a property of the engine being backed up: a Codex user
+  // who loses Codex should land on Claude, not on whatever the global default
+  // happens to be. Falls back to the Claude-first chain when the caller has no
+  // preference. Any non-selectable engine (e.g. gemini-cli) is dropped here —
+  // that also defends against a caller-supplied `fallbackChain` containing one.
+  const chain = (
+    input.fallbackChain ?? (preferred ? failoverChainFor(preferred) : DEFAULT_FALLBACK_CHAIN)
+  ).filter((engine) => !NON_SELECTABLE_ENGINES.has(engine));
 
   if (preferred) {
     const probe = availability[preferred];
