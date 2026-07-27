@@ -161,7 +161,7 @@ export default function FinalizeAutomationSelect({
           <ul
             role="listbox"
             aria-label="Runner automation"
-            className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1"
+            className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] max-h-[min(70vh,20rem)] overflow-y-auto overscroll-contain rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1"
           >
             {optionList.map((option: any) => {
               const active = option.value === selectedValue;

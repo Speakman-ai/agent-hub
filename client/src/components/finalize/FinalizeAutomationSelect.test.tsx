@@ -288,4 +288,20 @@ describe('FinalizeAutomationSelect', () => {
       );
     });
   });
+
+  describe('menu overflow on short viewports', () => {
+    // Regression: on a short laptop viewport the mode menu opens upward
+    // (bottom-full) and, with up to 8 two-line options, overflowed off the top
+    // of the screen with no way to reach "Consult". The listbox must cap its
+    // height and scroll instead of clipping.
+    it('caps the menu height and enables vertical scroll', () => {
+      render(
+        <FinalizeAutomationSelect sessionId={sid} session={{ finalize_automation: 'manual' }} />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select' as any) as any);
+      const listbox = screen.getByRole('listbox');
+      expect(listbox.className).toContain('overflow-y-auto');
+      expect(listbox.className).toMatch(/max-h-\[/);
+    });
+  });
 });
