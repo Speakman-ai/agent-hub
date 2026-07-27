@@ -111,8 +111,7 @@ import {
 } from './codex-exec-sandbox.js';
 import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
 import { type ProjectAwsFiles, writeProjectAwsFiles } from './project-aws-config-file.js';
-import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
-import { advertisedCapabilityModelsForEnv } from './codex-model-capability.js';
+import { resolveCodexModelSelection } from './codex-model-selection.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
@@ -3468,19 +3467,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // dropped so Codex falls back to its built-in ChatGPT default rather
         // than 400ing the turn. API-key / unknown modes keep the prior
         // pass-through behavior.
-        const codexAuth = detectCodexAuthMode();
         // Capability-gated newer models (gpt-5.6-*) are allowed through only
         // when the installed CLI advertises them in the spawn's codex home —
-        // matching what /api/config/models offers as selectable. On an older
-        // binary the model is absent from the cache, so it's stripped here and
-        // Codex falls back to its ChatGPT default instead of 400ing the turn.
-        const codexCapabilityModels = advertisedCapabilityModelsForEnv(sessionCliEnv);
-        if (model && shouldPassModelFlag(codexAuth.mode, model, codexCapabilityModels)) {
+        // matching what /api/config/models offers as selectable. The helper
+        // reads auth.json from that same home as well; using the process-global
+        // ~/.codex here let a per-user ChatGPT session be misclassified as
+        // unknown and forward a model that the backend rejected with HTTP 400.
+        const codexModelSelection = resolveCodexModelSelection(model, sessionCliEnv);
+        if (model && codexModelSelection.passModel) {
           args.push('--model', model);
         } else if (model) {
           console.warn(
             `[chat] Dropping --model ${model} for codex-cli session ${sessionId}: ` +
-              `auth_mode=${codexAuth.mode} does not accept it. Falling back to codex default.`,
+              `auth_mode=${codexModelSelection.authMode} does not accept it. Falling back to codex default.`,
           );
         }
         // Optional named profile from `~/.codex/config.toml` — when
