@@ -34,7 +34,11 @@ export default function createLogQueryRoutes({ findProject }: RouteDeps): Router
       }
       try {
         const page = queryLogRecords({ projectId, ...parsed.data });
-        res.json({ records: page.records.map(serializeLogRecord), nextCursor: page.nextCursor });
+        res.json({
+          records: page.records.map(serializeLogRecord),
+          nextCursor: page.nextCursor,
+          nextCursorTimeUnixNano: page.nextCursorTimeUnixNano,
+        });
       } catch (err) {
         // SQLite FTS5 rejects malformed MATCH syntax (for example an unmatched
         // quote). Treat that as a bad search, not an internal server failure.

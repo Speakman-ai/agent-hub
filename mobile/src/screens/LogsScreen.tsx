@@ -46,6 +46,7 @@ import {
   extractStackTrace,
   recordHasDetail,
   mergeTailRecords,
+  buildOlderPageParams,
   filterLogRecords,
   distinctValues,
   isNearBottom,
@@ -369,9 +370,9 @@ export function LiveLogsView({
     () => mergeTailRecords(older, records, records.length + older.length + 1),
     [older, records],
   );
-  // Ascending id order (oldest→newest) so the stream reads top-to-bottom like a
-  // terminal tail: oldest near the "Load older" pager at the top, newest at the
-  // bottom. The list auto-scrolls to the end to follow new records while the
+  // Ascending event-time order (oldest→newest) so the stream reads top-to-bottom
+  // like a terminal tail: oldest near the "Load older" pager at the top, newest
+  // at the bottom. The list auto-scrolls to the end to follow new records while the
   // user is pinned to the bottom (see the scroll-stickiness handlers below).
   const visible = useMemo(() => filterLogRecords(combined, filter), [combined, filter]);
 
@@ -400,17 +401,15 @@ export function LiveLogsView({
     const gen = filterGenRef.current;
     setLoadingOlder(true);
     setOlderError(null);
-    const oldestId = combined.length > 0 ? combined[0].id : undefined;
+    // Keyset + facets come from the same place, so the pager walks the filtered
+    // stream it is querying. `visible`, never `combined`: see the helper.
     try {
-      const params: Record<string, unknown> = { limit: OLDER_PAGE_LIMIT };
-      if (oldestId != null) params.cursor = oldestId;
-      if (minSeverityNumber > 0) params.minSeverityNumber = minSeverityNumber;
-      if (sourceId) params.sourceId = sourceId;
-      if (environment) params.environment = environment;
-      if (text.trim()) params.text = text.trim();
-      // Keep "Load older" inside the selected window so paging stops at the
-      // boundary (and marks the pager exhausted) instead of walking all history.
-      if (sinceUnixNano != null) params.startTimeUnixNano = sinceUnixNano;
+      const params = buildOlderPageParams({
+        visible,
+        filter,
+        limit: OLDER_PAGE_LIMIT,
+        sinceUnixNano,
+      });
       const page = (await api.queryLogs(projectId, params)) as {
         records: LogRecord[];
         nextCursor: number | null;
@@ -425,17 +424,7 @@ export function LiveLogsView({
     } finally {
       if (gen === filterGenRef.current) setLoadingOlder(false);
     }
-  }, [
-    loadingOlder,
-    olderExhausted,
-    combined,
-    projectId,
-    minSeverityNumber,
-    sourceId,
-    environment,
-    text,
-    sinceUnixNano,
-  ]);
+  }, [loadingOlder, olderExhausted, visible, filter, projectId, sinceUnixNano]);
 
   const runClear = useCallback(async () => {
     setClearing(true);

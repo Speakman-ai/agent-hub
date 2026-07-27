@@ -24,7 +24,12 @@ import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
 import { parsePreviewProxySessionId } from './preview/preview-proxy.js';
 import { parseTerminalWebSocketSessionId } from './terminal/terminal-websocket.js';
 import { canViewProject } from './project-visibility.js';
-import { queryLogRecordsSince, type LogRecordRow } from './logs/logs-db.js';
+import {
+  queryLogRecordsSince,
+  queryLogTailSeed,
+  type LogRecordRow,
+  type LogTailSeed,
+} from './logs/logs-db.js';
 import { MAX_QUERY_LIMIT } from './logs/logs-schema.js';
 import { serializeLogRecord } from './logs/log-record-api.js';
 import { subscribeLogTail } from './logs/log-tail.js';
@@ -148,7 +153,18 @@ export default function createWebSocket(
     for (const client of wss.clients) {
       const sub = tailSubscriptions.get(client as WsClient);
       if (!sub || client.readyState !== WsClient.OPEN) continue;
-      const matching = records.filter((record) => record.project_id === sub.projectId);
+      // Bound the live push by the subscription's window as well as its
+      // project. A newly-committed row is NOT necessarily inside the window: a
+      // source flushing a backlog commits rows whose event times are hours old,
+      // and pushing those into a "Last hour" view drops ancient records at the
+      // top of a bounded tail. The seed and "Load older" both honour the
+      // window, so the live path has to as well or the view is only bounded
+      // until the next delayed batch lands.
+      const matching = records.filter(
+        (record) =>
+          record.project_id === sub.projectId &&
+          (sub.sinceUnixNano == null || record.time_unix_nano >= sub.sinceUnixNano),
+      );
       if (matching.length === 0) continue;
       sub.records.push(...matching);
       if (sub.records.length > MAX_LOG_TAIL_BUFFER_RECORDS) {
@@ -256,6 +272,77 @@ export default function createWebSocket(
     }
   }
 
+  /** Release the queued live records once backfill/seed has been dispatched. */
+  function finishLogTailBackfill(ws: WsClient, sub: LogTailSubscription): void {
+    if (tailSubscriptions.get(ws) !== sub) return;
+    sub.backfillInProgress = false;
+    if (sub.records.length > 0) scheduleLogTailFlush(ws, sub);
+  }
+
+  /**
+   * Seed a *fresh* subscribe from the newest end of the window in a single
+   * frame, instead of draining the window oldest-first.
+   *
+   * Draining forward from a cursor is correct for a reconnect (the client is
+   * missing a contiguous range, so every committed row must arrive) but wrong
+   * for a first subscribe: on a busy project it streams the entire retention
+   * window into the browser oldest-first, so the Live view sits on hours-old
+   * records until the whole replay finishes. The tail is what the user asked
+   * for, so send the tail; `Load older` pages backwards on demand.
+   *
+   * This is **lossy by construction**: it drops everything older than the
+   * newest `MAX_QUERY_LIMIT` in the window and reports `nextCursor: null`. It
+   * therefore runs only when the subscriber explicitly asked for a seed
+   * (`seed: true`), never when the server merely observes `cursor === 0`; see
+   * the `logs_subscribe` handler.
+   */
+  function seedLogTail(ws: WsClient, sub: LogTailSubscription, cursor: number): void {
+    let seed: LogTailSeed;
+    try {
+      seed = queryLogTailSeed(sub.projectId, MAX_QUERY_LIMIT, sub.sinceUnixNano);
+    } catch {
+      requireLogTailRecovery(
+        ws,
+        sub,
+        sub.records.length,
+        'Log tail seed failed; reconnect to recover',
+      );
+      return;
+    }
+    // `seed.cursor` is the project's max committed ingest id at seed time, NOT
+    // the max id among the rows we are sending. The event-time cutoff excludes
+    // rows that can hold much higher ids (a delayed batch ingested late with old
+    // event times sits entirely above the seed page), so reporting the page's
+    // max would leave the client resubscribing below them and the next
+    // reconnect would drain `id > cursor` and splice those already-known,
+    // old-event-time rows into the live tail as if they were new. Everything
+    // already ingested has been considered; excluded rows come back through the
+    // event-time "Load older" path, which is the only path that positions them
+    // correctly anyway. `Math.max` keeps the advance monotonic against the
+    // cursor the client sent.
+    const seedCursor = Math.max(cursor, seed.cursor);
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'logs_tail_backfill',
+          projectId: sub.projectId,
+          records: seed.records.map(serializeLogRecord),
+          cursor: seedCursor,
+          nextCursor: null,
+        }),
+      );
+    } catch {
+      requireLogTailRecovery(
+        ws,
+        sub,
+        sub.records.length,
+        'Log tail seed send failed; reconnect to recover',
+      );
+      return;
+    }
+    finishLogTailBackfill(ws, sub);
+  }
+
   /**
    * Drain every bounded `id > cursor` page before releasing queued live
    * records. Yielding between pages keeps the event loop responsive; records
@@ -266,7 +353,13 @@ export default function createWebSocket(
     ws: WsClient,
     sub: LogTailSubscription,
     initialCursor: number,
+    seedRequested: boolean,
   ): Promise<void> {
+    if (tailSubscriptions.get(ws) !== sub || ws.readyState !== WsClient.OPEN) return;
+    if (seedRequested) {
+      seedLogTail(ws, sub, initialCursor);
+      return;
+    }
     let cursor = initialCursor;
     while (tailSubscriptions.get(ws) === sub && ws.readyState === WsClient.OPEN) {
       if (ws.bufferedAmount > MAX_LOG_TAIL_SOCKET_BUFFERED_BYTES) {
@@ -310,9 +403,7 @@ export default function createWebSocket(
         return;
       }
       if (page.nextCursor == null) {
-        if (tailSubscriptions.get(ws) !== sub) return;
-        sub.backfillInProgress = false;
-        if (sub.records.length > 0) scheduleLogTailFlush(ws, sub);
+        finishLogTailBackfill(ws, sub);
         return;
       }
       cursor = page.nextCursor;
@@ -595,6 +686,20 @@ export default function createWebSocket(
           msg.sinceUnixNano > 0
             ? msg.sinceUnixNano
             : undefined;
+        // Explicit fresh-subscribe signal. Whether a subscriber already holds
+        // tail state is something only that subscriber knows, so it must be
+        // *stated* rather than inferred from `cursor === 0`: 0 is also the
+        // legitimate resume cursor for a client that has not yet durably
+        // accepted a row, and seeding one of those would silently drop every
+        // retained record older than the newest MAX_QUERY_LIMIT (the seed
+        // reports `nextCursor: null`, so the client never pages back for them).
+        // Absent, non-boolean, or false → forward drain, the lossless default,
+        // which is also what every pre-`seed` client gets.
+        //
+        // A `seed: true` paired with a non-zero cursor is self-contradictory:
+        // the caller claims to be fresh while naming rows it has already seen.
+        // Resolve it toward the lossless branch rather than honouring the seed.
+        const seedRequested = msg.seed === true && cursor === 0;
         if (
           projectId.length === 0 ||
           projectId.length > 200 ||
@@ -629,7 +734,7 @@ export default function createWebSocket(
         // Install before reading the backfill: concurrent commits can produce a
         // duplicate (the client dedupes by id), but never an unrecoverable gap.
         tailSubscriptions.set(ws, sub);
-        void streamLogTailBackfill(ws, sub, cursor);
+        void streamLogTailBackfill(ws, sub, cursor, seedRequested);
       } else if (type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong' }));
       }

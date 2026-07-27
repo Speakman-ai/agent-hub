@@ -187,6 +187,68 @@ describe('LiveLogsView', () => {
     expect(screen.queryByText('evt 1')).not.toBeInTheDocument();
   });
 
+  it('pages older history from the oldest MATCHING row, not the oldest tail row', async () => {
+    // Regression (review): the keyset came from the unfiltered tail while the
+    // request carried the active facets, so the server paged strictly older
+    // than a non-matching row and skipped every matching record between it and
+    // the oldest rendered match.
+    (api.queryLogs as any).mockResolvedValue({ records: [], nextCursor: null });
+    const { sock } = renderLive();
+    act(() =>
+      sock.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [
+          // Oldest row overall, but INFO: must NOT become the cursor.
+          record(1, { timeUnixNano: 50, severityNumber: SEVERITY_NUMBER.INFO }),
+          record(2, { timeUnixNano: 100, severityNumber: SEVERITY_NUMBER.ERROR }),
+        ],
+        cursor: 2,
+        dropped: 0,
+      }),
+    );
+    fireEvent.change(screen.getByLabelText('Minimum severity'), {
+      target: { value: String(SEVERITY_NUMBER.ERROR) },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Load older' }));
+
+    await waitFor(() => expect(api.queryLogs).toHaveBeenCalled());
+    const params = (api.queryLogs as any).mock.calls.at(-1)![1];
+    expect(params).toMatchObject({
+      cursor: 2,
+      cursorTimeUnixNano: 100,
+      minSeverityNumber: SEVERITY_NUMBER.ERROR,
+    });
+    // An ERROR at t=70 sits between the INFO row and the oldest visible match;
+    // it stays reachable only because the cursor is 100 and not 50.
+    expect(params.cursorTimeUnixNano).toBeGreaterThan(70);
+  });
+
+  it('omits the cursor entirely when the filter matches nothing currently held', async () => {
+    // Paging from the unfiltered tail here would jump past the tail's whole
+    // time span and miss every matching record inside it.
+    (api.queryLogs as any).mockResolvedValue({ records: [], nextCursor: null });
+    const { sock } = renderLive();
+    act(() =>
+      sock.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [record(1, { timeUnixNano: 50, severityNumber: SEVERITY_NUMBER.INFO })],
+        cursor: 1,
+        dropped: 0,
+      }),
+    );
+    fireEvent.change(screen.getByLabelText('Minimum severity'), {
+      target: { value: String(SEVERITY_NUMBER.ERROR) },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Load older' }));
+
+    await waitFor(() => expect(api.queryLogs).toHaveBeenCalled());
+    const params = (api.queryLogs as any).mock.calls.at(-1)![1];
+    expect(params).not.toHaveProperty('cursor');
+    expect(params).not.toHaveProperty('cursorTimeUnixNano');
+  });
+
   it('resets older-history paging when a filter changes', async () => {
     (api.queryLogs as any).mockResolvedValue({ records: [], nextCursor: null });
     const { sock } = renderLive();

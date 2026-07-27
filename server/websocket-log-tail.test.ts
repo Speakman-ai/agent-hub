@@ -103,7 +103,9 @@ describe('WebSocket log live tail', () => {
       });
       // A cursor from project B is untrusted input: it changes only the
       // project-A id boundary and cannot make B's row appear in the replay.
-      ws.send(JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0 }));
+      ws.send(
+        JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0, seed: true }),
+      );
       const backfill = await messages.waitFor((message) => message.type === 'logs_tail_backfill');
       expect(backfill.records).toEqual([
         expect.objectContaining({ id: a.id, projectId: 'project-a', body: 'project-a old' }),
@@ -126,10 +128,7 @@ describe('WebSocket log live tail', () => {
     }
   });
 
-  it('bounds the initial backfill to the sinceUnixNano window', async () => {
-    // Regression: an initial subscribe (cursor 0) replayed the entire retained
-    // history oldest-first, so the Live view filled with ancient records before
-    // the newest arrived. A time window must seed only recent rows.
+  it('bounds the initial seed to the sinceUnixNano window', async () => {
     insertLogRecords(
       [{ projectId: 'project-a', sourceId: 'a', timeUnixNano: 1, body: 'ancient row' }],
       1,
@@ -152,6 +151,7 @@ describe('WebSocket log live tail', () => {
           type: 'logs_subscribe',
           projectId: 'project-a',
           cursor: 0,
+          seed: true,
           sinceUnixNano: 500,
         }),
       );
@@ -186,9 +186,12 @@ describe('WebSocket log live tail', () => {
         ws.once('open', resolve);
         ws.once('error', reject);
       });
-      ws.send(JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0 }));
+      // Reconnect cursor (not 0): the client is missing a contiguous range, so
+      // the server drains it forward page by page. A fresh subscribe takes the
+      // single-frame seed path instead (covered below).
+      ws.send(JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 1 }));
       await messages.waitFor(
-        (message) => message.type === 'logs_tail_backfill' && message.nextCursor === 500,
+        (message) => message.type === 'logs_tail_backfill' && message.nextCursor === 501,
       );
       const live = insertLogRecords(
         [{ projectId: 'project-a', sourceId: 'a', timeUnixNano: 1002, body: 'live-1002' }],
@@ -211,7 +214,283 @@ describe('WebSocket log live tail', () => {
     }
   });
 
-  it('closes on tail-queue overflow so a reconnect can recover by cursor', async () => {
+  it('seeds a fresh subscribe with the newest window rows in one frame', async () => {
+    // Regression: a fresh subscribe (cursor 0) drained the window oldest-first,
+    // so the Live view opened on the oldest records of the range and only
+    // reached the tail after every intermediate page had streamed. The seed must
+    // be the newest rows, and it must complete in a single frame.
+    insertLogRecords(
+      Array.from({ length: 600 }, (_, index) => ({
+        projectId: 'project-a',
+        sourceId: 'a',
+        timeUnixNano: index + 1,
+        body: `row-${index + 1}`,
+      })),
+      1,
+    );
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const messages = bufferMessages(ws);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      ws.send(
+        JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0, seed: true }),
+      );
+      const seed = await messages.waitFor((message) => message.type === 'logs_tail_backfill');
+      const bodies = (seed.records as Array<{ body: string }>).map((r) => r.body);
+      // Newest 500 of 600, still oldest-first so the client appends in order.
+      expect(bodies).toHaveLength(500);
+      expect(bodies[0]).toBe('row-101');
+      expect(bodies[bodies.length - 1]).toBe('row-600');
+      // Single frame: no further paging, so the tail is live immediately.
+      expect(seed.nextCursor).toBeNull();
+      expect(messages.all().filter((m) => m.type === 'logs_tail_backfill')).toHaveLength(1);
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('seeds the chronological tail and reports the max ingest id as the cursor', async () => {
+    // Regression (review): with a delayed batch the seed's last row (newest by
+    // event time) is NOT the highest id. The live cursor means "newest ingest id
+    // I hold", so it must be the max: reporting lower would make the reconnect
+    // drain resurrect the old-event-time rows the seed deliberately excluded and
+    // splice them into the live tail; reporting higher would skip ingested rows.
+    const current = insertLogRecords(
+      [
+        { projectId: 'project-a', sourceId: 'a', timeUnixNano: 9_000, body: 'current-1' },
+        { projectId: 'project-a', sourceId: 'a', timeUnixNano: 9_001, body: 'current-2' },
+      ],
+      1,
+    ).records;
+    const delayed = insertLogRecords(
+      [
+        { projectId: 'project-a', sourceId: 'a', timeUnixNano: 10, body: 'delayed-1' },
+        { projectId: 'project-a', sourceId: 'a', timeUnixNano: 11, body: 'delayed-2' },
+      ],
+      1,
+    ).records;
+    const maxId = Math.max(...[...current, ...delayed].map((r) => r.id));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const messages = bufferMessages(ws);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      ws.send(
+        JSON.stringify({
+          type: 'logs_subscribe',
+          projectId: 'project-a',
+          cursor: 0,
+          seed: true,
+        }),
+      );
+      const seed = await messages.waitFor((message) => message.type === 'logs_tail_backfill');
+      const records = seed.records as Array<{ body: string; id: number }>;
+      // Chronological tail, oldest-first within the frame.
+      expect(records.map((r) => r.body)).toEqual([
+        'delayed-1',
+        'delayed-2',
+        'current-1',
+        'current-2',
+      ]);
+      // Cursor is the max COMMITTED ingest id, not the last (chronologically
+      // newest) row's id: the delayed batch owns the higher ids here.
+      expect(seed.cursor).toBe(maxId);
+      expect(seed.cursor).not.toBe(records[records.length - 1]!.id);
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('clears already-ingested rows the seed excluded, so a reconnect cannot resurrect them', async () => {
+    // Regression (review): the seed cursor was the max id among the rows it
+    // RETURNED. When the newest-by-event-time rows are the low-id current batch
+    // and an already-ingested delayed batch (higher ids, older event times) is
+    // excluded by the cutoff, that cursor sits BELOW the delayed rows. The
+    // client then reconnects, the server drains `id > cursor`, and those old
+    // records get spliced into the live tail as if they were new, which is the
+    // exact jump this change exists to remove.
+    const current = insertLogRecords(
+      [
+        { projectId: 'project-a', sourceId: 'a', timeUnixNano: 9_000, body: 'current-1' },
+        { projectId: 'project-a', sourceId: 'a', timeUnixNano: 9_001, body: 'current-2' },
+      ],
+      1,
+    ).records;
+    // Ingested later (higher ids) but older by event time, so the seed's
+    // event-time cutoff excludes them.
+    const delayed = insertLogRecords(
+      [
+        { projectId: 'project-a', sourceId: 'a', timeUnixNano: 10, body: 'delayed-1' },
+        { projectId: 'project-a', sourceId: 'a', timeUnixNano: 11, body: 'delayed-2' },
+      ],
+      1,
+    ).records;
+    expect(Math.min(...delayed.map((r) => r.id))).toBeGreaterThan(
+      Math.max(...current.map((r) => r.id)),
+    );
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    // Seed a fresh subscribe with a limit that excludes the delayed batch.
+    const first = new WebSocket(`ws://127.0.0.1:${port}`);
+    const firstMessages = bufferMessages(first);
+    let seedCursor: number;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        first.once('open', resolve);
+        first.once('error', reject);
+      });
+      first.send(
+        JSON.stringify({
+          type: 'logs_subscribe',
+          projectId: 'project-a',
+          cursor: 0,
+          seed: true,
+          // Window excludes the delayed batch's ancient event times.
+          sinceUnixNano: 1_000,
+        }),
+      );
+      const seed = await firstMessages.waitFor((m) => m.type === 'logs_tail_backfill');
+      expect((seed.records as Array<{ body: string }>).map((r) => r.body)).toEqual([
+        'current-1',
+        'current-2',
+      ]);
+      seedCursor = seed.cursor as number;
+      // The cursor clears the excluded delayed batch entirely.
+      expect(seedCursor).toBe(Math.max(...delayed.map((r) => r.id)));
+    } finally {
+      first.close();
+    }
+
+    // Now reconnect from that cursor, exactly as the client would.
+    const second = new WebSocket(`ws://127.0.0.1:${port}`);
+    const secondMessages = bufferMessages(second);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        second.once('open', resolve);
+        second.once('error', reject);
+      });
+      second.send(
+        JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: seedCursor }),
+      );
+      const drain = await secondMessages.waitFor(
+        (m) => m.type === 'logs_tail_backfill' && m.nextCursor === null,
+      );
+      // Nothing is redelivered: the delayed rows stay out of the live tail and
+      // remain reachable only through the event-time "Load older" path.
+      expect(drain.records).toEqual([]);
+      expect(JSON.stringify(drain)).not.toContain('delayed-');
+    } finally {
+      second.close();
+    }
+  });
+
+  it('keeps a windowed reconnect drain inside the window', async () => {
+    // Regression (review): the client sent `sinceUnixNano` only on the seed, so
+    // a reconnect drained every `id > cursor` unbounded. A delayed row committed
+    // after the cursor with an out-of-window event time was therefore replayed
+    // into a bounded Live view.
+    const inWindow = insertLogRecords(
+      [{ projectId: 'project-a', sourceId: 'a', timeUnixNano: 9_000, body: 'in-window' }],
+      1,
+    ).records[0]!;
+    insertLogRecords(
+      [{ projectId: 'project-a', sourceId: 'a', timeUnixNano: 10, body: 'delayed-out-of-window' }],
+      1,
+    );
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const messages = bufferMessages(ws);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      // Reconnect (seed omitted) from BELOW both rows, carrying the window.
+      ws.send(
+        JSON.stringify({
+          type: 'logs_subscribe',
+          projectId: 'project-a',
+          cursor: inWindow.id - 1,
+          sinceUnixNano: 1_000,
+        }),
+      );
+      const drain = await messages.waitFor(
+        (message) => message.type === 'logs_tail_backfill' && message.nextCursor === null,
+      );
+      expect((drain.records as Array<{ body: string }>).map((r) => r.body)).toEqual(['in-window']);
+      expect(JSON.stringify(drain)).not.toContain('delayed-out-of-window');
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('keeps the live push inside the window too', async () => {
+    // The drain is not the only delivery path: a source flushing a backlog
+    // commits rows with hours-old event times, and the live fan-out would push
+    // them straight into a bounded view. Same symptom, different path.
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const messages = bufferMessages(ws);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      ws.send(
+        JSON.stringify({
+          type: 'logs_subscribe',
+          projectId: 'project-a',
+          cursor: 0,
+          seed: true,
+          sinceUnixNano: 1_000,
+        }),
+      );
+      await messages.waitFor((message) => message.type === 'logs_tail_backfill');
+
+      const backlog = insertLogRecords(
+        [
+          { projectId: 'project-a', sourceId: 'a', timeUnixNano: 10, body: 'backlog-flush' },
+          { projectId: 'project-a', sourceId: 'a', timeUnixNano: 9_500, body: 'fresh-row' },
+        ],
+        1,
+      ).records;
+      publish?.(backlog);
+
+      const live = await messages.waitFor((message) => message.type === 'logs_tail');
+      expect((live.records as Array<{ body: string }>).map((r) => r.body)).toEqual(['fresh-row']);
+      expect(JSON.stringify(live)).not.toContain('backlog-flush');
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('drains forward from cursor 0 when no seed was requested', async () => {
+    // Regression (review): the lossy newest-page seed must be opt-in. A client
+    // that resubscribes from cursor 0 without asking for a seed has NOT told us
+    // it is empty, so inferring one would drop every retained row older than the
+    // newest page and report `nextCursor: null`, leaving no way to page back.
+    insertLogRecords(
+      Array.from({ length: 600 }, (_, index) => ({
+        projectId: 'project-a',
+        sourceId: 'a',
+        timeUnixNano: index + 1,
+        body: `row-${index + 1}`,
+      })),
+      1,
+    );
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -222,6 +501,67 @@ describe('WebSocket log live tail', () => {
         ws.once('error', reject);
       });
       ws.send(JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0 }));
+      const first = await messages.waitFor((message) => message.type === 'logs_tail_backfill');
+      const bodies = (first.records as Array<{ body: string }>).map((r) => r.body);
+      // Oldest-first page with a continue-token, not the newest-500 seed.
+      expect(bodies[0]).toBe('row-1');
+      expect(first.nextCursor).toBe(500);
+      // ...and the remaining rows still arrive.
+      const last = await messages.waitFor(
+        (message) => message.type === 'logs_tail_backfill' && message.nextCursor === null,
+      );
+      const tailBodies = (last.records as Array<{ body: string }>).map((r) => r.body);
+      expect(tailBodies[tailBodies.length - 1]).toBe('row-600');
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('ignores a seed request that contradicts a non-zero cursor', async () => {
+    // `seed: true` with a cursor means the caller claims to be fresh while
+    // naming rows it has already seen. Resolve toward the lossless drain.
+    insertLogRecords(
+      Array.from({ length: 600 }, (_, index) => ({
+        projectId: 'project-a',
+        sourceId: 'a',
+        timeUnixNano: index + 1,
+        body: `row-${index + 1}`,
+      })),
+      1,
+    );
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const messages = bufferMessages(ws);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      ws.send(
+        JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 1, seed: true }),
+      );
+      const first = await messages.waitFor((message) => message.type === 'logs_tail_backfill');
+      expect((first.records as Array<{ body: string }>)[0]!.body).toBe('row-2');
+      expect(first.nextCursor).toBe(501);
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('closes on tail-queue overflow so a reconnect can recover by cursor', async () => {
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const messages = bufferMessages(ws);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      ws.send(
+        JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0, seed: true }),
+      );
       await messages.waitFor((message) => message.type === 'logs_tail_backfill');
       resetLogMetrics();
       const recovery = messages.waitFor(
@@ -269,7 +609,9 @@ describe('WebSocket log live tail', () => {
         ws.once('open', resolve);
         ws.once('error', reject);
       });
-      ws.send(JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0 }));
+      ws.send(
+        JSON.stringify({ type: 'logs_subscribe', projectId: 'project-a', cursor: 0, seed: true }),
+      );
       await messages.waitFor((message) => message.type === 'logs_tail_backfill');
       const serverClient = [...wss.clients][0]!;
       Object.defineProperty(serverClient, 'bufferedAmount', {

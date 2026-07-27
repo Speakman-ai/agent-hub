@@ -2,7 +2,7 @@
  * Live application-log tail hook (LOG-QUERY WebSocket contract).
  *
  * Wire protocol (server `websocket.ts`):
- *   → { type: 'logs_subscribe', projectId, cursor }
+ *   → { type: 'logs_subscribe', projectId, cursor, seed?, sinceUnixNano? }
  *   ← { type: 'logs_tail_backfill', projectId, records[], cursor, nextCursor }
  *   ← { type: 'logs_tail',          projectId, records[], cursor, dropped }
  *   ← { type: 'logs_tail_recovery_required', projectId, dropped }  (then close 1013)
@@ -15,10 +15,21 @@
  *
  * Pausing freezes the visible list: incoming records buffer (bounded) and the
  * cursor still advances so reconnect math stays correct; resume merges them in.
+ *
+ * `seed: true` asks the server for the newest window page in one frame instead
+ * of a forward drain from the cursor. That is lossy (everything older than the
+ * page is skipped, with no continue-token), so the hook sends it only while it
+ * holds no records at all, the one state where there is nothing to lose. Every
+ * reconnect that carries accepted rows drains forward instead.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getWsUrl } from '../utils/connection';
-import { mergeTailRecords, resolveTailCursor, type LogRecord } from '../utils/logStream';
+import {
+  buildLogSubscribeFrame,
+  mergeTailRecords,
+  resolveTailCursor,
+  type LogRecord,
+} from '../utils/logStream';
 
 export type LogTailStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -97,6 +108,11 @@ export function useLogTail(
 
   // Refs survive reconnects without re-triggering the connect effect.
   const cursorRef = useRef(0);
+  // Has this subscription ever durably accepted a record? Drives the `seed`
+  // flag: it is the precondition for asking for a lossy newest-page seed, and
+  // it is deliberately NOT the same fact as `cursorRef.current === 0` (an empty
+  // frame advances the cursor without delivering rows).
+  const hasRecordsRef = useRef(false);
   const pausedRef = useRef(false);
   const pendingRef = useRef<LogRecord[]>([]);
   const socketRef = useRef<SocketLike | null>(null);
@@ -131,6 +147,7 @@ export function useLogTail(
   const applyIncoming = useCallback((incoming: LogRecord[], nextCursor: number) => {
     if (nextCursor > cursorRef.current) cursorRef.current = nextCursor;
     if (incoming.length === 0) return;
+    hasRecordsRef.current = true;
     if (pausedRef.current) {
       pendingRef.current = mergeTailRecords(pendingRef.current, incoming, capRef.current);
       setPendingCount(pendingRef.current.length);
@@ -169,18 +186,18 @@ export function useLogTail(
       setStatus('open');
       setError(null);
       try {
-        const frame: Record<string, unknown> = {
-          type: 'logs_subscribe',
-          projectId: pid,
-          cursor: cursorRef.current,
-        };
-        // Only bound the window on the initial seed (cursor 0). After the tail
-        // has advanced, every id > cursor is already newer than the window, so
-        // resubscribing with the (now-stale) bound would be a no-op anyway.
-        if (sinceUnixNanoRef.current != null && cursorRef.current === 0) {
-          frame.sinceUnixNano = sinceUnixNanoRef.current;
-        }
-        socket.send(JSON.stringify(frame));
+        // `buildLogSubscribeFrame` owns the seed decision (see its doc): a seed
+        // is lossy, so it is requested only while we hold no records.
+        socket.send(
+          JSON.stringify(
+            buildLogSubscribeFrame({
+              projectId: pid,
+              cursor: cursorRef.current,
+              hasRecords: hasRecordsRef.current,
+              sinceUnixNano: sinceUnixNanoRef.current,
+            }),
+          ),
+        );
       } catch {
         // A send failure on a freshly-open socket is a transport fault; the
         // close handler will schedule a reconnect from the same cursor.
@@ -274,6 +291,7 @@ export function useLogTail(
       }
     }
     cursorRef.current = 0;
+    hasRecordsRef.current = false;
     pendingRef.current = [];
     attemptsRef.current = 0;
     setRecords([]);
@@ -290,6 +308,7 @@ export function useLogTail(
   useEffect(() => {
     closedRef.current = false;
     cursorRef.current = 0;
+    hasRecordsRef.current = false;
     pendingRef.current = [];
     attemptsRef.current = 0;
     setRecords([]);

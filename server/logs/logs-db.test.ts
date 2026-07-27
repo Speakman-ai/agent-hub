@@ -12,6 +12,7 @@ import {
   insertLogSource,
   queryLogRecords,
   queryLogRecordsSince,
+  queryLogTailSeed,
   getProjectByteSize,
   getRetentionConfig,
   setRetentionConfig,
@@ -22,6 +23,7 @@ import {
   enforceProjectQuota,
   purgeProjectLogRecords,
   type LogRecordInput,
+  type LogQueryPage,
 } from './logs-db.js';
 import { runLogRetentionReaper } from './log-retention-reaper.js';
 import {
@@ -225,6 +227,87 @@ describe('queryLogRecords', () => {
   });
 });
 
+describe('queryLogRecords keyset paging', () => {
+  it('orders newest-first by event time, not ingest id', () => {
+    insertLogRecords(
+      [
+        rec({ body: 'old-event-high-id', timeUnixNano: nanoAgo(9) }),
+        rec({ body: 'new-event-low-id', timeUnixNano: nanoAgo(0) }),
+      ],
+      NOW,
+    );
+    expect(queryLogRecords({ projectId: 'proj-a' }).records.map((r) => r.body)).toEqual([
+      'new-event-low-id',
+      'old-event-high-id',
+    ]);
+  });
+
+  it('reaches a delayed high-id record that an id cursor would skip', () => {
+    // Regression (review): the client caps its tail by event time, so a delayed
+    // batch (high id, old event time) can be evicted while `id < min(id held)`
+    // never asks for it again. Paging on (time, id) makes it the next page.
+    const recent = insertLogRecords([rec({ body: 'recent', timeUnixNano: nanoAgo(0) })], NOW)
+      .records[0]!;
+    const delayed = insertLogRecords([rec({ body: 'delayed', timeUnixNano: nanoAgo(5) })], NOW)
+      .records[0]!;
+    expect(delayed.id).toBeGreaterThan(recent.id); // higher id, older event time
+
+    // An id-only cursor from the record the client still holds cannot see it.
+    const idOnly = getLogsDb()
+      .prepare('SELECT body FROM log_records WHERE project_id = ? AND id < ?')
+      .all('proj-a', recent.id) as Array<{ body: string }>;
+    expect(idOnly.map((r) => r.body)).not.toContain('delayed');
+
+    // The keyset cursor does.
+    const page = queryLogRecords({
+      projectId: 'proj-a',
+      cursor: recent.id,
+      cursorTimeUnixNano: recent.time_unix_nano,
+    });
+    expect(page.records.map((r) => r.body)).toEqual(['delayed']);
+  });
+
+  it('walks the whole history exactly once with no repeats or gaps', () => {
+    // Interleave event times against ingest order so id and time disagree.
+    insertLogRecords(
+      Array.from({ length: 12 }, (_, i) => rec({ body: `r-${i}`, timeUnixNano: nanoAgo(i % 4) })),
+      NOW,
+    );
+    const seen: string[] = [];
+    let cursor: number | null = null;
+    let cursorTime: number | null = null;
+    for (let guard = 0; guard < 20; guard++) {
+      const page: LogQueryPage = queryLogRecords({
+        projectId: 'proj-a',
+        limit: 5,
+        ...(cursor != null ? { cursor, cursorTimeUnixNano: cursorTime ?? undefined } : {}),
+      });
+      seen.push(...page.records.map((r) => r.body ?? ''));
+      if (page.nextCursor == null) break;
+      cursor = page.nextCursor;
+      cursorTime = page.nextCursorTimeUnixNano;
+    }
+    expect(seen).toHaveLength(12);
+    expect(new Set(seen).size).toBe(12);
+  });
+
+  it('resolves a bare id cursor into its keyset so pre-keyset callers stay correct', () => {
+    const recent = insertLogRecords([rec({ body: 'recent', timeUnixNano: nanoAgo(0) })], NOW)
+      .records[0]!;
+    insertLogRecords([rec({ body: 'delayed', timeUnixNano: nanoAgo(5) })], NOW);
+    // No cursorTimeUnixNano: the server looks the row's event time up.
+    const page = queryLogRecords({ projectId: 'proj-a', cursor: recent.id });
+    expect(page.records.map((r) => r.body)).toEqual(['delayed']);
+  });
+
+  it('falls back to the id predicate when the cursor row is gone', () => {
+    insertLogRecords([rec({ body: 'a' }), rec({ body: 'b' })], NOW);
+    const missing = 999_999;
+    expect(() => queryLogRecords({ projectId: 'proj-a', cursor: missing })).not.toThrow();
+    expect(queryLogRecords({ projectId: 'proj-a', cursor: missing }).records).toHaveLength(2);
+  });
+});
+
 describe('queryLogRecordsSince', () => {
   it('returns rows newer than the cursor, oldest-first', () => {
     insertLogRecords([rec({ body: 'one' }), rec({ body: 'two' }), rec({ body: 'three' })], NOW);
@@ -256,6 +339,117 @@ describe('queryLogRecordsSince', () => {
     insertLogRecords([rec({ projectId: 'proj-b', body: 'b-1' })], NOW);
     const page = queryLogRecordsSince('proj-a', 0, undefined, nanoAgo(1));
     expect(page.records.every((r) => r.project_id === 'proj-a')).toBe(true);
+  });
+});
+
+describe('queryLogTailSeed', () => {
+  it('seeds the chronologically newest rows even when a delayed batch has higher ids', () => {
+    // Regression (review): selecting the seed by ingest id reopens the very bug
+    // the seed exists to fix. Ingest 3 current rows, then a delayed batch of 4
+    // older-timestamped rows; `ORDER BY id DESC LIMIT 4` would hand back only
+    // the delayed batch and the Live view would open away from the tail again.
+    insertLogRecords(
+      [
+        rec({ body: 'current-1', timeUnixNano: nanoAgo(0) }),
+        rec({ body: 'current-2', timeUnixNano: nanoAgo(0) }),
+        rec({ body: 'current-3', timeUnixNano: nanoAgo(0) }),
+      ],
+      NOW,
+    );
+    insertLogRecords(
+      Array.from({ length: 4 }, (_, i) => rec({ body: `delayed-${i}`, timeUnixNano: nanoAgo(5) })),
+      NOW,
+    );
+    const seed = queryLogTailSeed('proj-a', 3);
+    expect(seed.records.map((r) => r.body)).toEqual(['current-1', 'current-2', 'current-3']);
+    // The delayed rows own the highest ids, so an id-ordered seed would have
+    // returned them instead.
+    expect(Math.max(...seed.records.map((r) => r.id))).toBeLessThan(
+      Math.max(...queryLogRecords({ projectId: 'proj-a' }).records.map((r) => r.id)),
+    );
+  });
+
+  it('returns the newest rows in the window, oldest-first', () => {
+    // Regression: a fresh subscribe seeded from the OLDEST edge of the window,
+    // so the Live view opened on hours-old records and only reached the tail
+    // after the whole window had replayed page by page.
+    insertLogRecords(
+      [rec({ body: 'one' }), rec({ body: 'two' }), rec({ body: 'three' }), rec({ body: 'four' })],
+      NOW,
+    );
+    expect(queryLogTailSeed('proj-a', 2).records.map((r) => r.body)).toEqual(['three', 'four']);
+  });
+
+  it('excludes rows older than the window and scopes to the project', () => {
+    insertLogRecords(
+      [
+        rec({ body: 'ancient', timeUnixNano: nanoAgo(10) }),
+        rec({ body: 'recent', timeUnixNano: nanoAgo(0) }),
+      ],
+      NOW,
+    );
+    insertLogRecords([rec({ projectId: 'proj-b', body: 'other-project' })], NOW);
+    const seed = queryLogTailSeed('proj-a', MAX_QUERY_LIMIT, nanoAgo(1));
+    expect(seed.records.map((r) => r.body)).toEqual(['recent']);
+  });
+
+  it('reports the max committed ingest id, not the max id in the seed page', () => {
+    // Regression (review): the event-time cutoff excludes rows that can hold far
+    // HIGHER ids than anything in the page. Here the newest-by-time rows are the
+    // low-id current batch; the delayed batch was ingested later (higher ids)
+    // but is older by event time, so it is excluded. Handing back the page's max
+    // would leave the client resubscribing below the delayed rows, and the next
+    // reconnect would drain `id > cursor` and resurrect them into the live tail.
+    const current = insertLogRecords(
+      [
+        rec({ body: 'current-1', timeUnixNano: nanoAgo(0) }),
+        rec({ body: 'current-2', timeUnixNano: nanoAgo(0) }),
+      ],
+      NOW,
+    ).records;
+    const delayed = insertLogRecords(
+      [
+        rec({ body: 'delayed-1', timeUnixNano: nanoAgo(9) }),
+        rec({ body: 'delayed-2', timeUnixNano: nanoAgo(9) }),
+      ],
+      NOW,
+    ).records;
+
+    const seed = queryLogTailSeed('proj-a', 2);
+    expect(seed.records.map((r) => r.body)).toEqual(['current-1', 'current-2']);
+
+    const pageMaxId = Math.max(...seed.records.map((r) => r.id));
+    const committedMaxId = Math.max(...[...current, ...delayed].map((r) => r.id));
+    // The excluded delayed batch owns the higher ids...
+    expect(committedMaxId).toBeGreaterThan(pageMaxId);
+    // ...and the cursor clears them, so no reconnect drain can resurrect them.
+    expect(seed.cursor).toBe(committedMaxId);
+  });
+
+  it('clears rows outside the time window too, since the reconnect drain has no window', () => {
+    insertLogRecords([rec({ body: 'in-window', timeUnixNano: nanoAgo(0) })], NOW);
+    const outOfWindow = insertLogRecords(
+      [rec({ body: 'out-of-window', timeUnixNano: nanoAgo(30) })],
+      NOW,
+    ).records[0]!;
+    const seed = queryLogTailSeed('proj-a', MAX_QUERY_LIMIT, nanoAgo(1));
+    expect(seed.records.map((r) => r.body)).toEqual(['in-window']);
+    expect(seed.cursor).toBe(outOfWindow.id);
+  });
+
+  it('reports cursor 0 for a project with no records', () => {
+    insertLogRecords([rec({ projectId: 'proj-b', body: 'elsewhere' })], NOW);
+    const seed = queryLogTailSeed('proj-a');
+    expect(seed.records).toHaveLength(0);
+    expect(seed.cursor).toBe(0);
+  });
+
+  it('clamps the seed size to MAX_QUERY_LIMIT', () => {
+    insertLogRecords(
+      Array.from({ length: MAX_QUERY_LIMIT + 5 }, (_, i) => rec({ body: `r-${i}` })),
+      NOW,
+    );
+    expect(queryLogTailSeed('proj-a', MAX_QUERY_LIMIT + 500).records).toHaveLength(MAX_QUERY_LIMIT);
   });
 });
 

@@ -40,9 +40,12 @@ class FakeSocket implements SocketLike {
     this.onclose?.();
   }
   lastSubscribeCursor(): number | null {
+    return this.lastSubscribe()?.cursor ?? null;
+  }
+  lastSubscribe(): { cursor: number; seed?: boolean; sinceUnixNano?: number } | null {
     for (let i = this.sent.length - 1; i >= 0; i--) {
       const parsed = JSON.parse(this.sent[i]);
-      if (parsed.type === 'logs_subscribe') return parsed.cursor;
+      if (parsed.type === 'logs_subscribe') return parsed;
     }
     return null;
   }
@@ -89,6 +92,7 @@ describe('useLogTail', () => {
       type: 'logs_subscribe',
       projectId: 'p1',
       cursor: 0,
+      seed: true,
     });
     act(() =>
       sock.emit({
@@ -157,6 +161,96 @@ describe('useLogTail', () => {
       cursor: 0,
       sinceUnixNano: 2_000_000,
     });
+  });
+
+  it('carries sinceUnixNano on a reconnect, not just on the seed', () => {
+    // Regression (review): the window rode on the seed frame only, so a
+    // reconnect drained unbounded and a delayed out-of-window record committed
+    // after the cursor was replayed into a bounded Live view.
+    vi.useFakeTimers();
+    renderHook(() => useLogTail('p1', { ...opts, sinceUnixNano: 500 }));
+    const first = FakeSocket.instances[0];
+    act(() => first.open());
+    expect(first.lastSubscribe()).toMatchObject({ seed: true, sinceUnixNano: 500 });
+
+    act(() =>
+      first.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [record(1)],
+        cursor: 1,
+        dropped: 0,
+      }),
+    );
+    act(() => first.serverClose());
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+    const second = FakeSocket.instances[1];
+    act(() => second.open());
+    expect(second.lastSubscribe()).toMatchObject({
+      cursor: 1,
+      seed: false,
+      sinceUnixNano: 500,
+    });
+  });
+
+  it('asks for a seed only while it holds no records', () => {
+    // Regression (review): the newest-page seed is lossy. It skips everything
+    // older than the page and carries no continue-token. Requesting one with
+    // records already in hand would punch an unrecoverable hole, so the flag
+    // must go false the moment the tail accepts a row.
+    vi.useFakeTimers();
+    renderHook(() => useLogTail('p1', opts));
+    const first = FakeSocket.instances[0];
+    act(() => first.open());
+    expect(first.lastSubscribe()).toMatchObject({ cursor: 0, seed: true });
+
+    act(() =>
+      first.emit({
+        type: 'logs_tail_backfill',
+        projectId: 'p1',
+        records: [record(1), record(2)],
+        cursor: 2,
+        nextCursor: null,
+      }),
+    );
+    act(() => first.serverClose());
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+    const second = FakeSocket.instances[1];
+    act(() => second.open());
+    expect(second.lastSubscribe()).toMatchObject({ cursor: 2, seed: false });
+  });
+
+  it('does not ask for a seed on a reconnect that delivered no records but advanced the cursor', () => {
+    // An empty frame still advances the cursor. The seed flag keys off "have I
+    // accepted a row?", not off the cursor, and the server's `cursor === 0`
+    // guard resolves any disagreement toward the lossless forward drain.
+    vi.useFakeTimers();
+    renderHook(() => useLogTail('p1', opts));
+    const first = FakeSocket.instances[0];
+    act(() => first.open());
+    act(() =>
+      first.emit({
+        type: 'logs_tail_backfill',
+        projectId: 'p1',
+        records: [],
+        cursor: 7,
+        nextCursor: null,
+      }),
+    );
+    act(() => first.serverClose());
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+    const second = FakeSocket.instances[1];
+    act(() => second.open());
+    const frame = second.lastSubscribe()!;
+    expect(frame.cursor).toBe(7);
+    // Cursor is non-zero, so the server drains forward regardless of the flag.
+    expect(frame.seed === true && frame.cursor === 0).toBe(false);
   });
 
   it('reconnects from the last cursor and dedupes replayed backfill', () => {

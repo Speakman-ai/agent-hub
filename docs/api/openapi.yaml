@@ -7115,9 +7115,13 @@ components:
         nextCursor:
           type: integer
           nullable: true
+        nextCursorTimeUnixNano:
+          type: integer
+          nullable: true
       required:
         - records
         - nextCursor
+        - nextCursorTimeUnixNano
     LogQueryErrorResponse:
       type: object
       properties:
@@ -27955,7 +27959,7 @@ paths:
       tags:
         - Logs
       summary: Query project logs
-      description: Returns a bounded newest-first page. Every filter and cursor is scoped to the path project; a cursor from another project cannot reveal records.
+      description: Returns a bounded page ordered newest-first by event time, keyset-paginated on (timeUnixNano, id). Pass back both `nextCursor` and `nextCursorTimeUnixNano` for the next older page. Every filter and cursor is scoped to the path project; a cursor from another project cannot reveal records.
       parameters:
         - schema:
             type: string
@@ -28032,6 +28036,13 @@ paths:
             exclusiveMinimum: true
           required: false
           name: cursor
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: cursorTimeUnixNano
           in: query
         - schema:
             type: integer

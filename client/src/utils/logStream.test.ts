@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   mergeTailRecords,
+  buildLogSubscribeFrame,
+  oldestRecordCursor,
+  buildOlderPageParams,
+  isOlderCursor,
   filterLogRecords,
   recordMatchesFilter,
   distinctValues,
@@ -83,6 +87,221 @@ describe('mergeTailRecords', () => {
     const merged = mergeTailRecords(existing, [], 10);
     expect(merged).toHaveLength(10);
     expect(merged[0].id).toBe(41);
+  });
+});
+
+describe('buildLogSubscribeFrame', () => {
+  it('requests a seed only while the tail holds no records', () => {
+    // Regression (review): the newest-page seed is lossy. It skips everything
+    // older than the page and reports no continue-token. Asking for one with
+    // records in hand would punch a hole the client can never page back for.
+    expect(buildLogSubscribeFrame({ projectId: 'p1', cursor: 0, hasRecords: false })).toMatchObject(
+      { type: 'logs_subscribe', projectId: 'p1', cursor: 0, seed: true },
+    );
+    expect(buildLogSubscribeFrame({ projectId: 'p1', cursor: 42, hasRecords: true })).toMatchObject(
+      { cursor: 42, seed: false },
+    );
+  });
+
+  it('keys the seed off held records, not off a zero cursor', () => {
+    // An empty frame advances the cursor without delivering rows, so the two
+    // facts can disagree. The flag follows the records; the server's own
+    // `cursor === 0` guard resolves the disagreement toward the safe drain.
+    expect(buildLogSubscribeFrame({ projectId: 'p1', cursor: 7, hasRecords: false })).toMatchObject(
+      {
+        cursor: 7,
+        seed: true,
+      },
+    );
+    expect(buildLogSubscribeFrame({ projectId: 'p1', cursor: 0, hasRecords: true })).toMatchObject({
+      cursor: 0,
+      seed: false,
+    });
+  });
+
+  it('sends the window bound on every subscribe, seed and reconnect alike', () => {
+    // Regression (review): the window used to ride on the seed only, on the
+    // reasoning that every `id > cursor` is already newer than it. That assumed
+    // ingest id and event time agree. A delayed batch committed after the cursor
+    // carries old event times, so an unbounded reconnect drain replays hours-old
+    // rows into a bounded Live view.
+    expect(
+      buildLogSubscribeFrame({
+        projectId: 'p1',
+        cursor: 0,
+        hasRecords: false,
+        sinceUnixNano: 500,
+      }),
+    ).toMatchObject({ seed: true, sinceUnixNano: 500 });
+    expect(
+      buildLogSubscribeFrame({ projectId: 'p1', cursor: 9, hasRecords: true, sinceUnixNano: 500 }),
+    ).toMatchObject({ seed: false, sinceUnixNano: 500 });
+  });
+
+  it('omits the window bound for the unbounded ("All time") range', () => {
+    expect(
+      buildLogSubscribeFrame({ projectId: 'p1', cursor: 0, hasRecords: false }),
+    ).not.toHaveProperty('sinceUnixNano');
+  });
+});
+
+describe('chronological ordering (multi-source ingest)', () => {
+  it('orders the merged tail by event time, not ingest id', () => {
+    // Regression: two sources each POST their own batch, so their rows land in
+    // contiguous id runs. Sorting by id made the stream jump backwards in time
+    // every time it crossed from one batch into the next.
+    const prod = [
+      rec({ id: 1, sourceId: 'prod', timeUnixNano: 100 }),
+      rec({ id: 2, sourceId: 'prod', timeUnixNano: 300 }),
+    ];
+    const dev = [
+      rec({ id: 3, sourceId: 'dev', timeUnixNano: 200 }),
+      rec({ id: 4, sourceId: 'dev', timeUnixNano: 400 }),
+    ];
+    const merged = mergeTailRecords(prod, dev, 100);
+    expect(merged.map((r) => r.timeUnixNano)).toEqual([100, 200, 300, 400]);
+    expect(merged.map((r) => r.id)).toEqual([1, 3, 2, 4]);
+  });
+
+  it('breaks equal timestamps by ingest id so the order stays stable', () => {
+    const merged = mergeTailRecords(
+      [rec({ id: 7, timeUnixNano: 100 })],
+      [rec({ id: 5, timeUnixNano: 100 }), rec({ id: 6, timeUnixNano: 100 })],
+      100,
+    );
+    expect(merged.map((r) => r.id)).toEqual([5, 6, 7]);
+  });
+
+  it('trims to the newest `cap` records by event time', () => {
+    const merged = mergeTailRecords(
+      [rec({ id: 1, timeUnixNano: 400 }), rec({ id: 2, timeUnixNano: 100 })],
+      [rec({ id: 3, timeUnixNano: 200 })],
+      2,
+    );
+    expect(merged.map((r) => r.timeUnixNano)).toEqual([200, 400]);
+  });
+});
+
+describe('oldestRecordCursor', () => {
+  it('returns the chronologically oldest record as a (time, id) keyset', () => {
+    // "Load older" pages on the same axis the tail renders and trims on, so the
+    // cursor is the rendered head, not the minimum ingest id.
+    const records = [
+      rec({ id: 9, timeUnixNano: 100 }),
+      rec({ id: 2, timeUnixNano: 200 }),
+      rec({ id: 5, timeUnixNano: 300 }),
+    ];
+    expect(oldestRecordCursor(records)).toEqual({ timeUnixNano: 100, id: 9 });
+  });
+
+  it('breaks a timestamp tie on the lower id', () => {
+    const records = [rec({ id: 8, timeUnixNano: 100 }), rec({ id: 3, timeUnixNano: 100 })];
+    expect(oldestRecordCursor(records)).toEqual({ timeUnixNano: 100, id: 3 });
+  });
+
+  it('returns null for an empty tail', () => {
+    expect(oldestRecordCursor([])).toBeNull();
+  });
+
+  it('stays reachable after the cap evicts a delayed high-id record', () => {
+    // Regression (review): the tail is capped by event time while pagination
+    // used ingest id, so a delayed batch (high id, old event time) could be
+    // evicted by the cap and then sit above `id < min(id held)` forever. With
+    // an event-time keyset the evicted row is strictly older than the cursor,
+    // which is exactly what the next "Load older" page asks for.
+    const delayed = rec({ id: 99, timeUnixNano: 50 });
+    const kept = [rec({ id: 1, timeUnixNano: 100 }), rec({ id: 2, timeUnixNano: 200 })];
+    const capped = mergeTailRecords(kept, [delayed], 2);
+    expect(capped.map((r) => r.id)).toEqual([1, 2]); // delayed row evicted
+    const cursor = oldestRecordCursor(capped)!;
+    // The evicted record is strictly older than the cursor on the paged axis...
+    expect(isOlderCursor({ timeUnixNano: delayed.timeUnixNano, id: delayed.id }, cursor)).toBe(
+      true,
+    );
+    // ...even though its ingest id is far ABOVE the minimum id held, which is
+    // precisely what an id-only cursor could never reach.
+    expect(delayed.id > Math.min(...capped.map((r) => r.id))).toBe(true);
+  });
+});
+
+describe('buildOlderPageParams', () => {
+  const errorFilter = { minSeverityNumber: SEVERITY_NUMBER.ERROR };
+
+  it('takes the keyset from the FILTERED stream, not the raw tail', () => {
+    // Regression (review): the cursor came from the unfiltered tail. With an
+    // ERROR filter, the INFO row at the oldest edge of the tail became the
+    // cursor, so the server paged strictly older than it and every ERROR row
+    // between that INFO row and the oldest rendered match was skipped forever.
+    const combined = [
+      rec({ id: 1, timeUnixNano: 50, severityNumber: SEVERITY_NUMBER.INFO }),
+      rec({ id: 2, timeUnixNano: 100, severityNumber: SEVERITY_NUMBER.ERROR }),
+    ];
+    const visible = filterLogRecords(combined, errorFilter);
+    const params = buildOlderPageParams({ visible, filter: errorFilter, limit: 100 });
+    // Cursor is the oldest ERROR (t=100), not the oldest row overall (t=50).
+    expect(params.cursorTimeUnixNano).toBe(100);
+    expect(params.cursor).toBe(2);
+    // An ERROR at t=70 lies between the two and is therefore still fetchable.
+    expect(70).toBeLessThan(params.cursorTimeUnixNano as number);
+  });
+
+  it('sends no cursor when the filter matches nothing held', () => {
+    // Otherwise the request would page past the tail's entire time span and
+    // miss every matching record inside it. With no cursor the server returns
+    // the newest matching rows anywhere in the window, which is what the user
+    // asked for.
+    const combined = [rec({ id: 1, timeUnixNano: 50, severityNumber: SEVERITY_NUMBER.INFO })];
+    const visible = filterLogRecords(combined, errorFilter);
+    expect(visible).toHaveLength(0);
+    const params = buildOlderPageParams({ visible, filter: errorFilter, limit: 100 });
+    expect(params).not.toHaveProperty('cursor');
+    expect(params).not.toHaveProperty('cursorTimeUnixNano');
+    expect(params.minSeverityNumber).toBe(SEVERITY_NUMBER.ERROR);
+  });
+
+  it('forwards the active facets and the window bound', () => {
+    const params = buildOlderPageParams({
+      visible: [],
+      filter: {
+        minSeverityNumber: SEVERITY_NUMBER.WARN,
+        sourceId: 'src-a',
+        environment: 'prod',
+        text: '  boom  ',
+      },
+      limit: 25,
+      sinceUnixNano: 500,
+    });
+    expect(params).toMatchObject({
+      limit: 25,
+      minSeverityNumber: SEVERITY_NUMBER.WARN,
+      sourceId: 'src-a',
+      environment: 'prod',
+      text: 'boom',
+      startTimeUnixNano: 500,
+    });
+  });
+
+  it('omits empty facets so an unfiltered pager is not over-constrained', () => {
+    const params = buildOlderPageParams({
+      visible: [],
+      filter: { minSeverityNumber: 0, sourceId: '', environment: '', text: '   ' },
+      limit: 10,
+    });
+    expect(Object.keys(params)).toEqual(['limit']);
+  });
+});
+
+describe('isOlderCursor', () => {
+  it('compares on event time, then id', () => {
+    expect(isOlderCursor({ timeUnixNano: 100, id: 5 }, { timeUnixNano: 200, id: 1 })).toBe(true);
+    expect(isOlderCursor({ timeUnixNano: 200, id: 1 }, { timeUnixNano: 100, id: 5 })).toBe(false);
+    expect(isOlderCursor({ timeUnixNano: 100, id: 1 }, { timeUnixNano: 100, id: 5 })).toBe(true);
+    expect(isOlderCursor({ timeUnixNano: 100, id: 5 }, { timeUnixNano: 100, id: 5 })).toBe(false);
+  });
+
+  it('is false when either side is absent (first render)', () => {
+    expect(isOlderCursor(null, { timeUnixNano: 1, id: 1 })).toBe(false);
+    expect(isOlderCursor({ timeUnixNano: 1, id: 1 }, null)).toBe(false);
   });
 });
 
@@ -208,8 +427,8 @@ describe('nextScrollTop', () => {
   it('follows the newest record to the real maximum scroll top when pinned', () => {
     // Max reachable scrollTop is scrollHeight - clientHeight, not scrollHeight.
     const target = nextScrollTop(
-      { firstId: 1, scrollHeight: 800, scrollTop: 300 },
-      { firstId: 1, scrollHeight: 1000, clientHeight: 400 },
+      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 800, scrollTop: 300 },
+      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 1000, clientHeight: 400 },
       true,
     );
     expect(target).toBe(600);
@@ -217,19 +436,19 @@ describe('nextScrollTop', () => {
 
   it('floors the pinned scroll top at 0 when content is shorter than the viewport', () => {
     const target = nextScrollTop(
-      { firstId: 1, scrollHeight: 100, scrollTop: 0 },
-      { firstId: 1, scrollHeight: 200, clientHeight: 500 },
+      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 100, scrollTop: 0 },
+      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 200, clientHeight: 500 },
       true,
     );
     expect(target).toBe(0);
   });
 
   it('preserves the viewport when older history is prepended above', () => {
-    // First visible id dropped from 10 → 1 (a "Load older" prepend) and the
-    // content grew by 400px; shift down by that delta so the read row stays put.
+    // The oldest held keyset moved back (a "Load older" prepend) and the content
+    // grew by 400px; shift down by that delta so the read row stays put.
     const target = nextScrollTop(
-      { firstId: 10, scrollHeight: 600, scrollTop: 0 },
-      { firstId: 1, scrollHeight: 1000, clientHeight: 400 },
+      { oldest: { timeUnixNano: 10, id: 10 }, scrollHeight: 600, scrollTop: 0 },
+      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 1000, clientHeight: 400 },
       false,
     );
     expect(target).toBe(400);
@@ -237,17 +456,17 @@ describe('nextScrollTop', () => {
 
   it('leaves the scroll untouched when records append below while scrolled up', () => {
     const target = nextScrollTop(
-      { firstId: 1, scrollHeight: 800, scrollTop: 100 },
-      { firstId: 1, scrollHeight: 1000, clientHeight: 400 },
+      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 800, scrollTop: 100 },
+      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 1000, clientHeight: 400 },
       false,
     );
     expect(target).toBeNull();
   });
 
-  it('does not adjust on the first render (no prior firstId)', () => {
+  it('does not adjust on the first render (no prior cursor)', () => {
     const target = nextScrollTop(
-      { firstId: null, scrollHeight: 0, scrollTop: 0 },
-      { firstId: 5, scrollHeight: 1000, clientHeight: 400 },
+      { oldest: null, scrollHeight: 0, scrollTop: 0 },
+      { oldest: { timeUnixNano: 5, id: 5 }, scrollHeight: 1000, clientHeight: 400 },
       false,
     );
     expect(target).toBeNull();

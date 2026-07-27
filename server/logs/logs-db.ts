@@ -473,16 +473,29 @@ export interface LogQuery {
   fingerprint?: string;
   /** FTS5 MATCH query over the body. Ignored when FTS is unavailable. */
   text?: string;
-  /** Opaque cursor from a prior page: only rows with id < cursor are returned. */
+  /**
+   * Ingest-id half of the keyset cursor from a prior page. Paired with
+   * `cursorTimeUnixNano` it is the tie-break within one event timestamp; on its
+   * own it is resolved to a full keyset by looking up that row's event time.
+   */
   cursor?: number;
+  /**
+   * Event-time half of the keyset cursor: only rows strictly older than
+   * `(cursorTimeUnixNano, cursor)` are returned. This is the axis the Live view
+   * renders and trims on, so paging on it is what makes a trimmed record
+   * recoverable through "Load older".
+   */
+  cursorTimeUnixNano?: number;
   /** Page size; clamped to [1, MAX_QUERY_LIMIT]. */
   limit?: number;
 }
 
 export interface LogQueryPage {
   records: LogRecordRow[];
-  /** Cursor to pass as `cursor` for the next (older) page, or null at the end. */
+  /** Ingest-id half of the cursor for the next (older) page; null at the end. */
   nextCursor: number | null;
+  /** Event-time half of that cursor; null at the end. */
+  nextCursorTimeUnixNano: number | null;
 }
 
 export interface LogQuerySincePage {
@@ -497,6 +510,22 @@ export interface LogQuerySincePage {
  * Always bounded: the effective limit is clamped to `MAX_QUERY_LIMIT` no
  * matter what the caller passes, so a query can never scan the whole table
  * into memory.
+ *
+ * "Newest" means **newest by event time**, keyset-paginated on
+ * `(time_unix_nano, id)` descending. Ingest id alone is the wrong axis here:
+ * a delayed batch lands with high ids and old event times, so an id-ordered
+ * page can hand back rows that are nowhere near the chronological tail, and an
+ * id-predicated page can skip rows the caller still needs. Since the Live view
+ * renders and trims on event time, paging on the same axis is what guarantees
+ * a record trimmed from the client tail is exactly one "Load older" away.
+ *
+ * `id` remains the tie-break inside one timestamp and the stable opaque token,
+ * so the pair is a total order over the table.
+ *
+ * A caller that supplies only `cursor` (the pre-keyset shape) is upgraded, not
+ * degraded: that row's event time is looked up and the full keyset is used. If
+ * the row is gone (purged, or another project's id) the query falls back to the
+ * legacy `id <` predicate, which is the best positioning still available.
  */
 export function queryLogRecords(q: LogQuery): LogQueryPage {
   const db = getLogsDb();
@@ -549,20 +578,37 @@ export function queryLogRecords(q: LogQuery): LogQueryPage {
     params.push(q.fingerprint);
   }
   if (q.cursor != null) {
-    where.push('r.id < ?');
-    params.push(q.cursor);
+    // Resolve a bare id cursor into the keyset it stands for.
+    const cursorTime =
+      q.cursorTimeUnixNano ??
+      (
+        db
+          .prepare('SELECT time_unix_nano AS t FROM log_records WHERE id = ? AND project_id = ?')
+          .get(q.cursor, q.projectId) as { t: number } | undefined
+      )?.t;
+    if (cursorTime == null) {
+      where.push('r.id < ?');
+      params.push(q.cursor);
+    } else {
+      where.push('(r.time_unix_nano < ? OR (r.time_unix_nano = ? AND r.id < ?))');
+      params.push(cursorTime, cursorTime, q.cursor);
+    }
   }
 
   // Fetch one extra row to decide whether a further page exists.
-  const sql = `SELECT r.* FROM ${from} WHERE ${where.join(' AND ')} ORDER BY r.id DESC LIMIT ?`;
+  const sql = `SELECT r.* FROM ${from} WHERE ${where.join(' AND ')}
+      ORDER BY r.time_unix_nano DESC, r.id DESC LIMIT ?`;
   const rows = db.prepare(sql).all(...params, limit + 1) as LogRecordRow[];
 
   let nextCursor: number | null = null;
+  let nextCursorTimeUnixNano: number | null = null;
   if (rows.length > limit) {
     rows.length = limit;
-    nextCursor = rows[rows.length - 1].id;
+    const last = rows[rows.length - 1]!;
+    nextCursor = last.id;
+    nextCursorTimeUnixNano = last.time_unix_nano;
   }
-  return { records: rows, nextCursor };
+  return { records: rows, nextCursor, nextCursorTimeUnixNano };
 }
 
 /**
@@ -604,6 +650,82 @@ export function queryLogRecordsSince(
     nextCursor = rows[rows.length - 1]!.id;
   }
   return { records: rows, nextCursor };
+}
+
+/**
+ * Initial live-tail seed: the `limit` chronologically newest rows inside the
+ * window, returned oldest-first so a client can append them straight into
+ * render order.
+ *
+ * A fresh subscribe must not walk the window from its oldest edge. On a busy
+ * project that meant replaying the whole retention window into the browser
+ * page-by-page, so the Live view opened on hours-old records and only reached
+ * the actual tail after every intermediate page had streamed. Seeding from the
+ * newest edge makes the first frame the tail; `queryLogRecords` ("Load older")
+ * walks backwards on demand.
+ *
+ * "Newest" is by **event time**, matching how the client orders and caps the
+ * rendered tail. Selecting by ingest id instead reopens the very bug this seed
+ * exists to fix whenever event times are non-monotonic: let 100 current rows be
+ * ingested and then a delayed batch of 500 older-timestamped rows arrive, and
+ * `ORDER BY id DESC LIMIT 500` hands back only the delayed batch, so the Live
+ * view opens away from the chronological tail again. Ordering on
+ * `(time_unix_nano, id)` makes the seed the actual tail; id stays the tie-break
+ * within a timestamp and the cursor token.
+ *
+ * The returned `cursor` is the project's **max committed ingest id at seed
+ * time**, which is deliberately NOT the max id among the returned rows. The
+ * event-time cutoff excludes rows that can hold far higher ids: a delayed batch
+ * ingested late with old event times sits above every row in the seed. Handing
+ * back the page's max would leave the client resubscribing below those rows, so
+ * the next reconnect would drain `id > cursor` and splice already-known,
+ * old-event-time records into the live tail as if they were new. The cursor is
+ * therefore "everything already ingested has been considered"; excluded rows
+ * stay reachable through the event-time "Load older" path, which is the only
+ * path that positions them correctly anyway.
+ *
+ * The max-id read happens AFTER the page select on purpose. Anything committed
+ * in between is by definition after the caller installed its live subscription,
+ * so it reaches the client through the live queue and is deduped by id there;
+ * reading the id first could only ever produce a cursor that is too low.
+ */
+export interface LogTailSeed {
+  /** Chronologically newest rows in the window, oldest-first. */
+  records: LogRecordRow[];
+  /** Live resubscribe cursor: max committed ingest id for the project. */
+  cursor: number;
+}
+
+export function queryLogTailSeed(
+  projectId: string,
+  limit?: number,
+  sinceUnixNano?: number,
+): LogTailSeed {
+  const db = getLogsDb();
+  const effectiveLimit = clampQueryLimit(limit);
+  const where = ['project_id = ?'];
+  const params: Array<string | number> = [projectId];
+  if (sinceUnixNano != null) {
+    where.push('time_unix_nano >= ?');
+    params.push(sinceUnixNano);
+  }
+  const rows = db
+    .prepare(
+      `SELECT * FROM log_records
+        WHERE ${where.join(' AND ')}
+        ORDER BY time_unix_nano DESC, id DESC LIMIT ?`,
+    )
+    .all(...params, effectiveLimit) as LogRecordRow[];
+  // Index seek on (project_id, id DESC), not a scan. Deliberately unbounded by
+  // the time window: the cursor tracks *ingest progress*, not what the view
+  // shows. Scoping it to the window would leave out-of-window high-id rows
+  // permanently below the cursor, so every later reconnect would re-scan them.
+  // Excluding them from the view is the window filter's job, applied on the
+  // live push and the reconnect drain alike.
+  const latest = db
+    .prepare('SELECT id FROM log_records WHERE project_id = ? ORDER BY id DESC LIMIT 1')
+    .get(projectId) as { id: number } | undefined;
+  return { records: rows.reverse(), cursor: latest?.id ?? 0 };
 }
 
 /** Total bytes currently stored for a project (quota accounting). */

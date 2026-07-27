@@ -11,6 +11,8 @@ import {
   filterLogRecords,
   distinctValues,
   mergeTailRecords,
+  oldestRecordCursor,
+  buildOlderPageParams,
   resolveSinceUnixNano,
   isNearBottom,
   nextScrollTop,
@@ -19,6 +21,7 @@ import {
   DEFAULT_TIME_RANGE_MS,
   type LogRecord,
   type LogFilter,
+  type LogCursor,
 } from '../../utils/logStream';
 import { useLogTail, type UseLogTailOptions, type LogTailStatus } from '../../hooks/useLogTail';
 import LogRecordRow from './LogRecordRow';
@@ -111,10 +114,10 @@ export default function LiveLogsView({
     setLoadingOlder(false);
   }, [minSeverityNumber, sourceId, environment, text, sinceUnixNano]);
 
-  // Live tail + any explicitly loaded older pages, deduped, ascending id order
-  // (oldest→newest). The stream renders in this order so the newest record sits
-  // at the bottom like a terminal tail, and the container auto-scrolls to follow
-  // it (see the scroll-stickiness effect below).
+  // Live tail + any explicitly loaded older pages, deduped, ascending event
+  // time (oldest→newest). The stream renders in this order so the newest record
+  // sits at the bottom like a terminal tail, and the container auto-scrolls to
+  // follow it (see the scroll-stickiness effect below).
   const combined = useMemo(
     () => mergeTailRecords(older, records, records.length + older.length + 1),
     [older, records],
@@ -126,7 +129,11 @@ export default function LiveLogsView({
   // to read history or when "Load older" prepends rows above.
   const streamRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
-  const prevScrollRef = useRef({ firstId: null as number | null, scrollHeight: 0, scrollTop: 0 });
+  const prevScrollRef = useRef({
+    oldest: null as LogCursor | null,
+    scrollHeight: 0,
+    scrollTop: 0,
+  });
 
   const onStreamScroll = useCallback(() => {
     const el = streamRef.current;
@@ -136,14 +143,14 @@ export default function LiveLogsView({
   useLayoutEffect(() => {
     const el = streamRef.current;
     if (!el) return;
-    const firstId = visible.length > 0 ? visible[0].id : null;
+    const oldest = oldestRecordCursor(visible);
     const target = nextScrollTop(
       prevScrollRef.current,
-      { firstId, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight },
+      { oldest, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight },
       stickToBottomRef.current,
     );
     if (target != null) el.scrollTop = target;
-    prevScrollRef.current = { firstId, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    prevScrollRef.current = { oldest, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
   }, [visible]);
 
   const sources = useMemo(() => distinctValues(combined, 'sourceId'), [combined]);
@@ -154,17 +161,15 @@ export default function LiveLogsView({
     const gen = filterGenRef.current;
     setLoadingOlder(true);
     setOlderError(null);
-    const oldestId = combined.length > 0 ? combined[0].id : undefined;
+    // Keyset + facets come from the same place, so the pager walks the filtered
+    // stream it is querying. `visible`, never `combined`: see the helper.
     try {
-      const params: Record<string, unknown> = { limit: OLDER_PAGE_LIMIT };
-      if (oldestId != null) params.cursor = oldestId;
-      if (minSeverityNumber > 0) params.minSeverityNumber = minSeverityNumber;
-      if (sourceId) params.sourceId = sourceId;
-      if (environment) params.environment = environment;
-      if (text.trim()) params.text = text.trim();
-      // Keep "Load older" inside the selected window so paging stops at the
-      // boundary (and marks the pager exhausted) instead of walking all history.
-      if (sinceUnixNano != null) params.startTimeUnixNano = sinceUnixNano;
+      const params = buildOlderPageParams({
+        visible,
+        filter,
+        limit: OLDER_PAGE_LIMIT,
+        sinceUnixNano,
+      });
       const page = (await api.queryLogs(projectId, params)) as {
         records: LogRecord[];
         nextCursor: number | null;
@@ -179,17 +184,7 @@ export default function LiveLogsView({
     } finally {
       if (gen === filterGenRef.current) setLoadingOlder(false);
     }
-  }, [
-    loadingOlder,
-    olderExhausted,
-    combined,
-    projectId,
-    minSeverityNumber,
-    sourceId,
-    environment,
-    text,
-    sinceUnixNano,
-  ]);
+  }, [loadingOlder, olderExhausted, visible, filter, projectId, sinceUnixNano]);
 
   const clearLogs = useCallback(async () => {
     setClearing(true);

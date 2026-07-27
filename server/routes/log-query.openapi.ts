@@ -15,6 +15,10 @@ export const LogQueryParamsSchema = z.object({
   traceId: z.string().min(1).max(256).optional(),
   fingerprint: z.string().min(1).max(256).optional(),
   cursor: finiteInt.positive().optional(),
+  // Event-time half of the keyset cursor. Paging is chronological, so a cursor
+  // that carries only `cursor` (the pre-keyset shape) makes the server look the
+  // row's event time up instead; sending both skips that lookup.
+  cursorTimeUnixNano: finiteInt.nonnegative().optional(),
   limit: finiteInt.min(1).max(MAX_QUERY_LIMIT).optional(),
 });
 
@@ -47,6 +51,7 @@ const LogQueryResponse = registerComponent(
   z.object({
     records: z.array(LogRecordComponent),
     nextCursor: z.number().int().nullable(),
+    nextCursorTimeUnixNano: z.number().int().nullable(),
   }),
 );
 
@@ -63,7 +68,7 @@ registerPath({
   tags: ['Logs'],
   summary: 'Query project logs',
   description:
-    'Returns a bounded newest-first page. Every filter and cursor is scoped to the path project; a cursor from another project cannot reveal records.',
+    'Returns a bounded page ordered newest-first by event time, keyset-paginated on (timeUnixNano, id). Pass back both `nextCursor` and `nextCursorTimeUnixNano` for the next older page. Every filter and cursor is scoped to the path project; a cursor from another project cannot reveal records.',
   request: {
     params: z.object({ projectId: z.string() }),
     query: LogQueryParamsSchema,
