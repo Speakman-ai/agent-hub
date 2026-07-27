@@ -6,6 +6,7 @@ const ENGINE_DISPLAY: Record<string, string> = {
 };
 
 const MODEL_KNOWN_LABELS: Record<string, string> = {
+  'claude-opus-5': 'Opus 5',
   'claude-fable-5': 'Fable 5',
   'claude-opus-4-8': 'Opus 4.8',
   'claude-opus-4-7': 'Opus 4.7',

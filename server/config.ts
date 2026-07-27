@@ -214,11 +214,13 @@ if (!existsSync(DEFAULT_PROJECTS_DIR) && existsSync(LEGACY_PROJECTS_DIR)) {
 // ─── Exported config object ──────────────────────────────────────
 
 const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
-  // claude-fable-5: Anthropic's flagship generally-available Mythos-class model
-  // (API id `claude-fable-5`, released 2026-06-09). Listed first as the most
-  // capable Claude Code option. Keep in sync with client TopBar.jsx MODEL_LABELS,
-  // shared systemBannerModel.js MODEL_KNOWN_LABELS, and mobile engineOptions.js.
+  // claude-opus-5: Anthropic's flagship Opus model (API id `claude-opus-5`).
+  // Listed first as the most capable Claude Code option and the claude-code
+  // default. claude-fable-5 remains the Mythos-class option below it. Keep in
+  // sync with client TopBar.jsx MODEL_LABELS, shared systemBannerModel.js
+  // MODEL_KNOWN_LABELS, and mobile engineOptions.js.
   'claude-code': [
+    'claude-opus-5',
     'claude-fable-5',
     'claude-opus-4-8',
     'claude-opus-4-7',
@@ -269,7 +271,7 @@ const mergedEngineValidModelsRaw =
 const mergedEngineValidModels = normalizeCursorAgentEngineModels(mergedEngineValidModelsRaw);
 
 const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
-  'claude-code': 'claude-opus-4-8',
+  'claude-code': 'claude-opus-5',
   'cursor-agent': 'composer-2.5',
   // No `gemini-cli` default — Gemini is RAG-only, not a selectable engine.
   // Codex: Luna is the preferred model when the installed CLI advertises the
@@ -400,7 +402,7 @@ const config: AppConfig = {
   ) as string,
 
   // ── Models ─────────────────────────────────────────────────────
-  defaultModel: resolve(null, 'defaultModel', 'claude-opus-4-8') as string,
+  defaultModel: resolve(null, 'defaultModel', 'claude-opus-5') as string,
 
   engineDefaultModels: mergedEngineDefaultModels,
 

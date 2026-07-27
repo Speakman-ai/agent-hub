@@ -26,8 +26,9 @@ const ENGINE_OPTIONS = [
 ];
 
 const MODEL_LABELS = {
+  'claude-opus-5': { label: 'Opus 5', short: 'Opus' },
   'claude-fable-5': { label: 'Fable 5', short: 'Fable' },
-  'claude-opus-4-8': { label: 'Opus 4.8', short: 'Opus' },
+  'claude-opus-4-8': { label: 'Opus 4.8', short: 'Opus 4.8' },
   'claude-opus-4-7': { label: 'Opus 4.7', short: 'Opus 4.7' },
   'claude-opus-4-6': { label: 'Opus 4.6', short: 'Opus 4.6' },
   'claude-sonnet-5': { label: 'Sonnet', short: 'Sonnet' },
@@ -65,6 +66,7 @@ function fallbackModelsForEngine(engine: any) {
     return ['gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
   if (engine === 'grok-cli') return ['grok-4.5', 'grok-build', 'grok-composer-2.5-fast'];
   return [
+    'claude-opus-5',
     'claude-fable-5',
     'claude-opus-4-8',
     'claude-opus-4-7',

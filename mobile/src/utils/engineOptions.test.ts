@@ -47,14 +47,23 @@ describe('mobile engine picker constants', () => {
         expect(models).not.toContain('gpt-5.2-codex');
         expect(models).not.toContain('gpt-5.1-codex-max');
     });
-    it('exposes claude-fable-5 first for claude-code with a Fable 5 label', () => {
-        // Regression: Claude Fable 5 (claude-fable-5) is the flagship GA Claude Code
-        // model. It must appear in the mobile picker and stay aligned with
-        // server/config.ts and client TopBar.jsx.
+    it('exposes claude-opus-5 first for claude-code with an Opus 5 label', () => {
+        // Regression: Claude Opus 5 (claude-opus-5) is the flagship Claude Code
+        // model and the default. It must appear first in the mobile picker and
+        // stay aligned with server/config.ts and client TopBar.tsx.
+        const models = ENGINE_MODELS['claude-code'];
+        const ids = models.map((m: any) => m.id);
+        expect(ids).toContain('claude-opus-5');
+        expect(ids[0]).toBe('claude-opus-5');
+        const opus5 = models.find((m: any) => m.id === 'claude-opus-5');
+        expect(opus5.label).toBe('Opus 5');
+        expect(opus5.short).toBe('Opus');
+        expect(ENGINE_DEFAULT_MODELS['claude-code']).toBe('claude-opus-5');
+    });
+    it('still exposes claude-fable-5 for claude-code with a Fable 5 label', () => {
         const models = ENGINE_MODELS['claude-code'];
         const ids = models.map((m: any) => m.id);
         expect(ids).toContain('claude-fable-5');
-        expect(ids[0]).toBe('claude-fable-5');
         const fable = models.find((m: any) => m.id === 'claude-fable-5');
         expect(fable.label).toBe('Fable 5');
         expect(fable.short).toBe('Fable');

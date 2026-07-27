@@ -342,18 +342,33 @@ describe('config.ts — claude-code model defaults', () => {
     return (await import('./config.js')).default;
   }
 
-  it('offers claude-fable-5 as a selectable claude-code model', async () => {
-    // Regression: Claude Fable 5 (API id `claude-fable-5`, released 2026-06-09)
-    // is Anthropic's flagship generally-available Claude Code model and must be
-    // selectable, otherwise PUT /api/sessions/:id/model rejects it as invalid.
+  it('offers claude-opus-5 as a selectable claude-code model', async () => {
+    // Regression: Claude Opus 5 (API id `claude-opus-5`) is Anthropic's flagship
+    // Opus model and must be selectable, otherwise PUT /api/sessions/:id/model
+    // rejects it as invalid.
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-opus-5');
+    expect(cfg.allValidModels).toContain('claude-opus-5');
+  });
+
+  it('lists claude-opus-5 first as the flagship claude-code option', async () => {
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['claude-code'][0]).toBe('claude-opus-5');
+  });
+
+  it('defaults claude-code to claude-opus-5', async () => {
+    // Regression: claude-opus-5 is the configured claude-code + top-level default.
+    const cfg = await importDefaults();
+    expect(cfg.engineDefaultModels['claude-code']).toBe('claude-opus-5');
+    expect(cfg.defaultModel).toBe('claude-opus-5');
+  });
+
+  it('still offers claude-fable-5 as a selectable claude-code model', async () => {
+    // Claude Fable 5 (API id `claude-fable-5`, released 2026-06-09) remains a
+    // selectable Mythos-class option below Opus 5.
     const cfg = await importDefaults();
     expect(cfg.engineValidModels['claude-code']).toContain('claude-fable-5');
     expect(cfg.allValidModels).toContain('claude-fable-5');
-  });
-
-  it('lists claude-fable-5 first as the flagship claude-code option', async () => {
-    const cfg = await importDefaults();
-    expect(cfg.engineValidModels['claude-code'][0]).toBe('claude-fable-5');
   });
 
   it('keeps the claude-code default in its valid model list', async () => {

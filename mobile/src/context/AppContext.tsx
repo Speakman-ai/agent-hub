@@ -45,7 +45,7 @@ export function AppProvider({ children }: any) {
     const [chatScrollNonce, setChatScrollNonce] = useState(0);
     const [streamingEngine, setStreamingEngine] = useState<any>(null);
     const [sessionEngine, setSessionEngine] = useState('claude-code');
-    const [sessionModel, setSessionModel] = useState('claude-opus-4-8');
+    const [sessionModel, setSessionModel] = useState('claude-opus-5');
     // Codex reasoning ("thinking") preset for the active session: 'high' (default)
     // or 'pro' (→ xhigh). Only meaningful for the codex-cli engine.
     const [sessionReasoningEffort, setSessionReasoningEffort] = useState('high');
@@ -209,7 +209,7 @@ export function AppProvider({ children }: any) {
             return 'gpt-5.6-luna';
         if (engine === 'grok-cli')
             return 'grok-4.5';
-        return 'claude-opus-4-8';
+        return 'claude-opus-5';
     };
     const activeSessionIdRef = useRef(activeSessionId);
     activeSessionIdRef.current = activeSessionId;

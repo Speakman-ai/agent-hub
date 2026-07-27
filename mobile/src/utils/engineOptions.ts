@@ -13,8 +13,9 @@ export const ENGINE_OPTIONS = [
 ];
 export const ENGINE_MODELS: Record<string, any> = {
     'claude-code': [
+        { id: 'claude-opus-5', label: 'Opus 5', short: 'Opus' },
         { id: 'claude-fable-5', label: 'Fable 5', short: 'Fable' },
-        { id: 'claude-opus-4-8', label: 'Opus 4.8', short: 'Opus' },
+        { id: 'claude-opus-4-8', label: 'Opus 4.8', short: 'Opus 4.8' },
         { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus 4.7' },
         { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
         { id: 'claude-sonnet-5', label: 'Sonnet', short: 'Sonnet' },
@@ -44,7 +45,7 @@ export const ENGINE_MODELS: Record<string, any> = {
     ],
 };
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
-    'claude-code': 'claude-opus-4-8',
+    'claude-code': 'claude-opus-5',
     'cursor-agent': 'composer-2.5',
     'codex-cli': 'gpt-5.6-luna',
     'grok-cli': 'grok-4.5',

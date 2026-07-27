@@ -671,7 +671,7 @@ describe('support-tickets routes', () => {
       expect.any(Object),
       expect.objectContaining({
         preferred: 'claude-code',
-        preferredModel: 'claude-opus-4-8',
+        preferredModel: 'claude-opus-5',
         userId: 'user-selected',
         fallbackChain: ['claude-code'],
       }),
