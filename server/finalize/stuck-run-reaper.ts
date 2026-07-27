@@ -45,7 +45,17 @@ import { isFinalizeRunLive, abortFinalizeRunInProcess } from './run-abort-regist
  */
 export const REAPABLE_RUN_STATUS = 'running';
 
-/** One running run plus the signals the classifier needs (from SQL). */
+/**
+ * One running run plus the signals the classifier needs (from SQL).
+ *
+ * `last_activity_ms` is the run's progress clock and MUST be sourced from every
+ * signal the orchestrator emits — the last phase write and job timestamps, not
+ * just step timestamps. Flooring it at `started_at` alone once reaped healthy
+ * runs: `status` first becomes `running` at the tasks phase, so a run that
+ * spent 33 minutes in rebase → review → fix rounds (none of which touch step
+ * rows) arrived there with a 33-minute-old clock and was killed 4 seconds after
+ * dispatching its checks, while the reviewer had just approved it.
+ */
 export interface RuntimeStuckRunCandidate {
   id: string;
   status: FinalizeRunStatus;
@@ -133,6 +143,20 @@ export function idleThresholdForReason(
   return reason === 'orphaned' ? config.orphanIdleMs : config.hungIdleMs;
 }
 
+/**
+ * Durable `failure_reason` for a reap. Distinct per reason — an `orphaned` run
+ * genuinely has no orchestrator, whereas a `hung` one is still registered, so
+ * reporting "no live orchestrator" for it sends anyone reading the row (or the
+ * session bubble) after the wrong cause. Both keep the
+ * `Finalize run interrupted` prefix that the boot-retrigger crash-loop counter
+ * matches on.
+ */
+export function failureReasonForStuckRun(reason: StuckRunReason): string {
+  return reason === 'orphaned'
+    ? 'Finalize run interrupted (stalled with no live orchestrator)'
+    : 'Finalize run interrupted (orchestrator stopped making progress)';
+}
+
 export const STUCK_RUN_REAPER_CRON = '* * * * *';
 
 export interface RuntimeStuckRunReaperDeps {
@@ -206,7 +230,11 @@ export async function runStuckRunReaper(
       // cutoff). If the run made any progress since the select snapshot it is a
       // no-op (0 changes → skip), so a TOCTOU race can never fail a live run.
       const cutoff = nowMs - idleThresholdForReason(reason, config);
-      const res = deps.stmts.failRuntimeStuckFinalizeRun.run({ id: c.id, cutoff }) as {
+      const res = deps.stmts.failRuntimeStuckFinalizeRun.run({
+        id: c.id,
+        cutoff,
+        failure_reason: failureReasonForStuckRun(reason),
+      }) as {
         changes: number;
       };
       if (!res.changes) continue;

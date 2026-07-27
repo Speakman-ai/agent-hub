@@ -14,6 +14,7 @@ import { BACKGROUND_SHELLS_SCHEMA } from './background-shells/background-shell-s
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { FINALIZE_SERVER_CI_SCHEMA } from './finalize/ci-config-store.js';
+import { stuckRunProgressClockSql } from './finalize/stuck-run-clock-sql.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
@@ -1478,6 +1479,21 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT flake_recovered_jobs FROM finalize_runs LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE finalize_runs ADD COLUMN flake_recovered_jobs TEXT');
+  }
+
+  // phase_changed_at: wall-clock of the run's last phase/status transition.
+  // The stuck-run reaper's idle clock needs an origin that advances with the
+  // run's real progress. `started_at` cannot serve: it is stamped at row
+  // INSERT, so for a run that spends 30 minutes in rebase → review → fix
+  // rounds (which touch no step rows) the clock is already far past every
+  // idle threshold by the time the tasks phase dispatches its first step —
+  // the reaper would then kill a perfectly healthy run seconds after checks
+  // began. Bumping this on every phase write re-anchors "idle since" to the
+  // last thing the orchestrator actually did.
+  try {
+    db.prepare('SELECT phase_changed_at FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_runs ADD COLUMN phase_changed_at INTEGER');
   }
 
   try {
@@ -5980,19 +5996,20 @@ function initDb(dataDir: string): void {
     // > 0, `running_steps = 0`) — reaping those would fail a pending run on the
     // happy path. `started_at` can't be the gate (it is stamped at INSERT, so it
     // is always set). Signals the reaper needs to classify WITHOUT a restart:
-    //   - last_activity_ms: newest of run.started_at and any step start/end —
-    //     a live orchestrator bumps this by transitioning steps, so it goes
-    //     stale exactly when the run stops making progress.
+    //   - last_activity_ms: newest of run.started_at, the run's last phase
+    //     write, and any step/job start/end — a live orchestrator bumps this by
+    //     changing phase or transitioning steps/jobs, so it goes stale exactly
+    //     when the run stops making progress. It must NOT be floored at
+    //     started_at alone: the rebase/review/fix rounds touch no step rows, so
+    //     a run that reviewed for longer than the idle threshold would arrive
+    //     at the tasks phase already "idle" and be reaped seconds after
+    //     dispatching its checks.
     //   - queued_steps / running_steps: a real stall has stranded `queued`
     //     work with NOTHING `running` (a genuinely-executing long step keeps a
     //     `running` row, so we never reap an in-flight step).
     selectRuntimeStuckFinalizeRunCandidates: db.prepare(
       `SELECT r.id, r.status, r.session_id, r.card_id, r.project_id, r.head_sha, r.started_at,
-              MAX(
-                COALESCE(r.started_at, 0),
-                COALESCE((SELECT MAX(s.started_at) FROM finalize_run_steps s WHERE s.run_id = r.id), 0),
-                COALESCE((SELECT MAX(s.ended_at)   FROM finalize_run_steps s WHERE s.run_id = r.id), 0)
-              ) AS last_activity_ms,
+              ${stuckRunProgressClockSql('r')} AS last_activity_ms,
               (SELECT COUNT(*) FROM finalize_run_steps s WHERE s.run_id = r.id AND s.state = 'queued')  AS queued_steps,
               (SELECT COUNT(*) FROM finalize_run_steps s WHERE s.run_id = r.id AND s.state = 'running') AS running_steps
          FROM finalize_runs r
@@ -6009,14 +6026,16 @@ function initDb(dataDir: string): void {
     // steps, still has stranded `queued` work, AND still idle past @cutoff (the
     // reaper passes nowMs − the idle threshold it classified the run under, so
     // this mirrors the same idle predicate). Any miss → 0 changes → caller
-    // skips. failure_reason keeps the 'Finalize run interrupted%' prefix so the
+    // skips. failure_reason is supplied by the caller (it differs by reason —
+    // an orphaned run really has no orchestrator, a hung one does) but every
+    // variant keeps the 'Finalize run interrupted%' prefix so the
     // boot-retrigger crash-loop counter
     // (countInterruptedFinalizeRunsForSessionHead) bounds runtime reaps too:
     // reap → auto-retrigger → stall → reap can't loop forever.
     failRuntimeStuckFinalizeRun: db.prepare(
       `UPDATE finalize_runs
           SET status = 'infra_error',
-              failure_reason = 'Finalize run interrupted (stalled with no live orchestrator)',
+              failure_reason = @failure_reason,
               phase = NULL,
               ended_at = COALESCE(ended_at, unixepoch() * 1000)
         WHERE id = @id
@@ -6029,11 +6048,7 @@ function initDb(dataDir: string): void {
                 SELECT 1 FROM finalize_run_steps s
                  WHERE s.run_id = finalize_runs.id AND s.state = 'queued'
               )
-          AND MAX(
-                COALESCE(finalize_runs.started_at, 0),
-                COALESCE((SELECT MAX(s.started_at) FROM finalize_run_steps s WHERE s.run_id = finalize_runs.id), 0),
-                COALESCE((SELECT MAX(s.ended_at)   FROM finalize_run_steps s WHERE s.run_id = finalize_runs.id), 0)
-              ) <= @cutoff`,
+          AND ${stuckRunProgressClockSql('finalize_runs')} <= @cutoff`,
     ),
     // Sweep the reaped run's stranded steps so its timeline reads cleanly. Only
     // `queued` steps are swept: the reap-guard above already proved no step was
@@ -6477,10 +6492,14 @@ function initDb(dataDir: string): void {
                  id DESC
         LIMIT 1`,
     ),
+    // Also re-anchors the stuck-run reaper's idle clock (see phase_changed_at
+    // above): a phase write is proof-of-life from the orchestrator, so idleness
+    // is measured from here rather than from the run's INSERT.
     updateFinalizeRunPhase: db.prepare(
       `UPDATE finalize_runs
           SET phase = ?,
-              status = ?
+              status = ?,
+              phase_changed_at = unixepoch() * 1000
         WHERE id = ?`,
     ),
     updateFinalizeRunActiveSeconds: db.prepare(

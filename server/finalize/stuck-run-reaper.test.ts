@@ -15,13 +15,17 @@ import type { Stmts } from '../types.js';
 import {
   classifyRuntimeStuckRun,
   runStuckRunReaper,
+  failureReasonForStuckRun,
   DEFAULT_RUNTIME_STUCK_RUN_CONFIG,
   type RuntimeStuckRunCandidate,
 } from './stuck-run-reaper.js';
+import { stuckRunProgressClockSql } from './stuck-run-clock-sql.js';
 
 const CONFIG = DEFAULT_RUNTIME_STUCK_RUN_CONFIG;
 const NOW = 1_782_400_000_000;
 const MIN = 60_000;
+/** A step that has never run: dispatched `queued`, no timestamps yet. */
+const NO_TIMES = { started_at: null, ended_at: null };
 
 function candidate(over: Partial<RuntimeStuckRunCandidate> = {}): RuntimeStuckRunCandidate {
   return {
@@ -156,6 +160,7 @@ describe('runStuckRunReaper tick', () => {
     expect(stmts.failRuntimeStuckFinalizeRun.run).toHaveBeenCalledWith({
       id: 'run-1',
       cutoff: NOW - CONFIG.orphanIdleMs,
+      failure_reason: failureReasonForStuckRun('orphaned'),
     });
     expect(stmts.failRuntimeStuckFinalizeRunSteps.run).toHaveBeenCalledWith('run-1');
     expect(abort).toHaveBeenCalledWith('run-1');
@@ -221,6 +226,7 @@ describe('runStuckRunReaper tick', () => {
     expect(stmts.failRuntimeStuckFinalizeRun.run).toHaveBeenCalledWith({
       id: 'run-1',
       cutoff: NOW - CONFIG.orphanIdleMs,
+      failure_reason: failureReasonForStuckRun('orphaned'),
     });
     // Lost the race → must NOT sweep steps, broadcast, or retrigger.
     expect(stmts.failRuntimeStuckFinalizeRunSteps.run).not.toHaveBeenCalled();
@@ -252,14 +258,11 @@ describe('runStuckRunReaper tick', () => {
  * inline-duplication convention as boot-recovery.test.ts).
  */
 describe('selectRuntimeStuckFinalizeRunCandidates (SQL)', () => {
-  // Mirrors db.ts — keep in sync.
+  // Built from the SAME fragment db.ts uses, so the clock cannot drift out from
+  // under these tests (it did once — see stuck-run-clock-sql.ts).
   const CANDIDATE_SQL = `
     SELECT r.id, r.status, r.session_id, r.card_id, r.project_id, r.head_sha, r.started_at,
-           MAX(
-             COALESCE(r.started_at, 0),
-             COALESCE((SELECT MAX(s.started_at) FROM finalize_run_steps s WHERE s.run_id = r.id), 0),
-             COALESCE((SELECT MAX(s.ended_at)   FROM finalize_run_steps s WHERE s.run_id = r.id), 0)
-           ) AS last_activity_ms,
+           ${stuckRunProgressClockSql('r')} AS last_activity_ms,
            (SELECT COUNT(*) FROM finalize_run_steps s WHERE s.run_id = r.id AND s.state = 'queued')  AS queued_steps,
            (SELECT COUNT(*) FROM finalize_run_steps s WHERE s.run_id = r.id AND s.state = 'running') AS running_steps
       FROM finalize_runs r
@@ -270,21 +273,30 @@ describe('selectRuntimeStuckFinalizeRunCandidates (SQL)', () => {
     db.exec(`
       CREATE TABLE finalize_runs (
         id TEXT PRIMARY KEY, status TEXT NOT NULL, session_id TEXT, card_id TEXT,
-        project_id TEXT, head_sha TEXT, started_at INTEGER, ended_at INTEGER
+        project_id TEXT, head_sha TEXT, started_at INTEGER, ended_at INTEGER,
+        phase_changed_at INTEGER
       );
       CREATE TABLE finalize_run_steps (
         run_id TEXT, step_index INTEGER, state TEXT NOT NULL, started_at INTEGER, ended_at INTEGER
       );
+      CREATE TABLE finalize_run_jobs (
+        run_id TEXT, job_id TEXT, matrix_key TEXT, state TEXT NOT NULL,
+        started_at INTEGER, ended_at INTEGER
+      );
     `);
     const insRun = db.prepare(
-      `INSERT INTO finalize_runs (id, status, session_id, card_id, project_id, head_sha, started_at)
-       VALUES (@id, @status, @session_id, @card_id, @project_id, @head_sha, @started_at)`,
+      `INSERT INTO finalize_runs (id, status, session_id, card_id, project_id, head_sha, started_at, phase_changed_at)
+       VALUES (@id, @status, @session_id, @card_id, @project_id, @head_sha, @started_at, @phase_changed_at)`,
     );
     const insStep = db.prepare(
       `INSERT INTO finalize_run_steps (run_id, step_index, state, started_at, ended_at)
        VALUES (@run_id, @step_index, @state, @started_at, @ended_at)`,
     );
-    return { db, insRun, insStep };
+    const insJob = db.prepare(
+      `INSERT INTO finalize_run_jobs (run_id, job_id, matrix_key, state, started_at, ended_at)
+       VALUES (@run_id, @job_id, @matrix_key, @state, @started_at, @ended_at)`,
+    );
+    return { db, insRun, insStep, insJob };
   }
 
   it('returns the stalled running run but NOT pre-start (queued/rebasing/reviewing) runs', () => {
@@ -295,6 +307,7 @@ describe('selectRuntimeStuckFinalizeRunCandidates (SQL)', () => {
       project_id: 'agent-hub',
       head_sha: 'h',
       started_at: NOW - 30 * MIN,
+      phase_changed_at: null,
     };
     // Stalled running run: 2 passed + 1 queued, nothing running, idle ~10min.
     insRun.run({ id: 'running-stalled', status: 'running', ...base });
@@ -351,6 +364,99 @@ describe('selectRuntimeStuckFinalizeRunCandidates (SQL)', () => {
     );
     db.close();
   });
+
+  /**
+   * Production run f773c012 (surveytracker, 2026-07-27). The run spent 33
+   * minutes in rebase → review → fix rounds, the reviewer approved it at round
+   * 4, the orchestrator flipped to the tasks phase and dispatched 13 jobs — and
+   * the reaper killed it 4 SECONDS later, because the progress clock was still
+   * floored at the run's INSERT 33 minutes earlier. The session timeline ended
+   * on "Review · round 4 · approved" with nothing after it: the user-visible
+   * report was "this finalize stopped for seemingly no reason".
+   *
+   * A run only reaches status='running' AT the tasks phase, so this is not a
+   * narrow race — every run whose review phase outlasts the idle threshold hit
+   * it on the reaper's first tick.
+   */
+  it('does NOT reap a run that just entered the tasks phase after a long review', () => {
+    const { db, insRun, insStep, insJob } = setup();
+    insRun.run({
+      id: 'long-review',
+      status: 'running',
+      session_id: 's',
+      card_id: 'c',
+      project_id: 'surveytracker',
+      head_sha: 'h',
+      // Row inserted 33 min ago; every minute since went to rebase/review/fix,
+      // none of which writes a step row.
+      started_at: NOW - 33 * MIN,
+      // The orchestrator flipped to phase=tasks 4 seconds ago — proof of life.
+      phase_changed_at: NOW - 4_000,
+    });
+    // Steps are dispatched `queued`; they only flip to `running` once a runner
+    // picks them up, so this window has the exact reapable shape.
+    for (let i = 1; i <= 13; i++) {
+      insStep.run({ run_id: 'long-review', step_index: i, state: 'queued', ...NO_TIMES });
+    }
+    for (let i = 1; i <= 13; i++) {
+      insJob.run({
+        run_id: 'long-review',
+        job_id: `job-${i}`,
+        matrix_key: '',
+        state: 'running',
+        started_at: NOW - 4_000,
+        ended_at: null,
+      });
+    }
+
+    const [c] = db.prepare(CANDIDATE_SQL).all() as RuntimeStuckRunCandidate[];
+    expect(c.queued_steps).toBe(13);
+    expect(c.running_steps).toBe(0);
+    // The clock tracks the phase write + job dispatch, NOT the 33-min-old INSERT.
+    expect(c.last_activity_ms).toBe(NOW - 4_000);
+    // Healthy under both reasons — including `hung`, which is what actually
+    // fired in production (the orchestrator was very much alive).
+    expect(
+      classifyRuntimeStuckRun(c, { nowMs: NOW, isLive: NEVER_LIVE, config: CONFIG }),
+    ).toBeNull();
+    expect(
+      classifyRuntimeStuckRun(c, { nowMs: NOW, isLive: ALWAYS_LIVE, config: CONFIG }),
+    ).toBeNull();
+    db.close();
+  });
+
+  it('still reaps once the tasks phase itself goes idle past the threshold', () => {
+    // The counterpart: same shape, but nothing has happened since the phase
+    // write. Re-anchoring the clock must not disarm the reaper, only move its
+    // origin to the last real progress.
+    const { db, insRun, insStep, insJob } = setup();
+    insRun.run({
+      id: 'stalled-tasks',
+      status: 'running',
+      session_id: 's',
+      card_id: 'c',
+      project_id: 'surveytracker',
+      head_sha: 'h',
+      started_at: NOW - 60 * MIN,
+      phase_changed_at: NOW - 12 * MIN,
+    });
+    insStep.run({ run_id: 'stalled-tasks', step_index: 1, state: 'queued', ...NO_TIMES });
+    insJob.run({
+      run_id: 'stalled-tasks',
+      job_id: 'job-1',
+      matrix_key: '',
+      state: 'queued',
+      started_at: null,
+      ended_at: null,
+    });
+
+    const [c] = db.prepare(CANDIDATE_SQL).all() as RuntimeStuckRunCandidate[];
+    expect(c.last_activity_ms).toBe(NOW - 12 * MIN);
+    expect(classifyRuntimeStuckRun(c, { nowMs: NOW, isLive: NEVER_LIVE, config: CONFIG })).toBe(
+      'orphaned',
+    );
+    db.close();
+  });
 });
 
 /**
@@ -363,7 +469,7 @@ describe('failRuntimeStuckFinalizeRun (atomic reap-guard, SQL)', () => {
   const FAIL_SQL = `
     UPDATE finalize_runs
        SET status = 'infra_error',
-           failure_reason = 'Finalize run interrupted (stalled with no live orchestrator)',
+           failure_reason = @failure_reason,
            phase = NULL,
            ended_at = COALESCE(ended_at, unixepoch() * 1000)
      WHERE id = @id
@@ -376,11 +482,9 @@ describe('failRuntimeStuckFinalizeRun (atomic reap-guard, SQL)', () => {
              SELECT 1 FROM finalize_run_steps s
               WHERE s.run_id = finalize_runs.id AND s.state = 'queued'
            )
-       AND MAX(
-             COALESCE(finalize_runs.started_at, 0),
-             COALESCE((SELECT MAX(s.started_at) FROM finalize_run_steps s WHERE s.run_id = finalize_runs.id), 0),
-             COALESCE((SELECT MAX(s.ended_at)   FROM finalize_run_steps s WHERE s.run_id = finalize_runs.id), 0)
-           ) <= @cutoff`;
+       AND ${stuckRunProgressClockSql('finalize_runs')} <= @cutoff`;
+
+  const REASON = failureReasonForStuckRun('orphaned');
 
   // The reaper passes cutoff = nowMs − idle threshold; last_activity ≤ cutoff
   // means "still idle past the threshold". Our stalled run last moved 10min ago.
@@ -391,10 +495,14 @@ describe('failRuntimeStuckFinalizeRun (atomic reap-guard, SQL)', () => {
     db.exec(`
       CREATE TABLE finalize_runs (
         id TEXT PRIMARY KEY, status TEXT NOT NULL, phase TEXT, failure_reason TEXT,
-        started_at INTEGER, ended_at INTEGER
+        started_at INTEGER, ended_at INTEGER, phase_changed_at INTEGER
       );
       CREATE TABLE finalize_run_steps (
         run_id TEXT, step_index INTEGER, state TEXT NOT NULL, started_at INTEGER, ended_at INTEGER
+      );
+      CREATE TABLE finalize_run_jobs (
+        run_id TEXT, job_id TEXT, matrix_key TEXT, state TEXT NOT NULL,
+        started_at INTEGER, ended_at INTEGER
       );
     `);
     // Baseline reapable run: status=running, 1 passed (ended 10min ago) + 1
@@ -414,7 +522,7 @@ describe('failRuntimeStuckFinalizeRun (atomic reap-guard, SQL)', () => {
 
   it('reaps the genuinely-stalled run (baseline)', () => {
     const { db, fail } = setup();
-    expect(fail.run({ id: 'r', cutoff: CUTOFF }).changes).toBe(1);
+    expect(fail.run({ id: 'r', cutoff: CUTOFF, failure_reason: REASON }).changes).toBe(1);
     expect(db.prepare(`SELECT status FROM finalize_runs WHERE id='r'`).get()).toEqual({
       status: 'infra_error',
     });
@@ -425,7 +533,7 @@ describe('failRuntimeStuckFinalizeRun (atomic reap-guard, SQL)', () => {
     const { db, insStep, fail } = setup();
     // The exact race: the select saw running_steps=0; now a step is running.
     insStep.run({ i: 3, state: 'running', started_at: NOW - 30_000, ended_at: null });
-    expect(fail.run({ id: 'r', cutoff: CUTOFF }).changes).toBe(0);
+    expect(fail.run({ id: 'r', cutoff: CUTOFF, failure_reason: REASON }).changes).toBe(0);
     expect(db.prepare(`SELECT status FROM finalize_runs WHERE id='r'`).get()).toEqual({
       status: 'running',
     });
@@ -436,14 +544,38 @@ describe('failRuntimeStuckFinalizeRun (atomic reap-guard, SQL)', () => {
     const { db, insStep, fail } = setup();
     // A step completed just now → last activity = NOW, no longer idle past cutoff.
     insStep.run({ i: 3, state: 'passed', started_at: NOW - 60_000, ended_at: NOW });
-    expect(fail.run({ id: 'r', cutoff: CUTOFF }).changes).toBe(0);
+    expect(fail.run({ id: 'r', cutoff: CUTOFF, failure_reason: REASON }).changes).toBe(0);
+    db.close();
+  });
+
+  it('does NOT reap when the orchestrator wrote a phase after the snapshot', () => {
+    // The production miss: proof-of-life between phases is real progress, and
+    // the guard must honour it exactly as it honours a step transition.
+    const { db, fail } = setup();
+    db.prepare(`UPDATE finalize_runs SET phase_changed_at=? WHERE id='r'`).run(NOW);
+    expect(fail.run({ id: 'r', cutoff: CUTOFF, failure_reason: REASON }).changes).toBe(0);
+    expect(db.prepare(`SELECT status FROM finalize_runs WHERE id='r'`).get()).toEqual({
+      status: 'running',
+    });
+    db.close();
+  });
+
+  it('does NOT reap when a runner claimed a job after the snapshot', () => {
+    // A job goes `running` before its first step does, so job activity has to
+    // count — otherwise the runner-boot window looks identical to a stall.
+    const { db, fail } = setup();
+    db.prepare(
+      `INSERT INTO finalize_run_jobs (run_id, job_id, matrix_key, state, started_at, ended_at)
+       VALUES ('r', 'job-1', '', 'running', ?, NULL)`,
+    ).run(NOW);
+    expect(fail.run({ id: 'r', cutoff: CUTOFF, failure_reason: REASON }).changes).toBe(0);
     db.close();
   });
 
   it('does NOT reap when the run advanced off running (e.g. to pushing)', () => {
     const { db, fail } = setup();
     db.prepare(`UPDATE finalize_runs SET status='pushing' WHERE id='r'`).run();
-    expect(fail.run({ id: 'r', cutoff: CUTOFF }).changes).toBe(0);
+    expect(fail.run({ id: 'r', cutoff: CUTOFF, failure_reason: REASON }).changes).toBe(0);
     db.close();
   });
 
@@ -452,7 +584,24 @@ describe('failRuntimeStuckFinalizeRun (atomic reap-guard, SQL)', () => {
     db.prepare(
       `UPDATE finalize_run_steps SET state='passed' WHERE run_id='r' AND state='queued'`,
     ).run();
-    expect(fail.run({ id: 'r', cutoff: CUTOFF }).changes).toBe(0);
+    expect(fail.run({ id: 'r', cutoff: CUTOFF, failure_reason: REASON }).changes).toBe(0);
+    db.close();
+  });
+
+  it('records a reason-accurate failure_reason that keeps the crash-loop prefix', () => {
+    // The row used to hardcode "no live orchestrator" for BOTH reasons, so a
+    // hung-but-registered run (production f773c012) reported the wrong cause.
+    const { db, fail } = setup();
+    const hung = failureReasonForStuckRun('hung');
+    expect(hung).not.toBe(failureReasonForStuckRun('orphaned'));
+    for (const reason of ['orphaned', 'hung'] as const) {
+      // countInterruptedFinalizeRunsForSessionHead matches on this prefix.
+      expect(failureReasonForStuckRun(reason)).toMatch(/^Finalize run interrupted/);
+    }
+    fail.run({ id: 'r', cutoff: CUTOFF, failure_reason: hung });
+    expect(db.prepare(`SELECT failure_reason FROM finalize_runs WHERE id='r'`).get()).toEqual({
+      failure_reason: hung,
+    });
     db.close();
   });
 });
