@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { satisfies } from 'semver';
+import { minVersion, satisfies, subset } from 'semver';
 
 /**
  * Regression guards for PR #272 (security: bump 20 dependencies).
@@ -179,9 +179,11 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // (cx() escaping bypass), GHSA-xgm2-5f3f-mvvc (header de-dup drop).
     { pkg: 'hono', min: '4.12.27', advisory: 'GHSA-hvrm-45r6-mjfj' },
     // GHSA-frvp-7c67-39w9: serve-static path traversal via encoded backslash.
-    // Backported to the 1.x line at 1.19.15, which stays inside
-    // @modelcontextprotocol/sdk's `^1.19.9` range -- no override needed.
-    { pkg: '@hono/node-server', min: '1.19.15', advisory: 'GHSA-frvp-7c67-39w9' },
+    // The advisory covers `< 2.0.5` with no backport, so the whole 1.x line is
+    // affected. Its sole consumer, @modelcontextprotocol/sdk, declares
+    // `^1.19.9` even at its newest release, so 2.x is reachable only through
+    // the server `@hono/node-server` override asserted below.
+    { pkg: '@hono/node-server', min: '2.0.5', advisory: 'GHSA-frvp-7c67-39w9' },
     // GHSA-r4q5-vmmm-2653: Authorization header leaked across a cross-domain redirect.
     { pkg: 'follow-redirects', min: '1.16.0', advisory: 'GHSA-r4q5-vmmm-2653' },
     // GHSA-v2v4-37r5-5v8g: XSS in the Address6 HTML-emitting methods.
@@ -226,6 +228,172 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       expect(checked, `expected at least one ${pkg} entry across the lockfiles`).toBeGreaterThan(0);
     });
   }
+});
+
+/**
+ * Overrides that are the *only* thing holding a package above its advisory
+ * floor. Each of these sits above the range its parent declares, so dropping
+ * the override lets a plain `npm install` re-resolve back into the vulnerable
+ * line without any lockfile edit looking suspicious. The floor assertions
+ * above catch that only after someone re-resolves; these catch the intent
+ * being removed.
+ */
+describe('override-backed advisory floors', () => {
+  const OVERRIDE_FLOORS: Array<{
+    manifest: (typeof LOCKFILES)[number]['name'];
+    pkg: string;
+    min: string;
+    advisory: string;
+    parentRange: string;
+  }> = [
+    {
+      manifest: 'server',
+      pkg: '@hono/node-server',
+      min: '2.0.5',
+      advisory: 'GHSA-frvp-7c67-39w9',
+      // @modelcontextprotocol/sdk declares `^1.19.9` and has no release that
+      // accepts 2.x, so without the override npm resolves a vulnerable 1.x.
+      parentRange: '^1.19.9',
+    },
+  ];
+
+  for (const { manifest, pkg, min, advisory, parentRange } of OVERRIDE_FLOORS) {
+    it(`${manifest}: keeps the ${pkg} override above the ${advisory} floor`, () => {
+      const entry = LOCKFILES.find((l) => l.name === manifest);
+      expect(entry, `unknown manifest ${manifest}`).toBeDefined();
+      const overrides = (readJson(entry!.manifest).overrides ?? {}) as Record<string, string>;
+      const range = overrides[pkg];
+
+      expect(
+        range,
+        `${manifest}/package.json must keep the "${pkg}" override; its parent declares ` +
+          `${parentRange}, so removing it re-resolves into the ${advisory} range`,
+      ).toBeTruthy();
+
+      const base = String(range).replace(/^[^\d]*/, '');
+      expect(
+        compareSemver(base, min) >= 0,
+        `${manifest} override "${pkg}": "${range}" must be >= ${min} (${advisory})`,
+      ).toBe(true);
+    });
+  }
+});
+
+/**
+ * A dependency bump can quietly move the Node line out from under us: a new
+ * major may raise `engines.node`, or narrow it with an upper bound, which
+ * surfaces as an install-time engine failure under `engine-strict` or as a
+ * runtime incompatibility on a deploy target long after the PR that moved it.
+ * The lockfile records each dependency's `engines.node`, so the check is exact
+ * rather than a spot audit of the packages someone thought to look at.
+ *
+ * The assertion is containment: every Node version the declared range admits
+ * must satisfy the dependency, since we can ship or deploy on any of them.
+ *
+ * `server` must declare a range because it is the deployed runtime and carries
+ * the `overrides` that force packages past their parents' declared ranges.
+ */
+/**
+ * `<X.Y.Z` written by hand admits `X.Y.Z-0` once a range is reasoned about
+ * prerelease-inclusively, while the `^`/`~`/`x` forms a dependency is far more
+ * likely to publish desugar to an upper bound that stops at `<X.Y.Z-0`. Left
+ * alone that mismatch makes `>=22.14.0 <23.0.0` look wider than `^22.12.0` and
+ * reports a violation on a range that in fact covers us. Pinning the bound to
+ * `-0` states the thing the manifest already means: `<23.0.0` excludes Node 23,
+ * prereleases included.
+ */
+function excludeBoundaryPrereleases(range: string): string {
+  return range.replace(/<(?!=)\s*(\d+\.\d+\.\d+)(?![-+\w.])/g, '<$1-0');
+}
+
+/**
+ * Does every Node version we claim to support satisfy `required`?
+ *
+ * Containment, not a floor probe: a dependency range with an upper bound (say
+ * `>=20 <22.16`) accepts our lowest supported Node and still rejects versions
+ * further up our own range, so testing the floor alone passes a dependency we
+ * would break on after a routine Node patch upgrade.
+ */
+function declaredRangeCoveredBy(declared: string, required: string): boolean {
+  return subset(excludeBoundaryPrereleases(declared), required, { includePrerelease: true });
+}
+
+describe('declared Node engines cover every dependency', () => {
+  const MUST_DECLARE_ENGINES: ReadonlyArray<(typeof LOCKFILES)[number]['name']> = ['server'];
+
+  for (const name of MUST_DECLARE_ENGINES) {
+    it(`${name}: declares an engines.node range`, () => {
+      const entry = LOCKFILES.find((l) => l.name === name);
+      expect(entry, `unknown manifest ${name}`).toBeDefined();
+      const declared = readJson(entry!.manifest).engines?.node as string | undefined;
+      expect(
+        declared,
+        `${name}/package.json must declare "engines.node" so the supported Node line is ` +
+          `machine-checked against what its dependencies require`,
+      ).toBeTruthy();
+    });
+  }
+
+  for (const { name, lock, manifest } of LOCKFILES) {
+    it(`${name}: every supported Node version satisfies every dependency's engines.node`, () => {
+      const declared = readJson(manifest).engines?.node as string | undefined;
+      if (!declared) return; // covered by MUST_DECLARE_ENGINES for the surfaces that need it
+
+      expect(
+        () => minVersion(declared),
+        `${name}: "${declared}" is not a parseable range`,
+      ).not.toThrow();
+
+      const violations: string[] = [];
+      let checked = 0;
+      for (const [key, meta] of Object.entries(lockPackages(lock))) {
+        const required = (meta as { engines?: { node?: string } }).engines?.node;
+        if (!required) continue;
+        checked++;
+        // A malformed range from a published package must not silently pass.
+        let covered: boolean;
+        try {
+          covered = declaredRangeCoveredBy(declared, required);
+        } catch {
+          violations.push(`${key} declares an unparseable engines.node "${required}"`);
+          continue;
+        }
+        if (!covered) violations.push(`${key} requires node "${required}"`);
+      }
+
+      expect(checked, `expected ${name} lockfile entries to record engines.node`).toBeGreaterThan(
+        0,
+      );
+      expect(
+        violations,
+        `${name}: "${declared}" admits Node versions these dependencies reject. Either narrow ` +
+          `engines.node across the repo (package.json, .nvmrc, Dockerfiles, CI node-version) ` +
+          `or pick dependency versions that cover the whole declared line.`,
+      ).toEqual([]);
+    });
+  }
+
+  // The containment semantics above are the entire point of the guard, so pin
+  // them directly rather than inferring them from whatever the tree resolves to
+  // today -- a lockfile that happens to hold no upper-bounded range would let a
+  // floor-only regression sit here undetected.
+  describe('range containment semantics', () => {
+    const DECLARED = '>=22.14.0 <23.0.0';
+
+    it.each([
+      ['>=20.0.0', true, 'an open lower bound above our floor'],
+      ['^20.19.0 || >=22.12.0', true, 'a union whose upper arm is open'],
+      ['^20.19.0 || ^22.12.0 || >=24.0.0', true, 'a union arm that brackets our whole range'],
+      ['20.x || 22.x || 23.x || 24.x', true, 'x-ranges covering our major'],
+      ['>=22.14.0 <23.0.0', true, 'the identical range'],
+      ['>=20 <22.16', false, 'an upper bound inside our range'],
+      ['>=24.0.0', false, 'a floor above our whole range'],
+      ['^20.0.0', false, 'a major we do not run'],
+      ['>=22.20.0', false, 'a floor above ours but inside our range'],
+    ])('%s -> %s (%s)', (required, expected) => {
+      expect(declaredRangeCoveredBy(DECLARED, required as string)).toBe(expected);
+    });
+  });
 });
 
 /**
