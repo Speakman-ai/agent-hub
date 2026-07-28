@@ -9,22 +9,6 @@ import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '@shared/utils/adaptiveQuestion
   getConnectionConfig: () => ({ mode: 'local' }),
 }));
 
-// The post-scaffold audit makes network calls on mount; stub them so the
-// audit view renders without errors when we transition to it.
-(vi as any).mock('../utils/auditClient.js', () => ({
-  fetchAuditReport: vi.fn(async () => ({
-    projectId: 'proj-1',
-    score: 88,
-    categories: [],
-    findings: [],
-    gaps: [],
-  })),
-  refreshAuditReport: vi.fn(async () => ({})),
-  fetchRosterSuggestions: vi.fn(async () => ({ tracks: [] })),
-  saveRoster: vi.fn(async () => ({ tracks: [], updatedAt: '2026-04-23T21:00:00Z' })),
-  fetchAgents: vi.fn(async () => []),
-}));
-
 describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
   let subscribeHandlers: any;
   let provision: any;
@@ -84,14 +68,14 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
     });
   }
 
-  async function transitionToAudit() {
+  async function transitionToLanding() {
     act(() => {
       subscribeHandlers.onEvent({ type: 'done', repoUrl: 'https://github.com/acme/my-proj' });
     });
     await act(async () => {
       fireEvent.click(screen.getByTestId('ps-success-close' as any) as any);
     });
-    await screen.findByTestId('post-scaffold-audit');
+    await screen.findByTestId('project-landing');
   }
 
   it('ignores preview-defaults events that do not match the created project id', async () => {
@@ -107,11 +91,11 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
         idleTTL: 600,
       },
     });
-    await transitionToAudit();
+    await transitionToLanding();
     expect(screen.queryByTestId('preview-confirm')).not.toBeInTheDocument();
   });
 
-  it('renders PreviewConfirm in the audit view when the matching scoped event arrives', async () => {
+  it('renders PreviewConfirm on the landing view when the matching scoped event arrives', async () => {
     await runThroughQuestionnaire();
     fireDetected({
       type: 'preview-defaults-detected',
@@ -124,7 +108,7 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
         idleTTL: 600,
       },
     });
-    await transitionToAudit();
+    await transitionToLanding();
     expect(screen.getByTestId('preview-confirm')).toBeInTheDocument();
     expect(screen.getByText(/Detected Next project/i)).toBeInTheDocument();
   });
@@ -136,7 +120,7 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
       projectId: 'proj-1',
       detected: null,
     });
-    await transitionToAudit();
+    await transitionToLanding();
     expect(screen.queryByTestId('preview-confirm')).not.toBeInTheDocument();
   });
 
@@ -153,9 +137,8 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
         idleTTL: 600,
       },
     });
-    await transitionToAudit();
+    await transitionToLanding();
 
-    // Audit mount triggers an audit fetch; ignore those for the assertion.
     const beforeCount = (fetchMock as any).mock.calls.length;
     fireEvent.click(screen.getByTestId('preview-confirm-accept' as any) as any);
 
@@ -195,7 +178,7 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
         idleTTL: 600,
       },
     });
-    await transitionToAudit();
+    await transitionToLanding();
 
     const beforeCount = (fetchMock as any).mock.calls.length;
     fireEvent.click(screen.getByTestId('preview-confirm-skip' as any) as any);

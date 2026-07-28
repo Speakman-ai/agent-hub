@@ -141,7 +141,6 @@ import createRumClientRoutes from './routes/rum-clients.js';
 import createPreviewEnvironmentRoutes from './routes/preview-environment.js';
 import createPreviewInstancesRoutes from './routes/preview-instances.js';
 import createProvisioningRoutes from './routes/provisioning.js';
-import createAuditRoutes from './routes/audit.js';
 import createJobRoutes from './routes/jobs.js';
 import createAgentRoutes from './routes/agents.js';
 import createOrgRoutes from './routes/orgs.js';
@@ -1467,7 +1466,6 @@ app.use(
   }),
 );
 app.use(createProvisioningRoutes(routeDeps));
-app.use(createAuditRoutes(routeDeps));
 app.use(createJobRoutes(routeDeps));
 app.use(createAgentRoutes(routeDeps));
 app.use(createOrgRoutes(routeDeps));

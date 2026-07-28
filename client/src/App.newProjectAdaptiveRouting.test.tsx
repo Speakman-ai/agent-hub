@@ -186,38 +186,6 @@ describe('App — "+ New Project" CTA routes to adaptive flow', () => {
     });
   });
 
-  it('routes to chat view when onProjectCreated fires with action:"chat"', async () => {
-    render(<App />);
-
-    await waitFor(() => expect(typeof (globalThis as any).__ahNewProjectCTA).toBe('function'), {
-      timeout: 3000,
-    });
-
-    // Open the adaptive flow
-    await act(async () => {
-      (globalThis as any).__ahNewProjectCTA();
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId('adaptive-flow-mock')).toBeInTheDocument();
-    });
-
-    // Fire onProjectCreated with action:'chat'
-    await act(async () => {
-      (globalThis as any).__ahAdaptiveOnProjectCreated({
-        action: 'chat',
-        agentId: 'test-agent-1',
-        projectId: 'proj-1',
-      });
-    });
-
-    // The adaptive flow should unmount (view is now 'chat', not 'new-project-adaptive')
-    await waitFor(() => {
-      expect(screen.queryByTestId('adaptive-flow-mock')).not.toBeInTheDocument();
-    });
-    // Sidebar should reflect the chat view
-    expect(screen.getByTestId('sidebar-mock').dataset.currentView).toBe('chat');
-  });
-
   it('routes to kanban view when onProjectCreated fires with action:"task"', async () => {
     render(<App />);
 

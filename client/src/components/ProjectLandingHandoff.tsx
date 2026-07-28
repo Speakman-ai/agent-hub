@@ -1,69 +1,36 @@
-import { useMemo } from 'react';
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Compass,
-  ExternalLink,
-  KanbanSquare,
-  MessageSquare,
-  Sparkles,
-  Users,
-  XCircle,
-} from 'lucide-react';
-import { scoreBand } from '../utils/auditReport';
+import { Compass, ExternalLink, KanbanSquare, Sparkles } from 'lucide-react';
 
 /**
- * ProjectLandingHandoff — Act V of the New Project storyboard.
+ * ProjectLandingHandoff — the final screen of the New Project flow.
  *
- * Shown after the user confirms the Act IV roster. Gives them a single
- * readable "you just created this" screen with:
+ * Shown once provisioning completes. Gives the user a single readable
+ * "you just created this" screen with:
  *
  *   • Header summary   — project name + repo link
- *   • Summary chips    — app type, stack, integrations, audit band
- *   • Audit highlights — top findings (up to 3) or a "clean" callout
- *   • Roster panel     — per-track assigned agent with a "Chat" action
+ *   • Summary chips    — app type, stack, integrations
  *   • Next steps       — starter CTAs (open kanban, browse skills, etc.)
  *
  * The component is deliberately **presentational** — all outbound routing
  * funnels through two optional callbacks:
  *
- *   - onOpenProject({ projectId, repoUrl? })            — "Open project"
- *   - onStartChat({ projectId, agentId, trackId? })     — "Chat with X"
- *   - onOpenStarterTask({ projectId, task })            — "Open kanban" etc.
+ *   - onOpenProject({ projectId, repoUrl? })     — "Open project"
+ *   - onOpenStarterTask({ projectId, task })     — "Open kanban" etc.
  *
- * All three are fired through the same upstream `onProjectCreated`
- * handler in NewProjectAdaptiveFlow — callers decide how to route.
+ * Both are fired through the same upstream `onProjectCreated` handler in
+ * NewProjectAdaptiveFlow — callers decide how to route.
  *
- * Empty / error handoffs:
- *   - `report === null` (audit load failed) → renders a neutral "audit
- *     unavailable" strip but still renders the roster + next steps.
- *   - `repoUrl` empty (github skipped) → repo row is hidden but the rest
- *     of the summary still renders.
- *   - `roster` empty → roster panel collapses to a muted "no agents
- *     assigned yet" message; next steps remain clickable.
+ * Empty handoff: `repoUrl` empty (github skipped) → the repo row renders a
+ * "local only" note and the rest of the summary still renders.
  */
 export default function ProjectLandingHandoff({
   projectId,
   projectName,
   repoUrl,
   payload,
-  report,
-  roster = [],
-  agents = [],
   onOpenProject,
-  onStartChat,
   onOpenStarterTask,
   onClose,
 }: any) {
-  const band = report ? scoreBand(report.score) : 'unknown';
-  const topFindings = useMemo(() => pickTopFindings(report?.findings || []), [report]);
-  const assignedRoster = useMemo(() => roster.filter((r: any) => r && r.agentId), [roster]);
-  const agentById = useMemo(() => {
-    const map = new Map();
-    for (const a of agents) map.set(a.id, a);
-    return map;
-  }, [agents]);
-
   const integrations = normalizeIntegrations(payload?.integrations);
   const stackChips = summarizeStack(payload);
   const appTypeLabel = payload?.appType && humanizeAppType(payload.appType);
@@ -72,7 +39,6 @@ export default function ProjectLandingHandoff({
     <div
       className="flex flex-col w-full h-full bg-gray-950 text-white"
       data-testid="project-landing"
-      data-audit-band={band}
     >
       <header className="flex shrink-0 items-center gap-3 border-b border-gray-800 bg-gray-900/90 px-4 py-3">
         <Sparkles size={16} className="text-emerald-400 shrink-0" aria-hidden="true" />
@@ -101,27 +67,10 @@ export default function ProjectLandingHandoff({
             appTypeLabel={appTypeLabel}
             stackChips={stackChips}
             integrations={integrations}
-            band={band}
-            score={report?.score ?? null}
-          />
-
-          <AuditHighlights band={band} findings={topFindings} hasReport={!!report} />
-
-          <RosterPanel
-            roster={roster}
-            agentById={agentById}
-            onStartChat={(row: any) =>
-              onStartChat?.({ projectId, agentId: row.agentId, trackId: row.trackId })
-            }
           />
 
           <NextStepsPanel
-            assignedRoster={assignedRoster}
-            agentById={agentById}
             onOpenProject={() => onOpenProject?.({ projectId, repoUrl })}
-            onStartChat={(row: any) =>
-              onStartChat?.({ projectId, agentId: row.agentId, trackId: row.trackId })
-            }
             onOpenStarterTask={(task: any) => onOpenStarterTask?.({ projectId, task })}
           />
         </div>
@@ -134,7 +83,7 @@ export default function ProjectLandingHandoff({
 /* Summary                                                             */
 /* ------------------------------------------------------------------ */
 
-function SummarySection({ repoUrl, appTypeLabel, stackChips, integrations, band, score }: any) {
+function SummarySection({ repoUrl, appTypeLabel, stackChips, integrations }: any) {
   return (
     <section
       aria-label="Project summary"
@@ -144,13 +93,6 @@ function SummarySection({ repoUrl, appTypeLabel, stackChips, integrations, band,
       <header className="flex items-center gap-2 border-b border-gray-800 px-4 py-3">
         <Compass size={14} className="text-gray-400" aria-hidden="true" />
         <h2 className="text-sm font-semibold text-white">Summary</h2>
-        <span
-          className={`ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${toneForBand(band)}`}
-          data-testid="pl-summary-band"
-        >
-          {bandLabel(band)}
-          {score != null && <span className="text-gray-400">· {score}/100</span>}
-        </span>
       </header>
       <dl className="divide-y divide-gray-800 text-sm">
         {repoUrl ? (
@@ -224,181 +166,10 @@ function ChipList({ chips, testId }: any) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Audit highlights                                                    */
-/* ------------------------------------------------------------------ */
-
-function AuditHighlights({ band, findings, hasReport }: any) {
-  if (!hasReport) {
-    return (
-      <section
-        aria-label="Audit highlights"
-        data-testid="pl-audit-unavailable"
-        className="rounded-lg border border-gray-800 bg-gray-900/40 px-4 py-3 text-sm text-gray-400"
-      >
-        Audit report is not available — you can still proceed; the team will run it when the first
-        session starts.
-      </section>
-    );
-  }
-
-  if (findings.length === 0) {
-    return (
-      <section
-        aria-label="Audit highlights"
-        data-testid="pl-audit-clean"
-        className={`rounded-lg border px-4 py-3 text-sm ${
-          band === 'green'
-            ? 'border-emerald-700 bg-emerald-950/30 text-emerald-200'
-            : 'border-gray-800 bg-gray-900/40 text-gray-300'
-        }`}
-      >
-        <div className="flex items-start gap-2">
-          <CheckCircle2 size={14} className="mt-0.5 text-emerald-400" aria-hidden="true" />
-          <div>No blocking findings. You can start working right away.</div>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section
-      aria-label="Audit highlights"
-      data-testid="pl-audit-highlights"
-      className="rounded-lg border border-gray-800 bg-gray-900/60"
-    >
-      <header className="flex items-center gap-2 border-b border-gray-800 px-4 py-3">
-        <AlertTriangle size={14} className="text-amber-400" aria-hidden="true" />
-        <h2 className="text-sm font-semibold text-white">Audit highlights</h2>
-        <span className="ml-auto text-xs text-gray-500">
-          Top {findings.length} of {findings.length === 1 ? 'finding' : 'findings'}
-        </span>
-      </header>
-      <ul className="divide-y divide-gray-800">
-        {findings.map((f: any) => (
-          <li
-            key={f.id}
-            className="flex items-start gap-2 px-4 py-2.5 text-[13px]"
-            data-testid={`pl-finding-${f.id}`}
-            data-severity={f.severity}
-          >
-            <SeverityIcon severity={f.severity} />
-            <div className="min-w-0 flex-1">
-              <div className="text-gray-200 break-words">{f.message}</div>
-              {f.hint && (
-                <div className="text-xs text-gray-500">
-                  <span className="font-medium">Hint:</span> {f.hint}
-                </div>
-              )}
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function SeverityIcon({ severity }: any) {
-  const common = 'shrink-0 mt-0.5';
-  if (severity === 'error')
-    return <XCircle size={14} className={`${common} text-red-400`} aria-label="error" />;
-  if (severity === 'warn')
-    return <AlertTriangle size={14} className={`${common} text-amber-400`} aria-label="warn" />;
-  return <CheckCircle2 size={14} className={`${common} text-gray-500`} aria-label="info" />;
-}
-
-/* ------------------------------------------------------------------ */
-/* Roster                                                              */
-/* ------------------------------------------------------------------ */
-
-function RosterPanel({ roster, agentById, onStartChat }: any) {
-  return (
-    <section
-      aria-label="Assigned agents"
-      data-testid="pl-roster"
-      className="rounded-lg border border-gray-800 bg-gray-900/60"
-    >
-      <header className="flex items-center gap-2 border-b border-gray-800 px-4 py-3">
-        <Users size={14} className="text-gray-400" aria-hidden="true" />
-        <h2 className="text-sm font-semibold text-white">Your team</h2>
-        <span className="ml-auto text-xs text-gray-500">
-          {roster.length} {roster.length === 1 ? 'track' : 'tracks'}
-        </span>
-      </header>
-      {roster.length === 0 ? (
-        <div className="px-4 py-5 text-sm text-gray-500" data-testid="pl-roster-empty">
-          No agents assigned yet — you can add a roster from the project settings.
-        </div>
-      ) : (
-        <ul className="divide-y divide-gray-800">
-          {roster.map((row: any) => {
-            // Prefer the resolved agent record (lookup via agentById) for
-            // the display name, fall back to the typed `agentName` the user
-            // entered in Act IV, then to the agentId. A row counts as
-            // "assigned" if it has either an agentId or an agentName —
-            // post-scaffold rows have both by the time the landing renders.
-            const agent = row.agentId ? agentById.get(row.agentId) : null;
-            const displayName = agent?.name || agent?.id || row.agentName || row.agentId || null;
-            const hasAssignment = !!(row.agentId || row.agentName);
-            return (
-              <li
-                key={row.trackId || row.id}
-                className="flex items-center gap-3 px-4 py-2.5 text-sm"
-                data-testid={`pl-roster-row-${row.trackId || row.id}`}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="text-gray-100 font-medium truncate">{row.label}</div>
-                  <div className="text-xs text-gray-500 truncate">
-                    {hasAssignment ? displayName : 'Unassigned'}
-                  </div>
-                </div>
-                {hasAssignment ? (
-                  <button
-                    type="button"
-                    onClick={() => onStartChat(row)}
-                    disabled={!row.agentId}
-                    className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-100 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                    data-testid={`pl-chat-${row.trackId || row.id}`}
-                  >
-                    <MessageSquare size={12} aria-hidden="true" /> Chat
-                  </button>
-                ) : (
-                  <span
-                    className="text-[11px] uppercase tracking-wide text-gray-500"
-                    data-testid={`pl-roster-row-${row.trackId || row.id}-empty`}
-                  >
-                    unassigned
-                  </span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Next steps                                                          */
 /* ------------------------------------------------------------------ */
 
-function NextStepsPanel({
-  assignedRoster,
-  agentById,
-  onOpenProject,
-  onStartChat,
-  onOpenStarterTask,
-}: any) {
-  const leadRow = pickLead(assignedRoster);
-  const leadAgent = leadRow ? agentById.get(leadRow.agentId) : null;
-  // Render the "Brief lead" CTA as long as we have an agentId to route to.
-  // The agent record may not be loaded (server-minted, not in the org list
-  // yet), but we can still chat with it; the typed `agentName` from Act IV
-  // is the next-best display name.
-  const leadDisplayName =
-    leadAgent?.name || leadAgent?.id || leadRow?.agentName || leadRow?.agentId || null;
-  const showLeadCta = !!(leadRow && leadDisplayName && leadRow.agentId);
-
+function NextStepsPanel({ onOpenProject, onOpenStarterTask }: any) {
   return (
     <section
       aria-label="Next steps"
@@ -410,17 +181,8 @@ function NextStepsPanel({
         <h2 className="text-sm font-semibold text-white">Next steps</h2>
       </header>
       <div className="flex flex-col gap-2 p-4">
-        {showLeadCta && (
-          <NextStepButton
-            primary
-            testId="pl-next-chat-lead"
-            icon={<MessageSquare size={14} aria-hidden="true" />}
-            title={`Brief ${leadDisplayName}`}
-            description={`Start a chat with your ${leadRow.label.toLowerCase()} and describe the first task.`}
-            onClick={() => onStartChat(leadRow)}
-          />
-        )}
         <NextStepButton
+          primary
           testId="pl-next-kanban"
           icon={<KanbanSquare size={14} aria-hidden="true" />}
           title="Open the kanban board"
@@ -470,15 +232,6 @@ function NextStepButton({ icon, title, description, onClick, primary, testId }: 
 /* ------------------------------------------------------------------ */
 /* Pure helpers                                                        */
 /* ------------------------------------------------------------------ */
-
-/** Pick the top ~3 audit findings, preferring error > warn > info. Exported
- *  for testing. */
-export function pickTopFindings(findings: any, max: any = 3) {
-  const order = { error: 0, warn: 1, info: 2 } as Record<string, any>;
-  return [...findings]
-    .sort((a: any, b: any) => (order[a.severity] ?? 99) - (order[b.severity] ?? 99))
-    .slice(0, max);
-}
 
 /** Normalize the questionnaire's `integrations` into a list of display chips. */
 export function normalizeIntegrations(integrations: any) {
@@ -546,42 +299,6 @@ export function summarizeStack(payload: any) {
       .map(String);
   }
   return [];
-}
-
-function pickLead(roster: any) {
-  if (!roster.length) return null;
-  const preferred = ['architect', 'lead', 'frontend', 'backend'];
-  for (const p of preferred) {
-    const hit = roster.find((r: any) => r.trackId === p);
-    if (hit) return hit;
-  }
-  return roster[0];
-}
-
-function toneForBand(band: any) {
-  switch (band) {
-    case 'green':
-      return 'border-emerald-700 bg-emerald-950/40 text-emerald-200';
-    case 'amber':
-      return 'border-amber-700 bg-amber-950/40 text-amber-200';
-    case 'red':
-      return 'border-red-700 bg-red-950/40 text-red-200';
-    default:
-      return 'border-gray-700 bg-gray-900/60 text-gray-300';
-  }
-}
-
-function bandLabel(band: any) {
-  switch (band) {
-    case 'green':
-      return 'Ready';
-    case 'amber':
-      return 'Needs work';
-    case 'red':
-      return 'Not ready';
-    default:
-      return 'Audit pending';
-  }
 }
 
 function displayRepo(url: any) {

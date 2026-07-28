@@ -3,41 +3,6 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import NewProjectAdaptiveFlow, { inferWithGithub } from './NewProjectAdaptiveFlow';
 import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '@shared/utils/adaptiveQuestionnaire';
 
-// Mock the audit transport layer so the flow test can drive Act IV and
-// transition into Act V (landing) without needing a live server.
-//
-// PostScaffoldAudit now runs in `createAgents` mode (one freshly-minted
-// agent per track) — saveRoster's response carries the minted `agentId`s
-// AND the created agent records, which the landing uses to render the
-// per-row display name + per-track "Chat" actions.
-(vi as any).mock('../utils/auditClient.js', () => ({
-  fetchAuditReport: vi.fn(async () => ({
-    projectId: 'proj-1',
-    score: 88,
-    categories: [{ id: 'lint', status: 'ok' }],
-    findings: [{ id: 'f1', severity: 'warn', message: 'Needs test for auth' }],
-    gaps: [],
-  })),
-  refreshAuditReport: vi.fn(async () => ({})),
-  fetchRosterSuggestions: vi.fn(async () => ({
-    tracks: [
-      { id: 'architect', label: 'Architect' },
-      { id: 'frontend', label: 'Frontend' },
-    ],
-  })),
-  saveRoster: vi.fn(async () => ({
-    tracks: [
-      { id: 'architect', label: 'Architect', agentId: 'proj-1-architect', custom: true },
-      { id: 'frontend', label: 'Frontend', agentId: 'proj-1-frontend', custom: true },
-    ],
-    agents: [
-      { id: 'proj-1-architect', name: 'my-proj Architect', role: 'Architect' },
-      { id: 'proj-1-frontend', name: 'my-proj Frontend', role: 'Frontend' },
-    ],
-    updatedAt: '2026-04-23T21:00:00Z',
-  })),
-}));
-
 describe('inferWithGithub', () => {
   it('is false for Agent Hub-hosted projects regardless of integrations', () => {
     // The hosting answer is the single source of truth — Hub-hosted
@@ -172,7 +137,7 @@ describe('NewProjectAdaptiveFlow', () => {
     expect(screen.getByTestId('ps-failure')).toHaveTextContent(/401 unauthorized/);
   });
 
-  it('transitions to the post-scaffold audit view after a successful provisioning run', async () => {
+  it('transitions straight to the landing view after a successful provisioning run', async () => {
     const { onClose } = await runThroughQuestionnaire();
     act(() => {
       subscribeHandlers.onEvent({
@@ -180,15 +145,40 @@ describe('NewProjectAdaptiveFlow', () => {
         repoUrl: 'https://github.com/acme/my-proj',
       });
     });
-    // The success "Done" button now advances into Act IV (audit) rather
-    // than closing the wizard outright. The provisioning socket is torn
-    // down eagerly since its terminal event has already landed.
+    // The success "Done" button advances to the landing handoff rather than
+    // closing the wizard outright. The provisioning socket is torn down
+    // eagerly since its terminal event has already landed.
     await act(async () => {
       fireEvent.click(screen.getByTestId('ps-success-close' as any) as any);
     });
-    expect(screen.getByTestId('post-scaffold-audit')).toBeInTheDocument();
+    expect(screen.getByTestId('project-landing')).toBeInTheDocument();
     expect(streamClose!).toHaveBeenCalled();
     expect(onClose!).not.toHaveBeenCalled();
+  });
+
+  // Regression: the readiness/roster step used to sit between provisioning
+  // and the landing, blocking the user behind a 404 audit card and a
+  // duplicate agent-roster picker. Provisioning already seeds the lead dev
+  // and reviewer agents, so nothing may render that step again.
+  it('never renders a readiness/roster step between provisioning and landing', async () => {
+    await runThroughQuestionnaire();
+    act(() => {
+      subscribeHandlers.onEvent({
+        type: 'done',
+        repoUrl: 'https://github.com/acme/my-proj',
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('ps-success-close' as any) as any);
+    });
+    expect(screen.queryByTestId('post-scaffold-audit')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('psa-confirm')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('psa-skip')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Readiness & roster/i)).not.toBeInTheDocument();
+    // The landing itself carries no audit or roster surface either.
+    expect(screen.queryByTestId('pl-roster')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pl-audit-unavailable')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pl-summary-band')).not.toBeInTheDocument();
   });
 
   it('still routes the close button to onClose when provisioning failed', async () => {
@@ -211,7 +201,7 @@ describe('NewProjectAdaptiveFlow', () => {
     expect(screen.queryByTestId('ps-phase-gh-push')).not.toBeInTheDocument();
   });
 
-  it('advances from audit to the Act V landing after a successful roster save', async () => {
+  it('renders the landing summary and routes next-step CTAs through onProjectCreated', async () => {
     const { onProjectCreated, onClose } = await runThroughQuestionnaire();
     // Finish provisioning with a repoUrl so the landing can display it.
     act(() => {
@@ -223,22 +213,7 @@ describe('NewProjectAdaptiveFlow', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('ps-success-close' as any) as any);
     });
-    // Wait for the audit to finish its initial load. Post-scaffold runs in
-    // create-agents mode — each track renders a name input the user can
-    // edit before confirming. `initialRosterForCreate` pre-fills the name
-    // from the project name ("my-proj Architect"), so the confirm button
-    // is enabled immediately.
-    await waitFor(() => {
-      expect(screen.getByTestId('roster-agent-name-architect')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('roster-agent-name-architect')).toHaveValue('my-proj Architect');
-    await waitFor(() => {
-      expect(screen.getByTestId('psa-confirm')).not.toBeDisabled();
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('psa-confirm' as any) as any);
-    });
-    // Landing rendered.
+
     await waitFor(() => {
       expect(screen.getByTestId('project-landing')).toBeInTheDocument();
     });
@@ -247,57 +222,20 @@ describe('NewProjectAdaptiveFlow', () => {
       'https://github.com/acme/my-proj',
     );
 
-    // The roster panel hydrates from the server response — every row shows
-    // the typed agent name (not "Unassigned") and exposes a per-row Chat
-    // action wired to the minted `<projectId>-<trackId>` agent id.
-    const architectRow = screen.getByTestId('pl-roster-row-architect');
-    expect(architectRow!).toHaveTextContent('Architect');
-    expect(architectRow!).toHaveTextContent('my-proj Architect');
-    expect(architectRow!).not.toHaveTextContent(/Unassigned/i);
-    expect(screen.getByTestId('pl-chat-architect')).not.toBeDisabled();
-
     // onProjectCreated / onClose are NOT fired yet — the user has to click
     // a next-step CTA to leave the landing.
     expect(onProjectCreated!).not.toHaveBeenCalled();
     expect(onClose!).not.toHaveBeenCalled();
 
-    // Clicking the primary "Brief lead" CTA routes through onProjectCreated
-    // with `action: 'chat'` + the minted agent id. onClose is NOT called —
-    // the host's onProjectCreated handler owns the view transition to avoid
-    // a setState race where onClose would clobber the routing.
-    fireEvent.click(screen.getByTestId('pl-next-chat-lead' as any) as any);
+    // The primary CTA routes through onProjectCreated with `action: 'task'`
+    // so the host lands on the new project's kanban board. onClose is NOT
+    // called — the host's onProjectCreated handler owns the view transition
+    // to avoid a setState race where onClose would clobber the routing.
+    fireEvent.click(screen.getByTestId('pl-next-kanban' as any) as any);
     expect(onProjectCreated!).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectId: 'proj-1',
-        agentId: 'proj-1-architect',
-        action: 'chat',
-      }),
+      expect.objectContaining({ projectId: 'proj-1', action: 'task' }),
     );
     expect(onClose!).not.toHaveBeenCalled();
-  });
-
-  it('audit-skip bypasses the landing and closes the wizard', async () => {
-    const { onProjectCreated, onClose } = await runThroughQuestionnaire();
-    act(() => {
-      subscribeHandlers.onEvent({
-        type: 'done',
-        repoUrl: 'https://github.com/acme/my-proj',
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('ps-success-close' as any) as any);
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId('psa-skip')).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByTestId('psa-skip' as any) as any);
-    expect(screen.queryByTestId('project-landing')).not.toBeInTheDocument();
-    // onClose is NOT called when onProjectCreated fires — the host's
-    // onProjectCreated handler owns the view transition.
-    expect(onClose!).not.toHaveBeenCalled();
-    expect(onProjectCreated!).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: 'proj-1', skipped: true }),
-    );
   });
 
   it('retry re-invokes provision and wipes previous events', async () => {

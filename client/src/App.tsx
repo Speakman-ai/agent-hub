@@ -6757,12 +6757,6 @@ export default function App({ initialView }: any = {}) {
                   return;
                 }
                 refreshAgents();
-                if (payload?.action === 'chat' && payload.agentId) {
-                  setActiveAgentId(payload.agentId);
-                  setCurrentView('chat');
-                  setSidebarOpen(false);
-                  return;
-                }
                 if (payload?.action === 'task' && payload.projectId) {
                   setCurrentView(`kanban:${payload.projectId}`);
                   setSidebarOpen(false);

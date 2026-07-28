@@ -2546,12 +2546,6 @@ export interface Stmts {
   getProvisioningJob: Stmt;
   getLatestProvisioningJobForProject: Stmt;
 
-  // Post-scaffold audit (Act IV) — see server/audit/audit-service.ts.
-  upsertAuditReport: Stmt;
-  getAuditReport: Stmt;
-  upsertProjectRoster: Stmt;
-  getProjectRoster: Stmt;
-
   // Finalize Code Changes runs — pre-PR validation pipeline.
   // Phase 1 ships the rebase phase; later phases reuse the same row.
   // See wiki: finalize-code-changes-architecture-v0 (§4).

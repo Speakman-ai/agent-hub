@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Check, Code2, FolderGit2, Kanban, X } from 'lucide-react';
 import AdaptiveQuestionnaire from './AdaptiveQuestionnaire';
 import ProvisioningStatus from './ProvisioningStatus';
-import PostScaffoldAudit from './PostScaffoldAudit';
 import ProjectLandingHandoff from './ProjectLandingHandoff';
 import PreviewConfirm, { buildPreviewPatch } from './PreviewConfirm';
 import { getApiBase, getAuthHeaders } from '../utils/connection';
@@ -17,8 +16,8 @@ import {
 
 /**
  * NewProjectAdaptiveFlow — stitches the project-type picker, the
- * questionnaire, the live provisioning status view, the post-scaffold
- * audit, and the workflow (non-code) form.
+ * questionnaire, the live provisioning status view, the landing handoff,
+ * and the workflow (non-code) form.
  *
  * Sub-views driven by local state:
  *   0. `type-picker` — render <ProjectTypePicker /> so the user chooses
@@ -33,15 +32,15 @@ import {
  *   2. `provisioning` — render <ProvisioningStatus /> with the event
  *      buffer reduced in real time. When a terminal success event lands
  *      and the user clicks "Continue", we transition to...
- *   3. `audit` — render <PostScaffoldAudit /> (Act IV): readiness score,
- *      findings, gaps, plus an agent-roster picker the user confirms to
- *      persist tracks on the new project record. On confirm we transition to...
- *   4. `landing` — render <ProjectLandingHandoff /> (Act V): summary card
- *      (repo / stack / integrations), audit highlights, assigned roster
- *      with per-row "Chat" actions, and a starter-task next-steps panel.
- *      Every outbound action funnels through `onProjectCreated` so the
- *      host app can decide how to route (open chat, open kanban, etc.).
- *  5. `workflow-form` — render <WorkflowProjectForm /> for non-code
+ *   3. `landing` — render <ProjectLandingHandoff />: summary card (repo /
+ *      stack / integrations), the detected-preview confirmation when the
+ *      server broadcast one, and a starter-task next-steps panel. Every
+ *      outbound action funnels through `onProjectCreated` so the host app
+ *      can decide how to route (open kanban, browse skills, etc.).
+ *      Provisioning already seeds the project's lead dev and reviewer
+ *      agents (see server/provisioning/initial-build.ts), so there is no
+ *      roster step between provisioning and the landing.
+ *   4. `workflow-form` — render <WorkflowProjectForm /> for non-code
  *      projects. On submit we POST `/api/projects` with `mode:'workflow'`
  *      and signal `onProjectCreated({projectId, action:'task'})` so the
  *      host lands on the new project's kanban view.
@@ -75,7 +74,6 @@ export default function NewProjectAdaptiveFlow({
   const [launchError, setLaunchError] = useState<any>(null);
   const [createdProjectId, setCreatedProjectId] = useState<any>(null);
   const [questionnairePayload, setQuestionnairePayload] = useState<any>(null);
-  const [landingContext, setLandingContext] = useState<any>(null);
   // Detected preview defaults for the new scaffold (from the server's
   // `preview-defaults-detected` WebSocket broadcast). The server already
   // auto-applies these to `project.prEnv.preview` server-side after the
@@ -166,7 +164,6 @@ export default function NewProjectAdaptiveFlow({
       setView('provisioning');
       currentPayloadRef.current = payload;
       setQuestionnairePayload(payload);
-      setLandingContext(null);
       try {
         const { wsUrl, projectId } = await provision(payload);
         if (projectId) setCreatedProjectId(projectId);
@@ -225,82 +222,21 @@ export default function NewProjectAdaptiveFlow({
   );
 
   // After a successful provisioning run, the success card's primary action
-  // transitions the flow into Act IV (audit + roster). We extract the
-  // terminal `done` event so we only advance on clean completion — the
-  // partial / failed paths keep the user on the provisioning view with
-  // their respective recovery affordances.
+  // transitions the flow into the landing handoff. We extract the terminal
+  // `done` event so we only advance on clean completion — the partial /
+  // failed paths keep the user on the provisioning view with their
+  // respective recovery affordances.
   const terminalDone = useMemo(() => events.find((e: any) => e && e.type === 'done'), [events]);
   const provisioningSucceeded = terminalDone && !terminalDone.error;
   const repoUrl = terminalDone && !terminalDone.error ? terminalDone.repoUrl || null : null;
 
-  const handleContinueToAudit = useCallback(() => {
+  const handleContinueToLanding = useCallback(() => {
     // The provisioning socket has already emitted its terminal `done`
-    // event — tear it down eagerly so Act IV doesn't inherit an open
+    // event — tear it down eagerly so the landing doesn't inherit an open
     // socket the server will reap anyway.
     streamHandleRef.current?.close?.();
-    setView('audit');
-  }, []);
-
-  // Act IV → Act V handoff. The audit component passes its rendered report
-  // + roster as a second arg so the landing can render the summary without
-  // refetching. The skip path still bypasses the landing (user explicitly
-  // opted out of finishing the flow in-wizard).
-  //
-  // The server response (`saved.tracks`) is authoritative for `agentId` —
-  // for the post-scaffold create flow every row's agent is minted by
-  // POST /roster as `<projectId>-<trackId>`, and the local UI roster
-  // carried `agentId: null` until that round-trip. We merge by trackId so
-  // the landing inherits the minted ids while keeping the typed-by-user
-  // `agentName` available for display when no agent record is in scope.
-  const handleAuditConfirmed = useCallback((saved: any, extras: any) => {
-    const savedTracks = Array.isArray(saved?.tracks) ? saved.tracks : [];
-    const localRoster = Array.isArray(extras?.roster) ? extras.roster : [];
-    const localByTrackId = new Map(localRoster.map((r: any) => [r.trackId, r]));
-
-    const rosterRows =
-      savedTracks.length > 0
-        ? savedTracks.map((t: any) => {
-            const local = localByTrackId.get(t.id);
-            return {
-              trackId: t.id,
-              label: t.label || (local as any)?.label || t.id,
-              agentId: t.agentId || (local as any)?.agentId || null,
-              agentName: (local as any)?.agentName || null,
-              custom: typeof t.custom === 'boolean' ? t.custom : !!(local as any)?.custom,
-            };
-          })
-        : localRoster;
-
-    // Prefer the server-returned `agents` array (includes minted ids +
-    // display names from the just-created agent rows) and fall back to
-    // whatever Act IV had in memory.
-    const agents =
-      Array.isArray(saved?.agents) && saved.agents.length > 0
-        ? saved.agents
-        : Array.isArray(extras?.agents)
-          ? extras.agents
-          : [];
-
-    setLandingContext({
-      roster: rosterRows,
-      report: extras?.report || null,
-      agents,
-      savedTracks,
-    });
     setView('landing');
   }, []);
-
-  const handleAuditSkip = useCallback(() => {
-    // Skip is an explicit exit — don't create a landing context. Emit the
-    // "project created" signal with whatever we have so the host can
-    // still refresh its project list / sidebar. The host's onProjectCreated
-    // handler routes the view; we don't call onClose to avoid clobbering.
-    if (createdProjectId) {
-      onProjectCreated?.({ projectId: createdProjectId, skipped: true });
-    } else {
-      onClose?.();
-    }
-  }, [onClose, onProjectCreated, createdProjectId]);
 
   // Landing action handlers — every path funnels through `onProjectCreated`
   // with a payload the host can route on (e.g. open a chat, open the
@@ -314,19 +250,6 @@ export default function NewProjectAdaptiveFlow({
         projectId: projectId || createdProjectId,
         repoUrl: outRepoUrl || null,
         action: 'open',
-      });
-    },
-    [onProjectCreated, createdProjectId],
-  );
-
-  const handleLandingStartChat = useCallback(
-    ({ projectId, agentId, trackId }: any) => {
-      if (!agentId) return;
-      onProjectCreated?.({
-        projectId: projectId || createdProjectId,
-        agentId,
-        trackId: trackId || null,
-        action: 'chat',
       });
     },
     [onProjectCreated, createdProjectId],
@@ -397,9 +320,9 @@ export default function NewProjectAdaptiveFlow({
     return <AdaptiveQuestionnaire onSubmit={start} onClose={() => setView('type-picker')} />;
   }
 
-  if (view === 'audit') {
+  if (view === 'landing') {
     return (
-      <div className="flex flex-col w-full h-full" data-testid="new-project-audit-view">
+      <div className="flex flex-col w-full h-full" data-testid="new-project-landing-view">
         {detectedPreview && (
           <div className="shrink-0 border-b border-gray-800 bg-gray-950 px-4 py-3 sm:px-8">
             <div className="mx-auto w-full max-w-5xl">
@@ -412,36 +335,17 @@ export default function NewProjectAdaptiveFlow({
           </div>
         )}
         <div className="flex-1 min-h-0">
-          <PostScaffoldAudit
+          <ProjectLandingHandoff
             projectId={createdProjectId}
-            projectName={
-              typeof questionnairePayload?.name === 'string' && questionnairePayload.name !== 'idk'
-                ? questionnairePayload.name.trim()
-                : createdProjectId
-            }
-            onConfirmed={handleAuditConfirmed}
-            onSkip={handleAuditSkip}
+            projectName={questionnairePayload?.name}
+            repoUrl={repoUrl}
+            payload={questionnairePayload}
+            onOpenProject={handleLandingOpenProject}
+            onOpenStarterTask={handleLandingStarterTask}
+            onClose={handleClose}
           />
         </div>
       </div>
-    );
-  }
-
-  if (view === 'landing') {
-    return (
-      <ProjectLandingHandoff
-        projectId={createdProjectId}
-        projectName={questionnairePayload?.name}
-        repoUrl={repoUrl}
-        payload={questionnairePayload}
-        report={landingContext?.report || null}
-        roster={landingContext?.roster || []}
-        agents={landingContext?.agents || []}
-        onOpenProject={handleLandingOpenProject}
-        onStartChat={handleLandingStartChat}
-        onOpenStarterTask={handleLandingStarterTask}
-        onClose={handleClose}
-      />
     );
   }
 
@@ -460,7 +364,7 @@ export default function NewProjectAdaptiveFlow({
           events={events}
           withGithub={withGithub}
           onRetry={handleRetry}
-          onClose={provisioningSucceeded ? handleContinueToAudit : handleClose}
+          onClose={provisioningSucceeded ? handleContinueToLanding : handleClose}
           onOpenRepo={handleOpenRepo}
         />
       </div>
