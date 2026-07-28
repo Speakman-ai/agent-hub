@@ -3,7 +3,6 @@ import { execFileSync, spawn, ChildProcess, exec, execFile } from 'child_process
 import { promisify } from 'util';
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
 import { parseDevServerConfig, type DevServerConfig } from '../dev-server-config.js';
@@ -32,10 +31,9 @@ import {
   patchOnboardContextFilesForShipping,
 } from '../finalize/shipping-prompt.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
-import { getUserByUsername, getUserById, createUser } from '../users-store.js';
+import { getUserById } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
-import { detectComposePreview } from '../scaffolding/detect-compose-preview.js';
 import { normalizeReplayConfig } from '../replays/replay-config.js';
 import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';

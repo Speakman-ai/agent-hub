@@ -26,7 +26,6 @@ import { Router, Request, Response } from 'express';
 import type { RouteDeps, AppConfig } from '../types.js';
 import { signJwt, verifyJwt } from '../jwt.js';
 import { getAuthRecord } from '../auth-store.js';
-import type { AuthenticatedRequest } from '../auth.js';
 import { buildAuthorizeUrl, exchangeCodeForToken, fetchUserInfo } from '../github-oauth.js';
 import {
   upsertGithubConnection,

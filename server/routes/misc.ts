@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { db } from '../db.js';
-import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../types.js';
+import type { RouteDeps, EnrichedAgent, AppConfig, Project } from '../types.js';
 import { getLogBuffer } from '../server-log.js';
 import { PUSH_EVENT_TYPES } from '../push.js';
 import { isAuthConfigured } from '../auth-store.js';

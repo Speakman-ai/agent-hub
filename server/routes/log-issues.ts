@@ -34,7 +34,6 @@ import {
   ownsIssueAnalyzeSessionClaim,
   claimIssueFixSession,
   releaseIssueFixSession,
-  releaseIssueFixClaimsForCard,
   ownsIssueFixSessionClaim,
   serializeLogIssue,
   type IssueStatus,
