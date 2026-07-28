@@ -1,7 +1,7 @@
 {
   "_comment": "Per-route allowed_unregistered counts. The OpenAPI coverage check (scripts/check-openapi-coverage.ts) fails when a route file exceeds its baseline. New routes default to 0 (must be documented). To migrate a file, add registerPath calls and lower its number here — `npm run check:openapi-coverage` prints a `Suggested baseline:` block whenever a file dropped below its allowance.",
   "_schema": "{ [routeName: string]: { allowed_unregistered: number, note?: string } }",
-  "agents": { "allowed_unregistered": 10, "note": "pre-existing migration debt (card 3ed3bfc9)" },
+  "agents": { "allowed_unregistered": 6, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "api-docs": { "allowed_unregistered": 1, "note": "Swagger UI static-asset routes: GET /api/docs/openapi.yaml returns the committed YAML spec verbatim — documenting it in OpenAPI itself adds no caller-visible contract." },
   "board": { "allowed_unregistered": 8, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "designs": { "allowed_unregistered": 9, "note": "pre-existing migration debt (card 3ed3bfc9)" },

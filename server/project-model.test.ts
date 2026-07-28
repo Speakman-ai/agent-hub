@@ -1,11 +1,15 @@
 import { getRequest } from './test/helpers.js';
 import config from './config.js';
 import { getDb } from './db.js';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import os from 'os';
 import path from 'path';
 import {
   findProject,
-  getProjects,
+  getProjectsPath,
   saveProjects,
+  migrateAgentMcpServers,
+  migrateStaleMcpConfigFiles,
   migrateWebhookRepoToProject,
   migrateWorkflowProjectWorkspaces,
   getProjectDataDir,
@@ -576,5 +580,106 @@ describe('resolveProjectSkillsDir', () => {
 
   it('returns "" only when neither ahw nor id is available', () => {
     expect(resolveProjectSkillsDir({ id: '' })).toBe('');
+  });
+});
+
+describe('MCP removal migrations', () => {
+  it('scrubs legacy agent mcpServers from memory and persisted projects.json', async () => {
+    const request = await getRequest();
+    const projId = `mcp-agent-scrub-${Date.now()}`;
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name: 'MCP Agent Scrub', cwd: '/tmp', color: '#abc' })
+      .expect(201);
+    createdProjectIds.push(projId);
+
+    const target = findProject(projId)!;
+    target.agents.push({
+      id: `${projId}-legacy`,
+      name: 'Legacy MCP Agent',
+      engine: 'claude-code',
+      role: 'dev',
+    });
+    const agent = target.agents[0];
+    const rawAgent = agent as unknown as Record<string, unknown>;
+    rawAgent.mcpServers = {
+      legacy: { command: 'credential-bearing-server', env: { TOKEN: 'secret' } },
+    };
+    saveProjects();
+
+    migrateAgentMcpServers();
+
+    expect(rawAgent.mcpServers).toBeUndefined();
+    const persisted = JSON.parse(readFileSync(getProjectsPath(), 'utf-8')) as Array<{
+      agents: Array<Record<string, unknown>>;
+    }>;
+    expect(persisted.flatMap((p) => p.agents).some((a) => 'mcpServers' in a)).toBe(false);
+  });
+
+  it('sweeps stale config files from project and persisted session worktree cwds', async () => {
+    const request = await getRequest();
+    const projId = `mcp-file-scrub-${Date.now()}`;
+    const root = mkdtempSync(path.join(os.tmpdir(), 'project-model-mcp-'));
+    const projectCwd = path.join(root, 'project');
+    const worktreeCwd = path.join(root, 'worktree');
+    const stalePaths = [projectCwd, worktreeCwd].map((cwd) => {
+      const filePath = path.join(cwd, '.claude', 'mcp-config.json');
+      mkdirSync(path.dirname(filePath), { recursive: true });
+      writeFileSync(
+        filePath,
+        JSON.stringify({ mcpServers: { legacy: { TOKEN: 'secret', _agentHub: true } } }),
+      );
+      writeFileSync(
+        path.join(cwd, '.claude', 'settings.json'),
+        JSON.stringify({
+          mcpServers: {
+            legacy: { TOKEN: 'settings-secret', _agentHub: true },
+            userAdded: { command: 'user-managed' },
+          },
+        }),
+      );
+      return filePath;
+    });
+
+    try {
+      await (
+        request as {
+          post(url: string): {
+            send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+          };
+        }
+      )
+        .post('/api/projects')
+        .send({ id: projId, name: 'MCP File Scrub', cwd: projectCwd, color: '#abc' })
+        .expect(201);
+      createdProjectIds.push(projId);
+
+      getDb()
+        .prepare('INSERT INTO sessions (id, agent_id, name, worktree_path) VALUES (?, ?, ?, ?)')
+        .run(
+          `mcp-file-session-${Date.now()}`,
+          `${projId}-agent`,
+          'legacy MCP session',
+          worktreeCwd,
+        );
+
+      migrateStaleMcpConfigFiles();
+
+      expect(stalePaths.every((filePath) => !existsSync(filePath))).toBe(true);
+      for (const cwd of [projectCwd, worktreeCwd]) {
+        const settings = JSON.parse(
+          readFileSync(path.join(cwd, '.claude', 'settings.json'), 'utf-8'),
+        ) as { mcpServers?: Record<string, { command?: string }> };
+        expect(settings.mcpServers).toEqual({ userAdded: { command: 'user-managed' } });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

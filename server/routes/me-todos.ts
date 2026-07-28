@@ -5,7 +5,7 @@
  * their own todos (spec TODO-MODEL). There is NO admin override: a todo is a
  * private capture primitive, so even an org Owner reading another user's todos
  * would be a privilege violation. Foreign / missing ids return 404 (not 403)
- * so they don't leak existence, matching the mcp-servers ownership convention.
+ * so they don't leak existence, matching the per-user ownership convention.
  *
  * Endpoints:
  *   GET    /api/me/todos            list (optional ?status=open|done)

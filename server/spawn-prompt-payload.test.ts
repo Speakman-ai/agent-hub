@@ -25,7 +25,7 @@ describe('spawn-prompt-payload', () => {
     });
 
     it('keeps the soft cap below the kernel cap with headroom', () => {
-      // ~28 KiB of headroom for engine flags, mcp-config paths,
+      // ~28 KiB of headroom for engine flags, config paths,
       // session ids, and any growth in the prompt builder.
       expect(SAFE_ARG_STRLEN_BYTES).toBeLessThan(MAX_ARG_STRLEN_BYTES);
       expect(MAX_ARG_STRLEN_BYTES - SAFE_ARG_STRLEN_BYTES).toBeGreaterThanOrEqual(20_000);

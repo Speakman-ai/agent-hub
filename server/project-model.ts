@@ -12,6 +12,7 @@ import { execSync } from 'child_process';
 import path from 'path';
 import config from './config.js';
 import { getDb, getStmts } from './db.js';
+import { removeStaleMcpConfigFiles } from './hooks.js';
 import { resolveProjectSkillsDir, setProjectSkillsDataDir } from './project-skill-paths.js';
 import {
   getProjectMode,
@@ -41,6 +42,8 @@ function initProjects(dataDir?: string): void {
   migrateWorkflowProjectWorkspaces();
   migrateProjectSkillDirectories();
   migrateWebhookRepoToProject();
+  migrateAgentMcpServers();
+  migrateStaleMcpConfigFiles();
 }
 
 /**
@@ -82,6 +85,66 @@ function migrateWorkflowProjectWorkspaces(): void {
       );
     }
   }
+}
+
+/**
+ * Scrub the retired `Agent.mcpServers` field out of persisted agents.
+ *
+ * The MCP subsystem was deleted (card 49f2e24e). Dropping the TypeScript
+ * property stops new writes but does nothing to `projects.json`, which is
+ * parsed with `JSON.parse` and re-serialized wholesale — unknown keys ride
+ * along untouched. On an install that ever configured a per-agent server
+ * that means the stored map (including any `env` values, which were kept in
+ * plaintext here, unlike the encrypted per-user registry) survives every
+ * boot AND is still handed to clients by the agent read routes, which
+ * serialize the same objects.
+ *
+ * Runs on every boot, persists only when it actually removed something, so
+ * the steady state is a no-op. Safe to delete once installs have aged past
+ * the removal release.
+ */
+function migrateAgentMcpServers(): void {
+  let removed = 0;
+  for (const project of projects) {
+    for (const agent of project.agents || []) {
+      const raw = agent as unknown as Record<string, unknown>;
+      if (raw.mcpServers === undefined) continue;
+      delete raw.mcpServers;
+      removed++;
+    }
+  }
+  if (removed === 0) return;
+  try {
+    saveProjects();
+    console.log(
+      `[Migration] ✓ Removed retired mcpServers config from ${removed} agent(s) in projects.json`,
+    );
+  } catch (err) {
+    console.warn(`[project-model] Failed to persist mcpServers scrub: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Remove plaintext MCP config files left in known project and session
+ * worktrees by the retired Claude spawn path. The session table retains the
+ * worktree cwd even after a session ends, so it gives the upgrade migration a
+ * bounded list of historical worktrees to clean without recursively walking
+ * arbitrary user directories.
+ *
+ * The operation is intentionally best-effort and idempotent. A missing or
+ * inaccessible worktree must not prevent the server from starting.
+ */
+function migrateStaleMcpConfigFiles(): void {
+  const cwds = projects.map((project) => project.cwd).filter(Boolean);
+  try {
+    const rows = getDb()
+      .prepare('SELECT worktree_path FROM sessions WHERE worktree_path IS NOT NULL')
+      .all() as Array<{ worktree_path: string | null }>;
+    cwds.push(...rows.map((row) => row.worktree_path).filter((cwd): cwd is string => Boolean(cwd)));
+  } catch {
+    // Fresh/legacy databases may not have the sessions table yet.
+  }
+  removeStaleMcpConfigFiles(cwds);
 }
 
 // ─── Core accessors ─────────────────────────────────────────────────
@@ -198,6 +261,8 @@ function reloadProjects(dataDir: string): void {
   hydrateProjects();
   migrateWorkflowProjectWorkspaces();
   migrateProjectSkillDirectories();
+  migrateAgentMcpServers();
+  migrateStaleMcpConfigFiles();
   // Auto-seeding Docs/Intake/Reviewer on reload is deprecated alongside the
   // sub-agent model (see CLAUDE.md "Flat Agent Model"). Context files are
   // still seeded so projects always have SOUL.md/AGENTS.md/etc. on disk.
@@ -691,6 +756,8 @@ export {
   migrateAhwDirectories,
   migrateWebhookRepoToProject,
   migrateWorkflowProjectWorkspaces,
+  migrateAgentMcpServers,
+  migrateStaleMcpConfigFiles,
   // State accessors
   getProjects,
   setProjects,

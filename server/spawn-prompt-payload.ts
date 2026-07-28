@@ -22,7 +22,7 @@
  *
  * The 100 KB soft cap is well below the kernel's 128 KiB hard ceiling
  * but leaves ~28 KB of headroom for any flags Claude/Codex still pass
- * inline (engine-session-id, model, mcp-config paths, etc.). It is not
+ * inline (engine-session-id, model, config paths, etc.). It is not
  * a hard wall on the agent's behalf — it's a defense against the cliff.
  */
 
@@ -40,7 +40,7 @@ export const MAX_ARG_STRLEN_BYTES = 131072;
 
 /**
  * Soft cap we enforce ourselves. Picked so that:
- *   • Other argv flags (model id, mcp-config path, session id) fit
+ *   • Other argv flags (model id, config path, session id) fit
  *     comfortably below the kernel ceiling even after concatenation
  *     with the prompt.
  *   • There's enough margin that the prompt builder can grow modestly

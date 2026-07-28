@@ -2,7 +2,7 @@
  * user_todos DDL — kept in its own module so `orgs.ts` (which initialises the
  * orgs DB and applies every schema) can import it without pulling in the full
  * `user-todos-store.ts` (which depends on `orgs.ts` for `getOrgsDb`). Mirrors
- * `google-connections-schema.ts` and `mcp-servers-schema.ts`.
+ * `google-connections-schema.ts` and `skill-credentials-schema.ts`.
  *
  * Cross-project personal todos live in the shared orgs.db, keyed by `user_id`,
  * NOT on any project board (spec TODO-MODEL). A todo is a per-user, global

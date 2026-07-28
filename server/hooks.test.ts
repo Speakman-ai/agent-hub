@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import os from 'os';
@@ -8,7 +8,12 @@ vi.mock('./config.js', () => ({
   default: { port: 3051, apiKey: 'test-key' },
 }));
 
-const { writeHooksConfig, removeHooksConfig } = await import('./hooks.js');
+const {
+  writeHooksConfig,
+  removeHooksConfig,
+  removeStaleMcpConfigFile,
+  removeStaleMcpSettingsFile,
+} = await import('./hooks.js');
 
 interface HookItem {
   type: string;
@@ -273,16 +278,15 @@ describe('writeHooksConfig — PreToolUse format guard', () => {
     expect(hasFormatGuard).toBe(false);
   });
 
-  // --- Regression: Claude Code does not read mcpServers from settings.json. ---
-  // The previous emission path wrote per-user MCP servers into
+  // --- Regression: settings.json must never carry an mcpServers block. ---
+  // An old emission path wrote per-user MCP servers into
   // .claude/settings.json::mcpServers, which the Claude Code loader
-  // silently ignored (verified via `claude mcp list`). The new path lives
-  // in mcp-spawn-config.ts::writeMcpConfigFile() + the CLI's
-  // `--mcp-config` flag. These tests pin the new contract:
-  //   1. writeHooksConfig must not write a `mcpServers` block (its API
-  //      no longer accepts one).
+  // silently ignored (verified via `claude mcp list`). Agent Hub no longer
+  // has an MCP registry at all, so these tests pin two things:
+  //   1. writeHooksConfig must not write a `mcpServers` block.
   //   2. Stale `_agentHub`-tagged blocks left behind by older versions
-  //      get scrubbed on the next write.
+  //      get scrubbed on the next write, so worktrees that predate the
+  //      removal don't keep a credential-bearing dead key forever.
 
   it('never writes mcpServers into settings.json (the API no longer accepts it)', () => {
     writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
@@ -290,7 +294,7 @@ describe('writeHooksConfig — PreToolUse format guard', () => {
     expect(settings.mcpServers).toBeUndefined();
   });
 
-  it('migrates a stale _agentHub-tagged mcpServers block out of settings.json', () => {
+  it('strips a stale _agentHub-tagged mcpServers block out of settings.json', () => {
     // Simulate an existing settings.json written by a pre-fix version.
     const claudeDir = path.join(tmpDir, '.claude');
     if (!existsSync(claudeDir)) {
@@ -339,5 +343,154 @@ describe('writeHooksConfig — PreToolUse format guard', () => {
     writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
     const after = readSettings();
     expect(after.mcpServers).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Stale .claude/mcp-config.json cleanup
+//
+// The removed MCP spawn path wrote decrypted `env` values and
+// `Authorization` headers into `<cwd>/.claude/mcp-config.json`, and its
+// own `removeMcpConfigFile` helper had no production caller — so the
+// file outlived every session that created it. Deleting the writer does
+// not clean up what it already wrote; these tests pin that it does now.
+// ═══════════════════════════════════════════════════════════════════
+
+describe('removeStaleMcpConfigFile', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'hooks-mcp-stale-'));
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  function seedStaleConfig(): string {
+    const claudeDir = path.join(tmpDir, '.claude');
+    mkdirSync(claudeDir, { recursive: true });
+    const filePath = path.join(claudeDir, 'mcp-config.json');
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        mcpServers: {
+          Linear: {
+            type: 'http',
+            url: 'https://mcp.linear.app/mcp',
+            headers: { Authorization: 'Bearer leaked' },
+            _agentHub: true,
+          },
+        },
+      }),
+    );
+    return filePath;
+  }
+
+  it('deletes a credential-bearing mcp-config.json left by the removed spawn path', () => {
+    const filePath = seedStaleConfig();
+    expect(existsSync(filePath)).toBe(true);
+
+    removeStaleMcpConfigFile(tmpDir);
+
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it('preserves unmarked user MCP entries in the conventional config path', () => {
+    const claudeDir = path.join(tmpDir, '.claude');
+    mkdirSync(claudeDir, { recursive: true });
+    const filePath = path.join(claudeDir, 'mcp-config.json');
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        mcpServers: {
+          AgentHub: { command: 'retired', _agentHub: true },
+          UserAdded: { command: 'their-bin' },
+        },
+      }),
+    );
+
+    removeStaleMcpConfigFile(tmpDir);
+
+    const after = JSON.parse(readFileSync(filePath, 'utf-8'));
+    expect(after.mcpServers.AgentHub).toBeUndefined();
+    expect(after.mcpServers.UserAdded).toEqual({ command: 'their-bin' });
+  });
+
+  it('leaves an unmarked user-owned config file untouched', () => {
+    const claudeDir = path.join(tmpDir, '.claude');
+    mkdirSync(claudeDir, { recursive: true });
+    const filePath = path.join(claudeDir, 'mcp-config.json');
+    const contents = JSON.stringify({ mcpServers: { UserAdded: { command: 'their-bin' } } });
+    writeFileSync(filePath, contents);
+
+    removeStaleMcpConfigFile(tmpDir);
+
+    expect(readFileSync(filePath, 'utf-8')).toBe(contents);
+  });
+
+  it('leaves the rest of .claude alone', () => {
+    seedStaleConfig();
+    const settingsPath = path.join(tmpDir, '.claude', 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ hooks: {} }));
+
+    removeStaleMcpConfigFile(tmpDir);
+
+    expect(existsSync(settingsPath)).toBe(true);
+  });
+
+  it('is a no-op when the file or directory is absent, and never throws', () => {
+    expect(() => removeStaleMcpConfigFile(tmpDir)).not.toThrow();
+    expect(() => removeStaleMcpConfigFile(path.join(tmpDir, 'does-not-exist'))).not.toThrow();
+    // Idempotent: a second pass over an already-cleaned worktree is silent.
+    seedStaleConfig();
+    removeStaleMcpConfigFile(tmpDir);
+    expect(() => removeStaleMcpConfigFile(tmpDir)).not.toThrow();
+  });
+
+  it('is invoked by removeHooksConfig teardown', () => {
+    const filePath = seedStaleConfig();
+    writeFileSync(path.join(tmpDir, '.claude', 'settings.json'), JSON.stringify({ hooks: {} }));
+
+    removeHooksConfig(tmpDir);
+
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it('scrubs marked settings entries during the boot migration without removing user entries', () => {
+    const settingsPath = path.join(tmpDir, '.claude', 'settings.json');
+    mkdirSync(path.dirname(settingsPath), { recursive: true });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        mcpServers: {
+          AgentHub: { command: 'retired', _agentHub: true },
+          UserAdded: { command: 'their-bin' },
+        },
+        customSetting: true,
+      }),
+    );
+
+    removeStaleMcpSettingsFile(tmpDir);
+
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(after.mcpServers.AgentHub).toBeUndefined();
+    expect(after.mcpServers.UserAdded).toEqual({ command: 'their-bin' });
+    expect(after.customSetting).toBe(true);
+  });
+
+  it('scrubs marked settings entries on teardown even when no hooks remain', () => {
+    const settingsPath = path.join(tmpDir, '.claude', 'settings.json');
+    mkdirSync(path.dirname(settingsPath), { recursive: true });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ mcpServers: { AgentHub: { command: 'retired', _agentHub: true } } }),
+    );
+
+    removeHooksConfig(tmpDir);
+
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).mcpServers).toBeUndefined();
   });
 });

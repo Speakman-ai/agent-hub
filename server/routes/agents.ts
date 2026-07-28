@@ -137,14 +137,6 @@ function resolveHeartbeatUpdateOwner(
   return heartbeatRequestOwner(req);
 }
 
-interface McpServerInput {
-  command?: string;
-  url?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  cwd?: string;
-}
-
 /**
  * Translate a Zod-parsed browser-numeric dim (`number | null | undefined`)
  * to the `'delete' | number | undefined` tristate consumed by
@@ -676,105 +668,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     delete agent.hooks;
     saveProjects();
     res.json({ hooks: {}, supportedEvents: HOOK_EVENTS });
-  });
-
-  // ─── MCP Server configuration ────────────────────────────────────────
-
-  router.get('/api/agents/:agentId/mcp-servers', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
-    if (!found) return;
-    res.json({ mcpServers: found.agent.mcpServers || {} });
-  });
-
-  router.put('/api/agents/:agentId/mcp-servers', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
-    if (!found) return;
-    const { agent } = found;
-
-    const { mcpServers } = req.body as { mcpServers?: Record<string, McpServerInput> };
-    if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) {
-      return res.status(400).json({ error: 'mcpServers object is required' });
-    }
-
-    for (const [name, server] of Object.entries(mcpServers)) {
-      if (!name || typeof name !== 'string') {
-        return res.status(400).json({ error: 'Server name must be a non-empty string' });
-      }
-      if (!server.command && !server.url) {
-        return res.status(400).json({ error: `Server "${name}" must have either command or url` });
-      }
-      if (server.command && typeof server.command !== 'string') {
-        return res.status(400).json({ error: `Server "${name}" command must be a string` });
-      }
-      if (server.url && typeof server.url !== 'string') {
-        return res.status(400).json({ error: `Server "${name}" url must be a string` });
-      }
-      if (server.args && !Array.isArray(server.args)) {
-        return res.status(400).json({ error: `Server "${name}" args must be an array` });
-      }
-      if (server.env && (typeof server.env !== 'object' || Array.isArray(server.env))) {
-        return res.status(400).json({ error: `Server "${name}" env must be an object` });
-      }
-    }
-
-    agent.mcpServers = mcpServers;
-    saveProjects();
-    res.json({ mcpServers: agent.mcpServers });
-  });
-
-  router.put('/api/agents/:agentId/mcp-servers/:serverName', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
-    if (!found) return;
-    const { agent } = found;
-    const serverName = req.params.serverName as string;
-    const server = req.body as McpServerInput;
-
-    if (!server.command && !server.url) {
-      return res.status(400).json({ error: 'Server must have either command or url' });
-    }
-    if (server.command && typeof server.command !== 'string') {
-      return res.status(400).json({ error: 'command must be a string' });
-    }
-    if (server.url && typeof server.url !== 'string') {
-      return res.status(400).json({ error: 'url must be a string' });
-    }
-    if (server.args && !Array.isArray(server.args)) {
-      return res.status(400).json({ error: 'args must be an array' });
-    }
-    if (server.env && (typeof server.env !== 'object' || Array.isArray(server.env))) {
-      return res.status(400).json({ error: 'env must be an object' });
-    }
-
-    if (!agent.mcpServers) agent.mcpServers = {};
-
-    const serverConfig: McpServerInput = {};
-    if (server.command) serverConfig.command = server.command;
-    if (server.url) serverConfig.url = server.url;
-    if (server.args?.length) serverConfig.args = server.args;
-    if (server.env && Object.keys(server.env).length) serverConfig.env = server.env;
-    if (server.cwd) serverConfig.cwd = server.cwd;
-
-    agent.mcpServers[serverName] = serverConfig;
-    saveProjects();
-    res.json({ mcpServers: agent.mcpServers });
-  });
-
-  router.delete('/api/agents/:agentId/mcp-servers/:serverName', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
-    if (!found) return;
-    const { agent } = found;
-    const serverName = req.params.serverName as string;
-
-    if (!agent.mcpServers || !agent.mcpServers[serverName]) {
-      return res.status(404).json({ error: `MCP server "${serverName}" not found` });
-    }
-
-    delete agent.mcpServers[serverName];
-    if (Object.keys(agent.mcpServers).length === 0) {
-      delete agent.mcpServers;
-    }
-    saveProjects();
-    res.json({ mcpServers: agent.mcpServers || {} });
   });
 
   // ─── Context endpoints ─────────────────────────────────────────────

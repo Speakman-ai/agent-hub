@@ -195,7 +195,6 @@ import createReplaysDashboardRoutes from './routes/replays-dashboard.js';
 import createReplayPlaylistRoutes from './routes/replay-playlists.js';
 import createRumSessionsRoutes from './routes/rum-sessions.js';
 import createAuthRoutes from './routes/auth.js';
-import createMcpServerRoutes from './routes/mcp-servers.js';
 import createMeTodosRoutes from './routes/me-todos.js';
 import createMeDashboardRoutes from './routes/me-dashboard.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
@@ -1509,7 +1508,6 @@ app.use(
       ),
   }),
 );
-app.use(createMcpServerRoutes());
 app.use(createMeTodosRoutes(routeDeps));
 app.use(createMeDashboardRoutes(routeDeps));
 // PR-env settings/provisioning routes and the `pr_env_config` DB row

@@ -1,9 +1,8 @@
 import Database from 'better-sqlite3';
 import path from 'path';
-import { mkdirSync, existsSync, readFileSync, readdirSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync, readdirSync, unlinkSync } from 'fs';
 import config from './config.js';
 import type { OrgRow } from './types.js';
-import { MCP_SERVERS_SCHEMA } from './mcp-servers-schema.js';
 import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
 import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
@@ -160,12 +159,6 @@ export function initOrgsDb(): void {
     CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token_hash);
   `);
 
-  // MCP-server registry (per-user). Replaces the deleted Nango integration.
-  // Each row is a Claude Code / Cursor MCP server config that gets injected
-  // into the spawn via `--mcp-config`. Owned by exactly one Hub user;
-  // resolved at spawn time keyed on session.owner_user_id. See
-  // server/mcp-servers-store.ts for the read/write surface.
-  orgsDb.exec(MCP_SERVERS_SCHEMA);
   orgsDb.exec(USER_SKILL_CREDENTIALS_SCHEMA);
   // Per-user Google OAuth connection (tokens encrypted at rest). Separate
   // table rather than columns on `users` — keeps the encrypted token blobs
@@ -280,17 +273,27 @@ export function initOrgsDb(): void {
     orgsDb.exec('ALTER TABLE user_skill_credentials ADD COLUMN masked_preview TEXT');
   }
 
-  // Migration: drop the two Nango-era tables. The Nango integration was
-  // ripped out in favour of the MCP-server registry; these tables held
-  // operator-tier OAuth secrets and per-user OAuth `connection_id`s
-  // that have no MCP analogue. Use IF EXISTS so fresh installs are a
-  // no-op. Existing installs that had Nango connections lose them on
-  // boot — there is no migration path because the data shape is wholly
-  // incompatible with the MCP-server replacement.
+  // Migration: drop the Nango-era and MCP-registry tables. Both held
+  // per-user third-party credentials for features that no longer exist, so
+  // there is no migration path and nothing to preserve. `IF EXISTS` makes
+  // fresh installs a no-op; without it an install that once created these
+  // tables keeps them forever, since every schema statement above is
+  // `CREATE TABLE IF NOT EXISTS`. Dropping a table drops its indexes.
   orgsDb.exec(`
     DROP TABLE IF EXISTS user_integrations;
     DROP TABLE IF EXISTS integration_providers;
+    DROP TABLE IF EXISTS mcp_servers;
   `);
+
+  // The MCP registry encrypted its env/header secrets with an AES-256-GCM
+  // key minted next to orgs.db. The ciphertext is gone with the table, so
+  // the key is now an unreferenced secret on disk — remove it.
+  try {
+    const mcpKeyPath = path.join(path.dirname(dbPath), 'mcp-servers-secret.key');
+    if (existsSync(mcpKeyPath)) unlinkSync(mcpKeyPath);
+  } catch {
+    // Best-effort: a stale key file must never block orgs.db init.
+  }
 
   // Migration: earlier Phase 3 commits created `invites` with FKs that had
   // no ON DELETE action (SQLite's NO ACTION default). With foreign_keys =

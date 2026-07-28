@@ -21,12 +21,10 @@ import { getWikiContext } from './wiki.js';
 import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from './memory.js';
 import { listEnabledSkills } from './agent-skills-list.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
-import { writeHooksConfig } from './hooks.js';
+import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
-import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
-import { buildMcpServersMap, writeMcpConfigFile } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import { runGoogleReadAction } from './google-react.js';
 import {
@@ -3233,68 +3231,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const CODEX_BIN = getCodexBin();
       const GROK_BIN = getGrokBin();
 
-      // `ownerId` / `credsOwnerId` / `sessionCliEnv` resolved above (before
-      // cursor create-chat). Per-user MCP servers (claude-code only — cursor/gemini/codex have
-      // their own MCP loading rules and don't take --mcp-config). Resolved
-      // BEFORE the engine arg branch so the Claude branch can append
-      // `--mcp-config` / `--strict-mcp-config` flags. The actual file write
-      // happens just below this block once `effectiveCwd` semantics are in
-      // play; the resolved map is also reused by the hooks-config branch.
-      let mergedMcpServers: Record<string, import('./types.js').McpServerConfig> | undefined;
-      let mcpConfigPath: string | null = null;
-      if (engine === 'claude-code') {
-        try {
-          const userMcpRows = ownerId ? listEnabledMcpServersForUser(ownerId) : [];
-          if (
-            (agent.mcpServers && Object.keys(agent.mcpServers).length > 0) ||
-            userMcpRows.length > 0
-          ) {
-            mergedMcpServers = buildMcpServersMap(userMcpRows, agent.mcpServers);
-          }
-        } catch (err) {
-          // Best-effort; the spawn proceeds with agent.mcpServers only.
-          const summary = (err as Error).message
-            .replace(/[\r\n|]+/g, ' ')
-            .trim()
-            .slice(0, 200);
-          const meta = JSON.stringify({
-            v: 2,
-            sev: 'soft',
-            resolution: 'recovered',
-            session: sessionId,
-            tags: ['mcp-servers', 'spawn'],
-          });
-          console.error(
-            `TOOL_ERROR | ${new Date().toISOString()} | mcp-servers | spawn lookup | error | ${summary} | ${meta}`,
-          );
-          mergedMcpServers = agent.mcpServers;
-        }
-        // Write `.claude/mcp-config.json`. Returns null when there are no
-        // servers to emit; the Claude args branch checks the path before
-        // appending the flag so an empty/missing file never gets passed
-        // to `--mcp-config` (which would, paired with `--strict-mcp-config`,
-        // unintentionally suppress whatever's at higher scopes).
-        try {
-          mcpConfigPath = writeMcpConfigFile(effectiveCwd, mergedMcpServers);
-        } catch (err) {
-          const summary = (err as Error).message
-            .replace(/[\r\n|]+/g, ' ')
-            .trim()
-            .slice(0, 200);
-          const meta = JSON.stringify({
-            v: 2,
-            sev: 'soft',
-            resolution: 'recovered',
-            session: sessionId,
-            tags: ['mcp-servers', 'spawn-write'],
-          });
-          console.error(
-            `TOOL_ERROR | ${new Date().toISOString()} | mcp-config-file | write | error | ${summary} | ${meta}`,
-          );
-          mcpConfigPath = null;
-        }
-      }
-
       const awsSsoEnabledForProject = projectHasAwsSsoProfiles(project);
       let projectAwsFiles: ProjectAwsFiles | undefined;
       if (awsSsoEnabledForProject) {
@@ -3543,16 +3479,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // to it for skills outside the bundled list (see claude-cli-args.ts).
           ...disableNativeSkillToolArgs({ codeMutationTools: hubOnlySession }),
         ];
-        // Wire per-session MCP config when we wrote one above. `--mcp-config`
-        // is the only documented Claude Code MCP source that fits Agent
-        // Hub's per-session lifecycle; `.claude/settings.json::mcpServers`
-        // is silently ignored by the loader (verified via `claude mcp list`).
-        // `--strict-mcp-config` ensures the agent only sees servers Agent
-        // Hub controls — no surprises from hand-edited `~/.claude.json` or
-        // `.mcp.json` files in the worktree.
-        if (mcpConfigPath) {
-          args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
-        }
         if (isNewEngineSession) {
           args.push('--session-id', sessionId);
         } else {
@@ -3645,13 +3571,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       if (engine === 'claude-code') {
+        // Scrub a `.claude/mcp-config.json` written by the removed MCP spawn
+        // path before it stops being read. Unconditional because the old
+        // writer ran for every claude-code spawn, not just the worktree /
+        // agent-hooks cases below.
+        removeStaleMcpConfigFile(effectiveCwd);
         const isWorktree = effectiveCwd !== project.cwd;
         const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
-        // MCP server emission moved up: see the `mergedMcpServers` /
-        // `mcpConfigPath` block before the args branch. The hooks-config
-        // file is now strictly about hooks (Stop, format guard, agent
-        // hooks); MCP lives in `.claude/mcp-config.json` paired with the
-        // Claude CLI's `--mcp-config` flag.
         if (isWorktree || hasAgentHooks) {
           try {
             writeHooksConfig(effectiveCwd, sessionId, {

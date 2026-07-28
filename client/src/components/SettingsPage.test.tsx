@@ -64,7 +64,6 @@ import { api } from '../utils/api';
       Promise.resolve({ agentEngineOverrides: { [id]: { engine: body.engine } } }),
     ),
     deleteMyAgentEngineOverride: vi.fn().mockResolvedValue({ agentEngineOverrides: {} }),
-    getMcpServers: vi.fn().mockResolvedValue({ mcpServers: {} }),
     getSkills: vi.fn().mockResolvedValue([]),
     getGlobalSkills: vi.fn().mockResolvedValue([]),
     getGlobalSkill: vi.fn().mockResolvedValue({ content: '' }),
@@ -141,9 +140,9 @@ describe('SettingsPage — tab labels', () => {
     expect(queryByRole('button', { name: /^Integrations$/ })).toBeNull();
   });
 
-  it('lands the legacy Settings → Integrations deep link on General (no Skills MCP redirect)', async () => {
-    // MCP moved off the Skills page into per-agent config; the old
-    // `?tab=integrations` link must no longer bounce to `skills:mcp`.
+  it('lands the legacy Settings → Integrations deep link on General', async () => {
+    // The Integrations tab is gone; the old `?tab=integrations` link must
+    // land on General rather than bouncing to the removed `skills:mcp`.
     const onNavigate = vi.fn();
     const { findByRole } = render(
       <SettingsPage

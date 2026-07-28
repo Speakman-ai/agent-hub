@@ -2,7 +2,7 @@
  * Google user OAuth connection DDL — kept in its own module so `orgs.ts`
  * (which initialises the orgs DB and applies the schema) can import it without
  * pulling in the full `google-connections-store.ts` (which depends on `orgs.ts`
- * for `getOrgsDb`). Mirrors `mcp-servers-schema.ts`.
+ * for `getOrgsDb`). Mirrors `user-todos-schema.ts`.
  *
  * Unlike GitHub's connection (six nullable columns on `users`), Google lives in
  * a dedicated table: the token columns are ENCRYPTED at rest via secret-crypto

@@ -6,7 +6,7 @@
  *   1. `server/routes/agents.ts` imports the exported request schemas and
  *      uses `safeParse(...)` to validate incoming bodies. The handler
  *      keeps its downstream logic (workspace creation, FK cascade-deletes,
- *      sub-agent ref scrub, hooks/MCP/context plumbing, …) — only the
+ *      sub-agent ref scrub, hooks/context plumbing, …) — only the
  *      hand-rolled `if (!field) return 400` checks are replaced.
  *
  *   2. `server/openapi/generate.ts` walks `server/routes/*.ts` and
@@ -68,7 +68,7 @@ export const AgentComponent = registerComponent(
     })
     .openapi({
       description:
-        'An agent. Many additional optional fields exist on the row (subAgents, hooks, mcpServers, …) — only the stable, documented surface is enumerated here.',
+        'An agent. Many additional optional fields exist on the row (subAgents, hooks, …) — only the stable, documented surface is enumerated here.',
     }),
 );
 

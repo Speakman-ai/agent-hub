@@ -7,7 +7,7 @@
  *
  * The DDL lives here as an exported constant so both the runtime store
  * (`logs-db.ts`) and its Vitest coverage share one source of truth for the
- * schema (same pattern as `runner-queue-schema.ts` / `mcp-servers-schema.ts`).
+ * schema (same pattern as `runner-queue-schema.ts` / `user-todos-schema.ts`).
  *
  * Data model: the normalized rows follow the stable OpenTelemetry LogRecord
  * shape (decision LOG-INGEST) — timestamp, observed timestamp, severity

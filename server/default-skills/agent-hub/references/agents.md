@@ -140,7 +140,7 @@ scaffolding loop.
 
 `owner_user_id` ties the agent to a specific user account. When a
 session spawns, the server resolves credentials (Claude / Cursor /
-Gemini / Codex auth, skill credentials, per-user MCP servers, etc.)
+Gemini / Codex auth, skill credentials, etc.)
 through that owner. This is the universal reviewer lock — see the wiki
 page `spawn-identity-isolation-universal-reviewer-lock` for the full
 contract.
