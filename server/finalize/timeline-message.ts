@@ -15,6 +15,7 @@ export const FINALIZE_TIMELINE_KINDS = [
   'finalize_checks_round',
   'finalize_flake_recovered',
   'finalize_ready_to_push',
+  'finalize_run_summary',
   'finalize_run_terminal',
 ] as const;
 
@@ -300,6 +301,31 @@ export function writeFinalizeReadyToPushTimeline(
       validatedHeadSha: args.validatedHeadSha,
       host: args.host ?? 'github',
     },
+  });
+}
+
+/**
+ * End-of-run briefing: what changed, what the reviewer raised, what a human
+ * should still test by hand. Written once per run when it parks at a fully
+ * validated ready-to-push, so the operator deciding whether to push has the
+ * whole picture in one block instead of scrolling the round-by-round history.
+ *
+ * `content` carries the full markdown because the web client renders the
+ * structured payload but mobile and plain-text consumers only see the string.
+ */
+export function writeFinalizeRunSummaryTimeline(
+  deps: TimelineMessageDeps,
+  args: {
+    sessionId: string | null | undefined;
+    content: string;
+    payload: Record<string, unknown>;
+  },
+): string | null {
+  return writeFinalizeTimelineMessage(deps, {
+    sessionId: args.sessionId,
+    kind: 'finalize_run_summary',
+    content: args.content,
+    payload: args.payload,
   });
 }
 

@@ -297,6 +297,9 @@ function makeStmts(): {
     getMessageById: {
       get: vi.fn(() => undefined),
     } as unknown as OrchestratorDeps['stmts']['getMessageById'],
+    getMessages: {
+      all: vi.fn(() => []),
+    } as unknown as OrchestratorDeps['stmts']['getMessages'],
     upsertFinalizeRunStep: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['upsertFinalizeRunStep'],
@@ -437,6 +440,7 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
   pushed: ReturnType<typeof vi.fn>;
   resolveHead: ReturnType<typeof vi.fn>;
   dispatchAndWaitForTurnEnd: ReturnType<typeof vi.fn>;
+  emitRunSummary: ReturnType<typeof vi.fn>;
 } {
   const stmts = makeStmts();
   const broadcast = vi.fn();
@@ -445,6 +449,8 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
     .mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' } satisfies PushAndCreatePrResult);
   const resolveHead = vi.fn().mockResolvedValue('deadbeefcafebabe');
   const dispatchAndWaitForTurnEnd = vi.fn().mockResolvedValue({ userMessagePersisted: true });
+  // Stubbed by default so these tests never shell out to git or reach an LLM.
+  const emitRunSummary = vi.fn().mockResolvedValue(null);
   let counter = 0;
 
   const deps: OrchestratorDeps = {
@@ -464,6 +470,7 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
     runReviewerDispatch: fakeRunReview(REVIEW_OK),
     runStepPhase: fakeRunSteps(STEPS_OK),
     dispatchFixMessage: fakeDispatchFix(FIX_TURN_ENDED),
+    emitRunSummary: emitRunSummary as unknown as OrchestratorDeps['emitRunSummary'],
     transactional: <T>(fn: () => T) => fn(),
     now: () => 1_700_000_000_000,
     newId: () => `run-${++counter}`,
@@ -471,7 +478,15 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
     ...overrides,
   };
 
-  return { deps, broadcast, stmts, pushed, resolveHead, dispatchAndWaitForTurnEnd };
+  return {
+    deps,
+    broadcast,
+    stmts,
+    pushed,
+    resolveHead,
+    dispatchAndWaitForTurnEnd,
+    emitRunSummary,
+  };
 }
 
 beforeEach(() => {
@@ -814,6 +829,46 @@ describe('runFinalize — split modes', () => {
       (call) => JSON.parse(call[7] as string).kind,
     );
     expect(timelineKinds).not.toContain('finalize_ready_to_push');
+  });
+
+  it('emits the end-of-run summary when a run parks fully validated', async () => {
+    const { deps, emitRunSummary } = makeDeps({
+      config: { personalOAuth: null, openaiApiKey: 'sk-test' },
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(emitRunSummary).toHaveBeenCalledTimes(1);
+    const args = emitRunSummary.mock.calls[0]?.[1];
+    expect(args).toMatchObject({
+      sessionId: 'sess-1',
+      worktreePath: '/tmp/wt',
+      baseBranch: 'main',
+      headSha: 'deadbeefcafebabe',
+      config: { openaiApiKey: 'sk-test' },
+    });
+    expect(args.card).toBe(fakeCard);
+  });
+
+  it('does not emit a summary for a single-phase run awaiting its sibling', async () => {
+    const { deps, emitRunSummary } = makeDeps();
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(emitRunSummary).not.toHaveBeenCalled();
+  });
+
+  it('parks ready_to_push even when the summary writer throws', async () => {
+    const { deps } = makeDeps({
+      emitRunSummary: vi.fn().mockRejectedValue(new Error('summary blew up')) as never,
+    });
+
+    // The summary is a convenience; it must never take the run down with it.
+    await expect(runFinalize(deps, baseOpts())).resolves.toMatchObject({
+      kind: 'ready_to_push',
+    });
   });
 
   it('cancels instead of parking ready_to_push when Stop is pressed during CI', async () => {

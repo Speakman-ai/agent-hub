@@ -18,9 +18,9 @@
  *   - Throws on error — the orchestrator catches and maps to
  *     `infra_error / github_push_5xx` (see `terminate()` in `orchestrator.ts`).
  */
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import type { AppConfig } from '../types.js';
+import { MAX_BUFFER, collectPrCommits, collectPrDiffStat, execGit } from './branch-facts.js';
+import type { CommitInfo } from './branch-facts.js';
 import {
   autoGitChildEnv,
   resolveAutoGitGithubToken,
@@ -36,7 +36,10 @@ import type {
   PushAndCreatePrResult,
 } from './orchestrator.js';
 
-const execFileAsync = promisify(execFile);
+// Re-exported so existing importers (origin-guard, the Hub-native push path,
+// their tests) keep a single entry point for the git helpers.
+export { execGit, collectPrCommits, collectPrDiffStat };
+export type { CommitInfo };
 
 /** Config slice the LLM PR-summary step needs (host-wide API keys). */
 export type PrSummaryConfig = Pick<AppConfig, 'openaiApiKey'> & {
@@ -66,37 +69,8 @@ export async function resolvePrSummaryOverride(
   });
 }
 
-/**
- * Run a command, rethrowing with stderr/stdout folded into the message.
- *
- * `execFileAsync`'s rejection `.message` is typically just `Command failed:
- * <cmd>` — the actual git / gh diagnostic lands on `err.stderr`, which the
- * Finalize push path otherwise discards. Folding it in here is what makes the
- * `[finalize-push] github_push_5xx ...` server log line actionable.
- */
-export async function execGit(
-  file: string,
-  argv: string[],
-  opts: Parameters<typeof execFileAsync>[2],
-): Promise<{ stdout: string; stderr: string }> {
-  try {
-    const result = await execFileAsync(file, argv, opts);
-    return { stdout: String(result.stdout), stderr: String(result.stderr) };
-  } catch (err) {
-    const e = err as { message?: string; stderr?: unknown; stdout?: unknown };
-    const stderr = e.stderr ? String(e.stderr).trim() : '';
-    const stdout = e.stdout ? String(e.stdout).trim() : '';
-    const detail = stderr || stdout;
-    const base = `${file} ${argv[0] ?? ''} failed: ${e.message ?? 'unknown error'}`;
-    throw new Error(detail ? `${base}\n${detail}` : base);
-  }
-}
-
 /** Per-call timeout for `git push` / `gh pr create`. Generous — large pushes are slow. */
 const PUSH_TIMEOUT_MS = 5 * 60 * 1000;
-
-/** Cap stdout/stderr at 10 MiB to match auto-git.ts's STREAM_OUTPUT_MAX_BYTES. */
-const MAX_BUFFER = 10 * 1024 * 1024;
 
 /**
  * Resolve the authoritative origin SHA for `branch` via `ls-remote`, used to
@@ -184,11 +158,6 @@ function parsePrListUrl(stdout: string): string | null {
   }
 }
 
-interface CommitInfo {
-  subject: string;
-  body?: string;
-}
-
 function normalizeTitle(rawTitle: string): string {
   const normalized = rawTitle.replace(/\s+/g, ' ').trim();
   if (!normalized) return 'Untitled change';
@@ -196,60 +165,6 @@ function normalizeTitle(rawTitle: string): string {
   return stripped.length > 70
     ? `${stripped.slice(0, 67).replace(/[.!?:;,\s]+$/, '')}...`
     : stripped;
-}
-
-export async function collectPrCommits(
-  worktreePath: string,
-  baseBranch: string,
-  env: NodeJS.ProcessEnv,
-): Promise<CommitInfo[]> {
-  const refs = [baseBranch, `origin/${baseBranch}`];
-  for (const ref of refs) {
-    try {
-      const { stdout } = await execGit('git', ['log', `${ref}..HEAD`, '-z', '--format=%s%n%b'], {
-        cwd: worktreePath,
-        env,
-        timeout: 10_000,
-        maxBuffer: MAX_BUFFER,
-      });
-      const commits: CommitInfo[] = [];
-      for (const record of stdout.split('\0')) {
-        const trimmed = record.replace(/\n+$/, '');
-        if (!trimmed) continue;
-        const newlineIdx = trimmed.indexOf('\n');
-        const subject = (newlineIdx === -1 ? trimmed : trimmed.slice(0, newlineIdx)).trim();
-        if (!subject) continue;
-        const body = newlineIdx === -1 ? '' : trimmed.slice(newlineIdx + 1).trim();
-        commits.push(body ? { subject, body } : { subject });
-      }
-      return commits;
-    } catch {
-      // Try the next ref. If neither resolves, callers fall back to card data.
-    }
-  }
-  return [];
-}
-
-export async function collectPrDiffStat(
-  worktreePath: string,
-  baseBranch: string,
-  env: NodeJS.ProcessEnv,
-): Promise<string> {
-  const refs = [baseBranch, `origin/${baseBranch}`];
-  for (const ref of refs) {
-    try {
-      const { stdout } = await execGit('git', ['diff', '--stat', `${ref}...HEAD`], {
-        cwd: worktreePath,
-        env,
-        timeout: 10_000,
-        maxBuffer: MAX_BUFFER,
-      });
-      return stdout.trim();
-    } catch {
-      // Try the next ref. Missing diff stat should not block PR creation.
-    }
-  }
-  return '';
 }
 
 /**

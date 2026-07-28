@@ -117,6 +117,7 @@ import {
   writeFinalizeRunTerminalTimeline,
   type TimelineMessageDeps,
 } from './timeline-message.js';
+import { emitFinalizeRunSummary } from './run-summary.js';
 import { classifyRunFlakeRecovery, recordJobAttemptsForRound } from './flake-gate.js';
 import {
   blockedGateResult,
@@ -259,7 +260,14 @@ export interface SpawnedSession {
 export type SpawnSessionFn = (args: SpawnSessionArgs) => Promise<SpawnedSession | null>;
 
 export interface OrchestratorDeps {
-  config: Pick<AppConfig, 'personalOAuth'>;
+  /**
+   * `openaiApiKey` gates the end-of-run summary's LLM narrative. It is the only
+   * provider key here on purpose: `AppConfig` has no host-wide Anthropic key
+   * (Claude credentials are per-account by design — see the "AI provider
+   * credentials" note in `server/config.ts`), and `openaiApiKey` is the
+   * sanctioned host key for background LLM work like session titles.
+   */
+  config: Pick<AppConfig, 'personalOAuth'> & Partial<Pick<AppConfig, 'openaiApiKey'>>;
   stmts: Pick<
     Stmts,
     | 'getFinalizeRun'
@@ -282,6 +290,8 @@ export interface OrchestratorDeps {
     | 'addMessage'
     | 'touchSession'
     | 'getMessageById'
+    // Read back by the end-of-run summary to replay this run's review rounds.
+    | 'getMessages'
     | 'upsertFinalizeRunStep'
     | 'beginFinalizeRunStepAttempt'
     | 'finishFinalizeRunStepIfAttempt'
@@ -367,6 +377,8 @@ export interface OrchestratorDeps {
   dispatchFixMessage?: typeof dispatchFixMessage;
   /** Spawn originating agent after §7 fix dispatch (see `spawn-fix-turn.ts`). */
   spawnFixTurn?: SpawnFixTurnFn;
+  /** End-of-run summary writer. Tests inject a stub to avoid git + LLM calls. */
+  emitRunSummary?: typeof emitFinalizeRunSummary;
   /** Override the active-time budget cap (seconds). Defaults to {@link FINALIZE_BUDGET_SECONDS}. */
   budgetSeconds?: number;
   /** Deterministic clock injection (defaults to `Date.now`). */
@@ -1830,6 +1842,37 @@ export async function runFinalize(
             round: loopCount,
             host: opts.project.gitHost === 'agenthub' ? 'agenthub' : 'github',
           });
+          // Awaited so the briefing lands ahead of the push/merge automation's
+          // own terminal block. The run is already parked and off the budget
+          // clock here, so the bounded LLM wait costs nothing but push latency.
+          // The summary is a convenience — a failure must never unwind a run
+          // that already passed every gate.
+          try {
+            await (deps.emitRunSummary ?? emitFinalizeRunSummary)(
+              {
+                stmts: deps.stmts,
+                broadcast: deps.broadcast,
+                log,
+                newId: deps.newId,
+              },
+              {
+                sessionId,
+                runId,
+                round: loopCount,
+                worktreePath,
+                baseBranch: opts.baseBranch,
+                headSha: gateOutcome.validatedHeadSha,
+                card: opts.card,
+                config: { openaiApiKey: deps.config.openaiApiKey ?? null },
+              },
+            );
+          } catch (err) {
+            log(
+              `[finalize-orchestrator] run=${runId} end-of-run summary failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
           // Push/merge automation only fires on full validation — auto-pushing
           // a single-phase run would ship code that skipped the other gate. The
           // flake gate withholds automation for BOTH a flake-recovered run (a

@@ -9,6 +9,7 @@ export const FINALIZE_TIMELINE_KINDS = [
   'finalize_review_round',
   'finalize_checks_round',
   'finalize_ready_to_push',
+  'finalize_run_summary',
   'finalize_run_terminal',
   'finalize_fix_dispatch',
   'finalize_step_output',
@@ -31,6 +32,21 @@ export function parseFinalizeTimelineKind(metadataString: any) {
   return parsed.kind;
 }
 
+/**
+ * Returns the **flat** metadata object: `{ kind, ...payload }`.
+ *
+ * The server writes metadata as `JSON.stringify({ kind, ...payload })` (see
+ * `writeFinalizeTimelineMessage`), so every payload field sits at the TOP LEVEL
+ * — there is no `payload` property to read through. All the per-kind parsers
+ * below therefore read `parsed.<field>` directly.
+ *
+ * ⚠️ The server has an identically-named `parseFinalizeTimelineMetadata` that
+ * returns `{ kind, payload }` instead — same name, different shape. `payload`
+ * there is an alias for this same flat object, not a nested one. Do not "fix"
+ * the parsers below to read `parsed.payload.<field>`: that yields undefined for
+ * every field and silently renders empty blocks. Pinned by the
+ * "server-shaped (flat) metadata" test in FinalizeRunSummaryBlock.test.tsx.
+ */
 export function parseFinalizeTimelineMetadata(metadataString: any) {
   const parsed = parseRaw(metadataString);
   if (!parsed || typeof parsed.kind !== 'string') return null;
@@ -99,6 +115,54 @@ export function parseFinalizeReadyToPushMetadata(metadataString: any) {
     // False for pre-feature messages — lets the block fall back to the
     // live project state instead of trusting the default.
     hostStamped: parsed.host === 'agenthub' || parsed.host === 'github',
+  };
+}
+
+function normalizeSummaryFinding(raw: any) {
+  if (!raw || typeof raw !== 'object') return null;
+  const body = typeof raw.body === 'string' ? raw.body : '';
+  if (!body) return null;
+  const lineStart = raw.lineStart ?? raw.line_start;
+  const lineEnd = raw.lineEnd ?? raw.line_end;
+  return {
+    filePath: raw.filePath ?? raw.file_path ?? '(unknown)',
+    lineStart: typeof lineStart === 'number' ? lineStart : null,
+    lineEnd: typeof lineEnd === 'number' ? lineEnd : null,
+    body,
+  };
+}
+
+export function parseFinalizeRunSummaryMetadata(metadataString: any) {
+  const parsed = parseFinalizeTimelineMetadata(metadataString);
+  if (!parsed || parsed.kind !== 'finalize_run_summary') return null;
+  const rounds = Array.isArray(parsed.reviewRounds) ? parsed.reviewRounds : [];
+  return {
+    runId: parsed.runId ?? parsed.run_id ?? null,
+    round: typeof parsed.round === 'number' ? parsed.round : 0,
+    headSha: typeof parsed.headSha === 'string' ? parsed.headSha : null,
+    summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+    commits: Array.isArray(parsed.commits)
+      ? parsed.commits.filter((c: any) => typeof c === 'string' && c)
+      : [],
+    truncatedCommits: typeof parsed.truncatedCommits === 'number' ? parsed.truncatedCommits : 0,
+    diffStat: typeof parsed.diffStat === 'string' ? parsed.diffStat : '',
+    filesChanged: typeof parsed.filesChanged === 'number' ? parsed.filesChanged : null,
+    insertions: typeof parsed.insertions === 'number' ? parsed.insertions : null,
+    deletions: typeof parsed.deletions === 'number' ? parsed.deletions : null,
+    reviewRounds: rounds.map((r: any) => ({
+      round: typeof r?.round === 'number' ? r.round : 0,
+      verdict: r?.verdict ?? null,
+      findings: (Array.isArray(r?.findings) ? r.findings : [])
+        .map(normalizeSummaryFinding)
+        .filter(Boolean),
+      truncatedFindings: typeof r?.truncatedFindings === 'number' ? r.truncatedFindings : 0,
+    })),
+    totalFindings: typeof parsed.totalFindings === 'number' ? parsed.totalFindings : 0,
+    finalVerdict: parsed.finalVerdict ?? null,
+    reviewNotes: typeof parsed.reviewNotes === 'string' ? parsed.reviewNotes : '',
+    manualTesting: Array.isArray(parsed.manualTesting)
+      ? parsed.manualTesting.filter((s: any) => typeof s === 'string' && s)
+      : [],
   };
 }
 

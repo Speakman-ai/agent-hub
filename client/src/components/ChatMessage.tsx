@@ -24,6 +24,7 @@ import FinalizeRebaseBlock from './finalize/blocks/FinalizeRebaseBlock';
 import FinalizeReviewRoundBlock from './finalize/blocks/FinalizeReviewRoundBlock';
 import FinalizeChecksRoundBlock from './finalize/blocks/FinalizeChecksRoundBlock';
 import FinalizeReadyToPushBlock from './finalize/blocks/FinalizeReadyToPushBlock';
+import FinalizeRunSummaryBlock from './finalize/blocks/FinalizeRunSummaryBlock';
 import FinalizeTerminalBlock from './finalize/blocks/FinalizeTerminalBlock';
 import FinalizeFixDispatchBlock from './finalize/blocks/FinalizeFixDispatchBlock';
 
@@ -427,6 +428,9 @@ function ChatMessage({
     }
     if (finalizeKind === 'finalize_ready_to_push') {
       return <FinalizeReadyToPushBlock message={message} hosted={hosted} />;
+    }
+    if (finalizeKind === 'finalize_run_summary') {
+      return <FinalizeRunSummaryBlock message={message} />;
     }
     if (finalizeKind === 'finalize_run_terminal') {
       return (
