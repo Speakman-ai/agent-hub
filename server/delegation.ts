@@ -29,7 +29,7 @@ import {
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { getSessionOwner } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
-import { applyAssistantTextChunkForDelegationKickoff } from './delegation-kickoff-buffer.js';
+import { applyAssistantTextChunk } from './assistant-stream-buffer.js';
 import { extractJsonFromTagBody } from './action-block-parsing.js';
 
 export interface DelegationDeps {
@@ -288,12 +288,13 @@ function absorbStreamEvents(
   for (const event of events) {
     if (event.type === 'assistant_text') {
       const text = typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-      buffers = applyAssistantTextChunkForDelegationKickoff(
+      const { next } = applyAssistantTextChunk(
         buffers,
         text,
         event.partial,
         event.replacesAssistantBuffer ? { replace: true } : undefined,
-      ).next;
+      );
+      buffers = next;
     }
     if (event.type === 'result' && event.isError && event.text && !sink.streamErrorMessage) {
       sink.streamErrorMessage = event.text;

@@ -1,11 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { parseDelegateBlock } from './delegation.js';
 import {
-  accumulateAssistantStreamForDelegateKickoff,
-  applyAssistantTextChunkForDelegationKickoff,
+  accumulateAssistantStream,
+  applyAssistantTextChunk,
   foldAssistantTextChunk,
-  planDelegationRoundOnProcClose,
-} from './delegation-kickoff-buffer.js';
+} from './assistant-stream-buffer.js';
 
 const DELEGATE_ROW =
   '{"agentId":"sub-1","task":"x","owner":"hub-backend","scope":"server only","expectedArtifact":"patch + tests","deadline":"end-of-turn","returnFormat":"summary"}';
@@ -26,18 +25,18 @@ function firstEventIndexWhereKickoff(
   let state = { finalText: '', partialFallback: '' };
   for (let i = 0; i < events.length; i++) {
     const { text, partial } = events[i];
-    const step = applyAssistantTextChunkForDelegationKickoff(state, text, partial);
+    const step = applyAssistantTextChunk(state, text, partial);
     state = step.next;
-    if (bufferWouldKickoffDelegation(step.accumulatedForKickoff)) return i;
+    if (bufferWouldKickoffDelegation(step.accumulatedText)) return i;
   }
   return null;
 }
 
-describe('delegation-kickoff-buffer (wired from chat.ts handleEvent)', () => {
-  it('accumulateAssistantStreamForDelegateKickoff matches finalText + partialFallback concatenation', () => {
-    expect(accumulateAssistantStreamForDelegateKickoff('a', 'b')).toBe('ab');
-    expect(accumulateAssistantStreamForDelegateKickoff('', 'partial')).toBe('partial');
-    expect(accumulateAssistantStreamForDelegateKickoff('final', '')).toBe('final');
+describe('assistant-stream-buffer', () => {
+  it('accumulateAssistantStream matches finalText + partialFallback concatenation', () => {
+    expect(accumulateAssistantStream('a', 'b')).toBe('ab');
+    expect(accumulateAssistantStream('', 'partial')).toBe('partial');
+    expect(accumulateAssistantStream('final', '')).toBe('final');
   });
 
   it('detects kickoff only after </delegate> closes the block (concatenated buffer)', () => {
@@ -50,10 +49,7 @@ describe('delegation-kickoff-buffer (wired from chat.ts handleEvent)', () => {
     let state = { finalText: '', partialFallback: '' };
     for (let i = 0; i < chunks.length; i++) {
       state = foldAssistantTextChunk(state, chunks[i], false);
-      const acc = accumulateAssistantStreamForDelegateKickoff(
-        state.finalText,
-        state.partialFallback,
-      );
+      const acc = accumulateAssistantStream(state.finalText, state.partialFallback);
       const kick = bufferWouldKickoffDelegation(acc);
       if (i < 2) expect(kick).toBe(false);
       if (i === 2) expect(kick).toBe(true);
@@ -139,7 +135,7 @@ describe('parseDelegateBlock payload shapes (client/server parity)', () => {
   });
 });
 
-describe('applyAssistantTextChunkForDelegationKickoff (chat.ts handleEvent slice)', () => {
+describe('applyAssistantTextChunk (chat.ts handleEvent slice)', () => {
   it('matches manual fold + accumulate for each chunk', () => {
     let state = { finalText: '', partialFallback: '' };
     const chunks = [
@@ -149,12 +145,9 @@ describe('applyAssistantTextChunkForDelegationKickoff (chat.ts handleEvent slice
     ];
     for (const ch of chunks) {
       const manualFold = foldAssistantTextChunk(state, ch.text, ch.partial);
-      const manualAcc = accumulateAssistantStreamForDelegateKickoff(
-        manualFold.finalText,
-        manualFold.partialFallback,
-      );
-      const step = applyAssistantTextChunkForDelegationKickoff(state, ch.text, ch.partial);
-      expect(step.accumulatedForKickoff).toBe(manualAcc);
+      const manualAcc = accumulateAssistantStream(manualFold.finalText, manualFold.partialFallback);
+      const step = applyAssistantTextChunk(state, ch.text, ch.partial);
+      expect(step.accumulatedText).toBe(manualAcc);
       expect(step.next).toEqual(manualFold);
       state = step.next;
     }
@@ -163,79 +156,26 @@ describe('applyAssistantTextChunkForDelegationKickoff (chat.ts handleEvent slice
   it('replace option overwrites buffers so Cursor result tail can complete delegate blocks', () => {
     let state = { finalText: '', partialFallback: 'partial-only' };
     const delegateClose = `<delegate>[${DELEGATE_ROW}]</delegate>`;
-    const step = applyAssistantTextChunkForDelegationKickoff(
-      state,
-      `Intro\n${delegateClose}`,
-      false,
-      { replace: true },
-    );
+    const step = applyAssistantTextChunk(state, `Intro\n${delegateClose}`, false, {
+      replace: true,
+    });
     expect(step.next).toEqual({ finalText: `Intro\n${delegateClose}`, partialFallback: '' });
-    expect(bufferWouldKickoffDelegation(step.accumulatedForKickoff)).toBe(true);
+    expect(bufferWouldKickoffDelegation(step.accumulatedText)).toBe(true);
   });
 
-  it('matches delegation absorbStreamEvents: partial deltas then Cursor canonical replace', () => {
+  it('matches absorbStreamEvents: partial deltas then canonical replace', () => {
     let state = { finalText: '', partialFallback: '' };
-    state = applyAssistantTextChunkForDelegationKickoff(state, 'stream', true).next;
-    state = applyAssistantTextChunkForDelegationKickoff(state, 'ed', true).next;
+    state = applyAssistantTextChunk(state, 'stream', true).next;
+    state = applyAssistantTextChunk(state, 'ed', true).next;
     const canonical = `streamed\n\n<delegate>[${DELEGATE_ROW}]</delegate>`;
-    state = applyAssistantTextChunkForDelegationKickoff(state, canonical, false, {
+    state = applyAssistantTextChunk(state, canonical, false, {
       replace: true,
     }).next;
     expect(state).toEqual({ finalText: canonical, partialFallback: '' });
     expect(
       bufferWouldKickoffDelegation(
-        accumulateAssistantStreamForDelegateKickoff(state.finalText, state.partialFallback),
+        accumulateAssistantStream(state.finalText, state.partialFallback),
       ),
     ).toBe(true);
-  });
-});
-
-describe('planDelegationRoundOnProcClose (chat.ts proc close delegation branch)', () => {
-  const tasks = [
-    {
-      agentId: 's',
-      task: 't',
-      owner: 'lead',
-      scope: 'server',
-      expectedArtifact: 'diff',
-      deadline: 'today',
-      returnFormat: 'summary',
-    },
-  ];
-
-  it('skips when there is no delegate block and no early promise', () => {
-    expect(
-      planDelegationRoundOnProcClose({
-        delegateTasks: null,
-        hadEarlyDelegationPromise: false,
-      }),
-    ).toEqual({ mode: 'skip' });
-  });
-
-  it('starts when final content has delegate and there was no stream kickoff', () => {
-    expect(
-      planDelegationRoundOnProcClose({
-        delegateTasks: tasks,
-        hadEarlyDelegationPromise: false,
-      }),
-    ).toEqual({ mode: 'delegate', startIfNeeded: true });
-  });
-
-  it('does not start again when stream kickoff already created a promise', () => {
-    expect(
-      planDelegationRoundOnProcClose({
-        delegateTasks: tasks,
-        hadEarlyDelegationPromise: true,
-      }),
-    ).toEqual({ mode: 'delegate', startIfNeeded: false });
-  });
-
-  it('still chains completion when only early stream delegation exists (parse mismatch on close)', () => {
-    expect(
-      planDelegationRoundOnProcClose({
-        delegateTasks: null,
-        hadEarlyDelegationPromise: true,
-      }),
-    ).toEqual({ mode: 'delegate', startIfNeeded: false });
   });
 });

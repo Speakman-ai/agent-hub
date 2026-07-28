@@ -173,10 +173,7 @@ import {
   titleSourceForPick,
 } from './session-title.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
-import {
-  applyAssistantTextChunkForDelegationKickoff,
-  planDelegationRoundOnProcClose,
-} from './delegation-kickoff-buffer.js';
+import { applyAssistantTextChunk } from './assistant-stream-buffer.js';
 import { isSessionChatBusy } from './session-chat-busy.js';
 import { clearDelegationUiMeta } from './delegation-state.js';
 import { isDelegationDisabledForAgent } from './delegation-gate.js';
@@ -3918,7 +3915,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (event.type === 'assistant_text') {
           const text =
             typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-          const { next, accumulatedForKickoff } = applyAssistantTextChunkForDelegationKickoff(
+          const { next, accumulatedText } = applyAssistantTextChunk(
             { finalText, partialFallback },
             text,
             event.partial,
@@ -3929,7 +3926,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           try {
             S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
           } catch {}
-          tryKickoffDelegationFromStream(accumulatedForKickoff);
+          tryKickoffDelegationFromStream(accumulatedText);
         }
 
         if (event.type === 'system' && event.gitWorktree != null) {
@@ -5831,12 +5828,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
         if (agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0) {
           const parsedDelegateTasks = delegateTasks;
-          const closePlan = planDelegationRoundOnProcClose({
-            delegateTasks: parsedDelegateTasks,
-            hadEarlyDelegationPromise: delegationWorkPromise != null,
-          });
-          if (closePlan.mode === 'delegate') {
-            if (closePlan.startIfNeeded) {
+          const hasDelegateTasks = !!parsedDelegateTasks?.length;
+          if (hasDelegateTasks || delegationWorkPromise != null) {
+            if (hasDelegateTasks && delegationWorkPromise == null) {
               startDelegationOnce(parsedDelegateTasks!);
             }
 

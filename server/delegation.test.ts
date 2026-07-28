@@ -462,16 +462,24 @@ describe('handleDelegation — retry logic', () => {
     expect(argv.join('\0')).toContain('prompt');
     expect(argv.join('\0')).toContain('audit routes');
 
-    const geminiLine = JSON.stringify({
-      type: 'message',
-      role: 'assistant',
-      partial: false,
-      content: [{ type: 'text', text: 'Gemini delegate output.' }],
-    });
-    fakeProcs[0].finish(0, { stdout: `${geminiLine}\n` });
+    const geminiLines = [
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        partial: false,
+        content: [{ type: 'text', text: 'Gemini delegate ' }],
+      }),
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        partial: false,
+        content: [{ type: 'text', text: 'output.' }],
+      }),
+    ];
+    fakeProcs[0].finish(0, { stdout: `${geminiLines.join('\n')}\n` });
 
     const results = await pending;
-    expect(results[0].output).toContain('Gemini delegate output.');
+    expect(results[0].output).toBe('Gemini delegate output.');
     expect(results[0].error).toBeNull();
   });
 

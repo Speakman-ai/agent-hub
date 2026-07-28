@@ -29,10 +29,7 @@ import { getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
 import { createStreamParser } from './stream-parser.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
-import {
-  applyAssistantTextChunkForDelegationKickoff,
-  accumulateAssistantStreamForDelegateKickoff,
-} from './delegation-kickoff-buffer.js';
+import { applyAssistantTextChunk, accumulateAssistantStream } from './assistant-stream-buffer.js';
 import {
   normalizeDesignEngine,
   resolveDesignModelForEngine,
@@ -401,17 +398,14 @@ export async function handleDesignChat(
         if (event.type === 'assistant_text') {
           const text =
             typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-          const { next } = applyAssistantTextChunkForDelegationKickoff(
+          const { next } = applyAssistantTextChunk(
             buffers,
             text,
             !!event.partial,
             event.replacesAssistantBuffer ? { replace: true } : undefined,
           );
           buffers = next;
-          const visible = accumulateAssistantStreamForDelegateKickoff(
-            buffers.finalText,
-            buffers.partialFallback,
-          );
+          const visible = accumulateAssistantStream(buffers.finalText, buffers.partialFallback);
           state.lastStream = visible;
           broadcast({
             type: 'design_stream',
