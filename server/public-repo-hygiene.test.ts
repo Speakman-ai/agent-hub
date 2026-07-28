@@ -228,6 +228,52 @@ describe('public-repo hygiene', () => {
     }
   });
 
+  it('no generated build/report output is git-tracked, and each path is ignored', () => {
+    // A committed playwright-report/index.html (524 KB snapshot of one local
+    // run) sat in the tree because .gitignore had no entry for it. Generated
+    // output belongs to the machine that produced it, never to the repo.
+    const GENERATED_PREFIXES = [
+      'playwright-report/',
+      'e2e/playwright-report/',
+      'test-results/',
+      'e2e/test-results/',
+      'blob-report/',
+      'e2e/blob-report/',
+      'docs/api/_site/',
+      'client/dist/',
+    ];
+
+    const tracked = execFileSync('git', ['ls-files', '-z'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    })
+      .split('\0')
+      .filter(Boolean);
+
+    const committed = tracked.filter((rel) => GENERATED_PREFIXES.some((p) => rel.startsWith(p)));
+    expect(committed, `Generated output must not be committed:\n${committed.join('\n')}`).toEqual(
+      [],
+    );
+
+    // `git check-ignore` exits 1 when a path is NOT ignored, so a missing
+    // .gitignore entry surfaces as an offender rather than a thrown error.
+    const notIgnored = GENERATED_PREFIXES.filter((prefix) => {
+      try {
+        execFileSync('git', ['check-ignore', '-q', '--no-index', '--', prefix + 'probe'], {
+          cwd: REPO_ROOT,
+        });
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    expect(
+      notIgnored,
+      `Missing .gitignore coverage for generated output:\n${notIgnored.join('\n')}`,
+    ).toEqual([]);
+  });
+
   it('shipped client/mobile source has no personal /home/<user> paths', () => {
     // Generic placeholders are fine; a maintainer's real home dir is not.
     const ALLOWED_HOME = new Set(['user', 'node', 'runner', 'agent']);
