@@ -403,6 +403,16 @@ export const api = {
   getGitHostMirror: (projectId: any) => fetchJSON(`/projects/${projectId}/git-host/mirror`),
   reconcileGitHostMirror: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/git-host/mirror/reconcile`, { method: 'POST' }),
+  // Mirror target: link an existing GitHub repo, or create one first.
+  getGitHostMirrorOwners: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/git-host/mirror/owners`),
+  linkGitHostMirror: (projectId: any, body: any) =>
+    fetchJSON(`/projects/${projectId}/git-host/mirror/link`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  unlinkGitHostMirror: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/git-host/mirror/link`, { method: 'DELETE' }),
   // Per-user Google connection (Settings -> Account). Never returns tokens.
   getGoogleStatus: () => fetchJSON('/auth/google/status'),
   // Returns { authorizeUrl }; the caller does a full-page redirect to it.

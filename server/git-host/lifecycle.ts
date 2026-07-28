@@ -25,6 +25,7 @@ import path from 'path';
 import config, { resolveAgentHubApiBaseForSpawn } from '../config.js';
 import { getActualPort } from '../server-port.js';
 import type { Project } from '../types.js';
+import { classifyCloneUrl } from '../clone-url-auth.js';
 import {
   createHostedRepo,
   getHostedRepoInfo,
@@ -204,7 +205,17 @@ export interface GitHostStatus {
   mirror: {
     enabled: boolean;
     refs: 'default-branch' | 'all';
+    /** `owner/repo` the hosted repo mirrors to, null when unlinked. */
+    githubRepo: string | null;
+    /** Canonical HTTPS push target, null when unlinked. */
+    repoUrl: string | null;
   } | null;
+}
+
+function deriveGithubSlug(repoUrl: string | null | undefined): string | null {
+  if (!repoUrl) return null;
+  const parsed = classifyCloneUrl(repoUrl);
+  return parsed.owner && parsed.repo ? `${parsed.owner}/${parsed.repo}` : null;
 }
 
 export async function getGitHostStatus(project: Project, dataDir?: string): Promise<GitHostStatus> {
@@ -223,6 +234,10 @@ export async function getGitHostStatus(project: Project, dataDir?: string): Prom
       ? {
           enabled: project.gitMirror?.enabled !== false && Boolean(project.repoUrl),
           refs: project.gitMirror?.refs === 'all' ? 'all' : 'default-branch',
+          // Projects imported from GitHub carry only repoUrl — derive the
+          // slug so the UI reads "linked" for them too.
+          githubRepo: project.githubRepo ?? deriveGithubSlug(project.repoUrl),
+          repoUrl: project.repoUrl ?? null,
         }
       : null,
   };

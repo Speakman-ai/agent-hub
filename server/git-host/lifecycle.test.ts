@@ -157,7 +157,12 @@ describe('git-host lifecycle', () => {
     expect(status.cloneUrl).toBe('http://127.0.0.1:3051/git/p5.git');
     expect(status.defaultBranch).toBe('main');
     expect(status.branchCount).toBe(1);
-    expect(status.mirror).toEqual({ enabled: true, refs: 'default-branch' });
+    expect(status.mirror).toEqual({
+      enabled: true,
+      refs: 'default-branch',
+      githubRepo: 'o/r',
+      repoUrl: 'https://github.com/o/r.git',
+    });
 
     const off = await getGitHostStatus(makeProject('p-none'), dataDir);
     expect(off.enabled).toBe(false);

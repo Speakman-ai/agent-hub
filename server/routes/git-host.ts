@@ -30,8 +30,20 @@ import {
   refreshBranchProtection,
 } from '../git-host/repo-store.js';
 import { listRecentPushes } from '../git-host/recent-pushes.js';
-import { mirrorPolicy, readMirrorState } from '../git-host/mirror.js';
+import { mirrorPolicy, pushMirrorNow, readMirrorState } from '../git-host/mirror.js';
 import { reconcileMirror } from '../git-host/reconcile.js';
+import {
+  GithubApiError,
+  createGithubRepo,
+  listGithubOwners,
+  parseRepoRef,
+  verifyGithubRepo,
+  type GithubRepoInfo,
+} from '../git-host/mirror-link.js';
+import { resolveUserGithubToken } from '../skill-credentials-github.js';
+import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
+import { getInstallationTokenForOwner } from '../github-app.js';
+import config from '../config.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -64,8 +76,41 @@ const GitHostStatusSchema = z.object({
     .object({
       enabled: z.boolean(),
       refs: z.enum(['default-branch', 'all']),
+      githubRepo: z.string().nullable(),
+      repoUrl: z.string().nullable(),
     })
     .nullable(),
+});
+
+const MirrorOwnersSchema = z.object({
+  connected: z.boolean().openapi({
+    description: 'False when the caller has no GitHub token stored — owners is then empty.',
+  }),
+  owners: z.array(z.object({ login: z.string(), type: z.enum(['user', 'organization']) })),
+});
+
+const MirrorLinkBodySchema = z.object({
+  mode: z.enum(['existing', 'create']).openapi({
+    description:
+      '`existing` links a repo that is already on GitHub; `create` creates it first, then links it.',
+  }),
+  repo: z.string().openapi({
+    description:
+      'Repository reference: `owner/repo`, a bare name (paired with `owner`), or a GitHub clone URL.',
+  }),
+  owner: z.string().optional().openapi({
+    description:
+      'Account or org that owns (or will own) the repo. Defaults to the caller GitHub login.',
+  }),
+  private: z.boolean().optional().openapi({ description: 'create mode only; defaults to true.' }),
+  refs: z.enum(['default-branch', 'all']).optional(),
+});
+
+const MirrorLinkResultSchema = z.object({
+  created: z.boolean(),
+  githubRepo: z.string(),
+  repoUrl: z.string(),
+  status: GitHostStatusSchema,
 });
 
 registerPath({
@@ -293,6 +338,62 @@ registerPath({
   },
 });
 
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/git-host/mirror/owners',
+  tags: ['Projects'],
+  summary: 'GitHub accounts the caller can create a mirror repo under',
+  description:
+    "Admin only. Returns the caller's GitHub login plus every org their stored token can see, for the create-repo owner picker. `connected: false` (with an empty list) means no GitHub token is stored for the caller — connect one in Settings → GitHub.",
+  request: { params: z.object({ projectId: z.string() }) },
+  responses: {
+    200: { description: 'Owner candidates.', content: jsonContent(MirrorOwnersSchema) },
+    404: { description: 'Unknown project or not Hub-hosted.', content: jsonContent(ErrorResponse) },
+    502: { description: 'GitHub API unreachable.', content: jsonContent(ErrorResponse) },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/git-host/mirror/link',
+  tags: ['Projects'],
+  summary: 'Link (or create) the GitHub repo a Hub-hosted project mirrors to',
+  description:
+    'Admin only. Points the hosted repo at a GitHub mirror target: `mode: "existing"` verifies the repo and the caller\'s push access, `mode: "create"` creates an empty repo under the caller\'s account or one of their orgs first. Sets githubRepo + repoUrl, enables mirroring, and kicks off an initial push in the background.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    body: { content: jsonContent(MirrorLinkBodySchema), required: true },
+  },
+  responses: {
+    200: { description: 'Mirror linked.', content: jsonContent(MirrorLinkResultSchema) },
+    400: {
+      description: 'Invalid repo reference, or no GitHub token stored for the caller.',
+      content: jsonContent(ErrorResponse),
+    },
+    403: { description: 'GitHub refused the token.', content: jsonContent(ErrorResponse) },
+    404: {
+      description: 'Unknown project, not Hub-hosted, or repo not visible to the caller.',
+      content: jsonContent(ErrorResponse),
+    },
+    409: { description: 'Repo already exists (create mode).', content: jsonContent(ErrorResponse) },
+    502: { description: 'GitHub API unreachable.', content: jsonContent(ErrorResponse) },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/git-host/mirror/link',
+  tags: ['Projects'],
+  summary: 'Unlink the GitHub mirror target from a Hub-hosted project',
+  description:
+    'Admin only. Clears githubRepo + repoUrl and disables mirroring. The GitHub repo itself is left untouched.',
+  request: { params: z.object({ projectId: z.string() }) },
+  responses: {
+    200: { description: 'Mirror unlinked.', content: jsonContent(GitHostStatusSchema) },
+    404: { description: 'Unknown project or not Hub-hosted.', content: jsonContent(ErrorResponse) },
+  },
+});
+
 const RepoReadmeSchema = z
   .object({
     branch: z.string(),
@@ -440,6 +541,152 @@ export default function createGitHostRoutes(deps: RouteDeps): Router {
       if (!project) return;
       const result = await reconcileMirror(project, { broadcast: deps.broadcast });
       res.json({ ...result, state: readMirrorState(project.id) });
+    },
+  );
+
+  /**
+   * The caller's own GitHub token. Creating a repo has to happen as a
+   * person (a GitHub App installation token cannot create a user repo),
+   * so this is the only credential the create path accepts.
+   */
+  const callerGithubToken = (req: Request): Promise<string | null> =>
+    resolveUserGithubToken((req as AuthenticatedRequest).authUserId ?? null, {
+      oauthCredentials: resolveOAuthAppCredentials(config),
+    });
+
+  const NO_TOKEN_MESSAGE =
+    'Connect a GitHub account first (Settings → GitHub) — Agent Hub needs your token to reach GitHub.';
+
+  const sendGithubError = (res: Response, err: unknown): void => {
+    if (err instanceof GithubApiError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+  };
+
+  router.get(
+    '/api/projects/:projectId/git-host/mirror/owners',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const project = findHostedProjectOr404(req, res);
+      if (!project) return;
+      const token = await callerGithubToken(req);
+      if (!token) return res.json({ connected: false, owners: [] });
+      try {
+        res.json({ connected: true, owners: await listGithubOwners(token) });
+      } catch (err: unknown) {
+        sendGithubError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/git-host/mirror/link',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const project = findHostedProjectOr404(req, res);
+      if (!project) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const mode = body.mode === 'create' ? 'create' : 'existing';
+      if (body.mode !== undefined && body.mode !== 'create' && body.mode !== 'existing') {
+        return res.status(400).json({ error: 'mode must be "existing" or "create"' });
+      }
+      if (typeof body.repo !== 'string' || !body.repo.trim()) {
+        return res.status(400).json({ error: 'repo is required' });
+      }
+      if (body.owner !== undefined && typeof body.owner !== 'string') {
+        return res.status(400).json({ error: 'owner must be a string' });
+      }
+      if (body.refs !== undefined && body.refs !== 'default-branch' && body.refs !== 'all') {
+        return res.status(400).json({ error: 'refs must be "default-branch" or "all"' });
+      }
+
+      let ref: { owner: string | null; repo: string };
+      try {
+        ref = parseRepoRef(body.repo);
+      } catch (err: unknown) {
+        return sendGithubError(res, err);
+      }
+      const explicitOwner = typeof body.owner === 'string' ? body.owner.trim() : '';
+      const owner = ref.owner ?? (explicitOwner || null);
+
+      const userToken = await callerGithubToken(req);
+      let info: GithubRepoInfo;
+      try {
+        if (mode === 'create') {
+          if (!userToken) return res.status(400).json({ error: NO_TOKEN_MESSAGE });
+          info = await createGithubRepo(userToken, {
+            owner,
+            repo: ref.repo,
+            private: body.private !== false,
+            description: `Mirror of the Agent Hub-hosted repository for ${project.name || project.id}.`,
+          });
+        } else {
+          if (!owner) {
+            return res.status(400).json({ error: 'Use the form owner/repo.' });
+          }
+          // Fall back to the App installation token so an operator whose
+          // mirror identity is the GitHub App can still link without
+          // connecting a personal account.
+          const token =
+            userToken ??
+            (config.githubApp ? await getInstallationTokenForOwner(config.githubApp, owner) : null);
+          if (!token) return res.status(400).json({ error: NO_TOKEN_MESSAGE });
+          info = await verifyGithubRepo(token, owner, ref.repo);
+        }
+      } catch (err: unknown) {
+        return sendGithubError(res, err);
+      }
+
+      (project as Record<string, unknown>).githubRepo = `${info.owner}/${info.repo}`;
+      (project as Record<string, unknown>).repoUrl = info.cloneUrl;
+      (project as Record<string, unknown>).gitMirror = {
+        ...(project.gitMirror ?? {}),
+        enabled: true,
+        refs:
+          (body.refs as 'default-branch' | 'all' | undefined) ??
+          project.gitMirror?.refs ??
+          'default-branch',
+      };
+      deps.saveProjects();
+      deps.broadcast({ type: 'git_host_update', projectId: project.id, status: 'mirror-linked' });
+      deps.broadcast({ type: 'projects_updated', reason: 'mirror-linked' });
+
+      // Seed the mirror so the GitHub side isn't empty until the next push.
+      void pushMirrorNow(project, { broadcast: deps.broadcast }).catch((err: unknown) => {
+        console.warn(
+          `[git-host] initial mirror push failed for ${project.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+
+      res.json({
+        created: mode === 'create',
+        githubRepo: `${info.owner}/${info.repo}`,
+        repoUrl: info.cloneUrl,
+        status: await getGitHostStatus(project),
+      });
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/git-host/mirror/link',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const project = findHostedProjectOr404(req, res);
+      if (!project) return;
+      delete (project as Record<string, unknown>).githubRepo;
+      delete (project as Record<string, unknown>).repoUrl;
+      (project as Record<string, unknown>).gitMirror = {
+        ...(project.gitMirror ?? {}),
+        enabled: false,
+      };
+      deps.saveProjects();
+      deps.broadcast({ type: 'git_host_update', projectId: project.id, status: 'mirror-unlinked' });
+      deps.broadcast({ type: 'projects_updated', reason: 'mirror-unlinked' });
+      res.json(await getGitHostStatus(project));
     },
   );
 

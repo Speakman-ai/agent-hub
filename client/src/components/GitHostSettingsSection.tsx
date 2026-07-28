@@ -77,6 +77,245 @@ function DefaultBranchSelector({ project, status, onChanged, showToast }: any) {
   );
 }
 
+/**
+ * GitHub mirror target — link an existing repo or create a fresh one.
+ *
+ * A project born on the Hub forge has no `repoUrl`, so mirroring is off
+ * with nothing in the UI to turn it on. This panel is that missing step:
+ * once a target is linked the server enables mirroring and seeds the
+ * first push.
+ */
+function MirrorTargetPanel({ project, status, onChanged, showToast }: any) {
+  const linked = status.mirror?.githubRepo || null;
+  const [mode, setMode] = useState<'existing' | 'create'>('existing');
+  const [repo, setRepo] = useState('');
+  const [owner, setOwner] = useState('');
+  const [isPrivate, setIsPrivate] = useState(true);
+  const [owners, setOwners] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [savingMirror, setSavingMirror] = useState(false);
+
+  // Owner list only matters for the create path — fetch it on demand.
+  useEffect(() => {
+    if (linked || mode !== 'create' || owners !== null) return;
+    let alive = true;
+    api
+      .getGitHostMirrorOwners(project.id)
+      .then((d: any) => {
+        if (!alive) return;
+        setOwners(d);
+        if (!owner && d?.owners?.length) setOwner(d.owners[0].login);
+      })
+      .catch(() => alive && setOwners({ connected: false, owners: [] }));
+    return () => {
+      alive = false;
+    };
+  }, [linked, mode, owners, owner, project.id]);
+
+  const submit = async () => {
+    if (!repo.trim() || busy) return;
+    setBusy(true);
+    try {
+      const res = await api.linkGitHostMirror(project.id, {
+        mode,
+        repo: repo.trim(),
+        ...(mode === 'create' ? { owner: owner || undefined, private: isPrivate } : {}),
+      });
+      setRepo('');
+      if (showToast)
+        showToast(
+          res.created
+            ? `Created ${res.githubRepo} on GitHub and started mirroring.`
+            : `Mirroring to ${res.githubRepo}.`,
+          'success',
+        );
+      onChanged();
+    } catch (err: any) {
+      if (showToast) showToast(err?.message || 'Failed to link the GitHub repository', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unlink = async () => {
+    setBusy(true);
+    try {
+      await api.unlinkGitHostMirror(project.id);
+      if (showToast)
+        showToast('GitHub mirror unlinked — the repo on GitHub was left alone.', 'success');
+      onChanged();
+    } catch (err: any) {
+      if (showToast) showToast(err?.message || 'Failed to unlink the mirror', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const patchMirror = async (patch: any) => {
+    setSavingMirror(true);
+    try {
+      await api.updateProject(project.id, { gitMirror: patch });
+      onChanged();
+    } catch (err: any) {
+      if (showToast) showToast(err?.message || 'Failed to save mirror settings', 'error');
+    } finally {
+      setSavingMirror(false);
+    }
+  };
+
+  return (
+    <div className="pt-2 space-y-2" data-testid={`project-mirror-target-${project.id}`}>
+      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+        GitHub mirror
+      </span>
+
+      {linked ? (
+        <>
+          <div className="flex items-center gap-2">
+            <a
+              href={`https://github.com/${linked}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex-1 min-w-0 truncate text-sm text-blue-400 hover:text-blue-300"
+              data-testid={`project-mirror-repo-${project.id}`}
+            >
+              {linked}
+            </a>
+            <button
+              onClick={unlink}
+              disabled={busy}
+              data-testid={`project-mirror-unlink-${project.id}`}
+              className="px-2 py-1 rounded-lg border border-gray-700 text-xs text-gray-400 hover:text-red-300 hover:border-red-700 transition-colors disabled:opacity-50"
+            >
+              Unlink
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <span className="text-sm text-gray-200">Mirror pushes to GitHub</span>
+              <p className="text-xs text-gray-500">
+                Pushes and PR merges on the Hub are replayed to GitHub so Actions and deploys keep
+                running.
+              </p>
+            </div>
+            <button
+              onClick={() => patchMirror({ enabled: !status.mirror?.enabled })}
+              disabled={savingMirror}
+              data-testid={`project-mirror-enabled-${project.id}`}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+                status.mirror?.enabled ? 'bg-emerald-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  status.mirror?.enabled ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-gray-200 flex-1 min-w-0">Mirrored refs</span>
+            <select
+              value={status.mirror?.refs || 'default-branch'}
+              onChange={(e: any) => patchMirror({ refs: e.target.value })}
+              disabled={savingMirror}
+              data-testid={`project-mirror-refs-${project.id}`}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600 disabled:opacity-50"
+            >
+              <option value="default-branch">Default branch + tags</option>
+              <option value="all">All branches + tags</option>
+            </select>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-xs text-gray-500">
+            Optional. Link a GitHub repository to keep a copy of this project there — or create a
+            new one on your account without leaving Agent Hub.
+          </p>
+          <div className="flex gap-1">
+            {[
+              { key: 'existing', label: 'Link existing' },
+              { key: 'create', label: 'Create new repo' },
+            ].map((opt: any) => (
+              <button
+                key={opt.key}
+                onClick={() => setMode(opt.key)}
+                data-testid={`project-mirror-mode-${opt.key}-${project.id}`}
+                className={`px-2 py-1 rounded-lg text-xs border transition-colors ${
+                  mode === opt.key
+                    ? 'border-blue-600 text-blue-300 bg-blue-950/40'
+                    : 'border-gray-700 text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {mode === 'create' && owners && !owners.connected && (
+            <p className="text-xs text-amber-300 flex items-center gap-1.5">
+              <AlertTriangle size={12} />
+              Connect your GitHub account in Settings → GitHub first.
+            </p>
+          )}
+
+          <div className="flex items-center gap-2">
+            {mode === 'create' && owners?.owners?.length > 0 && (
+              <select
+                value={owner}
+                onChange={(e: any) => setOwner(e.target.value)}
+                data-testid={`project-mirror-owner-${project.id}`}
+                className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600 max-w-[40%]"
+              >
+                {owners.owners.map((o: any) => (
+                  <option key={o.login} value={o.login}>
+                    {o.login}
+                  </option>
+                ))}
+              </select>
+            )}
+            <input
+              value={repo}
+              onChange={(e: any) => setRepo(e.target.value)}
+              placeholder={mode === 'create' ? project.id : 'owner/repo or GitHub URL'}
+              data-testid={`project-mirror-repo-input-${project.id}`}
+              className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-gray-600"
+            />
+            <button
+              onClick={submit}
+              disabled={busy || !repo.trim()}
+              data-testid={`project-mirror-submit-${project.id}`}
+              className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm text-white transition-colors disabled:opacity-50 flex-shrink-0"
+            >
+              {busy ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : mode === 'create' ? (
+                'Create'
+              ) : (
+                'Link'
+              )}
+            </button>
+          </div>
+
+          {mode === 'create' && (
+            <label className="flex items-center gap-2 text-xs text-gray-400">
+              <input
+                type="checkbox"
+                checked={isPrivate}
+                onChange={(e: any) => setIsPrivate(e.target.checked)}
+                data-testid={`project-mirror-private-${project.id}`}
+                className="accent-blue-600"
+              />
+              Private repository
+            </label>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 const PROTECTION_OPTIONS = [
   {
     key: 'requiredChecks',
@@ -327,6 +566,18 @@ export default function GitHostSettingsSection({ project, showToast, onProjectsC
           project={project}
           status={status}
           onChanged={refresh}
+          showToast={showToast}
+        />
+      )}
+
+      {status.enabled && (
+        <MirrorTargetPanel
+          project={project}
+          status={status}
+          onChanged={() => {
+            refresh();
+            if (onProjectsChange) onProjectsChange();
+          }}
           showToast={showToast}
         />
       )}

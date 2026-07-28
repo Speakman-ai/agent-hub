@@ -11,6 +11,9 @@ import { api } from '../utils/api';
     getGitHostBranches: vi.fn(async () => ({ defaultBranch: 'main', branches: [] })),
     setGitHostDefaultBranch: vi.fn(),
     updateProject: vi.fn(),
+    getGitHostMirrorOwners: vi.fn(),
+    linkGitHostMirror: vi.fn(),
+    unlinkGitHostMirror: vi.fn(),
   },
 }));
 
@@ -123,5 +126,121 @@ describe('GitHostSettingsSection', () => {
     await waitFor(() =>
       expect(showToast!).toHaveBeenCalledWith(expect.stringMatching(/clone failed/), 'error'),
     );
+  });
+});
+
+describe('GitHostSettingsSection — GitHub mirror target', () => {
+  const unlinkedStatus = {
+    ...enabledStatus,
+    mirror: { enabled: false, refs: 'default-branch', githubRepo: null, repoUrl: null },
+  };
+  const linkedStatus = {
+    ...enabledStatus,
+    mirror: {
+      enabled: true,
+      refs: 'default-branch',
+      githubRepo: 'octocat/widgets',
+      repoUrl: 'https://github.com/octocat/widgets.git',
+    },
+  };
+
+  it('links an existing repo from the owner/repo field', async () => {
+    (api.getGitHostStatus as any).mockResolvedValue(unlinkedStatus);
+    (api.linkGitHostMirror as any).mockResolvedValue({
+      created: false,
+      githubRepo: 'octocat/widgets',
+    });
+    const showToast = vi.fn();
+
+    render(<GitHostSettingsSection project={project} showToast={showToast} />);
+    const input = await screen.findByTestId('project-mirror-repo-input-proj-1' as any);
+    fireEvent.change(input, { target: { value: 'octocat/widgets' } });
+    fireEvent.click(screen.getByTestId('project-mirror-submit-proj-1' as any));
+
+    await waitFor(() =>
+      expect(api.linkGitHostMirror).toHaveBeenCalledWith('proj-1', {
+        mode: 'existing',
+        repo: 'octocat/widgets',
+      }),
+    );
+    await waitFor(() =>
+      expect(showToast!).toHaveBeenCalledWith(
+        expect.stringMatching(/Mirroring to octocat\/widgets/),
+        'success',
+      ),
+    );
+  });
+
+  it('create mode: loads owners and posts the create request', async () => {
+    (api.getGitHostStatus as any).mockResolvedValue(unlinkedStatus);
+    (api.getGitHostMirrorOwners as any).mockResolvedValue({
+      connected: true,
+      owners: [
+        { login: 'octocat', type: 'user' },
+        { login: 'acme', type: 'organization' },
+      ],
+    });
+    (api.linkGitHostMirror as any).mockResolvedValue({
+      created: true,
+      githubRepo: 'acme/fresh',
+    });
+
+    render(<GitHostSettingsSection project={project} />);
+    fireEvent.click(await screen.findByTestId('project-mirror-mode-create-proj-1' as any));
+
+    const ownerSelect = await screen.findByTestId('project-mirror-owner-proj-1' as any);
+    await waitFor(() => expect(api.getGitHostMirrorOwners).toHaveBeenCalledWith('proj-1'));
+    fireEvent.change(ownerSelect, { target: { value: 'acme' } });
+    fireEvent.change(screen.getByTestId('project-mirror-repo-input-proj-1' as any), {
+      target: { value: 'fresh' },
+    });
+    fireEvent.click(screen.getByTestId('project-mirror-submit-proj-1' as any));
+
+    await waitFor(() =>
+      expect(api.linkGitHostMirror).toHaveBeenCalledWith('proj-1', {
+        mode: 'create',
+        repo: 'fresh',
+        owner: 'acme',
+        private: true,
+      }),
+    );
+  });
+
+  it('create mode: warns when no GitHub account is connected', async () => {
+    (api.getGitHostStatus as any).mockResolvedValue(unlinkedStatus);
+    (api.getGitHostMirrorOwners as any).mockResolvedValue({ connected: false, owners: [] });
+
+    render(<GitHostSettingsSection project={project} />);
+    fireEvent.click(await screen.findByTestId('project-mirror-mode-create-proj-1' as any));
+
+    expect(await screen.findByText(/Connect your GitHub account/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('project-mirror-owner-proj-1')).toBeNull();
+  });
+
+  it('linked: shows the repo, toggles mirroring off, and unlinks', async () => {
+    (api.getGitHostStatus as any).mockResolvedValue(linkedStatus);
+    (api.updateProject as any).mockResolvedValue({});
+    (api.unlinkGitHostMirror as any).mockResolvedValue(unlinkedStatus);
+
+    render(<GitHostSettingsSection project={project} />);
+    expect(await screen.findByTestId('project-mirror-repo-proj-1' as any)).toHaveTextContent(
+      'octocat/widgets',
+    );
+    expect(screen.queryByTestId('project-mirror-repo-input-proj-1')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('project-mirror-enabled-proj-1' as any));
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', { gitMirror: { enabled: false } }),
+    );
+
+    fireEvent.change(screen.getByTestId('project-mirror-refs-proj-1' as any), {
+      target: { value: 'all' },
+    });
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', { gitMirror: { refs: 'all' } }),
+    );
+
+    fireEvent.click(screen.getByTestId('project-mirror-unlink-proj-1' as any));
+    await waitFor(() => expect(api.unlinkGitHostMirror).toHaveBeenCalledWith('proj-1'));
   });
 });

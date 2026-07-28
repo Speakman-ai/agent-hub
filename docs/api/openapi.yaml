@@ -24153,9 +24153,17 @@ paths:
                         enum:
                           - default-branch
                           - all
+                      githubRepo:
+                        type: string
+                        nullable: true
+                      repoUrl:
+                        type: string
+                        nullable: true
                     required:
                       - enabled
                       - refs
+                      - githubRepo
+                      - repoUrl
                 required:
                   - enabled
                   - cloneUrl
@@ -24254,9 +24262,17 @@ paths:
                         enum:
                           - default-branch
                           - all
+                      githubRepo:
+                        type: string
+                        nullable: true
+                      repoUrl:
+                        type: string
+                        nullable: true
                     required:
                       - enabled
                       - refs
+                      - githubRepo
+                      - repoUrl
                 required:
                   - enabled
                   - cloneUrl
@@ -24363,9 +24379,17 @@ paths:
                         enum:
                           - default-branch
                           - all
+                      githubRepo:
+                        type: string
+                        nullable: true
+                      repoUrl:
+                        type: string
+                        nullable: true
                     required:
                       - enabled
                       - refs
+                      - githubRepo
+                      - repoUrl
                 required:
                   - enabled
                   - cloneUrl
@@ -24779,6 +24803,346 @@ paths:
                   - status
                   - action
                   - state
+        "404":
+          description: Unknown project or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/mirror/owners:
+    get:
+      tags:
+        - Projects
+      summary: GitHub accounts the caller can create a mirror repo under
+      description: "Admin only. Returns the caller's GitHub login plus every org their stored token can see, for the create-repo owner picker. `connected: false` (with an empty list) means no GitHub token is stored for the caller — connect one in Settings → GitHub."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Owner candidates.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected:
+                    type: boolean
+                    description: False when the caller has no GitHub token stored — owners is then empty.
+                  owners:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        login:
+                          type: string
+                        type:
+                          type: string
+                          enum:
+                            - user
+                            - organization
+                      required:
+                        - login
+                        - type
+                required:
+                  - connected
+                  - owners
+        "404":
+          description: Unknown project or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "502":
+          description: GitHub API unreachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/mirror/link:
+    post:
+      tags:
+        - Projects
+      summary: Link (or create) the GitHub repo a Hub-hosted project mirrors to
+      description: "Admin only. Points the hosted repo at a GitHub mirror target: `mode: \"existing\"` verifies the repo and the caller's push access, `mode: \"create\"` creates an empty repo under the caller's account or one of their orgs first. Sets githubRepo + repoUrl, enables mirroring, and kicks off an initial push in the background."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum:
+                    - existing
+                    - create
+                  description: "`existing` links a repo that is already on GitHub; `create` creates it first, then links it."
+                repo:
+                  type: string
+                  description: "Repository reference: `owner/repo`, a bare name (paired with `owner`), or a GitHub clone URL."
+                owner:
+                  type: string
+                  description: Account or org that owns (or will own) the repo. Defaults to the caller GitHub login.
+                private:
+                  type: boolean
+                  description: create mode only; defaults to true.
+                refs:
+                  type: string
+                  enum:
+                    - default-branch
+                    - all
+              required:
+                - mode
+                - repo
+      responses:
+        "200":
+          description: Mirror linked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created:
+                    type: boolean
+                  githubRepo:
+                    type: string
+                  repoUrl:
+                    type: string
+                  status:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                      cloneUrl:
+                        type: string
+                        nullable: true
+                      defaultBranch:
+                        type: string
+                        nullable: true
+                      branchCount:
+                        type: number
+                      importState:
+                        type: object
+                        nullable: true
+                        properties:
+                          status:
+                            type: string
+                            enum:
+                              - importing
+                              - ready
+                              - error
+                          startedAt:
+                            type: number
+                          finishedAt:
+                            type: number
+                          error:
+                            type: string
+                          importedFrom:
+                            type: string
+                            enum:
+                              - github
+                              - cwd
+                              - empty
+                        required:
+                          - status
+                          - startedAt
+                      mirror:
+                        type: object
+                        nullable: true
+                        properties:
+                          enabled:
+                            type: boolean
+                          refs:
+                            type: string
+                            enum:
+                              - default-branch
+                              - all
+                          githubRepo:
+                            type: string
+                            nullable: true
+                          repoUrl:
+                            type: string
+                            nullable: true
+                        required:
+                          - enabled
+                          - refs
+                          - githubRepo
+                          - repoUrl
+                    required:
+                      - enabled
+                      - cloneUrl
+                      - defaultBranch
+                      - branchCount
+                      - importState
+                      - mirror
+                required:
+                  - created
+                  - githubRepo
+                  - repoUrl
+                  - status
+        "400":
+          description: Invalid repo reference, or no GitHub token stored for the caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: GitHub refused the token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project, not Hub-hosted, or repo not visible to the caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Repo already exists (create mode).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "502":
+          description: GitHub API unreachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags:
+        - Projects
+      summary: Unlink the GitHub mirror target from a Hub-hosted project
+      description: Admin only. Clears githubRepo + repoUrl and disables mirroring. The GitHub repo itself is left untouched.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Mirror unlinked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  cloneUrl:
+                    type: string
+                    nullable: true
+                  defaultBranch:
+                    type: string
+                    nullable: true
+                  branchCount:
+                    type: number
+                  importState:
+                    type: object
+                    nullable: true
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - importing
+                          - ready
+                          - error
+                      startedAt:
+                        type: number
+                      finishedAt:
+                        type: number
+                      error:
+                        type: string
+                      importedFrom:
+                        type: string
+                        enum:
+                          - github
+                          - cwd
+                          - empty
+                    required:
+                      - status
+                      - startedAt
+                  mirror:
+                    type: object
+                    nullable: true
+                    properties:
+                      enabled:
+                        type: boolean
+                      refs:
+                        type: string
+                        enum:
+                          - default-branch
+                          - all
+                      githubRepo:
+                        type: string
+                        nullable: true
+                      repoUrl:
+                        type: string
+                        nullable: true
+                    required:
+                      - enabled
+                      - refs
+                      - githubRepo
+                      - repoUrl
+                required:
+                  - enabled
+                  - cloneUrl
+                  - defaultBranch
+                  - branchCount
+                  - importState
+                  - mirror
         "404":
           description: Unknown project or not Hub-hosted.
           content:
