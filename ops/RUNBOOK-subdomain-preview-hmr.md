@@ -78,44 +78,41 @@ The cert/DNS without the env var (or vice-versa) is a no-op — both are require
 ### 3. Switch each project's preview to a dev server (per repo)
 
 Only after steps 1–2 verify green. In path mode this step white-screens the
-preview, which is why it must come last. Each repo's `compose.preview.yml` entry
-service runs its dev server, and `.agent-hub/preview.json` sets
-`compose.entryWorkdir` (+ `entrySourceDir`, `shadowDirs`) so the Hub live-mounts
-the worktree (the runtime translates the bind to the host path and writes the
-override). HMR file-watching then sees agent edits directly.
+preview, which is why it must come last. Each repo declares a `prEnv.devServer`
+block: the Hub spawns `startCommand` as a managed long-lived process against the
+session worktree and maps `portMap[]` out through the preview proxy. There is no
+bind mount to arrange — the process reads the worktree directly, so HMR
+file-watching sees agent edits without any `entryWorkdir`/`shadowDirs` wiring.
 
-**agent-hub** (`client` service → Vite dev server):
-
-```yaml
-# compose.preview.yml  (client service)
-  client:
-    image: ${AGENT_HUB_SERVER_IMAGE:-public.ecr.aws/h9t4v7h0/agent-hub:main}
-    working_dir: /app/client
-    command: ['sh', '-c', 'exec node_modules/.bin/vite --host 0.0.0.0 --port 80']
-    environment:
-      - FRONTEND_PORT=${FRONTEND_PORT:-80}
-    depends_on:
-      server:
-        condition: service_healthy
-    expose:
-      - '80'
-```
+**agent-hub** (`.agent-hub/preview.json`, `prEnv.devServer`):
 
 ```jsonc
-// .agent-hub/preview.json  (prEnv.preview.compose)
-"entryWorkdir": "/app",      // live-mount the worktree here
-"entrySourceDir": ".",       // mount the worktree root
-"shadowDirs": []             // worktree already carries client/node_modules (vite)
+"startCommand": "export AGENT_HUB_PREVIEW=1 AGENT_HUB_PORT=3151 ...; exec npm run dev",
+"portMap": [
+  { "internalPort": 3050, "label": "client", "primary": true },
+  { "internalPort": 3151, "label": "api" }
+],
+"healthPath": "/"
 ```
 
-In subdomain mode the app renders at `/`, so Vite needs **no** `base`/HMR-proxy
-wiring — its defaults work. (`vite.config.js` already binds `0.0.0.0` and proxies
-`/api` in dev; confirm the proxy target points at the `server` service when run in
-the preview container.)
+Three constraints that are easy to get wrong:
 
-- **An Angular app** → `frontend` runs `ng serve --host 0.0.0.0` (drop the static
-  `dockerfile.preview`/nginx path), same `entryWorkdir` mount.
-- **Any other project** → its own dev server, same pattern.
+- **Bind `$PORT`, not the configured port.** The runtime announces the primary
+  entry's mapping as `PORT` — a pool-allocated host port on the host session-env
+  backend, the configured `internalPort` under sysbox. `client/vite.config.ts`
+  reads it through `buildPreviewServerConfig` (gated on `AGENT_HUB_PREVIEW=1`).
+- **Allow the upstream Host.** The proxy forwards
+  `Host: $AGENT_HUB_PREVIEW_HEALTH_HOST`, which Vite 5 403s unless it is in
+  `server.allowedHosts`. `resolvePreviewAllowedHosts` always appends it alongside
+  the `.<subdomain-base>` entry.
+- **Keep the nested API off 3051.** On the host session-env backend the dev
+  server shares a network namespace with the Hub, which already owns 3051, so
+  agent-hub pins `AGENT_HUB_PORT=3151` and points its data dir at
+  `.agent-hub-preview/` — otherwise the nested Hub opens the host Hub's SQLite
+  database.
+
+- **An Angular app** → `startCommand: "ng serve --host 0.0.0.0 --port $PORT"`.
+- **Any other project** → its own dev server, same `$PORT` contract.
 
 ## Guardrail (so it can't silently regress again)
 

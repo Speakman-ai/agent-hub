@@ -51,9 +51,13 @@ services:
       start_period: 60s
 
   # Runs the Vite dev server for live HMR against the worktree the Hub
-  # bind-mounts at /app (see .agent-hub/preview.json `entryWorkdir`). Assumes
-  # subdomain preview mode (app served at base `/`); in path-prefix mode a dev
-  # server's absolute URLs don't resolve. See ops/RUNBOOK-subdomain-preview-hmr.md.
+  # bind-mounts at /app. Assumes subdomain preview mode (app served at base `/`);
+  # in path-prefix mode a dev server's absolute URLs don't resolve. See
+  # ops/RUNBOOK-subdomain-preview-hmr.md.
+  #
+  # Not wired to this repo's session previews any more: `.agent-hub/preview.json`
+  # declares a `prEnv.devServer` block and the Hub runs the app as a managed
+  # process instead.
   client:
     # :main supplies the Node runtime; the worktree mount overlays /app, so the
     # client source + client/node_modules (incl. vite) come from the session.

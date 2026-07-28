@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --port 3050",
+    "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "pretest": "node ./scripts/check-test-deps.mjs",

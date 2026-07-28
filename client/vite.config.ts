@@ -16,7 +16,7 @@ const previewServer = buildPreviewServerConfig(process.env);
 
 // In Docker production builds, set VITE_API_PORT="" so the client uses
 // same-origin WebSocket via nginx. In dev, defaults to 3051. In preview mode the
-// client talks same-origin (Vite proxies /api to the compose `server` service).
+// client talks same-origin (Vite proxies /api to the nested API on loopback).
 const apiPort = isPreviewMode(process.env) ? '' : (process.env.VITE_API_PORT ?? '3051');
 
 // Resolve the app version baked into the bundle. Implementation lives in
@@ -64,6 +64,7 @@ export default defineConfig({
   // In preview mode use the HMR-over-proxy server config; otherwise the normal
   // local dev server (untouched).
   server: previewServer ?? {
+    // `npm run dev:client` runs bare `vite`, so this is the local dev port.
     port: 3050,
     host: '0.0.0.0',
     // Proxy only applies in dev mode (not production builds)

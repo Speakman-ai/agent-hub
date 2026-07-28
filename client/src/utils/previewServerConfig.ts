@@ -1,9 +1,10 @@
 // Vite dev-server config for running INSIDE an Agent Hub session preview, to get
 // live hot-module-reload of the agent-hub client against the session worktree.
 //
-// Activated by AGENT_HUB_PREVIEW=1 (set in compose.preview.yml's client service).
-// Returns null outside preview, so normal `npm run dev` / `npm run build` are
-// completely unaffected — the gate is a single env var.
+// Activated by AGENT_HUB_PREVIEW=1, exported by `devServer.startCommand` in
+// `.agent-hub/preview.json`. Returns null outside preview, so normal
+// `npm run dev` / `npm run build` are completely unaffected — the gate is a
+// single env var.
 //
 // ⚠️ REQUIRES Agent Hub **subdomain preview mode** (the app is served at the
 // subdomain root, base `/`). In path-prefix mode the Hub proxy strips the mount
@@ -13,6 +14,12 @@
 export function isPreviewMode(env: any) {
   return env.AGENT_HUB_PREVIEW === '1';
 }
+
+/** Port the nested Agent Hub API binds when none is pinned. Mirrors `config.ts`. */
+const DEFAULT_API_PORT = 3051;
+
+/** Vite's normal local-dev port, and the fallback when `PORT` is absent. */
+export const DEFAULT_PREVIEW_CLIENT_PORT = 3050;
 
 /**
  * The fixed internal hostname the Hub reaches the dev server over — both the
@@ -73,16 +80,23 @@ export const PREVIEW_WATCH_IGNORED = ['**/.agent-hub-preview/**'];
 
 /**
  * Build the Vite `server` config for preview/HMR mode, or null when not in a
- * preview container. Kept a pure function of `env` so it is unit-testable
+ * session preview. Kept a pure function of `env` so it is unit-testable
  * without running the full vite.config.js (which shells out to git, etc.).
  */
 export function buildPreviewServerConfig(env: any) {
   if (!isPreviewMode(env)) return null;
 
-  const port = Number(env.FRONTEND_PORT) || 80;
-  // The compose `server` service backs /api; the dev client talks same-origin
-  // and Vite proxies to it. Overridable for non-compose harnesses.
-  const apiTarget = env.AGENT_HUB_PREVIEW_API_TARGET || 'http://server:3051';
+  // The dev-server runtime injects PORT from the PRIMARY portMap entry's
+  // mapping — a pool-allocated host port on the host session-env backend, the
+  // configured internal port under sysbox. Binding anything else leaves the
+  // readiness probe dialling a dead port until the budget expires.
+  const port = Number(env.PORT) || DEFAULT_PREVIEW_CLIENT_PORT;
+  // `npm run dev` also starts the nested Agent Hub API in the same env, so the
+  // dev client talks same-origin and Vite proxies to it over loopback.
+  // AGENT_HUB_PORT is what the nested API binds; keep the two in lockstep.
+  const apiTarget =
+    env.AGENT_HUB_PREVIEW_API_TARGET ||
+    `http://127.0.0.1:${Number(env.AGENT_HUB_PORT) || DEFAULT_API_PORT}`;
   // HMR rides the Hub preview proxy's WebSocket tunnel. The public origin is TLS
   // on 443 while Vite listens on `port` internally, so the HMR client must be
   // told the public port/protocol. Defaults suit the prod TLS deployment;
@@ -98,8 +112,9 @@ export function buildPreviewServerConfig(env: any) {
     // dev server also proxies /api same-origin). See resolvePreviewAllowedHosts.
     allowedHosts: resolvePreviewAllowedHosts(env),
     hmr: { protocol: hmrProtocol, clientPort: hmrClientPort },
-    // The worktree is bind-mounted in; inotify can miss events across the mount,
-    // so poll to keep HMR reliable.
+    // Under the sysbox session backend the worktree is bind-mounted into a
+    // per-session container, and inotify can miss events across the mount, so
+    // poll to keep HMR reliable on both backends.
     watch: { usePolling: true, interval: 300, ignored: PREVIEW_WATCH_IGNORED },
     proxy: {
       // `/api` includes the dedicated session-terminal WebSocket route, so it
@@ -109,8 +124,8 @@ export function buildPreviewServerConfig(env: any) {
       '/design-files': apiTarget,
       // The nested app opens a same-origin WebSocket at `/ws` for live chat
       // streaming and real-time updates. Without `ws: true` Vite would not
-      // upgrade it to the compose `server` service, so the preview would load
-      // but never stream. Distinct from Vite's own HMR socket (config above).
+      // upgrade it to the nested API, so the preview would load but never
+      // stream. Distinct from Vite's own HMR socket (config above).
       '/ws': { target: apiTarget, ws: true },
     },
   };

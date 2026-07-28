@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "cd server && npx tsx watch index.ts",
-    "dev:client": "cd client && npx vite --port 3050",
+    "dev:client": "cd client && npx vite",
     "build": "cd client && npx vite build",
     "start": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "install:all": "npm install --include=dev && cd server && npm install --include=dev && cd ../shared && npm install --include=dev && cd ../client && npm install --include=dev && cd ../mobile && npm install --include=dev",
