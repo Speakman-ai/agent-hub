@@ -9,9 +9,9 @@
  * leaving the on-disk artifact dirs intact.
  *
  * Usage:
- *   node scripts/recover-orphan-designs.cjs              # dry run, prints plan
- *   node scripts/recover-orphan-designs.cjs --apply       # insert rows
- *   AGENT_HUB_DATA_DIR=/path node scripts/recover-orphan-designs.cjs --apply
+ *   node ops/scripts/recover-orphan-designs.cjs          # dry run, prints plan
+ *   node ops/scripts/recover-orphan-designs.cjs --apply   # insert rows
+ *   AGENT_HUB_DATA_DIR=/path node ops/scripts/recover-orphan-designs.cjs --apply
  *
  * Safe to re-run: INSERT uses `OR IGNORE` so dirs that already have rows are
  * skipped. Design names are derived from each dir's `index.html` <title> tag

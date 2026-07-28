@@ -17,9 +17,9 @@
  * pages are reclaimed for reuse but the .db file size doesn't drop).
  *
  * Usage:
- *   node scripts/prune-session-events.cjs                 # dry run
- *   node scripts/prune-session-events.cjs --apply          # delete + VACUUM
- *   AGENT_HUB_DATA_DIR=/path node scripts/prune-session-events.cjs --apply
+ *   node ops/scripts/prune-session-events.cjs             # dry run
+ *   node ops/scripts/prune-session-events.cjs --apply      # delete + VACUUM
+ *   AGENT_HUB_DATA_DIR=/path node ops/scripts/prune-session-events.cjs --apply
  *
  * Safe to re-run: orphan SELECTs have no side effects, VACUUM is a
  * no-op when there's nothing to reclaim. Always grab a backup of
