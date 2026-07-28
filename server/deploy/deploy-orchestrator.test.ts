@@ -38,6 +38,7 @@ import {
   type DeployOrchestratorDeps,
 } from './deploy-orchestrator.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
+import type { RunnerJobLossProbe } from '../finalize/runner-queue.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { createSupportTicket, getSupportTicket } from '../support-tickets-store.js';
 import { addReleaseDigestRecipient } from '../release-notification-settings.js';
@@ -129,6 +130,13 @@ interface StepScript {
   stdout?: string;
   /** Never emit close — used to exercise the timeout path. */
   hang?: boolean;
+  /**
+   * Emit `error` instead of `close` — how a runner-agent that died under the
+   * step surfaces (`RunnerJobChannel.fail()` → `RemoteSpawnedStep.fail()`).
+   */
+  error?: string;
+  /** Queue-row loss evidence, exposed the way the remote backend wires it. */
+  probe?: Partial<RunnerJobLossProbe>;
 }
 
 interface FakeBackend {
@@ -141,7 +149,11 @@ interface FakeBackend {
 
 function makeFakeBackend(
   scripts: StepScript[],
-  opts: { acquireDelay?: Promise<void> } = {},
+  opts: {
+    acquireDelay?: Promise<void>;
+    /** Throw from `acquire` on this 1-based call index and every one after it. */
+    failAcquireFrom?: number;
+  } = {},
 ): FakeBackend {
   const acquireCalls: JobClaimSpec[] = [];
   const spawnArgs: Array<{ run: string; cwd: string; env: NodeJS.ProcessEnv | undefined }> = [];
@@ -170,10 +182,23 @@ function makeFakeBackend(
           return true;
         },
       };
+      if (script.probe) {
+        const evidence = script.probe;
+        child.probeRunnerLoss = () => ({
+          state: 'running',
+          lost: false,
+          leaseExpired: false,
+          spotInterrupted: false,
+          heartbeatAt: null,
+          detail: null,
+          ...evidence,
+        });
+      }
       // Drive output + close asynchronously so the consumer wires listeners first.
       setImmediate(() => {
         if (script.stdout) stdout.push(script.stdout);
-        if (!script.hang) emitter.emit('close', script.exitCode);
+        if (script.error) emitter.emit('error', new Error(script.error));
+        else if (!script.hang) emitter.emit('close', script.exitCode);
       });
       return child;
     },
@@ -187,6 +212,9 @@ function makeFakeBackend(
     async acquire(spec) {
       acquireCalls.push(spec);
       if (opts.acquireDelay) await opts.acquireDelay;
+      if (opts.failAcquireFrom && acquireCalls.length >= opts.failAcquireFrom) {
+        throw new Error('no runner-agent claimed job within 1000ms');
+      }
       return lease;
     },
   };
@@ -617,6 +645,172 @@ describe('triggerDeployment — runner acquire retry (transient fleet loss)', ()
     // Env lock still released, so the environment is free to deploy again.
     expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
     expect(acquireEnvironmentLock(PROJECT, 'dev', 'after-cancel')).toBe(true);
+  });
+});
+
+describe('triggerDeployment — mid-run runner loss (agent crashes under a step)', () => {
+  const LOSS_MESSAGE =
+    'runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)';
+
+  it('resumes the interrupted step on a fresh runner and completes the deploy', async () => {
+    // Step 1 dies with the runner mid-flight, then succeeds on the replacement.
+    const fb = makeFakeBackend([
+      { exitCode: -1, error: LOSS_MESSAGE, probe: { state: 'lost', lost: true } },
+      { exitCode: 0 },
+      { exitCode: 0 },
+    ]);
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-loss',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('success');
+    // A replacement runner was leased, and the dead one was torn down.
+    expect(fb.acquireCalls.length).toBe(2);
+    expect(fb.released).toBe(2);
+    // The interrupted step re-ran, then the deploy carried on.
+    expect(fb.spawnArgs.map((s) => s.run)).toEqual(['./build.sh', './build.sh', './ship.sh']);
+
+    const steps = listDeploymentSteps(dep.id);
+    expect(steps.map((s) => s.status)).toEqual(['success', 'success']);
+    // The dead runner's failure is not left behind on the recovered step.
+    expect(steps[0].error).toBeNull();
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.current_ref).toBe('sha-loss');
+  });
+
+  it('does not retry a step that genuinely exited non-zero', async () => {
+    const fb = makeFakeBackend([{ exitCode: 3, stdout: 'boom\n' }]);
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-fail',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('error');
+    expect(fb.acquireCalls.length).toBe(1);
+    expect(fb.spawnArgs.length).toBe(1);
+    expect(dep.error).toContain('exit 3');
+  });
+
+  it('gives up once the shared retry budget is spent and names the loss', async () => {
+    // Every attempt loses its runner: original + the two default retries.
+    const fb = makeFakeBackend(
+      Array.from({ length: 4 }, () => ({
+        exitCode: -1,
+        error: LOSS_MESSAGE,
+        probe: { state: 'lost' as const, lost: true, spotInterrupted: true },
+      })),
+    );
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-loss-loop',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('error');
+    // Original acquire + DEFAULT_DEPLOY_RUNNER_LOSS_RETRIES replacements.
+    expect(fb.acquireCalls.length).toBe(3);
+    expect(fb.spawnArgs.length).toBe(3);
+    expect(dep.error).toContain('runner lost (spot_reclaimed)');
+
+    const steps = listDeploymentSteps(dep.id);
+    expect(steps[0].status).toBe('error');
+    // The operator reads runner loss, not a raw spawn-error string.
+    expect(steps[0].error).toContain('runner lost mid-step (spot_reclaimed)');
+    expect(steps[0].error).toContain('after 2 retries on a fresh runner');
+    expect(steps[0].error).not.toContain('failed to spawn');
+    expect(steps[1].status).toBe('skipped');
+    // Env lock released, so the environment is free to deploy again.
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+  });
+
+  it('respects DEPLOY_RUNNER_LOSS_MAX_RETRIES=0 (retry disabled)', async () => {
+    const fb = makeFakeBackend([{ exitCode: -1, error: LOSS_MESSAGE }]);
+    const deps = makeDeps(fb.backend);
+    deps.env = { PATH: '/usr/bin', DEPLOY_RUNNER_LOSS_MAX_RETRIES: '0' };
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-loss-off',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      deps,
+    );
+
+    expect(dep.status).toBe('error');
+    expect(fb.acquireCalls.length).toBe(1);
+    expect(listDeploymentSteps(dep.id)[0].error).toContain('no retry budget remained');
+  });
+
+  it('fails the deploy when no replacement runner can be acquired', async () => {
+    const fb = makeFakeBackend([{ exitCode: -1, error: LOSS_MESSAGE }], { failAcquireFrom: 2 });
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-loss-noagent',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('error');
+    expect(dep.error).toContain('runner lost, no replacement available');
+    expect(listDeploymentSteps(dep.id)[0].error).toContain(
+      'no replacement runner could be acquired',
+    );
+    // Env lock released despite the second failure.
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+  });
+
+  it('re-attaches a github_workflow step instead of dispatching it twice', async () => {
+    const fb = makeFakeBackend([
+      { exitCode: -1, error: LOSS_MESSAGE },
+      { exitCode: 0, stdout: `${GITHUB_RUN_MARKER} {"runId":"991","conclusion":"success"}\n` },
+    ]);
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'sha-wf-loss',
+        worktreePath: WORKTREE,
+        config: GITHUB_WORKFLOW_CONFIG,
+      },
+      { ...makeDeps(fb.backend), resolveProjectGithubRepo: () => 'acme/webapp' },
+    );
+
+    expect(dep.status).toBe('success');
+    expect(fb.spawnArgs.length).toBe(2);
+    // First attempt dispatches; the resumed attempt watches instead, so the
+    // interrupted deploy is never dispatched to GitHub a second time.
+    expect(fb.spawnArgs[0].run).toContain('gh workflow run');
+    expect(fb.spawnArgs[1].run).not.toContain('gh workflow run');
+    expect(fb.spawnArgs[1].run).toContain('github_workflow recovery');
   });
 });
 

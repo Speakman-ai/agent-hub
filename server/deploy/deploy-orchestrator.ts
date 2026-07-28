@@ -45,6 +45,12 @@ import type { AppConfig, BroadcastFn, DeploymentRow } from '../types.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { resolveRunnerBackend } from '../finalize/runner-backend.js';
 import { acquireRunnerWithRetry } from './deploy-acquire-retry.js';
+import {
+  classifyDeployRunnerLoss,
+  describeDeployRunnerLoss,
+  resolveDeployRunnerLossRetries,
+} from './deploy-runner-loss.js';
+import type { RunnerJobLossProbe } from '../finalize/runner-queue.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
 import { resolveRunsOnImage } from '../finalize/runner-images.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
@@ -775,6 +781,13 @@ interface StepRunOutcome {
   timedOut: boolean;
   /** Set when the child emitted an `error` event (spawn failure). */
   spawnError?: string;
+  /**
+   * Queue-row evidence about the runner backing this step, sampled at settle
+   * time on a failing outcome. Populated only by backends that wire a probe
+   * (the remote fleet); the local DinD backend leaves it null and loss is then
+   * classified from the failure message alone.
+   */
+  lossProbe?: RunnerJobLossProbe | null;
 }
 
 /**
@@ -849,7 +862,20 @@ function runStep(
         if (tail.length > STEP_TAIL_LINES) tail.shift();
       }
       if (active) clearActiveChild(active, child);
-      resolve({ ...outcome, tail });
+      // Sample the runner's queue row only on a failing outcome — this is a
+      // SQLite read and the happy path runs it once per step for nothing. The
+      // probe is what lets the caller tell "the runner died under this step"
+      // from "this deploy command failed".
+      let lossProbe: RunnerJobLossProbe | null = null;
+      if (outcome.exitCode !== 0) {
+        try {
+          lossProbe = child.probeRunnerLoss?.() ?? null;
+        } catch {
+          // Evidence is best-effort; a probe failure just falls back to
+          // message-based classification.
+        }
+      }
+      resolve({ ...outcome, tail, lossProbe });
     };
 
     child.on('error', (err) => {
@@ -963,6 +989,31 @@ export async function runDeployment(
   // project-scoped secrets are layered on top. `minimalEnv: true` on the spec
   // also stops the runner backend folding process.env at step-exec time.
   const baseEnv: NodeJS.ProcessEnv = buildDeployBaseEnv(deps.env ?? process.env);
+  // Resolved inside the try below, then reused by the mid-run re-acquire path
+  // when a runner dies under a step. Both stay null until the acquire block has
+  // decided the backend and built the spec.
+  let backend: RunnerBackend | null = null;
+  let runnerSpec: JobClaimSpec | null = null;
+  /**
+   * Acquire a runner for this deployment. Bounded auto-retry on TRANSIENT
+   * acquire failures (agent lost before attach, no agent claimed in time, Spot
+   * reclaim). Also used to stand up a REPLACEMENT runner after a mid-run loss.
+   * A deterministic failure (worktree bundle) short-circuits, and a cancelled
+   * deployment stops retrying. Mirrors Finalize's infra auto-retry
+   * (server/finalize/infra-retry.ts) for the deploy path.
+   */
+  const acquireLease = async (): Promise<RunnerLease> => {
+    if (!backend || !runnerSpec) throw new Error('deploy runner spec was never resolved');
+    return acquireRunnerWithRetry(backend, runnerSpec, {
+      isCancelled: currentDeploymentIsCancelled,
+      onRetry: (retry, attempts, detail) => {
+        console.warn(
+          `[deploy-orchestrator] runner acquire failed for ${projectId}/${environment} ` +
+            `(deployment ${deploymentId}), retrying (${retry}/${attempts - 1}): ${detail}`,
+        );
+      },
+    });
+  };
   let lease: RunnerLease;
   try {
     // Inject the initiating user's GitHub token so deploy steps can run
@@ -1012,8 +1063,8 @@ export async function runDeployment(
       );
     }
 
-    const backend = deps.runnerBackend ?? resolveRunnerBackend();
-    const spec: JobClaimSpec = {
+    backend = deps.runnerBackend ?? resolveRunnerBackend();
+    runnerSpec = {
       orgId: deps.orgId ?? '',
       projectId,
       runId: deploymentId,
@@ -1034,22 +1085,10 @@ export async function runDeployment(
       minimalEnv: true,
     };
 
-    // Bounded auto-retry on TRANSIENT acquire failures (agent lost before
-    // attach, no agent claimed in time, Spot reclaim). The acquire runs before
-    // any deploy step, so retrying it can never cause a partial / double deploy.
-    // A deterministic failure (worktree bundle) short-circuits, and a cancelled
-    // deployment stops retrying. On final give-up the throw falls through to the
-    // catch → fail(), which releases the env lock (no leak). Mirrors Finalize's
-    // infra auto-retry (server/finalize/infra-retry.ts) for the deploy path.
-    lease = await acquireRunnerWithRetry(backend, spec, {
-      isCancelled: currentDeploymentIsCancelled,
-      onRetry: (retry, attempts, detail) => {
-        console.warn(
-          `[deploy-orchestrator] runner acquire failed for ${projectId}/${environment} ` +
-            `(deployment ${deploymentId}), retrying (${retry}/${attempts - 1}): ${detail}`,
-        );
-      },
-    });
+    // This first acquire runs before any deploy step, so retrying it can never
+    // cause a partial / double deploy. On final give-up the throw falls through
+    // to the catch → fail(), which releases the env lock (no leak).
+    lease = await acquireLease();
   } catch (err) {
     // `fail()` preserves a cancelled terminal: if the deployment was cancelled
     // (at entry or between acquire attempts) `acquireRunnerWithRetry` throws, but
@@ -1066,6 +1105,11 @@ export async function runDeployment(
   const deadline = now() + envConfig.timeoutMinutes * 60_000;
   let failure: { error: string } | null = null;
   let failedAtOrder = -1;
+  // Re-acquire budget for a runner that dies UNDER a step, shared across every
+  // step of this deployment so a fleet that keeps dropping agents fails the
+  // deploy instead of grinding through the whole timeout budget.
+  const runnerLossRetryBudget = resolveDeployRunnerLossRetries(deps.env ?? process.env);
+  let runnerLossRetriesUsed = 0;
 
   // Snapshot the environment's currently-live ref BEFORE we overwrite it on
   // success. The deploy holds the env lock for the whole run, so no concurrent
@@ -1097,13 +1141,89 @@ export async function runDeployment(
       }
       const stepCfg = envConfig.steps[stepRow.step_order - 1];
       if (!stepCfg) continue; // defensive: row/config drift
-      const runnableStep =
-        ctx.recovering && stepRow.status === 'running'
-          ? stepConfigForRecovery(stepCfg, stepRow, deploymentAtRunStart)
+
+      let outcome: StepRunOutcome | null = null;
+      let stepLossRetries = 0;
+      let budgetExpiredBeforeStep = false;
+      let reacquireError: string | null = null;
+
+      // Attempt loop for ONE step. It iterates only when the runner-agent dies
+      // under the step (crash / OOM / lost Hub contact / Spot reclaim) — infra,
+      // not a deploy failure. A step that reports any exit code, times out, or
+      // is cancelled settles on the first pass.
+      for (;;) {
+        const remaining = deadline - now();
+        if (remaining <= 0) {
+          budgetExpiredBeforeStep = true;
+          break;
+        }
+
+        // Re-setting `running` also clears the previous attempt's error/exit
+        // code, so a step that recovers on a fresh runner does not carry the
+        // dead runner's failure into its success row.
+        const runningRow = updateDeploymentStepStatus(stepRow.id, 'running') ?? stepRow;
+        emitDeploymentUpdate(deps, projectId, deploymentId);
+
+        // Resume rather than restart when this step was already in flight —
+        // after a Hub restart, or after the runner died under it. A
+        // `github_workflow` step then re-attaches to the run it already
+        // dispatched instead of dispatching a second deploy of the same ref.
+        const resuming =
+          stepLossRetries > 0 || (ctx.recovering === true && stepRow.status === 'running');
+        const runnableStep = resuming
+          ? stepConfigForRecovery(stepCfg, runningRow, deploymentAtRunStart)
           : stepCfg;
 
-      const remaining = deadline - now();
-      if (remaining <= 0) {
+        outcome = await runStep(
+          lease,
+          runnableStep,
+          stepRow.step_order,
+          worktreePath,
+          baseEnv,
+          remaining,
+          active,
+          (line) => {
+            const githubRun = parseGithubRunMarker([line]);
+            if (githubRun) setDeploymentStepGithubRun(stepRow.id, githubRun);
+          },
+        );
+
+        if (currentDeploymentIsCancelled()) {
+          return getDeployment(deploymentId) as DeploymentRow;
+        }
+
+        // A genuine overrun of the deployment budget is not runner loss, and
+        // there is no budget left to retry into either way.
+        if (outcome.timedOut) break;
+        const loss = classifyDeployRunnerLoss(outcome);
+        if (!loss) break;
+        // Budget is shared across the whole deployment: a fleet that keeps
+        // dropping agents fails the deploy rather than burning the timeout.
+        if (runnerLossRetriesUsed >= runnerLossRetryBudget) break;
+        // Nothing left to resume into — fall through and report the loss.
+        if (deadline - now() <= 0) break;
+
+        runnerLossRetriesUsed += 1;
+        stepLossRetries += 1;
+        console.warn(
+          `[deploy-orchestrator] runner lost during step "${stepCfg.name}" for ` +
+            `${projectId}/${environment} (deployment ${deploymentId}) — ${loss.kind}: ${loss.detail}; ` +
+            `resuming on a fresh runner (${runnerLossRetriesUsed}/${runnerLossRetryBudget})`,
+        );
+        try {
+          await lease.release();
+        } catch {
+          // The runner is already gone; teardown failing is expected here.
+        }
+        try {
+          lease = await acquireLease();
+        } catch (err) {
+          reacquireError = err instanceof Error ? err.message : String(err);
+          break;
+        }
+      }
+
+      if (budgetExpiredBeforeStep) {
         updateDeploymentStepStatus(stepRow.id, 'error', {
           error: `deployment exceeded its ${envConfig.timeoutMinutes}m budget before this step started`,
         });
@@ -1113,25 +1233,18 @@ export async function runDeployment(
         break;
       }
 
-      updateDeploymentStepStatus(stepRow.id, 'running');
-      emitDeploymentUpdate(deps, projectId, deploymentId);
+      // Defensive: the attempt loop always assigns before breaking.
+      if (!outcome) continue;
 
-      const outcome = await runStep(
-        lease,
-        runnableStep,
-        stepRow.step_order,
-        worktreePath,
-        baseEnv,
-        remaining,
-        active,
-        (line) => {
-          const githubRun = parseGithubRunMarker([line]);
-          if (githubRun) setDeploymentStepGithubRun(stepRow.id, githubRun);
-        },
-      );
-
-      if (currentDeploymentIsCancelled()) {
-        return getDeployment(deploymentId) as DeploymentRow;
+      if (reacquireError) {
+        updateDeploymentStepStatus(stepRow.id, 'error', {
+          exitCode: outcome.exitCode,
+          error: `runner lost mid-step and no replacement runner could be acquired: ${reacquireError}`,
+        });
+        emitDeploymentUpdate(deps, projectId, deploymentId);
+        failure = { error: `step "${stepCfg.name}" failed: runner lost, no replacement available` };
+        failedAtOrder = stepRow.step_order;
+        break;
       }
 
       // A `github_workflow` step prints a run marker (run id / url / conclusion)
@@ -1166,6 +1279,23 @@ export async function runDeployment(
         updateDeploymentStepStatus(stepRow.id, 'success', { exitCode: 0 });
         emitDeploymentUpdate(deps, projectId, deploymentId);
         continue;
+      }
+
+      // Loss that survived the retry budget: name it for what it is, so the
+      // operator reads "the fleet kept dropping runners" rather than a raw
+      // spawn-error string that looks like a broken deploy script.
+      const exhaustedLoss = classifyDeployRunnerLoss(outcome);
+      if (exhaustedLoss) {
+        updateDeploymentStepStatus(stepRow.id, 'error', {
+          exitCode: outcome.exitCode,
+          error: describeDeployRunnerLoss(exhaustedLoss, stepLossRetries),
+        });
+        emitDeploymentUpdate(deps, projectId, deploymentId);
+        failure = {
+          error: `step "${stepCfg.name}" failed: runner lost (${exhaustedLoss.kind})`,
+        };
+        failedAtOrder = stepRow.step_order;
+        break;
       }
 
       const detail = outcome.spawnError
