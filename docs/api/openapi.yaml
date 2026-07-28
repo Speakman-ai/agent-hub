@@ -8262,6 +8262,7 @@ components:
           enum:
             - compose
             - spawn
+            - dev-server
         composeProjectName:
           type: string
           nullable: true

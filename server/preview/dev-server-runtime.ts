@@ -44,6 +44,7 @@ import { createSessionEnv } from '../session-env/select-session-env.js';
 import { getSessionEnvSelection } from '../session-env/sysbox-capability.js';
 import {
   DEFAULT_PREVIEW_PORT_RANGE,
+  DEV_SERVER_RUNTIME_KIND,
   ensureDevServerPreviewColumns,
   WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
@@ -63,7 +64,7 @@ import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 // ─── Types & contracts ──────────────────────────────────────────────────
 
 /** `worktree_preview_groups.runtime` value for rows this runtime owns. */
-export const DEV_SERVER_RUNTIME_KIND = 'dev-server';
+export { DEV_SERVER_RUNTIME_KIND };
 
 export type DevServerStatus = 'starting' | 'ready' | 'failed';
 

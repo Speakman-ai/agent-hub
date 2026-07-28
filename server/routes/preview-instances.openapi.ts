@@ -16,7 +16,7 @@ const ProjectPreviewInstance = registerComponent(
       sessionId: z.string(),
       sessionName: z.string().nullable(),
       status: z.enum(['starting', 'ready', 'failed']),
-      kind: z.enum(['compose', 'spawn']),
+      kind: z.enum(['compose', 'spawn', 'dev-server']),
       composeProjectName: z.string().nullable(),
       port: z.number().nullable(),
       url: z.string().nullable(),

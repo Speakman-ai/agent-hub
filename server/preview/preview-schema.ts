@@ -39,6 +39,14 @@
  * startScript from exhausting the port pool. `getActiveBySessionId()`
  * includes 'failed' rows so the replace-on-restart guard can sweep them.
  */
+/**
+ * `worktree_preview_groups.runtime` value for rows the dev-server
+ * runtime owns. Lives here (beside the column definition) so callers
+ * that only need to discriminate a row don't have to import the whole
+ * runtime module.
+ */
+export const DEV_SERVER_RUNTIME_KIND = 'dev-server';
+
 export const WORKTREE_PREVIEWS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS worktree_previews (
     id              TEXT PRIMARY KEY,

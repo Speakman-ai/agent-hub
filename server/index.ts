@@ -1463,6 +1463,7 @@ app.use(
     ...routeDeps,
     getPreviewComposeRuntime: () => previewComposeRuntime,
     getPreviewRuntime: () => previewRuntime,
+    getDevServerRuntime: () => devServerRuntime,
   }),
 );
 app.use(createProvisioningRoutes(routeDeps));

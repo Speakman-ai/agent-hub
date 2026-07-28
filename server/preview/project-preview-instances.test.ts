@@ -93,4 +93,93 @@ describe('project-preview-instances', () => {
     expect(result.failed).toEqual([]);
     expect(stopPreview).toHaveBeenCalledWith('g1');
   });
+
+  describe('dev-server groups', () => {
+    beforeEach(() => {
+      db.prepare(`INSERT INTO sessions (id, agent_id, name) VALUES (?, ?, ?)`).run(
+        'sess-2',
+        'agent-1',
+        'Dev server session',
+      );
+      // A dev-server group carries runtime='dev-server' and NULL
+      // compose_project_name, and names its process rows after the
+      // project's portMap keys rather than 'entry'.
+      db.prepare(
+        `INSERT INTO worktree_preview_groups
+           (id, session_id, project_id, status, compose_project_name, runtime, worktree_path)
+         VALUES (?, ?, ?, ?, NULL, 'dev-server', ?)`,
+      ).run('g2', 'sess-2', 'proj-a', 'ready', '/tmp/wt2');
+      db.prepare(
+        `INSERT INTO worktree_preview_processes
+           (id, group_id, name, port, url, status, internal_port, is_primary)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run('g2:client', 'g2', 'client', 4200, 'http://localhost:4200', 'ready', 3050, 1);
+      db.prepare(
+        `INSERT INTO worktree_preview_processes
+           (id, group_id, name, port, url, status, internal_port, is_primary)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run('g2:api', 'g2', 'api', 4201, 'http://localhost:4201', 'ready', 3051, 0);
+    });
+
+    it("lists dev-server groups with kind 'dev-server' and the primary port", () => {
+      const { previews } = listProjectPreviewInstances(db, 'proj-a');
+      const devServer = previews.find((p) => p.id === 'g2');
+      expect(devServer).toMatchObject({
+        id: 'g2',
+        sessionId: 'sess-2',
+        sessionName: 'Dev server session',
+        status: 'ready',
+        kind: 'dev-server',
+        composeProjectName: null,
+        port: 4200,
+        url: 'http://localhost:4200',
+      });
+      // The extra portMap row must not fan the group out into two entries.
+      expect(previews.filter((p) => p.id === 'g2')).toHaveLength(1);
+    });
+
+    it('stopProjectPreviewInstance routes dev-server groups to DevServerRuntime.stop', async () => {
+      const stop = vi.fn().mockResolvedValue(undefined);
+      const stopPreview = vi.fn().mockResolvedValue(undefined);
+      const result = await stopProjectPreviewInstance(
+        db,
+        {
+          getDevServerRuntime: () => ({ stop }) as never,
+          getPreviewComposeRuntime: () => ({ stopPreview }) as never,
+          getPreviewRuntime: () => ({ stopPreview }) as never,
+        },
+        'proj-a',
+        'g2',
+      );
+      expect(result.stopped).toBe(true);
+      expect(stop).toHaveBeenCalledWith('g2');
+      // The legacy runtime ignores dev-server rows, so reaching it would
+      // report success while leaking the process and its host port.
+      expect(stopPreview).not.toHaveBeenCalled();
+    });
+
+    it('stopProjectPreviewInstance surfaces a missing dev-server runtime', async () => {
+      await expect(
+        stopProjectPreviewInstance(db, { getPreviewRuntime: () => ({}) as never }, 'proj-a', 'g2'),
+      ).rejects.toThrow(/Dev server runtime is not available/);
+    });
+
+    it('purgeProjectPreviewInstances stops compose and dev-server groups with their own runtimes', async () => {
+      const stop = vi.fn().mockResolvedValue(undefined);
+      const stopPreview = vi.fn().mockResolvedValue(undefined);
+      const result = await purgeProjectPreviewInstances(
+        db,
+        {
+          getDevServerRuntime: () => ({ stop }) as never,
+          getPreviewComposeRuntime: () => ({ stopPreview }) as never,
+        },
+        'proj-a',
+      );
+      expect(result.stopped).toBe(2);
+      expect(result.failed).toEqual([]);
+      expect(stop).toHaveBeenCalledWith('g2');
+      expect(stopPreview).toHaveBeenCalledWith('g1');
+      expect(stopPreview).toHaveBeenCalledTimes(1);
+    });
+  });
 });
