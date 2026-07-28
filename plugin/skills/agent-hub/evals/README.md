@@ -76,8 +76,6 @@ diff <(jq -S .results baseline-report.json) <(jq -S .results with-skill-report.j
 - Haiku and Opus results are recorded regardless; a Haiku miss on a
   subtlety (e.g. remembering `$AGENT_HUB_SESSION_ID`) is expected and does
   not block the release.
-- `delegate-task` is a **bonus** — tracked for trend analysis but not a
-  blocking gate.
 
 ## Should-fire vs. should-not-fire
 

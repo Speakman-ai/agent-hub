@@ -55,10 +55,9 @@ describe('agent-hub skill — examples/ directory', () => {
     expect(statSync(MIRROR_EXAMPLES).isDirectory()).toBe(true);
   });
 
-  it('ships the five required example recipes (plus a README)', () => {
+  it('ships the four required example recipes (plus a README)', () => {
     const required = [
       'create-ticket-from-bug-report.md',
-      'delegate-to-subagent.md',
       'post-heartbeat-summary.md',
       'search-and-link-wiki-page.md',
       'move-card-through-workflow.md',

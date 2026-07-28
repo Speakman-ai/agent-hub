@@ -1,32 +1,29 @@
-# Sessions — Messages, Ask Mode & Delegation
+# Sessions — Messages & Ask Mode
 
 You're running inside a session. The `sessions` table tracks the
 session; `messages` stores the per-turn message log. You can query other
-sessions too — useful for handoffs, triage, and cross-session analysis.
-Coordination with sub-agents also happens through the session layer, via
-three fenced JSON blocks the server parses after your turn closes.
+sessions too — useful for triage and cross-session analysis.
 
 Back to [SKILL.md](../SKILL.md).
 
 **Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Sessions>
-(request/response shapes for session CRUD, messages, ask-mode, dispatch).
-This page is the *how*.
+(request/response shapes for session CRUD, messages, ask-mode). This page is
+the *how*.
 
 ## Contents
 
 - [Listing sessions & messages](#listing-sessions--messages)
 - [Session row](#session-row)
 - [Message row](#message-row)
+- [Per-user session ownership](#per-user-session-ownership)
 - [Ask mode — read-only / plan-mode sessions](#ask-mode--read-only--plan-mode-sessions)
   - [What changes in ask mode](#what-changes-in-ask-mode)
   - [Detecting ask_mode from inside a session](#detecting-ask_mode-from-inside-a-session)
   - [Flipping ask mode programmatically](#flipping-ask-mode-programmatically)
 - [ReAct loop — host-mediated skill/wiki/web actions](#react-loop--host-mediated-skillwikiweb-actions)
-- [Delegation to sub-agents](#delegation-to-sub-agents)
-  - [`<delegate>` — parallel one-shot sub-agents](#delegate--parallel-one-shot-sub-agents)
-  - [`<handoff>` — ownership transfer to one specialist](#handoff--ownership-transfer-to-one-specialist)
+- [No app-level sub-agent dispatch](#no-app-level-sub-agent-dispatch)
+- [Action blocks](#action-blocks)
   - [`<agenthub:close-card>` — auto-close duplicate / already-done cards](#agenthubclose-card--auto-close-duplicate--already-done-cards)
-  - [Choosing between them](#choosing-between-them)
 
 ## Listing sessions & messages
 
@@ -38,8 +35,7 @@ scripts/sessions.sh messages <sessionId>     # full message history
 ## Session row
 
 Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `gemini-cli`), `model`,
-`use_worktree` (0/1 — per-session git isolation; new rows default from the project's `mode`, see
-[`<handoff>`](#handoff--ownership-transfer-to-one-specialist) below),
+`use_worktree` (0/1 — per-session git isolation; new rows default from the project's `mode`),
 `ask_mode` (0/1 — see below), `react_loop_enabled` (0/1 — see
 [ReAct loop](#react-loop--host-mediated-skillwikiweb-actions)), `created_at`, `updated_at`, `title`,
 `last_message_at`.
@@ -57,7 +53,7 @@ timestamps. Messages are stored in order; there's no separate turn index.
 Each `sessions` row carries an `owner_user_id` column populated from
 the caller that created it. Ownership is **strict** — only the
 recorded owner can read or mutate the session, message log, tasks,
-delegations, forwards, and the WebSocket `chat` / `cancel` surface.
+forwards, and the WebSocket `chat` / `cancel` surface.
 Non-owners get **404 Not Found** (not 403) so foreign sessions can't
 be probed for existence.
 
@@ -71,10 +67,10 @@ Ownership rules:
   dispatch, bug-report intake): owner = the org owner (oldest user in
   `users.created_at ASC`). Net effect in strict mode: only the owner
   sees these sessions in `GET /api/sessions/cron` and friends.
-- **Child sessions** (`<handoff>` target, `/forward` clone): inherit
-  the parent's owner via `inheritOwnerFromSession` in `handoff.ts` /
-  `routes/sessions.ts`. A specialist taking over a transcript stays
-  scoped to whoever started the conversation.
+- **Child sessions** (`/forward` clone): inherit the parent's owner via
+  `inheritOwnerFromSession` in `routes/sessions.ts`. A specialist picking
+  up a forwarded transcript stays scoped to whoever started the
+  conversation.
 - **Pre-migration NULL owners**: treated as belonging to the org owner
   so legacy rows stay accessible after the upgrade. The startup
   `backfillSessionOwners()` then replaces every NULL with that user.
@@ -145,8 +141,8 @@ consume the session:
   continuation turns we'll string together (prevents infinite tool →
   continue → tool loops).
 - `AUTO_CONTINUATION_MAX_RETRIES` — when a continuation is scheduled but
-  the session still has an active task or in-flight delegation round, the
-  handler reschedules itself up to this many times (500ms each) before
+  the session still has an active task, the handler reschedules itself up
+  to this many times (500ms each) before
   dropping the continuation. The pure planner `planAutoContinuationRetry`
   in `server/chat.ts` encodes this decision so the cap is covered by unit
   tests rather than wall-clock `setTimeout` behavior.
@@ -164,9 +160,9 @@ enforced independently of this flag.
 Every Claude Code spawn that runs an Agent-Hub-enriched system prompt is
 launched with `--disallowed-tools Skill` (helper:
 `server/claude-cli-args.ts → disableNativeSkillToolArgs()`). This covers
-the chat session, `<delegate>` sub-agents and synthesis, conference rooms,
-`runClaude` (heartbeats / crons / workflow steps), Slack one-shots, the
-memory reconciliation pass, and Design Studio.
+the chat session, conference rooms, `runClaude` (heartbeats / crons /
+workflow steps), Slack one-shots, the memory reconciliation pass, and
+Design Studio.
 
 The reason is that Agent Hub's per-agent skill registry includes skills
 that are **not** in Claude Code's bundled list (`aws-infra`, `design`,
@@ -185,8 +181,7 @@ until it hits another `--option` or a `--` end-of-options separator. So
 and the CLI exits with `Error: Input must be provided either through
 stdin or as a prompt argument when using --print`. Spawn sites whose
 argv ends with a bare positional prompt (heartbeat / memory / slack /
-room-chat / `<delegate>` sub-agent fan-out / `<delegate>` synthesis)
-**must** insert `'--'` between `disableNativeSkillToolArgs()` and the
+room-chat) **must** insert `'--'` between `disableNativeSkillToolArgs()` and the
 prompt push. Sites that already have an intervening `--option` (e.g.
 `--session-id`/`--resume` between the helper call and the prompt — chat
 session, design-multi-engine) are safe without `'--'` because the next
@@ -195,18 +190,25 @@ flag terminates the variadic. The
 occurrence of `disableNativeSkillToolArgs()` in the bare-prompt files
 and pins each one independently.
 
-## Delegation to sub-agents
+## No app-level sub-agent dispatch
 
-Lead agents coordinate with sub-agents by emitting **fenced JSON blocks**
-in chat output. The server parses these from the final assistant message
-after the CLI process closes — they are **terminal in the turn** (anything
-after the closing tag is dropped). Parsing lives in `server/chat.ts` and
-dispatch in `server/delegation.ts` + `server/handoff.ts`. All targets must
-be listed as sub-agents of the emitter (same project).
+Agent Hub has no block for spawning a sub-agent or transferring ownership
+of a session. That dispatch system was removed; emitting the old tags gets
+you a system message saying so and nothing else. Agents are peers and
+coordinate through plain chat, kanban assignment, the Forward Session flow,
+multi-agent sessions, and conference rooms. The CLI engines (Claude Code,
+Cursor, Codex) run their own internal sub-agent orchestration, which is
+separate and unaffected.
+
+## Action blocks
+
+The server parses action blocks from the final assistant message after the
+CLI process closes — they are **terminal in the turn** (anything after the
+closing tag is dropped). Parsing lives in `server/chat.ts`.
 
 **Payload normalization (tolerant pre-pass).** All action-block parsers
-(`<delegate>`, `<handoff>`, `<agenthub:close-card>`, `<agenthub:skill>`,
-`<agenthub:react>`) route the raw tag body through
+(`<agenthub:close-card>`, `<agenthub:skill>`, `<agenthub:react>`) route the
+raw tag body through
 `server/action-block-parsing.ts#extractJsonFromTagBody` before
 `JSON.parse`. The helper:
 
@@ -224,185 +226,6 @@ the existing **invalid-json** rejection gates (which persist a system
 message back to the session). The pre-pass is purely additive — every
 shape that parsed before still parses now.
 
-### `<delegate>` — parallel one-shot sub-agents
-
-Spawn one or more sub-agents in parallel as fresh CLI processes. Each
-receives a self-contained `task` string; their outputs are collected and
-injected into the lead's next turn as a synthesized summary message. The
-lead stays running.
-
-```
-<delegate>
-[
-  {
-    "agentId": "hub-frontend",
-    "task": "Audit client/src/components/Chat.jsx for scroll-follow regressions.",
-    "owner": "hub-lead",
-    "scope": "client/src/components/Chat.jsx (read-only audit)",
-    "expectedArtifact": "Markdown report with file:line refs + verdict",
-    "deadline": "end-of-turn",
-    "returnFormat": "summary"
-  },
-  {
-    "agentId": "hub-backend",
-    "task": "Check if server/chat.ts still emits the old `stream_end` event.",
-    "owner": "hub-lead",
-    "scope": "server/chat.ts (read-only grep)",
-    "expectedArtifact": "Grep summary listing emit sites + verdict",
-    "deadline": "end-of-turn",
-    "returnFormat": "summary"
-  }
-]
-</delegate>
-```
-
-- **Payload**: JSON array of task objects (`{tasks: [...]}` wrapper and a
-  bare single object are also accepted and unwrapped to a one-element array).
-  **Each task MUST include all seven contract fields**: `agentId`, `task`,
-  `owner`, `scope`, `expectedArtifact`, `deadline`, `returnFormat` — all
-  non-empty strings. The server gate (`server/delegation.ts#detectDelegateBlock`)
-  and the client UI (`client/src/utils/coordinationBlocks.js`) reject partial
-  rows; the failed-state `DelegateCard` then lists exactly which fields are
-  missing per row so the lead can re-emit a corrected block.
-- **JSONL stream folding (Cursor + synthesis)**: engines that emit
-  `stream-json` partial `assistant_text` plus a terminal `result` line also
-  emit a final `assistant_text` with `replacesAssistantBuffer` when there is
-  canonical prose left after stripping `agenthub:ask` / `[[STEP:…]]` payloads
-  (otherwise the replace would clear streamed deltas for ask-only or
-  step-marker-only result lines). Both `server/chat.ts` and delegation output
-  collection in `server/delegation.ts` (`absorbStreamEvents`) fold through the
-  same buffer helper so the canonical `result` body **replaces** streamed
-  deltas instead of appending a duplicate.
-- **Parallelism**: all tasks spawn concurrently via `Promise.all`. No hard
-  cap, but keep N small (≤ 4) — every spawn is a real CLI subprocess with
-  its own context.
-- **Return shape**: a synthesis message containing per-task
-  `{agentId, agentName, task, output, error}` (`task` is the delegated
-  instruction string). Failed sub-agents surface as `error`, not as an
-  exception — the lead always gets something back.
-- **When to use**: short parallel side-quests whose results you will read
-  and synthesize. Not for multi-turn ownership — use `<handoff>` for
-  that.
-- **Sub-agent allowlist enforcement**: every `agentId` must appear in the
-  emitting agent's `subAgents` list (configured in `agents.json`). Tasks
-  targeting peers outside that list are silently dropped by
-  `server/delegation.ts`. Two surfaces help the lead self-correct:
-  - **Prompt annotation** — `buildEnrichedPrompt` injects a
-    `### Valid <delegate> targets` section into every lead turn listing
-    the allowlisted peers and noting that other peers are reachable only
-    via `<handoff>`, chat, or conference rooms. Misconfigured allowlist
-    entries (ids that don't match any project peer) are flagged inline.
-  - **Skip system message** — when *every* `<delegate>` in a block is
-    filtered out, the server persists a `role=system` message into the
-    lead's session (with `metadata.kind = "delegation_skip"`) listing
-    each skipped agent + reason (`not-sub-agent` / `agent-not-found`)
-    and the current allowlist, alongside the existing
-    `delegation_error` WS broadcast. The lead sees the reason on its
-    next turn and can retarget or fall back to `<handoff>`.
-
-### User cancellation → lead takeover
-
-If the user cancels in-flight delegation (WebSocket `delegation_cancel` with
-the **lead** `sessionId`, Stop while delegates run, or an interrupt that
-calls `handleDelegationCancel`), the server kills sub-processes, marks
-matching `delegations` rows `status = 'cancelled'`, clears delegation UI
-meta, and broadcasts `delegation_cancelled`. Each cancelled task still
-returns a result with `error: "Cancelled"` and the original `task` text.
-
-Sub-agent and synthesis CLI spawns are launched with `detached: true`
-and registered with `trackChild` (`server/process-groups.ts`), and
-cancellation/timeout paths call `killProcessGroup` rather than
-`proc.kill`. This means SIGTERM is delivered to the entire process
-group, so the CLI's own grandchildren (Claude Code worker processes,
-shells, etc.) are reaped together with the parent — pm2 restarts and
-user-cancel flows no longer leak orphan claude processes that hold
-RSS until the host runs out of memory. The host shutdown handler
-(`installShutdownHandlers`) drains the same registry on
-`SIGTERM` / `SIGINT` / `SIGHUP`, escalating to SIGKILL after a grace
-window before `process.exit(0)`.
-
-After the round completes, `synthesizeResults` runs. When any task was
-cancelled, `buildDelegationSynthesisPrompt` switches to **lead takeover**
-mode: the prompt **splits** finished vs cancelled vs other-failure rows so
-the lead incorporates completed sub-agent stdout without redoing it, while
-personally executing only the cancelled (and unresolved failed) tasks. It
-includes partial sub-agent output if any was streamed, repeats the user's
-original message, and instructs the lead to **finish the work in-session**
-(not merely describe the cancellation). The lead's resume session receives
-that as the next synthesis turn.
-
-### Active session indicators during delegation
-
-After the lead CLI exits, the `active_tasks` row for that session is cleared,
-but **sub-agent CLIs may still be running** until results are collected and
-(optionally) synthesized. The server merges in-flight delegation into
-`GET /api/active-tasks` and WebSocket `active-tasks-snapshot` so web,
-Electron, and mobile session lists keep showing the lead session as busy
-until delegation completes.
-
-### `<handoff>` — ownership transfer to one specialist
-
-End your turn and hand ownership of the conversation to a single
-sub-agent. A **new session** is created for the target with your
-transcript (capped — see below) plus the `note` pre-injected into
-their enriched system prompt via `buildHandoffPromptSection`. The user
-continues the conversation with the target; you do not see their reply.
-
-Transcript truncation is layered and tuned for cost (see the constants
-at the top of `server/handoff.ts` — these are the single tuning surface
-for handoff prepend cost):
-
-- `HANDOFF_TRANSCRIPT_MAX_TURNS = 10` — tail-of-N turns are kept; older
-  turns are dropped entirely. (Lowered from 50 in the April 2026
-  cost audit; tail-10 preserved the signal at ~1/5 the token cost.)
-- `HANDOFF_TRANSCRIPT_MAX_CHARS_PER_MESSAGE = 2000` — oversize messages
-  are **middle-truncated** with a `_…(truncated N chars)…_` marker so
-  both opening framing and closing conclusions survive (~1000 chars
-  head + 1000 chars tail).
-- `HANDOFF_TRANSCRIPT_MAX_TOTAL_CHARS = 20000` — if the joined body
-  still exceeds the budget after per-message caps, whole turns are
-  dropped from the head (oldest first) and the `last X of Y turns`
-  label in the rendered section reflects the surviving count.
-
-All three constants are overridable per-call via optional
-`maxTurns` / `maxCharsPerMessage` / `maxTotalChars` fields on
-`BuildHandoffContextArgs`, but in production the defaults apply.
-
-```
-<handoff>
-{"toAgent": "hub-backend", "note": "Plan done — failing test is server/chat.test.ts:142, fix likely at server/chat.ts:754 (isAskMode branch). Linked card: 36d919a9. Please implement + PR."}
-</handoff>
-```
-
-- **Payload**: single JSON object with required string fields `toAgent`
-  and `note`. Array payloads are rejected; only one target per handoff.
-- **Lifecycle** (rows in the `handoffs` table): `pending` (created) →
-  `delivered` (target session spawned and primed) → `failed` (validation
-  error, target not in project, or spawn failure).
-- **Terminal**: anything emitted after `</handoff>` is logged and
-  dropped.
-- **When to use**: the specialist needs multiple turns, will likely
-  commit / open a PR, or needs the full transcript as background. Prefer
-  `<handoff>` over `<delegate>` for anything beyond a short side-quest.
-- **Worktree default on the new session**: `handleHandoff` in
-  `server/handoff.ts` seeds `sessions.use_worktree` from the **source
-  project's** `mode`. **`workflow`** projects create the target row with
-  `use_worktree = 0` (work in the project checkout). **`dev`** (default or
-  omitted `mode`) keeps the historical default of `1` so isolation can apply
-  when chat spins up a worktree.
-- **Kanban card forwarding**: if your session owns a kanban card (i.e.
-  the card's `session_id` points at you), `<handoff>` re-points the
-  card to the **target** session and updates the assignee to the target
-  agent. That keeps `<agenthub:close-card>`, auto-PR linkage, and the
-  sidebar title working after the transfer. The target's first-turn
-  prompt gets a `## Forwarded Context` block naming the card + (if the
-  epic is autonomous) a reminder to commit + push rather than pause for
-  human review. `handoff_start` broadcasts carry `cardId`, `cardTitle`,
-  `epicId`, and `epicAutonomous` for UI / dispatch observers. Once the
-  target `sessions` row exists, the server also emits **`session_created`**
-  with `{ agentId, session }` (same payload shape as kanban assign and
-  `POST /api/agents/:agentId/sessions`) so web/mobile clients can splice the
-  new session into the agent's sidebar list without a manual refresh.
 ### `<agenthub:close-card>` — auto-close duplicate / already-done cards
 
 If you pick up a kanban card and discover the work is redundant
@@ -431,11 +254,3 @@ message — the linked card is **not** moved.
 - **Requires**: the session must be linked to a card (it is whenever the
   sidebar was auto-renamed to the card title, i.e. when the card was
   created with `session_id: $AGENT_HUB_SESSION_ID`).
-
-### Choosing between them
-
-| Scenario                                                       | Use                     |
-| -------------------------------------------------------------- | ----------------------- |
-| Two or three short audits you'll synthesize yourself           | `<delegate>`            |
-| Specialist needs to commit / PR / take multiple turns          | `<handoff>`             |
-| Discovered the card you're on is already shipped / a dupe      | `<agenthub:close-card>` |

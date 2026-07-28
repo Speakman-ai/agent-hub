@@ -50,7 +50,7 @@ source-time freeze. Resolution order:
 
 1. `AGENT_HUB_API_KEY` environment variable (the normal path; injected
    by `buildSpawnEnv` from `cfg.apiKey` at every spawn, so a config
-   rotation reaches every new heartbeat/cron/delegation/room-chat/
+   rotation reaches every new heartbeat/cron/room-chat/
    slack/design-chat process without a server restart).
 2. **Per-session spawn-creds file** at
    `$AGENT_HUB_DATA_DIR/spawn-creds/$AGENT_HUB_SESSION_ID.token`
@@ -402,13 +402,11 @@ Spawn sites:
 - `server/room-chat.ts` — conference-room turns.
 - `server/design-chat.ts` — Design Studio sessions.
 - `server/slack.ts` — Slack-bot mediated runs.
-- `server/delegation.ts` — both `<delegate>` sub-agent spawns and
-  the synthesis pass that summarizes their results.
 
 The practical effect: when a user has authenticated `cursor-agent` /
 `codex` via "Sign in with browser" once, every downstream spawn the
-platform makes on their behalf — including delegated sub-agents and
-synthesis — reads the same per-user token cache without re-prompting.
+platform makes on their behalf reads the same per-user token cache
+without re-prompting.
 
 ### Per-engine HOME shim (P3/P4 foundation)
 
@@ -455,7 +453,7 @@ userId, cfg.dataDir)` whenever the per-user `auth.json` is populated
 `CODEX_HOME` is **explicitly deleted** from the spawn env so a stale
 host-process value cannot leak the operator's Codex cache into a user
 spawn. Net effect: once a user completes the per-user device login,
-every chat / heartbeat / cron / room / Slack / delegation spawn owned
+every chat / heartbeat / cron / room / Slack spawn owned
 by them reads the same `~/.codex` clone without re-prompting.
 
 The matching Cursor/Gemini wiring is a planned follow-up (the cleanup
@@ -543,7 +541,7 @@ the trigger.
 
 ## Per-user skill credentials
 
-Third-party tokens for **installed skills** (Linear, GitHub PAT, etc.) live
+Third-party tokens for **installed skills** (1Password, GitHub PAT, etc.) live
 in a dedicated store — not on the `users` row — so operators are not
 tempted to paste secrets into chat or kanban cards.
 
@@ -571,7 +569,7 @@ request body carries `agent_id`:
   panel. Resolution skips every per-project skill store and walks **only**
   bundled `server/default-skills/{skill_id}/SKILL.md` → `skill_registry`.
   The agent-scoped RBAC gate does not run — any authenticated user may
-  store their own personal credential for a bundled skill (e.g. Linear).
+  store their own personal credential for a bundled skill (e.g. 1Password).
   `skill_id` + `key_name` are still required; unknown skills 400 with
   `invalid credential schema for skill: …`.
 
@@ -616,7 +614,6 @@ and any per-account AI engine spawn hard-fails.
 | Crons                                                              | `server/heartbeat.ts` (`runCronJob` → `runClaude`; `cron-skill-principal.ts`) | `null` — no human in-context                                                       |
 | Workflows                                                          | `server/workflow-runner.ts`                                                   | `null` — workflow steps carry no human attribution                                 |
 | Slack bot replies                                                  | `server/slack.ts`                                                             | `null` — no human in-context                                                       |
-| Delegation / synthesis spawns                                      | `server/delegation.ts`                                                        | Parent session owner (`getSessionOwner`); `null` when unknown                      |
 
 Saved secrets follow the `user_id` column, not the agent. System spawns
 with no resolvable human (`null` principal) merge no per-user skill creds

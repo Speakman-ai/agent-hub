@@ -4,8 +4,8 @@
 # listed under `coupled_paths` MUST also touch a skill-doc file listed under
 # `skill_doc_paths`, or carry the `override_label` as an escape hatch.
 #
-# Enforcement: `.github/workflows/skill-coupling.yml` runs on every PR and
-# invokes `.github/scripts/check-skill-coupling.mjs` with this config.
+# Enforcement: the `skill-coupling` job in `.github/workflows/main-checks.yml`
+# invokes `.github/scripts/skill-coupling.mjs` with this config.
 #
 # The rule exists because agents on Agent Hub rely on the shipped `agent-hub`
 # SKILL.md to understand what the platform does today. When coordination
@@ -18,8 +18,6 @@
 
 coupled_paths:
   # Coordination protocol parsers / spawners
-  - server/delegation.ts
-  - server/handoff.ts
   - server/card-auto-close.ts
   # Auth Phase 3 multi-user/org surface
   - server/routes/auth.ts

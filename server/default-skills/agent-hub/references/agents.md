@@ -149,7 +149,7 @@ Practical consequence: cross-user agent spawning is intentionally not
 supported. If you need a different identity, change `owner_user_id`
 (Admin/Owner only) rather than impersonating from the caller side.
 
-The `delegations` and `handoffs` tables exist in schema for historical
-data only — the `<delegate>` / `<handoff>` sub-agent dispatch system was
-removed; agents coordinate via plain chat and conference rooms. The CLI
-engines handle their own internal sub-agent orchestration.
+Agent Hub has no app-level sub-agent dispatch. Agents are peers and
+coordinate via plain chat, kanban assignment, the Forward Session flow,
+multi-agent sessions, and conference rooms. The CLI engines handle their
+own internal sub-agent orchestration.

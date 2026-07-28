@@ -9,7 +9,6 @@ expected output.
 | File                                 | Scenario                                              |
 | ------------------------------------ | ----------------------------------------------------- |
 | [create-ticket-from-bug-report.md](create-ticket-from-bug-report.md) | User drops a bug report → triage into a kanban card   |
-| [delegate-to-subagent.md](delegate-to-subagent.md)                   | Fan out a parallel audit to two specialist agents     |
 | [post-heartbeat-summary.md](post-heartbeat-summary.md)               | End-of-heartbeat summary: log findings + drop cards   |
 | [search-and-link-wiki-page.md](search-and-link-wiki-page.md)         | FTS5 wiki search + link page into a card comment      |
 | [move-card-through-workflow.md](move-card-through-workflow.md)       | Walk a card To Do → In Progress (merge writes Done) |

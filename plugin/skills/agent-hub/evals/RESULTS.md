@@ -26,7 +26,6 @@ JSON report into `evals/archive/` (gitignored) for deeper inspection.
 - Haiku + Opus results are **recorded** regardless. A Haiku miss on a
   subtle instruction-following detail (e.g. remembering to pass
   `$AGENT_HUB_SESSION_ID`) is allowed but tracked.
-- `delegate-task` is bonus coverage — tracked, not blocking.
 
 ## Measured results
 
@@ -39,7 +38,6 @@ Should-fire matrix (happy path — skill is expected to surface its scripts):
 | create-ticket  | pending | pending | pending | pending         |
 | move-card      | pending | pending | pending | pending         |
 | search-wiki    | pending | pending | pending | pending         |
-| delegate-task  | pending | pending | pending | pending         |
 
 Should-not-fire matrix (anti-trigger — skill must stay out of the way):
 

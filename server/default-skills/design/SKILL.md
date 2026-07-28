@@ -55,9 +55,9 @@ changes as soon as the turn ends.
    files outside the artifact location (the `design/` subdir in design mode, or
    the cwd in legacy Design Studio). The canvas mount is scoped to that root;
    anything outside it is unreachable from the canvas.
-4. **Don't use `<delegate>` or `<handoff>`.** Design sessions are single-agent;
-   coordination blocks will not be parsed and will leak into the transcript.
-   If you hit a wall, ask the user in prose.
+4. **Design sessions are single-agent.** There is no sub-agent dispatch
+   block; anything of that shape leaks into the transcript unparsed. If you
+   hit a wall, ask the user in prose.
 5. **Respect linked-project design tokens.** The system prompt lists any
    projects linked to this design and concatenates their `DESIGN_SYSTEM.md`
    (or `SOUL.md` as a fallback). Extract colors, type scale, spacing, and

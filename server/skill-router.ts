@@ -165,7 +165,7 @@ function builtInScore(
       /\b(agent hub|localhost:3051|\/api\/projects\/|agent_hub_url|agent_hub_api_key|agent_hub_session_id|project_id)\b/i.test(
         message,
       ) ||
-      /<delegate>|<\/delegate>|<handoff>|<\/handoff>|<agenthub:close-card>/i.test(message) ||
+      /<agenthub:close-card>/i.test(message) ||
       /scripts\/(board|wiki|kanban-[a-z-]+|heartbeats|crons|log-tool-error|epics|sessions|resolve-column-id|get-board-state|ah-api|server)\.sh\b/i.test(
         message,
       )

@@ -27,7 +27,7 @@ This page is the *how* for the error-logging format itself.
   - [`PROJECT_ID` unset or wrong slug](#project_id-unset-or-wrong-slug)
   - [Column name not found when moving a card](#column-name-not-found-when-moving-a-card)
   - [Wiki create returns 409 (slug collision)](#wiki-create-returns-409-slug-collision)
-  - [`<delegate>` / `<handoff>` never dispatched](#delegate--handoff-never-dispatched)
+  - [Card close gate rejected](#card-close-gate-rejected)
   - [Plan mode blocks a write](#plan-mode-blocks-a-write)
   - [Rate limit (`429`) from auth routes](#rate-limit-429-from-auth-routes)
   - [WebSocket stream closes without a final message](#websocket-stream-closes-without-a-final-message)
@@ -254,75 +254,19 @@ work, log a `TOOL_ERROR` and escalate.
   old page is genuinely stale, update its body in place — don't create a
   duplicate under a forked slug.
 
-### `<delegate>` / `<handoff>` never dispatched
+### Card close gate rejected
 
-- **Symptom**: you emitted the fenced block but no sub-agent session
-  appeared in the sidebar.
-- **Cause**: the block was followed by additional output (both are
-  **terminal in the turn**; anything after the closing tag is dropped),
-  or the `agentId` / `toAgent` is not a sub-agent of the current project.
-- **Recovery**: re-emit the block as the very last thing in your turn. Run
-  `scripts/server.sh agents` to confirm the target agent id. For
-  `<handoff>`, check the `handoffs` table — a row with `status = 'failed'`
-  carries the validation error.
-
-### `<delegate>` dispatch failed after retries
-
-- **Symptom**: the synthesis that follows your `<delegate>` block contains
-  a section like `⚠️ Error: Delegation to <agent> failed after 3
-  attempts: …` and no useful output from the sub-agent.
-- **Cause**: the CLI subprocess for the sub-agent failed on every
-  attempt — non-zero exit with no stdout, spawn error (e.g. missing
-  `claudeBin`), or timeout. The dispatcher retries up to
-  `delegationMaxAttempts` (default 3, linear backoff via
-  `delegationRetryBackoffMs`) before giving up; **user cancellation** is
-  terminal and is never retried (see below). On **retry exhaustion** the
-  server:
-  - tags the `delegations` row `status = 'error'` with the descriptive
-    message,
-  - emits `delegation_agent_error` with `attempts: N`,
-  - appends a structured `TOOL_ERROR | … | delegation | <agentId>:<task>
-    | dispatch_failed | … (attempts=N)` line to the project's daily note.
-- **Recovery**: check `claudeBin` in `~/.agent-hub/data/config.json`, then
-  look at the daily-note `TOOL_ERROR` entry for the exact failure
-  (ENOENT, timeout, non-zero exit). If the CLI itself is broken, fix
-  that first; otherwise re-emit the `<delegate>` block in a follow-up
-  turn. The lead already sees the error via synthesis, so acknowledge
-  and decide — don't silently re-dispatch the same failing task.
-
-### `<delegate>` filtered: "No valid sub-agents found for delegation"
-
-- **Symptom**: the message-anchored DelegateCard renders a persistent
-  `Dispatch failed: No valid sub-agents found for delegation` banner and
-  every row shows the amber `Did not start` chip (instead of the old
-  indefinite "Queued" spinner). A red toast also appears once.
-- **Cause**: every `agentId` in the `<delegate>` payload was either not
-  listed under `subAgents` for the lead or not present in the project
-  roster. `handleDelegation` filters them out, then — with `validTasks`
-  empty — broadcasts `{ type: 'delegation_error', sessionId,
-  parentMessageId, error: 'No valid sub-agents found for delegation' }`
-  and returns without spawning anything. No `delegation_start` follows,
-  so live status never arrives for that round.
-- **Recovery**: run `scripts/server.sh agents` to see who's actually a
-  sub-agent of the current lead, fix the `agentId` values, and re-emit
-  the block as the last thing in a fresh turn. The new `parentMessageId`
-  on the broadcast is what lets the client scope the banner to the
-  correct DelegateCard when a session has multiple delegate rounds.
-
-### `<delegate>` cancelled mid-flight (user stop)
-
-- **Symptom**: `delegation_cancelled` in the client; synthesis text
-  explicitly tells the **lead** to take over; `delegations` rows show
-  `status = 'cancelled'` (not `error`).
-- **Cause**: the user stopped delegation or interrupted while sub-agent
-  CLIs were still running. `handleDelegationCancel` in `server/delegation.ts`
-  signals each subprocess, updates the DB, and broadcasts
-  `delegation_cancelled`. Per-task `delegation_agent_error` is **not**
-  emitted for user cancel (avoids the UI flipping a row from cancelled
-  styling back to error).
-- **Recovery**: the next synthesis turn uses **lead takeover** prompt text
-  (`buildDelegationSynthesisPrompt`): carry out the delegated `task`
-  strings yourself in the lead session — the work is not dropped.
+- **Symptom**: you emitted `<agenthub:close-card>` but the linked card
+  stayed put, and a **Card close gate rejected** system message landed in
+  the session.
+- **Cause**: the payload was malformed JSON, was missing `reason` or
+  `note`, used a `reason` outside {`duplicate`, `already-done`}, or the
+  session has no linked kanban card. The block is also **terminal in the
+  turn** — anything after the closing tag is dropped.
+- **Recovery**: re-emit the block as the very last thing in your turn with
+  both required fields. Confirm the session actually owns a card
+  (`kanban_cards.session_id`); if it doesn't, move the card by hand with
+  `scripts/kanban-move-card.sh <cardId> Done` instead.
 
 ### Plan mode blocks a write
 

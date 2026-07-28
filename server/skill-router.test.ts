@@ -201,7 +201,8 @@ describe('routeSkillsFromMessage — multi-match + project default', () => {
 
   it('(d) explicit-trigger match for agent-hub wins over project-default (de-dupe keeps higher score)', () => {
     const matches = routeSkillsFromMessage({
-      message: 'spawn helpers via <delegate>{"toAgent":"x"}</delegate>',
+      message:
+        'close the card via <agenthub:close-card>{"reason":"duplicate"}</agenthub:close-card>',
       skills: SKILLS,
       projectSlug: 'agent-hub',
     });

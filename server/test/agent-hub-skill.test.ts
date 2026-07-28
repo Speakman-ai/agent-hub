@@ -63,11 +63,11 @@ const SUB_SKILLS = [
     id: 'agent-hub-sessions',
     dir: path.join(DEFAULT_SKILLS_DIR, 'agent-hub-sessions'),
     reference: 'sessions.md',
-    // delegate/handoff/close-card/ask-mode markers consolidate here after
+    // close-card / ask-mode / ownership markers consolidate here after
     // the split. Coverage assertion below (REQUIRED_MARKERS) is updated
     // to scan the agent-hub family, but this sub-skill is where the
     // session-flavoured surface should live first.
-    domainMarkers: [/<delegate>/, /<handoff>/, /<agenthub:close-card>/, /ask[_ ]?mode/i],
+    domainMarkers: [/<agenthub:close-card>/, /ask[_ ]?mode/i, /owner_user_id/],
   },
   {
     id: 'agent-hub-heartbeats-crons',
@@ -114,12 +114,8 @@ function assertExecutable(file: string, label: string): void {
 
 const REQUIRED_MARKERS: Array<{ surface: string; patterns: RegExp[] }> = [
   {
-    surface: '<delegate> coordination block',
-    patterns: [/<delegate>/, /agentId/, /parallel/i],
-  },
-  {
-    surface: '<handoff> coordination block',
-    patterns: [/<handoff>/, /toAgent/, /pending.*delivered.*failed|handoffs.*table/i],
+    surface: 'no app-level sub-agent dispatch',
+    patterns: [/no app-level sub-agent dispatch/i, /peers/i, /conference rooms?/i],
   },
   {
     surface: 'Ask Mode (read-only sessions)',
@@ -155,8 +151,8 @@ const REQUIRED_MARKERS: Array<{ surface: string; patterns: RegExp[] }> = [
 function assertAllMarkersPresent(skillDirs: string[], label: string): void {
   // Coverage is measured across the WHOLE agent-hub skill family — the
   // core skill + every domain sub-skill — because the split moved the
-  // session-flavoured surfaces (delegate / handoff / close-card /
-  // ask-mode) out of the core's references/ into agent-hub-sessions'.
+  // session-flavoured surfaces (close-card / ask-mode / ownership) out
+  // of the core's references/ into agent-hub-sessions'.
   // Concatenating the markdown for the family keeps the assertion
   // honest without requiring every marker to live in the core.
   const corpus = skillDirs

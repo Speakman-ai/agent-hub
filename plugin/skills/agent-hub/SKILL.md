@@ -6,7 +6,7 @@ description: >-
   (agent-hub-kanban, agent-hub-wiki, agent-hub-sessions,
   agent-hub-heartbeats-crons). Covers the Agent Hub API at
   http://localhost:3051, kanban boards, epics, per-project wiki (FTS5),
-  sessions, heartbeats, crons, and delegation via <delegate> / <handoff> /
+  sessions, heartbeats, crons, and card auto-close via
   <agenthub:close-card>. TRIGGER on Agent-Hub signals: env vars
   AGENT_HUB_URL / AGENT_HUB_API_KEY / AGENT_HUB_SESSION_ID / PROJECT_ID;
   URLs under localhost:3051 or /api/projects/<slug>/; the name "Agent Hub";
@@ -17,7 +17,7 @@ description: >-
   the Claude Code CLI / Agent SDK alone — coincidental vocabulary is not a
   trigger.
 category: platform
-version: 3.0.0
+version: 3.1.0
 keep-coding-instructions: true
 ---
 
@@ -55,7 +55,7 @@ their own `references/<domain>.md` and trigger only on domain vocabulary.
 | --- | --- |
 | `agent-hub-kanban` | Cards, columns, comments, epics, blockers, Done-state contract |
 | `agent-hub-wiki` | FTS5 search, pages, categories, slug conventions |
-| `agent-hub-sessions` | Messages, ask mode, `<delegate>` / `<handoff>` / `<agenthub:close-card>` |
+| `agent-hub-sessions` | Messages, ask mode, session ownership, `<agenthub:close-card>` |
 | `agent-hub-heartbeats-crons` | Scheduled agents, threads, persistent logs |
 
 To load one mid-turn, end your turn with:
@@ -77,7 +77,7 @@ All scripts read these env vars:
 | `PROJECT_ID` | (required) | Slug from the system prompt, e.g. `agent-hub`. |
 | `AGENT_HUB_SESSION_ID` | (injected) | Your session id. Pass when creating cards to auto-link. |
 | `AGENT_HUB_SKILLS_DIR` | (injected) | Absolute path to the bundled `agent-hub` skill. Its `scripts/` dir is also prepended to `PATH`, so wrappers run by bare name. |
-| `AGENT_HUB_CODEX_DANGER_BYPASS` | `true` (server default) | Server-only: when true (`1`/`true`/`on`, or unset), interactive Codex spawns use `--dangerously-bypass-approvals-and-sandbox` outside Ask Mode instead of `--full-auto` (needed when Linux bubblewrap cannot create user namespaces). Set `false`/`0`/`off` to opt into Codex's sandbox. Same as `codexDangerBypass` in host `config.json` or `PATCH /api/config`. Applies to chat, conference rooms, Design Studio, and `<delegate>` sub-agent runs plus delegation synthesis when the lead engine is Codex. |
+| `AGENT_HUB_CODEX_DANGER_BYPASS` | `true` (server default) | Server-only: when true (`1`/`true`/`on`, or unset), interactive Codex spawns use `--dangerously-bypass-approvals-and-sandbox` outside Ask Mode instead of `--full-auto` (needed when Linux bubblewrap cannot create user namespaces). Set `false`/`0`/`off` to opt into Codex's sandbox. Same as `codexDangerBypass` in host `config.json` or `PATCH /api/config`. Applies to chat, conference rooms, and Design Studio when the engine is Codex. |
 
 Identify yourself / the project:
 
@@ -130,9 +130,9 @@ PROJECT_ID=agent-hub scripts/log-tool-error.sh \
 ```
 
 The reference also lists common failure modes (auth `401`/`403`, missing
-`PROJECT_ID`, column-name typos, wiki `409`, undispatched
-`<delegate>`/`<handoff>`, plan-mode blocks, `429` rate limits, WebSocket
-mid-stream drops) with the recovery step that usually unsticks them.
+`PROJECT_ID`, column-name typos, wiki `409`, rejected
+`<agenthub:close-card>` payloads, plan-mode blocks, `429` rate limits,
+WebSocket mid-stream drops) with the recovery step that usually unsticks them.
 
 ## Self-reporting checklist
 
@@ -197,7 +197,6 @@ Concrete recipes live under **[examples/](examples/)**:
 | Recipe | When to use |
 | --- | --- |
 | [create-ticket-from-bug-report](examples/create-ticket-from-bug-report.md) | User drops a bug report and wants a kanban card created |
-| [delegate-to-subagent](examples/delegate-to-subagent.md) | Fan out parallel audits via `<delegate>` |
 | [post-heartbeat-summary](examples/post-heartbeat-summary.md) | End a heartbeat run with a structured thread summary |
 | [search-and-link-wiki-page](examples/search-and-link-wiki-page.md) | FTS-search the wiki and link the page in a card comment |
 | [move-card-through-workflow](examples/move-card-through-workflow.md) | Walk a card To Do → In Progress (merge writes Done) |
