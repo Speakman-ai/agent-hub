@@ -10,6 +10,7 @@
  */
 import type { BroadcastFn } from '../types.js';
 import type {
+  DevServerRuntimeSync,
   PreviewComposeRuntimeSync,
   PreviewRuntimeActiveLookup,
 } from './preview-runtime-lookup.js';
@@ -20,6 +21,7 @@ const lastRefreshMs = new Map<string, number>();
 
 export type PreviewWorktreeSyncDeps = {
   broadcast: BroadcastFn;
+  getDevServerRuntime?: () => DevServerRuntimeSync | null;
   getPreviewComposeRuntime?: () => PreviewComposeRuntimeSync | null;
   getPreviewRuntime?: () => PreviewRuntimeActiveLookup | null;
 };
@@ -28,6 +30,10 @@ function activePreviewRow(
   sessionId: string,
   deps: PreviewWorktreeSyncDeps,
 ): { id: string; status: string } | null {
+  // Dev-server first, matching `getSessionPreviewPort`: it is the runtime a
+  // session actually runs on, and a stale compose row must not shadow it.
+  const devServer = deps.getDevServerRuntime?.()?.getActiveBySessionId(sessionId);
+  if (devServer) return { id: devServer.id, status: devServer.status };
   const compose = deps.getPreviewComposeRuntime?.()?.getActiveBySessionId(sessionId);
   if (compose) return { id: compose.id, status: compose.status };
   const legacy = deps.getPreviewRuntime?.()?.getActiveBySessionId(sessionId);

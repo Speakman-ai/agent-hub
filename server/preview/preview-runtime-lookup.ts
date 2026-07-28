@@ -30,6 +30,13 @@ export type DevServerPortLookup = {
 };
 
 /**
+ * Dev-server surface the worktree-sync helpers need: the active group (for
+ * `preview_refresh` targeting and the agent preview-block gate) plus the
+ * upstream port lookup `broadcastPreviewRefreshIfReady` gates on.
+ */
+export type DevServerRuntimeSync = PreviewRuntimeActiveLookup & DevServerPortLookup;
+
+/**
  * Client-facing description of one mapped dev-server port. Feeds the session
  * preview pane's multi-port selector (rendered only when a group exposes more
  * than one). `url` is the browser-facing proxy URL for that port: the primary

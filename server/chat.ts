@@ -4150,6 +4150,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             broadcast,
             project,
             worktreePath: effectiveCwd,
+            getDevServerRuntime,
             getPreviewComposeRuntime,
             getPreviewRuntime,
           });
@@ -5627,6 +5628,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // why the request was dropped — same shape as the close-card gate.
         const previewSyncDeps = {
           broadcast,
+          getDevServerRuntime,
           getPreviewComposeRuntime,
           getPreviewRuntime,
           stmts,
