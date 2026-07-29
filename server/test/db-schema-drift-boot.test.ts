@@ -20,6 +20,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { openScratchDb } from './destructive-db.js';
 
 /** `finalize_kickoff_claims` exactly as it existed on prod: no `job_filter`. */
 const LEGACY_KICKOFF_CLAIMS_SCHEMA = `
@@ -39,8 +40,11 @@ describe('initDb against a database with schema drift', () => {
       throw new Error('expected AGENT_HUB_DATA_DIR to be set by test/setup.ts');
     }
 
+    // Seeding writes the legacy production schema, so the target is proven to
+    // be a scratch path before the handle opens — `AGENT_HUB_DATA_DIR` is the
+    // live data dir in any process the server spawned.
     const dbPath = path.join(dataDir, 'agent-hub.db');
-    const seed = new Database(dbPath);
+    const seed = openScratchDb(dbPath);
     seed.pragma('journal_mode = WAL');
     seed.exec(LEGACY_KICKOFF_CLAIMS_SCHEMA);
     seed

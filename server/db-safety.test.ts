@@ -20,7 +20,7 @@ import {
   assertScratchDbFile,
   UnsafeTestDatabaseError,
 } from './db-safety.js';
-import { wipeTables, assertScratchDb } from './test/destructive-db.js';
+import { wipeTables, assertScratchDb, openScratchDb } from './test/destructive-db.js';
 
 const PROD_LIKE_DIRS = [
   '/data',
@@ -146,5 +146,30 @@ describe('wipeTables', () => {
     const db = new Database(':memory:');
     expect(() => wipeTables(db, ['kanban_boards; DROP TABLE x'])).toThrow(/invalid table name/);
     db.close();
+  });
+});
+
+describe('openScratchDb', () => {
+  it('opens a writable handle on a tmpdir path', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'open-scratch-db-test-'));
+    const db = openScratchDb(path.join(dir, 'fixture.db'));
+    expect(() => db.exec('CREATE TABLE t (id INTEGER)')).not.toThrow();
+    db.close();
+  });
+
+  it('refuses a prod-like path before the file is created', () => {
+    // The seeding shape this guards: a fixture test joining a data dir it got
+    // from AGENT_HUB_DATA_DIR, which is the live dir in any spawned process.
+    //
+    // Every probe deliberately sits under a directory component that cannot
+    // exist, so removing the guard to check this test still fails makes
+    // better-sqlite3 raise SQLITE_CANTOPEN — it can never reach a real
+    // database file. `/data/agent-hub.db` IS the live database inside a
+    // session container, and a bare `new Database` on it succeeds.
+    for (const prodLike of PROD_LIKE_DIRS) {
+      expect(() => openScratchDb(path.join(prodLike, 'no-such-dir', 'agent-hub.db'))).toThrow(
+        UnsafeTestDatabaseError,
+      );
+    }
   });
 });

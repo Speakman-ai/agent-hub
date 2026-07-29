@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { openScratchDb } from './destructive-db.js';
 
 describe('support_tickets additive migration ordering', () => {
   it('initDb survives a legacy support_tickets table missing read_at and reporter_email', async () => {
@@ -19,7 +20,7 @@ describe('support_tickets additive migration ordering', () => {
     }
 
     const dbPath = path.join(dataDir, 'agent-hub.db');
-    const seed = new Database(dbPath);
+    const seed = openScratchDb(dbPath);
     seed.pragma('journal_mode = WAL');
     seed.exec(`
       CREATE TABLE support_tickets (

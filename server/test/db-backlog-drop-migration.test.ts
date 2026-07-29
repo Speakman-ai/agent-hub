@@ -28,9 +28,10 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { openScratchDb } from './destructive-db.js';
 
 function seedPreMigrationSchema(dbPath: string): void {
-  const seed = new Database(dbPath);
+  const seed = openScratchDb(dbPath);
   seed.pragma('journal_mode = WAL');
   // Schema kept intentionally minimal — just enough for the migration's
   // SELECTs/UPDATEs/DELETEs to operate. db.ts will CREATE TABLE IF NOT

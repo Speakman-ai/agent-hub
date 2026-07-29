@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { openScratchDb } from './destructive-db.js';
 
 describe('heartbeat_state schema cleanup', () => {
   it('removes stale ownership columns and indexes while preserving run state', async () => {
@@ -10,7 +11,7 @@ describe('heartbeat_state schema cleanup', () => {
     }
 
     const dbPath = path.join(dataDir, 'agent-hub.db');
-    const seed = new Database(dbPath);
+    const seed = openScratchDb(dbPath);
     seed.pragma('journal_mode = WAL');
     seed.exec(`
       CREATE TABLE heartbeat_state (
