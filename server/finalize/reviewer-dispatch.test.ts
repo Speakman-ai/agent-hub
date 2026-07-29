@@ -23,6 +23,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SAFE_ARG_STRLEN_BYTES } from '../spawn-prompt-payload.js';
 import type { KanbanCardRow, Project, ReviewerThreadRow } from '../types.js';
 import {
   REVIEWER_THREAD_HARD_CAP,
@@ -30,6 +31,12 @@ import {
   REVIEW_PHASE_ACTIVE_SECONDS,
   buildLocalDiffReviewerPrompt,
   collectLocalDiffInputs,
+  truncateDiffAtFileBoundary,
+  REVIEWER_DIFF_BYTE_LIMIT,
+  REVIEWER_FILE_LIST_CAP,
+  REVIEWER_FILE_LIST_BYTE_BUDGET,
+  renderChangedFileList,
+  DIFF_MARKER_RESERVE_BYTES,
   formatThreadsForDispatchBody,
   runReviewerDispatch,
   type ReviewerDispatchDeps,
@@ -680,8 +687,167 @@ describe('collectLocalDiffInputs', () => {
       headSha: 'bbb2222',
       changedFiles: ['a.ts', 'b.ts'],
       unifiedDiff: 'diff body\n',
+      omittedFileCount: 0,
+      severedPatch: false,
+      diffDegraded: false,
+      fileListUnavailable: false,
     });
     expect(runGit).toHaveBeenCalledTimes(4);
+  });
+
+  // Regression: a 325-file session reported "Finalize struggles when there are
+  // lots of file changes". `git diff` ran under a 10 MB maxBuffer, so a large
+  // change set killed the child with ERR_CHILD_PROCESS_STDIO_MAXBUFFER, the
+  // rejection propagated out of collectLocalDiffInputs, and the run terminated
+  // as `no_diff_inputs` — which the client renders as "There were no code
+  // changes for Finalize to review or push."
+  describe('large change sets', () => {
+    const shaGit = (onDiff: (args: string[]) => Promise<{ stdout: string; stderr: string }>) =>
+      vi.fn().mockImplementation((args: string[]) => {
+        if (args[0] === 'rev-parse') {
+          return Promise.resolve({
+            stdout: args[1] === 'HEAD' ? 'bbb2222\n' : 'aaa1111\n',
+            stderr: '',
+          });
+        }
+        if (args[1] === '--name-only') {
+          return Promise.resolve({ stdout: 'a.ts\nb.ts\n', stderr: '' });
+        }
+        return onDiff(args);
+      });
+
+    it('requests a diff buffer far above the 10 MB ceiling that used to kill git', async () => {
+      let diffOpts: { maxBufferBytes?: number } | undefined;
+      const runGit = vi
+        .fn()
+        .mockImplementation((args: string[], opts: { maxBufferBytes?: number }) => {
+          if (args[0] === 'rev-parse') {
+            return Promise.resolve({
+              stdout: args[1] === 'HEAD' ? 'bbb2222\n' : 'aaa1111\n',
+              stderr: '',
+            });
+          }
+          if (args[1] === '--name-only') {
+            return Promise.resolve({ stdout: 'a.ts\n', stderr: '' });
+          }
+          diffOpts = opts;
+          return Promise.resolve({ stdout: 'diff body\n', stderr: '' });
+        });
+
+      await collectLocalDiffInputs({ worktreePath: '/tmp/wt', baseBranch: 'main', runGit });
+
+      expect(diffOpts?.maxBufferBytes).toBeGreaterThan(10 * 1024 * 1024);
+    });
+
+    it('gives the changed-file list the same large buffer as the patch body', async () => {
+      // The file list scales with the change set too. Under the default 10 MB
+      // buffer it could overflow and throw BEFORE the patch fallback ran,
+      // reintroducing no_diff_inputs on exactly the input this survives.
+      const seen: Array<{ args: string[]; maxBufferBytes?: number }> = [];
+      const runGit = vi
+        .fn()
+        .mockImplementation((args: string[], opts: { maxBufferBytes?: number }) => {
+          seen.push({ args, maxBufferBytes: opts?.maxBufferBytes });
+          if (args[0] === 'rev-parse') {
+            return Promise.resolve({
+              stdout: args[1] === 'HEAD' ? 'bbb2222\n' : 'aaa1111\n',
+              stderr: '',
+            });
+          }
+          return Promise.resolve({ stdout: 'a.ts\n', stderr: '' });
+        });
+
+      await collectLocalDiffInputs({ worktreePath: '/tmp/wt', baseBranch: 'main', runGit });
+
+      const nameOnly = seen.find((c) => c.args[1] === '--name-only');
+      expect(nameOnly?.maxBufferBytes).toBeGreaterThan(10 * 1024 * 1024);
+    });
+
+    it('degrades rather than throwing when the changed-file list overflows', async () => {
+      const runGit = vi.fn().mockImplementation((args: string[]) => {
+        if (args[0] === 'rev-parse') {
+          return Promise.resolve({
+            stdout: args[1] === 'HEAD' ? 'bbb2222\n' : 'aaa1111\n',
+            stderr: '',
+          });
+        }
+        if (args[1] === '--name-only') {
+          return Promise.reject(new Error('stdout maxBuffer length exceeded'));
+        }
+        return Promise.resolve({ stdout: 'diff body\n', stderr: '' });
+      });
+
+      const result = await collectLocalDiffInputs({
+        worktreePath: '/tmp/wt',
+        baseBranch: 'main',
+        runGit,
+      });
+
+      expect(result.fileListUnavailable).toBe(true);
+      expect(result.unifiedDiff).toBe('diff body\n');
+    });
+
+    it('degrades to a --stat summary instead of throwing when the patch body overflows', async () => {
+      const enobufs = Object.assign(new Error('stdout maxBuffer length exceeded'), {
+        code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+      });
+      const runGit = shaGit((args) =>
+        args.includes('--stat')
+          ? Promise.resolve({ stdout: ' a.ts | 900 +++\n b.ts | 800 +++\n', stderr: '' })
+          : Promise.reject(enobufs),
+      );
+
+      const result = await collectLocalDiffInputs({
+        worktreePath: '/tmp/wt',
+        baseBranch: 'main',
+        runGit,
+      });
+
+      // The whole point: a huge change set still produces usable inputs, so the
+      // run never reports "no code changes" for a session full of them.
+      expect(result.diffDegraded).toBe(true);
+      expect(result.changedFiles).toEqual(['a.ts', 'b.ts']);
+      expect(result.unifiedDiff).toContain('a.ts | 900');
+    });
+
+    it('keeps the run alive when both the patch and the stat are unreadable', async () => {
+      const runGit = shaGit(() => Promise.reject(new Error('boom')));
+
+      const result = await collectLocalDiffInputs({
+        worktreePath: '/tmp/wt',
+        baseBranch: 'main',
+        runGit,
+      });
+
+      expect(result.diffDegraded).toBe(true);
+      expect(result.unifiedDiff).toBe('');
+      expect(result.changedFiles).toEqual(['a.ts', 'b.ts']);
+    });
+
+    it('dispatch reaches the reviewer rather than failing no_diff_inputs on an oversized diff', async () => {
+      const store: ThreadStoreState = { rows: [] };
+      const runner = vi
+        .fn<ReviewerDispatchDeps['runReviewer']>()
+        .mockResolvedValue({ verdict: 'approved', threads: [] });
+      const broadcast = vi.fn();
+      const { deps } = makeDeps(store, runner, broadcast);
+      const runGit = shaGit((args) =>
+        args.includes('--stat')
+          ? Promise.resolve({ stdout: ' a.ts | 900 +++\n', stderr: '' })
+          : Promise.reject(new Error('stdout maxBuffer length exceeded')),
+      );
+
+      const outcome = await runReviewerDispatch({ ...deps, runGit } as ReviewerDispatchDeps, {
+        runId: 'run-big',
+        worktreePath: '/tmp/wt',
+        baseBranch: 'main',
+        card: fakeCard,
+        project: fakeProject,
+      });
+
+      expect(outcome).not.toMatchObject({ failureReason: 'no_diff_inputs' });
+      expect(runner).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('throws when SHA resolution returns empty output', async () => {
@@ -800,5 +966,339 @@ describe('formatThreadsForDispatchBody', () => {
     expect(body).toContain('a.ts:10 — single');
     expect(body).toContain('b.ts:5-12 — range');
     expect(body).toContain('c.md — file-level');
+  });
+});
+
+describe('truncateDiffAtFileBoundary', () => {
+  const patch = (name: string, body: string) =>
+    `diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n${body}`;
+
+  it('returns the diff untouched when it fits the budget', () => {
+    const diff = patch('a.ts', '+const x = 1;\n');
+    expect(truncateDiffAtFileBoundary(diff, 1000)).toEqual({
+      diff,
+      omittedFileCount: 0,
+      severedPatch: false,
+    });
+  });
+
+  it('drops whole file patches rather than cutting mid-hunk', () => {
+    const a = patch('a.ts', `+${'a'.repeat(200)}\n`);
+    const b = patch('b.ts', `+${'b'.repeat(200)}\n`);
+    const c = patch('c.ts', `+${'c'.repeat(200)}\n`);
+
+    // Budget a and b plus the truncation footer, so exactly c is dropped.
+    const result = truncateDiffAtFileBoundary(
+      a + b + c,
+      Buffer.byteLength(a + b, 'utf8') + DIFF_MARKER_RESERVE_BYTES,
+    );
+
+    expect(result.omittedFileCount).toBe(1);
+    // Retained patches are complete — a reviewer anchoring findings to them
+    // cannot land on a line that was severed by the trim.
+    expect(result.severedPatch).toBe(false);
+    expect(result.diff).toContain(a);
+    expect(result.diff).toContain(b);
+    expect(result.diff).not.toContain('ccc');
+    expect(result.diff).toContain('diff truncated');
+    expect(result.diff).toContain('every patch shown above is complete');
+  });
+
+  it('clips a single oversized patch instead of returning an empty diff', () => {
+    const huge = patch('lock.json', `+${'x'.repeat(5000)}\n`);
+    const result = truncateDiffAtFileBoundary(huge, 500);
+
+    expect(result.diff.length).toBeGreaterThan(0);
+    expect(result.diff).toContain('diff --git a/lock.json');
+    expect(result.diff).toContain('diff truncated');
+  });
+
+  it('flags a lone oversized patch as severed rather than reporting zero omissions', () => {
+    // Regression: a single patch over the budget is cut mid-content, but with
+    // sections.length === 1 the omitted count was 0, so the prompt disclosed
+    // nothing and the marker still claimed every patch was complete. The
+    // reviewer could then approve a file it had only partly seen.
+    const huge = patch('lock.json', `+${'x'.repeat(5000)}\n`);
+    const result = truncateDiffAtFileBoundary(huge, 500);
+
+    expect(result.severedPatch).toBe(true);
+    expect(result.diff).not.toContain('every patch shown above is complete');
+    expect(result.diff).toContain('INCOMPLETE');
+  });
+
+  it('prefers keeping a small patch whole over severing a large one', () => {
+    const huge = patch('lock.json', `+${'x'.repeat(5000)}\n`);
+    const small = patch('a.ts', '+const x = 1;\n');
+    const result = truncateDiffAtFileBoundary(huge + small, 500);
+
+    // Nothing needs severing while some patch still fits: keep that one intact
+    // and report the oversized one as omitted.
+    expect(result.severedPatch).toBe(false);
+    expect(result.omittedFileCount).toBe(1);
+    expect(result.diff).toContain('const x = 1;');
+  });
+
+  it('reports both a severed patch and the patches dropped alongside it', () => {
+    // Only when NO patch fits does the first get cut mid-content.
+    const huge1 = patch('lock.json', `+${'x'.repeat(5000)}\n`);
+    const huge2 = patch('vendor.js', `+${'y'.repeat(5000)}\n`);
+    const result = truncateDiffAtFileBoundary(huge1 + huge2, 500);
+
+    expect(result.severedPatch).toBe(true);
+    expect(result.omittedFileCount).toBe(1);
+    expect(result.diff).toContain('INCOMPLETE');
+  });
+
+  it('clips a severed patch by UTF-8 bytes, not UTF-16 code units', () => {
+    // Regression: `head.slice(0, limit)` counts code units. A patch of 3-byte
+    // characters therefore emitted ~3x the byte budget, re-triggering the
+    // argv-cap trim that this budget exists to prevent.
+    const multibyte = `diff --git a/i18n.ts b/i18n.ts\n+${'漢'.repeat(5000)}\n`;
+    const limit = 500;
+    const result = truncateDiffAtFileBoundary(multibyte, limit);
+
+    expect(result.severedPatch).toBe(true);
+    const bodyBytes = Buffer.byteLength(result.diff.split('\n[diff truncated')[0]!, 'utf8');
+    expect(bodyBytes).toBeLessThanOrEqual(limit);
+  });
+
+  // A cut inside a UTF-8 sequence decodes to U+FFFD and corrupts the text the
+  // reviewer anchors findings to. Sweeping EVERY byte offset across a run of
+  // characters guarantees cuts land after the leading byte, after each
+  // continuation byte, and exactly on boundaries.
+  //
+  // The offsets must start above DIFF_MARKER_RESERVE_BYTES: content is budgeted
+  // at `limit - reserve`, so a sweep below the reserve clips to zero bytes and
+  // asserts nothing. (An earlier version of this test swept 40..80 and was
+  // vacuous for exactly that reason.)
+  describe.each([
+    ['2-byte', 'é'],
+    ['3-byte', '漢'],
+    ['4-byte', '😀'],
+    ['mixed-width', 'a漢é😀'],
+  ])('severing a patch of %s characters', (_label, unit) => {
+    it('never splits a character, at any byte offset', () => {
+      const diff = `diff --git a/i18n.ts b/i18n.ts\n+${unit.repeat(400)}\n`;
+      let sawContent = false;
+
+      for (let k = 0; k <= 64; k += 1) {
+        const limit = DIFF_MARKER_RESERVE_BYTES + k;
+        const out = truncateDiffAtFileBoundary(diff, limit).diff;
+        const body = out.split('\n[diff truncated')[0]!;
+
+        expect(out).not.toContain('�');
+        expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(limit);
+        // Whatever survives must be a genuine prefix of the input — a split
+        // code point would break this even if it somehow avoided U+FFFD.
+        expect(diff.startsWith(body)).toBe(true);
+        if (body.length > 0) sawContent = true;
+      }
+
+      // Guard against the sweep silently going vacuous again.
+      expect(sawContent).toBe(true);
+    });
+  });
+
+  it('never returns more bytes than the limit it was given', () => {
+    // Regression: the marker was appended AFTER clipping to `limit`, so the
+    // result overshot the budget it advertises. The reserve slack absorbed it
+    // today, but the budget exists so applyArgvPromptCap never re-trims the
+    // prompt — a function that lies about its own bound makes that arithmetic
+    // unverifiable.
+    const many = Array.from({ length: 50 }, (_, i) =>
+      patch(`f${i}.ts`, `+${'x'.repeat(500)}\n`),
+    ).join('');
+    const lone = patch('lock.json', `+${'x'.repeat(200_000)}\n`);
+    const multibyte = patch('i18n.ts', `+${'漢'.repeat(60_000)}\n`);
+
+    for (const limit of [500, 1_000, 5_000, REVIEWER_DIFF_BYTE_LIMIT]) {
+      for (const diff of [many, lone, multibyte]) {
+        const out = truncateDiffAtFileBoundary(diff, limit).diff;
+        expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(limit);
+      }
+    }
+  });
+
+  it('keeps the truncation marker even when the limit is tiny', () => {
+    // The marker is the disclosure; losing it to a small budget would hide the
+    // truncation entirely.
+    const out = truncateDiffAtFileBoundary(patch('a.ts', `+${'x'.repeat(9000)}\n`), 400).diff;
+    expect(out).toContain('diff truncated');
+  });
+
+  it('budgets the diff below the argv cap that would re-trim the prompt', () => {
+    // applyArgvPromptCap keeps the TAIL and drops the head, so a prompt over
+    // this cap loses its headers, file list, and truncation notice, and the
+    // surviving diff is a raw byte slice with severed hunks. Staying under the
+    // cap here is what stops that second trim from ever running.
+    expect(REVIEWER_DIFF_BYTE_LIMIT).toBeLessThan(SAFE_ARG_STRLEN_BYTES);
+  });
+});
+
+describe('renderChangedFileList', () => {
+  it('bounds by UTF-8 bytes, not just file count', () => {
+    // Regression: REVIEWER_FILE_LIST_CAP bounds the count only. A path may be
+    // PATH_MAX (4096 bytes), so 200 of them is ~819 KB — 8x SAFE_ARG_STRLEN_BYTES
+    // on its own, which pushes the prompt over the argv cap and drops its head.
+    const longPath = 'a/'.repeat(2000) + 'f.ts'; // ~4 KB each
+    const files = Array.from({ length: REVIEWER_FILE_LIST_CAP }, () => longPath);
+
+    const out = renderChangedFileList(files);
+
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(REVIEWER_FILE_LIST_BYTE_BUDGET);
+    expect(out).toMatch(/more file\(s\) not listed here|paths too long to list/);
+  });
+
+  it('stays within budget at every path length near the boundary', () => {
+    // Regression: the "…and N more" suffix was appended after the loop without
+    // being budgeted, so a path accepted near the edge pushed the result past
+    // the budget. The earlier byte test used 4 KB paths, which broke the loop
+    // with headroom to spare and never probed the boundary.
+    const budget = 400;
+    for (let pathLen = 1; pathLen <= 420; pathLen += 1) {
+      const files = Array.from({ length: 50 }, () => 'p'.repeat(pathLen));
+      const out = renderChangedFileList(files, { byteBudget: budget });
+      expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it('stays within budget when the suffix digit count grows', () => {
+    // The suffix length varies with the number of unlisted files; the reserve
+    // is derived from a worst-case render so it must hold at any magnitude.
+    for (const count of [10, 1_000, 1_000_000, 100_000_000]) {
+      const files = Array.from({ length: Math.min(count, 500) }, () => 'x'.repeat(60));
+      const out = renderChangedFileList(files, { byteBudget: 300 });
+      expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(300);
+    }
+  });
+
+  it('still bounds by count when paths are short', () => {
+    const files = Array.from({ length: 1000 }, (_, i) => `src/f${i}.ts`);
+    const out = renderChangedFileList(files);
+
+    expect(out.split('\n').filter((l) => l.startsWith('- src/'))).toHaveLength(
+      REVIEWER_FILE_LIST_CAP,
+    );
+    expect(out).toContain(`${1000 - REVIEWER_FILE_LIST_CAP} more file(s)`);
+  });
+
+  it('reports the count even when a single path exceeds the whole budget', () => {
+    const out = renderChangedFileList(['x'.repeat(50_000)]);
+    expect(out).toContain('1 file(s)');
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThan(REVIEWER_FILE_LIST_BYTE_BUDGET);
+  });
+
+  it('says nothing changed only when nothing changed', () => {
+    expect(renderChangedFileList([])).toBe('_(no files changed)_');
+  });
+});
+
+describe('buildLocalDiffReviewerPrompt — stays under the engine argv cap', () => {
+  it('fits with 200 PATH_MAX-length changed-file paths', () => {
+    // The reviewer-flagged case: the count cap passes, the byte budget is what
+    // keeps the prompt whole.
+    const longPath = 'a/'.repeat(2047) + 'f.ts'; // ~4096 bytes, PATH_MAX
+    const bigDiff = Array.from(
+      { length: 200 },
+      (_, i) => `diff --git a/f${i}.ts b/f${i}.ts\n+${'x'.repeat(4000)}\n`,
+    ).join('');
+    const trimmed = truncateDiffAtFileBoundary(bigDiff);
+
+    const prompt = buildLocalDiffReviewerPrompt({
+      inputs: {
+        baseSha: 'aaa1111',
+        headSha: 'bbb2222',
+        changedFiles: Array.from({ length: REVIEWER_FILE_LIST_CAP }, () => longPath),
+        unifiedDiff: trimmed.diff,
+        omittedFileCount: trimmed.omittedFileCount,
+        severedPatch: trimmed.severedPatch,
+      },
+      card: fakeCard,
+      project: fakeProject,
+    });
+
+    expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThan(SAFE_ARG_STRLEN_BYTES);
+    // The head of the prompt is what the argv cap would drop, so these are the
+    // things that must survive.
+    expect(prompt).toContain('Pre-PR Code Review');
+    expect(prompt).toContain('Partial input');
+  });
+
+  it('fits even with a pathological diff and thousands of changed files', () => {
+    const fileCount = 3000;
+    const bigDiff = Array.from(
+      { length: 500 },
+      (_, i) => `diff --git a/f${i}.ts b/f${i}.ts\n+${'x'.repeat(4000)}\n`,
+    ).join('');
+    const trimmed = truncateDiffAtFileBoundary(bigDiff);
+    const inputs: ReviewerLocalDiffInputs = {
+      baseSha: 'aaa1111',
+      headSha: 'bbb2222',
+      changedFiles: Array.from({ length: fileCount }, (_, i) => `some/deep/path/to/file-${i}.ts`),
+      unifiedDiff: trimmed.diff,
+      omittedFileCount: trimmed.omittedFileCount,
+    };
+
+    const prompt = buildLocalDiffReviewerPrompt({
+      inputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+
+    expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThan(SAFE_ARG_STRLEN_BYTES);
+    // The disclosure must survive — it is the whole reason the reviewer knows
+    // not to treat a clean read as a clean change set.
+    expect(prompt).toContain('Partial input');
+    expect(prompt).toContain(`${fileCount - REVIEWER_FILE_LIST_CAP} more file(s)`);
+  });
+});
+
+describe('buildLocalDiffReviewerPrompt — partial-input disclosure', () => {
+  const base = { card: fakeCard, project: fakeProject };
+
+  it('says nothing about truncation when the reviewer saw the whole diff', () => {
+    const prompt = buildLocalDiffReviewerPrompt({ ...base, inputs: fakeInputs });
+    expect(prompt).not.toContain('Partial input');
+  });
+
+  it('tells the reviewer when file patches were omitted', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      ...base,
+      inputs: { ...fakeInputs, omittedFileCount: 42 },
+    });
+    // Without this the reviewer reads a trimmed patch as the whole change and
+    // can approve code it never saw.
+    expect(prompt).toContain('Partial input');
+    expect(prompt).toContain('42 file patch(es) were omitted');
+  });
+
+  it('tells the reviewer when the only patch was cut mid-file', () => {
+    // The lone-oversized-file case: nothing was omitted, so this disclosure is
+    // the only thing standing between a half-read file and an approval.
+    const prompt = buildLocalDiffReviewerPrompt({
+      ...base,
+      inputs: { ...fakeInputs, omittedFileCount: 0, severedPatch: true },
+    });
+    expect(prompt).toContain('Partial input');
+    expect(prompt).toContain('cut off mid-file');
+    expect(prompt).toContain('Do not treat it as fully reviewed');
+  });
+
+  it('never claims "no files changed" when the file list merely could not be read', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      ...base,
+      inputs: { ...fakeInputs, changedFiles: [], fileListUnavailable: true },
+    });
+    expect(prompt).not.toContain('no files changed');
+    expect(prompt).toContain('could not be read');
+  });
+
+  it('tells the reviewer when it only got a --stat summary', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      ...base,
+      inputs: { ...fakeInputs, diffDegraded: true },
+    });
+    expect(prompt).toContain('Partial input');
+    expect(prompt).toContain('per-file summary');
   });
 });

@@ -24,7 +24,12 @@ const FINALIZE_FAILURE_REASON_DESCRIPTIONS = {
   timeout: 'A Finalize step ran past its time limit and was stopped.',
   no_worktree: "Finalize could not access this session's worktree.",
   worktree_create_failed: "Finalize could not create this session's worktree.",
-  no_diff_inputs: 'There were no code changes for Finalize to review or push.',
+  // Deliberately NOT "there were no code changes". This code fires when the
+  // diff could not be computed (base/head SHA would not resolve), which a large
+  // change set can reach — telling someone with hundreds of modified files that
+  // they changed nothing sends them looking in entirely the wrong place.
+  no_diff_inputs:
+    "Finalize could not work out the diff between this branch and its base. The branch's base ref may be missing or unfetched.",
   stalled: 'A dispatched fix session stopped responding before it finished.',
   stalled_no_response: 'A dispatched fix session stopped responding before it finished.',
   push_gate: 'The push was blocked because the branch state did not satisfy the push gate.',

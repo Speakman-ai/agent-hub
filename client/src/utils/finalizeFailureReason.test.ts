@@ -17,6 +17,15 @@ describe('describeFinalizeFailureReason', () => {
     expect(describeFinalizeFailureReason('timeout')).toMatch(/time limit/i);
   });
 
+  it('does not tell a user with a large change set that they changed nothing', () => {
+    // Regression: a 325-file session hit no_diff_inputs and was told "There were
+    // no code changes for Finalize to review or push." The code means the diff
+    // could not be computed, not that the diff was empty.
+    const text = describeFinalizeFailureReason('no_diff_inputs');
+    expect(text).toMatch(/could not work out the diff/i);
+    expect(text).not.toMatch(/no code changes/i);
+  });
+
   it('returns null for unknown, empty, or non-string reasons', () => {
     expect(describeFinalizeFailureReason('totally_made_up')).toBeNull();
     expect(describeFinalizeFailureReason('')).toBeNull();

@@ -59,6 +59,7 @@ import type {
   ReviewerThreadRow,
   Stmts,
 } from '../types.js';
+import { SAFE_ARG_STRLEN_BYTES } from '../spawn-prompt-payload.js';
 import {
   readFinalizeLoopRound,
   writeFinalizeReviewRoundTimeline,
@@ -85,6 +86,68 @@ export const REVIEWER_THREAD_HARD_CAP = 200;
  * to keep the dispatch body readable.
  */
 export const REVIEWER_THREAD_BODY_LIMIT = 8_000;
+
+/**
+ * Bytes reserved inside {@link SAFE_ARG_STRLEN_BYTES} for everything in the
+ * prompt that is not the patch body: headers, the severity rubric, the
+ * output-format contract, and the partial-input notice (~3 KB measured), plus
+ * the changed-file list (bounded by {@link REVIEWER_FILE_LIST_BYTE_BUDGET}).
+ * The remainder is slack for the diff's truncation marker and prompt growth.
+ *
+ * Every component of the prompt must be bounded in BYTES for this reserve to
+ * mean anything — a count-only cap on a variable-length section is not a size
+ * cap. The worst-case assertions live in reviewer-dispatch.test.ts.
+ */
+const REVIEWER_PROMPT_RESERVE_BYTES = 20_000;
+
+/** Changed-file names listed before the tail is summarised as a count. */
+export const REVIEWER_FILE_LIST_CAP = 200;
+
+/**
+ * Byte ceiling for the rendered changed-file list.
+ *
+ * {@link REVIEWER_FILE_LIST_CAP} alone bounds the file *count*, which is not a
+ * bound on size: a path may be up to PATH_MAX (4096 bytes), so 200 of them is
+ * ~819 KB — eight times {@link SAFE_ARG_STRLEN_BYTES} on its own, and enough to
+ * push the prompt back over the argv cap that {@link REVIEWER_DIFF_BYTE_LIMIT}
+ * is derived to stay under. Both limits apply; whichever binds first wins.
+ *
+ * Sized to fit inside {@link REVIEWER_PROMPT_RESERVE_BYTES} alongside the
+ * prompt scaffolding (headers + rubric + output contract + the partial-input
+ * notice, ~3 KB measured), leaving ~5 KB of slack for the diff's truncation
+ * marker and future prompt growth.
+ */
+export const REVIEWER_FILE_LIST_BYTE_BUDGET = 12_000;
+
+/**
+ * Byte ceiling for the unified diff embedded in the reviewer prompt.
+ *
+ * Derived from the argv cap rather than picked freely, because the reviewer's
+ * **user** prompt is passed as a positional argv argument on every engine and
+ * re-trimmed by `applyArgvPromptCap` (`session-multi-engine.ts`). That trim
+ * keeps the *tail* and drops the head, so an over-budget prompt loses its
+ * headers, its file list, and the truncation notice below — and what survives
+ * is a raw byte slice with severed hunks. Budgeting under the cap here keeps
+ * that second trim from ever firing, so the reviewer receives whole file
+ * patches plus an explicit statement of what was left out.
+ *
+ * Truncation is at whole-file-patch boundaries so every hunk the reviewer does
+ * see is syntactically complete. Silently feeding a partial diff is the failure
+ * this bounds.
+ */
+export const REVIEWER_DIFF_BYTE_LIMIT = SAFE_ARG_STRLEN_BYTES - REVIEWER_PROMPT_RESERVE_BYTES;
+
+/**
+ * Buffer ceiling for the `git diff` spawn itself, deliberately far above
+ * {@link REVIEWER_DIFF_BYTE_LIMIT} so ordinary-large changesets are captured
+ * whole and trimmed here rather than killing git with
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`. That overflow used to reject out of
+ * `collectLocalDiffInputs` and surface as `no_diff_inputs`, whose UI copy
+ * claims "There were no code changes" — the opposite of the truth on the
+ * 325-file session that reported this. Mirrors the 32 MB precedent in
+ * `session-changes.ts`, with headroom for reformat-scale diffs.
+ */
+const DIFF_SPAWN_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
  * Reviewer's verdict — the same domain as `finalize_runs.reviewer_verdict`.
@@ -129,6 +192,31 @@ export interface ReviewerLocalDiffInputs {
   headSha: string;
   changedFiles: string[];
   unifiedDiff: string;
+  /**
+   * File patches dropped to fit {@link REVIEWER_DIFF_BYTE_LIMIT}. Zero/absent
+   * when the whole diff fit. Rendered into the prompt so the reviewer knows
+   * its view is partial instead of approving unseen code.
+   */
+  omittedFileCount?: number;
+  /**
+   * True when the patch body could not be captured at all and `unifiedDiff`
+   * holds a `--stat` summary instead. The review still runs — a large
+   * changeset must never be reported as having no changes.
+   */
+  diffDegraded?: boolean;
+  /**
+   * True when a single patch exceeded the whole budget and was cut mid-file.
+   * Tracked separately from {@link omittedFileCount} because such a file is
+   * partly shown rather than omitted, and a lone oversized patch would
+   * otherwise report zero omissions and disclose nothing.
+   */
+  severedPatch?: boolean;
+  /**
+   * True when the changed-file list could not be read. Distinguishes "the list
+   * is unavailable" from "the change set is empty" so the prompt never claims
+   * the latter on a session that is full of changes.
+   */
+  fileListUnavailable?: boolean;
 }
 
 /**
@@ -214,7 +302,13 @@ export interface ReviewerDispatchDeps {
    */
   runGit?: (
     args: string[],
-    opts: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv },
+    opts: {
+      cwd: string;
+      timeoutMs: number;
+      env?: NodeJS.ProcessEnv;
+      /** Per-call stdout ceiling; only the diff body needs the large one. */
+      maxBufferBytes?: number;
+    },
   ) => Promise<{ stdout: string; stderr: string }>;
   /** Deterministic clock injection for `created_at` timestamps. */
   now?: () => number;
@@ -526,13 +620,13 @@ function terminate(
 
 function defaultRunGit(
   args: string[],
-  opts: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv },
+  opts: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv; maxBufferBytes?: number },
 ): Promise<{ stdout: string; stderr: string }> {
   return execFileAsync('git', args, {
     cwd: opts.cwd,
     env: opts.env,
     timeout: opts.timeoutMs,
-    maxBuffer: 10 * 1024 * 1024,
+    maxBuffer: opts.maxBufferBytes ?? 10 * 1024 * 1024,
   }).then(({ stdout, stderr }) => ({ stdout, stderr }));
 }
 
@@ -586,19 +680,252 @@ export async function collectLocalDiffInputs(
   // the diff reflects what's actually on the feature branch relative
   // to the rebase target — three-dot would include changes on base
   // that we don't own and would pollute the reviewer's view.
-  const filesRes = await runGit(['diff', '--name-only', `${baseSha}..${headSha}`], spawnOpts);
-  const diffRes = await runGit(['diff', `${baseSha}..${headSha}`], spawnOpts);
+  //
+  // The file list scales with the change set too, so it gets the same large
+  // buffer and the same never-fatal handling as the patch body below. Under the
+  // default buffer a pathological path count could overflow here and throw
+  // *before* the patch fallback ever ran, reintroducing `no_diff_inputs` on the
+  // exact input this function exists to survive.
+  let changedFiles: string[] = [];
+  let fileListUnavailable = false;
+  try {
+    const filesRes = await runGit(['diff', '--name-only', `${baseSha}..${headSha}`], {
+      ...spawnOpts,
+      maxBufferBytes: DIFF_SPAWN_MAX_BUFFER,
+    });
+    changedFiles = filesRes.stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  } catch {
+    fileListUnavailable = true;
+  }
 
-  const changedFiles = filesRes.stdout
-    .split('\n')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  // The patch body is the only unbounded input here, and its failure modes all
+  // scale with change-set size. Capture it under a large buffer, then trim to
+  // the prompt budget. Every failure degrades to a `--stat` summary rather than
+  // propagating: a throw here becomes `no_diff_inputs`, which the UI reports as
+  // "There were no code changes" — the worst possible answer for a session with
+  // hundreds of changed files.
+  let unifiedDiff = '';
+  let omittedFileCount = 0;
+  let severedPatch = false;
+  let diffDegraded = false;
+  try {
+    const diffRes = await runGit(['diff', `${baseSha}..${headSha}`], {
+      ...spawnOpts,
+      maxBufferBytes: DIFF_SPAWN_MAX_BUFFER,
+    });
+    const trimmed = truncateDiffAtFileBoundary(diffRes.stdout);
+    unifiedDiff = trimmed.diff;
+    omittedFileCount = trimmed.omittedFileCount;
+    severedPatch = trimmed.severedPatch;
+  } catch {
+    diffDegraded = true;
+    try {
+      const statRes = await runGit(['diff', '--stat', `${baseSha}..${headSha}`], {
+        ...spawnOpts,
+        maxBufferBytes: DIFF_SPAWN_MAX_BUFFER,
+      });
+      unifiedDiff = truncateDiffAtFileBoundary(statRes.stdout).diff;
+    } catch {
+      // Both the patch and the stat were unreadable. The SHAs already resolved
+      // above, so the refs are sound and this is a size/transient problem —
+      // hand the reviewer the file list it already has rather than killing the
+      // run.
+      unifiedDiff = '';
+    }
+  }
 
   return {
     baseSha,
     headSha,
     changedFiles,
-    unifiedDiff: diffRes.stdout,
+    unifiedDiff,
+    omittedFileCount,
+    severedPatch,
+    diffDegraded,
+    fileListUnavailable,
+  };
+}
+
+/**
+ * Trim a unified diff to `limit` bytes on whole-file-patch boundaries.
+ *
+ * Cutting at a raw byte offset would hand the reviewer a half-written hunk and
+ * invite findings anchored to lines that do not exist. Splitting on `diff --git`
+ * headers keeps every retained patch complete, and the caller reports the
+ * dropped count so the prompt can say what was not reviewed.
+ *
+ * A single file patch larger than the whole budget is the one case where a
+ * clean boundary does not exist; it is byte-clipped so the reviewer still sees
+ * the head of that file rather than nothing at all. That case is reported
+ * separately as `severedPatch` — it is NOT an omission (the file is partly
+ * shown), and conflating the two would let a mid-file cut pass with no
+ * disclosure whenever it is the only patch.
+ *
+ * Exported for tests.
+ */
+/**
+ * Clip a string to at most `limit` **UTF-8 bytes**, never splitting a character.
+ *
+ * `String.prototype.slice` counts UTF-16 code units, so on non-ASCII content
+ * (any diff touching CJK, emoji, or accented text) it can emit up to 3-4x
+ * `limit` bytes and can cut a surrogate pair in half. Both matter here: the
+ * byte budget exists precisely to keep the prompt under the engine argv cap, so
+ * overshooting it re-triggers the head-dropping trim this function exists to
+ * prevent, and a severed code point corrupts the patch text the reviewer
+ * anchors findings to.
+ */
+function clipToUtf8Bytes(s: string, limit: number): string {
+  const buf = Buffer.from(s, 'utf8');
+  if (buf.length <= limit) return s;
+  // Walk back off any UTF-8 continuation byte (0b10xxxxxx) so the cut lands on
+  // a character boundary and the decode can't produce a replacement char.
+  let end = limit;
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString('utf8');
+}
+
+/**
+ * Render the changed-file list bounded by BOTH
+ * {@link REVIEWER_FILE_LIST_CAP} (count) and
+ * {@link REVIEWER_FILE_LIST_BYTE_BUDGET} (UTF-8 bytes), summarising whatever
+ * did not fit as a trailing count. The byte bound is the load-bearing one:
+ * path lengths are attacker-shaped in the sense that nothing in the repo
+ * constrains them, so a count-only cap is not a size cap.
+ *
+ * Exported for tests.
+ */
+/** Trailing "…and N more" line summarising paths that did not fit. */
+function renderFileListSuffix(unlisted: number): string {
+  return `\n- …and ${unlisted} more file(s) not listed here.`;
+}
+
+/** Fallback when not even one path fits the budget. */
+function renderFileListOverflowNotice(total: number): string {
+  return `- …${total} file(s), paths too long to list here.`;
+}
+
+/**
+ * Bytes reserved for {@link renderFileListSuffix}, derived from a worst-case
+ * render rather than hardcoded so rewording the suffix cannot push the list
+ * past its budget.
+ */
+const FILE_LIST_SUFFIX_RESERVE_BYTES = Buffer.byteLength(
+  renderFileListSuffix(Number.MAX_SAFE_INTEGER),
+  'utf8',
+);
+
+export function renderChangedFileList(
+  files: string[],
+  opts: { countCap?: number; byteBudget?: number } = {},
+): string {
+  if (files.length === 0) return '_(no files changed)_';
+  const countCap = opts.countCap ?? REVIEWER_FILE_LIST_CAP;
+  const byteBudget = opts.byteBudget ?? REVIEWER_FILE_LIST_BYTE_BUDGET;
+
+  // Paths are budgeted against the byte budget MINUS the "…and N more" suffix,
+  // because that suffix is appended after the loop. Without the reservation a
+  // path landing near the boundary is accepted, the suffix is appended anyway,
+  // and the result exceeds the budget it advertises — the same defect the diff
+  // truncation marker had.
+  const contentBudget = Math.max(0, byteBudget - FILE_LIST_SUFFIX_RESERVE_BYTES);
+  const lines: string[] = [];
+  let used = 0;
+  for (const f of files) {
+    if (lines.length >= countCap) break;
+    const line = `- ${f}`;
+    const size = Buffer.byteLength(line, 'utf8') + 1; // + newline
+    if (used + size > contentBudget) break;
+    lines.push(line);
+    used += size;
+  }
+
+  // Degenerate case: even one path blew the budget. Still report the count so
+  // the reviewer knows the change set is non-empty. Clipped so the contract
+  // holds even for a budget smaller than the notice.
+  if (lines.length === 0) {
+    return clipToUtf8Bytes(renderFileListOverflowNotice(files.length), byteBudget);
+  }
+
+  const unlisted = files.length - lines.length;
+  return lines.join('\n') + (unlisted > 0 ? renderFileListSuffix(unlisted) : '');
+}
+
+/** The `[diff truncated …]` footer appended to a trimmed diff. */
+function renderDiffTruncationMarker(
+  limit: number,
+  omittedFileCount: number,
+  severedPatch: boolean,
+): string {
+  const completeness = severedPatch
+    ? 'the LAST patch shown is cut off mid-file and is INCOMPLETE'
+    : 'every patch shown above is complete';
+  return (
+    `\n[diff truncated to fit the reviewer's ${limit}-byte budget: ` +
+    `${omittedFileCount} file patch(es) omitted, and ${completeness}; ` +
+    `the full changed-file list is in "Changed files".]\n`
+  );
+}
+
+/**
+ * Bytes the truncation marker may consume, derived from a worst-case render of
+ * the marker itself rather than hardcoded, so rewording the footer can never
+ * silently push the result past `limit`.
+ *
+ * The patch content is budgeted against `limit` MINUS this, because the marker
+ * is appended after clipping: without the reservation the returned string
+ * exceeds the very budget it advertises, and the whole point of that budget is
+ * that `applyArgvPromptCap` never has to re-trim the prompt.
+ */
+export const DIFF_MARKER_RESERVE_BYTES = Buffer.byteLength(
+  renderDiffTruncationMarker(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, true),
+  'utf8',
+);
+
+export function truncateDiffAtFileBoundary(
+  diff: string,
+  limit: number = REVIEWER_DIFF_BYTE_LIMIT,
+): { diff: string; omittedFileCount: number; severedPatch: boolean } {
+  if (Buffer.byteLength(diff, 'utf8') <= limit)
+    return { diff, omittedFileCount: 0, severedPatch: false };
+
+  // Content is budgeted against the limit MINUS the marker that gets appended
+  // below, so the returned string honours `limit` rather than overshooting it
+  // by the footer's length.
+  const contentBudget = Math.max(0, limit - DIFF_MARKER_RESERVE_BYTES);
+  const sections = diff.split(/(?=^diff --git )/m).filter((s) => s.length > 0);
+  const kept: string[] = [];
+  let used = 0;
+  let omittedFileCount = 0;
+  let severedPatch = false;
+
+  for (const section of sections) {
+    const size = Buffer.byteLength(section, 'utf8');
+    if (used + size <= contentBudget) {
+      kept.push(section);
+      used += size;
+    } else {
+      omittedFileCount += 1;
+    }
+  }
+
+  if (kept.length === 0) {
+    // One oversized patch (a lockfile, a vendored blob). Clip it so the
+    // reviewer gets the beginning instead of an empty diff, and flag that the
+    // patch shown is cut mid-content so the disclosure below fires even when it
+    // is the only file in the change set.
+    const head = sections[0] ?? diff;
+    kept.push(clipToUtf8Bytes(head, contentBudget));
+    severedPatch = true;
+    omittedFileCount = Math.max(0, sections.length - 1);
+  }
+
+  return {
+    diff: kept.join('') + renderDiffTruncationMarker(limit, omittedFileCount, severedPatch),
+    omittedFileCount,
+    severedPatch,
   };
 }
 
@@ -681,12 +1008,34 @@ export function buildLocalDiffReviewerPrompt(args: {
   project: Project;
 }): string {
   const { inputs, card, project } = args;
-  const fileList =
-    inputs.changedFiles.length === 0
-      ? '_(no files changed)_'
-      : inputs.changedFiles.map((f) => `- ${f}`).join('\n');
+  const fileList = inputs.fileListUnavailable
+    ? '_(the changed-file list could not be read — see the diff below)_'
+    : renderChangedFileList(inputs.changedFiles);
+
+  // A partial diff must be stated, not implied. Without this the reviewer reads
+  // a trimmed patch as the whole change and can approve code it never saw. A
+  // severed patch counts as partial even when nothing was omitted — a lone
+  // oversized file is cut mid-content and is the easiest case to miss.
+  const omitted = inputs.omittedFileCount ?? 0;
+  const coverageNotice = inputs.diffDegraded
+    ? `\n> **Partial input.** The patch body for this change set was too large to\n` +
+      `> capture, so the section below is a per-file summary rather than the full\n` +
+      `> diff. Review what is visible, and say so in your summary — do not treat\n` +
+      `> the absence of visible problems as evidence the change is clean.\n`
+    : inputs.severedPatch
+      ? `\n> **Partial input.** The diff exceeded the size budget and the last patch\n` +
+        `> shown is cut off mid-file, so you are seeing an incomplete version of\n` +
+        `> that file${omitted > 0 ? `, with ${omitted} further file patch(es) omitted` : ''}.\n` +
+        `> Do not treat it as fully reviewed, and say so in your summary.\n`
+      : omitted > 0
+        ? `\n> **Partial input.** ${omitted} file patch(es) were omitted\n` +
+          `> to fit the size budget; the patches shown are complete but do not cover\n` +
+          `> every changed file. Scope your findings to what is visible and note the\n` +
+          `> omission in your summary.\n`
+        : '';
 
   return `# Pre-PR Code Review (Local Diff)
+${coverageNotice}
 
 You are reviewing the **local diff** of a feature branch in the session's
 worktree for project \`${project.id}\` (${project.name ?? ''}), card
