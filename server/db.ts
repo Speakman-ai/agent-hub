@@ -109,29 +109,17 @@ function initDb(dataDir: string): void {
   db.exec('DROP TABLE IF EXISTS watchdog_events');
   db.exec('DROP TABLE IF EXISTS session_watchdog');
 
-  // Pre-bootstrap migration: P1 webhook_events columns (pr_key, deferred_until,
-  // superseded_by). MUST run before the bootstrap `db.exec` below because that
-  // block contains `CREATE INDEX … ON webhook_events(pr_key, …)` — and on
-  // existing installs `CREATE TABLE IF NOT EXISTS webhook_events` is a no-op,
-  // so the index would reference a column that doesn't exist yet and throw
-  // `SqliteError: no such column: pr_key` (root-caused 2026-05-07 deploy
-  // outage on dev + prod). The post-bootstrap migration block further down
-  // also needs these columns for the CHECK-constraint rebuild, so adding them
-  // here is strictly earlier — fresh installs skip the ALTER (no table) and
-  // the bootstrap CREATE TABLE creates them inline; legacy installs get the
-  // columns added before any index references them. ALTER TABLE on a missing
-  // table throws "no such table" which the try/catch swallows safely.
-  for (const col of ['pr_key TEXT', 'deferred_until TEXT', 'superseded_by INTEGER']) {
-    try {
-      db.exec(`ALTER TABLE webhook_events ADD COLUMN ${col}`);
-    } catch (_e) {
-      /* table doesn't exist yet (fresh install) or column already present */
-    }
-  }
+  // Migration: drop the webhook event/delivery tables. The GitHub App +
+  // inbound-webhook feature is gone; nothing reads or writes these. Dropped
+  // as children first so `webhook_configs` (still read once by
+  // migrateWebhookRepoToProject, which drops it after consuming the rows)
+  // has no dependent rows left when it goes.
+  db.exec('DROP TABLE IF EXISTS webhook_logs');
+  db.exec('DROP TABLE IF EXISTS webhook_events');
 
-  // Pre-bootstrap migration: support_tickets.read_at. Like the webhook_events
-  // block above, this must run before the bootstrap `db.exec` because that
-  // block creates `idx_support_tickets_unread` on `(project_id, read_at)`.
+  // Pre-bootstrap migration: support_tickets.read_at. Must run before the
+  // bootstrap `db.exec` because that block creates `idx_support_tickets_unread`
+  // on `(project_id, read_at)`.
   // Legacy installs where support_tickets already exists but read_at does not
   // would otherwise fail before the post-bootstrap migration can add it.
   try {
@@ -837,100 +825,14 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_kanban_card_blockers_blocked_by
       ON kanban_card_blockers(blocked_by_card_id);
 
-    -- Legacy webhook tables (webhook_configs / webhook_logs / webhook_events).
-    -- The GitHub App + inbound-webhook feature was removed in PR #149; the
-    -- webhook DB layer (prepared statements, worker, routes) is gone. These
-    -- tables are deliberately RETAINED, not dropped, for two reasons:
-    --   1. migrateWebhookRepoToProject (server/project-model.ts) reads
-    --      webhook_configs.repo_url on boot to recover a project's GitHub
-    --      repo association on upgrade. Dropping the table would erase that
-    --      upgrade path before every install has run the migration.
-    --   2. They preserve historical webhook delivery/audit rows for backups.
-    -- Safe to remove in a future migration once all installs have upgraded
-    -- past the webhook era and run the repo migration at least once.
-    CREATE TABLE IF NOT EXISTS webhook_configs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id TEXT NOT NULL,
-      repo_url TEXT NOT NULL,
-      secret TEXT NOT NULL,
-      events TEXT NOT NULL DEFAULT '{}',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      author_allowlist TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_webhook_configs_project ON webhook_configs(project_id);
-
-    CREATE TABLE IF NOT EXISTS webhook_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      webhook_config_id INTEGER NOT NULL,
-      event_type TEXT NOT NULL,
-      action TEXT,
-      delivery_id TEXT,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','success','error','skipped')),
-      result TEXT,
-      duration_ms INTEGER,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (webhook_config_id) REFERENCES webhook_configs(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_webhook_logs_config ON webhook_logs(webhook_config_id);
-    CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at DESC);
-
-    -- Webhook events queue: raw delivered events awaiting async processing.
-    -- Writes here from the fast-ack handler; a background worker claims rows
-    -- for kanban lifecycle + Claude prompt execution. Keeps the HTTP handler
-    -- off the hot path (see: webhook starvation incident, 2026-04-16).
-    --
-    -- P1 dedup/concurrency (card 2c4a0d06): three columns layer on top of
-    -- the P0 fast-ack design:
-    --   * pr_key         -- "<repo_full_name>:<pr_number>" for PR-scoped events.
-    --                       The worker never claims two rows with the same
-    --                       pr_key concurrently (per-PR serialization).
-    --   * deferred_until -- persistent debounce. The worker won't claim rows
-    --                       whose deferred_until is still in the future.
-    --                       Replaces in-memory reviewerDebounceTimers so
-    --                       debounce state survives restart.
-    --   * superseded_by  -- coalescing audit trail. When a newer row for the
-    --                       same (event_type, action, pr_key) arrives, older
-    --                       pending rows are flipped to status='skipped' with
-    --                       superseded_by pointing at the newer row.
-    CREATE TABLE IF NOT EXISTS webhook_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      webhook_config_id INTEGER NOT NULL,
-      delivery_id TEXT,
-      event_type TEXT NOT NULL,
-      action TEXT,
-      payload TEXT NOT NULL,
-      signature TEXT,
-      status TEXT NOT NULL DEFAULT 'pending'
-        CHECK(status IN ('pending','processing','done','error','skipped')),
-      started_at TEXT,
-      completed_at TEXT,
-      error_message TEXT,
-      attempts INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      pr_key TEXT,
-      deferred_until TEXT,
-      superseded_by INTEGER,
-      FOREIGN KEY (webhook_config_id) REFERENCES webhook_configs(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_webhook_events_status ON webhook_events(status, created_at);
-    -- Partial unique index: idempotency on GitHub's x-github-delivery header
-    -- when present. NULL delivery_ids are allowed to repeat (legacy / manual replays).
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_delivery
-      ON webhook_events(delivery_id)
-      WHERE delivery_id IS NOT NULL;
-    -- Per-key concurrency cap query: looks up "any row for this pr_key
-    -- currently processing?" The partial-index condition keeps it tight so
-    -- the index is useful even with millions of completed rows over time.
-    CREATE INDEX IF NOT EXISTS idx_webhook_events_pr_key_active
-      ON webhook_events(pr_key, status)
-      WHERE pr_key IS NOT NULL AND status IN ('pending','processing');
-    -- Deferred-until claim path: only the rows that are still waiting on a
-    -- debounce window need an index. Fully-claimed rows drop out.
-    CREATE INDEX IF NOT EXISTS idx_webhook_events_deferred
-      ON webhook_events(deferred_until)
-      WHERE deferred_until IS NOT NULL AND status = 'pending';
+    -- Legacy webhook tables (webhook_configs / webhook_logs / webhook_events)
+    -- are gone. The GitHub App + inbound-webhook feature was removed in
+    -- PR #149 and nothing has read or written these since. webhook_logs and
+    -- webhook_events are dropped in the pre-bootstrap block above;
+    -- webhook_configs is dropped by migrateWebhookRepoToProject
+    -- (server/project-model.ts) after it consumes the repo_url rows one
+    -- last time, so the upgrade path that recovers project.githubRepo still
+    -- runs exactly once on a webhook-era install.
 
     -- Skill registry: central catalog of available skills
     CREATE TABLE IF NOT EXISTS skill_registry (
@@ -2981,15 +2883,6 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
-  // Per-webhook author allowlist — when non-empty, only PRs whose
-  // pull_request.user.login matches (case-insensitive) trigger the reviewer.
-  // Empty array (default) = review-all, backwards compatible.
-  try {
-    db.exec("ALTER TABLE webhook_configs ADD COLUMN author_allowlist TEXT NOT NULL DEFAULT '[]'");
-  } catch (_e) {
-    /* already exists */
-  }
-
   db.exec(`
     -- Designs: Claude-Design-style canvas. Each design is a singleton-agent
     -- chat with an artifact directory on disk rendered in an iframe.
@@ -3129,95 +3022,6 @@ function initDb(dataDir: string): void {
     } catch (err) {
       console.warn(`[db] DROP TABLE ${tbl} failed:`, (err as Error).message);
     }
-  }
-
-  // Migration: P1 webhook event coalescing CHECK-constraint rebuild.
-  // The pr_key / deferred_until / superseded_by columns themselves are added
-  // in the pre-bootstrap block above (must run before the bootstrap block's
-  // CREATE INDEX on pr_key). What's left here is the conditional table
-  // rebuild that updates the `status` CHECK constraint to allow the new
-  // 'skipped' value — that requires a full INSERT…SELECT copy and so stays
-  // post-bootstrap to run after the table definitively exists.
-  {
-    const ddl =
-      (
-        db
-          .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='webhook_events'")
-          .get() as { sql: string } | undefined
-      )?.sql ?? '';
-    // Rebuild only when the legacy CHECK set is still in effect AND the new
-    // 'skipped' value is missing. Idempotent: subsequent boots find 'skipped'
-    // in the DDL and skip the rebuild.
-    if (ddl && !ddl.includes("'skipped'")) {
-      const handle = db;
-      handle.transaction(() => {
-        handle.exec(`
-          CREATE TABLE webhook_events_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            webhook_config_id INTEGER NOT NULL,
-            delivery_id TEXT,
-            event_type TEXT NOT NULL,
-            action TEXT,
-            payload TEXT NOT NULL,
-            signature TEXT,
-            status TEXT NOT NULL DEFAULT 'pending'
-              CHECK(status IN ('pending','processing','done','error','skipped')),
-            started_at TEXT,
-            completed_at TEXT,
-            error_message TEXT,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            pr_key TEXT,
-            deferred_until TEXT,
-            superseded_by INTEGER,
-            FOREIGN KEY (webhook_config_id) REFERENCES webhook_configs(id) ON DELETE CASCADE
-          );
-          INSERT INTO webhook_events_new
-            (id, webhook_config_id, delivery_id, event_type, action, payload, signature,
-             status, started_at, completed_at, error_message, attempts, created_at,
-             pr_key, deferred_until, superseded_by)
-          SELECT
-            id, webhook_config_id, delivery_id, event_type, action, payload, signature,
-            status, started_at, completed_at, error_message, attempts, created_at,
-            pr_key, deferred_until, superseded_by
-          FROM webhook_events;
-          DROP TABLE webhook_events;
-          ALTER TABLE webhook_events_new RENAME TO webhook_events;
-          CREATE INDEX IF NOT EXISTS idx_webhook_events_status
-            ON webhook_events(status, created_at);
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_delivery
-            ON webhook_events(delivery_id)
-            WHERE delivery_id IS NOT NULL;
-          CREATE INDEX IF NOT EXISTS idx_webhook_events_pr_key_active
-            ON webhook_events(pr_key, status)
-            WHERE pr_key IS NOT NULL AND status IN ('pending','processing');
-          CREATE INDEX IF NOT EXISTS idx_webhook_events_deferred
-            ON webhook_events(deferred_until)
-            WHERE deferred_until IS NOT NULL AND status = 'pending';
-        `);
-      })();
-    }
-  }
-  // Belt-and-suspenders: if the table was already created with the new CHECK
-  // constraint (fresh install or earlier rebuild) the indexes still need to
-  // exist on legacy installs that pre-date them.
-  try {
-    db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_webhook_events_pr_key_active
-       ON webhook_events(pr_key, status)
-       WHERE pr_key IS NOT NULL AND status IN ('pending','processing')`,
-    );
-  } catch (_e) {
-    /* already exists or column not yet present in this transaction window */
-  }
-  try {
-    db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_webhook_events_deferred
-       ON webhook_events(deferred_until)
-       WHERE deferred_until IS NOT NULL AND status = 'pending'`,
-    );
-  } catch (_e) {
-    /* already exists */
   }
 
   // W4 observability migrations on pool_slots / pool_metrics were removed
@@ -6094,7 +5898,6 @@ function initDb(dataDir: string): void {
     deleteNotesByProject: db.prepare('DELETE FROM notes WHERE project_id = ?'),
     deleteWikiPagesByProject: db.prepare('DELETE FROM wiki_pages WHERE project_id = ?'),
     deleteWikiEmbeddingsByProject: db.prepare('DELETE FROM wiki_embeddings WHERE project_id = ?'),
-    deleteWebhookConfigsByProject: db.prepare('DELETE FROM webhook_configs WHERE project_id = ?'),
     deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),
     deleteWorkflowsByProject: db.prepare('DELETE FROM workflows WHERE project_id = ?'),
     deleteThreadsByProject: db.prepare('DELETE FROM threads WHERE project_id = ?'),

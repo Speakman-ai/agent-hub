@@ -13973,6 +13973,76 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/skill-credentials/audit:
+    get:
+      tags:
+        - Auth
+      summary: Audit trail for the caller's skill credentials, newest first.
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: skillId
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Audit rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        user_id:
+                          type: string
+                        skill_id:
+                          type: string
+                        key_name:
+                          type: string
+                        action:
+                          type: string
+                          enum:
+                            - upsert
+                            - delete
+                        actor_user_id:
+                          type: string
+                        created_at:
+                          type: string
+                      required:
+                        - id
+                        - user_id
+                        - skill_id
+                        - key_name
+                        - action
+                        - actor_user_id
+                        - created_at
+                required:
+                  - audit
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Lookup failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/auth/me/skill-credentials/{id}:
     delete:
       tags:

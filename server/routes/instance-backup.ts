@@ -27,12 +27,7 @@ interface BackupItemDef {
   estimate: () => number;
 }
 
-const SLIM_EXCLUDED_TABLES = [
-  'session_events',
-  'webhook_events',
-  'webhook_logs',
-  'checkpoints',
-] as const;
+const SLIM_EXCLUDED_TABLES = ['session_events', 'checkpoints'] as const;
 
 function safeStatSize(p: string): number {
   try {
@@ -103,15 +98,13 @@ function buildItems(dataDir: string): BackupItemDef[] {
     {
       id: 'db.slim',
       label: 'Database — slim',
-      description:
-        'Full SQLite DB minus session_events / webhook_events / webhook_logs / checkpoints. Recommended for migration.',
+      description: 'Full SQLite DB minus session_events / checkpoints. Recommended for migration.',
       estimate: () => {
         const excluded = new Set<string>(SLIM_EXCLUDED_TABLES);
         const sum = dbstatSum(
           (n) =>
             !excluded.has(n) &&
             !n.startsWith('idx_session_events') &&
-            !n.startsWith('idx_webhook_') &&
             !n.startsWith('idx_checkpoints'),
         );
         return sum > 0 ? sum : Math.floor(safeStatSize(dbPath) * 0.1);

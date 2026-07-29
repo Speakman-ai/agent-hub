@@ -29,6 +29,31 @@ function maskLast4(plaintext: string): string {
   return `••••${suffix}`;
 }
 
+/**
+ * How long a skill-credential audit row survives. The table is append-only
+ * and had no reader and no bound until now, so it grew forever. A year keeps
+ * the "who rotated what when" window that makes the trail useful without
+ * letting a chatty rotation script balloon orgs.db.
+ */
+export const SKILL_CREDENTIAL_AUDIT_RETENTION_DAYS = 365;
+
+/**
+ * Delete audit rows older than the retention window. Called opportunistically
+ * on write (this table is only touched on credential upsert/delete, which is
+ * rare), so there is no separate reaper to schedule. Returns rows removed.
+ */
+export function pruneUserSkillCredentialAudit(retentionDays?: number): number {
+  const days = retentionDays ?? SKILL_CREDENTIAL_AUDIT_RETENTION_DAYS;
+  const db = getOrgsDb();
+  const res = db
+    .prepare(
+      `DELETE FROM user_skill_credential_audit
+       WHERE created_at < datetime('now', ?)`,
+    )
+    .run(`-${days} days`);
+  return res.changes;
+}
+
 function appendAudit(opts: {
   userId: string;
   skillId: string;
@@ -41,6 +66,59 @@ function appendAudit(opts: {
     `INSERT INTO user_skill_credential_audit (id, user_id, skill_id, key_name, action, actor_user_id)
      VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(uuidv4(), opts.userId, opts.skillId, opts.keyName, opts.action, opts.actorUserId);
+  try {
+    pruneUserSkillCredentialAudit();
+  } catch (err) {
+    // Retention is best-effort — never fail a credential write over it.
+    console.warn('[skill-credentials] audit prune failed:', (err as Error).message);
+  }
+}
+
+export interface SkillCredentialAuditRow {
+  id: string;
+  user_id: string;
+  skill_id: string;
+  key_name: string;
+  action: 'upsert' | 'delete';
+  actor_user_id: string;
+  created_at: string;
+}
+
+/**
+ * Audit trail for one user's skill credentials, newest first. Mirrors
+ * `listUserEngineAuthAudit` in users-store.ts — same shape, same intent
+ * (answering "which secret rotated when, and who did it").
+ *
+ * `created_at` only has second granularity, and `id` is a random uuid, so
+ * two writes in the same second would come back in arbitrary order if `id`
+ * were the tiebreak. The implicit `rowid` is monotonic per insert, which is
+ * the real "what happened last" signal.
+ */
+export function listUserSkillCredentialAudit(
+  userId: string,
+  filter?: { skillId?: string; limit?: number },
+): SkillCredentialAuditRow[] {
+  const db = getOrgsDb();
+  // Clamp so a hostile `?limit=` can't scan the whole table into memory.
+  const limit = Math.min(Math.max(filter?.limit ?? 200, 1), 500);
+  if (filter?.skillId) {
+    return db
+      .prepare(
+        `SELECT * FROM user_skill_credential_audit
+         WHERE user_id = ? AND skill_id = ?
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?`,
+      )
+      .all(userId, filter.skillId, limit) as SkillCredentialAuditRow[];
+  }
+  return db
+    .prepare(
+      `SELECT * FROM user_skill_credential_audit
+       WHERE user_id = ?
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT ?`,
+    )
+    .all(userId, limit) as SkillCredentialAuditRow[];
 }
 
 export function existsUserSkillCredential(

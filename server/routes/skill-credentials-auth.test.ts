@@ -492,3 +492,138 @@ credentials:
     expect(wrongKeyBeta.status).toBe(400);
   });
 });
+
+describe('/api/auth/me/skill-credentials/audit', () => {
+  /**
+   * Register a project with a workspace skill declaring `keys`, so PUTs for
+   * those key names pass credential-schema validation.
+   */
+  function registerSkillWithKeys(skillId: string, keys: string[]): void {
+    const repo = path.join(_skillCredTestRoot, 'repo');
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(
+      path.join(_skillCredTestRoot, 'projects.json'),
+      JSON.stringify([
+        {
+          id: 'p-audit',
+          name: 'Audit',
+          cwd: repo,
+          agents: [{ id: 'audit-agent', name: 'Bot', engine: 'claude-code', cwd: repo }],
+        },
+      ]) + '\n',
+      'utf8',
+    );
+    reloadProjects(_skillCredTestRoot);
+
+    const ahw = path.join(_skillCredTestRoot, 'persist', 'projects', 'p-audit');
+    const dir = path.join(resolveProjectSkillsDir({ id: 'p-audit', ahw }), skillId);
+    mkdirSync(dir, { recursive: true });
+    const decls = keys
+      .map((k) => `  - name: ${k}\n    label: ${k}\n    required: true\n    type: secret`)
+      .join('\n');
+    writeFileSync(
+      path.join(dir, 'SKILL.md'),
+      `---\nname: ${skillId}\ncredentials:\n${decls}\n---\n`,
+      'utf8',
+    );
+  }
+
+  function putCredential(
+    app: ReturnType<typeof buildGatedApp>,
+    token: string,
+    skillId: string,
+    keyName: string,
+    value = 'v',
+  ) {
+    return supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ skill_id: skillId, key_name: keyName, value, agent_id: 'audit-agent' });
+  }
+
+  it('returns 401 for api-key-only callers (no uid)', async () => {
+    const app = buildGatedApp();
+    _skillCredApiKeyOverride = 'sekrit';
+    const res = await supertest(app)
+      .get('/api/auth/me/skill-credentials/audit')
+      .set('x-api-key', 'sekrit');
+    expect(res.status).toBe(401);
+  });
+
+  it('exposes the upsert/delete trail the store has always written', async () => {
+    registerMinimalAgentProject('cred-agent');
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+
+    await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
+        value: 'ghp_audit_test_value_xxxxx',
+        agent_id: 'cred-agent',
+      })
+      .expect(200);
+
+    const listed = await supertest(app)
+      .get('/api/auth/me/skill-credentials?skillId=github')
+      .set('Authorization', `Bearer ${token}`);
+    const id = listed.body.credentials[0].id as string;
+
+    await supertest(app)
+      .delete(`/api/auth/me/skill-credentials/${id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const audit = await supertest(app)
+      .get('/api/auth/me/skill-credentials/audit')
+      .set('Authorization', `Bearer ${token}`);
+    expect(audit.status).toBe(200);
+    // Newest first: the delete precedes the upsert.
+    expect(audit.body.audit.map((r: { action: string }) => r.action)).toEqual(['delete', 'upsert']);
+    expect(audit.body.audit[0].skill_id).toBe('github');
+    expect(audit.body.audit[0].key_name).toBe('GH_TOKEN');
+    // The trail must never carry the secret itself.
+    expect(JSON.stringify(audit.body)).not.toContain('ghp_audit_test_value_xxxxx');
+  });
+
+  it('filters by skillId', async () => {
+    registerSkillWithKeys('audit-skill', ['TOKEN_A', 'TOKEN_B']);
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+
+    await putCredential(app, token, 'audit-skill', 'TOKEN_A').expect(200);
+    await putCredential(app, token, 'audit-skill', 'TOKEN_B').expect(200);
+
+    const all = await supertest(app)
+      .get('/api/auth/me/skill-credentials/audit')
+      .set('Authorization', `Bearer ${token}`);
+    expect(all.body.audit).toHaveLength(2);
+
+    const filtered = await supertest(app)
+      .get('/api/auth/me/skill-credentials/audit?skillId=nope')
+      .set('Authorization', `Bearer ${token}`);
+    expect(filtered.body.audit).toHaveLength(0);
+  });
+
+  it('clamps limit so a hostile value cannot scan the whole table', async () => {
+    registerSkillWithKeys('audit-skill', ['K1', 'K2', 'K3']);
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+
+    for (const key of ['K1', 'K2', 'K3']) {
+      await putCredential(app, token, 'audit-skill', key).expect(200);
+    }
+
+    const capped = await supertest(app)
+      .get('/api/auth/me/skill-credentials/audit?limit=1')
+      .set('Authorization', `Bearer ${token}`);
+    expect(capped.body.audit).toHaveLength(1);
+
+    const overMax = await supertest(app)
+      .get('/api/auth/me/skill-credentials/audit?limit=99999')
+      .set('Authorization', `Bearer ${token}`);
+    expect(overMax.body.audit).toHaveLength(3);
+  });
+});

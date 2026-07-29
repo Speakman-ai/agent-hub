@@ -29,7 +29,8 @@ beforeAll(() => {
   }
 });
 
-const { default: createInstanceBackupRoutes } = await import('./instance-backup.js');
+const { default: createInstanceBackupRoutes, __test } = await import('./instance-backup.js');
+const { getDb } = await import('../db.js');
 const cfg = (await import('../config.js')).default;
 
 function buildApp(role: 'Owner' | 'Admin' | 'User' | null) {
@@ -146,5 +147,22 @@ describe('POST /api/instance-backup/bundle', () => {
     const text = body.toString('latin1');
     expect(text).toContain('json/kanban.json');
     expect(text).toContain('BACKUP-MANIFEST.json');
+  });
+});
+
+describe('SLIM_EXCLUDED_TABLES', () => {
+  it('only names tables that still exist in the schema', () => {
+    // A dropped table left in the exclusion list is dead config that reads
+    // as "we deliberately skip this" — it silently stops meaning anything.
+    // This caught webhook_events / webhook_logs after the webhook purge.
+    const live = new Set(
+      (
+        getDb().prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
+          name: string;
+        }>
+      ).map((r) => r.name),
+    );
+    const stale = __test.SLIM_EXCLUDED_TABLES.filter((t) => !live.has(t));
+    expect(stale).toEqual([]);
   });
 });

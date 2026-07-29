@@ -21,17 +21,29 @@ import {
 import type { Project } from './types.js';
 
 /**
- * Insert a legacy `webhook_configs` row directly. The webhook DB layer
- * (prepared statements) was removed with the GitHub App / webhook feature
- * (PR #149); only the table itself is retained so the one-shot
- * `migrateWebhookRepoToProject` upgrade path has something to read.
+ * Recreate the legacy `webhook_configs` table and insert a row, simulating a
+ * webhook-era install mid-upgrade. There is no bootstrap DDL for this table
+ * any more — `migrateWebhookRepoToProject` consumes it once and drops it — so
+ * each test that exercises the migration has to stage the table itself.
  */
 function insertLegacyWebhookConfig(projectId: string, repoUrl: string): void {
-  getDb()
-    .prepare(
-      'INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled, author_allowlist) VALUES (?, ?, ?, ?, ?, ?)',
-    )
-    .run(projectId, repoUrl, 'secret', '["pull_request.opened"]', 1, '[]');
+  const db = getDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS webhook_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL,
+      repo_url TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      events TEXT NOT NULL DEFAULT '{}',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      author_allowlist TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  db.prepare(
+    'INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled, author_allowlist) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(projectId, repoUrl, 'secret', '["pull_request.opened"]', 1, '[]');
 }
 
 let originalApiKey: string | null;
@@ -160,6 +172,34 @@ describe('migrateWebhookRepoToProject', () => {
 
       expect(findProject(projId)!.githubRepo, `${c.label} (${c.url})`).toBe(c.expected);
     }
+  });
+
+  it('drops webhook_configs after consuming it, and is a no-op on the next boot', async () => {
+    const request = await getRequest();
+    const projId = `migrate-drop-${Date.now()}`;
+    createdProjectIds.push(projId);
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name: 'Drop Test', cwd: '/tmp', color: '#444' })
+      .expect(201);
+
+    insertLegacyWebhookConfig(projId, 'https://github.com/drop-org/drop-repo');
+    migrateWebhookRepoToProject();
+
+    expect(findProject(projId)!.githubRepo).toBe('drop-org/drop-repo');
+    const tables = getDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='webhook_configs'")
+      .all();
+    expect(tables).toEqual([]);
+
+    // Second boot: table already gone, migration returns early without throwing.
+    expect(() => migrateWebhookRepoToProject()).not.toThrow();
   });
 });
 

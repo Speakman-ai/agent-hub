@@ -2434,7 +2434,6 @@ export interface Stmts {
   deleteNotesByProject: Stmt;
   deleteWikiPagesByProject: Stmt;
   deleteWikiEmbeddingsByProject: Stmt;
-  deleteWebhookConfigsByProject: Stmt;
   deleteBoardsByProject: Stmt;
   deleteWorkflowsByProject: Stmt;
   deleteThreadsByProject: Stmt;

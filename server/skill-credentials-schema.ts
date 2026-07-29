@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS user_skill_credentials (
 );
 CREATE INDEX IF NOT EXISTS idx_uskillcred_user_skill ON user_skill_credentials(user_id, skill_id);
 
+-- Append-only trail of credential writes. Read by
+-- listUserSkillCredentialAudit (exposed at GET
+-- /api/auth/me/skill-credentials/audit) and bounded by
+-- pruneUserSkillCredentialAudit, which runs opportunistically on each write.
 CREATE TABLE IF NOT EXISTS user_skill_credential_audit (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,

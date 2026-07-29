@@ -130,6 +130,7 @@ import {
   deleteUserSkillCredential,
   existsUserSkillCredential,
   deleteUserSkillCredentialByKey,
+  listUserSkillCredentialAudit,
 } from '../skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from '../skill-credentials-resolve.js';
 import { findAgent, resolveProjectSkillsDir } from '../project-model.js';
@@ -995,6 +996,49 @@ registerPath({
       content: {
         'application/json': {
           schema: z.object({ credentials: z.array(z.record(z.string(), z.unknown())) }),
+        },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Lookup failed.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/skill-credentials/audit',
+  tags: ['Auth'],
+  summary: "Audit trail for the caller's skill credentials, newest first.",
+  request: {
+    query: z.object({
+      skillId: z.string().optional(),
+      limit: z.coerce.number().int().min(1).max(500).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Audit rows.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            audit: z.array(
+              z.object({
+                id: z.string(),
+                user_id: z.string(),
+                skill_id: z.string(),
+                key_name: z.string(),
+                action: z.enum(['upsert', 'delete']),
+                actor_user_id: z.string(),
+                created_at: z.string(),
+              }),
+            ),
+          }),
         },
       },
     },
@@ -3253,6 +3297,27 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     try {
       const rows = listMaskedUserSkillCredentials(authedReq.authUserId, skillId);
       res.json({ credentials: rows });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/api/auth/me/skill-credentials/audit', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const skillIdRaw = req.query.skillId;
+    const skillId = typeof skillIdRaw === 'string' && skillIdRaw.trim() ? skillIdRaw.trim() : null;
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : undefined;
+    try {
+      const audit = listUserSkillCredentialAudit(authedReq.authUserId, {
+        ...(skillId ? { skillId } : {}),
+        ...(limit ? { limit } : {}),
+      });
+      res.json({ audit });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

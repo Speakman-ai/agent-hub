@@ -261,6 +261,12 @@ function reloadProjects(dataDir: string): void {
   hydrateProjects();
   migrateWorkflowProjectWorkspaces();
   migrateProjectSkillDirectories();
+  // Also run on reload, not just initProjects: an org that never happens to be
+  // the boot-active one only ever reaches this path (performOrgSwitch calls
+  // initDb then reloadProjects). Without it, that org's DB would keep a legacy
+  // webhook_configs table forever, un-consumed and un-dropped. Idempotent — a
+  // single SELECT that throws immediately once the table is gone.
+  migrateWebhookRepoToProject();
   migrateAgentMcpServers();
   migrateStaleMcpConfigFiles();
   // Auto-seeding Docs/Intake/Reviewer on reload is deprecated alongside the
@@ -326,23 +332,26 @@ function migrateAhwDirectories(): void {
  * association — and with it reviewer seeding, since `ensureReviewerAgents`
  * keys off `project.githubRepo`.
  *
- * The legacy `webhook_configs` table is intentionally retained in the DB
- * bootstrap (see server/db.ts) precisely so this migration has something to
- * read on upgrade. We read it raw here rather than via a prepared statement
- * because the rest of the webhook DB layer was deleted with the feature.
+ * `webhook_configs` has no bootstrap DDL any more, so this is the last read
+ * it will ever get: we consume the rows and then drop the table in the same
+ * pass. That keeps the upgrade path alive for a webhook-era install while
+ * guaranteeing the table doesn't linger forever. We read it raw rather than
+ * via a prepared statement because the rest of the webhook DB layer was
+ * deleted with the feature.
  *
- * Runs on every boot but is idempotent: it never overwrites an existing
- * `project.githubRepo`, so once a project has the field the migration is a
- * no-op. Resilient to the table being absent on a brand-new install.
+ * Idempotent across boots: after the first run the table is gone, the SELECT
+ * throws "no such table", and the function returns immediately. It also never
+ * overwrites an existing `project.githubRepo`.
  */
 function migrateWebhookRepoToProject(): void {
+  const db = getDb();
   let rows: Array<{ project_id: string; repo_url: string | null }> = [];
   try {
-    rows = getDb()
+    rows = db
       .prepare('SELECT project_id, repo_url FROM webhook_configs ORDER BY created_at DESC')
       .all() as Array<{ project_id: string; repo_url: string | null }>;
   } catch {
-    // Legacy table missing (fresh install) — nothing to migrate.
+    // Legacy table missing (fresh install, or already migrated + dropped).
     return;
   }
 
@@ -371,6 +380,12 @@ function migrateWebhookRepoToProject(): void {
   if (migrated) {
     saveProjects();
     console.log('[Migration] ✓ Migrated legacy webhook repo URLs to project.githubRepo');
+  }
+
+  try {
+    db.exec('DROP TABLE IF EXISTS webhook_configs');
+  } catch (err) {
+    console.warn('[Migration] DROP TABLE webhook_configs failed:', (err as Error).message);
   }
 }
 
