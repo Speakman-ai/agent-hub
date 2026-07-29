@@ -49,7 +49,8 @@ import {
   buildOlderPageParams,
   filterLogRecords,
   distinctValues,
-  isNearBottom,
+  isNearTop,
+  toNewestFirst,
   type SeverityTone,
   type LogRecord,
   type LogFilter,
@@ -370,27 +371,23 @@ export function LiveLogsView({
     () => mergeTailRecords(older, records, records.length + older.length + 1),
     [older, records],
   );
-  // Ascending event-time order (oldest→newest) so the stream reads top-to-bottom
-  // like a terminal tail: oldest near the "Load older" pager at the top, newest
-  // at the bottom. The list auto-scrolls to the end to follow new records while the
-  // user is pinned to the bottom (see the scroll-stickiness handlers below).
+  // `visible` stays ascending because the "Load older" keyset and the cap are
+  // defined on that order; only the render flips (see `rendered`).
   const visible = useMemo(() => filterLogRecords(combined, filter), [combined, filter]);
+  // One flat list, strictly newest-first: the record that just arrived is the
+  // first row, and scrolling down walks steadily back in time to the pager.
+  const rendered = useMemo(() => toNewestFirst(visible), [visible]);
 
-  // Auto-scroll stickiness: follow the newest record while the user is pinned to
-  // the bottom, but never yank the viewport when they've scrolled up to read
-  // history or when "Load older" prepends rows above the viewport.
+  // Auto-scroll stickiness: hold the newest record on screen while the user is
+  // pinned to the top, but never yank the viewport when they've scrolled down to
+  // read history.
   const listRef = useRef<FlatList<LogRecord>>(null);
-  const stickToBottomRef = useRef(true);
+  const stickToTopRef = useRef(true);
   const onListScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-    stickToBottomRef.current = isNearBottom({
-      offsetY: contentOffset.y,
-      contentHeight: contentSize.height,
-      viewportHeight: layoutMeasurement.height,
-    });
+    stickToTopRef.current = isNearTop({ offsetY: e.nativeEvent.contentOffset.y });
   }, []);
   const onListContentSizeChange = useCallback(() => {
-    if (stickToBottomRef.current) listRef.current?.scrollToEnd({ animated: false });
+    if (stickToTopRef.current) listRef.current?.scrollToOffset({ offset: 0, animated: false });
   }, []);
 
   const sources = useMemo(() => distinctValues(combined, 'sourceId'), [combined]);
@@ -543,7 +540,32 @@ export function LiveLogsView({
         </View>
       ) : null}
 
-      {/* Older-history pager */}
+      {/* Stream — newest first; older history is paged in below it. */}
+      {rendered.length === 0 ? (
+        <Text style={styles.emptyState}>
+          {combined.length === 0
+            ? 'No logs yet. Records appear here as your sources ingest them.'
+            : 'No logs match the current filters.'}
+        </Text>
+      ) : (
+        <FlatList
+          ref={listRef}
+          data={rendered}
+          keyExtractor={(r) => String(r.id)}
+          renderItem={({ item }) => <LogRecordRow record={item} />}
+          style={styles.stream}
+          contentContainerStyle={styles.streamContent}
+          onScroll={onListScroll}
+          scrollEventThrottle={16}
+          onContentSizeChange={onListContentSizeChange}
+          // Keep the viewport anchored when live records are inserted above, so
+          // the row the user is reading doesn't slide away.
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        />
+      )}
+
+      {/* Older-history pager — at the foot of the stream, where the oldest rows
+          are, so paging in history extends the list downwards. */}
       <View style={styles.olderRow}>
         {olderExhausted ? (
           <Text style={styles.olderExhausted}>Beginning of retained history.</Text>
@@ -560,30 +582,6 @@ export function LiveLogsView({
         )}
         {olderError ? <Text style={styles.olderError}>{olderError}</Text> : null}
       </View>
-
-      {/* Stream */}
-      {visible.length === 0 ? (
-        <Text style={styles.emptyState}>
-          {combined.length === 0
-            ? 'No logs yet. Records appear here as your sources ingest them.'
-            : 'No logs match the current filters.'}
-        </Text>
-      ) : (
-        <FlatList
-          ref={listRef}
-          data={visible}
-          keyExtractor={(r) => String(r.id)}
-          renderItem={({ item }) => <LogRecordRow record={item} />}
-          style={styles.stream}
-          contentContainerStyle={styles.streamContent}
-          onScroll={onListScroll}
-          scrollEventThrottle={16}
-          onContentSizeChange={onListContentSizeChange}
-          // Keep the viewport anchored when "Load older" prepends rows above, so
-          // the row the user is reading doesn't jump.
-          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-        />
-      )}
     </View>
   );
 }

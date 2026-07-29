@@ -82,7 +82,7 @@ describe('LiveLogsView', () => {
     expect(screen.getByText('Live')).toBeInTheDocument();
   });
 
-  it('renders streamed records oldest→newest (newest at the bottom)', () => {
+  it('renders streamed records newest→oldest (newest at the top)', () => {
     const { sock } = renderLive();
     act(() =>
       sock.emit({
@@ -95,10 +95,34 @@ describe('LiveLogsView', () => {
     );
     const first = screen.getByText('first');
     const second = screen.getByText('second');
-    expect(first).toBeInTheDocument();
-    expect(second).toBeInTheDocument();
-    // The oldest record (id 1) must render before the newest (id 2) in the DOM.
-    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The newest record (id 2) must render before the oldest (id 1) in the DOM.
+    expect(second.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('renders one flat descending stream across ingest batches, not per-batch blocks', () => {
+    // Two sources POST their own batches, so ids arrive in contiguous runs whose
+    // event times interleave. Rendering must be a single strictly-descending
+    // sequence — never a batch-shaped block that steps backwards in time.
+    const { sock } = renderLive();
+    act(() =>
+      sock.emit({
+        type: 'logs_tail',
+        projectId: 'p1',
+        records: [
+          record(1, { body: 't10', timeUnixNano: 10_000_000, sourceId: 'src-a' }),
+          record(2, { body: 't30', timeUnixNano: 30_000_000, sourceId: 'src-a' }),
+          record(3, { body: 't20', timeUnixNano: 20_000_000, sourceId: 'src-b' }),
+          record(4, { body: 't40', timeUnixNano: 40_000_000, sourceId: 'src-b' }),
+        ],
+        cursor: 4,
+        dropped: 0,
+      }),
+    );
+    const bodies = screen
+      .getAllByText(/^t\d+$/)
+      .map((el) => el.textContent)
+      .filter(Boolean);
+    expect(bodies).toEqual(['t40', 't30', 't20', 't10']);
   });
 
   it('filters the visible tail by minimum severity', () => {

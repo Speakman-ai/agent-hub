@@ -11,10 +11,11 @@ import {
   filterLogRecords,
   distinctValues,
   mergeTailRecords,
-  oldestRecordCursor,
+  newestRecordCursor,
+  toNewestFirst,
   buildOlderPageParams,
   resolveSinceUnixNano,
-  isNearBottom,
+  isNearTop,
   nextScrollTop,
   SEVERITY_BUCKETS,
   TIME_RANGES,
@@ -115,42 +116,44 @@ export default function LiveLogsView({
   }, [minSeverityNumber, sourceId, environment, text, sinceUnixNano]);
 
   // Live tail + any explicitly loaded older pages, deduped, ascending event
-  // time (oldest→newest). The stream renders in this order so the newest record
-  // sits at the bottom like a terminal tail, and the container auto-scrolls to
-  // follow it (see the scroll-stickiness effect below).
+  // time. `visible` stays ascending because the "Load older" keyset and the cap
+  // are defined on that order; only the render flips (see `rendered`).
   const combined = useMemo(
     () => mergeTailRecords(older, records, records.length + older.length + 1),
     [older, records],
   );
   const visible = useMemo(() => filterLogRecords(combined, filter), [combined, filter]);
+  // One flat list, strictly newest-first: the record that just arrived is the
+  // first row, and reading downwards walks steadily back in time.
+  const rendered = useMemo(() => toNewestFirst(visible), [visible]);
 
   // Auto-scroll stickiness: keep the newest record in view while the user is
-  // pinned to the bottom, but never yank the viewport when they've scrolled up
-  // to read history or when "Load older" prepends rows above.
+  // pinned to the top, but never yank the viewport when they've scrolled down
+  // to read history.
   const streamRef = useRef<HTMLDivElement>(null);
-  const stickToBottomRef = useRef(true);
+  const stickToTopRef = useRef(true);
   const prevScrollRef = useRef({
-    oldest: null as LogCursor | null,
+    newest: null as LogCursor | null,
     scrollHeight: 0,
     scrollTop: 0,
   });
 
   const onStreamScroll = useCallback(() => {
     const el = streamRef.current;
-    if (el) stickToBottomRef.current = isNearBottom(el);
+    if (el) stickToTopRef.current = isNearTop(el);
   }, []);
 
   useLayoutEffect(() => {
     const el = streamRef.current;
     if (!el) return;
-    const oldest = oldestRecordCursor(visible);
+    const newest = newestRecordCursor(visible);
     const target = nextScrollTop(
       prevScrollRef.current,
-      { oldest, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight },
-      stickToBottomRef.current,
+      { newest, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight },
+      stickToTopRef.current,
     );
     if (target != null) el.scrollTop = target;
-    prevScrollRef.current = { oldest, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    prevScrollRef.current = { newest, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
   }, [visible]);
 
   const sources = useMemo(() => distinctValues(combined, 'sourceId'), [combined]);
@@ -359,7 +362,25 @@ export default function LiveLogsView({
         </div>
       ) : null}
 
-      {/* Older-history pager */}
+      {/* Stream — newest first; older history is paged in below it. */}
+      <div
+        ref={streamRef}
+        onScroll={onStreamScroll}
+        className="mt-2 min-h-0 flex-1 overflow-y-auto rounded border border-gray-800 bg-gray-950/40"
+      >
+        {rendered.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-500">
+            {combined.length === 0
+              ? 'No logs yet. Records appear here as your sources ingest them.'
+              : 'No logs match the current filters.'}
+          </div>
+        ) : (
+          rendered.map((r) => <LogRecordRow key={r.id} record={r} />)
+        )}
+      </div>
+
+      {/* Older-history pager — sits at the foot of the stream, where the oldest
+          rows are, so paging in history extends the list downwards. */}
       <div className="mt-2">
         {olderExhausted ? (
           <span className="text-xs text-gray-600">Beginning of retained history.</span>
@@ -375,23 +396,6 @@ export default function LiveLogsView({
           </button>
         )}
         {olderError ? <span className="ml-2 text-xs text-red-400">{olderError}</span> : null}
-      </div>
-
-      {/* Stream */}
-      <div
-        ref={streamRef}
-        onScroll={onStreamScroll}
-        className="mt-2 min-h-0 flex-1 overflow-y-auto rounded border border-gray-800 bg-gray-950/40"
-      >
-        {visible.length === 0 ? (
-          <div className="p-8 text-center text-sm text-gray-500">
-            {combined.length === 0
-              ? 'No logs yet. Records appear here as your sources ingest them.'
-              : 'No logs match the current filters.'}
-          </div>
-        ) : (
-          visible.map((r) => <LogRecordRow key={r.id} record={r} />)
-        )}
       </div>
     </div>
   );

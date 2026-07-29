@@ -252,6 +252,37 @@ export function isOlderCursor(next: LogCursor | null, prev: LogCursor | null): b
   return next.id < prev.id;
 }
 
+/**
+ * Cursor of the chronologically newest record held. This is the head of the
+ * rendered list (newest-first) and therefore the probe for "did rows get
+ * inserted above the viewport?" — live arrivals push the head forward in time.
+ */
+export function newestRecordCursor(records: readonly LogRecord[]): LogCursor | null {
+  let newest: LogRecord | null = null;
+  for (const r of records) {
+    if (!Number.isFinite(r.id)) continue;
+    if (newest == null || compareLogRecords(r, newest) > 0) newest = r;
+  }
+  return newest ? { timeUnixNano: newest.timeUnixNano, id: newest.id } : null;
+}
+
+/** Is `next` strictly newer than `prev` in the chronological keyset order? */
+export function isNewerCursor(next: LogCursor | null, prev: LogCursor | null): boolean {
+  return isOlderCursor(prev, next);
+}
+
+/**
+ * The rendered order of the Live tail: strictly newest-first, one flat list.
+ *
+ * Everything else in this module — the merge, the cap, the "Load older" keyset —
+ * works in ascending event time, because that is the order the server pages on.
+ * Presentation is the only place the stream is flipped, so the pagination order
+ * and the rendered order stay the same total order read from opposite ends.
+ */
+export function toNewestFirst(records: readonly LogRecord[]): LogRecord[] {
+  return records.slice().reverse();
+}
+
 /** Inputs for a "Load older" history page request. */
 export interface OlderPageParamsInput {
   /**
@@ -320,44 +351,37 @@ export interface ScrollGeometry {
 }
 
 /**
- * Is the tail scrolled to (or within `threshold` px of) the bottom? The live
- * tail renders oldest→newest, so "pinned to bottom" means the newest record is
- * in view and the stream should keep auto-scrolling as records arrive. A small
- * threshold absorbs sub-pixel rounding and the height a just-appended row adds
- * between the scroll event and the layout effect.
+ * Is the tail scrolled to (or within `threshold` px of) the top? The stream
+ * renders newest-first, so "pinned to top" means the newest record is in view
+ * and the stream should stay there as records arrive. A small threshold absorbs
+ * sub-pixel rounding and the height a just-inserted row adds between the scroll
+ * event and the layout effect.
  */
-export function isNearBottom(geom: ScrollGeometry, threshold = 24): boolean {
-  const distance = geom.scrollHeight - geom.scrollTop - geom.clientHeight;
-  return distance <= threshold;
+export function isNearTop(geom: Pick<ScrollGeometry, 'scrollTop'>, threshold = 24): boolean {
+  return geom.scrollTop <= threshold;
 }
 
 /**
  * Desired `scrollTop` after the tail's content changed, or `null` to leave the
  * scroll position untouched.
  *
- *  - Pinned to the bottom → follow the newest record by returning the real
- *    maximum scroll top (`scrollHeight - clientHeight`, floored at 0). This is
- *    the exact value the DOM clamps `scrollTop` to at the bottom, so the helper
- *    encodes a reachable position rather than relying on the browser to clamp an
- *    out-of-range `scrollHeight`.
- *  - Older history prepended above the viewport (the oldest held keyset moved
- *    back) → shift down by the added height so the row the user was reading
- *    stays put instead of jumping.
- *  - Otherwise (records appended below while scrolled up) → leave it, so reading
- *    history is never interrupted.
+ *  - Pinned to the top → stay on the newest record by returning 0.
+ *  - New records inserted above the viewport (the newest held keyset moved
+ *    forward) while the user has scrolled down → shift down by the added height
+ *    so the row they were reading stays put instead of sliding away.
+ *  - Otherwise → leave it. "Load older" appends below the viewport in this
+ *    order, so paging in history never moves the scroll position at all.
  *
- * The prepend probe is the oldest held `(timeUnixNano, id)` keyset, which is
- * both the head of the rendered list and the "Load older" cursor. Those are the
- * same position by construction now that paging and rendering share one order,
- * so the probe moves exactly when history is paged in above the viewport.
+ * The probe is the newest held `(timeUnixNano, id)` keyset, which is the head of
+ * the rendered list, so it moves exactly when rows are inserted above.
  */
 export function nextScrollTop(
-  prev: { oldest: LogCursor | null; scrollHeight: number; scrollTop: number },
-  next: { oldest: LogCursor | null; scrollHeight: number; clientHeight: number },
-  stickToBottom: boolean,
+  prev: { newest: LogCursor | null; scrollHeight: number; scrollTop: number },
+  next: { newest: LogCursor | null; scrollHeight: number; clientHeight: number },
+  stickToTop: boolean,
 ): number | null {
-  if (stickToBottom) return Math.max(0, next.scrollHeight - next.clientHeight);
-  if (isOlderCursor(next.oldest, prev.oldest) && next.scrollHeight > prev.scrollHeight) {
+  if (stickToTop) return 0;
+  if (isNewerCursor(next.newest, prev.newest) && next.scrollHeight > prev.scrollHeight) {
     return prev.scrollTop + (next.scrollHeight - prev.scrollHeight);
   }
   return null;

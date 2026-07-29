@@ -3,8 +3,11 @@ import {
   mergeTailRecords,
   buildLogSubscribeFrame,
   oldestRecordCursor,
+  newestRecordCursor,
+  toNewestFirst,
   buildOlderPageParams,
   isOlderCursor,
+  isNewerCursor,
   filterLogRecords,
   recordMatchesFilter,
   distinctValues,
@@ -15,7 +18,7 @@ import {
   nanoToMillis,
   resolveTailCursor,
   resolveSinceUnixNano,
-  isNearBottom,
+  isNearTop,
   nextScrollTop,
   DEFAULT_TIME_RANGE_MS,
   TIME_RANGES,
@@ -403,61 +406,52 @@ describe('extractStackTrace', () => {
   });
 });
 
-describe('isNearBottom', () => {
-  it('is true at the exact bottom', () => {
-    expect(isNearBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 })).toBe(true);
+describe('isNearTop', () => {
+  it('is true at the exact top', () => {
+    expect(isNearTop({ scrollTop: 0 })).toBe(true);
   });
 
-  it('is true within the threshold of the bottom', () => {
-    expect(isNearBottom({ scrollTop: 480, scrollHeight: 1000, clientHeight: 500 })).toBe(true);
+  it('is true within the threshold of the top', () => {
+    expect(isNearTop({ scrollTop: 20 })).toBe(true);
   });
 
-  it('is false when scrolled up past the threshold', () => {
-    expect(isNearBottom({ scrollTop: 200, scrollHeight: 1000, clientHeight: 500 })).toBe(false);
+  it('is false when scrolled down past the threshold', () => {
+    expect(isNearTop({ scrollTop: 200 })).toBe(false);
   });
 
   it('honors a custom threshold', () => {
-    const geom = { scrollTop: 400, scrollHeight: 1000, clientHeight: 500 };
-    expect(isNearBottom(geom, 50)).toBe(false);
-    expect(isNearBottom(geom, 100)).toBe(true);
+    expect(isNearTop({ scrollTop: 80 }, 50)).toBe(false);
+    expect(isNearTop({ scrollTop: 80 }, 100)).toBe(true);
   });
 });
 
 describe('nextScrollTop', () => {
-  it('follows the newest record to the real maximum scroll top when pinned', () => {
-    // Max reachable scrollTop is scrollHeight - clientHeight, not scrollHeight.
+  it('stays on the newest record at offset 0 when pinned to the top', () => {
     const target = nextScrollTop(
-      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 800, scrollTop: 300 },
-      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 1000, clientHeight: 400 },
-      true,
-    );
-    expect(target).toBe(600);
-  });
-
-  it('floors the pinned scroll top at 0 when content is shorter than the viewport', () => {
-    const target = nextScrollTop(
-      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 100, scrollTop: 0 },
-      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 200, clientHeight: 500 },
+      { newest: { timeUnixNano: 1, id: 1 }, scrollHeight: 800, scrollTop: 300 },
+      { newest: { timeUnixNano: 2, id: 2 }, scrollHeight: 1000, clientHeight: 400 },
       true,
     );
     expect(target).toBe(0);
   });
 
-  it('preserves the viewport when older history is prepended above', () => {
-    // The oldest held keyset moved back (a "Load older" prepend) and the content
-    // grew by 400px; shift down by that delta so the read row stays put.
+  it('preserves the viewport when live records are inserted above', () => {
+    // The newest held keyset moved forward and the content grew by 400px; shift
+    // down by that delta so the row the user is reading stays put.
     const target = nextScrollTop(
-      { oldest: { timeUnixNano: 10, id: 10 }, scrollHeight: 600, scrollTop: 0 },
-      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 1000, clientHeight: 400 },
+      { newest: { timeUnixNano: 10, id: 10 }, scrollHeight: 600, scrollTop: 200 },
+      { newest: { timeUnixNano: 20, id: 20 }, scrollHeight: 1000, clientHeight: 400 },
       false,
     );
-    expect(target).toBe(400);
+    expect(target).toBe(600);
   });
 
-  it('leaves the scroll untouched when records append below while scrolled up', () => {
+  it('leaves the scroll untouched when older history is appended below', () => {
+    // "Load older" extends the list downwards in this order, so the viewport
+    // must not move at all.
     const target = nextScrollTop(
-      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 800, scrollTop: 100 },
-      { oldest: { timeUnixNano: 1, id: 1 }, scrollHeight: 1000, clientHeight: 400 },
+      { newest: { timeUnixNano: 10, id: 10 }, scrollHeight: 800, scrollTop: 100 },
+      { newest: { timeUnixNano: 10, id: 10 }, scrollHeight: 1600, clientHeight: 400 },
       false,
     );
     expect(target).toBeNull();
@@ -465,11 +459,78 @@ describe('nextScrollTop', () => {
 
   it('does not adjust on the first render (no prior cursor)', () => {
     const target = nextScrollTop(
-      { oldest: null, scrollHeight: 0, scrollTop: 0 },
-      { oldest: { timeUnixNano: 5, id: 5 }, scrollHeight: 1000, clientHeight: 400 },
+      { newest: null, scrollHeight: 0, scrollTop: 0 },
+      { newest: { timeUnixNano: 5, id: 5 }, scrollHeight: 1000, clientHeight: 400 },
       false,
     );
     expect(target).toBeNull();
+  });
+});
+
+describe('toNewestFirst', () => {
+  it('flips the ascending tail into one strictly descending list', () => {
+    const ascending = [rec({ id: 1 }), rec({ id: 2 }), rec({ id: 3 })];
+    expect(toNewestFirst(ascending).map((r) => r.id)).toEqual([3, 2, 1]);
+  });
+
+  it('does not mutate its input', () => {
+    const ascending = [rec({ id: 1 }), rec({ id: 2 })];
+    toNewestFirst(ascending);
+    expect(ascending.map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  it('renders interleaved ingest batches as one descending time sequence', () => {
+    // Two sources each land a contiguous id run; the rendered order must follow
+    // event time, never the batch boundaries.
+    const merged = mergeTailRecords(
+      [],
+      [
+        rec({ id: 1, timeUnixNano: 10 }),
+        rec({ id: 2, timeUnixNano: 30 }),
+        rec({ id: 3, timeUnixNano: 20 }),
+        rec({ id: 4, timeUnixNano: 40 }),
+      ],
+      100,
+    );
+    expect(toNewestFirst(merged).map((r) => r.timeUnixNano)).toEqual([40, 30, 20, 10]);
+  });
+
+  it('handles empty input', () => {
+    expect(toNewestFirst([])).toEqual([]);
+  });
+});
+
+describe('newestRecordCursor', () => {
+  it('returns the chronologically newest keyset', () => {
+    const records = [
+      rec({ id: 9, timeUnixNano: 100 }),
+      rec({ id: 3, timeUnixNano: 300 }),
+      rec({ id: 7, timeUnixNano: 200 }),
+    ];
+    expect(newestRecordCursor(records)).toEqual({ timeUnixNano: 300, id: 3 });
+  });
+
+  it('breaks ties on the ingest id', () => {
+    const records = [rec({ id: 3, timeUnixNano: 100 }), rec({ id: 9, timeUnixNano: 100 })];
+    expect(newestRecordCursor(records)).toEqual({ timeUnixNano: 100, id: 9 });
+  });
+
+  it('returns null for an empty tail', () => {
+    expect(newestRecordCursor([])).toBeNull();
+  });
+});
+
+describe('isNewerCursor', () => {
+  it('is the mirror of isOlderCursor', () => {
+    expect(isNewerCursor({ timeUnixNano: 200, id: 1 }, { timeUnixNano: 100, id: 5 })).toBe(true);
+    expect(isNewerCursor({ timeUnixNano: 100, id: 5 }, { timeUnixNano: 200, id: 1 })).toBe(false);
+    expect(isNewerCursor({ timeUnixNano: 100, id: 5 }, { timeUnixNano: 100, id: 1 })).toBe(true);
+    expect(isNewerCursor({ timeUnixNano: 100, id: 5 }, { timeUnixNano: 100, id: 5 })).toBe(false);
+  });
+
+  it('is false when either side is missing', () => {
+    expect(isNewerCursor(null, { timeUnixNano: 1, id: 1 })).toBe(false);
+    expect(isNewerCursor({ timeUnixNano: 1, id: 1 }, null)).toBe(false);
   });
 });
 

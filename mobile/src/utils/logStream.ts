@@ -340,6 +340,18 @@ export function filterLogRecords(records: readonly LogRecord[], filter: LogFilte
   return records.filter((r) => recordMatchesFilter(r, filter));
 }
 
+/**
+ * The rendered order of the Live tail: strictly newest-first, one flat list.
+ *
+ * Everything else in this module — the merge, the cap, the "Load older" keyset —
+ * works in ascending event time, because that is the order the server pages on.
+ * Presentation is the only place the stream is flipped, so the pagination order
+ * and the rendered order stay the same total order read from opposite ends.
+ */
+export function toNewestFirst(records: readonly LogRecord[]): LogRecord[] {
+  return records.slice().reverse();
+}
+
 /** Scroll geometry of a FlatList (subset of a RN scroll `nativeEvent`). */
 export interface ListScrollGeometry {
   /** `contentOffset.y` — how far the content is scrolled. */
@@ -351,14 +363,14 @@ export interface ListScrollGeometry {
 }
 
 /**
- * Is the tail scrolled to (or within `threshold` px of) the bottom? The live
- * tail renders oldest→newest, so "pinned to bottom" means the newest record is
- * on screen and the list should keep auto-scrolling to the end as records
- * arrive. A small threshold absorbs sub-pixel rounding and the height a
- * just-appended row adds between the scroll event and the content-size change.
+ * Is the tail scrolled to (or within `threshold` px of) the top? The stream
+ * renders newest-first, so "pinned to top" means the newest record is on screen
+ * and the list should stay at offset 0 as records arrive. A small threshold
+ * absorbs sub-pixel rounding and the height a just-inserted row adds between the
+ * scroll event and the content-size change.
  */
-export function isNearBottom(geom: ListScrollGeometry, threshold = 24): boolean {
-  return geom.contentHeight - geom.offsetY - geom.viewportHeight <= threshold;
+export function isNearTop(geom: Pick<ListScrollGeometry, 'offsetY'>, threshold = 24): boolean {
+  return geom.offsetY <= threshold;
 }
 
 /** Distinct non-empty values of a field across a tail, sorted, for facet menus. */

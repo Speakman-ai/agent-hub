@@ -16,7 +16,8 @@ import {
   extractStackTrace,
   recordHasDetail,
   resolveTailCursor,
-  isNearBottom,
+  isNearTop,
+  toNewestFirst,
   type LogRecord,
 } from './logStream';
 
@@ -422,22 +423,52 @@ describe('recordHasDetail', () => {
   });
 });
 
-describe('isNearBottom — FlatList tail stickiness', () => {
-  it('is true at the exact bottom', () => {
-    expect(isNearBottom({ offsetY: 500, contentHeight: 1000, viewportHeight: 500 })).toBe(true);
+describe('isNearTop — FlatList tail stickiness', () => {
+  it('is true at the exact top', () => {
+    expect(isNearTop({ offsetY: 0 })).toBe(true);
   });
 
-  it('is true within the threshold of the bottom', () => {
-    expect(isNearBottom({ offsetY: 480, contentHeight: 1000, viewportHeight: 500 })).toBe(true);
+  it('is true within the threshold of the top', () => {
+    expect(isNearTop({ offsetY: 20 })).toBe(true);
   });
 
-  it('is false when scrolled up past the threshold (reading older history)', () => {
-    expect(isNearBottom({ offsetY: 100, contentHeight: 1000, viewportHeight: 500 })).toBe(false);
+  it('is false when scrolled down past the threshold (reading older history)', () => {
+    expect(isNearTop({ offsetY: 300 })).toBe(false);
   });
 
   it('honors a custom threshold', () => {
-    const geom = { offsetY: 400, contentHeight: 1000, viewportHeight: 500 };
-    expect(isNearBottom(geom, 50)).toBe(false);
-    expect(isNearBottom(geom, 100)).toBe(true);
+    expect(isNearTop({ offsetY: 80 }, 50)).toBe(false);
+    expect(isNearTop({ offsetY: 80 }, 100)).toBe(true);
+  });
+});
+
+describe('toNewestFirst', () => {
+  it('flips the ascending tail into one strictly descending list', () => {
+    const ascending = [rec({ id: 1 }), rec({ id: 2 }), rec({ id: 3 })];
+    expect(toNewestFirst(ascending).map((r) => r.id)).toEqual([3, 2, 1]);
+  });
+
+  it('does not mutate its input', () => {
+    const ascending = [rec({ id: 1 }), rec({ id: 2 })];
+    toNewestFirst(ascending);
+    expect(ascending.map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  it('renders interleaved ingest batches as one descending time sequence', () => {
+    const merged = mergeTailRecords(
+      [],
+      [
+        rec({ id: 1, timeUnixNano: 10 }),
+        rec({ id: 2, timeUnixNano: 30 }),
+        rec({ id: 3, timeUnixNano: 20 }),
+        rec({ id: 4, timeUnixNano: 40 }),
+      ],
+      100,
+    );
+    expect(toNewestFirst(merged).map((r) => r.timeUnixNano)).toEqual([40, 30, 20, 10]);
+  });
+
+  it('handles empty input', () => {
+    expect(toNewestFirst([])).toEqual([]);
   });
 });
