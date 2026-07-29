@@ -35,6 +35,7 @@ import {
 import { installStatsCompletionTimestamps } from './stats-completion.js';
 import type { Stmts } from './types.js';
 import { configureDbInstrumentation, instrumentStmts } from './db-instrumentation.js';
+import { reconcileSchema } from './schema-reconcile.js';
 
 let db: Database.Database | undefined;
 let stmts: Stmts | undefined;
@@ -84,6 +85,24 @@ function initDb(dataDir: string): void {
 
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+
+  // Record every DDL string this function executes so the additive schema
+  // reconciler (run just before statement preparation, below) can diff the
+  // `CREATE TABLE` bodies against the live tables.
+  //
+  // We shadow the instance's `exec` rather than converting ~25 call sites so
+  // that coverage is automatic and permanent: DDL added later — inline here, or
+  // inside an imported `*_SCHEMA` constant, or by a helper that receives `db` —
+  // is captured without anyone remembering to opt in. That completeness is the
+  // whole point; a reconciler that sees only the call sites someone converted
+  // would leave exactly the silent gaps it exists to close. The shadow is
+  // removed before the reconciler runs, so it is confined to schema setup.
+  const recordedDdl: string[] = [];
+  const rawExec = db.exec.bind(db);
+  (db as { exec: (source: string) => Database.Database }).exec = (source: string) => {
+    recordedDdl.push(source);
+    return rawExec(source);
+  };
 
   // Migration: drop legacy threads/thread_entries tables that lack project_id
   // (created by an older schema before the threads feature was redesigned).
@@ -3435,6 +3454,38 @@ function initDb(dataDir: string): void {
     ];
     for (const [id, name, desc, cat, author, content] of seedSkills) {
       insertSkill.run(id, name, desc, cat, author, content);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Additive schema reconciliation — MUST stay between the last DDL above and
+  // the statement preparation below.
+  //
+  // `CREATE TABLE IF NOT EXISTS` does nothing on a table that already exists, so
+  // adding a column to a CREATE body only reaches databases created after the
+  // edit. Older installs keep the narrower table, and because the statements
+  // below are prepared eagerly (better-sqlite3 validates column names at prepare
+  // time), one drifted column throws before the HTTP listener binds — the
+  // process crash-loops and the whole deployment 502s. That is the 2026-07-29
+  // `finalize_kickoff_claims.job_filter` outage.
+  //
+  // The reconciler closes that gap generically: any column present in a CREATE
+  // body but missing from the live table is added here. See
+  // server/schema-reconcile.ts for the additive-only contract and for why
+  // un-addable drift warns instead of throwing.
+  // ---------------------------------------------------------------------
+  Reflect.deleteProperty(db, 'exec');
+  {
+    const { alters, blocked } = reconcileSchema(db, recordedDdl);
+    for (const alter of alters) {
+      console.log(`[db] schema drift repaired: added ${alter.table}.${alter.column}`);
+    }
+    for (const drift of blocked) {
+      console.warn(
+        `[db] schema drift NOT repaired: ${drift.table}.${drift.column} (${drift.reason}). ` +
+          `This column is in the CREATE TABLE body but missing from the live table; ` +
+          `it needs a hand-written migration.`,
+      );
     }
   }
 
