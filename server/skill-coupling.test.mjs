@@ -4,7 +4,7 @@
 // The script is pure ESM with zero deps, so we import it directly.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -27,7 +27,18 @@ const mod = await import(SCRIPT_PATH);
 const { parseCouplingYaml, globToRegex, matchesAny, evaluateCoupling, formatFailureMessage } =
   mod;
 
-const SHIPPED_CONFIG = parseCouplingYaml(readFileSync(CONFIG_PATH, 'utf8'));
+const REPO_ROOT = path.resolve(__dirname, '..');
+const CONFIG_TEXT = readFileSync(CONFIG_PATH, 'utf8');
+const SHIPPED_CONFIG = parseCouplingYaml(CONFIG_TEXT);
+
+// A glob entry only guarantees its non-wildcard prefix exists on disk.
+function literalPrefix(pattern) {
+  const wildcard = pattern.search(/[*?]/);
+  if (wildcard === -1) return pattern;
+  const upToWildcard = pattern.slice(0, wildcard);
+  const lastSlash = upToWildcard.lastIndexOf('/');
+  return lastSlash === -1 ? '' : upToWildcard.slice(0, lastSlash);
+}
 
 describe('parseCouplingYaml', () => {
   it('parses the shipped .github/skill-coupling.yml', () => {
@@ -78,6 +89,60 @@ items:
       'skill-freeze-override',
     );
     expect(parseCouplingYaml("label: 'x'").label).toBe('x');
+  });
+});
+
+// The config is read far more often than it is run. Stale paths in its comments
+// and dangling entries in its lists are the drift mode that actually bites, so
+// pin every on-disk reference the file makes.
+describe('shipped config points at files that exist', () => {
+  it('every repo path named in a comment resolves on disk', () => {
+    const referenced = new Set(
+      (CONFIG_TEXT.match(/`[^`]+`/g) || [])
+        .map((m) => m.slice(1, -1))
+        .filter((s) => s.startsWith('.github/')),
+    );
+    expect(referenced.size).toBeGreaterThan(0);
+    for (const rel of referenced) {
+      expect(
+        existsSync(path.join(REPO_ROOT, rel)),
+        `${rel} does not exist`,
+      ).toBe(true);
+    }
+  });
+
+  it('names the workflow that actually runs the check, and its push trigger', () => {
+    expect(CONFIG_TEXT).toContain('.github/workflows/main-checks.yml');
+    expect(CONFIG_TEXT).toContain('.github/scripts/skill-coupling.mjs');
+    expect(CONFIG_TEXT).toMatch(/runs on `push`/);
+
+    const workflow = readFileSync(
+      path.join(REPO_ROOT, '.github', 'workflows', 'main-checks.yml'),
+      'utf8',
+    );
+    expect(workflow).toContain('skill-coupling:');
+    expect(workflow).toContain('node .github/scripts/skill-coupling.mjs');
+    expect(workflow).toMatch(/on:\s*\n\s*push:/);
+  });
+
+  it('has no dangling coupled_paths entry', () => {
+    for (const pattern of SHIPPED_CONFIG.coupled_paths) {
+      const prefix = literalPrefix(pattern);
+      expect(
+        existsSync(path.join(REPO_ROOT, prefix)),
+        `coupled_paths entry "${pattern}" points at nothing (${prefix})`,
+      ).toBe(true);
+    }
+  });
+
+  it('has no dangling skill_doc_paths entry', () => {
+    for (const pattern of SHIPPED_CONFIG.skill_doc_paths) {
+      const prefix = literalPrefix(pattern);
+      expect(
+        existsSync(path.join(REPO_ROOT, prefix)),
+        `skill_doc_paths entry "${pattern}" points at nothing (${prefix})`,
+      ).toBe(true);
+    }
   });
 });
 

@@ -1,8 +1,13 @@
 // Skill-freeze coupling check.
 //
-// Enforces that any PR touching a "platform module" (see
+// Enforces that a change touching a "platform module" (see
 // `.github/skill-coupling.yml`) also touches the agent-hub skill doc, unless
 // the `skill-freeze-override` label is present.
+//
+// Run by the `skill-coupling` job in `.github/workflows/main-checks.yml`, which
+// fires on push to main — the diff under inspection is the push range, and no
+// labels are available, so the override hatch only applies when a caller passes
+// `PR_LABELS` explicitly.
 //
 // Exports a pure `evaluateCoupling({ changedFiles, labels, config })` that
 // returns `{ ok, reason, matchedCoupled, matchedDoc, overrideUsed }` so the
@@ -174,7 +179,7 @@ export function formatFailureMessage(result, config) {
   const lines = [];
   lines.push('❌ Skill-freeze coupling check failed.');
   lines.push('');
-  lines.push('The following platform-module files changed in this PR:');
+  lines.push('The following platform-module files changed:');
   for (const f of result.matchedCoupled) lines.push(`  • ${f}`);
   lines.push('');
   lines.push(
@@ -185,14 +190,16 @@ export function formatFailureMessage(result, config) {
   );
   lines.push('agents reading the doc get an accurate mental model.');
   lines.push('');
-  lines.push('To pass this check, do ONE of the following:');
-  lines.push('');
-  lines.push('  1. Update the skill doc — touch any of:');
-  for (const p of config.skill_doc_paths || []) lines.push(`     • ${p}`);
+  lines.push('To pass this check, update the skill doc — touch any of:');
+  for (const p of config.skill_doc_paths || []) lines.push(`  • ${p}`);
   lines.push('');
   lines.push(
-    `  2. Add the \`${config.override_label}\` label to this PR (emergency only).`,
+    'Emergency only: a caller that supplies PR_LABELS can bypass with the',
   );
+  lines.push(
+    `\`${config.override_label}\` label. The main-checks job runs on push and`,
+  );
+  lines.push('passes no labels, so that hatch is unavailable in CI.');
   lines.push('');
   lines.push(
     'The coupling rule is defined in `.github/skill-coupling.yml`.',

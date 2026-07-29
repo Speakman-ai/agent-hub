@@ -1,11 +1,14 @@
 # Skill-freeze coupling rule.
 #
-# During (and after) the skill freeze, any PR that touches a "platform module"
+# During (and after) the skill freeze, a change that touches a "platform module"
 # listed under `coupled_paths` MUST also touch a skill-doc file listed under
-# `skill_doc_paths`, or carry the `override_label` as an escape hatch.
+# `skill_doc_paths`.
 #
 # Enforcement: the `skill-coupling` job in `.github/workflows/main-checks.yml`
-# invokes `.github/scripts/skill-coupling.mjs` with this config.
+# invokes `.github/scripts/skill-coupling.mjs` with this config. That workflow
+# runs on `push` to main (plus manual dispatch), so this is a post-merge
+# informational check, not a merge gate — the diff it inspects is the push
+# range, not a PR.
 #
 # The rule exists because agents on Agent Hub rely on the shipped `agent-hub`
 # SKILL.md to understand what the platform does today. When coordination
@@ -33,6 +36,8 @@ skill_doc_paths:
   - server/default-skills/agent-hub/SKILL.md
   - server/default-skills/agent-hub/references/*
 
-# PRs carrying this label bypass the check (emergency escape hatch).
-# Use sparingly — prefer updating the skill doc.
+# Label-based escape hatch, honoured only when the runner supplies labels via
+# `PR_LABELS`. The main-checks job runs on push and has no labels to read, so
+# this is inert in CI today — it survives for local / dispatch invocations.
+# Updating the skill doc is the real way to satisfy the rule.
 override_label: skill-freeze-override
