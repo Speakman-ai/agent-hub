@@ -13,7 +13,7 @@
  */
 import { FINALIZE_STEP_SHELL } from './ci-config.js';
 import { FINALIZE_RUNNER_WORKSPACE } from './runner-images.js';
-import { resolveHostMountPath } from './container-runner.js';
+import { translateContainerPathToHost } from '../preview/host-path-translation.js';
 import {
   resolveRunnerResourceArgs,
   type RepoVisibility,
@@ -23,6 +23,16 @@ import {
 const STEP_SHELL_ARGV = FINALIZE_STEP_SHELL.split(/\s+/u);
 export const RUNNER_USER = 'runner';
 const RUNNER_HOME = '/home/runner';
+
+/**
+ * Resolve a worktree path for a docker bind mount. When the Hub itself runs in
+ * a container, the path it sees is not the path the host daemon resolves, so
+ * un-translate it back to the host-side path before handing it to `docker run`.
+ */
+export function resolveHostMountPath(worktreePath: string): string {
+  const translation = translateContainerPathToHost(worktreePath);
+  return translation.hostPath ?? worktreePath;
+}
 
 /**
  * Shared image cache, mounted into every runner so CI image builds can be done

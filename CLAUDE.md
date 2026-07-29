@@ -434,8 +434,9 @@ Config (env):
 
 ### Escape hatch
 
-- `FINALIZE_RUNNER_DOCKER_MODE=host-socket` restores legacy behavior (mount host `/var/run/docker.sock`, one ephemeral container per step, `host.docker.internal` for port probes). Use only for debugging.
 - `FINALIZE_RUNNER_RESOURCE_PROFILE=unconstrained` removes the GitHub-parity CPU/memory caps (legacy full-host behavior). Use for the pre-prod runner or local debugging — never for the gate.
+
+**DinD is the only runner mode.** The legacy `FINALIZE_RUNNER_DOCKER_MODE=host-socket` hatch — which mounted the host `/var/run/docker.sock` into an ephemeral container per step and added `host.docker.internal` for port probes — was a privilege-escalation surface kept only for debugging, and has been removed (SPEC-4). The env var is no longer read anywhere; setting it has no effect.
 
 ### Key files
 
@@ -444,7 +445,6 @@ Config (env):
 - `server/finalize/runner-resource-profile.ts` — GitHub-parity CPU/memory cap resolution
 - `server/finalize/runner-image-versions.ts` — targeted Node/Docker/Compose/Buildx versions (mirrors the GitHub ubuntu-24.04 manifest; soft-pinned in the Dockerfile, drift-tested). Bump here + the Dockerfile ARGs together when GitHub updates the image.
 - `server/finalize/runner/entrypoint.sh` — starts inner dockerd
-- `server/finalize/runner-docker-mode.ts` — `dind` vs `host-socket`
 
 ## Deployment
 

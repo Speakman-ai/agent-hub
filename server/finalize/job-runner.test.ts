@@ -995,9 +995,14 @@ jobs:
     // from the Hub, so without this injection the test would pick the REMOTE
     // backend, whose acquire() tries to reach the control plane and throws →
     // `infra_error` instead of `success`. Inject the local backend (which still
-    // routes through the mocked job-container.js) and pin dind mode so the test
-    // is independent of the environment it runs in.
-    vi.stubEnv('FINALIZE_RUNNER_DOCKER_MODE', 'dind');
+    // routes through the mocked job-container.js) so the test is independent of
+    // the environment it runs in.
+    //
+    // Regression (SPEC-4): the legacy `host-socket` escape hatch is deleted, so
+    // FINALIZE_RUNNER_DOCKER_MODE is inert. Setting it to the old value must NOT
+    // divert the run onto a per-step ephemeral-container path — the job still
+    // starts exactly one DinD container and execs both steps into it.
+    vi.stubEnv('FINALIZE_RUNNER_DOCKER_MODE', 'host-socket');
     const deps: StepRunnerDeps = {
       stmts: {
         getFinalizeRun: { get: vi.fn() },

@@ -14,7 +14,7 @@
  * INNER dockerd that the container entrypoint starts.
  */
 
-import { resolveHostMountPath } from '../finalize/container-runner.js';
+import { resolveHostMountPath } from '../finalize/runner-exec-args.js';
 import { DEFAULT_UBUNTU_24_04_IMAGE } from '../finalize/runner-images.js';
 
 /** The session worktree as seen from inside the container. */

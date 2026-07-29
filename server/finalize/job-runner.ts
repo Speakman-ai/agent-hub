@@ -1,9 +1,9 @@
 /**
  * job-runner.ts — v2 Finalize tasks phase: parallel GHA-style jobs + matrix.
  *
- * Expands ci.yaml v2 `jobs` × `matrix.include` into isolated runner
+ * Expands ci.yaml v2 `jobs` × `matrix.include` into isolated DinD runner
  * containers (or host bash for `runs-on: host`) and schedules shards
- * with a bounded parallelism pool.
+ * with a bounded parallelism pool. DinD is the only container runner mode.
  */
 import { randomUUID } from 'crypto';
 import type { CiConfigV2, CiStepV2, JobInstance } from './ci-config-v2.js';
@@ -13,11 +13,9 @@ import {
   expandJobInstances,
   substituteEnvString,
 } from './ci-config-v2.js';
-import { createContainerSpawnStep } from './container-runner.js';
 import { resolveRunnerBackend, type RunnerLease } from './runner-backend.js';
 import { detectRepoVisibility } from './runner-repo-visibility.js';
 import { hasExplicitResourceProfile, type RepoVisibility } from './runner-resource-profile.js';
-import { isDindRunnerMode } from './runner-docker-mode.js';
 import { isContainerRunsOn, resolveRunsOnImage } from './runner-images.js';
 import {
   defaultSpawnStep,
@@ -500,132 +498,123 @@ async function runJobInstance(
       };
     }
 
-    if (isDindRunnerMode()) {
-      const backend = deps.runnerBackend ?? resolveRunnerBackend();
+    const backend = deps.runnerBackend ?? resolveRunnerBackend();
 
-      // Budget-exhaustion guard (card #1243). When earlier attempts have already
-      // consumed the run's CI time budget, the remaining-budget acquire cap
-      // collapses toward zero. Acquiring with a sub-floor window is hopeless —
-      // the fleet can't scale up and claim the job in time, so the attempt fails
-      // instantly ("claimed within Nms"), the per-instance retry re-runs with the
-      // same tiny window, and the orchestrator loop re-enters: a millisecond-fast
-      // livelock that thrashes for the whole run with no genuine red. Once less
-      // than a viable acquire window remains, the run is out of time: stop here
-      // with a distinct, human-readable `budget_exhausted` reason. CI-class (see
-      // CI_FAILURE_REASONS) so neither this instance's infra retry nor the
-      // orchestrator's infra auto-retry re-runs a job that would only exhaust the
-      // shared family budget again.
-      const minAcquireMs = minAcquireTimeoutMs();
-      const remainingBudgetMs = budgetMs - (now() - budgetStartedAt);
-      if (remainingBudgetMs < minAcquireMs) {
-        const endedAt = now();
-        const detail =
-          `finalize run budget exhausted before a runner could be acquired for job ` +
-          `${instance.jobId} (${Math.max(0, Math.round(remainingBudgetMs / 1000))}s of budget ` +
-          `left, need >= ${Math.round(minAcquireMs / 1000)}s to acquire an agent)`;
-        console.warn(`[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} ${detail}`);
-        persistJobState(
-          deps,
-          runId,
-          instance.jobId,
-          instance.matrixKey,
-          'failed',
-          -1,
-          jobStartedAt,
-          endedAt,
-          jobAttempt,
-        );
-        return {
-          instance,
-          result: {
-            status: 'infra_error',
-            stepResults: [],
-            activeSecondsBilled: 0,
-            infraErrorDetail: detail,
-            failureReason: 'budget_exhausted',
-          },
-        };
-      }
-
-      // Pick the GitHub-parity resource tier from the gated repo's visibility
-      // (public -> ubuntu-public, private -> ubuntu-private) so public repos get
-      // exact parity without manual config. Skip the probe entirely when an
-      // operator already pinned a valid profile — the override wins regardless,
-      // so the gh call would be wasted. Detection failures resolve to 'unknown',
-      // which keeps the stricter default tier (the safe direction).
-      let visibility: RepoVisibility | undefined;
-      if (!hasExplicitResourceProfile()) {
-        visibility = await detectRepoVisibility({ worktreePath, env: process.env });
-      }
-      try {
-        lease = await backend.acquire({
-          orgId: opts.orgId ?? '',
-          projectId: opts.projectId ?? '',
-          runId: opts.runId,
-          jobId: instance.jobId,
-          matrixKey: instance.matrixKey,
-          image,
-          worktreePath,
-          composeProjectName,
-          env: mergedEnv,
-          labels: jobLabels,
-          // Floor at minAcquireMs (never the old 1ms). The guard above already
-          // returned when remaining < floor, so this only protects against the
-          // small clock drift consumed by visibility detection between the guard
-          // and here — the window is never sub-floor.
-          acquireTimeoutMs: Math.max(minAcquireMs, budgetMs - (now() - budgetStartedAt)),
-          visibility,
-        });
-      } catch (err) {
-        const endedAt = now();
-        const msg = err instanceof Error ? err.message : String(err);
-        // Log at the source. The retry wrapper only logs between attempts
-        // (attempt < maxAttempts), so the FINAL attempt's reason would
-        // otherwise be dropped — leaving an `infra_error` with no visible
-        // cause in the step logs. Always surface why the runner acquire failed.
-        console.warn(
-          `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} runner acquire failed: ${msg}`,
-        );
-        persistJobState(
-          deps,
-          runId,
-          instance.jobId,
-          instance.matrixKey,
-          'failed',
-          -1,
-          jobStartedAt,
-          endedAt,
-          jobAttempt,
-        );
-        // A `git bundle` failure (e.g. "Refusing to create empty bundle") is
-        // DETERMINISTIC — re-acquiring on a fresh agent re-runs the same broken
-        // bundle. Tag it with the non-infra `worktree_bundle_failed` reason so
-        // neither the per-instance retry below nor the orchestrator's infra
-        // auto-retry livelocks on it. Generic acquire failures (no reason) stay
-        // infra-retryable as before.
-        const failureReason = isWorktreeBundleFailureMessage(msg)
-          ? 'worktree_bundle_failed'
-          : undefined;
-        return {
-          instance,
-          result: {
-            status: 'infra_error',
-            stepResults: [],
-            activeSecondsBilled: 0,
-            infraErrorDetail: msg,
-            ...(failureReason ? { failureReason } : {}),
-          },
-        };
-      }
-      spawnStep = lease.spawnStep;
-    } else {
-      spawnStep = createContainerSpawnStep({
-        image,
-        composeProjectName,
-        baseEnv: mergedEnv,
-        labels: jobLabels,
-      });
+    // Budget-exhaustion guard (card #1243). When earlier attempts have already
+    // consumed the run's CI time budget, the remaining-budget acquire cap
+    // collapses toward zero. Acquiring with a sub-floor window is hopeless —
+    // the fleet can't scale up and claim the job in time, so the attempt fails
+    // instantly ("claimed within Nms"), the per-instance retry re-runs with the
+    // same tiny window, and the orchestrator loop re-enters: a millisecond-fast
+    // livelock that thrashes for the whole run with no genuine red. Once less
+    // than a viable acquire window remains, the run is out of time: stop here
+    // with a distinct, human-readable `budget_exhausted` reason. CI-class (see
+    // CI_FAILURE_REASONS) so neither this instance's infra retry nor the
+    // orchestrator's infra auto-retry re-runs a job that would only exhaust the
+    // shared family budget again.
+    const minAcquireMs = minAcquireTimeoutMs();
+    const remainingBudgetMs = budgetMs - (now() - budgetStartedAt);
+    if (remainingBudgetMs < minAcquireMs) {
+      const endedAt = now();
+      const detail =
+        `finalize run budget exhausted before a runner could be acquired for job ` +
+        `${instance.jobId} (${Math.max(0, Math.round(remainingBudgetMs / 1000))}s of budget ` +
+        `left, need >= ${Math.round(minAcquireMs / 1000)}s to acquire an agent)`;
+      console.warn(`[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} ${detail}`);
+      persistJobState(
+        deps,
+        runId,
+        instance.jobId,
+        instance.matrixKey,
+        'failed',
+        -1,
+        jobStartedAt,
+        endedAt,
+        jobAttempt,
+      );
+      return {
+        instance,
+        result: {
+          status: 'infra_error',
+          stepResults: [],
+          activeSecondsBilled: 0,
+          infraErrorDetail: detail,
+          failureReason: 'budget_exhausted',
+        },
+      };
     }
+
+    // Pick the GitHub-parity resource tier from the gated repo's visibility
+    // (public -> ubuntu-public, private -> ubuntu-private) so public repos get
+    // exact parity without manual config. Skip the probe entirely when an
+    // operator already pinned a valid profile — the override wins regardless,
+    // so the gh call would be wasted. Detection failures resolve to 'unknown',
+    // which keeps the stricter default tier (the safe direction).
+    let visibility: RepoVisibility | undefined;
+    if (!hasExplicitResourceProfile()) {
+      visibility = await detectRepoVisibility({ worktreePath, env: process.env });
+    }
+    try {
+      lease = await backend.acquire({
+        orgId: opts.orgId ?? '',
+        projectId: opts.projectId ?? '',
+        runId: opts.runId,
+        jobId: instance.jobId,
+        matrixKey: instance.matrixKey,
+        image,
+        worktreePath,
+        composeProjectName,
+        env: mergedEnv,
+        labels: jobLabels,
+        // Floor at minAcquireMs (never the old 1ms). The guard above already
+        // returned when remaining < floor, so this only protects against the
+        // small clock drift consumed by visibility detection between the guard
+        // and here — the window is never sub-floor.
+        acquireTimeoutMs: Math.max(minAcquireMs, budgetMs - (now() - budgetStartedAt)),
+        visibility,
+      });
+    } catch (err) {
+      const endedAt = now();
+      const msg = err instanceof Error ? err.message : String(err);
+      // Log at the source. The retry wrapper only logs between attempts
+      // (attempt < maxAttempts), so the FINAL attempt's reason would
+      // otherwise be dropped — leaving an `infra_error` with no visible
+      // cause in the step logs. Always surface why the runner acquire failed.
+      console.warn(
+        `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} runner acquire failed: ${msg}`,
+      );
+      persistJobState(
+        deps,
+        runId,
+        instance.jobId,
+        instance.matrixKey,
+        'failed',
+        -1,
+        jobStartedAt,
+        endedAt,
+        jobAttempt,
+      );
+      // A `git bundle` failure (e.g. "Refusing to create empty bundle") is
+      // DETERMINISTIC — re-acquiring on a fresh agent re-runs the same broken
+      // bundle. Tag it with the non-infra `worktree_bundle_failed` reason so
+      // neither the per-instance retry below nor the orchestrator's infra
+      // auto-retry livelocks on it. Generic acquire failures (no reason) stay
+      // infra-retryable as before.
+      const failureReason = isWorktreeBundleFailureMessage(msg)
+        ? 'worktree_bundle_failed'
+        : undefined;
+      return {
+        instance,
+        result: {
+          status: 'infra_error',
+          stepResults: [],
+          activeSecondsBilled: 0,
+          infraErrorDetail: msg,
+          ...(failureReason ? { failureReason } : {}),
+        },
+      };
+    }
+    spawnStep = lease.spawnStep;
   }
 
   const instanceSteps = planned.filter((p) => p.instance === instance);
