@@ -17,11 +17,20 @@ describe('benignStreamEvents', () => {
     ).toBe(true);
   });
 
-  it('does not match real parser gaps', () => {
+  it('matches tool_progress keep-alives already persisted before the parser suppressed them', () => {
     expect(
       isBenignUnknownStreamEvent({
         type: 'unknown',
         text: 'unhandled claude event: tool_progress',
+      }),
+    ).toBe(true);
+  });
+
+  it('does not match real parser gaps', () => {
+    expect(
+      isBenignUnknownStreamEvent({
+        type: 'unknown',
+        text: 'unhandled claude event: some_future_frame',
       }),
     ).toBe(false);
     expect(

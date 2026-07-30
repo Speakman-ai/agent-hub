@@ -4,7 +4,7 @@ export interface BenignStreamEventLike {
 }
 
 export const BENIGN_UNKNOWN_STREAM_TEXT: RegExp[] = [
-  /^unhandled claude event: (control_request|control_response|sdk_control_request|sdk_control_response)$/,
+  /^unhandled claude event: (control_request|control_response|sdk_control_request|sdk_control_response|tool_progress)$/,
   /^unhandled cursor event: interaction_query$/,
   /^unhandled gemini event: init$/,
 ];

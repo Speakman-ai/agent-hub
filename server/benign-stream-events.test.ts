@@ -12,11 +12,20 @@ describe('shouldPersistStreamEvent', () => {
     ).toBe(false);
   });
 
-  it('keeps unrecognized unknown frames for debugging', () => {
+  it('drops tool_progress keep-alives', () => {
     expect(
       shouldPersistStreamEvent({
         type: 'unknown',
         text: 'unhandled claude event: tool_progress',
+      } as StreamEvent),
+    ).toBe(false);
+  });
+
+  it('keeps unrecognized unknown frames for debugging', () => {
+    expect(
+      shouldPersistStreamEvent({
+        type: 'unknown',
+        text: 'unhandled claude event: some_future_frame',
       } as StreamEvent),
     ).toBe(true);
   });

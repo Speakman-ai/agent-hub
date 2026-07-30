@@ -216,6 +216,17 @@ describe('eventsToBlocks — benign unknown stream events', () => {
     expect(blocks.filter((b: any) => b.kind === 'unknown')).toEqual([]);
     expect(blocks.map((b: any) => b.kind)).toEqual(['text']);
   });
+
+  it('suppresses historical Claude tool_progress unknown rows', () => {
+    const events = wrap([
+      { type: 'tool_use', id: 'tu1', tool: 'Bash', input: { command: 'npm test' } },
+      { type: 'unknown', text: 'unhandled claude event: tool_progress' },
+      { type: 'unknown', text: 'unhandled claude event: tool_progress' },
+      { type: 'tool_result', toolUseId: 'tu1', output: 'ok', isError: false },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks.filter((b: any) => b.kind === 'unknown')).toEqual([]);
+  });
 });
 
 describe('SessionTail — tool_result image rendering', () => {

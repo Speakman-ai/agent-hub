@@ -607,6 +607,14 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
     case 'sdk_control_response':
       return [];
 
+    // Keep-alive frames the CLI emits every 30s while a tool is still running
+    // (`{type:'tool_progress', tool_use_id, tool_name, elapsed_time_seconds,
+    // heartbeat:true}`). They carry no output — the tool_use block is already
+    // rendered and the tool_result closes it — so a long Bash call would
+    // otherwise stamp a row into the tail on every tick.
+    case 'tool_progress':
+      return [];
+
     default:
       return [{ type: 'unknown', text: `unhandled claude event: ${raw.type as string}` }];
   }

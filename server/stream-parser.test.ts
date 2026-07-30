@@ -318,6 +318,34 @@ describe('createStreamParser — Claude Code', () => {
     expect(events).toHaveLength(0);
   });
 
+  it('ignores tool_progress keep-alives emitted while a tool is still running', () => {
+    // Verbatim frames captured from Claude Code 2.1.220 during a long Bash call:
+    // one every 30s, which used to stamp an "unhandled event" row per tick.
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_progress',
+        tool_use_id: 'toolu_01RRwoT5UX3rGULZgpP3ydyk-heartbeat-1',
+        tool_name: 'Bash',
+        parent_tool_use_id: 'toolu_01RRwoT5UX3rGULZgpP3ydyk',
+        elapsed_time_seconds: 60,
+        heartbeat: true,
+        session_id: '2928f1f9-8236-4756-88cc-9bd37ddc8ab8',
+        uuid: '25059ea5-28aa-43c7-916a-510fafeddac2',
+      }),
+      JSON.stringify({
+        type: 'tool_progress',
+        tool_use_id: 'toolu_01RRwoT5UX3rGULZgpP3ydyk-heartbeat-2',
+        tool_name: 'Bash',
+        parent_tool_use_id: 'toolu_01RRwoT5UX3rGULZgpP3ydyk',
+        elapsed_time_seconds: 90,
+        heartbeat: true,
+        session_id: '2928f1f9-8236-4756-88cc-9bd37ddc8ab8',
+        uuid: '87a7884b-8108-4a7f-be4e-dcfdb40a0b1c',
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
   it('returns unknown for unhandled types', () => {
     const events = parse([JSON.stringify({ type: 'new_future_event' })]);
     expect(events).toHaveLength(1);
