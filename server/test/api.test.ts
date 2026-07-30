@@ -1352,7 +1352,6 @@ describe('Sessions', () => {
         null,
         Date.now(),
         'full',
-        null,
       );
       stmts.updateFinalizeRunPrUrl.run('https://github.com/acme/widgets/pull/1240', runId);
 

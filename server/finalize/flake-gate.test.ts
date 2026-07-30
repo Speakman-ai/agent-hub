@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { recordJobAttemptsForRound, classifyRunFlakeRecovery } from './flake-gate.js';
 import type { FinalizeRunJobAttemptRow, FinalizeRunJobRow, Stmts } from '../types.js';
-import type { CiConfigV2 } from './ci-config-v2.js';
+import type { CiConfig } from './ci-config-jobs.js';
 
 function jobRow(
   job_id: string,
@@ -92,7 +92,7 @@ function attemptsStmts(rows: FinalizeRunJobAttemptRow[]) {
   } as unknown as Pick<Stmts, 'listFinalizeRunJobAttemptsForRun'>;
 }
 
-const v2Config = (paths?: Record<string, string[]>): CiConfigV2 => ({
+const v2Config = (paths?: Record<string, string[]>): CiConfig => ({
   version: 2,
   on: ['finalize'],
   timeoutMinutes: 30,

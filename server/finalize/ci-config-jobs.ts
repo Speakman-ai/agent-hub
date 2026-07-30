@@ -1,24 +1,41 @@
 /**
- * ci-config-v2.ts — `.agent-hub/ci.yaml` v2 parser (GHA-style jobs + matrix).
+ * ci-config-jobs.ts — `.agent-hub/ci.yaml` `jobs:` body parser (GHA-style
+ * jobs + matrix).
  *
- * v2 adds `jobs`, `runs-on`, `matrix.include`, job/step `env`, and parallel
- * container execution. v1 configs are unchanged — see ci-config.ts.
+ * The document root (`version`, `on`, `timeout_minutes`) is parsed by
+ * ci-config.ts, which then hands the rest of the mapping to
+ * {@link parseCiConfigJobs}. This file owns `jobs`, `runs-on`,
+ * `matrix.include`, job/step `env`, and the `needs` dependency graph.
  */
 import {
   FINALIZE_TIMEOUT_DEFAULT_MINUTES,
   FINALIZE_TIMEOUT_MAX_MINUTES,
   FINALIZE_TIMEOUT_MIN_MINUTES,
-  SUPPORTED_TRIGGERS,
   validateStepTimeoutMinutes,
   type CiConfigParseError,
   type CiConfigParseResult,
   type CiTrigger,
 } from './ci-config.js';
 
-export interface CiStepV2 {
+export interface CiStep {
+  /**
+   * Step display name. Defaults to `step <index>` (1-indexed) when the
+   * author omitted the field — index is filled in here so downstream
+   * code never has to re-derive it.
+   */
   name: string;
+  /**
+   * Shell command. Executed verbatim under `bash -euo pipefail -c <run>`
+   * inside the job's runner container.
+   */
   run: string;
-  /** Static env map; values may contain ${VAR} placeholders. */
+  /**
+   * Step-level environment variables; values may contain `${VAR}`
+   * placeholders resolved against the job env. Injected into the step's
+   * process environment (as `docker exec -e` args — never inlined into
+   * `run`, which is persisted/displayed). Absent when the step declared no
+   * `env:`.
+   */
   env?: Record<string, string>;
   /**
    * Optional per-step wall-clock cap in minutes (GHA `timeout-minutes` parity).
@@ -29,7 +46,7 @@ export interface CiStepV2 {
   timeoutMinutes?: number;
 }
 
-export interface CiJobV2 {
+export interface CiJob {
   runsOn: string;
   failFast: boolean;
   /**
@@ -81,7 +98,7 @@ export interface CiJobV2 {
    */
   retries: number;
   env?: Record<string, string>;
-  steps: CiStepV2[];
+  steps: CiStep[];
 }
 
 /**
@@ -106,12 +123,12 @@ export function resolveDefaultJobRetries(): number {
   return DEFAULT_JOB_RETRIES;
 }
 
-export interface CiConfigV2 {
+export interface CiConfig {
   version: 2;
   on: CiTrigger[];
   timeoutMinutes: number;
   env?: Record<string, string>;
-  jobs: Record<string, CiJobV2>;
+  jobs: Record<string, CiJob>;
 }
 
 export interface JobInstance {
@@ -124,15 +141,15 @@ export interface JobInstance {
   warmup: boolean;
   /** Job ids that must complete successfully before this instance runs. */
   needs: string[];
-  /** Extra same-commit re-runs of this shard on a genuine test failure (see CiJobV2.retries). */
+  /** Extra same-commit re-runs of this shard on a genuine test failure (see CiJob.retries). */
   retries: number;
-  steps: CiStepV2[];
+  steps: CiStep[];
   /** Merged env: top + job + matrix builtins (not step env). */
   env: Record<string, string>;
 }
 
-const V2_TOP_KEYS = new Set(['version', 'on', 'timeout_minutes', 'env', 'jobs']);
-const V2_JOB_KEYS = new Set([
+const TOP_LEVEL_KEYS = new Set(['version', 'on', 'timeout_minutes', 'env', 'jobs']);
+const JOB_KEYS = new Set([
   'runs-on',
   'fail-fast',
   'warmup',
@@ -143,9 +160,9 @@ const V2_JOB_KEYS = new Set([
   'env',
   'steps',
 ]);
-const V2_STEP_KEYS = new Set(['name', 'run', 'env', 'timeout_minutes']);
+const STEP_KEYS = new Set(['name', 'run', 'env', 'timeout_minutes']);
 
-export type CiConfigV2ErrorCode =
+export type CiConfigJobsErrorCode =
   | 'missing_jobs'
   | 'invalid_jobs_shape'
   | 'empty_jobs'
@@ -165,21 +182,21 @@ export type CiConfigV2ErrorCode =
   | 'invalid_retries'
   | 'unknown_needs_job'
   | 'cyclic_needs'
-  | 'unknown_top_level_key_v2'
-  | 'missing_steps_v2'
-  | 'invalid_steps_shape_v2'
-  | 'empty_steps_v2'
-  | 'invalid_step_shape_v2'
-  | 'unknown_step_key_v2'
-  | 'missing_step_run_v2'
-  | 'invalid_step_run_v2'
-  | 'invalid_step_name_v2'
-  | 'invalid_step_timeout_v2';
+  | 'unknown_top_level_key'
+  | 'missing_steps'
+  | 'invalid_steps_shape'
+  | 'empty_steps'
+  | 'invalid_step_shape'
+  | 'unknown_step_key'
+  | 'missing_step_run'
+  | 'invalid_step_run'
+  | 'invalid_step_name'
+  | 'invalid_step_timeout';
 
-type V2ErrorCode = CiConfigV2ErrorCode | import('./ci-config.js').CiConfigErrorCode;
+type ErrorCode = CiConfigJobsErrorCode | import('./ci-config.js').CiConfigErrorCode;
 
 function err(
-  code: V2ErrorCode,
+  code: ErrorCode,
   message: string,
   path?: string,
 ): { ok: false; error: CiConfigParseError } {
@@ -189,10 +206,6 @@ function err(
       ? { code: code as CiConfigParseError['code'], message, path }
       : { code: code as CiConfigParseError['code'], message },
   };
-}
-
-function isTrigger(value: string): value is CiTrigger {
-  return (SUPPORTED_TRIGGERS as readonly string[]).includes(value);
 }
 
 function describeType(value: unknown): string {
@@ -235,43 +248,43 @@ function parseEnvMap(
   return { ok: true, env };
 }
 
-function parseStepsV2(
+function parseSteps(
   stepsRaw: unknown,
   jobPath: string,
-): { ok: true; steps: CiStepV2[] } | { ok: false; error: CiConfigParseError } {
+): { ok: true; steps: CiStep[] } | { ok: false; error: CiConfigParseError } {
   if (!Array.isArray(stepsRaw)) {
-    return err('invalid_steps_shape_v2', `'${jobPath}.steps' must be a list.`, `${jobPath}.steps`);
+    return err('invalid_steps_shape', `'${jobPath}.steps' must be a list.`, `${jobPath}.steps`);
   }
   if (stepsRaw.length === 0) {
     return err(
-      'empty_steps_v2',
+      'empty_steps',
       `'${jobPath}.steps' must declare at least one step.`,
       `${jobPath}.steps`,
     );
   }
-  const steps: CiStepV2[] = [];
+  const steps: CiStep[] = [];
   for (let i = 0; i < stepsRaw.length; i++) {
     const stepPath = `${jobPath}.steps[${i}]`;
     const raw = stepsRaw[i];
     if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) {
-      return err('invalid_step_shape_v2', `'${stepPath}' must be a mapping.`, stepPath);
+      return err('invalid_step_shape', `'${stepPath}' must be a mapping.`, stepPath);
     }
     const stepObj = raw as Record<string, unknown>;
     for (const key of Object.keys(stepObj)) {
-      if (!V2_STEP_KEYS.has(key)) {
+      if (!STEP_KEYS.has(key)) {
         return err(
-          'unknown_step_key_v2',
-          `Unknown key in '${stepPath}': '${key}' (allowed: ${[...V2_STEP_KEYS].join(', ')}).`,
+          'unknown_step_key',
+          `Unknown key in '${stepPath}': '${key}' (allowed: ${[...STEP_KEYS].join(', ')}).`,
           `${stepPath}.${key}`,
         );
       }
     }
     if (!('run' in stepObj)) {
-      return err('missing_step_run_v2', `'${stepPath}' is missing 'run'.`, `${stepPath}.run`);
+      return err('missing_step_run', `'${stepPath}' is missing 'run'.`, `${stepPath}.run`);
     }
     if (typeof stepObj.run !== 'string' || stepObj.run.trim().length === 0) {
       return err(
-        'invalid_step_run_v2',
+        'invalid_step_run',
         `'${stepPath}.run' must be a non-empty string.`,
         `${stepPath}.run`,
       );
@@ -280,7 +293,7 @@ function parseStepsV2(
     if ('name' in stepObj) {
       if (typeof stepObj.name !== 'string' || stepObj.name.trim().length === 0) {
         return err(
-          'invalid_step_name_v2',
+          'invalid_step_name',
           `'${stepPath}.name' must be a non-empty string.`,
           `${stepPath}.name`,
         );
@@ -300,7 +313,7 @@ function parseStepsV2(
       const v = validateStepTimeoutMinutes(stepObj.timeout_minutes);
       if (!v.ok) {
         return err(
-          'invalid_step_timeout_v2',
+          'invalid_step_timeout',
           `'${stepPath}.timeout_minutes' ${v.message}.`,
           `${stepPath}.timeout_minutes`,
         );
@@ -395,14 +408,14 @@ export function resolveDefaultMatrixFailFast(): boolean {
 function parseJob(
   jobId: string,
   raw: unknown,
-): { ok: true; job: CiJobV2 } | { ok: false; error: CiConfigParseError } {
+): { ok: true; job: CiJob } | { ok: false; error: CiConfigParseError } {
   const jobPath = `jobs.${jobId}`;
   if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) {
     return err('invalid_job_shape', `'${jobPath}' must be a mapping.`, jobPath);
   }
   const jobObj = raw as Record<string, unknown>;
   for (const key of Object.keys(jobObj)) {
-    if (!V2_JOB_KEYS.has(key)) {
+    if (!JOB_KEYS.has(key)) {
       return err('unknown_job_key', `Unknown key in '${jobPath}': '${key}'.`, `${jobPath}.${key}`);
     }
   }
@@ -506,9 +519,9 @@ function parseJob(
     if (Object.keys(parsed.env).length > 0) jobEnv = parsed.env;
   }
   if (!('steps' in jobObj)) {
-    return err('missing_steps_v2', `'${jobPath}' is missing 'steps'.`, `${jobPath}.steps`);
+    return err('missing_steps', `'${jobPath}' is missing 'steps'.`, `${jobPath}.steps`);
   }
-  const stepsParsed = parseStepsV2(jobObj.steps, jobPath);
+  const stepsParsed = parseSteps(jobObj.steps, jobPath);
   if (!stepsParsed.ok) return stepsParsed;
   return {
     ok: true,
@@ -527,13 +540,10 @@ function parseJob(
 }
 
 /**
- * Parse a v2 ci.yaml root object (already YAML-parsed).
- */
-/**
  * Detect a cycle in the job `needs` graph via DFS. Returns the cycle path
  * (e.g. `['a', 'b', 'a']`) for the error message, or null when acyclic.
  */
-function findNeedsCycle(jobs: Record<string, CiJobV2>): string[] | null {
+function findNeedsCycle(jobs: Record<string, CiJob>): string[] | null {
   const VISITING = 1;
   const DONE = 2;
   const state = new Map<string, number>();
@@ -567,26 +577,30 @@ function findNeedsCycle(jobs: Record<string, CiJobV2>): string[] | null {
   return null;
 }
 
-export function parseCiConfigV2Root(
+/**
+ * Parse the `jobs:` body of an already-YAML-parsed ci.yaml root, with the
+ * root fields ci-config.ts validated (`on`, `timeout_minutes`) passed in.
+ */
+export function parseCiConfigJobs(
   root: Record<string, unknown>,
   on: CiTrigger[],
   timeoutMinutes: number,
 ): CiConfigParseResult {
   for (const key of Object.keys(root)) {
-    if (!V2_TOP_KEYS.has(key)) {
-      return err('unknown_top_level_key', `Unknown top-level key in ci.yaml v2: '${key}'.`, key);
+    if (!TOP_LEVEL_KEYS.has(key)) {
+      return err('unknown_top_level_key', `Unknown top-level key in ci.yaml: '${key}'.`, key);
     }
   }
   if (!('jobs' in root)) {
-    return err('missing_jobs', "ci.yaml v2 is missing required 'jobs'.", 'jobs');
+    return err('missing_jobs', "ci.yaml is missing required 'jobs'.", 'jobs');
   }
   const jobsRaw = root.jobs;
   if (jobsRaw === null || typeof jobsRaw !== 'object' || Array.isArray(jobsRaw)) {
-    return err('invalid_jobs_shape', "ci.yaml v2 'jobs' must be a mapping.", 'jobs');
+    return err('invalid_jobs_shape', "ci.yaml 'jobs' must be a mapping.", 'jobs');
   }
   const jobEntries = Object.entries(jobsRaw as Record<string, unknown>);
   if (jobEntries.length === 0) {
-    return err('empty_jobs', "ci.yaml v2 'jobs' must declare at least one job.", 'jobs');
+    return err('empty_jobs', "ci.yaml 'jobs' must declare at least one job.", 'jobs');
   }
   let topEnv: Record<string, string> | undefined;
   if ('env' in root) {
@@ -594,7 +608,7 @@ export function parseCiConfigV2Root(
     if (!parsed.ok) return parsed;
     if (Object.keys(parsed.env).length > 0) topEnv = parsed.env;
   }
-  const jobs: Record<string, CiJobV2> = {};
+  const jobs: Record<string, CiJob> = {};
   for (const [jobId, jobRaw] of jobEntries) {
     const parsed = parseJob(jobId, jobRaw);
     if (!parsed.ok) return parsed;
@@ -634,7 +648,7 @@ export function parseCiConfigV2Root(
   if (cyclePath) {
     return err(
       'cyclic_needs',
-      `ci.yaml v2 'needs' has a dependency cycle: ${cyclePath.join(' → ')}.`,
+      `ci.yaml 'needs' has a dependency cycle: ${cyclePath.join(' → ')}.`,
       'jobs',
     );
   }
@@ -662,7 +676,7 @@ export function matrixKeyFromRow(matrix: Record<string, string>): string {
 
 /** Expand all jobs × matrix shards into runnable instances. */
 export function expandJobInstances(
-  config: CiConfigV2,
+  config: CiConfig,
   builtins: Record<string, string>,
 ): JobInstance[] {
   const instances: JobInstance[] = [];
@@ -727,7 +741,7 @@ export function substituteEnvString(template: string, env: Record<string, string
 /** Matches a still-unresolved `${VAR}` placeholder left by substituteEnvString. */
 const UNRESOLVED_PLACEHOLDER_RE = /\$\{[^}]+\}/;
 
-export function applyEnvToStep(step: CiStepV2, env: Record<string, string>): CiStepV2 {
+export function applyEnvToStep(step: CiStep, env: Record<string, string>): CiStep {
   const stepEnv = step.env ?? {};
   const merged = { ...env };
   const resolvedStepEnv: Record<string, string> = {};

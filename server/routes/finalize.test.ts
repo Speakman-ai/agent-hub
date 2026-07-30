@@ -46,7 +46,6 @@ interface SeedRunOpts {
   startedAt?: number;
   mode?: 'full' | 'checks' | 'review';
   validatedHeadSha?: string | null;
-  jobFilter?: string[] | null;
 }
 
 function seedSession(sessionId: string, _projectId: string): void {
@@ -68,8 +67,8 @@ function seedFinalizeRun(opts: SeedRunOpts): string {
         idempotency_key, status, phase, trigger_source, worktree_path,
         triggered_by_user_id, author_name, author_email,
         reviewer_verdict, active_seconds_consumed, started_at,
-        mode, validated_head_sha, job_filter
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        mode, validated_head_sha
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -91,7 +90,6 @@ function seedFinalizeRun(opts: SeedRunOpts): string {
       startedAt,
       opts.mode ?? 'full',
       opts.validatedHeadSha ?? null,
-      opts.jobFilter ? JSON.stringify(opts.jobFilter) : null,
     );
   return id;
 }
@@ -344,58 +342,6 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body.phases.review?.mode).toBe('review');
     expect(res.body.phases.checks?.validated_head_sha).toBe('sha-1');
     expect(res.body.phases.review?.validated_head_sha).toBe('sha-1');
-  });
-
-  it('excludes a legacy job-filtered row from the checks phase summary', async () => {
-    // Back-compat: historical rows with a non-null `job_filter` (the removed
-    // single-job "Run Tests" debug runs) must never become a phase summary,
-    // even when parked at ready_to_push more recently than the full run. The
-    // `job_filter IS NULL` clause in the phase picker keeps the FULL run as
-    // the checks proof.
-    const projectId = await freshProject();
-    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
-    const fullRunId = seedFinalizeRun({
-      projectId,
-      sessionId,
-      mode: 'checks',
-      status: 'ready_to_push',
-      validatedHeadSha: 'sha-full',
-      startedAt: 1_000,
-    });
-    // A later partial run for one job, also parked — must be ignored.
-    seedFinalizeRun({
-      projectId,
-      sessionId,
-      mode: 'checks',
-      status: 'ready_to_push',
-      validatedHeadSha: 'sha-partial',
-      jobFilter: ['e2e'],
-      startedAt: 2_000,
-    });
-
-    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
-    // The phase summary stays pinned to the full-suite run.
-    expect(res.body.phases.checks?.run_id).toBe(fullRunId);
-    expect(res.body.phases.checks?.validated_head_sha).toBe('sha-full');
-    // ...even though the partial run is the latest overall row.
-    expect(res.body.run?.validated_head_sha).toBe('sha-partial');
-  });
-
-  it('returns no checks phase when only a legacy job-filtered row exists', async () => {
-    const projectId = await freshProject();
-    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
-    seedFinalizeRun({
-      projectId,
-      sessionId,
-      mode: 'checks',
-      status: 'ready_to_push',
-      validatedHeadSha: 'sha-partial',
-      jobFilter: ['lint'],
-      startedAt: 1_000,
-    });
-
-    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
-    expect(res.body.phases.checks).toBeNull();
   });
 
   it('returns 200 + null without 404, even for arbitrary unknown session ids', async () => {

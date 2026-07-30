@@ -444,7 +444,6 @@ describe('PR validation passthrough surface', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
     stmts!.markFinalizeRunReadyToPush.run(headSha, runId);
     stmts!.upsertFinalizeRunJob.run(runId, 'unit', '', 'passed', 0, Date.now(), Date.now(), null);
@@ -523,7 +522,6 @@ describe('branch protection', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
     stmts!.markFinalizeRunReadyToPush.run(headSha, runId);
 
@@ -609,7 +607,6 @@ describe('branch protection', () => {
       null,
       Date.now() - 60_000,
       'checks',
-      null,
     );
     stmts!.failFinalizeRun.run('failed', 'checks_failed', 'rerun-base');
     stmts!.upsertFinalizeRunJob.run('rerun-base', 'backend', '', 'failed', 1, 1, 2, null);
@@ -633,7 +630,6 @@ describe('branch protection', () => {
       null,
       Date.now() - 30_000,
       'checks',
-      null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'rerun-frontend');
     stmts!.upsertFinalizeRunJob.run('rerun-frontend', 'frontend', '', 'passed', 0, 3, 4, null);
@@ -661,7 +657,6 @@ describe('branch protection', () => {
       null,
       Date.now(),
       'checks',
-      null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'rerun-backend');
     stmts!.upsertFinalizeRunJob.run('rerun-backend', 'backend', '', 'passed', 0, 5, 6, null);
@@ -737,7 +732,6 @@ describe('branch protection', () => {
       null,
       Date.now(),
       'checks',
-      null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'partial-frontend');
     stmts!.upsertFinalizeRunJob.run('partial-frontend', 'frontend', '', 'passed', 0, 1, 2, null);
@@ -936,7 +930,6 @@ describe('setup-failure surfacing on PR checks', () => {
       null,
       Date.now(),
       'checks',
-      null,
     );
     stmts!.failFinalizeRun.run('failed', 'ci_config_invalid', runId);
 
@@ -980,7 +973,6 @@ describe('checks_run — detailed run for the PR page', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, runId);
     stmts!.upsertFinalizeRunJob.run(runId, 'backend', '', 'passed', 0, 1, 2, null);
@@ -1015,14 +1007,15 @@ describe('checks_run — detailed run for the PR page', () => {
 });
 
 describe('CI empty-state explanation (checks_note)', () => {
-  it('explains missing config, v1 config, and v2-not-started', async () => {
+  it('explains missing config, an unparseable config, and not-started', async () => {
     // hostedProjectWithBranch seeds no ci.yaml → "No CI is configured".
     const { id, branch, work } = await hostedProjectWithBranch();
     await postPulls(id).send({ headBranch: branch, title: 'Explain me' }).expect(201);
     let detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.checks_note).toMatch(/No CI is configured/);
 
-    // v1 config → finalize-only migration hint.
+    // A `version: 1` file is no longer a schema the parser accepts, so it
+    // reads as a broken config and the note names the conversion.
     mkdirSync(path.join(work, '.agent-hub'), { recursive: true });
     writeFileSync(
       path.join(work, '.agent-hub', 'ci.yaml'),
@@ -1032,9 +1025,10 @@ describe('CI empty-state explanation (checks_note)', () => {
     git(work, 'commit -m "v1 ci"');
     git(work, `push origin ${branch}`);
     detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
-    expect(detail.body.checks_note).toMatch(/version 1 \(Finalize-only\)/);
+    expect(detail.body.checks_note).toMatch(/failed to parse/);
+    expect(detail.body.checks_note).toMatch(/version: 2/);
 
-    // v2 config with no run yet → "not started" (PR CI is disabled in
+    // Valid config with no run yet → "not started" (PR CI is disabled in
     // tests via AGENT_HUB_DISABLE_PUSH_CI, so no run row appears).
     writeFileSync(
       path.join(work, '.agent-hub', 'ci.yaml'),
@@ -1072,7 +1066,6 @@ describe('POST ci-runs/:runId/rerun guards', () => {
         null,
         Date.now(),
         'checks',
-        null,
       );
       if (status !== 'queued') stmts!.failFinalizeRun.run(status, null, runId);
     };
@@ -1124,7 +1117,6 @@ describe('checks merge across runs (per-job re-run keeps all checks visible)', (
       null,
       Date.now() - 60_000,
       'checks',
-      null,
     );
     stmts!.failFinalizeRun.run('failed', 'checks_failed', 'mc-run1');
     stmts!.upsertFinalizeRunJob.run('mc-run1', 'backend-tests', '', 'passed', 0, 1, 2, null);
@@ -1149,7 +1141,6 @@ describe('checks merge across runs (per-job re-run keeps all checks visible)', (
       null,
       Date.now(),
       'checks',
-      null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'mc-run2');
     stmts!.upsertFinalizeRunJob.run('mc-run2', 'frontend-tests', '', 'passed', 0, 3, 4, null);
@@ -1276,7 +1267,6 @@ describe('linked card + list CI status', () => {
       null,
       Date.now(),
       'checks',
-      null,
     );
     stmts!.failFinalizeRun.run('succeeded', null, 'lk-run');
     stmts!.upsertFinalizeRunJob.run('lk-run', 'unit', '', 'passed', 0, 1, 2, null);

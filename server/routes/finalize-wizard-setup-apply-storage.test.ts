@@ -14,7 +14,8 @@ import { FINALIZE_SERVER_CI_SCHEMA, getServerCiConfig } from '../finalize/ci-con
 import createFinalizeWizardRoutes from './finalize-wizard.js';
 import type { RouteDeps } from '../types.js';
 
-const VALID_YAML = 'version: 1\non: [finalize]\nsteps:\n  - run: echo hi\n';
+const VALID_YAML =
+  'version: 2\non: [finalize]\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo hi\n';
 
 function makeStmts() {
   const db = new Database(':memory:');

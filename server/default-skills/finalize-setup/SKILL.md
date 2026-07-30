@@ -6,10 +6,9 @@ description: >-
   Reads README + package manifests (package.json, pyproject.toml,
   Cargo.toml, go.mod), detects existing CI signal (GitHub workflows,
   Makefile, npm scripts), proposes a ci.yaml that mirrors what the repo
-  already runs — a v2 concurrent-jobs pipeline (GHA parity, one job per
-  GitHub job on the DinD fleet) when the repo has more than one CI lane,
-  or a simple v1 sequential pipeline otherwise — collects env vars,
-  proves the pipeline locally, then commits + pushes + opens a PR.
+  already runs (GHA parity: one concurrent job per GitHub job on the
+  DinD fleet), collects env vars, proves the pipeline locally, then
+  commits + pushes + opens a PR.
 version: 1.0.0
 keep-coding-instructions: true
 ---
@@ -54,7 +53,7 @@ Kickoff includes full `draft` JSON. Fields:
 | `npmScripts` | Top-level `package.json` scripts that look like test / lint / typecheck / build |
 | `makefileTargets` | Make targets that look like test / lint / typecheck / build |
 | `readme` | `setupExcerpt`, `readmePath` |
-| `proposedCiYaml` | Server-pre-built ci.yaml (may be v1) — a starting point; mirrors CI gate workflows. Transform to v2 fan-out when the repo has >1 CI lane (Step 4). |
+| `proposedCiYaml` | Server-pre-built ci.yaml, a starting point that mirrors CI gate workflows. Fan it out to one job per GitHub job when the repo has >1 CI lane (Step 4). |
 | `envVars` | Keys + `sources` + `required` (scanned the same way preview-setup does) |
 
 **Do not** re-scan the repo unless the user changed files mid-session.
@@ -112,25 +111,22 @@ to stop resisting complex steps:
    subset, or push the user toward "just lint" unless they explicitly
    ask for a lighter pipeline. Their explicit scope wins.
 
-## Step 4 — Pipeline proposal (pick the version first)
+## Step 4 — Pipeline proposal
 
-There are two schema versions. **Choose before you propose:**
+A ci.yaml is a `jobs:` map. Every job runs as its own concurrent runner
+on the DinD fleet (`runs-on: ubuntu-24.04`), one privileged container
+per job instance, the same way GitHub fans a workflow out. A lightweight
+gate that needs no Docker can use `runs-on: host` and run on the Hub box
+instead.
 
-| | **v2 — concurrent jobs (prefer this)** | **v1 — sequential steps** |
-|---|---|---|
-| Shape | `jobs:` map, each `runs-on: ubuntu-24.04` | flat `steps:` list |
-| Runs on | the **DinD runner fleet**, one privileged container per job instance, **concurrently** | the **Hub box**, one step at a time |
-| Use when | the repo already runs >1 CI lane (multiple GitHub jobs / a `matrix`), or the user asks for "GHA parity", concurrency, or "run everything at once" | a trivial single-lane repo, or the user explicitly wants the simplest thing |
-
-**Default to v2 whenever `draft.githubWorkflows` shows more than one job
-or a matrix.** The whole point is parity: map **one v2 `job` per GitHub
-job**, mirror a GitHub `matrix` with `matrix.include` (each row becomes
-its own concurrent runner), and **do NOT group, serialize, or drop jobs
-to "save" runners** — full fan-out is the goal. Use `needs:` only to
+The whole point is parity: map **one `job` per GitHub job**, mirror a
+GitHub `matrix` with `matrix.include` (each row becomes its own
+concurrent runner), and **do NOT group, serialize, or drop jobs to
+"save" runners** — full fan-out is the goal. Use `needs:` only to
 reproduce a real GitHub `needs:` edge; otherwise leave jobs independent
 so they all start at once.
 
-### v2 skeleton (GHA fan-out)
+### Skeleton (GHA fan-out)
 
 ```yaml
 version: 2
@@ -157,7 +153,7 @@ jobs:
         - { shard: "2", shards: "3" }
         - { shard: "3", shards: "3" }
     steps:
-      # v2 steps have NO `if:` — branch in the script off FINALIZE_MATRIX_*.
+      # Steps have NO `if:` — branch in the script off FINALIZE_MATRIX_*.
       # A matrix key `shard` is injected as $FINALIZE_MATRIX_SHARD.
       - name: Tests (shard ${FINALIZE_MATRIX_SHARD})
         run: |
@@ -175,44 +171,29 @@ jobs:
         run: npm run lint
 ```
 
-### v1 skeleton (sequential fallback)
-
-```yaml
-version: 1
-on:
-  - finalize
-  - manual
-timeout_minutes: 60
-steps:
-  - name: install
-    run: npm ci --include=dev
-  - name: lint
-    run: npm run lint
-  - name: test
-    run: npm test
-```
-
 The server pre-builds `draft.proposedCiYaml` from CI gate workflows. It
-may arrive as v1; when the repo warrants v2 (per the table above),
-**transform it into the v2 fan-out yourself** using `draft.githubWorkflows`
-+ `draft.npmScripts` — one job per GitHub job.
+arrives as a handful of `runs-on: host` jobs (plus an `e2e` matrix when
+one was detected); when the repo runs more CI lanes than that, **fan it
+out yourself** using `draft.githubWorkflows` + `draft.npmScripts` — one
+job per GitHub job.
 
 Show the proposed YAML verbatim in a fenced ```yaml block. Then
 `agenthub:ask`:
 
 - **Use as-is** — proceed to apply
 - **Edit** — multi-question picker for which jobs/steps to include / drop
-- **Add a custom job/step** — collect name + `run` (+ `runs-on` for v2) in prose
+- **Add a custom job/step** — collect name + `run` + `runs-on` in prose
 
-Constraints both versions share:
+Constraints:
 
 - `on:` is a non-empty list of `finalize` / `manual` (no `pull_request`)
 - `timeout_minutes` between 1 and 240 (config may lower, never raise)
-- **No** `shell:`, `uses:`, `with:`, or `autofix:` at any version
-- v2 jobs need `runs-on: ubuntu-24.04` (or `ubuntu-latest`); matrix values
-  must be **quoted strings** (`shard: "1"`, not `1`)
+- **No** `shell:`, `uses:`, `with:`, or `autofix:` anywhere
+- every job needs `runs-on: ubuntu-24.04` (or `ubuntu-latest`, or `host`
+  for a gate that needs no Docker); matrix values must be **quoted
+  strings** (`shard: "1"`, not `1`)
 
-The full cheat sheet (both versions) is at
+The full cheat sheet is at
 [references/ci-yaml-schema.md](references/ci-yaml-schema.md). Stack
 recipes (npm/pnpm/yarn/pip/poetry/cargo/go) are at
 [references/stack-recipes.md](references/stack-recipes.md).
@@ -230,10 +211,9 @@ For each entry in `draft.envVars` that CI steps will read:
    - **Import .env blob** — collect a paste and bundle as `secrets.env`.
 
 Secrets are stored per-project and merged into the shell env when
-Finalize steps run, regardless of version. **v1** has no `env:` field —
-steps read the merged env directly. **v2** can additionally reference a
-project secret explicitly with `${VAR}` in a top-level / job / step
-`env:` block (e.g. `AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}`); an
+Finalize steps run, so a step can read them directly. A config can also
+reference a project secret explicitly with `${VAR}` in a top-level / job
+/ step `env:` block (e.g. `AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}`); an
 unresolved `${VAR}` is left out of the step environment rather than
 passed through literally.
 
@@ -286,8 +266,7 @@ Response shape:
 
 Server rejects with **400** + `{ "error": "ci_config_invalid", "code":
 "<CiConfigErrorCode>", "message": "...", "path": "..." }` if the YAML
-fails validation (the parser auto-selects the v1 or v2 schema from the
-`version:` field). Fix the issue and re-submit — do not work around the
+fails validation. Fix the issue and re-submit — do not work around the
 validation.
 
 ## Step 8 — Verify in your worktree (prove the pipeline)
@@ -343,13 +322,12 @@ user can review, then summarise:
   render as raw code in chat).
 - Multiple ask rounds are fine — monorepos need extra picks; custom
   steps need free-text rounds.
-- **Never** propose `shell:`, `uses:`, `with:`, or `autofix:` at any
-  version — the parser rejects them and the wizard ends in failure. At
-  **v1** `env:` and `matrix:` are also rejected (sequential steps only);
-  at **v2** they are first-class (`env:` blocks + job-level
-  `matrix.include` are how you get GHA-parity concurrency).
+- **Never** propose `shell:`, `uses:`, `with:`, or `autofix:` — the
+  parser rejects them and the wizard ends in failure. `env:` blocks and
+  job-level `matrix.include` are first-class, and are how you get
+  GHA-parity concurrency.
 - **Do not down-scope for concurrency's sake.** When a repo has multiple
-  GitHub jobs, fan them out 1-1 into v2 jobs — never collapse them into
+  GitHub jobs, fan them out 1-1 — never collapse them into
   fewer jobs to reduce runner count. The fleet scales to the work.
 - Prefer pointing users to **Settings → Finalize** for re-running the
   wizard; the apply endpoint overwrites the existing file in a single

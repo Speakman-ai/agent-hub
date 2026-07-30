@@ -15,8 +15,8 @@ import type { FinalizeRunRow, Project, RouteDeps } from '../types.js';
 import { getDb } from '../db.js';
 import { rerunCiRun } from '../git-host/push-ci.js';
 import { z, registerPath } from '../openapi/registry.js';
-import { loadCiConfigFromFile, parseCiConfig, type AnyCiConfig } from '../finalize/ci-config.js';
-import { matrixKeyFromRow } from '../finalize/ci-config-v2.js';
+import { loadCiConfigFromFile, parseCiConfig, type CiConfig } from '../finalize/ci-config.js';
+import { matrixKeyFromRow } from '../finalize/ci-config-jobs.js';
 import { DEFAULT_CI_CONFIG_RELATIVE_PATH } from '../finalize/finalize-keys.js';
 import { isInfraFailureReason } from '../finalize/infra-retry.js';
 import { readRepoFile } from '../git-host/repo-read.js';
@@ -305,14 +305,7 @@ function statsKey(jobId: string, matrixKey: string): string {
   return `${jobId}\u0000${matrixKey}`;
 }
 
-function configuredTestsFromCi(config: AnyCiConfig): ConfiguredTest[] {
-  if (config.version === 1) {
-    return config.steps.map((step, i) => ({
-      job_id: step.name || `step ${i + 1}`,
-      matrix_key: '',
-      name: step.name || `step ${i + 1}`,
-    }));
-  }
+function configuredTestsFromCi(config: CiConfig): ConfiguredTest[] {
   const tests: ConfiguredTest[] = [];
   for (const [jobId, job] of Object.entries(config.jobs)) {
     const matrixRows = job.matrixInclude.length > 0 ? job.matrixInclude : [{}];

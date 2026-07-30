@@ -634,15 +634,74 @@ function extractMatrixIncludeFromWorkflow(
 }
 
 /**
- * Serialise v2 ci.yaml with host jobs for simple gates and an optional
- * matrix e2e job mirroring `.github/workflows/e2e.yml`.
+ * Reserved job ids the host-job namer must not collide with.
+ *
+ * `e2e` is emitted below as the container matrix job, so a detected gate that
+ * sanitises to `e2e` has to be renamed or it would silently replace it.
  */
-export function serializeProposedCiYamlV2(args: {
+const RESERVED_JOB_IDS = new Set(['e2e']);
+
+/**
+ * Derive a YAML-safe, unique job id from a human step name.
+ *
+ * Two failure modes this closes, both of which silently drop CI coverage:
+ *
+ *   - **Collision.** `Lint` and `lint` (or `Test (unit)` and `Test [unit]`)
+ *     sanitise to the same key. A duplicate key in a YAML mapping keeps only
+ *     the last entry, so an entire gate disappears from the pipeline.
+ *   - **Empty / unsafe id.** A name that is entirely punctuation sanitises to
+ *     `''` or a bare `-`, producing `  :` or `  -:` — either unparsable or
+ *     read as a sequence entry rather than a job key.
+ *
+ * Ids are lowercased for stability across machines, stripped of leading and
+ * trailing separators, and de-duplicated with a numeric suffix.
+ */
+function uniqueJobId(name: string, taken: Set<string>): string {
+  const base =
+    name
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .toLowerCase()
+      .replace(/^[-._]+|[-._]+$/g, '') || 'job';
+  let id = base;
+  for (let n = 2; taken.has(id) || RESERVED_JOB_IDS.has(id); n++) {
+    id = `${base}-${n}`;
+  }
+  taken.add(id);
+  return id;
+}
+
+/**
+ * Serialise a `ProposedStep[]` into a valid ci.yaml document: one host job
+ * per simple gate, plus an optional matrix e2e job mirroring
+ * `.github/workflows/e2e.yml`.
+ *
+ * Host jobs are chained with `needs` in detection order rather than left
+ * independent. `runs-on: host` executes on the Hub box in the session's own
+ * worktree, so every host job shares one directory: running the detected gates
+ * concurrently lets lint/typecheck/test start before the install gate has
+ * finished writing `node_modules`, and lets any two of them race while mutating
+ * build output. The steps this is built from were an ordered list, so a linear
+ * chain is also the faithful translation of their original semantics. The e2e
+ * matrix job is deliberately NOT chained: it runs in a container with its own
+ * checkout, so it shares nothing with the host jobs and should start at once.
+ *
+ * Kept hand-rolled rather than going through `yaml.stringify` because the
+ * wire format is small, predictable, and we want stable formatting across
+ * machines (the wizard shows this verbatim, then writes it to disk — the
+ * parser is the only authority on validity).
+ */
+export function serializeProposedCiYaml(args: {
   hostJobs: ProposedStep[];
   e2eMatrix?: Array<Record<string, string>>;
   timeoutMinutes?: number;
 }): string {
   const timeoutMinutes = args.timeoutMinutes ?? 60;
+  // The schema rejects an empty `jobs:` mapping, so a repo with nothing
+  // detectable still gets a draft that parses (and fails loudly when run).
+  const hostJobs =
+    args.hostJobs.length > 0 || (args.e2eMatrix?.length ?? 0) > 0
+      ? args.hostJobs
+      : [{ name: 'test', run: 'echo "configure me" && exit 1' }];
   const lines: string[] = [];
   lines.push('version: 2');
   lines.push('on:');
@@ -656,13 +715,19 @@ export function serializeProposedCiYamlV2(args: {
   lines.push('  GIT_COMMIT_SHA: ${FINALIZE_HEAD_SHA}');
   lines.push('jobs:');
 
-  for (const step of args.hostJobs) {
-    const jobId = step.name.replace(/[^a-zA-Z0-9._-]+/g, '-').toLowerCase();
+  const takenJobIds = new Set<string>();
+  let previousHostJobId: string | null = null;
+  for (const step of hostJobs) {
+    const jobId = uniqueJobId(step.name, takenJobIds);
     lines.push(`  ${jobId}:`);
     lines.push('    runs-on: host');
+    if (previousHostJobId) {
+      lines.push(`    needs: [${previousHostJobId}]`);
+    }
     lines.push('    steps:');
     lines.push(`      - name: ${yamlScalar(step.name)}`);
     lines.push(`        run: ${yamlScalar(step.run)}`);
+    previousHostJobId = jobId;
   }
 
   if (args.e2eMatrix && args.e2eMatrix.length > 0) {
@@ -689,7 +754,7 @@ export function serializeProposedCiYamlV2(args: {
   return lines.join('\n') + '\n';
 }
 
-function splitProposedStepsForV2(steps: ProposedStep[]): {
+function splitProposedStepsForJobs(steps: ProposedStep[]): {
   hostJobs: ProposedStep[];
   e2eMatrix: Array<Record<string, string>> | null;
 } {
@@ -708,36 +773,6 @@ function splitProposedStepsForV2(steps: ProposedStep[]): {
     hostJobs.push(step);
   }
   return { hostJobs, e2eMatrix };
-}
-
-/**
- * Serialise a `ProposedStep[]` into a v1-valid ci.yaml document.
- *
- * Kept hand-rolled rather than going through `yaml.stringify` because
- * the wire format is small, predictable, and we want stable formatting
- * across machines (the wizard shows this verbatim, then writes it to
- * disk — the parser is the only authority on validity).
- */
-export function serializeProposedCiYaml(steps: ProposedStep[], timeoutMinutes = 30): string {
-  if (steps.length === 0) {
-    // Schema rejects empty steps — fall back to a minimal placeholder so
-    // the draft always passes the v1 parser even on weird repos.
-    steps = [{ name: 'test', run: 'echo "configure me" && exit 1' }];
-  }
-  const lines: string[] = [];
-  lines.push('version: 1');
-  lines.push('on:');
-  lines.push('  - finalize');
-  lines.push('  - manual');
-  if (timeoutMinutes !== 60) {
-    lines.push(`timeout_minutes: ${timeoutMinutes}`);
-  }
-  lines.push('steps:');
-  for (const step of steps) {
-    lines.push(`  - name: ${yamlScalar(step.name)}`);
-    lines.push(`    run: ${yamlScalar(step.run)}`);
-  }
-  return lines.join('\n') + '\n';
 }
 
 /**
@@ -797,11 +832,12 @@ export function collectFinalizeSetupDraft(workspaceDir: string): FinalizeSetupDr
     subprojects,
   );
   const proposedTimeout = proposedSteps.length >= 3 ? 60 : 30;
-  const { hostJobs, e2eMatrix } = splitProposedStepsForV2(proposedSteps);
-  const proposedCiYaml =
-    e2eMatrix && e2eMatrix.length > 0
-      ? serializeProposedCiYamlV2({ hostJobs, e2eMatrix, timeoutMinutes: proposedTimeout })
-      : serializeProposedCiYaml(proposedSteps, proposedTimeout);
+  const { hostJobs, e2eMatrix } = splitProposedStepsForJobs(proposedSteps);
+  const proposedCiYaml = serializeProposedCiYaml({
+    hostJobs,
+    ...(e2eMatrix && e2eMatrix.length > 0 ? { e2eMatrix } : {}),
+    timeoutMinutes: proposedTimeout,
+  });
 
   const ciAbs = path.join(workspaceDir, '.agent-hub', 'ci.yaml');
   const existingCi = existsSync(ciAbs);

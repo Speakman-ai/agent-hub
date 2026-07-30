@@ -1115,9 +1115,7 @@ function initDb(dataDir: string): void {
       ended_at INTEGER,
       pr_url TEXT,
       validated_head_sha TEXT,
-      mode TEXT NOT NULL DEFAULT 'full',
-      -- JSON array of ci.yaml v2 job ids for single-job debug runs; NULL = all jobs.
-      job_filter TEXT
+      mode TEXT NOT NULL DEFAULT 'full'
     );
     CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS finalize_runs_session ON finalize_runs(session_id);
@@ -1136,7 +1134,6 @@ function initDb(dataDir: string): void {
       session_id TEXT NOT NULL,
       branch TEXT NOT NULL,
       mode TEXT NOT NULL,
-      job_filter TEXT,
       created_at INTEGER NOT NULL
     );
 
@@ -1384,14 +1381,36 @@ function initDb(dataDir: string): void {
     db.exec("ALTER TABLE finalize_runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'full'");
   }
 
-  // job_filter: JSON array of ci.yaml v2 job ids for single-job "Run Tests"
-  // dropdown runs. NULL for normal runs (every job). Job-filtered rows are
-  // excluded from the per-phase pickers below so a debug run never flips the
-  // "Tested" badge or claims full validation.
+  // job_filter held a JSON array of job ids for the retired single-job "Run
+  // Tests" dropdown. Nothing writes it and the phase pickers no longer read it,
+  // so drop it wherever an older install still carries the column.
+  //
+  // Before dropping it, neutralise the rows it used to protect. A job-filtered
+  // run only ever exercised SOME jobs, so `getLatestChecksRunForSession` used
+  // to exclude it with a `job_filter IS NULL` clause. Without the column that
+  // clause is gone, and a historical filtered row (always `mode = 'checks'`)
+  // becomes selectable as the checks half of a "branch fully validated" pair —
+  // both `isBranchFullyValidated` and the push gate accept a sibling whose
+  // `validated_head_sha` equals the head under test, which is exactly what
+  // happens when someone debugged one job and then ran the reviewer on the same
+  // unchanged commit. Clearing `validated_head_sha` closes that: a partial run
+  // never validated a head, so the column was always a lie on these rows, and
+  // both consumers require a non-null match. `head_sha` is untouched, so the
+  // run stays visible in history and in the per-sha PR checks lookup.
   try {
     db.prepare('SELECT job_filter FROM finalize_runs LIMIT 1').get();
+    db.exec('UPDATE finalize_runs SET validated_head_sha = NULL WHERE job_filter IS NOT NULL');
   } catch {
-    db.exec('ALTER TABLE finalize_runs ADD COLUMN job_filter TEXT');
+    /* column already dropped, or a fresh schema that never had it */
+  }
+  for (const table of ['finalize_runs', 'finalize_kickoff_claims']) {
+    let present = true;
+    try {
+      db.prepare(`SELECT job_filter FROM ${table} LIMIT 1`).get();
+    } catch {
+      present = false; // already dropped, or a fresh schema that never had it
+    }
+    if (present) db.exec(`ALTER TABLE ${table} DROP COLUMN job_filter`);
   }
 
   // flake_recovered_jobs: JSON array of per-job verdicts for jobs that passed
@@ -6090,8 +6109,8 @@ function initDb(dataDir: string): void {
         id, card_id, session_id, project_id, branch, head_sha,
         idempotency_key, status, phase, trigger_source, worktree_path,
         triggered_by_user_id, author_name, author_email, retry_of_run_id,
-        started_at, mode, job_filter
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        started_at, mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     // Promote a finalize run to its terminal `pushed` state and record the
     // ended_at clock in one atomic update. Used by the push step (§9) after
@@ -6161,17 +6180,11 @@ function initDb(dataDir: string): void {
     // (mode 'checks' / 'review') OR from a combined 'full' run that
     // exercised both. Same (started_at DESC, id DESC) tiebreak as the
     // overall picker so all three agree on which row is "latest".
-    // `job_filter IS NULL` excludes single-job "Run Tests" dropdown debug
-    // runs: a partial run must never become the phase summary that flips the
-    // "Tested" badge, nor count toward full validation / push automation. The
-    // full suite (mode 'checks'/'full' with no filter) is the only thing that
-    // can mark a session tested.
     getLatestChecksRunForSession: db.prepare(
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
           AND mode IN ('checks', 'full')
-          AND job_filter IS NULL
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
@@ -6180,7 +6193,6 @@ function initDb(dataDir: string): void {
          FROM finalize_runs
         WHERE session_id = ?
           AND mode IN ('review', 'full')
-          AND job_filter IS NULL
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
@@ -6216,18 +6228,14 @@ function initDb(dataDir: string): void {
          FROM finalize_runs
         WHERE session_id = ?
           AND branch = ?
-          AND (
-            (job_filter IS NULL AND ? IS NULL)
-            OR job_filter = ?
-          )
           AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'ready_to_push')
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
     insertFinalizeKickoffClaim: db.prepare(
       `INSERT OR IGNORE INTO finalize_kickoff_claims
-        (claim_key, session_id, branch, mode, job_filter, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+        (claim_key, session_id, branch, mode, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
     ),
     deleteFinalizeKickoffClaim: db.prepare(
       `DELETE FROM finalize_kickoff_claims WHERE claim_key = ?`,

@@ -236,10 +236,8 @@ describe('collectFinalizeSetupDraft', () => {
     const parsed = parseCiConfig(draft.proposedCiYaml);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
-      expect(parsed.config.version).toBe(1);
-      if (parsed.config.version === 1) {
-        expect(parsed.config.steps.length).toBeGreaterThanOrEqual(5);
-      }
+      expect(parsed.config.version).toBe(2);
+      expect(Object.keys(parsed.config.jobs).length).toBeGreaterThanOrEqual(5);
       // The draft omits an explicit `timeout_minutes`, so the config
       // inherits the parser default (raised from 60m to 240m / 4h).
       expect(parsed.config.timeoutMinutes).toBe(FINALIZE_TIMEOUT_DEFAULT_MINUTES);
@@ -283,43 +281,130 @@ jobs:
 });
 
 describe('serializeProposedCiYaml', () => {
-  it('always emits a parseable v1 document', () => {
-    const yaml = serializeProposedCiYaml(
-      [
+  it('always emits a parseable document', () => {
+    const yaml = serializeProposedCiYaml({
+      hostJobs: [
         { name: 'install', run: 'npm ci --include=dev' },
         { name: 'test', run: 'npm test' },
       ],
-      30,
-    );
+      timeoutMinutes: 30,
+    });
     const parsed = parseCiConfig(yaml);
     expect(parsed.ok).toBe(true);
-    if (parsed.ok && parsed.config.version === 1) {
-      expect(parsed.config.steps.map((s) => s.name)).toEqual(['install', 'test']);
-      expect(parsed.config.timeoutMinutes).toBe(30);
-    }
+    if (!parsed.ok) return;
+    expect(Object.keys(parsed.config.jobs)).toEqual(['install', 'test']);
+    expect(parsed.config.jobs.install.steps[0].name).toBe('install');
+    expect(parsed.config.timeoutMinutes).toBe(30);
   });
 
   it('quotes scalars that contain YAML metacharacters', () => {
-    const yaml = serializeProposedCiYaml(
-      [{ name: 'lint: strict', run: 'echo "hi" && exit 0' }],
-      60,
-    );
+    const yaml = serializeProposedCiYaml({
+      hostJobs: [{ name: 'lint: strict', run: 'echo "hi" && exit 0' }],
+      timeoutMinutes: 60,
+    });
     const parsed = parseCiConfig(yaml);
     expect(parsed.ok).toBe(true);
-    if (parsed.ok && parsed.config.version === 1) {
-      expect(parsed.config.steps[0].name).toBe('lint: strict');
-      expect(parsed.config.steps[0].run).toBe('echo "hi" && exit 0');
-    }
+    if (!parsed.ok) return;
+    const job = Object.values(parsed.config.jobs)[0];
+    expect(job.steps[0].name).toBe('lint: strict');
+    expect(job.steps[0].run).toBe('echo "hi" && exit 0');
   });
 
   it('omits timeout_minutes when the default is in use', () => {
-    const yaml = serializeProposedCiYaml([{ name: 'test', run: 'echo ok' }], 60);
+    const yaml = serializeProposedCiYaml({
+      hostJobs: [{ name: 'test', run: 'echo ok' }],
+      timeoutMinutes: 60,
+    });
     expect(yaml).not.toMatch(/timeout_minutes/);
   });
 
-  it('substitutes a placeholder when steps is empty (parser rejects empty)', () => {
-    const yaml = serializeProposedCiYaml([], 60);
+  it('substitutes a placeholder when there are no jobs (parser rejects empty)', () => {
+    const yaml = serializeProposedCiYaml({ hostJobs: [], timeoutMinutes: 60 });
     const parsed = parseCiConfig(yaml);
     expect(parsed.ok).toBe(true);
+  });
+
+  it('chains host jobs with needs so they cannot race on the shared worktree', () => {
+    // `runs-on: host` runs on the Hub box in the session's own worktree, so
+    // every host job shares one directory. Left independent, lint/test would
+    // start before install finished writing node_modules.
+    const yaml = serializeProposedCiYaml({
+      hostJobs: [
+        { name: 'install', run: 'npm ci --include=dev' },
+        { name: 'lint', run: 'npm run lint' },
+        { name: 'test', run: 'npm test' },
+      ],
+      timeoutMinutes: 60,
+    });
+    const parsed = parseCiConfig(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.config.jobs.install.needs).toEqual([]);
+    expect(parsed.config.jobs.lint.needs).toEqual(['install']);
+    expect(parsed.config.jobs.test.needs).toEqual(['lint']);
+  });
+
+  it('leaves the e2e container job unchained (its own checkout, shares nothing)', () => {
+    const yaml = serializeProposedCiYaml({
+      hostJobs: [{ name: 'install', run: 'npm ci' }],
+      e2eMatrix: [{ group: 'Core', specs: 'a.cy.ts' }],
+      timeoutMinutes: 60,
+    });
+    const parsed = parseCiConfig(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.config.jobs.e2e.needs).toEqual([]);
+    expect(parsed.config.jobs.e2e.runsOn).toBe('ubuntu-24.04');
+  });
+
+  it('de-duplicates job ids that sanitise to the same key', () => {
+    // Two gates collapsing to one YAML key would keep only the last, silently
+    // dropping a gate from the pipeline.
+    const yaml = serializeProposedCiYaml({
+      hostJobs: [
+        { name: 'Lint', run: 'npm run lint' },
+        { name: 'lint', run: './lint' },
+        { name: 'Test (unit)', run: 'npm test' },
+        { name: 'Test [unit]', run: 'npm run test:unit' },
+      ],
+      timeoutMinutes: 60,
+    });
+    const parsed = parseCiConfig(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // Four gates in, four jobs out — nothing swallowed.
+    expect(Object.keys(parsed.config.jobs)).toHaveLength(4);
+    const runs = Object.values(parsed.config.jobs).map((job) => job.steps[0].run);
+    expect(runs).toEqual(['npm run lint', './lint', 'npm test', 'npm run test:unit']);
+  });
+
+  it('falls back to a usable id when a name sanitises to nothing', () => {
+    // A punctuation-only name previously produced `  :` or a bare `  -:`,
+    // which is either unparsable or read as a sequence entry, not a job key.
+    const yaml = serializeProposedCiYaml({
+      hostJobs: [
+        { name: '!!!', run: 'echo one' },
+        { name: '***', run: 'echo two' },
+      ],
+      timeoutMinutes: 60,
+    });
+    const parsed = parseCiConfig(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(Object.keys(parsed.config.jobs)).toEqual(['job', 'job-2']);
+  });
+
+  it('renames a host gate that would collide with the reserved e2e job', () => {
+    const yaml = serializeProposedCiYaml({
+      hostJobs: [{ name: 'e2e', run: './run_e2e_tests' }],
+      e2eMatrix: [{ group: 'Core' }],
+      timeoutMinutes: 60,
+    });
+    const parsed = parseCiConfig(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // The host gate is renamed; the container matrix job keeps `e2e`.
+    expect(parsed.config.jobs['e2e-2'].runsOn).toBe('host');
+    expect(parsed.config.jobs.e2e.runsOn).toBe('ubuntu-24.04');
   });
 });

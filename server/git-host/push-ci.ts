@@ -36,7 +36,7 @@ import { v4 as uuidv4 } from 'uuid';
 import config from '../config.js';
 import type { BroadcastFn, FinalizeRunRow, Project, PullRequestRow, Stmts } from '../types.js';
 import { gitHostRepoPath, hostedRepoDefaultBranch, hostedRepoExists } from './repo-store.js';
-import { loadCiConfigFromFile, parseCiConfig } from '../finalize/ci-config.js';
+import { loadCiConfigFromFile } from '../finalize/ci-config.js';
 import { runJobPhase } from '../finalize/job-runner.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 
@@ -214,29 +214,18 @@ export function maybeRunPrCi(
       return;
     }
 
-    // No ci.yaml at this sha → nothing configured to run; skip silently
-    // (unlike the opt-in default-branch trigger, which records a failure).
-    // A PARSEABLE config that isn't version 2 (legacy Finalize-only steps
-    // format) also skips: the project never opted into runner CI, so a
-    // recorded "ci_config_invalid" failure would be a lie. A v2 config
-    // that fails to parse falls through and records the failure — that IS
-    // a broken CI setup worth surfacing.
-    let configText: string;
+    // Presence probe only. No ci.yaml at this sha means nothing is configured
+    // to run, so skip silently (unlike the opt-in default-branch trigger,
+    // which records a failure). A committed-but-invalid config is NOT skipped:
+    // it falls through so `runCiForSha` records `ci_config_invalid` with the
+    // parser's actionable message, because that IS a broken CI setup worth
+    // surfacing.
     try {
-      const { stdout } = await execFileP(
-        'git',
-        ['-C', bare, 'show', `${headSha}:${CI_CONFIG_RELATIVE_PATH}`],
-        { timeout: 15_000, maxBuffer: 1024 * 1024 },
-      );
-      configText = stdout;
+      await execFileP('git', ['-C', bare, 'show', `${headSha}:${CI_CONFIG_RELATIVE_PATH}`], {
+        timeout: 15_000,
+        maxBuffer: 1024 * 1024,
+      });
     } catch {
-      return;
-    }
-    const parsed = parseCiConfig(configText);
-    if (parsed.ok && parsed.config.version !== 2) {
-      console.log(
-        `[push-ci] pr#${pr.number} ci.yaml is version ${parsed.config.version} (finalize-only) — skipping PR CI`,
-      );
       return;
     }
 
@@ -374,7 +363,6 @@ async function runCiForSha(
       null,
       Date.now(),
       'checks',
-      null,
     );
   } catch {
     return; // UNIQUE(idempotency_key) race — another path already ran this sha
@@ -412,11 +400,6 @@ async function runCiForSha(
       fail('ci_config_invalid', parsed.error.message);
       return;
     }
-    if (parsed.config.version !== 2) {
-      fail('ci_config_invalid', 'CI on push requires .agent-hub/ci.yaml version: 2');
-      return;
-    }
-
     let ciConfig = parsed.config;
     if (args.jobFilter) {
       const job = ciConfig.jobs?.[args.jobFilter];

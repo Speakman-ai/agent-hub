@@ -1,18 +1,12 @@
 # Finalize Code Changes — pipeline config for the agent-hub repo itself.
 #
-# v2 (GHA-parity). Every job below maps 1-1 to a job that runs in GitHub
+# GHA-parity. Every job below maps 1-1 to a job that runs in GitHub
 # Actions (`.github/workflows/ci.yml` + the lint gate from
 # `main-checks.yml`), and every job runs as its OWN concurrent runner on
 # the Finalize DinD fleet — exactly the way GitHub fans a workflow out.
 # Nothing is grouped or serialized to "save" runners: the whole point is
 # parity, so install/typecheck/build, each test shard, lint, and the
 # lint gate all light up at once on separate `ubuntu-24.04` runners.
-#
-# Why v2 and not v1: a v1 `steps:` pipeline runs sequentially on the Hub
-# box itself (see server/finalize/orchestrator.ts — only `version === 2`
-# routes to the runner fleet via the job-runner). v2 `jobs:` with
-# `runs-on:` are what the orchestrator hands to the remote fleet, one
-# privileged DinD container per job instance, concurrently.
 #
 # Install note: each job runs on its own runner with a fresh worktree and
 # there is NO node_modules sharing between jobs — so every job installs
@@ -49,8 +43,8 @@ jobs:
 
   # ── GHA `test` job (matrix): server 1/6..6/6, client 1/3..3/3,
   # mobile 1/2..2/2, electron
-  # GHA expands this matrix into independent job instances; v2
-  # `matrix.include` does the same — concurrent runners. v2 steps
+  # GHA expands this matrix into independent job instances;
+  # `matrix.include` does the same — concurrent runners. Steps
   # have no `if:`, so the per-suite branch lives in the run script,
   # keyed off the injected FINALIZE_MATRIX_* env vars.
   test:

@@ -45,7 +45,7 @@ import { readFile } from 'fs/promises';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'url';
 import { loadCiConfigFromFile } from './ci-config.js';
-import { expandJobInstances } from './ci-config-v2.js';
+import { expandJobInstances } from './ci-config-jobs.js';
 
 // Resolve the repo root from this file's location. The test file lives
 // at `<repo>/server/finalize/repo-ci-yaml.test.ts`; the ci.yaml lives

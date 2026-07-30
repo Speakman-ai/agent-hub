@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import type { Stmts } from '../types.js';
 import { classifyRunFlakeRecovery, recordJobAttemptsForRound } from './flake-gate.js';
 import { serializeFlakeGate, hasFlakeRecoveredJobs } from './flake-recovery.js';
-import type { CiConfigV2 } from './ci-config-v2.js';
+import type { CiConfig } from './ci-config-jobs.js';
 
 /**
  * End-to-end retry-history round-trip against a real in-memory sqlite, using
@@ -90,7 +90,7 @@ type KnownStmt =
   | 'listFinalizeRunJobAttemptsForRun'
   | 'setFinalizeRunFlakeRecoveredJobs';
 
-const config: CiConfigV2 = {
+const config: CiConfig = {
   version: 2,
   on: ['finalize'],
   timeoutMinutes: 30,

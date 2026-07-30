@@ -67,7 +67,7 @@ const sampleDraft: FinalizeSetupDraft = {
   },
   envVars: [{ key: 'API_KEY', sources: ['source'], required: false }],
   proposedCiYaml:
-    'version: 1\non:\n  - finalize\n  - manual\nsteps:\n  - name: install\n    run: npm ci --include=dev\n  - name: test\n    run: npm test\n',
+    'version: 2\non:\n  - finalize\n  - manual\njobs:\n  install:\n    runs-on: host\n    steps:\n      - name: install\n        run: npm ci --include=dev\n  test:\n    runs-on: host\n    needs: [install]\n    steps:\n      - name: test\n        run: npm test\n',
 };
 
 describe('finalize-wizard kickoff prompt', () => {
@@ -127,26 +127,33 @@ describe('finalize-wizard kickoff prompt', () => {
     expect(prompt).toMatch(/10\. \*\*`POST .*wizard-complete`\*\*/);
   });
 
-  it('teaches v2 per-job fan-out as the GHA-parity default in the proposal step', () => {
-    // The wizard must prefer v2 concurrent jobs (one per GitHub job on
-    // the DinD fleet) whenever the repo runs more than one CI lane, and
+  it('teaches per-job fan-out as the GHA-parity default in the proposal step', () => {
+    // The wizard must map one job per GitHub job onto the DinD fleet, and
     // must never group/serialize/drop jobs to save runners.
-    expect(prompt).toMatch(/Prefer v2/i);
-    expect(prompt).toMatch(/concurrent `jobs:`/);
-    expect(prompt).toMatch(/one v2 `job` per GitHub job/i);
+    expect(prompt).toMatch(/`version: 2` is the only schema/i);
+    expect(prompt).toMatch(/concurrent runners on the DinD fleet/i);
+    expect(prompt).toMatch(/one job per GitHub job/i);
     expect(prompt).toMatch(/matrix\.include/);
     expect(prompt).toMatch(/Do NOT group, serialize, or drop jobs/i);
     expect(prompt).toMatch(/FINALIZE_MATRIX_/);
   });
 
-  it('keeps schema guardrails (shared constraints + banned fields) in the proposal step', () => {
-    // The agent still can't emit a banned field; the prompt enumerates
-    // the shared constraints and the per-version env/matrix rules.
+  it('never teaches the retired version 1 steps pipeline', () => {
+    // The parser rejects `version: 1`, so a prompt that still offered it as a
+    // "simple fallback" would send the agent straight into a 400 on apply.
+    expect(prompt).not.toMatch(/version: 1/);
+    expect(prompt).not.toMatch(/\bv1\b/);
+  });
+
+  it('keeps schema guardrails (constraints + banned fields) in the proposal step', () => {
+    // The agent still can't emit a banned field; the prompt enumerates the
+    // constraints and the env/matrix rules.
     expect(prompt).toMatch(/`on:` must be `finalize`\/`manual`/);
     expect(prompt).toMatch(/`timeout_minutes` in `\[1, 240\]`/);
-    // shell/uses/with banned at every version; env/matrix are v2-only.
     expect(prompt).toMatch(/Never\*\* propose `shell:`, `uses:`, or `with:`/);
-    expect(prompt).toMatch(/At \*\*v1\*\*, `env:` and `matrix:` are also rejected/);
+    expect(prompt).toMatch(
+      /`env:` \(top\/job\/step\) and `matrix\.include` \(job-level\) are first-class/,
+    );
   });
 
   it('documents CI replacement mode so the wizard does not refuse complex steps', () => {

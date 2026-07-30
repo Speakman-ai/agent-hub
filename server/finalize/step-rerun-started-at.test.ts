@@ -61,7 +61,6 @@ function seedRun(): string {
     null,
     Date.now(),
     'full',
-    null,
   );
   return runId;
 }

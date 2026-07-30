@@ -59,7 +59,7 @@ import { mergeFinalizeGitSpawnEnv } from './finalize-git-env.js';
 import { FINALIZE_BUDGET_SECONDS, runRebasePhase } from './rebase.js';
 import type { RebasePhaseOutcome } from './rebase.js';
 import { loadCiConfigFromFile } from './ci-config.js';
-import type { AnyCiConfig, CiConfigParseResult } from './ci-config.js';
+import type { CiConfig, CiConfigParseResult } from './ci-config.js';
 import { resolveCiConfig, type CiConfigSource } from './ci-config-source.js';
 import { getServerCiConfig } from './ci-config-store.js';
 import { runReviewerDispatch } from './reviewer-dispatch.js';
@@ -68,7 +68,6 @@ import type {
   ReviewerLocalDiffInputs,
   RunReviewerOnLocalDiff,
 } from './reviewer-dispatch.js';
-import { runStepPhase } from './step-runner.js';
 import type { StepRunResult } from './step-runner.js';
 import { runJobPhase } from './job-runner.js';
 import { reconcileFinalizeRunTerminalSteps } from './reconcile-terminal-steps.js';
@@ -372,7 +371,6 @@ export interface OrchestratorDeps {
   runRebasePhase?: typeof runRebasePhase;
   loadCiConfigFromFile?: typeof loadCiConfigFromFile;
   runReviewerDispatch?: typeof runReviewerDispatch;
-  runStepPhase?: typeof runStepPhase;
   runJobPhase?: typeof runJobPhase;
   dispatchFixMessage?: typeof dispatchFixMessage;
   /** Spawn originating agent after §7 fix dispatch (see `spawn-fix-turn.ts`). */
@@ -513,7 +511,6 @@ export async function runFinalize(
   const runRebase = deps.runRebasePhase ?? runRebasePhase;
   const loadCi = deps.loadCiConfigFromFile ?? loadCiConfigFromFile;
   const runReview = deps.runReviewerDispatch ?? runReviewerDispatch;
-  const runSteps = deps.runStepPhase ?? runStepPhase;
   const runJobs = deps.runJobPhase ?? runJobPhase;
   const dispatchFix = deps.dispatchFixMessage ?? dispatchFixMessage;
   const resolveHead = deps.resolveHeadSha ?? defaultResolveHeadSha;
@@ -591,8 +588,6 @@ export async function runFinalize(
       opts.retryOfRunId ?? null,
       startedAt,
       mode,
-      // `job_filter` is a legacy nullable column; new runs never set it.
-      null,
     );
   } catch (err) {
     // UNIQUE collision race: another caller raced us between the lookup
@@ -852,7 +847,7 @@ export async function runFinalize(
     // re-read state from the DB (which would race with the live row).
     let lastReviewerOutcome: ReviewerDispatchOutcome | null = null;
     let lastStepOutcome: StepRunResult | null = null;
-    let parsedCi: AnyCiConfig | null = null;
+    let parsedCi: CiConfig | null = null;
     // §6 no-progress guard: the post-rebase HEAD snapshot the PREVIOUS
     // iteration validated against. A fix dispatch can only change the
     // outcome of review/checks by landing a new commit on the feature
@@ -876,11 +871,11 @@ export async function runFinalize(
     // classifier can't tell a real fix from a laundered flake, so the gate must
     // block automation rather than read clean. Only flips false, never back.
     let attemptHistoryPersisted = true;
-    // Whether the v2 jobs (tasks) phase actually ran at least once this run.
-    // Drives `expectAttempts`: a v2 run that ran jobs MUST have history, so its
+    // Whether the jobs (tasks) phase actually ran at least once this run.
+    // Drives `expectAttempts`: a run that ran jobs MUST have history, so its
     // absence fails the gate closed; a review-only run never ran jobs and has
     // nothing to classify.
-    let ranV2Jobs = false;
+    let ranJobs = false;
     // Intra-phase recovered flakes accumulated across every round: a shard that
     // failed a genuine test then passed on a same-commit `retries:` rerun. These
     // never appear as a failed row in the per-round attempt history (the retry
@@ -1203,7 +1198,6 @@ export async function runFinalize(
 
       trace('ci_parsed', {
         round: loopCount,
-        ciVersion: parsedCi.version,
         timeoutMinutes: parsedCi.timeoutMinutes ?? null,
         budgetSeconds,
         // Which config source won, and whether a server config was shadowed by
@@ -1336,50 +1330,33 @@ export async function runFinalize(
 
         // ── Phase 4: tasks ──────────────────────────────────────────────
         try {
-          if (parsedCi.version === 2) {
-            // Tenant identity for the remote runner queue (local backend ignores
-            // it). getActiveOrgId throws before an org is selected — default to
-            // '' so the local path / tests are unaffected.
-            let orgId = '';
-            try {
-              orgId = getActiveOrgId();
-            } catch {
-              /* no active org — fine for the local backend */
-            }
-            lastStepOutcome = await runJobs(
-              {
-                stmts: deps.stmts,
-                broadcast: deps.broadcast,
-                logStore: deps.logStore,
-              },
-              {
-                runId,
-                config: parsedCi,
-                worktreePath,
-                sessionId,
-                branch: opts.branch,
-                headSha: headValidatedAgainst,
-                env: spawnEnv,
-                orgId,
-                projectId: opts.project.id,
-              },
-            );
-          } else {
-            lastStepOutcome = await runSteps(
-              {
-                stmts: deps.stmts,
-                broadcast: deps.broadcast,
-                logStore: deps.logStore,
-              },
-              {
-                runId,
-                config: parsedCi,
-                worktreePath,
-                sessionId,
-                env: spawnEnv,
-              },
-            );
+          // Tenant identity for the remote runner queue (local backend ignores
+          // it). getActiveOrgId throws before an org is selected — default to
+          // '' so the local path / tests are unaffected.
+          let orgId = '';
+          try {
+            orgId = getActiveOrgId();
+          } catch {
+            /* no active org — fine for the local backend */
           }
+          lastStepOutcome = await runJobs(
+            {
+              stmts: deps.stmts,
+              broadcast: deps.broadcast,
+              logStore: deps.logStore,
+            },
+            {
+              runId,
+              config: parsedCi,
+              worktreePath,
+              sessionId,
+              branch: opts.branch,
+              headSha: headValidatedAgainst,
+              env: spawnEnv,
+              orgId,
+              projectId: opts.project.id,
+            },
+          );
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return terminate(
@@ -1415,7 +1392,6 @@ export async function runFinalize(
         }
         trace('checks', {
           round: loopCount,
-          engine: parsedCi.version === 2 ? 'jobs' : 'steps',
           status: lastStepOutcome.status,
           steps: lastStepOutcome.stepResults.length,
           failedStep: lastStepOutcome.failedStep?.name ?? null,
@@ -1424,41 +1400,38 @@ export async function runFinalize(
         // Snapshot this round's per-job state into the retry-history table so
         // the flake-recovery classifier can later see "failed round N, passed
         // round M". finalize_run_jobs only keeps the latest state per instance;
-        // this append is what makes per-round history durable. v2 jobs only —
-        // v1 sequential steps have no job concept to track.
-        if (parsedCi.version === 2) {
-          ranV2Jobs = true;
-          // Capture any shard that recovered a genuine test failure via a
-          // same-commit config `retries:` rerun this round. These are invisible
-          // to the per-round attempt history below (their final state is
-          // `passed`), so accumulate them for the flake gate at the push step.
-          for (const inst of lastStepOutcome.flakeRecoveredInstances ?? []) {
-            const key = `${inst.jobId} ${inst.matrixKey}`;
-            const prev = intraPhaseFlakeRecovered.get(key);
-            if (!prev || inst.failureCount > prev.failureCount) {
-              intraPhaseFlakeRecovered.set(key, inst);
-            }
+        // this append is what makes per-round history durable.
+        ranJobs = true;
+        // Capture any shard that recovered a genuine test failure via a
+        // same-commit config `retries:` rerun this round. These are invisible
+        // to the per-round attempt history below (their final state is
+        // `passed`), so accumulate them for the flake gate at the push step.
+        for (const inst of lastStepOutcome.flakeRecoveredInstances ?? []) {
+          const key = `${inst.jobId} ${inst.matrixKey}`;
+          const prev = intraPhaseFlakeRecovered.get(key);
+          if (!prev || inst.failureCount > prev.failureCount) {
+            intraPhaseFlakeRecovered.set(key, inst);
           }
-          const persisted = recordJobAttemptsForRound(
-            { stmts: deps.stmts, now, log },
-            { runId, round: loopCount, headSha: headValidatedAgainst },
-          );
-          if (!persisted) attemptHistoryPersisted = false;
-          // Refresh this run's cross-run flake-history rows from the snapshot
-          // just recorded. Idempotent upsert per instance — the final round's
-          // call reflects the run's ultimate per-instance outcome regardless of
-          // terminal path. Best-effort: a miss only degrades future flake-rate
-          // accuracy, never the gate's fail-closed correctness.
-          recordRunTestHistory(
-            { stmts: deps.stmts, now, log },
-            {
-              runId,
-              projectId: opts.project.id,
-              branch: opts.branch,
-              headSha: headValidatedAgainst,
-            },
-          );
         }
+        const persisted = recordJobAttemptsForRound(
+          { stmts: deps.stmts, now, log },
+          { runId, round: loopCount, headSha: headValidatedAgainst },
+        );
+        if (!persisted) attemptHistoryPersisted = false;
+        // Refresh this run's cross-run flake-history rows from the snapshot
+        // just recorded. Idempotent upsert per instance — the final round's
+        // call reflects the run's ultimate per-instance outcome regardless of
+        // terminal path. Best-effort: a miss only degrades future flake-rate
+        // accuracy, never the gate's fail-closed correctness.
+        recordRunTestHistory(
+          { stmts: deps.stmts, now, log },
+          {
+            runId,
+            projectId: opts.project.id,
+            branch: opts.branch,
+            headSha: headValidatedAgainst,
+          },
+        );
         // Step terminal classes: the runner already wrote `failed` /
         // `timed_out` to the row for those classes, but NOT for `infra_error`
         // (§10 leaves that to the orchestrator).
@@ -1626,7 +1599,7 @@ export async function runFinalize(
               worktreePath,
               env: spawnEnv,
               config: parsedCi,
-              expectAttempts: ranV2Jobs,
+              expectAttempts: ranJobs,
               attemptsPersisted: attemptHistoryPersisted,
             },
           );

@@ -224,15 +224,9 @@ async function kickoffFinalizeRunBody(
   }
   const { attempt, idempotencyKey } = decision;
 
-  // `job_filter` is retained as a nullable column for historical rows only;
-  // every new run is the full Finalize (checks + reviewer), so the filter is
-  // always null. The two trailing args match the `(job_filter IS NULL AND ?
-  // IS NULL) OR job_filter = ?` clause in the prepared statement.
   const activeForBranch = stmts.getActiveFinalizeRunForSessionBranch.get(
     session.id,
     session.worktree_branch,
-    null,
-    null,
   ) as FinalizeRunRow | undefined;
   if (activeForBranch) {
     return { kind: 'in_flight', runId: activeForBranch.id, status: activeForBranch.status };
@@ -248,7 +242,6 @@ async function kickoffFinalizeRunBody(
     session.id,
     session.worktree_branch,
     mode,
-    null,
     Date.now(),
   ) as { changes?: number };
   if ((claimResult.changes ?? 0) === 0) {
@@ -256,8 +249,6 @@ async function kickoffFinalizeRunBody(
       const active = stmts.getActiveFinalizeRunForSessionBranch.get(
         session.id,
         session.worktree_branch,
-        null,
-        null,
       ) as FinalizeRunRow | undefined;
       if (active) {
         return { kind: 'in_flight', runId: active.id, status: active.status };

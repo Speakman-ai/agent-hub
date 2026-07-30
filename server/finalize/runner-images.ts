@@ -1,5 +1,5 @@
 /**
- * Map ci.yaml `runs-on` labels to Docker images for Finalize v2 job containers.
+ * Map ci.yaml `runs-on` labels to Docker images for Finalize job containers.
  *
  * Override the default tag with FINALIZE_RUNNER_IMAGE_UBUNTU_24_04 env var
  * when testing a locally built image.
@@ -18,7 +18,10 @@ const RUNS_ON_MAP: Record<string, string | null> = {
 
 /**
  * Resolve a `runs-on` label to a Docker image reference.
- * Returns `null` for host execution (v1 / legacy).
+ *
+ * Returns `null` when the job runs directly on the Hub host rather than in a
+ * container — either `runs-on: host` (what `finalize-setup` proposes for
+ * lightweight gates that need no Docker) or an unrecognised bare label.
  */
 export function resolveRunsOnImage(runsOn: string): string | null {
   const key = runsOn.trim().toLowerCase();

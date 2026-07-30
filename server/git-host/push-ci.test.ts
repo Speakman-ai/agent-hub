@@ -283,7 +283,7 @@ describe('push CI engine', () => {
     expect(runJobPhase).not.toHaveBeenCalled();
   });
 
-  it('records ci_config_invalid for missing or v1 ci.yaml', async () => {
+  it('records ci_config_invalid for a missing or version-1 ci.yaml', async () => {
     const missing = await seedHostedProject({ ciYaml: null });
     const v1 = await seedHostedProject({
       ciYaml: 'version: 1\non: [push]\nsteps:\n  - name: t\n    run: echo ok\n',
@@ -409,7 +409,6 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
       null,
       Date.now(),
       'full',
-      null,
     );
     stmts.markFinalizeRunReadyToPush.run(headSha, finRunId);
 
@@ -451,7 +450,6 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
       null,
       Date.now(),
       'full',
-      null,
     );
     stmts.markFinalizeRunReadyToPush.run(headSha, finRunId);
 
@@ -527,15 +525,18 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
   });
 });
 
-describe('PR-level CI — legacy version-1 configs', () => {
-  it('skips silently when ci.yaml is the finalize-only v1 format', async () => {
+describe('PR-level CI — rejected configs', () => {
+  it('fails loudly with ci_config_invalid when ci.yaml declares version 1', async () => {
+    // `version: 1` is not a schema the parser accepts any more. A committed
+    // v1 file is present-but-invalid, so PR CI must surface a red run the
+    // author can act on rather than skipping as if CI were never configured.
     const v1 = [
       'version: 1',
       'on: [finalize, manual]',
       'timeout_minutes: 30',
       'steps:',
       '  - name: backend-tests',
-      '    run: echo legacy',
+      '    run: echo hi',
     ].join('\n');
     const { project, headSha } = await seedHostedProject({ ciYaml: v1 });
     const runJobPhase = vi.fn();
@@ -545,7 +546,21 @@ describe('PR-level CI — legacy version-1 configs', () => {
       { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
     );
     expect(runJobPhase).not.toHaveBeenCalled();
-    // No run row — a v1 config is not "invalid", it just never opted in.
+    expect(runRowFor(project, headSha)).toMatchObject({
+      status: 'failed',
+      failure_reason: 'ci_config_invalid',
+    });
+  });
+
+  it('still skips silently when the commit has no ci.yaml at all', async () => {
+    const { project, headSha } = await seedHostedProject({ ciYaml: null });
+    const runJobPhase = vi.fn();
+    await maybeRunPrCi(
+      project,
+      { number: 10, head_branch: 'main', base_branch: 'main' },
+      { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
+    );
+    expect(runJobPhase).not.toHaveBeenCalled();
     expect(runRowFor(project, headSha)).toBeUndefined();
   });
 });

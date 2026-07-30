@@ -53,13 +53,13 @@
  * The companion per-repo tests (`repo-ci-yaml.test.ts` for agent-hub
  * and `repo-ci-yaml-example-webapp.test.ts` for webapp)
  * pin the per-repo step/job contracts; this test pins what's COMMON
- * across schema versions.
+ * across both repos.
  */
 
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'url';
-import { loadCiConfigFromFile, type AnyCiConfig, type CiStep } from './ci-config.js';
+import { loadCiConfigFromFile, type CiConfig, type CiStep } from './ci-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -76,10 +76,7 @@ const WEBAPP_CI_YAML = path.join(path.dirname(__filename), 'fixtures', 'example-
 
 // Helper: load + assert ok, returning the CiConfig (or throwing with a
 // clear test-failure message that pinpoints which file is broken).
-// Version-agnostic — the orchestrator branches on version downstream;
-// what this helper guarantees is "parsed successfully into something
-// the orchestrator can read."
-async function loadOk(label: string, file: string): Promise<AnyCiConfig> {
+async function loadOk(label: string, file: string): Promise<CiConfig> {
   const result = await loadCiConfigFromFile(file);
   if (!result.ok) {
     throw new Error(
@@ -90,12 +87,10 @@ async function loadOk(label: string, file: string): Promise<AnyCiConfig> {
   return result.config;
 }
 
-// Helper: flatten every executable step from a parsed config. At v1 the
-// steps sit at `cfg.steps`; at v2 they sit inside `cfg.jobs[id].steps`
-// for every job. Returning a flat list keeps the per-step invariants
-// readable without leaking the version branch into each assertion.
-function allSteps(cfg: AnyCiConfig): CiStep[] {
-  if (cfg.version === 1) return cfg.steps;
+// Helper: flatten every executable step from a parsed config. Steps sit
+// inside `cfg.jobs[id].steps` for every job; a flat list keeps the per-step
+// invariants readable.
+function allSteps(cfg: CiConfig): CiStep[] {
   return Object.values(cfg.jobs).flatMap((job) => job.steps);
 }
 
@@ -103,11 +98,11 @@ describe('cross-repo parity: agent-hub vs webapp ci.yaml', () => {
   it('both files parse cleanly into a usable orchestrator config', async () => {
     const agentHub = await loadOk('agent-hub', AGENT_HUB_CI_YAML);
     const webapp = await loadOk('webapp', WEBAPP_CI_YAML);
-    // The orchestrator only branches on `version`; what we pin here is
-    // that both files yielded a parsed config with one of the supported
-    // versions. Version skew (one v1, one v2) is allowed by design.
-    expect([1, 2]).toContain(agentHub.version);
-    expect([1, 2]).toContain(webapp.version);
+    // `version: 2` is the only schema the parser accepts, so a successful
+    // parse already pins it — assert explicitly so a future schema bump has
+    // to come here and think about cross-repo skew.
+    expect(agentHub.version).toBe(2);
+    expect(webapp.version).toBe(2);
   });
 
   it('both files declare the finalize trigger (orchestrator needs it)', async () => {

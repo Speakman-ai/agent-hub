@@ -66,7 +66,6 @@ function seedRun(
     null,
     overrides.startedAt ?? Date.now(),
     'checks',
-    null,
   );
   if (typeof overrides.endedAt === 'number' || overrides.failureReason !== undefined) {
     getDb()

@@ -57,7 +57,7 @@ const QuarantineListResponse = registerComponent(
 const QuarantineCreateRequest = registerComponent(
   'QuarantineCreateRequest',
   z.object({
-    job_id: z.string().openapi({ description: 'The ci.yaml v2 job id to quarantine.' }),
+    job_id: z.string().openapi({ description: 'The ci.yaml job id to quarantine.' }),
     matrix_key: z
       .string()
       .optional()

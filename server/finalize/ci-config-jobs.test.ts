@@ -9,9 +9,9 @@ import {
   resolveDefaultJobRetries,
   resolveDefaultMatrixFailFast,
   substituteEnvString,
-} from './ci-config-v2.js';
+} from './ci-config-jobs.js';
 
-describe('ci-config-v2 helpers', () => {
+describe('ci-config-jobs helpers', () => {
   it('matrixKeyFromRow prefers group field', () => {
     expect(matrixKeyFromRow({ group: 'Profiles & Tasks', specs: 'a.cy.ts' })).toBe(
       'Profiles_Tasks',
@@ -414,7 +414,7 @@ jobs:
   });
 });
 
-describe('ci-config-v2 — per-step timeout_minutes', () => {
+describe('ci-config-jobs — per-step timeout_minutes', () => {
   const cfg = (stepTail: string) => `
 version: 2
 on: [finalize]
@@ -427,7 +427,7 @@ jobs:
 ${stepTail}
 `;
 
-  it('parses a valid per-step timeout_minutes onto the v2 step', () => {
+  it('parses a valid per-step timeout_minutes onto the step', () => {
     const r = parseCiConfig(cfg('        timeout_minutes: 8'));
     expect(r.ok).toBe(true);
     if (!r.ok || r.config.version !== 2) return;
@@ -438,15 +438,15 @@ ${stepTail}
     });
   });
 
-  it('rejects an invalid v2 step timeout with invalid_step_timeout_v2', () => {
+  it('rejects an invalid step timeout with invalid_step_timeout', () => {
     const r = parseCiConfig(cfg('        timeout_minutes: 0'));
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.error.code).toBe('invalid_step_timeout_v2');
+    expect(r.error.code).toBe('invalid_step_timeout');
   });
 });
 
-describe('ci-config-v2 job retries', () => {
+describe('ci-config-jobs job retries', () => {
   const jobCfg = (retriesLine = ''): string => `
 version: 2
 on: [finalize]

@@ -503,7 +503,7 @@ export interface RunStepsSequenceOptions {
   /** When false, skip the checks-round timeline write (v2 job shards). Default true. */
   emitChecksTimeline?: boolean;
   /**
-   * When true, this sequence is ONE shard of a larger run (the v2 matrix path)
+   * When true, this sequence is ONE shard of a larger run (a matrix shard)
    * and must NOT write the run-level terminal status on failure. A shard that
    * calls `failFinalizeRun('failed'|'timed_out', …)` stamps the whole
    * `finalize_runs` row terminal (status + `ended_at`) the moment the FIRST
@@ -513,90 +513,13 @@ export interface RunStepsSequenceOptions {
    * failure-shaped {@link StepRunResult}; the job-level state is persisted by
    * the job runner and the orchestrator owns the single run-level terminal
    * write once every shard has finished (mirrors how `infra_error` already
-   * defers to the orchestrator). Default false (v1 single-sequence path owns
-   * its terminal write, unchanged).
+   * defers to the orchestrator). Default false — an unsharded single sequence
+   * owns its own terminal write.
    */
   deferRunTerminal?: boolean;
 }
-export interface StepRunnerOptions {
-  /** finalize_runs.id. */
-  runId: string;
-  /** Parsed ci.yaml v1. Steps are run in declaration order. */
-  config: CiConfig;
-  /** Absolute path of the session's worktree (working directory). */
-  worktreePath: string;
-  /** Session to stream output into. Must be non-null at this phase. */
-  sessionId: string;
-  /** Extra env injected per-step (PATH augmentations, tokens, etc.). */
-  env?: NodeJS.ProcessEnv;
-}
-
 /**
- * Run the tasks phase end-to-end.
- *
- * Pre-conditions (caller's responsibility):
- *   - `finalize_runs` row exists and the rebase + review phases have
- *     already finished.
- *   - `config` is the validated {@link CiConfig} from the parse phase
- *     (post-{@link parseCiConfig}).
- *   - `worktreePath` is on the correct head SHA. The runner does not
- *     re-check the git state — that's the rebase phase's job.
- *
- * Post-conditions:
- *   - `finalize_runs.phase = 'tasks'`, `status = 'running'` while steps
- *     are in flight.
- *   - On success → status stays `running`; the orchestrator advances to
- *     the push phase.
- *   - On non-success → `failFinalizeRun` is called with the appropriate
- *     terminal status + `failure_reason`. The orchestrator is expected
- *     to read the result and dispatch the §7 fix message into the
- *     session before moving the row to its final state.
- *
- * The streaming-output insertion path is best-effort: if `addMessage` or
- * the broadcast throws for one line, we log and keep going. We do NOT
- * abort a step because the chat UI hiccupped.
- */
-export async function runStepPhase(
-  deps: StepRunnerDeps,
-  opts: StepRunnerOptions,
-): Promise<StepRunResult> {
-  if (!opts.worktreePath) {
-    return terminate(
-      deps.stmts,
-      opts.runId,
-      'infra_error',
-      'worktree_create_failed',
-      'worktree path missing for tasks phase',
-      0,
-      [],
-      'worktree path missing',
-    );
-  }
-  if (!opts.sessionId) {
-    return terminate(
-      deps.stmts,
-      opts.runId,
-      'infra_error',
-      'container_unavailable',
-      'session id missing for tasks phase',
-      0,
-      [],
-      'session id missing',
-    );
-  }
-
-  return runStepsSequence(deps, {
-    runId: opts.runId,
-    sessionId: opts.sessionId,
-    worktreePath: opts.worktreePath,
-    steps: opts.config.steps,
-    timeoutMinutes: opts.config.timeoutMinutes,
-    env: opts.env,
-  });
-}
-
-/**
- * Run an ordered list of steps (shared by v1 step phase and v2 job shards).
+ * Run an ordered list of steps — the body of one job instance (matrix shard).
  */
 export async function runStepsSequence(
   deps: StepRunnerDeps,
@@ -923,7 +846,7 @@ function stepRunnerTimelineDeps(deps: StepRunnerDeps): TimelineMessageDeps {
 
 function emitChecksRoundTimeline(
   deps: StepRunnerDeps,
-  opts: Pick<StepRunnerOptions, 'runId' | 'sessionId'>,
+  opts: Pick<RunStepsSequenceOptions, 'runId' | 'sessionId'>,
 ): void {
   const runRow = deps.stmts.getFinalizeRun.get(opts.runId) as FinalizeRunRow | undefined;
   const steps = listFinalizeRunSteps(deps.stmts, opts.runId);
@@ -942,7 +865,7 @@ function emitChecksRoundTimeline(
   });
 }
 
-/** Emit one checks-round timeline message after all v2 job shards finish. */
+/** Emit one checks-round timeline message after all job shards finish. */
 export function emitFinalizeChecksRoundTimeline(
   deps: StepRunnerDeps,
   opts: Pick<RunStepsSequenceOptions, 'runId' | 'sessionId'>,
@@ -958,15 +881,6 @@ function finishStepSequence(
   if (opts.emitChecksTimeline !== false) {
     emitChecksRoundTimeline(deps, opts);
   }
-  return result;
-}
-
-function finishStepPhase(
-  deps: StepRunnerDeps,
-  opts: StepRunnerOptions,
-  result: StepRunResult,
-): StepRunResult {
-  emitChecksRoundTimeline(deps, opts);
   return result;
 }
 
@@ -1008,7 +922,7 @@ interface RunSingleStepArgs {
  */
 function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
   // Output no longer flows into the session message log, so this function
-  // doesn't need sessionId/runId/deps — the caller (runStepPhase) owns the
+  // doesn't need sessionId/runId/deps — the caller (runStepsSequence) owns the
   // log-store upload + step-row persistence once the step resolves.
   const { step, stepIndex, now, spawnStep, hardTimeoutMs } = args;
 
@@ -1338,7 +1252,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
 
 /**
  * Bounded wall-clock for the best-effort step-log upload. The terminal step
- * state is ALWAYS persisted before this runs (see runStepPhase), so even a
+ * state is ALWAYS persisted before this runs (see runStepsSequence), so even a
  * fully hung backend can only delay attaching the log location by this much —
  * never the step's running→passed/failed transition. Override with
  * `FINALIZE_STEP_LOG_UPLOAD_TIMEOUT_MS`.

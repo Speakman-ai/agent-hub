@@ -20,7 +20,7 @@
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import type { AnyCiConfig } from './ci-config.js';
+import type { CiConfig } from './ci-config.js';
 import type { FinalizeRunJobAttemptRow, FinalizeRunJobRow, Stmts } from '../types.js';
 import {
   blockedGateResult,
@@ -162,8 +162,8 @@ export async function classifyRunFlakeRecovery(
     runId: string;
     worktreePath: string;
     env?: NodeJS.ProcessEnv;
-    config: AnyCiConfig | null;
-    /** True when the tasks phase ran jobs we expect history for (v2). */
+    config: CiConfig | null;
+    /** True when the tasks phase actually ran jobs we expect history for. */
     expectAttempts?: boolean;
     /** False when any round's per-round history failed to persist. */
     attemptsPersisted?: boolean;
@@ -208,12 +208,10 @@ export async function classifyRunFlakeRecovery(
     headSha: r.head_sha,
   }));
 
-  // Per-job declared code-path globs (v2 only).
+  // Per-job declared code-path globs.
   const jobPaths = new Map<string, string[]>();
-  if (args.config && args.config.version === 2) {
-    for (const [jobId, job] of Object.entries(args.config.jobs)) {
-      if (job.paths && job.paths.length > 0) jobPaths.set(jobId, job.paths);
-    }
+  for (const [jobId, job] of Object.entries(args.config?.jobs ?? {})) {
+    if (job.paths && job.paths.length > 0) jobPaths.set(jobId, job.paths);
   }
 
   // Pre-resolve the (failHead, passHead) change-sets the classifier will ask

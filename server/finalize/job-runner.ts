@@ -1,18 +1,18 @@
 /**
  * job-runner.ts — v2 Finalize tasks phase: parallel GHA-style jobs + matrix.
  *
- * Expands ci.yaml v2 `jobs` × `matrix.include` into isolated DinD runner
+ * Expands ci.yaml `jobs` × `matrix.include` into isolated DinD runner
  * containers (or host bash for `runs-on: host`) and schedules shards
  * with a bounded parallelism pool. DinD is the only container runner mode.
  */
 import { randomUUID } from 'crypto';
-import type { CiConfigV2, CiStepV2, JobInstance } from './ci-config-v2.js';
+import type { CiConfig, CiStep, JobInstance } from './ci-config-jobs.js';
 import {
   applyEnvToStep,
   buildFinalizeBuiltinEnv,
   expandJobInstances,
   substituteEnvString,
-} from './ci-config-v2.js';
+} from './ci-config-jobs.js';
 import { resolveRunnerBackend, type RunnerLease } from './runner-backend.js';
 import { detectRepoVisibility } from './runner-repo-visibility.js';
 import { hasExplicitResourceProfile, type RepoVisibility } from './runner-resource-profile.js';
@@ -29,7 +29,6 @@ import {
   type StepRunnerDeps,
   type SpawnStepFn,
 } from './step-runner.js';
-import type { CiStep } from './ci-config.js';
 import { classifyFailureReason } from './infra-retry.js';
 import { isWorktreeBundleFailureMessage } from './worktree-bundle.js';
 
@@ -38,7 +37,7 @@ export const DEFAULT_MAX_PARALLEL_JOBS = 4;
 
 export interface JobRunnerOptions {
   runId: string;
-  config: CiConfigV2;
+  config: CiConfig;
   worktreePath: string;
   sessionId: string;
   branch: string;
@@ -354,7 +353,7 @@ function resolveMergedEnv(
   return merged;
 }
 
-function toCiStep(step: CiStepV2, env: Record<string, string>): CiStep {
+function toCiStep(step: CiStep, env: Record<string, string>): CiStep {
   const resolved = applyEnvToStep(step, env);
   return {
     name: resolved.name,
@@ -673,7 +672,7 @@ async function runJobInstance(
 }
 
 /**
- * Run ci.yaml v2 jobs phase — parallel matrix shards in runner containers.
+ * Run the ci.yaml jobs phase — parallel matrix shards in runner containers.
  */
 export async function runJobPhase(
   deps: StepRunnerDeps,

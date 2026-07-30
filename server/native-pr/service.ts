@@ -35,7 +35,7 @@ import {
 } from './git-read.js';
 import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
 import { parseCiConfig } from '../finalize/ci-config.js';
-import { expandJobInstances } from '../finalize/ci-config-v2.js';
+import { expandJobInstances } from '../finalize/ci-config-jobs.js';
 import { isKnownHubUserId } from './author-user.js';
 import { NativePrError } from './errors.js';
 import { execFile } from 'child_process';
@@ -67,13 +67,6 @@ async function ciEmptyStateNote(repoPath: string, sha: string): Promise<string |
     return 'No CI is configured on this branch (.agent-hub/ci.yaml not found).';
   }
   const parsed = parseCiConfig(text);
-  if (parsed.ok && parsed.config.version !== 2) {
-    return (
-      `CI checks do not run for pull requests on this project — .agent-hub/ci.yaml is ` +
-      `version ${parsed.config.version} (Finalize-only). Migrate it to version 2 (jobs + runs-on) ` +
-      `to enable PR checks.`
-    );
-  }
   if (!parsed.ok) {
     return `.agent-hub/ci.yaml failed to parse: ${parsed.error.message}`;
   }
@@ -448,7 +441,7 @@ function requiredJobsFromCiConfigText(
   text: string,
 ): Array<{ jobId: string; matrixKey: string }> | null {
   const parsed = parseCiConfig(text);
-  if (!parsed.ok || parsed.config.version !== 2) return null;
+  if (!parsed.ok) return null;
   return expandJobInstances(parsed.config, {}).map((instance) => ({
     jobId: instance.jobId,
     matrixKey: instance.matrixKey,

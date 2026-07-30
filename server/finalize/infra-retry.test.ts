@@ -385,21 +385,21 @@ describe('openInfraRetryRun', () => {
     }
   });
 
-  // Regression (card #1184): the production `insertFinalizeRun` statement binds
-  // 18 columns (… started_at, mode, job_filter). openInfraRetryRun used to pass
-  // only 16 values, so against the REAL prepared statement better-sqlite3 threw
-  // "Too few parameter values were provided" — caught and swallowed into a null
-  // return, which collapsed every reclaim retry in 1ms. The other tests here mock
-  // insertFinalizeRun and destructure only 16 args, so they never caught it. This
-  // one runs the actual SQL so the bind-count contract is enforced for real.
-  it('binds all 18 columns against the real statement and inherits parent mode/job_filter', () => {
+  // Regression: the production `insertFinalizeRun` statement binds 17 columns
+  // (… started_at, mode). openInfraRetryRun used to pass only 16 values, so
+  // against the REAL prepared statement better-sqlite3 threw "Too few parameter
+  // values were provided" — caught and swallowed into a null return, which
+  // collapsed every reclaim retry in 1ms. The other tests here mock
+  // insertFinalizeRun and destructure only 16 args, so they never caught it.
+  // This one runs the actual SQL so the bind-count contract is enforced.
+  it('binds all 17 columns against the real statement and inherits the parent mode', () => {
     const db = new Database(':memory:');
     db.exec(`CREATE TABLE finalize_runs (
       id TEXT PRIMARY KEY, card_id TEXT, session_id TEXT, project_id TEXT,
       branch TEXT, head_sha TEXT, idempotency_key TEXT UNIQUE, status TEXT,
       phase TEXT, trigger_source TEXT, worktree_path TEXT, triggered_by_user_id TEXT,
       author_name TEXT, author_email TEXT, retry_of_run_id TEXT, started_at INTEGER,
-      mode TEXT, job_filter TEXT
+      mode TEXT
     )`);
     // EXACT column list + placeholder count from db.ts:insertFinalizeRun.
     const realInsert = db.prepare(
@@ -407,11 +407,11 @@ describe('openInfraRetryRun', () => {
         id, card_id, session_id, project_id, branch, head_sha,
         idempotency_key, status, phase, trigger_source, worktree_path,
         triggered_by_user_id, author_name, author_email, retry_of_run_id,
-        started_at, mode, job_filter
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        started_at, mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
-    const parent = fakeParentRow({ mode: 'checks', job_filter: '["server"]' });
+    const parent = fakeParentRow({ mode: 'checks' });
     const { stmts } = makeStmts({ 'parent-run': parent });
     // Swap in the real prepared statement for the insert path only.
     (stmts as unknown as { insertFinalizeRun: unknown }).insertFinalizeRun = realInsert;
@@ -426,13 +426,11 @@ describe('openInfraRetryRun', () => {
     expect(result).toEqual({ runId: 'retry-real' });
     const row = db.prepare('SELECT * FROM finalize_runs WHERE id=?').get('retry-real') as {
       mode: string;
-      job_filter: string | null;
       retry_of_run_id: string;
       started_at: number;
     };
     expect(row).toBeDefined();
     expect(row.mode).toBe('checks'); // inherited from parent
-    expect(row.job_filter).toBe('["server"]'); // inherited from parent
     expect(row.retry_of_run_id).toBe('parent-run');
     expect(row.started_at).toBe(4_242);
     db.close();

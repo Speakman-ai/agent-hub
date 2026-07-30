@@ -23,10 +23,10 @@ import {
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
   __test,
   defaultSpawnStep,
-  runStepPhase,
   runStepsSequence,
   type SpawnStepFn,
   type SpawnedStep,
+  type StepRunResult,
   type StepRunnerDeps,
 } from './step-runner.js';
 import type { RunnerJobLossProbe } from './runner-queue.js';
@@ -189,12 +189,47 @@ function makeFakeChild(): {
   return { child, stdout, stderr, emitter, killed };
 }
 
+/**
+ * Drive one job's step sequence from a parsed config, the way `runJobPhase`
+ * does for each matrix shard. Keeps these tests reading as "run this pipeline"
+ * instead of unpacking `jobs.checks` at 30 call sites.
+ */
+function runJobSteps(
+  deps: StepRunnerDeps,
+  opts: {
+    runId: string;
+    config: CiConfig;
+    worktreePath: string;
+    sessionId: string;
+    env?: NodeJS.ProcessEnv;
+  },
+): Promise<StepRunResult> {
+  return runStepsSequence(deps, {
+    runId: opts.runId,
+    sessionId: opts.sessionId,
+    worktreePath: opts.worktreePath,
+    steps: opts.config.jobs.checks.steps,
+    timeoutMinutes: opts.config.timeoutMinutes,
+    ...(opts.env ? { env: opts.env } : {}),
+  });
+}
+
 function makeConfig(steps: CiStep[], timeoutMinutes = 60): CiConfig {
   return {
-    version: 1,
+    version: 2,
     on: ['finalize'],
     timeoutMinutes,
-    steps,
+    jobs: {
+      checks: {
+        runsOn: 'host',
+        failFast: false,
+        warmup: false,
+        needs: [],
+        retries: 0,
+        matrixInclude: [{}],
+        steps,
+      },
+    },
   };
 }
 
@@ -204,7 +239,7 @@ const WORKTREE = '/tmp/finalize-step-runner-fake';
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
-describe('runStepPhase — per-step timeout_minutes', () => {
+describe('runJobSteps — per-step timeout_minutes', () => {
   it('passes a step-level timeout_minutes as the spawn deadline, tightening the budget', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -229,7 +264,7 @@ describe('runStepPhase — per-step timeout_minutes', () => {
       { name: 'Uncapped', run: 'npm run lint' },
     ]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -270,7 +305,7 @@ describe('runStepPhase — per-step timeout_minutes', () => {
     // Step asks for 5 min — far above the 30s spawn cap — under a generous budget.
     const config = makeConfig([{ name: 'Long', run: 'npm run e2e', timeoutMinutes: 5 }], 60);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -285,7 +320,7 @@ describe('runStepPhase — per-step timeout_minutes', () => {
   });
 });
 
-describe('runStepPhase — happy path', () => {
+describe('runJobSteps — happy path', () => {
   it('runs every step sequentially, streams stdout/stderr line-by-line, returns success', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -309,7 +344,7 @@ describe('runStepPhase — happy path', () => {
       { name: 'Test', run: 'npm test' },
     ]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -431,7 +466,7 @@ describe('runStepPhase — happy path', () => {
   });
 });
 
-describe('runStepPhase — failure short-circuits', () => {
+describe('runJobSteps — failure short-circuits', () => {
   it('non-zero exit on step N stops the pipeline and surfaces failedStep', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -455,7 +490,7 @@ describe('runStepPhase — failure short-circuits', () => {
       { name: 'Test', run: 'npm test' },
     ]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -552,7 +587,7 @@ describe('runStepPhase — failure short-circuits', () => {
     };
     const config = makeConfig([{ name: 'step 1', run: 'kill -9 $$' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -567,7 +602,7 @@ describe('runStepPhase — failure short-circuits', () => {
   });
 });
 
-describe('runStepPhase — runner teardown (context canceled) reclassifies to infra_error', () => {
+describe('runJobSteps — runner teardown (context canceled) reclassifies to infra_error', () => {
   it('a non-zero exit ending in the context-canceled sentinel (all tests green) → infra_error, not step_failed', async () => {
     const stmts = makeStmts();
     const fakes: ReturnType<typeof makeFakeChild>[] = [];
@@ -584,7 +619,7 @@ describe('runStepPhase — runner teardown (context canceled) reclassifies to in
     };
     const config = makeConfig([{ name: 'Tests (client)', run: 'npm test' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -630,7 +665,7 @@ describe('runStepPhase — runner teardown (context canceled) reclassifies to in
     };
     const config = makeConfig([{ name: 'Tests (client)', run: 'npm test' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -653,7 +688,7 @@ describe('runStepPhase — runner teardown (context canceled) reclassifies to in
   });
 });
 
-describe('runStepPhase — runner cancellation collateral', () => {
+describe('runJobSteps — runner cancellation collateral', () => {
   it('reclassifies a `context canceled` non-zero exit as infra `runner_cancelled` (not step_failed)', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -673,7 +708,7 @@ describe('runStepPhase — runner cancellation collateral', () => {
       { name: 'E2E', run: 'docker compose up --abort-on-container-exit' },
     ]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -719,7 +754,7 @@ describe('runStepPhase — runner cancellation collateral', () => {
     };
     const config = makeConfig([{ name: 'Test', run: 'npm test' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -739,7 +774,7 @@ describe('runStepPhase — runner cancellation collateral', () => {
   });
 });
 
-describe('runStepPhase — timeout (fake timers)', () => {
+describe('runJobSteps — timeout (fake timers)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -765,7 +800,7 @@ describe('runStepPhase — timeout (fake timers)', () => {
     };
     const config = makeConfig([{ name: 'sleeper', run: 'sleep 9999' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -810,7 +845,7 @@ describe('runStepPhase — timeout (fake timers)', () => {
     };
     const config = makeConfig([{ name: 'sleeper', run: 'sleep 9999' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -840,7 +875,7 @@ describe('runStepPhase — timeout (fake timers)', () => {
 // carries a runner-loss probe (remote backend), the settlement must consult it
 // instead of blindly parking the run as timed_out — that blind park is exactly
 // how a Spot death used to burn a green change set.
-describe('runStepPhase — loss-aware remote timeout classification (fake timers)', () => {
+describe('runJobSteps — loss-aware remote timeout classification (fake timers)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -864,7 +899,7 @@ describe('runStepPhase — loss-aware remote timeout classification (fake timers
       now: () => Date.now(),
       spawnHardTimeoutMs: 100,
     };
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config: makeConfig([{ name: 'sleeper', run: 'sleep 9999' }]),
       worktreePath: WORKTREE,
@@ -953,7 +988,7 @@ describe('runStepPhase — loss-aware remote timeout classification (fake timers
   });
 });
 
-describe('runStepPhase — exit without close (leaked-grandchild pipe)', () => {
+describe('runJobSteps — exit without close (leaked-grandchild pipe)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -978,7 +1013,7 @@ describe('runStepPhase — exit without close (leaked-grandchild pipe)', () => {
     };
     const config = makeConfig([{ name: 'Typecheck', run: 'npm run typecheck' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1020,7 +1055,7 @@ describe('runStepPhase — exit without close (leaked-grandchild pipe)', () => {
     };
     const config = makeConfig([{ name: 'Build', run: 'npm run build' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1055,7 +1090,7 @@ describe('runStepPhase — exit without close (leaked-grandchild pipe)', () => {
     };
     const config = makeConfig([{ name: 'sleeper', run: 'sleep 9999' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1073,7 +1108,7 @@ describe('runStepPhase — exit without close (leaked-grandchild pipe)', () => {
   });
 });
 
-describe('runStepPhase — timeout (real timers)', () => {
+describe('runJobSteps — timeout (real timers)', () => {
   it('pipeline budget exhausted before step N surfaces timeout with the unexecuted step', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -1101,7 +1136,7 @@ describe('runStepPhase — timeout (real timers)', () => {
       1,
     );
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1134,7 +1169,7 @@ describe('runStepPhase — timeout (real timers)', () => {
   });
 });
 
-describe('runStepPhase — spawn errors', () => {
+describe('runJobSteps — spawn errors', () => {
   it('spawnStep throws → infra_error (no DB terminal write; orchestrator owns retry)', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -1149,7 +1184,7 @@ describe('runStepPhase — spawn errors', () => {
     };
     const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
 
-    const result = await runStepPhase(deps, {
+    const result = await runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1182,7 +1217,7 @@ describe('runStepPhase — spawn errors', () => {
     };
     const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1226,7 +1261,7 @@ describe('runStepPhase — spawn errors', () => {
       { name: 'first', run: 'echo a' },
       { name: 'doomed', run: 'echo b' },
     ]);
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1255,7 +1290,7 @@ describe('runStepPhase — spawn errors', () => {
       spawnStep,
       now: makeMonoClock(),
     };
-    const result = await runStepPhase(deps, {
+    const result = await runJobSteps(deps, {
       runId: RUN_ID,
       config: makeConfig([{ name: 'step 1', run: 'echo hi' }]),
       worktreePath: WORKTREE,
@@ -1281,7 +1316,7 @@ describe('runStepPhase — spawn errors', () => {
       spawnStep,
       now: makeMonoClock(),
     };
-    const result = await runStepPhase(deps, {
+    const result = await runJobSteps(deps, {
       runId: RUN_ID,
       config: makeConfig([{ name: 'step 1', run: 'echo hi' }]),
       worktreePath: WORKTREE,
@@ -1294,54 +1329,7 @@ describe('runStepPhase — spawn errors', () => {
   });
 });
 
-describe('runStepPhase — guard rails', () => {
-  it('missing worktree → infra_error without spawning anything', async () => {
-    const stmts = makeStmts();
-    const spawnStep = vi.fn();
-    const deps: StepRunnerDeps = {
-      stmts: stmts as never,
-      broadcast: vi.fn(),
-      spawnStep: spawnStep as never,
-    };
-    const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
-
-    const result = await runStepPhase(deps, {
-      runId: RUN_ID,
-      config,
-      worktreePath: '',
-      sessionId: SESSION_ID,
-    });
-    expect(result.status).toBe('infra_error');
-    expect(spawnStep).not.toHaveBeenCalled();
-    // Contract (review #2): infra_error must not write a terminal status —
-    // the orchestrator decides retry vs. give-up. The phase-entry write
-    // never happened either (we bailed before `setPhase`), so the DB row
-    // keeps whatever status the caller had set when it called us.
-    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
-  });
-
-  it('missing sessionId → infra_error without spawning', async () => {
-    const stmts = makeStmts();
-    const spawnStep = vi.fn();
-    const deps: StepRunnerDeps = {
-      stmts: stmts as never,
-      broadcast: vi.fn(),
-      spawnStep: spawnStep as never,
-    };
-    const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
-
-    const result = await runStepPhase(deps, {
-      runId: RUN_ID,
-      config,
-      worktreePath: WORKTREE,
-      sessionId: '',
-    });
-    expect(result.status).toBe('infra_error');
-    expect(spawnStep).not.toHaveBeenCalled();
-    // Same infra-error contract as the worktree-missing branch above.
-    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
-  });
-
+describe('runStepsSequence — resilience', () => {
   it('log store write failure does not abort the step', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -1365,7 +1353,7 @@ describe('runStepPhase — guard rails', () => {
       now: makeMonoClock(),
     };
     const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1382,7 +1370,7 @@ describe('runStepPhase — guard rails', () => {
   });
 });
 
-describe('runStepPhase — output tail capping', () => {
+describe('runJobSteps — output tail capping', () => {
   it('tail keeps only the last STEP_OUTPUT_TAIL_LINES lines mixed across stdout+stderr', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -1399,7 +1387,7 @@ describe('runStepPhase — output tail capping', () => {
       now: makeMonoClock(),
     };
     const config = makeConfig([{ name: 'noisy', run: 'noisy' }]);
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1437,7 +1425,7 @@ describe('runStepPhase — output tail capping', () => {
       now: makeMonoClock(),
     };
     const config = makeConfig([{ name: 'step 1', run: 'no-newline' }]);
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1714,7 +1702,7 @@ function stripPrefixForTail(s: string): string {
 // exploding the WAL, freezing the event loop, and flooding the live session
 // window. Output now goes to the log store as a SINGLE blob per step — never
 // the message stream — so a million-line step writes zero output messages.
-describe('runStepPhase — output never floods the message stream', () => {
+describe('runJobSteps — output never floods the message stream', () => {
   it('writes the step output ONCE to the log store, with no per-line messages', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -1734,7 +1722,7 @@ describe('runStepPhase — output never floods the message stream', () => {
     };
     const config = makeConfig([{ name: 'E2E', run: 'npm run e2e' }]);
 
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1773,7 +1761,7 @@ describe('runStepPhase — output never floods the message stream', () => {
 // row in `running` after the child has already exited — distorting the UI,
 // cancellation, and active-time accounting. The terminal state must be
 // persisted + broadcast FIRST; the log location is attached afterward.
-describe('runStepPhase — terminal step state precedes the log upload', () => {
+describe('runJobSteps — terminal step state precedes the log upload', () => {
   it('returns success while the upload is pending, then attaches the log in the background', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
@@ -1803,7 +1791,7 @@ describe('runStepPhase — terminal step state precedes the log upload', () => {
       now: makeMonoClock(),
     };
     const config = makeConfig([{ name: 'Build', run: 'npm run build' }]);
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1891,7 +1879,7 @@ describe('runStepPhase — terminal step state precedes the log upload', () => {
       { name: 'Install', run: 'npm ci' },
       { name: 'Test', run: 'npm test' },
     ]);
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,
@@ -1959,7 +1947,7 @@ describe('runStepPhase — terminal step state precedes the log upload', () => {
       now: makeMonoClock(),
     };
     const config = makeConfig([{ name: 'Test', run: 'npm test' }]);
-    const resultP = runStepPhase(deps, {
+    const resultP = runJobSteps(deps, {
       runId: RUN_ID,
       config,
       worktreePath: WORKTREE,

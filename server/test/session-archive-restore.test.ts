@@ -161,7 +161,6 @@ describe('Session archive & restore', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
 
     const bulk = await request.delete(`/api/agents/${aid}/sessions/pushed`).expect(200);
@@ -243,7 +242,6 @@ describe('Session archive & restore', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
 
     const bulk = await request.delete(`/api/agents/${aid}/sessions/merged`).expect(200);

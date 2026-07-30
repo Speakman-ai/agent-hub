@@ -5439,7 +5439,7 @@ components:
       properties:
         job_id:
           type: string
-          description: The ci.yaml v2 job id to quarantine.
+          description: The ci.yaml job id to quarantine.
         matrix_key:
           type: string
           description: Matrix-shard discriminator; omit/empty for non-matrix jobs.

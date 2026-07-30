@@ -357,8 +357,6 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     expect(stmts.getActiveFinalizeRunForSessionBranch.get).toHaveBeenCalledWith(
       'sess-1',
       'feature/x',
-      null,
-      null,
     );
     expect(runFinalize).not.toHaveBeenCalled();
   });
@@ -397,8 +395,6 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     expect(stmts.getActiveFinalizeRunForSessionBranch.get).toHaveBeenCalledWith(
       'sess-1',
       'feature/x',
-      null,
-      null,
     );
     expect(runFinalize).not.toHaveBeenCalled();
   });

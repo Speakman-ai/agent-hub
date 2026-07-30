@@ -724,7 +724,7 @@ describe('api.startFinalizeWizard — Finalize setup parity with web client', ()
             agentId: 'agent-a',
             target: { sessionId: 'sess-target', branch: 'feat/ci', worktreePath: '/wt' },
             session: { id: 'sess-1' },
-            draft: { proposedCiYaml: 'version: 1' },
+            draft: { proposedCiYaml: 'version: 2' },
         };
         globalThis.fetch = vi.fn().mockResolvedValue({
             ok: true,

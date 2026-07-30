@@ -32,6 +32,7 @@ import {
   type OrchestratorOptions,
   type PushAndCreatePrResult,
 } from './orchestrator.js';
+import type { CiConfig } from './ci-config.js';
 import type { RebasePhaseOutcome } from './rebase.js';
 import type { ReviewerDispatchOutcome } from './reviewer-dispatch.js';
 import type { StepRunResult } from './step-runner.js';
@@ -332,8 +333,19 @@ function makeStmts(): {
     upsertFinalizeRunJobAttempt: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['upsertFinalizeRunJobAttempt'],
+    // A green run records one `passed` attempt row per job instance. The flake
+    // gate fails CLOSED on missing history, so the default must model a real
+    // green round rather than an empty table.
     listFinalizeRunJobAttemptsForRun: {
-      all: vi.fn(() => []),
+      all: vi.fn(() => [
+        {
+          job_id: 'checks',
+          matrix_key: '',
+          round: 0,
+          state: 'passed',
+          head_sha: 'deadbeefcafebabe',
+        },
+      ]),
     } as unknown as OrchestratorDeps['stmts']['listFinalizeRunJobAttemptsForRun'],
     setFinalizeRunFlakeRecoveredJobs: {
       run: vi.fn(),
@@ -370,7 +382,7 @@ function fakeRunRebase(
 
 function fakeRunCi(
   result:
-    | { ok: true; config: { version: 1; on: ['finalize']; timeoutMinutes: number; steps: [] } }
+    | { ok: true; config: CiConfig }
     | { ok: false; error: { code: 'yaml_parse_error'; message: string } },
 ): NonNullable<OrchestratorDeps['loadCiConfigFromFile']> {
   return vi.fn().mockResolvedValue(result) as never;
@@ -382,7 +394,7 @@ function fakeRunReview(
   return vi.fn().mockResolvedValue(outcome) as never;
 }
 
-function fakeRunSteps(outcome: StepRunResult): NonNullable<OrchestratorDeps['runStepPhase']> {
+function fakeRunSteps(outcome: StepRunResult): NonNullable<OrchestratorDeps['runJobPhase']> {
   return vi.fn().mockResolvedValue(outcome) as never;
 }
 
@@ -405,10 +417,20 @@ const REBASE_OK: RebasePhaseOutcome = {
 const CI_OK = {
   ok: true as const,
   config: {
-    version: 1 as const,
+    version: 2 as const,
     on: ['finalize'] as ['finalize'],
     timeoutMinutes: 60 as const,
-    steps: [] as [],
+    jobs: {
+      checks: {
+        runsOn: 'host',
+        failFast: false,
+        warmup: false,
+        needs: [] as string[],
+        retries: 0,
+        matrixInclude: [{}],
+        steps: [{ name: 'test', run: 'npm test' }],
+      },
+    },
   },
 };
 
@@ -468,7 +490,7 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
     runRebasePhase: fakeRunRebase(REBASE_OK),
     loadCiConfigFromFile: fakeRunCi(CI_OK),
     runReviewerDispatch: fakeRunReview(REVIEW_OK),
-    runStepPhase: fakeRunSteps(STEPS_OK),
+    runJobPhase: fakeRunSteps(STEPS_OK),
     dispatchFixMessage: fakeDispatchFix(FIX_TURN_ENDED),
     emitRunSummary: emitRunSummary as unknown as OrchestratorDeps['emitRunSummary'],
     transactional: <T>(fn: () => T) => fn(),
@@ -549,7 +571,7 @@ describe('runFinalize — split modes', () => {
     const steps = fakeRunSteps(STEPS_OK);
     const { deps, stmts } = makeDeps({
       runReviewerDispatch: review,
-      runStepPhase: steps,
+      runJobPhase: steps,
     });
 
     const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
@@ -565,7 +587,7 @@ describe('runFinalize — split modes', () => {
     const steps = fakeRunSteps(STEPS_OK);
     const { deps, stmts } = makeDeps({
       runReviewerDispatch: review,
-      runStepPhase: steps,
+      runJobPhase: steps,
     });
 
     const result = await runFinalize(deps, baseOpts({ mode: 'review' }));
@@ -579,7 +601,7 @@ describe('runFinalize — split modes', () => {
   it('fails closed (terminates) when a NON-clean flake gate cannot be persisted', async () => {
     const { deps, stmts } = makeDeps({
       runReviewerDispatch: fakeRunReview(REVIEW_OK),
-      runStepPhase: fakeRunSteps(STEPS_OK),
+      runJobPhase: fakeRunSteps(STEPS_OK),
     });
     // History query throws → classifyRunFlakeRecovery yields a `blocked` gate…
     (stmts.stmts.listFinalizeRunJobAttemptsForRun as unknown as { all: () => unknown }).all =
@@ -605,7 +627,7 @@ describe('runFinalize — split modes', () => {
   it('still parks (automation withheld) when a NON-clean gate IS persisted', async () => {
     const { deps, stmts } = makeDeps({
       runReviewerDispatch: fakeRunReview(REVIEW_OK),
-      runStepPhase: fakeRunSteps(STEPS_OK),
+      runJobPhase: fakeRunSteps(STEPS_OK),
     });
     // Blocked gate (history query throws) but the verdict persists fine.
     (stmts.stmts.listFinalizeRunJobAttemptsForRun as unknown as { all: () => unknown }).all =
@@ -738,7 +760,7 @@ describe('runFinalize — split modes', () => {
     const dispatch = fakeDispatchFix(FIX_TURN_ENDED);
     const { deps } = makeDeps({
       runReviewerDispatch: review,
-      runStepPhase: failingSteps,
+      runJobPhase: failingSteps,
       dispatchFixMessage: dispatch,
     });
 
@@ -886,8 +908,8 @@ describe('runFinalize — split modes', () => {
     const steps = vi.fn().mockImplementation(async () => {
       abort();
       return STEPS_OK;
-    }) as unknown as NonNullable<OrchestratorDeps['runStepPhase']>;
-    const { deps, stmts } = makeDeps({ runStepPhase: steps });
+    }) as unknown as NonNullable<OrchestratorDeps['runJobPhase']>;
+    const { deps, stmts } = makeDeps({ runJobPhase: steps });
 
     const result = await runFinalize(deps, baseOpts({ mode: 'full', signal }));
 
@@ -908,7 +930,7 @@ describe('runFinalize — split modes', () => {
     // No signal is tripped here, so only the guarded write can catch it: the
     // mock flips the run's own row to `cancelled` as the CI phase returns,
     // standing in for a concurrent cancel-endpoint write.
-    (deps as { runStepPhase?: unknown }).runStepPhase = vi
+    (deps as { runJobPhase?: unknown }).runJobPhase = vi
       .fn()
       .mockImplementation(async (_deps: unknown, o: { runId: string }) => {
         const row = stmts.rows.get(o.runId);
@@ -1041,7 +1063,8 @@ describe('runFinalize — server-stored CI config fallback', () => {
               id: 'srv-1',
               project_id: 'proj',
               owner_user_id: null,
-              yaml_text: 'version: 1\non: [finalize]\nsteps:\n  - run: echo hi\n',
+              yaml_text:
+                'version: 2\non: [finalize]\njobs:\n  build:\n    runs-on: host\n    steps:\n      - run: echo hi\n',
               updated_by: null,
               updated_at: 0,
             }
@@ -1087,7 +1110,7 @@ describe('runFinalize — failed step triggers fix dispatch', () => {
       .mockResolvedValueOnce('sha-post-fix'); // iter 2 push gate (stable)
 
     const { deps } = makeDeps({
-      runStepPhase: runSteps as never,
+      runJobPhase: runSteps as never,
       resolveHeadSha: resolveHead,
     });
 
@@ -1134,7 +1157,7 @@ describe('runFinalize — reviewer requests changes triggers fix dispatch', () =
 
     const { deps } = makeDeps({
       runReviewerDispatch: runReview as never,
-      runStepPhase: runSteps as never,
+      runJobPhase: runSteps as never,
       resolveHeadSha: resolveHead,
     });
 
@@ -1152,7 +1175,7 @@ describe('runFinalize — reviewer requests changes triggers fix dispatch', () =
 describe('runFinalize — step phase status mapping', () => {
   it('maps timeout to timed_out outcome', async () => {
     const { deps } = makeDeps({
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'timeout',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -1229,7 +1252,7 @@ describe('runFinalize — step phase status mapping', () => {
   // its defensive write — no double `failFinalizeRun` / `ended_at` update.
   it('does not double-write the terminal row when the v1 step phase already wrote it', async () => {
     const { deps, stmts } = makeDeps();
-    deps.runStepPhase = vi.fn().mockImplementation(async () => {
+    deps.runJobPhase = vi.fn().mockImplementation(async () => {
       // Simulate the real v1 step-runner: it stamps the run row terminal
       // itself before returning the timeout-shaped outcome.
       const row = [...stmts.rows.values()][0];
@@ -1264,7 +1287,7 @@ describe('runFinalize — step phase status mapping', () => {
     const { deps, stmts } = makeDeps({
       // A step killed by its wall-clock cap; its child can exit 1 on the kill
       // signal, so a timeout outcome legitimately carries exitCode 1.
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'timeout',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -1309,7 +1332,7 @@ describe('runFinalize — step phase status mapping', () => {
 
   it('maps infra_error to infra_error outcome', async () => {
     const { deps, stmts } = makeDeps({
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'infra_error',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -1331,7 +1354,7 @@ describe('runFinalize — step phase status mapping', () => {
   it('reconciles step rows on terminal failure: backfills failed-step summary and sweeps stranded shards', async () => {
     const { deps, stmts, broadcast } = makeDeps({
       // A genuine step failure (exit 1) drives the run terminal via the step phase.
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'failure',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -1505,7 +1528,7 @@ describe('runFinalize — push gate refuses on new HEAD', () => {
       .mockResolvedValueOnce('sha-post-fix'); // iter 2 gate (stable through review+steps)
 
     const { deps } = makeDeps({
-      runStepPhase: runSteps as never,
+      runJobPhase: runSteps as never,
       resolveHeadSha: resolveHead,
     });
 
@@ -1550,7 +1573,7 @@ describe('runFinalize — cancellation', () => {
       },
     };
     const { deps } = makeDeps({
-      runStepPhase: fakeRunSteps(failedSteps),
+      runJobPhase: fakeRunSteps(failedSteps),
       dispatchFixMessage: fakeDispatchFix({
         outcome: 'cancelled',
         messageId: 'msg-x',
@@ -1577,7 +1600,7 @@ describe('runFinalize — stall watchdog', () => {
       },
     };
     const { deps } = makeDeps({
-      runStepPhase: fakeRunSteps(failedSteps),
+      runJobPhase: fakeRunSteps(failedSteps),
       dispatchFixMessage: fakeDispatchFix({
         outcome: 'stalled_no_response',
         messageId: 'msg-y',
@@ -1678,7 +1701,7 @@ describe('runFinalize — budget enforcement', () => {
           return REBASE_OK;
         }) as never,
       // Force the loop to iterate at least once by failing a step.
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'failure',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -1814,7 +1837,7 @@ describe('runFinalize — terminal broadcasts on outcomeFromFailed paths', () =>
 
   it('emits finalize_run_completed when step phase reports timeout', async () => {
     const { deps, broadcast } = makeDeps({
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'timeout',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -1868,7 +1891,7 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
 
     const { deps } = makeDeps({
       // Always fail steps so the loop dispatches a fix forever.
-      runStepPhase: fakeRunSteps(failedSteps),
+      runJobPhase: fakeRunSteps(failedSteps),
       resolveHeadSha: resolveHead,
       // Generous budget so the backstop fires before the budget guard.
       budgetSeconds: 999_999_999,
@@ -1908,7 +1931,7 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
       .mockResolvedValue('frozen-sha');
 
     const { deps } = makeDeps({
-      runStepPhase: runSteps,
+      runJobPhase: runSteps,
       resolveHeadSha: resolveHead,
       budgetSeconds: 999_999_999,
     });
@@ -1938,7 +1961,7 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
         .fn<(...args: unknown[]) => Promise<string>>()
         .mockResolvedValue('frozen-sha');
       const { deps } = makeDeps({
-        runStepPhase: runSteps,
+        runJobPhase: runSteps,
         resolveHeadSha: resolveHead,
         budgetSeconds: 999_999_999,
       });
@@ -2146,7 +2169,7 @@ describe('runFinalize — card lifecycle integration', () => {
 
     const { deps } = makeDeps({
       cardLifecycle: lifecycle,
-      runStepPhase: runSteps as never,
+      runJobPhase: runSteps as never,
       resolveHeadSha: resolveHead,
     });
 
@@ -2174,7 +2197,7 @@ describe('runFinalize — card lifecycle integration', () => {
     };
     const { deps } = makeDeps({
       cardLifecycle: lifecycle,
-      runStepPhase: fakeRunSteps(failedSteps),
+      runJobPhase: fakeRunSteps(failedSteps),
       dispatchFixMessage: fakeDispatchFix({
         outcome: 'stalled_no_response',
         messageId: 'msg-stalled',
@@ -2247,7 +2270,7 @@ describe('runFinalize — §13 budget integration', () => {
           depArg.stmts.updateFinalizeRunActiveSeconds.run(99_999, 'run-1');
           return REBASE_OK;
         }) as never,
-      runStepPhase: fakeRunSteps(failedSteps),
+      runJobPhase: fakeRunSteps(failedSteps),
       dispatchFixMessage: fakeDispatchFix(FIX_TURN_ENDED),
       budgetSeconds: 60,
     });
@@ -2286,12 +2309,7 @@ describe('runFinalize — §13 budget integration', () => {
     // should trip on the next iteration.
     const ciLowered = {
       ok: true as const,
-      config: {
-        version: 1 as const,
-        on: ['finalize'] as ['finalize'],
-        timeoutMinutes: 1 as const,
-        steps: [] as [],
-      },
+      config: { ...CI_OK.config, timeoutMinutes: 1 as const },
     };
     const { deps, stmts } = makeDeps({
       loadCiConfigFromFile: fakeRunCi(ciLowered) as never,
@@ -2302,7 +2320,7 @@ describe('runFinalize — §13 budget integration', () => {
           depArg.stmts.updateFinalizeRunActiveSeconds.run(70, 'run-1');
           return REBASE_OK;
         }) as never,
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'failure',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -2344,7 +2362,7 @@ describe('runFinalize — §13 budget integration', () => {
           depArg.stmts.updateFinalizeRunActiveSeconds.run(200, 'run-1');
           return REBASE_OK;
         }) as never,
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'failure',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -2530,7 +2548,7 @@ describe('runFinalize — §10 infra retry on first infra failure', () => {
           depArg.stmts.updateFinalizeRunActiveSeconds.run(99_999, 'run-1');
           return REBASE_OK;
         }) as never,
-      runStepPhase: fakeRunSteps({
+      runJobPhase: fakeRunSteps({
         status: 'failure',
         stepResults: [],
         activeSecondsBilled: 5,
@@ -2987,7 +3005,7 @@ describe('runFinalize — §10 double-reclaim survival (generation cap > 1)', ()
       calls += 1;
       return calls <= 3 ? STEP_INFRA_SPOT : STEPS_OK;
     });
-    const { deps, stmts } = makeDeps({ runStepPhase: steps as never });
+    const { deps, stmts } = makeDeps({ runJobPhase: steps as never });
     const result = await runFinalize(deps, baseOpts());
     expect(result.kind).toBe('ready_to_push');
     expect(calls).toBe(4); // original + 3 reclaim retries
@@ -2997,7 +3015,7 @@ describe('runFinalize — §10 double-reclaim survival (generation cap > 1)', ()
   it('terminates as spot_reclaimed (not container_unavailable) when reclaim retries are exhausted', async () => {
     process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = '2';
     const steps = vi.fn(async () => STEP_INFRA_SPOT);
-    const { deps, stmts } = makeDeps({ runStepPhase: steps as never });
+    const { deps, stmts } = makeDeps({ runJobPhase: steps as never });
     const result = await runFinalize(deps, baseOpts());
     expect(result.kind).toBe('failed');
     if (result.kind === 'failed') {

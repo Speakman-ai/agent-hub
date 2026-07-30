@@ -226,7 +226,6 @@ describe('handleCardOnMerge — Done means merged, not pushed', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
     stmts.updateFinalizeRunPrUrl.run(prUrl, runId);
 

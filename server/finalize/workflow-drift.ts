@@ -43,7 +43,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { parse as parseYaml } from 'yaml';
-import type { CiConfigV2 } from './ci-config.js';
+import type { CiConfig } from './ci-config.js';
 
 /**
  * Mirror manifest — the EXPLICIT mapping between this repo's `.agent-hub/ci.yaml`
@@ -431,7 +431,7 @@ function buildGithubJobIndex(
 }
 
 export interface ComputeDriftInput {
-  ciConfig: CiConfigV2;
+  ciConfig: CiConfig;
   /** Parsed `.agent-hub/ci-mirror.yaml`, or null when absent (not configured). */
   manifest: WorkflowMirrorManifest | null;
   workflows: GithubWorkflow[];

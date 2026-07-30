@@ -13,7 +13,7 @@
  * exits NON-ZERO (usually 1), so {@link runStepsSequence} would otherwise
  * classify it as a genuine `step_failed` — a red the fix-dispatch loop chases
  * as if the change set broke a test. It didn't: the step was *cancelled*, not
- * failed. (See the matching note in `ci-config-v2.ts` about collateral
+ * failed. (See the matching note in `ci-config-jobs.ts` about collateral
  * `context canceled` shards "recording a misleading non-zero exit code" so the
  * agent can't tell the genuine red from the cascade noise.)
  *

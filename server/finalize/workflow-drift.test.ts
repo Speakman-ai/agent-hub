@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseCiConfig, loadCiConfigFromFile } from './ci-config.js';
-import type { CiConfigV2 } from './ci-config.js';
+import type { CiConfig } from './ci-config.js';
 import {
   canonicalCommands,
   computeWorkflowDrift,
@@ -20,7 +20,7 @@ import {
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** Build a v2 ci.yaml config from a YAML string, asserting it parsed cleanly. */
-function v2(yaml: string): CiConfigV2 {
+function v2(yaml: string): CiConfig {
   const parsed = parseCiConfig(yaml);
   if (!parsed.ok) throw new Error(`fixture ci.yaml failed to parse: ${parsed.error.message}`);
   if (parsed.config.version !== 2) throw new Error('fixture is not v2');

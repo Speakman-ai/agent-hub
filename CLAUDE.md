@@ -392,7 +392,7 @@ Wiki page with full context: `openapi-coverage-enforcement-zod-schema-lint`.
 
 ## Finalize CI Runners (DinD — GHA parity)
 
-ci.yaml v2 jobs with `runs-on: ubuntu-24.04` execute inside **privileged DinD runner containers** — one container per job instance (matrix shard), each with its own inner `dockerd`. This matches GitHub Actions (one VM = one Docker daemon) so parallel E2E shards can all bind default ports (`8001`, `4300`) without collision.
+ci.yaml jobs with `runs-on: ubuntu-24.04` execute inside **privileged DinD runner containers** — one container per job instance (matrix shard), each with its own inner `dockerd`. This matches GitHub Actions (one VM = one Docker daemon) so parallel E2E shards can all bind default ports (`8001`, `4300`) without collision.
 
 ### Runner image
 

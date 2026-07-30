@@ -313,7 +313,6 @@ function seedPushedFinalizeRun(input: {
     null,
     Date.now(),
     'full',
-    null,
   );
   if (input.validatedHeadSha) {
     getDb()

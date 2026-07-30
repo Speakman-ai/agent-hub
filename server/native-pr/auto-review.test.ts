@@ -175,7 +175,6 @@ describe('maybeRunPrAutoReview', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
     stmts.markFinalizeRunReadyToPush.run(headSha, runId);
     await maybeRunPrAutoReview(
@@ -236,7 +235,6 @@ describe('maybeRunPrAutoReview', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
     // Stamp validated_head_sha (ready_to_push), then claim the push so the row
     // sits in the transient 'pushing' status exactly as it does mid-push.
@@ -288,7 +286,6 @@ describe('maybeRunPrAutoReview', () => {
       null,
       Date.now(),
       'full',
-      null,
     );
     stmts.markFinalizeRunReadyToPush.run(headSha, runId);
 
@@ -511,7 +508,6 @@ describe('maybeRunPrAutoReview', () => {
         null,
         Date.now(),
         'full',
-        null,
       );
       stmts.markFinalizeRunReadyToPush.run(headSha, runId);
 

@@ -1624,16 +1624,6 @@ export interface FinalizeRunRow {
    */
   mode: FinalizeRunMode;
   /**
-   * JSON-encoded array of ci.yaml v2 job ids to scope this run to, or
-   * `null` for a normal run that exercises every job. Set only by the
-   * "Run Tests" dropdown's single-job debug runs (mode is forced to
-   * `'checks'`). A job-filtered run runs the selected jobs plus their
-   * transitive `needs:` deps and is deliberately EXCLUDED from the
-   * per-phase "Tested" / "Reviewed" pickers and from full-validation —
-   * a partial run can never flip the branch to ready-to-push.
-   */
-  job_filter: string | null;
-  /**
    * Persisted flake-recovery gate result (see `server/finalize/flake-recovery.ts`,
    * `serializeFlakeGate`/`parseFlakeGate`). NULL for a verified-`clean` run. For
    * a non-clean run it is a JSON-encoded gate object

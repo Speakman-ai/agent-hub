@@ -2,7 +2,7 @@ import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'url';
 import { loadCiConfigFromFile, parseCiConfig } from './ci-config.js';
-import { buildFinalizeBuiltinEnv, expandJobInstances } from './ci-config-v2.js';
+import { buildFinalizeBuiltinEnv, expandJobInstances } from './ci-config-jobs.js';
 import { runJobPhase } from './job-runner.js';
 import type { SpawnedStep, SpawnStepFn, StepRunnerDeps } from './step-runner.js';
 

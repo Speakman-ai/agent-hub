@@ -16,8 +16,7 @@
  *
  *   POST /api/projects/:projectId/finalize/setup-apply
  *     Admin+. Validates the proposed `ci_yaml_content` against the
- *     schema (server/finalize/ci-config.ts auto-selects v1 or v2 from
- *     the `version:` field), writes it to
+ *     schema (server/finalize/ci-config.ts), writes it to
  *     `<worktree>/.agent-hub/ci.yaml`, and commits it to the worktree's
  *     branch. Returns `{ ok, file, commit_sha, branch }`.
  *
@@ -154,12 +153,12 @@ export function buildKickoffPrompt(
     '1. **Summarise the repo** — read `README.md` if useful, then state primary stack + package manager + what CI already runs (from `draft.githubWorkflows`).',
     '2. **Existing config** — when `draft.existingCi === true`, show `draft.existingCiContent` and ask whether to overwrite, edit in place, or abort. Do not silently overwrite.',
     '3. **Monorepo / sub-projects** — when `draft.isMonorepo`, list every entry in `draft.subprojects[]` and ask whether to run all or pick one.',
-    '4. **Pipeline proposal** — first pick the schema version, then show the YAML verbatim in a fenced ```yaml block and ask: use as-is, edit, or add a custom job/step.',
-    '   - **Prefer v2 (`version: 2`, concurrent `jobs:`) whenever the repo already runs more than one CI lane** — i.e. `draft.githubWorkflows` defines multiple jobs or a `matrix`, or the user asks for "GHA parity", "concurrency", or "run everything at once". v2 jobs run as **independent concurrent runners on the DinD fleet** (`runs-on: ubuntu-24.04`), exactly like GitHub fans a workflow out. Map **one v2 `job` per GitHub job**, and mirror a GitHub `matrix` with `matrix.include` (each row becomes its own concurrent instance). **Do NOT group, serialize, or drop jobs to "save" runners — full fan-out is the goal.** Use `needs:` only to reproduce a real GitHub `needs:` edge; otherwise leave jobs independent so they all start at once.',
-    '   - **v1 (`version: 1`, sequential `steps:`)** is the simple fallback — use it only for a trivial single-lane repo or when the user explicitly wants the simplest thing. v1 runs sequentially **on the Hub box**, not the fleet.',
-    "   - v2 reminders: each job runs on its own runner with a fresh worktree and **no `node_modules` sharing between jobs**, so every job installs its own deps (mirror each GitHub job's install scope). v2 steps have **no `if:`** — branch inside the `run` script off the injected `FINALIZE_MATRIX_*` env vars (a `matrix.include` key `foo` becomes `$FINALIZE_MATRIX_FOO`). Reference project secrets via `${VAR}` in a job/step `env:` block.",
-    '   - Shared constraints: `on:` must be `finalize`/`manual`; `timeout_minutes` in `[1, 240]`. Full schema for both versions: `references/ci-yaml-schema.md`.',
-    '5. **Env vars / secrets** — call out `draft.envVars` entries the steps will read. v1 ci.yaml has no `env:` field. For each missing value, `agenthub:ask` whether to collect it now (bundle into `setup-apply` as `secrets`) or skip. Persist via `setup-apply` `{ "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" } }` — same as preview wizard. Users can also edit secrets in Settings → Finalize → Project secrets.',
+    '4. **Pipeline proposal** — show the YAML verbatim in a fenced ```yaml block and ask: use as-is, edit, or add a custom job/step.',
+    '   - `version: 2` is the only schema the parser accepts: a `jobs:` mapping where each job declares `runs-on:` and a `steps:` list. Jobs run as **independent concurrent runners on the DinD fleet** (`runs-on: ubuntu-24.04`), exactly like GitHub fans a workflow out. Map **one job per GitHub job**, and mirror a GitHub `matrix` with `matrix.include` (each row becomes its own concurrent instance). **Do NOT group, serialize, or drop jobs to "save" runners — full fan-out is the goal.** Use `needs:` only to reproduce a real GitHub `needs:` edge; otherwise leave jobs independent so they all start at once.',
+    '   - `runs-on: host` runs the job on the Hub box instead of a container. Use it for a lightweight gate that needs no Docker; note that host jobs share the session worktree, so gates that install deps into the same directory need a `needs:` edge onto a single install job rather than running concurrently.',
+    "   - Container-job reminders: each job runs on its own runner with a fresh worktree and **no `node_modules` sharing between jobs**, so every job installs its own deps (mirror each GitHub job's install scope). Steps have **no `if:`** — branch inside the `run` script off the injected `FINALIZE_MATRIX_*` env vars (a `matrix.include` key `foo` becomes `$FINALIZE_MATRIX_FOO`). Reference project secrets via `${VAR}` in a job/step `env:` block.",
+    '   - Constraints: `on:` must be `finalize`/`manual`; `timeout_minutes` in `[1, 240]`. Full schema: `references/ci-yaml-schema.md`.',
+    '5. **Env vars / secrets** — call out `draft.envVars` entries the steps will read. For each missing value, `agenthub:ask` whether to collect it now (bundle into `setup-apply` as `secrets`) or skip. Persist via `setup-apply` `{ "secrets": { "mode": "merge", "env": "KEY=value\\n", "defaultKind": "secret" } }` — same as preview wizard. Users can also edit secrets in Settings → Finalize → Project secrets.',
     '6. **Confirm with the user** — restate the proposed pipeline in plain prose and `agenthub:ask` a simple **Apply** / **Cancel**. **Never make the user pick or supply a `session_id`** — you already own the worktree.',
     '7. **Commit** — `POST .../finalize/setup-apply` with `{ "ci_yaml_content": "<the final YAML>", "session_id": "<YOUR SESSION_ID above>", "secrets": { ... } }` (secrets optional). This validates the schema and commits `.agent-hub/ci.yaml` into **this session\'s own worktree**. On 400 `ci_config_invalid`, fix the error code/path and retry — do not work around the validation.',
     '8. **Verify in your worktree** — actually run the steps you just configured (the `run:` commands from the ci.yaml — e.g. install, lint, tests) right here in the worktree to prove the pipeline is green **before** you push. This local proof is the whole point of working in a worktree. If anything fails, fix the config (or the repo), re-apply via setup-apply, and re-run until clean.',
@@ -168,13 +167,13 @@ export function buildKickoffPrompt(
     '',
     '**Ask JSON must use `question` + `header` + `options[].label` + `options[].description`** — not `prompt`, `id`, or `type`.',
     '',
-    '**Never** propose `shell:`, `uses:`, or `with:` at any version — the parser rejects them. At **v1**, `env:` and `matrix:` are also rejected (sequential steps only). At **v2** they are first-class: `env:` (top/job/step) and `matrix.include` (job-level) are how you get GHA-parity concurrency.',
+    '**Never** propose `shell:`, `uses:`, or `with:` — the parser rejects them. `env:` (top/job/step) and `matrix.include` (job-level) are first-class, and are how you get GHA-parity concurrency.',
     '',
     '## CI replacement mode (user scope wins)',
     '',
     'Finalize is designed to **replace GitHub Actions CI** as the pre-push gate — including heavy steps (Docker, AWS, E2E, permissions sync). When the user says Finalize replaces CI, run all workflows, or asks you to stop downgrading scope:',
     '',
-    '- Propose **one step per CI gate workflow** in `draft.githubWorkflows` (lint, `*.ci.yml`, e2e, permissions, smoke-test). Exclude deploy/release/terraform workflows only.',
+    '- Propose **one job per CI gate workflow** in `draft.githubWorkflows` (lint, `*.ci.yml`, e2e, permissions, smoke-test). Exclude deploy/release/terraform workflows only.',
     '- Prefer root gate scripts (`./lint`, `./run_api_tests`, `./run_e2e_tests`) and `run:` lines from workflow files. The server pre-builds this in `draft.proposedCiYaml`.',
     '- List runner prerequisites (Docker, `.env`, AWS creds, Settings → Secrets) as a **checklist**, not a reason to drop steps.',
     "- **Never** refuse, argue feasibility, or shrink the pipeline because a step is complex or needs cloud infra. The user's explicit scope wins.",
@@ -331,8 +330,8 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         res.status(400).json({ error: 'ci_yaml_content must be a non-empty string' });
         return;
       }
-      // v1 validation upstream of the disk write — a malformed file
-      // never lands on the branch.
+      // Validate upstream of the disk write so a malformed file never lands
+      // on the branch.
       const parsed = parseCiConfig(content);
       if (!parsed.ok) {
         res.status(400).json({

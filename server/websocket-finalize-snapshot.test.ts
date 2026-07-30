@@ -99,7 +99,6 @@ function insertRun(id: string, sessionId: string | null, status: string, phase: 
     null,
     Date.now(),
     'full',
-    null,
   );
 }
 

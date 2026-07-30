@@ -8,7 +8,7 @@ import type { CiConfigParseResult } from './ci-config.js';
 
 const OK: CiConfigParseResult = {
   ok: true,
-  config: { version: 1, on: ['finalize'], steps: [{ run: 'true' }] } as never,
+  config: { version: 2, on: ['finalize'], jobs: {} } as never,
 };
 const ABSENT: CiConfigParseResult = {
   ok: false,
@@ -19,8 +19,10 @@ const INVALID: CiConfigParseResult = {
   error: { code: 'yaml_parse_error', message: 'broken' },
 };
 
-const PROJECT_YAML = 'version: 1\non: [finalize]\nsteps:\n  - run: echo project\n';
-const PERSONAL_YAML = 'version: 1\non: [finalize]\nsteps:\n  - run: echo personal\n';
+const PROJECT_YAML =
+  'version: 2\non: [finalize]\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo project\n';
+const PERSONAL_YAML =
+  'version: 2\non: [finalize]\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo personal\n';
 
 function deps(over: Partial<ResolveCiConfigDeps>): ResolveCiConfigDeps {
   return {

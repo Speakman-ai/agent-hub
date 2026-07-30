@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'stream';
 import { parseCiConfig } from './ci-config.js';
-import { expandJobInstances, buildFinalizeBuiltinEnv } from './ci-config-v2.js';
+import { expandJobInstances, buildFinalizeBuiltinEnv } from './ci-config-jobs.js';
 import {
   runJobPhase,
   sanitizeComposeProjectName,
@@ -1043,5 +1043,75 @@ jobs:
     expect(stopJobContainer).toHaveBeenCalledTimes(1);
     expect(createJobScopedSpawnStep).toHaveBeenCalledTimes(1);
     expect(execRuns).toEqual(['echo one', 'echo two']);
+  });
+});
+
+describe('runJobPhase — guard rails', () => {
+  const CONFIG_YAML = `
+version: 2
+on: [finalize]
+jobs:
+  checks:
+    runs-on: host
+    steps:
+      - run: echo hi
+`;
+
+  function guardDeps(): { deps: StepRunnerDeps; spawnStep: ReturnType<typeof vi.fn> } {
+    const spawnStep = vi.fn();
+    return {
+      spawnStep,
+      deps: {
+        stmts: {
+          updateFinalizeRunPhase: { run: vi.fn() },
+          updateFinalizeRunActiveSeconds: { run: vi.fn() },
+          failFinalizeRun: { run: vi.fn() },
+        } as unknown as StepRunnerDeps['stmts'],
+        broadcast: vi.fn(),
+        spawnStep: spawnStep as never,
+      },
+    };
+  }
+
+  it('missing worktree path → infra_error without spawning anything', async () => {
+    const parsed = parseCiConfig(CONFIG_YAML);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const { deps, spawnStep } = guardDeps();
+
+    const result = await runJobPhase(deps, {
+      runId: 'guard-run',
+      config: parsed.config,
+      worktreePath: '',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('infra_error');
+    expect(spawnStep).not.toHaveBeenCalled();
+    // infra_error must NOT write a terminal status — the orchestrator decides
+    // retry vs. give-up.
+    expect(deps.stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('missing sessionId → infra_error without spawning anything', async () => {
+    const parsed = parseCiConfig(CONFIG_YAML);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const { deps, spawnStep } = guardDeps();
+
+    const result = await runJobPhase(deps, {
+      runId: 'guard-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: '',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('infra_error');
+    expect(spawnStep).not.toHaveBeenCalled();
+    expect(deps.stmts.failFinalizeRun.run).not.toHaveBeenCalled();
   });
 });

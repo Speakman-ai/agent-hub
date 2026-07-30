@@ -230,7 +230,10 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
     const res = await request
       .post('/api/projects/no-such-project/finalize/setup-apply')
       .set('Authorization', `Bearer ${adminJwt}`)
-      .send({ ci_yaml_content: 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n' });
+      .send({
+        ci_yaml_content:
+          'version: 2\non:\n  - manual\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo ok\n',
+      });
     expect(res.status).toBe(404);
   });
 
@@ -267,7 +270,8 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
   it('400 when no session with a worktree exists for the project', async () => {
     const projectId = await makeProject();
     await makeAgent(projectId);
-    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const yaml =
+      'version: 2\non:\n  - manual\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo ok\n';
     const res = await request
       .post(`/api/projects/${projectId}/finalize/setup-apply`)
       .set('Authorization', `Bearer ${adminJwt}`)
@@ -307,7 +311,8 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
         1,
       );
 
-    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const yaml =
+      'version: 2\non:\n  - manual\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo ok\n';
     const res = await request
       .post(`/api/projects/${projectId}/finalize/setup-apply`)
       .set('Authorization', `Bearer ${adminJwt}`)
@@ -332,14 +337,17 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
     const { worktreeDir, sessionId, branch } = seedSessionWithRepo(agentId);
 
     const yaml = [
-      'version: 1',
+      'version: 2',
       'on:',
       '  - finalize',
       '  - manual',
       'timeout_minutes: 30',
-      'steps:',
-      '  - name: test',
-      '    run: npm test',
+      'jobs:',
+      '  checks:',
+      '    runs-on: host',
+      '    steps:',
+      '      - name: test',
+      '        run: npm test',
       '',
     ].join('\n');
 
@@ -391,7 +399,8 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
     writeFileSync(path.join(worktreeDir, 'unrelated.txt'), 'pre-staged by the active session\n');
     execFileSync('git', ['add', 'unrelated.txt'], { cwd: worktreeDir });
 
-    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const yaml =
+      'version: 2\non:\n  - manual\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo ok\n';
     await request
       .post(`/api/projects/${projectId}/finalize/setup-apply`)
       .set('Authorization', `Bearer ${adminJwt}`)
@@ -432,7 +441,8 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
     const agentId = await makeAgent(projectId);
     const { worktreeDir, sessionId } = seedSessionWithRepo(agentId);
 
-    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok'; // no \n
+    const yaml =
+      'version: 2\non:\n  - manual\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo ok'; // no \n
     await request
       .post(`/api/projects/${projectId}/finalize/setup-apply`)
       .set('Authorization', `Bearer ${adminJwt}`)
@@ -462,7 +472,8 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
       .prepare("UPDATE sessions SET updated_at = '2030-01-01T00:00:00.000Z' WHERE id = ?")
       .run(newer.sessionId);
 
-    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const yaml =
+      'version: 2\non:\n  - manual\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo ok\n';
     const res = await request
       .post(`/api/projects/${projectId}/finalize/setup-apply`)
       .set('Authorization', `Bearer ${adminJwt}`)
@@ -493,7 +504,8 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
     const projectId = await makeProject(repoDir);
     await makeAgent(projectId);
 
-    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const yaml =
+      'version: 2\non:\n  - manual\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo ok\n';
     const res = await request
       .post(`/api/projects/${projectId}/finalize/setup-apply`)
       .set('Authorization', `Bearer ${adminJwt}`)
@@ -537,7 +549,8 @@ describe('POST /api/projects/:projectId/finalize/setup-apply', () => {
         1,
       );
 
-    const yaml = 'version: 1\non:\n  - manual\nsteps:\n  - run: echo ok\n';
+    const yaml =
+      'version: 2\non:\n  - manual\njobs:\n  checks:\n    runs-on: host\n    steps:\n      - run: echo ok\n';
     const res = await request
       .post(`/api/projects/${projectId}/finalize/setup-apply`)
       .set('Authorization', `Bearer ${adminJwt}`)
