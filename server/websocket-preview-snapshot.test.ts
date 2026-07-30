@@ -1,5 +1,5 @@
 /**
- * Integration test: a WebSocket client that connects while a compose
+ * Integration test: a WebSocket client that connects while a dev server
  * preview is active receives an `agenthub_preview` snapshot event so
  * its pane can rebuild state without waiting for the next chat-handler
  * broadcast.
@@ -24,19 +24,15 @@ import type { AddressInfo } from 'net';
 import { WebSocket } from 'ws';
 import createWebSocket from './websocket.js';
 import type { WebSocketDeps } from './types.js';
-import type { ComposePreviewRow } from './preview/preview-compose-runtime.js';
+import type { PreviewSnapshotRow } from './preview/preview-snapshot.js';
 
-function activeRow(overrides: Partial<ComposePreviewRow> = {}): ComposePreviewRow {
+function activeRow(overrides: Partial<PreviewSnapshotRow> = {}): PreviewSnapshotRow {
   return {
     id: 'grp-replay',
     session_id: 'sess-replay',
-    project_id: 'proj-replay',
     port: 4242,
     url: 'http://localhost:4242',
-    compose_project_name: 'agenthub-session-sess-replay',
     status: 'starting',
-    started_at: '2026-05-26 12:00:00',
-    last_active_at: '2026-05-26 12:00:01',
     ...overrides,
   };
 }
@@ -117,7 +113,7 @@ function makeDeps(
 }
 
 describe('WebSocket — preview snapshot on connect', () => {
-  it('replays a `preview_starting` event when an active compose group exists', async () => {
+  it('replays a `preview_starting` event when an active dev-server group exists', async () => {
     const row = activeRow({ status: 'starting' });
     const getLogTail = vi.fn().mockReturnValue(['boot-1', 'boot-2']);
     const listActive = vi.fn().mockReturnValue([row]);
@@ -197,7 +193,7 @@ describe('WebSocket — preview snapshot on connect', () => {
   });
 
   it('skips the snapshot block when no runtime accessor is wired', async () => {
-    // The legacy deps shape (no getPreviewSnapshotRuntime) still works —
+    // A missing accessor still works —
     // a missing accessor should yield zero `agenthub_preview` messages.
     const server = createServer();
     createWebSocket(server, makeDeps());

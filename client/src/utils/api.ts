@@ -659,39 +659,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ projectIds }),
     }),
-  // Re-detect preview defaults by sniffing the project's checkout. Pure
-  // read — server does not mutate `projects.json`. Returns
-  // `{ detected: { stack, startScript, port, captureRoutes, idleTTL } | null }`.
-  detectProjectPreview: (projectId: any) =>
-    fetchJSON(`/projects/${projectId}/preview/detect`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    }),
-  // One-shot preview validator. Spawns the configured startScript against
-  // the project's cwd, polls healthPath for 2xx with a 30s deadline, snaps
-  // a screenshot, and tears down. Returns
-  // `{ ok, ports: { allocated }, durationMs, screenshotUrl?, error? }`.
-  // The server's own deadline is 30s health-check + ~3s grace. We set a
-  // defensive 60s client-side ceiling so a hung server (network partition,
-  // frozen Node process) surfaces as a recoverable AbortError in the UI
-  // instead of spinning the Test button forever.
-  testProjectPreview: (projectId: any) =>
-    fetchJSON(`/projects/${projectId}/preview/test`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-      timeout: 60_000,
-    }),
-  // Settings → Preview: repo scan + compose draft (no agent session).
-  getPreviewEnvironmentDraft: (projectId: any) =>
-    fetchJSON(`/projects/${projectId}/preview/environment-draft`),
   getFinalizeEnvironmentDraft: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/finalize/environment-draft`),
-  // Default guided setup — spawns wizard session; opens chat in UI.
-  startPreviewWizard: (projectId: any) =>
-    fetchJSON(`/projects/${projectId}/preview/setup-wizard`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    }),
   // ── AI-assisted Dev Server (prEnv.devServer) setup wizard ────────
   // Read-only repo scan: start-command candidates, package manager,
   // monorepo layout, framework/port guesses, existing config. `{ projectId, draft }`.
@@ -841,13 +810,6 @@ export const api = {
     fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/fix`, {
       method: 'POST',
       body: JSON.stringify({ startAnother: options.startAnother === true }),
-    }),
-  // Single-path configure + secrets + compose boot test. Admin+.
-  buildPreviewEnvironment: (projectId: any, body: any) =>
-    fetchJSON(`/projects/${projectId}/preview/build`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-      timeout: 200_000,
     }),
   /** Boot worktree preview for a chat session (user toolbar only). */
   startSessionPreview: (sessionId: any, body: any = {}) =>
@@ -2501,44 +2463,18 @@ export const api = {
   // Server Logs
   getServerLogs: () => fetchJSON('/server-logs'),
 
-  // Preview Containers
-  getPreviewStatus: () => fetchJSON('/previews/status'),
+  // Session previews (project-scoped list + teardown)
   getProjectPreviews: (projectId: any) => fetchJSON(`/projects/${projectId}/previews`),
   purgeAllProjectPreviews: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/previews/purge`, {
       method: 'POST',
       timeout: 120000,
     }),
-  createPreview: (projectId: any, data: any) =>
-    fetchJSON(`/projects/${projectId}/previews`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-      timeout: 30000,
-    }),
   stopPreview: (projectId: any, previewId: any) =>
     fetchJSON(`/projects/${projectId}/previews/${previewId}/stop`, {
       method: 'POST',
       timeout: 30000,
     }),
-  rebuildPreview: (projectId: any, previewId: any) =>
-    fetchJSON(`/projects/${projectId}/previews/${previewId}/rebuild`, {
-      method: 'POST',
-      timeout: 30000,
-    }),
-  getPreviewLogs: (projectId: any, previewId: any, tail: any = 200) =>
-    fetchJSON(`/projects/${projectId}/previews/${previewId}/logs?tail=${tail}`),
-  deletePreview: (projectId: any, previewId: any) =>
-    fetchJSON(`/projects/${projectId}/previews/${previewId}`, { method: 'DELETE', timeout: 30000 }),
-
-  // Preview Captures
-  capturePreview: (projectId: any, previewId: any, { skipVideo }: any = {}) =>
-    fetchJSON(`/projects/${projectId}/previews/${previewId}/capture`, {
-      method: 'POST',
-      body: JSON.stringify({ skipVideo }),
-      timeout: 30000,
-    }),
-  getPreviewCaptures: (projectId: any, previewId: any) =>
-    fetchJSON(`/projects/${projectId}/previews/${previewId}/captures`),
 
   // iOS Builds
   getIosBuildStatus: () => fetchJSON('/ios-builds/status'),

@@ -1,5 +1,5 @@
 import { Monitor, Loader2, Settings2 } from 'lucide-react';
-import { isPreviewConfigured } from './PreviewSection';
+import { isPreviewConfigured } from '../utils/sessionPreviewState';
 
 /**
  * Toolbar control to boot the session worktree preview (POST .../preview/start).

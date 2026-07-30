@@ -5,15 +5,11 @@
  *
  * - `preview_refresh` WS event → client reloads the iframe (Angular HMR often
  *   picks up changes without this; the refresh covers API/proxy staleness).
- * - Bind-mounted dev servers (ng serve, Django runserver) pick up edits; we do
- *   not restart compose services on every turn (that blips the iframe).
+ * - The dev server watches the worktree directly and picks up edits itself;
+ *   we never restart it per turn (that would blip the iframe).
  */
 import type { BroadcastFn } from '../types.js';
-import type {
-  DevServerRuntimeSync,
-  PreviewComposeRuntimeSync,
-  PreviewRuntimeActiveLookup,
-} from './preview-runtime-lookup.js';
+import type { DevServerRuntimeSync } from './preview-runtime-lookup.js';
 import { getSessionPreviewPort } from './session-preview-port.js';
 
 const REFRESH_THROTTLE_MS = 3_000;
@@ -22,23 +18,14 @@ const lastRefreshMs = new Map<string, number>();
 export type PreviewWorktreeSyncDeps = {
   broadcast: BroadcastFn;
   getDevServerRuntime?: () => DevServerRuntimeSync | null;
-  getPreviewComposeRuntime?: () => PreviewComposeRuntimeSync | null;
-  getPreviewRuntime?: () => PreviewRuntimeActiveLookup | null;
 };
 
 function activePreviewRow(
   sessionId: string,
   deps: PreviewWorktreeSyncDeps,
 ): { id: string; status: string } | null {
-  // Dev-server first, matching `getSessionPreviewPort`: it is the runtime a
-  // session actually runs on, and a stale compose row must not shadow it.
   const devServer = deps.getDevServerRuntime?.()?.getActiveBySessionId(sessionId);
-  if (devServer) return { id: devServer.id, status: devServer.status };
-  const compose = deps.getPreviewComposeRuntime?.()?.getActiveBySessionId(sessionId);
-  if (compose) return { id: compose.id, status: compose.status };
-  const legacy = deps.getPreviewRuntime?.()?.getActiveBySessionId(sessionId);
-  if (legacy) return { id: legacy.id, status: legacy.status };
-  return null;
+  return devServer ? { id: devServer.id, status: devServer.status } : null;
 }
 
 /** User-started preview is booting or serving (must not be clobbered by agent preview blocks). */

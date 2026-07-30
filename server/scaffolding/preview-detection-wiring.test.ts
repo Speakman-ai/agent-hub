@@ -82,7 +82,7 @@ describe('subscribePreviewDetection', () => {
     }
   });
 
-  it('applies vite defaults to project.prEnv.preview after copy-template ok', async () => {
+  it('applies vite defaults to project.prEnv.devServer after copy-template ok', async () => {
     writePkg(workspaceDir, { devDependencies: { vite: '^5.0.0' } });
 
     const project: Project = {
@@ -119,14 +119,16 @@ describe('subscribePreviewDetection', () => {
       },
     });
 
-    await waitFor(() => !!project.prEnv?.preview);
+    await waitFor(() => !!project.prEnv?.devServer);
 
-    expect(project.prEnv?.preview).toEqual({
-      enabled: true,
-      startScript: 'npm run dev',
-      port: 5173,
+    expect(project.prEnv?.devServer).toEqual({
+      startCommand: 'npm run dev',
+      portMap: [{ internalPort: 5173, label: 'web', primary: true }],
       captureRoutes: ['/'],
       idleTTL: 600,
+      env: {},
+      secretKeys: [],
+      aptPackages: [],
     });
     expect(project.prEnv?.startScript).toBe('npm run dev');
     expect(project.prEnv?.internalPort).toBe(5173);
@@ -182,7 +184,7 @@ describe('subscribePreviewDetection', () => {
 
     await waitFor(() => broadcasts.some((b) => b.type === 'preview-defaults-detected'));
 
-    expect(project.prEnv?.preview).toBeUndefined();
+    expect(project.prEnv?.devServer).toBeUndefined();
     expect(saved).toBe(0);
     const msg = broadcasts.find((b) => b.type === 'preview-defaults-detected');
     expect(msg).toMatchObject({ detected: null });

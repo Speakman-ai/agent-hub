@@ -1332,7 +1332,7 @@ describe('Sidebar — per-project nav groups', () => {
     expect(screen.getByRole('button', { name: 'Project Configuration' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Runners' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Dev server' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Previews' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Previews' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Cron Jobs' })).toBeInTheDocument();
   });
 
@@ -1458,8 +1458,8 @@ describe('Sidebar — per-project nav groups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Runners' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`runners:${PROJECT_ID}`);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Previews' } as any) as any);
-    expect(onNavigate!).toHaveBeenCalledWith(`preview:${PROJECT_ID}`);
+    fireEvent.click(screen.getByRole('button', { name: 'Dev server' } as any) as any);
+    expect(onNavigate!).toHaveBeenCalledWith(`devserver:${PROJECT_ID}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`project-crons:${PROJECT_ID}`);

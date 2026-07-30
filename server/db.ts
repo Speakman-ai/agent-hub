@@ -8,6 +8,9 @@ import {
   WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
   MIGRATE_LEGACY_PREVIEWS_SQL,
+  ensureDevServerPreviewColumns,
+  deleteOrphanedNonDevServerPreviewRows,
+  dropComposePreviewColumns,
 } from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { BACKGROUND_SHELLS_SCHEMA } from './background-shells/background-shell-schema.js';
@@ -3135,7 +3138,7 @@ function initDb(dataDir: string): void {
   db.exec(JOBS_SCHEMA);
 
   // Worktree-preview runtime: per-session preview process tracking, owned
-  // by `server/preview/preview-runtime.ts`. Schema lives alongside the
+  // by `server/preview/dev-server-runtime.ts`. Schema lives alongside the
   // runtime so the test suite can spin up an in-memory DB without
   // pulling in the full bootstrap path here.
   //
@@ -3147,6 +3150,24 @@ function initDb(dataDir: string): void {
   db.exec(WORKTREE_PREVIEWS_SCHEMA);
   db.exec(WORKTREE_PREVIEW_GROUPS_SCHEMA);
   db.exec(MIGRATE_LEGACY_PREVIEWS_SQL);
+  ensureDevServerPreviewColumns(db);
+
+  // Compose / legacy-spawn preview removal. The dev server is the only
+  // preview runtime now, so rows those runtimes owned are unstoppable and
+  // would pin their ports against `worktree_preview_processes.port UNIQUE`
+  // forever. Sweep the rows first, then drop the columns only they wrote —
+  // the column drop has to come second because the sweep reads `runtime`,
+  // and a legacy row folded in by MIGRATE_LEGACY_PREVIEWS_SQL above lands
+  // with `runtime` NULL, which the sweep treats as non-dev-server.
+  try {
+    const swept = deleteOrphanedNonDevServerPreviewRows(db);
+    if (swept > 0) {
+      console.log(`[db] removed ${swept} orphaned compose/spawn preview group(s)`);
+    }
+    dropComposePreviewColumns(db);
+  } catch (err) {
+    console.warn('[db] compose preview cleanup failed:', (err as Error).message);
+  }
 
   // Worktree-preview secrets: per-project encrypted env merged into
   // preview spawns. Schema is co-located with `preview-secrets-store.ts`.

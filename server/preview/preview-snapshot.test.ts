@@ -3,25 +3,20 @@
  *
  * No DB, no runtime — we hand the builder a tiny stub that satisfies
  * `PreviewSnapshotRuntime`. The contract being tested is the row →
- * event projection, not the DB query (that's covered by
- * `PreviewComposeRuntime.listActive` tests).
+ * event projection, not the DB query.
  */
 
 import { describe, it, expect } from 'vitest';
-import type { ComposePreviewRow } from './preview-compose-runtime.js';
+import type { PreviewSnapshotRow } from './preview-snapshot.js';
 import { buildPreviewSnapshotEvents, previewSnapshotEventFromRow } from './preview-snapshot.js';
 
-function row(overrides: Partial<ComposePreviewRow>): ComposePreviewRow {
+function row(overrides: Partial<PreviewSnapshotRow>): PreviewSnapshotRow {
   return {
     id: 'grp-1',
     session_id: 'sess-1',
-    project_id: 'proj-1',
     port: 4200,
     url: 'http://localhost:4200',
-    compose_project_name: 'agenthub-session-sess-1',
     status: 'starting',
-    started_at: '2026-05-26 12:00:00',
-    last_active_at: '2026-05-26 12:00:01',
     ...overrides,
   };
 }
@@ -127,7 +122,7 @@ describe('previewSnapshotEventFromRow', () => {
 
   it('returns null for an unknown future status (defense-in-depth)', () => {
     const future = row({
-      status: 'pending' as unknown as ComposePreviewRow['status'],
+      status: 'pending' as unknown as PreviewSnapshotRow['status'],
     });
     expect(previewSnapshotEventFromRow(future, [])).toBeNull();
   });
@@ -135,7 +130,7 @@ describe('previewSnapshotEventFromRow', () => {
 
 describe('buildPreviewSnapshotEvents', () => {
   it('walks listActive() and emits one event per row, in listActive order', () => {
-    const rows: ComposePreviewRow[] = [
+    const rows: PreviewSnapshotRow[] = [
       row({ id: 'grp-a', session_id: 'sess-a', status: 'starting' }),
       row({ id: 'grp-b', session_id: 'sess-b', status: 'ready', url: 'http://localhost:4201' }),
       row({ id: 'grp-c', session_id: 'sess-c', status: 'failed' }),
@@ -157,7 +152,7 @@ describe('buildPreviewSnapshotEvents', () => {
     expect(events[2].logTail).toEqual(['c-fail']);
   });
 
-  it('returns an empty list when no compose groups are active', () => {
+  it('returns an empty list when no groups are active', () => {
     expect(
       buildPreviewSnapshotEvents({
         listActive: () => [],
@@ -169,7 +164,7 @@ describe('buildPreviewSnapshotEvents', () => {
   it('skips rows whose status maps to no event (forward compat)', () => {
     const events = buildPreviewSnapshotEvents({
       listActive: () => [
-        row({ status: 'phantom' as unknown as ComposePreviewRow['status'] }),
+        row({ status: 'phantom' as unknown as PreviewSnapshotRow['status'] }),
         row({ id: 'grp-real', status: 'ready' }),
       ],
       getLogTail: () => [],
@@ -177,33 +172,20 @@ describe('buildPreviewSnapshotEvents', () => {
     expect(events.map((e) => e.previewId)).toEqual(['grp-real']);
   });
 
-  it('accepts several runtimes and keeps each tail with its owning runtime', () => {
-    const compose = {
-      listActive: () => [row({ id: 'grp-compose', session_id: 'sess-1', status: 'ready' })],
-      getLogTail: (id: string) => [`compose-tail:${id}`],
-    };
-    // A dev-server shaped row: no compose_project_name, same structural core.
+  it('keeps each tail with its owning row', () => {
     const devServer = {
       listActive: () => [
         {
-          id: 'grp-dev',
-          session_id: 'sess-2',
-          status: 'starting',
-          url: 'http://localhost:4300',
-          port: 4300,
+          ...row({ id: 'grp-dev', session_id: 'sess-2', status: 'starting' }),
         },
       ],
       getLogTail: (id: string) => [`dev-tail:${id}`],
     };
 
-    const events = buildPreviewSnapshotEvents([compose, devServer]);
+    const events = buildPreviewSnapshotEvents(devServer);
 
-    expect(events.map((e) => [e.previewId, e.kind])).toEqual([
-      ['grp-compose', 'preview'],
-      ['grp-dev', 'preview_starting'],
-    ]);
-    expect(events[0].logTail).toEqual(['compose-tail:grp-compose']);
-    expect(events[1].logTail).toEqual(['dev-tail:grp-dev']);
+    expect(events.map((e) => [e.previewId, e.kind])).toEqual([['grp-dev', 'preview_starting']]);
+    expect(events[0].logTail).toEqual(['dev-tail:grp-dev']);
   });
 
   it('threads getClientPorts() into the ready snapshot for a dev-server runtime', () => {

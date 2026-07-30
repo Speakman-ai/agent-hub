@@ -2,7 +2,7 @@
  * Worktree-preview schema.
  *
  * One row per active preview process. Lifecycle is owned by
- * `preview-runtime.ts`; the reaper (`preview-reaper.ts`) walks the table
+ * `dev-server-runtime.ts`; its reaper walks the table
  * each tick and tears down rows whose `last_active_at` is past the
  * configured idle TTL.
  *
@@ -75,7 +75,7 @@ export const WORKTREE_PREVIEWS_SCHEMA = `
  *
  * `worktree_preview_processes` is the per-process detail row. Carries
  * its own pid, port, URL, status, and log path. The `name` column is
- * the join key from the project's `PreviewProcess.name` field. We keep
+ * the join key from the project's port-map label. We keep
  * `UNIQUE(port)` global to the preview pool (not scoped per group) so
  * the same allocator semantics from the old single-process table still
  * apply across the new multi-process world — two groups can't both
@@ -93,20 +93,10 @@ export const WORKTREE_PREVIEW_GROUPS_SCHEMA = `
     status          TEXT NOT NULL CHECK(status IN ('starting','ready','failed')),
     started_at      TEXT NOT NULL DEFAULT (datetime('now')),
     last_active_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    -- compose-runtime ownership discriminator. NULL for spawn-managed
-    -- rows; set to "agenthub-session-<sessionId>" by the compose
-    -- runtime. Both runtimes filter on this column when scanning the
-    -- shared table to enforce one-runtime-per-row ownership. Compose
-    -- companion columns (worktree_path, compose_file, entry_port,
-    -- override_file_path) are added idempotently by the compose
-    -- runtime migration to keep this base schema minimal for callers
-    -- that do not enable compose mode.
-    compose_project_name TEXT,
-    -- runtime ownership discriminator for non-compose rows. NULL for
-    -- legacy spawn-managed rows; 'dev-server' for DevServerRuntime
-    -- rows. The legacy PreviewRuntime excludes 'dev-server' rows from
-    -- its teardown paths so its reaper pass can't DELETE a row out from
-    -- under a live dev-server process.
+    -- Runtime ownership discriminator. 'dev-server' for DevServerRuntime
+    -- rows, which is the only runtime that writes here. Retained rather
+    -- than assumed so the reap pass can still recognise and clear rows
+    -- left behind by a retired runtime.
     runtime TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_worktree_preview_groups_session
@@ -128,7 +118,7 @@ export const WORKTREE_PREVIEW_GROUPS_SCHEMA = `
     -- proxy dials; internal_port is the port from the project's
     -- devServer portMap (what the process is told to serve inside the
     -- session env). is_primary marks the entry that keeps the
-    -- back-compat /preview/proxy/ mount. NULL / 0 on legacy + compose
+    -- back-compat /preview/proxy/ mount. NULL / 0 on older rows.
     -- rows.
     internal_port   INTEGER,
     is_primary      INTEGER NOT NULL DEFAULT 0,
@@ -192,11 +182,10 @@ export const MIGRATE_LEGACY_PREVIEWS_SQL = `
 /**
  * Idempotent column backfill for databases created before the dev-server
  * runtime columns were promoted into the base schema above. Mirrors the
- * compose runtime's `addComposeProjectNameColumnIfMissing` pattern:
+ * the previous runtime migration pattern:
  * `ALTER TABLE … ADD COLUMN` is fast and atomic, and the duplicate-column
  * error is swallowed per-statement so a partially-migrated DB still picks
- * up the remaining additions. Called by the PreviewRuntime and
- * DevServerRuntime constructors.
+ * up the remaining additions. Called by the dev-server runtime constructor.
  */
 export function ensureDevServerPreviewColumns(db: { exec(sql: string): unknown }): void {
   const additions = [
@@ -213,6 +202,64 @@ export function ensureDevServerPreviewColumns(db: { exec(sql: string): unknown }
       throw err;
     }
   }
+}
+
+/**
+ * Columns older preview runtimes added to `worktree_preview_groups` at
+ * construction time. The dev-server runtime never writes them, so on an
+ * existing database they are dead weight.
+ *
+ * `ALTER TABLE … DROP COLUMN` needs SQLite 3.35+ (better-sqlite3 bundles
+ * well past that). An unknown column raises "no such column", which we
+ * swallow per-statement so a fresh database — where the base schema never
+ * declared them — is a clean no-op.
+ */
+export function dropComposePreviewColumns(db: { exec(sql: string): unknown }): void {
+  const drops = [
+    `ALTER TABLE worktree_preview_groups DROP COLUMN compose_project_name`,
+    `ALTER TABLE worktree_preview_groups DROP COLUMN worktree_path`,
+    `ALTER TABLE worktree_preview_groups DROP COLUMN compose_file`,
+    `ALTER TABLE worktree_preview_groups DROP COLUMN entry_port`,
+    `ALTER TABLE worktree_preview_groups DROP COLUMN override_file_path`,
+    `ALTER TABLE worktree_preview_groups DROP COLUMN host_project_directory`,
+  ];
+  for (const stmt of drops) {
+    try {
+      db.exec(stmt);
+    } catch (err) {
+      const msg = (err as Error).message ?? '';
+      if (msg.includes('no such column')) continue;
+      throw err;
+    }
+  }
+}
+
+/**
+ * Rows older runtimes owned. Nothing can
+ * stop their processes now, so leaving them behind would pin their ports
+ * against the allocator's UNIQUE(port) invariant forever. Dev-server rows
+ * (`runtime = 'dev-server'`) are never touched.
+ */
+export function deleteOrphanedNonDevServerPreviewRows(db: {
+  prepare(sql: string): { run(...args: unknown[]): { changes: number } };
+}): number {
+  // Child rows go first: the FK declares ON DELETE CASCADE but that only
+  // fires when `PRAGMA foreign_keys` is ON, which is a per-connection
+  // setting. Deleting explicitly makes the sweep correct either way.
+  db.prepare(
+    `DELETE FROM worktree_preview_processes
+      WHERE group_id IN (
+        SELECT id FROM worktree_preview_groups
+         WHERE runtime IS NULL OR runtime <> '${DEV_SERVER_RUNTIME_KIND}'
+      )`,
+  ).run();
+  const { changes } = db
+    .prepare(
+      `DELETE FROM worktree_preview_groups
+        WHERE runtime IS NULL OR runtime <> '${DEV_SERVER_RUNTIME_KIND}'`,
+    )
+    .run();
+  return changes;
 }
 
 /**

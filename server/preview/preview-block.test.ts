@@ -11,7 +11,7 @@
  *   - Handler that observes a `failed` runtime row emits `preview_failed`
  *     with the captured log tail.
  *
- * The runtime is mocked at the `PreviewRuntime` shape — no real spawn,
+ * The runtime is mocked at the handler shape — no real spawn,
  * fetch, or DB is exercised here. End-to-end coverage of the runtime
  * itself lives in `preview-runtime.test.ts`.
  */
@@ -22,11 +22,10 @@ import {
   parsePreviewBlock,
   describePreviewReason,
   handlePreviewBlock,
-  resolvePreviewHandlerReadyTimeoutMs,
   type PreviewBroadcastEvent,
   type PreviewHandlerDeps,
+  type PreviewRuntimeLike,
 } from './preview-block.js';
-import type { PreviewRuntime } from './preview-runtime.js';
 import type { Project } from '../types.js';
 
 // ─── Test doubles ──────────────────────────────────────────────────────
@@ -56,7 +55,7 @@ interface FakeRuntimeOpts {
 }
 
 function makeRuntime(opts: FakeRuntimeOpts = {}): {
-  runtime: PreviewRuntime;
+  runtime: PreviewRuntimeLike;
   startPreviewCalls: number;
   getByIdCalls: () => number;
 } {
@@ -101,7 +100,7 @@ function makeRuntime(opts: FakeRuntimeOpts = {}): {
   };
 
   return {
-    runtime: fake as unknown as PreviewRuntime,
+    runtime: fake,
     get startPreviewCalls() {
       return startPreviewCalls;
     },
@@ -118,7 +117,7 @@ function configuredProject(overrides: Partial<Project> = {}): Project {
     agents: [],
     prEnv: {
       enabled: true,
-      preview: { enabled: true, startScript: 'npm run dev' },
+      devServer: { startCommand: 'npm run dev' },
     },
     ...overrides,
   } as Project;
@@ -271,71 +270,6 @@ describe('detectPreviewBlock — malformed payloads produce reasons, not crashes
   });
 });
 
-describe('resolvePreviewHandlerReadyTimeoutMs', () => {
-  it('uses compose budget when entryService is set', () => {
-    const project = {
-      prEnv: { preview: { compose: { entryService: 'frontend', entryPort: 4200 } } },
-    } as Project;
-    expect(resolvePreviewHandlerReadyTimeoutMs(project, 900_000)).toBe(900_000);
-  });
-
-  it('prefers per-project compose.readyTimeoutMs', () => {
-    const project = {
-      prEnv: {
-        preview: { compose: { entryService: 'web', entryPort: 3000, readyTimeoutMs: 42_000 } },
-      },
-    } as Project;
-    expect(resolvePreviewHandlerReadyTimeoutMs(project, 600_000)).toBe(42_000);
-  });
-
-  it('uses spawn default when compose is not configured', () => {
-    const project = { prEnv: { preview: { enabled: true } } } as Project;
-    expect(resolvePreviewHandlerReadyTimeoutMs(project, 600_000)).toBe(120_000);
-  });
-
-  it('uses spawn default for services-only compose metadata', () => {
-    const project = {
-      prEnv: {
-        preview: { enabled: true, compose: { file: 'compose.yml', readyTimeoutMs: 42_000 } },
-      },
-    } as Project;
-    expect(resolvePreviewHandlerReadyTimeoutMs(project, 600_000)).toBe(120_000);
-  });
-});
-
-describe('handlePreviewBlock — ready timeout default', () => {
-  it('waits on the compose budget when readyTimeoutMs is omitted', async () => {
-    const project = configuredProject({
-      prEnv: {
-        enabled: true,
-        startScript: 'npm run dev',
-        internalPort: 3000,
-        preview: {
-          enabled: true,
-          compose: { entryService: 'web', entryPort: 4200 },
-        },
-      },
-    });
-    const fake = makeRuntime({ flipAfterCalls: 999, initialStatus: 'starting' });
-    let nowMs = 0;
-    const deps = makeDeps({
-      project,
-      runtime: fake.runtime,
-      readyTimeoutMs: undefined,
-      readyPollIntervalMs: 1,
-      startingRebroadcastIntervalMs: 0,
-      sleep: async () => {
-        nowMs += 50_000;
-      },
-      now: () => nowMs,
-    });
-    await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
-    const failed = deps.events.find((e) => e.kind === 'preview_failed');
-    expect(failed?.error).toContain('600000ms');
-    expect(nowMs).toBeGreaterThanOrEqual(600_000);
-  });
-});
-
 // ─── Handler tests ─────────────────────────────────────────────────────
 
 describe('handlePreviewBlock — gating', () => {
@@ -355,7 +289,7 @@ describe('handlePreviewBlock — gating', () => {
     expect(ev.kind).toBe('preview_unavailable');
     expect(ev.unavailableReason).toBe('no-pr-env');
     // Preferred contract: structured navigation intent.
-    expect(ev.wizard).toEqual({ view: 'preview:p1', projectId: 'p1' });
+    expect(ev.wizard).toEqual({ view: 'devserver:p1', projectId: 'p1' });
     // Legacy fallback: string URL retained for one release of compat so
     // older client builds that read `wizardUrl` still render the card.
     expect(ev.wizardUrl).toContain('/projects/p1/settings/');
@@ -363,13 +297,12 @@ describe('handlePreviewBlock — gating', () => {
     startCalls.push(fake.startPreviewCalls);
   });
 
-  it('emits preview_unavailable when prEnv exists but preview.enabled is false', async () => {
+  it('emits preview_unavailable when prEnv exists without devServer config', async () => {
     const project = configuredProject({
       prEnv: {
-        enabled: true,
-        startScript: 'npm run dev',
+        enabled: false,
+        startScript: '',
         internalPort: 3000,
-        preview: { enabled: false },
       },
     });
     const deps = makeDeps({ project });
@@ -380,7 +313,7 @@ describe('handlePreviewBlock — gating', () => {
     const ev = deps.events[0];
     expect(ev.kind).toBe('preview_unavailable');
     expect(ev.unavailableReason).toBe('preview-disabled');
-    expect(ev.wizard).toEqual({ view: 'preview:proj-1', projectId: 'proj-1' });
+    expect(ev.wizard).toEqual({ view: 'devserver:proj-1', projectId: 'proj-1' });
     expect(ev.wizardUrl).toBeTruthy();
   });
 
@@ -417,7 +350,7 @@ describe('handlePreviewBlock — gating', () => {
     // The runtime-null path also needs to carry the navigation intent
     // so the user can resolve the deep-link even when the runtime isn't
     // wired (e.g. on a server whose preview subsystem failed to boot).
-    expect(deps.events[0].wizard).toEqual({ view: 'preview:proj-1', projectId: 'proj-1' });
+    expect(deps.events[0].wizard).toEqual({ view: 'devserver:proj-1', projectId: 'proj-1' });
     expect(deps.events[0].wizardUrl).toBeTruthy();
   });
 
@@ -432,7 +365,7 @@ describe('handlePreviewBlock — gating', () => {
 
     expect(deps.events[0].wizardUrl).toBe('/custom/p1/wizard');
     // Default wizard intent still emitted side-by-side.
-    expect(deps.events[0].wizard).toEqual({ view: 'preview:p1', projectId: 'p1' });
+    expect(deps.events[0].wizard).toEqual({ view: 'devserver:p1', projectId: 'p1' });
   });
 
   it('respects an injected buildWizard (preferred intent override)', async () => {
@@ -652,7 +585,7 @@ describe('handlePreviewBlock — preview_starting', () => {
     // step past startingRebroadcastIntervalMs each poll.
     let fakeNow = 0;
     const deps = makeDeps({
-      runtime: fake as unknown as PreviewRuntime,
+      runtime: fake,
       readyTimeoutMs: 10_000,
       readyPollIntervalMs: 1,
       startingRebroadcastIntervalMs: 5,
@@ -695,72 +628,5 @@ describe('handlePreviewBlock — preview_starting', () => {
     const before = Date.now();
     await handlePreviewBlock('sess-1', { target: 'client', route: '/' }, deps);
     expect(Date.now() - before).toBeLessThan(1_000);
-  });
-});
-
-// ─── Compose runtime dispatch ──────────────────────────────────────────
-
-describe('handlePreviewBlock — accepts a PreviewComposeRuntime', () => {
-  it('emits a preview attachment when the compose runtime reports ready', async () => {
-    // The compose runtime is structurally a `PreviewRuntimeLike` (the
-    // compile-time assertion in preview-block.ts pins this). We exercise
-    // the shape contract here with a thin manual fake whose
-    // `startPreview` return + `getById` flip exactly mirror what the
-    // real PreviewComposeRuntime produces (no docker / fetch loop, so
-    // the test is deterministic). The full compose runtime end-to-end is
-    // covered by preview-compose-runtime.test.ts.
-    let gets = 0;
-    const composeRuntimeShape = {
-      startPreview: async () => ({
-        previewId: 'compose-prev',
-        url: 'http://localhost:4111',
-        port: 4111,
-        composeProjectName: 'agenthub-session-sess-c',
-      }),
-      getById: () => {
-        gets++;
-        return {
-          id: 'compose-prev',
-          session_id: 'sess-c',
-          project_id: 'proj-1',
-          port: 4111,
-          url: 'http://localhost:4111',
-          compose_project_name: 'agenthub-session-sess-c',
-          status: (gets >= 2 ? 'ready' : 'starting') as 'ready' | 'starting',
-          started_at: '2026-05-18T00:00:00Z',
-          last_active_at: '2026-05-18T00:00:00Z',
-        };
-      },
-      getLogTail: () => [],
-    };
-
-    const project = configuredProject({
-      prEnv: {
-        enabled: true,
-        startScript: 'npm run dev',
-        internalPort: 3000,
-        preview: {
-          enabled: true,
-          compose: { entryService: 'web', entryPort: 8000 },
-        },
-      },
-    });
-
-    const deps = makeDeps({
-      project,
-      runtime: composeRuntimeShape as unknown as PreviewRuntime,
-      readyTimeoutMs: 1_000,
-      readyPollIntervalMs: 1,
-      startingRebroadcastIntervalMs: 0,
-    });
-
-    await handlePreviewBlock('sess-c', { target: 'client', route: '/' }, deps);
-
-    // Terminal event is `preview` with the compose-runtime's allocated port.
-    const terminal = deps.events[deps.events.length - 1];
-    expect(terminal.kind).toBe('preview');
-    expect(terminal.port).toBe(4111);
-    expect(terminal.previewUrl).toBe('http://localhost:4111');
-    expect(terminal.fullUrl).toBe('http://localhost:4111/');
   });
 });

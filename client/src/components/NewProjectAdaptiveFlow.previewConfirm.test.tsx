@@ -155,9 +155,9 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
     expect(body!).toEqual({
       prEnv: {
         enabled: false,
-        preview: {
-          enabled: true,
-          startScript: 'npm run dev',
+        devServer: {
+          startCommand: 'npm run dev',
+          portMap: [{ internalPort: 5173, label: 'web', primary: true }],
           captureRoutes: ['/'],
           idleTTL: 600,
         },
@@ -165,7 +165,7 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
     });
   });
 
-  it('PATCHes a disabled preview when the user skips', async () => {
+  it('PATCHes a prEnv with no dev-server block when the user skips', async () => {
     await runThroughQuestionnaire();
     fireDetected({
       type: 'preview-defaults-detected',
@@ -190,7 +190,7 @@ describe('NewProjectAdaptiveFlow — preview defaults confirmation', () => {
       expect(patchCall!).toBeTruthy();
       const body = JSON.parse(patchCall[1].body);
       expect(body!).toEqual({
-        prEnv: { enabled: false, preview: { enabled: false } },
+        prEnv: { enabled: false },
       });
     });
   });

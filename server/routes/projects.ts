@@ -22,10 +22,6 @@ import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolve
 import type { SupportedEngine } from '../engine-availability.js';
 import { claudePermissionModeForSpawn } from '../claude-cli-args.js';
 import {
-  PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS as PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS_SHARED,
-  PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS as PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS_SHARED,
-} from '../preview/preview-ready-timeout-bounds.js';
-import {
   ANALYZE_FINALIZE_SHIPPING_GUIDELINES,
   applyOnboardDevAgentShippingContracts,
   patchOnboardContextFilesForShipping,
@@ -35,7 +31,6 @@ import { getUserById } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { normalizeReplayConfig } from '../replays/replay-config.js';
-import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
 import { createPage } from '../wiki.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
@@ -80,13 +75,7 @@ import type {
   ProjectMode,
   StreamEvent,
   GithubWorkflowSettings,
-  PreviewProcess,
 } from '../types.js';
-import { formatGraphError, validateProcessGraph } from '../preview/preview-process-graph.js';
-import {
-  detectPreviewSuggestion,
-  previewDetectSuggestionToJson,
-} from '../preview-detect-suggestion.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
 import { getWorkflowWorkspaceDir } from '../project-mode.js';
@@ -554,40 +543,7 @@ export interface ValidatedPrEnvConfig {
   healthPath?: string;
   dockerfilePath?: string;
   env?: Record<string, string>;
-  preview?: ValidatedPrEnvPreviewConfig;
   devServer?: DevServerConfig;
-}
-
-export interface ValidatedPrEnvPreviewConfig {
-  enabled: boolean;
-  startScript?: string;
-  port?: number;
-  captureRoutes?: string[];
-  idleTTL?: number;
-  autoStart?: boolean;
-  compose?: ValidatedPreviewComposeConfig;
-  processes?: PreviewProcess[];
-}
-
-/**
- * Validated shape of the optional `preview.compose` sub-block.
- * Mirrors {@link PreviewComposeConfig} on the type side with the same
- * defaulting semantics — defaults are NOT filled in here so the stored
- * config round-trips exactly what the user supplied.
- */
-export interface ValidatedPreviewComposeConfig {
-  file?: string;
-  /** Deprecated one-release app-wrapping fallback. */
-  entryService?: string;
-  /** Deprecated one-release app-wrapping fallback. */
-  entryPort?: number;
-  envFile?: string;
-  healthPath?: string;
-  hostPortRange?: { min: number; max: number };
-  readyTimeoutMs?: number;
-  entryWorkdir?: string;
-  entrySourceDir?: string;
-  shadowDirs?: string[];
 }
 
 // Caps for the `env` map. The builder ultimately translates these into
@@ -698,551 +654,6 @@ function validatePrEnvVars(
   return { ok: true, value: out };
 }
 
-// Preview sub-config caps. Mirrors `PrEnvPreviewConfig` in `server/types.ts`.
-// The wizard / future client-side mirror should re-export the same numbers
-// (Wizard UI work is tracked in card 4 — out of scope here).
-const PR_ENV_PREVIEW_MAX_ROUTES = 10;
-const PR_ENV_PREVIEW_PORT_MIN = 1024;
-const PR_ENV_PREVIEW_PORT_MAX = 65535;
-const PR_ENV_PREVIEW_IDLE_TTL_MIN = 60;
-const PR_ENV_PREVIEW_IDLE_TTL_MAX = 86400;
-
-// Compose sub-config caps — see PreviewComposeConfig in server/types.ts.
-// The compose service-name pattern matches Docker's own
-// `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` rule, transcribed here so a misconfigured
-// service-name surfaces at save time instead of when `docker compose`
-// rejects it minutes into a build.
-const PREVIEW_COMPOSE_SERVICE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
-// Bounds shared with the global config clamp (`server/config.ts`) via
-// `preview/preview-ready-timeout-bounds.ts` so the per-project override and
-// the host default can't drift.
-const PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS = PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS_SHARED;
-const PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS = PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS_SHARED;
-const PREVIEW_COMPOSE_FILE_MAX_LEN = 256;
-// Path-traversal guard for `file` / `envFile`. These resolve relative to
-// the worktree root at runtime; a `..` segment could escape the worktree
-// and let a misconfigured project mount the host filesystem. We refuse
-// at save time so an operator can't accidentally publish such a config.
-const PREVIEW_COMPOSE_TRAVERSAL_RE = /(^|\/)\.\.(\/|$)/;
-
-/**
- * Validate the optional `preview.compose` sub-block. Returns the
- * normalised value on success, `undefined` on absent input, or an error
- * string on the first failure. Defaults are NOT applied here — the
- * runtime fills them in at start time so an operator's stored config
- * round-trips exactly what they typed.
- *
- * The compose block is services-only when `entryService` / `entryPort` are
- * absent. Cross-field exclusivity for the deprecated app-wrapping fallback
- * is checked by the caller in `validatePrEnvPreview`.
- */
-function validatePreviewCompose(
-  raw: unknown,
-): { ok: true; value: ValidatedPreviewComposeConfig | undefined } | { ok: false; error: string } {
-  if (raw === undefined || raw === null) return { ok: true, value: undefined };
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, error: 'prEnv.preview.compose must be an object' };
-  }
-  const obj = raw as Record<string, unknown>;
-
-  // A services-only compose block omits the old app identity fields. During
-  // the one-release migration window, the legacy fallback still requires the
-  // pair together so a partial config can never select it accidentally.
-  const hasEntryService = obj.entryService !== undefined && obj.entryService !== null;
-  const hasEntryPort = obj.entryPort !== undefined && obj.entryPort !== null;
-  if (hasEntryService !== hasEntryPort) {
-    return {
-      ok: false,
-      error:
-        'prEnv.preview.compose.entryService and entryPort must be provided together for the legacy fallback',
-    };
-  }
-
-  let entryService: string | undefined;
-  if (hasEntryService) {
-    if (typeof obj.entryService !== 'string') {
-      return { ok: false, error: 'prEnv.preview.compose.entryService must be a string' };
-    }
-    entryService = obj.entryService.trim();
-    if (!entryService) {
-      return { ok: false, error: 'prEnv.preview.compose.entryService is required' };
-    }
-    if (!PREVIEW_COMPOSE_SERVICE_NAME_RE.test(entryService)) {
-      return {
-        ok: false,
-        error:
-          'prEnv.preview.compose.entryService must match [a-zA-Z0-9][a-zA-Z0-9_.-]* ' +
-          '(Docker compose service-name rule)',
-      };
-    }
-  }
-
-  let entryPort: number | undefined;
-  if (hasEntryPort) {
-    if (typeof obj.entryPort === 'number' && Number.isFinite(obj.entryPort)) {
-      entryPort = Math.floor(obj.entryPort);
-    } else if (typeof obj.entryPort === 'string' && /^\d+$/.test(obj.entryPort.trim())) {
-      entryPort = parseInt(obj.entryPort.trim(), 10);
-    }
-    if (
-      entryPort === undefined ||
-      !Number.isInteger(entryPort) ||
-      entryPort < 1 ||
-      entryPort > PR_ENV_PREVIEW_PORT_MAX
-    ) {
-      return {
-        ok: false,
-        error: `prEnv.preview.compose.entryPort must be an integer between 1 and ${PR_ENV_PREVIEW_PORT_MAX}`,
-      };
-    }
-  }
-
-  // file / envFile — optional relative paths, no traversal, length-capped.
-  const validatePath = (
-    field: 'file' | 'envFile',
-    val: unknown,
-  ): { ok: true; value: string | undefined } | { ok: false; error: string } => {
-    if (val === undefined || val === null || val === '') return { ok: true, value: undefined };
-    if (typeof val !== 'string') {
-      return { ok: false, error: `prEnv.preview.compose.${field} must be a string` };
-    }
-    const t = val.trim();
-    if (!t) return { ok: true, value: undefined };
-    if (t.length > PREVIEW_COMPOSE_FILE_MAX_LEN) {
-      return {
-        ok: false,
-        error: `prEnv.preview.compose.${field} exceeds ${PREVIEW_COMPOSE_FILE_MAX_LEN} chars`,
-      };
-    }
-    if (t.startsWith('/')) {
-      return {
-        ok: false,
-        error: `prEnv.preview.compose.${field} must be relative to the worktree root (got absolute path)`,
-      };
-    }
-    if (PREVIEW_COMPOSE_TRAVERSAL_RE.test(t)) {
-      return {
-        ok: false,
-        error: `prEnv.preview.compose.${field} must not contain '..' path segments`,
-      };
-    }
-    return { ok: true, value: t };
-  };
-
-  const fileResult = validatePath('file', obj.file);
-  if (!fileResult.ok) return fileResult;
-  const envFileResult = validatePath('envFile', obj.envFile);
-  if (!envFileResult.ok) return envFileResult;
-
-  // healthPath — optional, must start with `/`.
-  let healthPath: string | undefined;
-  if (obj.healthPath !== undefined && obj.healthPath !== null && obj.healthPath !== '') {
-    if (typeof obj.healthPath !== 'string') {
-      return { ok: false, error: 'prEnv.preview.compose.healthPath must be a string' };
-    }
-    const hp = obj.healthPath.trim();
-    if (hp && !hp.startsWith('/')) {
-      return { ok: false, error: 'prEnv.preview.compose.healthPath must start with `/`' };
-    }
-    if (hp) healthPath = hp;
-  }
-
-  // hostPortRange — optional `{min, max}` pair. Both must be integers,
-  // 1..65535, and min <= max. We don't enforce overlap with the legacy
-  // 4100–4999 range here — operators may intentionally pick a disjoint
-  // range to keep compose and spawn previews on separate port windows.
-  let hostPortRange: { min: number; max: number } | undefined;
-  if (obj.hostPortRange !== undefined && obj.hostPortRange !== null) {
-    if (typeof obj.hostPortRange !== 'object' || Array.isArray(obj.hostPortRange)) {
-      return {
-        ok: false,
-        error: 'prEnv.preview.compose.hostPortRange must be an object {min, max}',
-      };
-    }
-    const range = obj.hostPortRange as Record<string, unknown>;
-    const parsePort = (v: unknown): number | null => {
-      if (typeof v === 'number' && Number.isFinite(v)) return Math.floor(v);
-      if (typeof v === 'string' && /^\d+$/.test(v.trim())) return parseInt(v.trim(), 10);
-      return null;
-    };
-    const min = parsePort(range.min);
-    const max = parsePort(range.max);
-    if (min === null || max === null || min < 1 || max < 1 || min > 65535 || max > 65535) {
-      return {
-        ok: false,
-        error: 'prEnv.preview.compose.hostPortRange.{min,max} must be integers between 1 and 65535',
-      };
-    }
-    if (min > max) {
-      return {
-        ok: false,
-        error: 'prEnv.preview.compose.hostPortRange.min must be ≤ max',
-      };
-    }
-    hostPortRange = { min, max };
-  }
-
-  // readyTimeoutMs — optional integer in bounds.
-  let readyTimeoutMs: number | undefined;
-  if (
-    obj.readyTimeoutMs !== undefined &&
-    obj.readyTimeoutMs !== null &&
-    obj.readyTimeoutMs !== ''
-  ) {
-    let parsed: number | null = null;
-    if (typeof obj.readyTimeoutMs === 'number' && Number.isFinite(obj.readyTimeoutMs)) {
-      parsed = Math.floor(obj.readyTimeoutMs);
-    } else if (typeof obj.readyTimeoutMs === 'string' && /^\d+$/.test(obj.readyTimeoutMs.trim())) {
-      parsed = parseInt(obj.readyTimeoutMs.trim(), 10);
-    }
-    if (
-      parsed === null ||
-      parsed < PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS ||
-      parsed > PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS
-    ) {
-      return {
-        ok: false,
-        error:
-          `prEnv.preview.compose.readyTimeoutMs must be an integer between ` +
-          `${PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS} and ${PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS} ms`,
-      };
-    }
-    readyTimeoutMs = parsed;
-  }
-
-  // entryWorkdir — optional absolute path inside the entry container.
-  // When set, the runtime bind-mounts the host worktree there for
-  // live-edit previews. We require absolute (must start with `/`) to
-  // disambiguate from compose-relative volume sources, length-cap it
-  // so a misconfigured value can't blow past kernel ARG_MAX, and
-  // reject `..` segments to avoid surprising compose-side resolution.
-  let entryWorkdir: string | undefined;
-  if (obj.entryWorkdir !== undefined && obj.entryWorkdir !== null && obj.entryWorkdir !== '') {
-    if (typeof obj.entryWorkdir !== 'string') {
-      return { ok: false, error: 'prEnv.preview.compose.entryWorkdir must be a string' };
-    }
-    const ew = obj.entryWorkdir.trim();
-    if (ew) {
-      if (!ew.startsWith('/')) {
-        return {
-          ok: false,
-          error: 'prEnv.preview.compose.entryWorkdir must be an absolute path inside the container',
-        };
-      }
-      if (ew.length > PREVIEW_COMPOSE_FILE_MAX_LEN) {
-        return {
-          ok: false,
-          error: `prEnv.preview.compose.entryWorkdir exceeds ${PREVIEW_COMPOSE_FILE_MAX_LEN} chars`,
-        };
-      }
-      if (PREVIEW_COMPOSE_TRAVERSAL_RE.test(ew)) {
-        return {
-          ok: false,
-          error: `prEnv.preview.compose.entryWorkdir must not contain '..' path segments`,
-        };
-      }
-      entryWorkdir = ew;
-    }
-  }
-
-  // entrySourceDir — optional relative path from worktree root to the
-  // directory that maps to entryWorkdir inside the container. For
-  // monorepos where the Dockerfile build context is a subdirectory
-  // (e.g. `frontend/`). Defaults to `.` (worktree root). Same
-  // validation as file/envFile: relative, no traversal, length-capped.
-  let entrySourceDir: string | undefined;
-  if (
-    obj.entrySourceDir !== undefined &&
-    obj.entrySourceDir !== null &&
-    obj.entrySourceDir !== ''
-  ) {
-    if (typeof obj.entrySourceDir !== 'string') {
-      return { ok: false, error: 'prEnv.preview.compose.entrySourceDir must be a string' };
-    }
-    const es = obj.entrySourceDir.trim().replace(/^\/+/, '').replace(/\/+$/, '');
-    if (es) {
-      if (es.length > PREVIEW_COMPOSE_FILE_MAX_LEN) {
-        return {
-          ok: false,
-          error: `prEnv.preview.compose.entrySourceDir exceeds ${PREVIEW_COMPOSE_FILE_MAX_LEN} chars`,
-        };
-      }
-      if (PREVIEW_COMPOSE_TRAVERSAL_RE.test(es)) {
-        return {
-          ok: false,
-          error: `prEnv.preview.compose.entrySourceDir must not contain '..' path segments`,
-        };
-      }
-      if (!entryWorkdir) {
-        return {
-          ok: false,
-          error: 'prEnv.preview.compose.entrySourceDir is only valid when entryWorkdir is set',
-        };
-      }
-      entrySourceDir = es;
-    }
-  }
-
-  // shadowDirs — optional list of relative paths under entryWorkdir
-  // that should remain image-provided (anonymous-volume "holes" in the
-  // parent bind). Without these, the host bind shadows the image's
-  // pre-installed deps (node_modules etc.) and the entry process fails
-  // on import resolution. Each entry must be a non-empty relative path
-  // without `..`. Capped at PR_ENV_MAX_VARS to bound the override size.
-  let shadowDirs: string[] | undefined;
-  if (obj.shadowDirs !== undefined && obj.shadowDirs !== null) {
-    if (!Array.isArray(obj.shadowDirs)) {
-      return {
-        ok: false,
-        error: 'prEnv.preview.compose.shadowDirs must be an array of relative paths',
-      };
-    }
-    if (obj.shadowDirs.length > PR_ENV_MAX_VARS) {
-      return {
-        ok: false,
-        error: `prEnv.preview.compose.shadowDirs exceeds ${PR_ENV_MAX_VARS} entries`,
-      };
-    }
-    if (obj.shadowDirs.length > 0 && !entryWorkdir) {
-      return {
-        ok: false,
-        error: 'prEnv.preview.compose.shadowDirs is only valid when entryWorkdir is set',
-      };
-    }
-    const normalised: string[] = [];
-    for (const raw of obj.shadowDirs) {
-      if (typeof raw !== 'string') {
-        return {
-          ok: false,
-          error: 'prEnv.preview.compose.shadowDirs entries must be strings',
-        };
-      }
-      const s = raw.trim().replace(/^\/+/, '').replace(/\/+$/, '');
-      if (!s) {
-        return {
-          ok: false,
-          error: 'prEnv.preview.compose.shadowDirs entries must be non-empty',
-        };
-      }
-      if (s.length > PREVIEW_COMPOSE_FILE_MAX_LEN) {
-        return {
-          ok: false,
-          error: `prEnv.preview.compose.shadowDirs entry exceeds ${PREVIEW_COMPOSE_FILE_MAX_LEN} chars`,
-        };
-      }
-      if (PREVIEW_COMPOSE_TRAVERSAL_RE.test(s)) {
-        return {
-          ok: false,
-          error: `prEnv.preview.compose.shadowDirs entries must not contain '..' segments`,
-        };
-      }
-      normalised.push(s);
-    }
-    if (normalised.length > 0) shadowDirs = normalised;
-  }
-
-  const value: ValidatedPreviewComposeConfig = {};
-  if (entryService) value.entryService = entryService;
-  if (entryPort !== undefined) value.entryPort = entryPort;
-  if (fileResult.value) value.file = fileResult.value;
-  if (envFileResult.value) value.envFile = envFileResult.value;
-  if (healthPath) value.healthPath = healthPath;
-  if (hostPortRange) value.hostPortRange = hostPortRange;
-  if (readyTimeoutMs !== undefined) value.readyTimeoutMs = readyTimeoutMs;
-  if (entryWorkdir) value.entryWorkdir = entryWorkdir;
-  if (entrySourceDir) value.entrySourceDir = entrySourceDir;
-  if (shadowDirs) value.shadowDirs = shadowDirs;
-  return { ok: true, value };
-}
-
-/**
- * Validate the optional `preview` sub-object on a per-project PR-env
- * config. Returns the normalized value on success (or `undefined` when
- * the input is absent), or an error string on the first failure.
- *
- * Note: the parent-`enabled` cross-field check (preview requires the
- * project's PR-env feature on) lives in `validatePrEnvProjectConfig`,
- * not here — this helper only validates the sub-object's own fields.
- */
-function validatePrEnvPreview(
-  raw: unknown,
-): { ok: true; value: ValidatedPrEnvPreviewConfig | undefined } | { ok: false; error: string } {
-  if (raw === undefined || raw === null) return { ok: true, value: undefined };
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, error: 'prEnv.preview must be an object' };
-  }
-  const obj = raw as Record<string, unknown>;
-  const enabled = !!obj.enabled;
-  if (!enabled) {
-    // Mirror the parent: keep the slot for round-tripping when toggled off.
-    return { ok: true, value: { enabled: false } };
-  }
-
-  const trimStr = (v: unknown): string | undefined => {
-    if (typeof v !== 'string') return undefined;
-    const t = v.trim();
-    return t.length > 0 ? t : undefined;
-  };
-
-  const startScript = trimStr(obj.startScript);
-
-  // Port: accept number or numeric string (mirrors `internalPort`).
-  let port: number | undefined;
-  if (obj.port !== undefined && obj.port !== null && obj.port !== '') {
-    if (typeof obj.port === 'number' && Number.isFinite(obj.port)) {
-      port = Math.floor(obj.port);
-    } else if (typeof obj.port === 'string' && /^\d+$/.test(obj.port.trim())) {
-      port = parseInt(obj.port.trim(), 10);
-    } else {
-      return {
-        ok: false,
-        error: `prEnv.preview.port must be an integer between ${PR_ENV_PREVIEW_PORT_MIN} and ${PR_ENV_PREVIEW_PORT_MAX}`,
-      };
-    }
-    if (
-      !Number.isInteger(port) ||
-      port < PR_ENV_PREVIEW_PORT_MIN ||
-      port > PR_ENV_PREVIEW_PORT_MAX
-    ) {
-      return {
-        ok: false,
-        error: `prEnv.preview.port must be an integer between ${PR_ENV_PREVIEW_PORT_MIN} and ${PR_ENV_PREVIEW_PORT_MAX}`,
-      };
-    }
-  }
-
-  // captureRoutes: array of leading-`/` strings, max 10 entries.
-  let captureRoutes: string[] | undefined;
-  if (obj.captureRoutes !== undefined && obj.captureRoutes !== null) {
-    if (!Array.isArray(obj.captureRoutes)) {
-      return { ok: false, error: 'prEnv.preview.captureRoutes must be an array of strings' };
-    }
-    if (obj.captureRoutes.length > PR_ENV_PREVIEW_MAX_ROUTES) {
-      return {
-        ok: false,
-        error: `prEnv.preview.captureRoutes supports at most ${PR_ENV_PREVIEW_MAX_ROUTES} entries (got ${obj.captureRoutes.length})`,
-      };
-    }
-    const out: string[] = [];
-    for (let i = 0; i < obj.captureRoutes.length; i++) {
-      const route = obj.captureRoutes[i];
-      if (typeof route !== 'string') {
-        return {
-          ok: false,
-          error: `prEnv.preview.captureRoutes[${i}] must be a string`,
-        };
-      }
-      const t = route.trim();
-      if (!t.startsWith('/')) {
-        return {
-          ok: false,
-          error: `prEnv.preview.captureRoutes[${i}] must start with \`/\``,
-        };
-      }
-      out.push(t);
-    }
-    if (out.length > 0) captureRoutes = out;
-  }
-
-  // idleTTL: integer seconds in [60, 86400].
-  let idleTTL: number | undefined;
-  if (obj.idleTTL !== undefined && obj.idleTTL !== null && obj.idleTTL !== '') {
-    if (typeof obj.idleTTL === 'number' && Number.isFinite(obj.idleTTL)) {
-      idleTTL = Math.floor(obj.idleTTL);
-    } else if (typeof obj.idleTTL === 'string' && /^\d+$/.test(obj.idleTTL.trim())) {
-      idleTTL = parseInt(obj.idleTTL.trim(), 10);
-    } else {
-      return {
-        ok: false,
-        error: `prEnv.preview.idleTTL must be an integer between ${PR_ENV_PREVIEW_IDLE_TTL_MIN} and ${PR_ENV_PREVIEW_IDLE_TTL_MAX} seconds`,
-      };
-    }
-    if (
-      !Number.isInteger(idleTTL) ||
-      idleTTL < PR_ENV_PREVIEW_IDLE_TTL_MIN ||
-      idleTTL > PR_ENV_PREVIEW_IDLE_TTL_MAX
-    ) {
-      return {
-        ok: false,
-        error: `prEnv.preview.idleTTL must be an integer between ${PR_ENV_PREVIEW_IDLE_TTL_MIN} and ${PR_ENV_PREVIEW_IDLE_TTL_MAX} seconds`,
-      };
-    }
-  }
-
-  // Compose sub-block. When present, it's mutually exclusive with the
-  // spawn-mode fields (`startScript`, `processes[]`) — picking both is
-  // almost certainly a typo and the runtime would silently pick one.
-  // We surface the conflict at save time so the operator can pick.
-  const composeResult = validatePreviewCompose(obj.compose);
-  if (!composeResult.ok) return { ok: false, error: composeResult.error };
-  if (composeResult.value?.entryService) {
-    if (startScript) {
-      return {
-        ok: false,
-        error:
-          'prEnv.preview.compose and prEnv.preview.startScript are mutually exclusive ' +
-          "— compose runs the project's docker-compose stack and has no startScript hook",
-      };
-    }
-    if (Array.isArray(obj.processes) && obj.processes.length > 0) {
-      return {
-        ok: false,
-        error:
-          'prEnv.preview.compose and prEnv.preview.processes[] are mutually exclusive ' +
-          "— compose owns the full multi-service graph via the project's compose file",
-      };
-    }
-  }
-
-  let processesValue: PreviewProcess[] | undefined;
-  if (obj.processes !== undefined && obj.processes !== null) {
-    if (!Array.isArray(obj.processes)) {
-      return { ok: false, error: 'prEnv.preview.processes must be an array' };
-    }
-    if (obj.processes.length > 0) {
-      if (startScript) {
-        return {
-          ok: false,
-          error:
-            'prEnv.preview.processes[] and prEnv.preview.startScript are mutually exclusive ' +
-            '— multi-process mode spawns each entry in processes[] and ignores startScript',
-        };
-      }
-      if (composeResult.value?.entryService) {
-        return {
-          ok: false,
-          error:
-            'prEnv.preview.compose and prEnv.preview.processes[] are mutually exclusive ' +
-            "— compose owns the full multi-service graph via the project's compose file",
-        };
-      }
-      const graph = validateProcessGraph(obj.processes as PreviewProcess[]);
-      if (!graph.ok) {
-        return { ok: false, error: `prEnv.preview.${formatGraphError(graph.error)}` };
-      }
-      processesValue = obj.processes as PreviewProcess[];
-    }
-  }
-
-  let autoStart: boolean | undefined;
-  if (obj.autoStart !== undefined && obj.autoStart !== null) {
-    if (typeof obj.autoStart !== 'boolean') {
-      return { ok: false, error: 'prEnv.preview.autoStart must be a boolean' };
-    }
-    autoStart = obj.autoStart;
-  }
-
-  const value: ValidatedPrEnvPreviewConfig = { enabled: true };
-  if (startScript) value.startScript = startScript;
-  if (port !== undefined) value.port = port;
-  if (captureRoutes && captureRoutes.length > 0) value.captureRoutes = captureRoutes;
-  if (idleTTL !== undefined) value.idleTTL = idleTTL;
-  if (autoStart !== undefined) value.autoStart = autoStart;
-  if (composeResult.value) value.compose = composeResult.value;
-  if (processesValue) value.processes = processesValue;
-  return { ok: true, value };
-}
-
 export function validatePrEnvProjectConfig(
   raw: unknown,
 ): { ok: true; value: ValidatedPrEnvConfig } | { ok: false; error: string } {
@@ -1257,13 +668,12 @@ export function validatePrEnvProjectConfig(
   if (!enabled) {
     // PR-environments were stripped in the "Strip PR Environments" epic;
     // `prEnv.enabled` is now a no-op for that subsystem. The parent slot is
-    // still the home of the worktree-preview config (`prEnv.preview`) and
-    // the shared `prEnv.healthPath`, both of which the in-session
-    // PreviewRuntime reads regardless of the parent flag. So when parent
-    // is disabled we still validate and round-trip those two fields, while
-    // dropping anything PR-env-only (startScript, internalPort,
-    // setupCommand, dockerfilePath, env) — those are meaningless without
-    // the PR-env runner.
+    // still the home of the dev-server config (`prEnv.devServer`) and the
+    // shared `prEnv.healthPath`, both of which the in-session runtime reads
+    // regardless of the parent flag. So when parent is disabled we still
+    // validate and round-trip those two fields, while dropping anything
+    // PR-env-only (startScript, internalPort, setupCommand, dockerfilePath,
+    // env) — those are meaningless without the PR-env runner.
     const value: ValidatedPrEnvConfig = { enabled: false };
     if (obj.healthPath !== undefined && obj.healthPath !== null && obj.healthPath !== '') {
       if (typeof obj.healthPath !== 'string') {
@@ -1277,11 +687,8 @@ export function validatePrEnvProjectConfig(
         value.healthPath = hp;
       }
     }
-    const previewResult = validatePrEnvPreview(obj.preview);
-    if (!previewResult.ok) return { ok: false, error: previewResult.error };
-    if (previewResult.value) value.preview = previewResult.value;
-    // Like `preview`, the dev-server block is session-scoped and read by
-    // the in-session runtime regardless of the parent PR-env flag.
+    // The dev-server block is session-scoped and read by the in-session
+    // runtime regardless of the parent PR-env flag.
     if (obj.devServer !== undefined && obj.devServer !== null) {
       const devServerResult = parseDevServerConfig(obj.devServer);
       if (!devServerResult.ok) return { ok: false, error: devServerResult.error };
@@ -1347,9 +754,6 @@ export function validatePrEnvProjectConfig(
   const envResult = validatePrEnvVars(obj.env);
   if (!envResult.ok) return { ok: false, error: envResult.error };
 
-  const previewResult = validatePrEnvPreview(obj.preview);
-  if (!previewResult.ok) return { ok: false, error: previewResult.error };
-
   const value: ValidatedPrEnvConfig = {
     enabled: true,
     startScript,
@@ -1359,7 +763,6 @@ export function validatePrEnvProjectConfig(
   if (healthPath) value.healthPath = healthPath;
   if (dockerfilePath) value.dockerfilePath = dockerfilePath;
   if (envResult.value) value.env = envResult.value;
-  if (previewResult.value) value.preview = previewResult.value;
   if (obj.devServer !== undefined && obj.devServer !== null) {
     const devServerResult = parseDevServerConfig(obj.devServer);
     if (!devServerResult.ok) return { ok: false, error: devServerResult.error };
@@ -1582,7 +985,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         }
         // After the clone lands on disk, sniff the workspace for a
         // recognised stack so the wizard can pre-populate the
-        // `prEnv.preview` block. The wizard waits for the
+        // `prEnv.devServer` block. The wizard waits for the
         // `clone-preview-defaults` broadcast (or its absence — we
         // always send one) before deciding whether to show "We
         // detected a Vite project — preview is enabled by default" vs
@@ -2116,85 +1519,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       defaultFinalizeAutomation: getUserProjectDefaultFinalizeAutomation(stmts, userId, project.id),
     });
   });
-
-  // ─── Re-detect preview defaults from the project's checkout ──────
-  //
-  // The Settings → Preview panel exposes a "Re-detect from repo" action so
-  // users can re-run the same workspace sniff that the new-project /
-  // clone-from-GitHub flows do, without having to clone again. We hand
-  // back the raw `DetectedPreviewDefaults` so the client can show a diff
-  // and let the user accept-overwrite or dismiss. Pure read — no
-  // mutation of `projects.json` happens server-side; the client follows
-  // up with a normal `PATCH /api/projects/:id` if the user accepts.
-  router.post('/api/projects/:projectId/preview/detect', (req: Request, res: Response) => {
-    const project = findProject(req.params.projectId as string);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
-    const cwd = (project as { cwd?: string }).cwd;
-    if (!cwd || typeof cwd !== 'string') {
-      return res.status(400).json({ error: 'Project has no cwd configured' });
-    }
-    // Priority: a top-level `docker-compose.yml` always wins over the
-    // legacy JS-stack sniff. Surveys-tracker and other compose-pivot
-    // projects ship both a Vite app and a compose file; PR 4 deletes
-    // the script-mode branch entirely, so biasing the suggestion toward
-    // compose-when-present keeps the UI on the supported path. The
-    // legacy JS-stack detector is still run when there's no compose
-    // file so projects without one keep getting useful defaults.
-    let suggestion = null;
-    try {
-      suggestion = detectPreviewSuggestion(cwd);
-    } catch {
-      suggestion = null;
-    }
-    res.json(previewDetectSuggestionToJson(suggestion));
-  });
-
-  // ─── One-shot preview test ────────────────────────────────────────
-  //
-  // Settings → Preview's "Test preview" button calls this endpoint. It
-  // runs the configured startScript inside `project.cwd/client`,
-  // allocates a port, polls `healthPath` with a 120s timeout (matches
-  // `PreviewRuntime`), captures a single screenshot on success, and
-  // tears down the spawned process in a `finally` so no orphaned dev
-  // server is left behind. Pure read of `projects.json` — no session,
-  // no worktree, no DB row written.
-  //
-  // Response shape:
-  //   { ok, ports: { allocated }, durationMs, logTail, screenshotUrl?, error? }
-  //
-  // Errors are always `200 OK` with `ok:false` + `error` so the panel can
-  // render them inline (this isn't a server fault, it's user config).
-  router.post(
-    '/api/projects/:projectId/preview/test',
-    async (req: Request, res: Response): Promise<void> => {
-      const project = findProject(req.params.projectId as string);
-      if (!project) {
-        res.status(404).json({ error: 'Project not found' });
-        return;
-      }
-      // `serverDir/uploads` matches the static-file mount in `index.ts`.
-      const uploadsDir = path.join(deps.serverDir, 'uploads');
-      try {
-        const result = await runPreviewTest({
-          project,
-          uploadsDir,
-          publicUrl: config.publicUrl,
-        });
-        res.json(result);
-      } catch (err) {
-        // runPreviewTest is designed to swallow all operational failures
-        // and return ok:false. A throw here is unexpected — surface it
-        // verbatim so we can debug rather than papering over the bug.
-        res.status(500).json({
-          ok: false,
-          ports: { allocated: null },
-          durationMs: 0,
-          error: `Unexpected preview-test error: ${(err as Error).message}`,
-          logTail: [],
-        });
-      }
-    },
-  );
 
   // ─── Branch listing for the PR base-branch picker ─────────────────
   //

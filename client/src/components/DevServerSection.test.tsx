@@ -10,6 +10,9 @@ import { SECRET_MASK } from '../utils/devServerConfig';
     putProjectSecrets: vi.fn(),
     updateProject: vi.fn(),
     startDevServerWizard: vi.fn(),
+    getProjectPreviews: vi.fn().mockResolvedValue({ previews: [] }),
+    purgeAllProjectPreviews: vi.fn(),
+    stopPreview: vi.fn(),
   },
 }));
 
@@ -18,7 +21,6 @@ const project = {
   name: 'Demo',
   cwd: '/tmp/demo',
   prEnv: {
-    preview: { enabled: true, compose: { entryService: 'web', entryPort: 3000 } },
     devServer: {
       startCommand: 'pnpm dev',
       env: { API_URL: 'http://localhost:4000' },
@@ -88,8 +90,8 @@ describe('DevServerSection', () => {
       secretKeys: ['STRIPE_KEY'],
       portMap: [{ internalPort: 3000, label: 'web', primary: true }],
     });
-    // Sibling prEnv config (preview) is preserved through the PATCH.
-    expect(body.prEnv.preview).toBeDefined();
+    // The deleted legacy preview block is not carried into the new config.
+    expect(body.prEnv.preview).toBeUndefined();
   });
 
   it('keeps the just-saved edits in the form (no revert from the stale project prop)', async () => {
@@ -321,6 +323,28 @@ describe('DevServerSection', () => {
 
   it('references the MASK sentinel constant shared with the store', () => {
     expect(SECRET_MASK).toBe('••••••••');
+  });
+
+  it('opens a running preview in the owning agent session', async () => {
+    (api.getProjectPreviews as any).mockResolvedValue({
+      previews: [
+        {
+          id: 'preview-1',
+          sessionId: 'sess-1',
+          agentId: 'agent-1',
+          sessionName: 'Preview session',
+          status: 'ready',
+          port: 4100,
+          url: 'http://localhost:4100',
+        },
+      ],
+    });
+    const onOpenSession = vi.fn();
+    render(<DevServerSection projects={[project]} onOpenSession={onOpenSession} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open session' }));
+
+    expect(onOpenSession).toHaveBeenCalledWith({ sessionId: 'sess-1', agentId: 'agent-1' });
   });
 
   describe('Agent walkthrough', () => {

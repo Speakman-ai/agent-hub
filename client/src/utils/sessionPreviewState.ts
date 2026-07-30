@@ -489,6 +489,19 @@ export const PREVIEW_DEVICE_PRESETS = [
 export type PreviewDevicePreset = (typeof PREVIEW_DEVICE_PRESETS)[number];
 
 /**
+ * Whether a project can start a session preview at all.
+ *
+ * A preview is driven by the managed dev-server process (`prEnv.devServer`),
+ * so a non-empty `startCommand` is the whole gate. This mirrors the server
+ * gate in `start-session-preview.ts` / `preview-block.ts` — keep the two in
+ * sync or the Start button and the runtime will disagree.
+ */
+export function isPreviewConfigured(project: any) {
+  const startCommand = project?.prEnv?.devServer?.startCommand;
+  return typeof startCommand === 'string' && startCommand.trim().length > 0;
+}
+
+/**
  * Decide whether the SessionPreviewPane should be visible for the active
  * session.
  *
@@ -505,7 +518,7 @@ export type PreviewDevicePreset = (typeof PREVIEW_DEVICE_PRESETS)[number];
  *
  *   - `activeSessionId`     — current session id (falsy → hidden).
  *   - `project`             — `activeChatProject` row; we look at
- *                             `project.prEnv.preview.compose.entryService`
+ *                             `project.prEnv.devServer.startCommand`
  *                             to decide whether the project supports
  *                             previews at all.
  *   - `activePreviewEvent`  — the latest `agenthub_preview` WS payload
@@ -521,15 +534,10 @@ export function shouldShowSessionPreviewPane({
   paneOpenBySession,
 }: any = {}) {
   if (!activeSessionId) return false;
-  // Mirror `isPreviewConfigured` (the Start-button gate): open the pane for
-  // the current dev-server process model (`prEnv.devServer.startCommand`) as
-  // well as the legacy compose app-wrapping model. Gating only on
-  // `compose.entryService` left dev-server projects with a Start button that
-  // streamed boot/terminal logs the pane never rendered.
-  const devServerCmd = project?.prEnv?.devServer?.startCommand;
-  const hasDevServer = typeof devServerCmd === 'string' && devServerCmd.trim().length > 0;
-  const hasComposeEntry = !!project?.prEnv?.preview?.compose?.entryService;
-  if (!hasDevServer && !hasComposeEntry) return false;
+  // Share the Start-button gate so the two can never disagree: a project the
+  // button lets you start must have a pane to render the streamed boot and
+  // terminal output into.
+  if (!isPreviewConfigured(project)) return false;
   if (!activePreviewEvent) return false;
   if (paneOpenBySession && paneOpenBySession[activeSessionId] === false) return false;
   return true;

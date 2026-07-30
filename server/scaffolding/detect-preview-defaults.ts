@@ -3,7 +3,7 @@
  *
  * Pure helper that inspects a workspace directory on disk and, when the
  * project's stack is one we recognise (Vite, Next.js, Create React App,
- * Astro, Nuxt, Expo web), returns sensible `prEnv.preview` defaults so
+ * Astro, Nuxt, Expo web), returns sensible `prEnv.devServer` defaults so
  * the new-project / clone-from-GitHub flows can pre-populate the wizard
  * with zero manual configuration.
  *
@@ -17,10 +17,10 @@
  *   - Returns `null` for unknown stacks; the caller is responsible for
  *     surfacing the empty wizard so the user can configure it manually.
  *
- * The returned object is `Partial<PrEnvPreviewConfig>` minus `enabled`
- * (callers usually flip that to `true` themselves) — i.e. it carries
- * `startScript`, `port`, `captureRoutes`, and `idleTTL`. Caller decides
- * whether to enable.
+ * The result is framework-shaped rather than config-shaped: callers map
+ * `startScript` → `devServer.startCommand` and `port` → a
+ * `devServer.portMap` entry, and decide for themselves whether to persist
+ * the block at all.
  *
  * This file is dependency-free beyond the Node `fs`/`path` builtins so
  * it can be unit-tested without spinning up the rest of the server.
@@ -29,44 +29,23 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 
-import type { PrEnvPreviewConfig, PreviewProcess } from '../types.js';
-
-/**
- * Subset of {@link PrEnvPreviewConfig} that detection returns. We
- * deliberately omit the `enabled` master switch so callers (provisioning
- * orchestrator, clone wizard) decide whether the user opts in.
- */
-export type DetectedPreviewDefaults = Required<
-  Pick<PrEnvPreviewConfig, 'startScript' | 'port' | 'captureRoutes' | 'idleTTL'>
-> & {
+/** What detection knows about a workspace, before any config mapping. */
+export interface DetectedPreviewDefaults {
+  /** Shell command that boots the dev server. */
+  startScript: string;
+  /** Port the dev server conventionally listens on. */
+  port: number;
+  /** Routes the session preview should open by default. */
+  captureRoutes: string[];
+  /** Seconds of inactivity before the dev server is reaped. */
+  idleTTL: number;
   /**
    * Tag for the recognised stack — useful for log lines and the wizard
-   * "We detected a Vite project — preview is enabled by default" copy.
-   * Not part of the persisted `PrEnvPreviewConfig`, lives only on the
-   * detection result.
+   * "We detected a Vite project" copy. Not persisted anywhere; it lives
+   * only on the detection result.
    */
-  stack: KnownStack | MultiProcessStack;
-  /**
-   * Optional multi-process preview graph — populated for fullstack
-   * layouts where the wizard should default to spawning a backend AND
-   * a frontend process. `startScript`/`port` still carry the legacy
-   * single-process fallback (which the runtime ignores when `processes`
-   * is non-empty), so callers that haven't been multi-process-aware yet
-   * keep working.
-   */
-  processes?: PreviewProcess[];
-};
-
-/**
- * Stack tags for layouts whose canonical preview is a multi-process
- * graph rather than a single dev-server. Kept separate from
- * {@link KnownStack} so the existing single-process call-sites' switch
- * statements continue to be exhaustive without changes.
- */
-export type MultiProcessStack =
-  | 'fullstack-django-react'
-  | 'fullstack-monorepo'
-  | 'fullstack-scripts';
+  stack: KnownStack;
+}
 
 export type KnownStack = 'vite' | 'next' | 'cra' | 'astro' | 'nuxt' | 'expo';
 
@@ -172,7 +151,7 @@ function classifyMonorepo(workspaceDir: string): KnownStack | null {
 }
 
 /**
- * Inspect a workspace directory and return preview defaults for the
+ * Inspect a workspace directory and return dev-server defaults for the
  * stack we detected, or `null` if the stack is unknown.
  *
  * Pure with respect to the filesystem (no caching, no mutation) so the
@@ -190,18 +169,6 @@ export function detectPreviewDefaults(workspaceDir: string): DetectedPreviewDefa
   // Caller mistake — be lenient and bail rather than throw.
   if (!existsSync(workspaceDir)) return null;
 
-  // Multi-process layouts win when present: the user explicitly
-  // structured the repo with two siblings (backend/+frontend/, apps/api+
-  // apps/web, or matching package.json scripts), so the wizard should
-  // default to spawning both — not just whichever leaf happens to win the
-  // single-process classifier. Each helper returns null when its pattern
-  // doesn't match so we cascade through them in priority order.
-  const multi =
-    detectFullstackDjangoReact(workspaceDir) ??
-    detectFullstackAppsMonorepo(workspaceDir) ??
-    detectFullstackPackageScripts(workspaceDir);
-  if (multi) return multi;
-
   const topPkg = readPkgJson(path.join(workspaceDir, 'package.json'));
   let stack: KnownStack | null = topPkg ? classifyPackageJson(topPkg) : null;
   if (!stack) {
@@ -210,192 +177,4 @@ export function detectPreviewDefaults(workspaceDir: string): DetectedPreviewDefa
   if (!stack) return null;
 
   return { stack, ...STACK_DEFAULTS[stack] };
-}
-
-// ─── Multi-process detectors ──────────────────────────────────────────
-
-function isDir(p: string): boolean {
-  try {
-    return existsSync(p) && statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Django (or any Python web stack) + React-style frontend.
- *
- * Recognition signal:
- *   - `backend/` exists AND has any of: `manage.py`, `requirements.txt`,
- *     `requirements-local.txt`, `pyproject.toml`.
- *   - `frontend/` exists AND has a `package.json` with a recognisable
- *     JS-stack dep (so we know what startScript to pick).
- *
- * Names follow the canonical Surveys-style layout the card called out.
- * If either half is missing, we bail and let the single-process path
- * handle it (`frontend/` alone is just a normal Vite app).
- */
-function detectFullstackDjangoReact(workspaceDir: string): DetectedPreviewDefaults | null {
-  const backendDir = path.join(workspaceDir, 'backend');
-  const frontendDir = path.join(workspaceDir, 'frontend');
-  if (!isDir(backendDir) || !isDir(frontendDir)) return null;
-
-  const hasPythonMarker =
-    existsSync(path.join(backendDir, 'manage.py')) ||
-    existsSync(path.join(backendDir, 'requirements.txt')) ||
-    existsSync(path.join(backendDir, 'requirements-local.txt')) ||
-    existsSync(path.join(backendDir, 'pyproject.toml'));
-  if (!hasPythonMarker) return null;
-
-  const frontendPkg = readPkgJson(path.join(frontendDir, 'package.json'));
-  if (!frontendPkg) return null;
-  const frontendStack = classifyPackageJson(frontendPkg);
-  if (!frontendStack) return null;
-  const frontendDefaults = STACK_DEFAULTS[frontendStack];
-
-  // Prefer requirements-local.txt when present (matches the Webapp
-  // convention); fall back to requirements.txt; otherwise skip pip install.
-  const reqLocal = existsSync(path.join(backendDir, 'requirements-local.txt'));
-  const reqDefault = existsSync(path.join(backendDir, 'requirements.txt'));
-  const pipPrefix = reqLocal
-    ? 'python3 -m pip install -r requirements-local.txt && '
-    : reqDefault
-      ? 'python3 -m pip install -r requirements.txt && '
-      : '';
-  const hasManage = existsSync(path.join(backendDir, 'manage.py'));
-  const backendStart = hasManage
-    ? `${pipPrefix}python manage.py runserver 0.0.0.0:$PORT`
-    : `${pipPrefix}python -m http.server $PORT`;
-
-  const processes: PreviewProcess[] = [
-    {
-      name: 'backend',
-      startScript: backendStart,
-      cwd: 'backend',
-      healthPath: '/',
-    },
-    {
-      name: 'frontend',
-      startScript: frontendDefaults.startScript,
-      cwd: 'frontend',
-      healthPath: '/',
-      dependsOn: ['backend'],
-    },
-  ];
-
-  return {
-    stack: 'fullstack-django-react',
-    startScript: frontendDefaults.startScript,
-    port: frontendDefaults.port,
-    captureRoutes: ['/'],
-    idleTTL: 600,
-    processes,
-  };
-}
-
-/**
- * Monorepo with `apps/api` + `apps/web` siblings (Turborepo / Nx
- * convention). Each sibling needs a recognisable package.json so we know
- * how to start it.
- */
-function detectFullstackAppsMonorepo(workspaceDir: string): DetectedPreviewDefaults | null {
-  const apiDir = path.join(workspaceDir, 'apps', 'api');
-  const webDir = path.join(workspaceDir, 'apps', 'web');
-  if (!isDir(apiDir) || !isDir(webDir)) return null;
-  const apiPkg = readPkgJson(path.join(apiDir, 'package.json'));
-  const webPkg = readPkgJson(path.join(webDir, 'package.json'));
-  if (!apiPkg || !webPkg) return null;
-
-  const webStack = classifyPackageJson(webPkg);
-  if (!webStack) return null;
-  const webDefaults = STACK_DEFAULTS[webStack];
-
-  // The api side may not match a known framework — that's fine, we still
-  // know how to start it as long as it has a `dev` or `start` script.
-  const apiScripts = (apiPkg.scripts ?? {}) as Record<string, unknown>;
-  const apiStart =
-    typeof apiScripts.dev === 'string'
-      ? 'npm run dev'
-      : typeof apiScripts.start === 'string'
-        ? 'npm start'
-        : null;
-  if (!apiStart) return null;
-
-  const processes: PreviewProcess[] = [
-    {
-      name: 'api',
-      startScript: apiStart,
-      cwd: 'apps/api',
-      healthPath: '/',
-    },
-    {
-      name: 'web',
-      startScript: webDefaults.startScript,
-      cwd: 'apps/web',
-      healthPath: '/',
-      dependsOn: ['api'],
-    },
-  ];
-
-  return {
-    stack: 'fullstack-monorepo',
-    startScript: webDefaults.startScript,
-    port: webDefaults.port,
-    captureRoutes: ['/'],
-    idleTTL: 600,
-    processes,
-  };
-}
-
-/**
- * Single package.json with explicit `start:api` + `start:web` (or
- * `dev:api` + `dev:web`) scripts. Common in small fullstack repos that
- * use `concurrently` under the hood but want each side spawned with its
- * own port/health-check via the preview runtime instead.
- */
-function detectFullstackPackageScripts(workspaceDir: string): DetectedPreviewDefaults | null {
-  const topPkg = readPkgJson(path.join(workspaceDir, 'package.json'));
-  if (!topPkg) return null;
-  const scripts = (topPkg.scripts ?? {}) as Record<string, unknown>;
-  const apiKey =
-    typeof scripts['start:api'] === 'string'
-      ? 'start:api'
-      : typeof scripts['dev:api'] === 'string'
-        ? 'dev:api'
-        : null;
-  const webKey =
-    typeof scripts['start:web'] === 'string'
-      ? 'start:web'
-      : typeof scripts['dev:web'] === 'string'
-        ? 'dev:web'
-        : null;
-  if (!apiKey || !webKey) return null;
-
-  // Best-effort frontend stack detection so we can pick a sensible
-  // captureRoutes default and legacy `port` fallback.
-  const frontendStack = classifyPackageJson(topPkg);
-  const webDefaults = frontendStack ? STACK_DEFAULTS[frontendStack] : STACK_DEFAULTS.vite;
-
-  const processes: PreviewProcess[] = [
-    {
-      name: 'api',
-      startScript: `npm run ${apiKey}`,
-      healthPath: '/',
-    },
-    {
-      name: 'web',
-      startScript: `npm run ${webKey}`,
-      healthPath: '/',
-      dependsOn: ['api'],
-    },
-  ];
-
-  return {
-    stack: 'fullstack-scripts',
-    startScript: webDefaults.startScript,
-    port: webDefaults.port,
-    captureRoutes: ['/'],
-    idleTTL: 600,
-    processes,
-  };
 }

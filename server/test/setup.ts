@@ -83,7 +83,7 @@ delete process.env.AGENT_HUB_CODEX_DANGER_BYPASS;
 // inherits them from the host (e.g. running vitest inside a Hub
 // container that has them in its launch env), the strict resolver in
 // resolveComposeProjectDirectory throws for any worktree path that
-// isn't under those mapped roots — making preview-compose-runtime
+// isn't under those mapped roots — making the preview runtime
 // tests fail with `worktree path is not under configured host roots`.
 // Per-test fixtures that need these vars set them locally inside a
 // try/finally; clearing them here gives every other test a clean slate.

@@ -23,6 +23,7 @@ import { listEnabledSkills } from './agent-skills-list.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
+import { isDevServerConfigured } from './dev-server-config.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -73,8 +74,6 @@ import {
 import { probeAllEngineAvailability, type SupportedEngine } from './engine-availability.js';
 import { sessionHasActiveUserPreview } from './preview/preview-worktree-sync.js';
 import { syncPreviewAfterWorktreeTurnIfDirty } from './code-change-tracker.js';
-import type { PreviewRuntime } from './preview/preview-runtime.js';
-import type { PreviewComposeRuntime } from './preview/preview-compose-runtime.js';
 import type { DevServerRuntime } from './preview/dev-server-runtime.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
@@ -213,7 +212,6 @@ import {
   sessionUsesWorktree,
 } from './project-mode.js';
 import { isWorkflowProject } from './project-mode-guards.js';
-import { isPreviewSetupWizardSession } from './routes/preview-wizard.js';
 import { isSetupWizardSession } from './setup-wizard-session.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import {
@@ -467,26 +465,12 @@ export interface ChatHandlerDeps {
   ) => Promise<void>;
   parseDelegateBlock: (content: string) => DelegateTask[] | null;
   /**
-   * Accessor for the per-session preview runtime. Returns `null` when the
-   * runtime has not been wired (e.g. tests of unrelated chat surface or
-   * pre-rollout deploys). The accessor pattern matches `getClaudeBin` /
-   * `getCursorBin` — callers don't need to know whether the runtime was
-   * constructed at process start.
-   */
-  getPreviewRuntime?: () => PreviewRuntime | null;
-  /**
-   * Accessor for the per-session **compose** preview runtime. Selected
-   * over `getPreviewRuntime` when a project sets
-   * `prEnv.preview.compose.entryService`. Same null-when-unwired contract
-   * as the legacy accessor.
-   */
-  getPreviewComposeRuntime?: () => PreviewComposeRuntime | null;
-  /**
-   * Accessor for the managed dev-server runtime. Only the observe side
-   * of the ReAct `preview` tool consults it today (state / logs /
-   * drive against the session's dev-server group); lifecycle stays on
-   * the REST start/stop surface. Same null-when-unwired contract as
-   * the sibling accessors.
+   * Accessor for the managed dev-server runtime. Returns `null` when the
+   * runtime has not been wired (e.g. tests of unrelated chat surface).
+   * The accessor pattern matches `getClaudeBin` / `getCursorBin` — callers
+   * don't need to know whether the runtime was constructed at process
+   * start. Only the observe side of the ReAct `preview` tool consults it;
+   * lifecycle stays on the REST start/stop surface.
    */
   getDevServerRuntime?: () => DevServerRuntime | null;
   /**
@@ -899,7 +883,7 @@ ${skillsList.join('\n')}`;
       ? `- \`browser\` — host Chromium via Stagehand (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — natural language or CSS/XPath; \`type\` also needs \`text\`), \`extract\` (optional \`instruction\`, optional JSON \`schema\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. Requires Playwright Chromium on the server and an LLM API key for natural-language \`act\`/\`extract\` (override model with \`STAGEHAND_MODEL\`).
 - **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
       : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
-    const previewEnabledForPrompt = Boolean(project.prEnv?.preview?.enabled);
+    const previewEnabledForPrompt = isDevServerConfigured(project.prEnv?.devServer);
     const previewToolLines = previewEnabledForPrompt
       ? `\n- \`preview\` — observe and drive **this session's dev preview** after the human starts it via **Start preview** (field: \`op\` + operands). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. You cannot start or stop the preview — if none is running you'll get a "not running" observation; ask the human to start it.`
       : '';
@@ -952,7 +936,7 @@ If you pick up a card and discover the work is redundant — either covered by a
 The server moves the session's linked card to Done and appends an explanatory comment referencing this session. Malformed payloads (missing/invalid fields) are rejected with a system message and the card is **not** moved.`;
         }
 
-        if (project.prEnv?.preview?.enabled) {
+        if (isDevServerConfigured(project.prEnv?.devServer)) {
           prompt += `\n\n## Worktree preview (lifecycle is human-only)
 Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only the human starts or stops the dev preview using **Start preview** in the chat toolbar (first boot can take several minutes). Once it is running you can observe and drive it yourself with the ReAct \`preview\` tool — check \`{"tool":"preview","op":"state"}\`, read boot/runtime logs with \`"op":"logs"\`, and verify UI changes with \`"op":"screenshot"\` plus \`navigate\`/\`click\`/\`type\`. Your file edits may hot-reload the running preview automatically.`;
         }
@@ -1854,8 +1838,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     handleDelegationCancel,
     synthesizeResults,
     parseDelegateBlock,
-    getPreviewRuntime,
-    getPreviewComposeRuntime,
     getDevServerRuntime,
     getPtyHost,
     autoCommitAndPR,
@@ -2930,11 +2912,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           : null;
       if (pinnedSpawnCwd) {
         effectiveCwd = pinnedSpawnCwd;
-      } else if (isPreviewSetupWizardSession(session!) && !sessionUsesWorktree(session!)) {
-        // Legacy Preview setup wizard rows were read-only over project.cwd.
-        // New rows are worktree-backed so they can be finalized like runner setup.
-        effectiveCwd = project.cwd;
-        msg._spawnCwd = project.cwd;
       } else if (
         sessionUsesWorktree(session!) &&
         getProjectMode(project as Project) !== 'workflow' &&
@@ -4074,8 +4051,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             project,
             worktreePath: effectiveCwd,
             getDevServerRuntime,
-            getPreviewComposeRuntime,
-            getPreviewRuntime,
           });
         }
 
@@ -5103,10 +5078,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                       condition: action.condition,
                     },
                     {
-                      runtime: resolvePreviewReactRuntime(sessionId, [
-                        getPreviewComposeRuntime?.(),
-                        getDevServerRuntime?.(),
-                      ]),
+                      runtime: resolvePreviewReactRuntime(sessionId, [getDevServerRuntime?.()]),
                       launchOpts: browserLaunchOpts,
                     },
                   );
@@ -5552,8 +5524,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const previewSyncDeps = {
           broadcast,
           getDevServerRuntime,
-          getPreviewComposeRuntime,
-          getPreviewRuntime,
           stmts,
           project,
           worktreePath: effectiveCwd,

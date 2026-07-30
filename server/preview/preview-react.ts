@@ -3,7 +3,7 @@
  *
  * Lets an agent OBSERVE (state / logs / screenshot) and DRIVE (navigate by
  * route, click, type, scroll, wait, read_page, extract) the preview —
- * compose stack or managed dev server — that a human already started for
+ * managed dev server — that a human already started for
  * the agent's own session.
  *
  * Invariants:
@@ -111,8 +111,7 @@ export interface PreviewReActActionInput {
 }
 
 /**
- * Structural minimum of a preview group row the tool reads. Both
- * `ComposePreviewRow` and `DevServerRow` satisfy it.
+ * Structural minimum of a preview group row the tool reads.
  */
 export interface PreviewReactRow {
   id: string;
@@ -124,8 +123,7 @@ export interface PreviewReactRow {
 }
 
 /**
- * Structural subset of a preview runtime used here (test seam). Both
- * `PreviewComposeRuntime` and `DevServerRuntime` satisfy it.
+ * Structural subset of the dev-server runtime used here (test seam).
  */
 export interface PreviewRuntimeForReact {
   getActiveBySessionId(sessionId: string): PreviewReactRow | null;
@@ -135,7 +133,7 @@ export interface PreviewRuntimeForReact {
 }
 
 export interface PreviewReActDeps {
-  /** Null when no preview runtime is wired (legacy deploys, some tests). */
+  /** Null when the dev-server runtime is not wired (some tests). */
   runtime: PreviewRuntimeForReact | null;
   /** Agent/project browser tuning (viewport, timeout) for the drive session. */
   launchOpts?: BrowserSessionOptions;

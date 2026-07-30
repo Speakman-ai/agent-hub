@@ -5,7 +5,7 @@
  * Why this exists: the chat handler in `preview-block.ts` is the only
  * code path that broadcasts `agenthub_preview` events today (apart from
  * the per-line `preview_log` fan-out and the new `notifyStatus` hook
- * that lives on the compose runtime). The block handler stays alive
+ * that lives on the dev-server runtime). The block handler stays alive
  * only for the duration of the chat turn that triggered the preview;
  * once it exits, no further broadcasts happen for that preview.
  *
@@ -19,15 +19,14 @@
  *
  * The fix is two-pronged:
  *
- *   1. The compose runtime now fires a `notifyStatus` callback when the
+ *   1. The dev-server runtime fires a `notifyStatus` callback when the
  *      background health-check flips a row to `ready` or `failed`. The
  *      WS broadcaster in `server/index.ts` translates that into the
  *      corresponding `agenthub_preview` event, so any client connected
  *      at the moment of the transition sees it — even if the original
  *      chat handler has exited.
  *
- *   2. On WS connect (this file), we walk every active preview group —
- *      compose and dev-server —
+ *   2. On WS connect (this file), we walk every active dev-server group —
  *      (`status IN ('starting','ready','failed')`) and emit a snapshot
  *      event so the reconnecting client can rebuild its preview pane
  *      state from scratch. Combined with #1, a reconnecting client
@@ -38,16 +37,14 @@
  * The functions here are intentionally pure: no WebSocket access, no
  * filesystem access, no globals. The caller (websocket.ts) does the
  * broadcast-filter check + ws.send, so this module stays trivially
- * unit-testable with an in-memory compose runtime stub.
+ * unit-testable with an in-memory runtime stub.
  */
 
 import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 
 /**
  * Structural minimum of a preview group row the snapshot builder needs.
- * Both `ComposePreviewRow` (compose runtime) and `DevServerRow`
- * (dev-server runtime) satisfy it, so one builder serves every runtime
- * that persists into `worktree_preview_groups`.
+ * `DevServerRow` (dev-server runtime) satisfies it.
  */
 export interface PreviewSnapshotRow {
   id: string;
@@ -59,7 +56,7 @@ export interface PreviewSnapshotRow {
 
 /**
  * The runtime surface that the snapshot builder needs. Narrowed from
- * `PreviewComposeRuntime` / `DevServerRuntime` so tests can pass a stub
+ * `DevServerRuntime` so tests can pass a stub
  * without standing up a real runtime.
  */
 export interface PreviewSnapshotRuntime {
@@ -67,17 +64,13 @@ export interface PreviewSnapshotRuntime {
   /**
    * Returns the in-memory boot-log tail for `groupId`, or `[]` if the
    * group is unknown to the runtime (e.g. ghost row from a prior
-   * process). Calling this on the production compose runtime hits the
-   * docker daemon for a fresh `docker compose logs --tail` read; that's
-   * acceptable on connect (one-shot) but would not be inside a hot
-   * loop.
+   * process). Calling this on the production runtime reads its in-memory
+   * log tail.
    */
   getLogTail(groupId: string): string[];
   /**
-   * Client-facing port entries for `groupId`, primary first. Only the
-   * dev-server runtime implements this (multi-port support); the compose
-   * runtime has a single entry port and omits it, so a reconnecting client
-   * gets the port selector for dev-server previews only.
+   * Client-facing port entries for `groupId`, primary first. This is
+   * implemented for multi-port dev-server previews.
    */
   getClientPorts?(groupId: string): PreviewPortEntry[];
 }
@@ -98,7 +91,7 @@ export type PreviewSnapshotEvent = {
    * — boot failed; the pane should render the error + final log tail.
    *
    * We do NOT emit a `preview_unavailable` snapshot — that kind is
-   * gated on `project.prEnv?.preview?.enabled`, which the client can
+   * gated on project configuration, which the client can
    * resolve from `/api/projects` on its own; sending it as a fake
    * "snapshot" would lie about preview state for sessions that simply
    * never started one.
@@ -122,7 +115,7 @@ export type PreviewSnapshotEvent = {
    * Client-facing port entries (primary first) for a multi-port dev server.
    * Present on `kind: 'preview'` only, and only when the group exposes more
    * than one port — the pane renders its selector off this. Absent for
-   * compose/legacy single-port previews.
+   * single-port previews.
    */
   ports?: PreviewPortEntry[];
   screenshotPath: null;
@@ -132,10 +125,8 @@ export type PreviewSnapshotEvent = {
 
 /**
  * Build the full set of snapshot events for the WS connect handshake.
- * Accepts one runtime or several (compose + dev-server share the
- * backing table but own disjoint row sets, so concatenation never
- * duplicates a group). Null/undefined entries — an unwired runtime on a
- * legacy deploy or a test harness — are skipped, the same posture as
+ * Accepts one runtime or several. Null/undefined entries — an unwired
+ * runtime or a test harness — are skipped, the same posture as
  * `resolvePreviewReactRuntime`; wrapping nullable runtimes in an
  * always-truthy array must not defeat the WS connect handler's
  * null-guard. The caller is responsible for filtering each event

@@ -14,13 +14,11 @@ const ProjectPreviewInstance = registerComponent(
     .object({
       id: z.string(),
       sessionId: z.string(),
+      agentId: z.string().nullable(),
       sessionName: z.string().nullable(),
       status: z.enum(['starting', 'ready', 'failed']),
-      kind: z.enum(['compose', 'spawn', 'dev-server']),
-      composeProjectName: z.string().nullable(),
       port: z.number().nullable(),
       url: z.string().nullable(),
-      worktreePath: z.string().nullable(),
       startedAt: z.string(),
       lastActiveAt: z.string(),
     })

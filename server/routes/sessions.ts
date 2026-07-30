@@ -120,11 +120,7 @@ import {
   type SessionPreviewStateRuntime,
 } from '../preview/get-session-preview-state.js';
 import { mintPreviewTicket, PREVIEW_TICKET_TTL_MS } from '../preview-auth.js';
-import type {
-  DevServerPortLookup,
-  PreviewComposeRuntimeSync,
-  PreviewRuntimeActiveLookup,
-} from '../preview/preview-runtime-lookup.js';
+import type { DevServerPortLookup } from '../preview/preview-runtime-lookup.js';
 import { triggerSessionShip, markSessionFinalizeAutomation } from '../session-ship.js';
 import { getUserProjectDefaultFinalizeAutomation } from '../user-project-settings.js';
 import {
@@ -457,40 +453,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   }
 
-  /**
-   * Tear down any preview groups owned by `sessionId` across all runtimes.
-   * Each runtime's `stopBySessionId` is a no-op for rows it does not own.
-   */
+  /** Tear down any preview group owned by `sessionId`. */
   async function stopPreviewsForSession(sessionId: string): Promise<void> {
-    const composeRuntime = deps.getPreviewComposeRuntime?.();
-    const legacyRuntime = deps.getPreviewRuntime?.();
     const devServerRuntime = deps.getDevServerRuntime?.();
     const tasks: Promise<unknown>[] = [];
     if (devServerRuntime) {
       tasks.push(
-        devServerRuntime.stopBySessionId(sessionId).catch((err) => {
+        devServerRuntime.stopBySessionId(sessionId).catch((err: unknown) => {
           console.warn(
             `[sessions] dev-server stopBySessionId failed (${sessionId}):`,
-            (err as Error).message,
-          );
-        }),
-      );
-    }
-    if (composeRuntime) {
-      tasks.push(
-        composeRuntime.stopBySessionId(sessionId).catch((err) => {
-          console.warn(
-            `[sessions] preview-compose stopBySessionId failed (${sessionId}):`,
-            (err as Error).message,
-          );
-        }),
-      );
-    }
-    if (legacyRuntime) {
-      tasks.push(
-        legacyRuntime.stopBySessionId(sessionId).catch((err) => {
-          console.warn(
-            `[sessions] preview stopBySessionId failed (${sessionId}):`,
             (err as Error).message,
           );
         }),
@@ -2018,7 +1989,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
    * single-process callers can keep reading the group-level surface.
    *
    * Joined directly against the `worktree_preview_groups` /
-   * `worktree_preview_processes` tables; no PreviewRuntime instance
+   * `worktree_preview_processes` tables; no runtime instance
    * required, which keeps the route usable even before the runtime is
    * fully wired into prod.
    */
@@ -2177,9 +2148,6 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           body,
           broadcast: deps.broadcast,
           findAgent,
-          getPreviewRuntime: deps.getPreviewRuntime as StartSessionPreviewDeps['getPreviewRuntime'],
-          getPreviewComposeRuntime:
-            deps.getPreviewComposeRuntime as StartSessionPreviewDeps['getPreviewComposeRuntime'],
           getDevServerRuntime: deps.getDevServerRuntime as
             | StartSessionPreviewDeps['getDevServerRuntime']
             | undefined,
@@ -2245,10 +2213,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
         return res.status(404).json({ error: 'Session not found' });
       }
-      const runtime = deps.getPreviewComposeRuntime?.() as
-        | SessionPreviewStateRuntime
-        | null
-        | undefined;
+      const runtime = deps.getDevServerRuntime?.() as SessionPreviewStateRuntime | null | undefined;
       const event = getSessionPreviewStateEvent(runtime, sessionId);
       return res.json({ event });
     },
@@ -2261,12 +2226,6 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         {
           getDevServerRuntime: deps.getDevServerRuntime as
             | (() => DevServerPortLookup | null)
-            | undefined,
-          getPreviewComposeRuntime: deps.getPreviewComposeRuntime as
-            | (() => PreviewComposeRuntimeSync | null)
-            | undefined,
-          getPreviewRuntime: deps.getPreviewRuntime as
-            | (() => PreviewRuntimeActiveLookup | null)
             | undefined,
         },
         internalPort,

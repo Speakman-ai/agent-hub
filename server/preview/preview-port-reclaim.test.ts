@@ -19,8 +19,8 @@ describe('preview-port-reclaim', () => {
 
   it('deletes a failed process row and its empty group', () => {
     db.prepare(
-      `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, compose_project_name)
-       VALUES ('g1', 's1', 'p1', 'failed', 'agenthub-session-s1')`,
+      `INSERT INTO worktree_preview_groups (id, session_id, project_id, status)
+       VALUES ('g1', 's1', 'p1', 'failed')`,
     ).run();
     db.prepare(
       `INSERT INTO worktree_preview_processes
@@ -56,9 +56,9 @@ describe('preview-port-reclaim', () => {
     for (const port of [4800, 4801]) {
       const gid = `g-${port}`;
       db.prepare(
-        `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, compose_project_name)
-         VALUES (?, 's', 'p1', 'failed', ?)`,
-      ).run(gid, `proj-${port}`);
+        `INSERT INTO worktree_preview_groups (id, session_id, project_id, status)
+         VALUES (?, 's', 'p1', 'failed')`,
+      ).run(gid);
       db.prepare(
         `INSERT INTO worktree_preview_processes
            (id, group_id, name, pid, port, url, log_path, status)

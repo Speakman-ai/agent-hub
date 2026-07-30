@@ -20,7 +20,7 @@ import type {
   SessionEnvSpawnOpts,
   SessionEnvWorktreeMount,
 } from '../session-env/session-env.js';
-import type { Clock } from './preview-runtime.js';
+import type { Clock } from './preview-runtime-primitives.js';
 import { resolveDevServerPortClientUrl } from './preview-public-url.js';
 import {
   buildDevServerSpawnEnv,

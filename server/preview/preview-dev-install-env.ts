@@ -4,7 +4,7 @@
  * The Hub process runs under `NODE_ENV=production` (PM2 sets it in
  * `ecosystem.config.cjs`). Every preview process the Hub spawns inherits the
  * parent env — DevServerRuntime through the host session-env `baseEnv`
- * default of `process.env`, PreviewRuntime through the `...process.env` merge.
+ * default of `process.env`, the runtime through the `...process.env` merge.
  * A preview start command that runs `npm ci` / `npm install` therefore sees
  * `NODE_ENV=production` and silently omits `devDependencies`. Build toolchains
  * shipped as devDependencies (`@angular-devkit/build-angular`, `vite`, `tsx`,

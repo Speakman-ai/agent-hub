@@ -42,7 +42,7 @@ export function isPlaceholderWorkflowCwd(
  * `sessions.use_worktree` default for new rows. Agent Hub is now
  * worktree-only for all user-facing session flows, so this always
  * returns 1 regardless of project mode. The flag is kept on the
- * row so internal callers (e.g., preview-wizard) can still spawn
+ * row so internal callers (e.g., dev-server wizard) can still spawn
  * shared-checkout sessions when they need to.
  */
 export function defaultSessionUseWorktreeFlag(_project: Project | null | undefined): 0 | 1 {

@@ -5,10 +5,7 @@ import SessionPreviewStartButton from './SessionPreviewStartButton';
 const configuredProject = {
   id: 'p1',
   prEnv: {
-    preview: {
-      enabled: true,
-      compose: { entryService: 'web', entryPort: 5173 },
-    },
+    devServer: { startCommand: 'npm run dev' },
   },
 };
 
@@ -18,7 +15,7 @@ describe('SessionPreviewStartButton', () => {
     render(
       <SessionPreviewStartButton
         sessionId="s1"
-        project={{ id: 'p1', prEnv: { preview: { enabled: false } } }}
+        project={{ id: 'p1', prEnv: {} }}
         onConfigure={onConfigure}
       />,
     );
@@ -74,7 +71,7 @@ describe('SessionPreviewStartButton', () => {
     render(
       <SessionPreviewStartButton
         sessionId="s1"
-        project={{ id: 'p1', prEnv: { preview: { enabled: false } } }}
+        project={{ id: 'p1', prEnv: {} }}
         onConfigure={vi.fn()}
       />,
     );

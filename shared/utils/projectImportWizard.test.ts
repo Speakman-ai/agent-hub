@@ -68,13 +68,23 @@ describe('projectImportWizard', () => {
       wikiPages: [{ title: 'Guide', category: 'onboarding', content: 'hello' }],
     });
     expect(
-      buildImportPreviewPatch({ enabled: true, startScript: ' npm run dev ', idleTTL: 1 }),
+      buildImportPreviewPatch({
+        enabled: true,
+        startScript: ' npm run dev ',
+        port: 5173,
+        idleTTL: 1,
+      }),
     ).toEqual({
       prEnv: {
         enabled: false,
-        preview: { enabled: true, startScript: 'npm run dev', idleTTL: 60 },
+        devServer: {
+          startCommand: 'npm run dev',
+          portMap: [{ internalPort: 5173, label: 'web', primary: true }],
+          idleTTL: 60,
+        },
       },
     });
+    expect(buildImportPreviewPatch({ enabled: false })).toEqual({ prEnv: { enabled: false } });
     expect(advanceImportStep(draft).step).toBe(1);
   });
 

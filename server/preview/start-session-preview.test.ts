@@ -1,19 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { startSessionPreview } from './start-session-preview.js';
 import type { Project, SessionRow } from '../types.js';
 
 vi.mock('./preview-block.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./preview-block.js')>();
-  return {
-    ...actual,
-    handlePreviewBlock: vi.fn().mockResolvedValue(undefined),
-  };
+  return { ...actual, handlePreviewBlock: vi.fn().mockResolvedValue(undefined) };
 });
 
-import config from '../config.js';
 import { handlePreviewBlock } from './preview-block.js';
 
-const project: Project = {
+const project = {
   id: 'p1',
   name: 'Demo',
   cwd: '/tmp/demo',
@@ -21,18 +17,18 @@ const project: Project = {
   ahw: '/tmp/demo/.ahw',
   agents: [],
   prEnv: {
-    enabled: true,
-    startScript: '',
-    internalPort: 5173,
-    preview: {
-      enabled: true,
-      compose: { file: 'docker-compose.yml', entryService: 'web', entryPort: 5173 },
-      captureRoutes: ['/'],
+    enabled: false,
+    devServer: {
+      startCommand: 'npm run dev',
+      env: {},
+      secretKeys: [],
+      portMap: [{ internalPort: 5173, label: 'web', primary: true }],
+      aptPackages: [],
     },
   },
-} as Project;
+} as unknown as Project;
 
-const session: SessionRow = {
+const session = {
   id: 'sess-1',
   agent_id: 'a1',
   name: 'Test',
@@ -46,9 +42,7 @@ const session: SessionRow = {
 } as SessionRow;
 
 describe('startSessionPreview', () => {
-  beforeEach(() => {
-    vi.mocked(handlePreviewBlock).mockClear();
-  });
+  beforeEach(() => vi.mocked(handlePreviewBlock).mockClear());
 
   it('returns 404 when session is missing', async () => {
     const result = await startSessionPreview({
@@ -61,127 +55,39 @@ describe('startSessionPreview', () => {
     expect(handlePreviewBlock).not.toHaveBeenCalled();
   });
 
-  it('invokes handlePreviewBlock with compose runtime and worktree cwd', async () => {
+  it('adapts the managed dev-server runtime and preserves the worktree cwd', async () => {
     const broadcast = vi.fn();
-    const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };
+    const runtime = {
+      start: vi
+        .fn()
+        .mockResolvedValue({ devServerId: 'ds-1', url: 'http://localhost:4200', port: 4200 }),
+      getById: vi.fn(),
+      getLogTail: vi.fn(),
+    };
     const result = await startSessionPreview({
       sessionId: 'sess-1',
       body: { route: '/board' },
       broadcast,
       findAgent: () => ({ project, agent: { id: 'a1' } }),
-      getPreviewComposeRuntime: () => composeRuntime,
+      getDevServerRuntime: () => runtime,
       getSession: () => session,
     });
     expect(result).toEqual({ ok: true, started: true });
-    expect(handlePreviewBlock).toHaveBeenCalledWith(
-      'sess-1',
-      expect.objectContaining({ target: 'client', route: '/board' }),
-      expect.objectContaining({
-        runtime: composeRuntime,
-        broadcast,
-        project,
-        worktreePath: '/tmp/wt',
-        readyTimeoutMs: config.previewComposeReadyTimeoutMs,
-      }),
-    );
+    const deps = vi.mocked(handlePreviewBlock).mock.calls[0]?.[2];
+    expect(deps).toMatchObject({ broadcast, project, worktreePath: '/tmp/wt' });
+    await deps!.runtime!.startPreview('sess-1', project, '/tmp/wt');
+    expect(runtime.start).toHaveBeenCalledWith('sess-1', project, '/tmp/wt');
   });
 
-  it('selects the managed dev-server runtime when configured', async () => {
-    const broadcast = vi.fn();
-    const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };
-    const devServerRuntime = {
-      start: vi.fn().mockResolvedValue({
-        devServerId: 'dev-server-1',
-        url: 'http://localhost:4200',
-        port: 4200,
-      }),
-      getById: vi.fn(),
-      getLogTail: vi.fn(),
-    };
-    const devServerProject = {
-      ...project,
-      prEnv: {
-        ...project.prEnv,
-        // Keep the legacy compose config present to pin dev-server precedence.
-        devServer: {
-          startCommand: 'npm run dev',
-          env: {},
-          secretKeys: [],
-          portMap: [],
-          aptPackages: [],
-        },
-      },
-    } as Project;
-
+  it('returns 409 before worktree provisioning finishes', async () => {
     const result = await startSessionPreview({
       sessionId: 'sess-1',
-      broadcast,
-      findAgent: () => ({ project: devServerProject, agent: { id: 'a1' } }),
-      getPreviewComposeRuntime: () => composeRuntime,
-      getDevServerRuntime: () => devServerRuntime,
-      getSession: () => session,
-    });
-
-    expect(result).toEqual({ ok: true, started: true });
-    const handlerDeps = vi.mocked(handlePreviewBlock).mock.calls[0]?.[2];
-    expect(handlerDeps?.runtime).not.toBe(composeRuntime);
-    expect(handlerDeps?.runtime).toBeTruthy();
-
-    await handlerDeps!.runtime!.startPreview('sess-1', devServerProject, '/tmp/wt');
-    expect(devServerRuntime.start).toHaveBeenCalledWith('sess-1', devServerProject, '/tmp/wt');
-    expect(composeRuntime.startPreview).not.toHaveBeenCalled();
-  });
-
-  it('does not select the legacy compose runtime for services-only metadata', async () => {
-    const broadcast = vi.fn();
-    const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };
-    const devServerRuntime = {
-      start: vi.fn(),
-      getById: vi.fn(),
-      getLogTail: vi.fn(),
-    };
-    const servicesProject = {
-      ...project,
-      prEnv: {
-        ...project.prEnv,
-        preview: {
-          enabled: true,
-          compose: { file: 'docker-compose.yml' },
-        },
-        devServer: { startCommand: 'docker compose up -d db && npm run dev' },
-      },
-    } as Project;
-
-    await startSessionPreview({
-      sessionId: 'sess-1',
-      broadcast,
-      findAgent: () => ({ project: servicesProject, agent: { id: 'a1' } }),
-      getPreviewComposeRuntime: () => composeRuntime,
-      getDevServerRuntime: () => devServerRuntime,
-      getSession: () => session,
-    });
-
-    const handlerDeps = vi.mocked(handlePreviewBlock).mock.calls[0]?.[2];
-    expect(handlerDeps?.runtime).toBeTruthy();
-    expect(handlerDeps?.runtime).not.toBe(composeRuntime);
-    expect(composeRuntime.startPreview).not.toHaveBeenCalled();
-  });
-
-  it('returns 409 instead of falling back to project cwd before worktree provisioning finishes', async () => {
-    const broadcast = vi.fn();
-    const composeRuntime = { startPreview: vi.fn(), getById: vi.fn(), getLogTail: vi.fn() };
-    const result = await startSessionPreview({
-      sessionId: 'sess-1',
-      broadcast,
+      broadcast: vi.fn(),
       findAgent: () => ({ project, agent: { id: 'a1' } }),
-      getPreviewComposeRuntime: () => composeRuntime,
+      getDevServerRuntime: () => null,
       getSession: () => ({ ...session, worktree_path: null }),
     });
-    expect(result).toEqual({
-      ok: false,
-      error: 'Session workspace is not ready yet. Wait for workspace provisioning to finish.',
-      statusCode: 409,
-    });
+    expect(result).toMatchObject({ ok: false, statusCode: 409 });
     expect(handlePreviewBlock).not.toHaveBeenCalled();
   });
 });

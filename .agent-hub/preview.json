@@ -3,9 +3,6 @@
   "projectId": "agent-hub",
   "prEnv": {
     "enabled": false,
-    "preview": {
-      "enabled": false
-    },
     "devServer": {
       "startCommand": "export AGENT_HUB_PREVIEW=1 AGENT_HUB_PORT=3151 AGENT_HUB_DISABLE_DOCKER_FEATURES=1 AGENT_HUB_DATA_DIR=\"$(pwd)/.agent-hub-preview/data\"; [ -d server/node_modules ] || npm run install:all; exec npm run dev",
       "env": {},

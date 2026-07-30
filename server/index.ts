@@ -133,12 +133,10 @@ import { createProjectVisibilityGate } from './project-visibility-middleware.js'
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
-import createPreviewWizardRoutes from './routes/preview-wizard.js';
 import createDevServerWizardRoutes from './routes/dev-server-wizard.js';
 import createRumWizardRoutes from './routes/rum-wizard.js';
 import createLogsWizardRoutes from './routes/logs-wizard.js';
 import createRumClientRoutes from './routes/rum-clients.js';
-import createPreviewEnvironmentRoutes from './routes/preview-environment.js';
 import createPreviewInstancesRoutes from './routes/preview-instances.js';
 import createProvisioningRoutes from './routes/provisioning.js';
 import createJobRoutes from './routes/jobs.js';
@@ -263,7 +261,7 @@ import { PtySession } from './terminal/pty-session.js';
 import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
-import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
+import { PREVIEW_REAPER_CRON } from './preview/preview-runtime-primitives.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
 import { runStuckRunReaper, STUCK_RUN_REAPER_CRON } from './finalize/stuck-run-reaper.js';
 import {
@@ -954,13 +952,7 @@ if (existsSync(CLIENT_DIST) && existsSync(path.join(CLIENT_DIST, 'index.html')))
 // existing call sites (`activeProcesses.set` / `.get` / `.delete`) below.
 export const activeProcesses = new Map<string, ChildProcess>();
 
-// ─── Preview runtimes ───────────────────────────────────────────────────
-//
-// Both runtimes share the same SQLite DB so the legacy spawn pool and the
-// compose pool see each other's allocated ports through
-// `worktree_preview_processes.port UNIQUE`. The compose runtime's
-// disk-backed override-file writer lives under `<dataDir>/preview-compose`
-// (created on construction with mkdirSync -p semantics).
+// ─── Preview runtime ────────────────────────────────────────────────────
 //
 // The reaper is scheduled below the runtime construction so it picks up
 // the same instance the chat handler + session archive hooks use; a
@@ -968,27 +960,16 @@ export const activeProcesses = new Map<string, ChildProcess>();
 // out from under them.
 const previewHealthHost = process.env.AGENT_HUB_PREVIEW_HEALTH_HOST?.trim();
 const previewUrlBase = createPreviewUrlBase(config.publicUrl);
-const { previewRuntime, previewComposeRuntime, devServerRuntime } = createPreviewRuntimes({
+const { devServerRuntime } = createPreviewRuntimes({
   db: getDb(),
-  dataDir: _activeDataDir,
   getProject: (id) => findProject(id) ?? null,
-  legacyConfig: {
-    urlBase: previewUrlBase,
-  },
   devServerConfig: {
     urlBase: previewUrlBase,
-    // Per-entry proxy URL: primary keeps the back-compat mount, extra ports
+    // Per-entry proxy URL: primary keeps the root mount, extra ports
     // resolve to their `/p/<internalPort>` sub-mount (path mode in prod;
     // direct loopback host port locally).
     portClientUrl: ({ sessionId, hostPort, internalPort, primary }) =>
       resolveDevServerPortClientUrl(config.publicUrl, sessionId, hostPort, internalPort, primary),
-    ...(previewHealthHost
-      ? { healthUrlBase: (port: number) => `http://${previewHealthHost}:${port}` }
-      : {}),
-  },
-  composeConfig: {
-    urlBase: previewUrlBase,
-    readyTimeoutMs: config.previewComposeReadyTimeoutMs,
     ...(previewHealthHost
       ? { healthUrlBase: (port: number) => `http://${previewHealthHost}:${port}` }
       : {}),
@@ -1131,60 +1112,27 @@ export const ptyHost = new PtyHost({
 
 if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
   // Scheduled per the reaper's documented contract — every 60 s, scan
-  // `worktree_preview_groups` and tear down idle / orphaned rows. We run
-  // both runtimes through the same tick so a compose-mode preview that
-  // never received a `touch` (e.g. the WS session dropped) doesn't
-  // accumulate.
+  // `worktree_preview_groups` and tear down idle / orphaned rows, so a
+  // preview that never received a `touch` (e.g. the WS session dropped)
+  // doesn't accumulate.
   //
-  // Cross-runtime ownership is enforced at the runtime layer: each
-  // runtime's `stopPreview` short-circuits when the row's
-  // `compose_project_name` doesn't match its mode (compose runtime
-  // skips NULL; legacy runtime skips non-NULL). So both passes scan
-  // the same table but only act on the rows they own — a compose-only
-  // row passed to the legacy reaper is a guarded no-op rather than a
-  // silent `DELETE FROM worktree_preview_groups` that would leak the
-  // docker stack.
-  // The legacy preview reaper drives *process-based* worktree previews and
-  // never touches docker — it must run on every host, including docker-less
-  // ones (e.g. a preview of agent-hub itself). The compose-mode reaper and the
-  // finalize reaper both shell out to `docker`; on a host with no reachable
-  // docker daemon they would throw `dial unix /var/run/docker.sock …` once a
-  // minute, forever. `resolveDockerAvailability()` gates only those two so a
-  // docker-less Hub stays quiet. See server/docker-availability.ts.
+  // The dev server runs as a managed host process and never touches
+  // docker, so this reaper must run on every host including docker-less
+  // ones (e.g. a preview of agent-hub itself). The finalize reapers below
+  // shell out to `docker` and stay gated on `resolveDockerAvailability()`
+  // so a docker-less Hub doesn't throw once a minute forever. See
+  // server/docker-availability.ts.
   const dockerAvailability = resolveDockerAvailability();
   if (!dockerAvailability.enabled) {
-    console.warn(
-      `[reapers] ${dockerAvailability.reason}; skipping finalize + compose-preview reapers`,
-    );
+    console.warn(`[reapers] ${dockerAvailability.reason}; skipping finalize reapers`);
   }
 
   cron.schedule(
     PREVIEW_REAPER_CRON,
     () => {
-      void runPreviewReaper({
-        db: getDb(),
-        runtime: previewRuntime,
-        getProject: (id) => findProject(id) ?? null,
-      }).catch((err) => {
-        console.warn('[preview-reaper] tick failed:', (err as Error).message);
-      });
-      // Dev-server rows are excluded from both preview reapers' teardown
-      // paths (runtime ownership guard) — this pass is their only
-      // authoritative idle/orphan cleanup.
-      void devServerRuntime.reap(Date.now()).catch((err) => {
+      void devServerRuntime.reap(Date.now()).catch((err: unknown) => {
         console.warn('[dev-server-reaper] tick failed:', (err as Error).message);
       });
-      if (dockerAvailability.enabled) {
-        void runPreviewReaper({
-          db: getDb(),
-          runtime: previewComposeRuntime as unknown as Parameters<
-            typeof runPreviewReaper
-          >[0]['runtime'],
-          getProject: (id) => findProject(id) ?? null,
-        }).catch((err) => {
-          console.warn('[preview-reaper:compose] tick failed:', (err as Error).message);
-        });
-      }
     },
     { name: 'preview-reaper' },
   );
@@ -1345,8 +1293,6 @@ export const routeDeps: RouteDeps = {
   },
   restoreAutonomousCrons,
   scheduleAll,
-  getPreviewRuntime: () => previewRuntime,
-  getPreviewComposeRuntime: () => previewComposeRuntime,
   getDevServerRuntime: () => devServerRuntime,
   getBackgroundShellRuntime: () => backgroundShellRuntime,
   provisionSessionWorkspace: async (sessionId: string) => {
@@ -1446,22 +1392,13 @@ app.use(createProjectStatsRoutes(routeDeps));
 app.use(createPullsNativeRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
-app.use(createPreviewWizardRoutes(routeDeps));
 app.use(createDevServerWizardRoutes(routeDeps));
 app.use(createRumWizardRoutes(routeDeps));
 app.use(createLogsWizardRoutes(routeDeps));
 app.use(createRumClientRoutes(routeDeps));
 app.use(
-  createPreviewEnvironmentRoutes({
-    ...routeDeps,
-    getPreviewComposeRuntime: () => previewComposeRuntime,
-  }),
-);
-app.use(
   createPreviewInstancesRoutes({
     ...routeDeps,
-    getPreviewComposeRuntime: () => previewComposeRuntime,
-    getPreviewRuntime: () => previewRuntime,
     getDevServerRuntime: () => devServerRuntime,
   }),
 );
@@ -1535,12 +1472,11 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) =>
     handleDesignChat(ws as WebSocketLike | null, msg),
   handleDesignCancel,
-  // Hand the compose + dev-server runtimes to the WS connect handler so
-  // it can replay active-preview snapshots (state + log tail) to
-  // (re)connecting clients. Without this, a client that reconnects after
-  // the chat-handler broadcast loop has exited never learns that the
-  // preview became ready.
-  getPreviewSnapshotRuntime: () => [previewComposeRuntime, devServerRuntime],
+  // Hand the dev-server runtime to the WS connect handler so it can
+  // replay active-preview snapshots (state + log tail) to (re)connecting
+  // clients. Without this, a client that reconnects after the chat-handler
+  // broadcast loop has exited never learns that the preview became ready.
+  getPreviewSnapshotRuntime: () => [devServerRuntime],
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
@@ -1583,8 +1519,6 @@ attachDefaultPreviewProxyUpgrade(
         sessionId,
         {
           getDevServerRuntime: () => devServerRuntime,
-          getPreviewComposeRuntime: () => previewComposeRuntime,
-          getPreviewRuntime: () => previewRuntime,
         },
         internalPort,
       ),
@@ -1614,8 +1548,6 @@ const chatHandler = createChatHandler({
   handleDelegationCancel,
   synthesizeResults: synthesizeResults as ChatHandlerDeps['synthesizeResults'],
   parseDelegateBlock,
-  getPreviewRuntime: () => previewRuntime,
-  getPreviewComposeRuntime: () => previewComposeRuntime,
   getDevServerRuntime: () => devServerRuntime,
   getPtyHost: () => ptyHost,
   autoCommitAndPR,

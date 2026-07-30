@@ -1,7 +1,7 @@
 /**
  * rum-setup-draft.ts — server-side scan for the AI RUM (real user
  * monitoring) instrumentation wizard. Mirrors the shape of
- * `finalize-setup-draft.ts` / `preview-environment-draft.ts`: a pure,
+ * `finalize-setup-draft.ts` / `logs-setup-draft.ts`: a pure,
  * DB-free, spawn-free function that reads files under `workspaceDir` and
  * returns a JSON-serialisable struct the wizard route embeds in its
  * kickoff prompt (and, today, a read-only `rum/setup-draft` endpoint

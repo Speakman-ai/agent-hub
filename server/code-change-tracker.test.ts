@@ -106,7 +106,7 @@ describe('maybeAutoStartPreviewOnCodeChange', () => {
           updateSessionCodeChangedAt: { run: vi.fn() },
         } as never,
         broadcast: vi.fn(),
-        project: { id: 'p', prEnv: { preview: { enabled: true } } } as Project,
+        project: { id: 'p' } as Project,
         worktreePath: '/wt',
       },
     );
@@ -144,19 +144,15 @@ describe('syncPreviewAfterWorktreeTurnIfDirty', () => {
       checkDirty: async () => false,
       project: { id: 'p' } as Project,
       worktreePath: '/wt',
-      getPreviewComposeRuntime: () => ({
-        getActiveBySessionId: () => ({
-          id: 'g1',
-          status: 'ready',
-          port: 4100,
-        }),
+      getDevServerRuntime: () => ({
+        getActiveBySessionId: () => ({ id: 'g1', status: 'ready', port: 4100 }),
+        getSessionUpstreamPort: () => 4100,
       }),
-      getPreviewRuntime: () => null,
     });
     expect(broadcast).not.toHaveBeenCalled();
   });
 
-  it('broadcasts preview_refresh when a ready compose preview exists', async () => {
+  it('broadcasts preview_refresh when a ready dev server exists', async () => {
     const broadcast = vi.fn();
     await syncPreviewAfterWorktreeTurnIfDirty('sess-1', '/wt', {
       stmts: {
@@ -167,20 +163,10 @@ describe('syncPreviewAfterWorktreeTurnIfDirty', () => {
       checkDirty: async () => true,
       project: { id: 'p' } as Project,
       worktreePath: '/wt',
-      getPreviewComposeRuntime: () => ({
-        getActiveBySessionId: () => ({
-          id: 'g1',
-          status: 'ready',
-          port: 4100,
-          url: 'http://localhost:4100',
-          session_id: 'sess-1',
-          project_id: 'p',
-          compose_project_name: 'proj',
-          started_at: '',
-          last_active_at: '',
-        }),
+      getDevServerRuntime: () => ({
+        getActiveBySessionId: () => ({ id: 'g1', status: 'ready', port: 4100 }),
+        getSessionUpstreamPort: () => 4100,
       }),
-      getPreviewRuntime: () => null,
     });
     expect(broadcast).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'preview_refresh', sessionId: 'sess-1' }),

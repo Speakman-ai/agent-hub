@@ -76,7 +76,7 @@ export default function NewProjectAdaptiveFlow({
   const [questionnairePayload, setQuestionnairePayload] = useState<any>(null);
   // Detected preview defaults for the new scaffold (from the server's
   // `preview-defaults-detected` WebSocket broadcast). The server already
-  // auto-applies these to `project.prEnv.preview` server-side after the
+  // auto-applies these to `project.prEnv.devServer` server-side after the
   // copy-template phase, but we expose them here so the user can confirm
   // or override before they land on the project. Null when detection
   // hasn't run yet or returned `detected: null` (unknown stack — silent).
@@ -110,7 +110,7 @@ export default function NewProjectAdaptiveFlow({
     return () => window.removeEventListener('preview-defaults-ws', handler);
   }, [createdProjectId]);
 
-  // PATCH the project's prEnv.preview when the user makes an explicit
+  // PATCH the project's prEnv.devServer when the user makes an explicit
   // accept / edit / skip decision. The server already pre-baked the
   // detected defaults during provisioning, so the user's "Looks good"
   // path is effectively a no-op — but we still send the patch to make the

@@ -85,7 +85,7 @@ describe('kickoffInitialBuild', () => {
     expect(msg.content).toContain('Build the initial version');
     // The four-phase contract: implement → CI → preview → pause.
     expect(msg.content).toContain('Phase 2 — CI');
-    expect(msg.content).toContain('preview/setup-apply');
+    expect(msg.content).toContain('dev-server/setup-apply');
     expect(msg.content).toContain('Phase 4 — Pause for verification');
     expect(msg.content).toContain('Finalize Code Changes');
     expect(broadcast).toHaveBeenCalledWith(

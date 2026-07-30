@@ -1,6 +1,6 @@
 /**
  * finalize-setup-draft.ts — server-side scan for the Finalize ci.yaml
- * setup wizard. Mirrors the shape of `preview-environment-draft.ts` but
+ * setup wizard. Mirrors the shape of the other setup-draft modules but
  * with CI-relevant signal:
  *
  *   - existing `.agent-hub/ci.yaml` (overwrite warning surface)

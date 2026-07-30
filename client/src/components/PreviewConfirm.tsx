@@ -5,9 +5,9 @@ import { Check, Edit3, Monitor, X } from 'lucide-react';
  * PreviewConfirm — single-screen confirmation panel for preview defaults
  * detected by the server during clone / scaffold.
  *
- * Renders a summary of the detected `prEnv.preview` config (framework
- * label, startScript, port hint, captureRoutes, idleTTL) with three
- * actions:
+ * Renders a summary of the detected dev-server defaults (framework label,
+ * startScript, port hint, captureRoutes, idleTTL) that seed
+ * `prEnv.devServer`, with three actions:
  *   - "Looks good"  → onConfirm(form, 'accept')   keeps detected values as-is
  *   - "Edit"        → expands an inline editor; "Save" emits onConfirm(form, 'edit')
  *   - "Skip preview"→ onConfirm({ enabled: false }, 'skip')
@@ -266,9 +266,11 @@ export default function PreviewConfirm({ detected, onConfirm, onSkip }: any) {
 
 /**
  * Build a PATCH payload for `/api/projects/:id` from a confirmed preview
- * decision. Returns null when the user skipped (caller may then send
- * `{ prEnv: { enabled: false, preview: { enabled: false } } }` or simply
- * not call PATCH at all — the validator accepts the disabled shape too).
+ * decision. Returns null when there is no decision to send.
+ *
+ * Skipping emits a prEnv block with no `devServer`: the dev-server config
+ * has no on/off switch, so leaving it out is how a project ends up with no
+ * preview.
  *
  * Exported for tests and for the wizard to reuse without re-implementing.
  */
@@ -276,13 +278,21 @@ export function buildPreviewPatch(confirmed: any) {
   if (!confirmed) return null;
   if (!confirmed.enabled) {
     return {
-      prEnv: { enabled: false, preview: { enabled: false } },
+      prEnv: { enabled: false },
     };
   }
-  const preview: Record<string, any> = { enabled: true };
-  if (confirmed.startScript) preview.startScript = confirmed.startScript;
+  const devServer: Record<string, any> = {};
+  if (confirmed.startScript) devServer.startCommand = confirmed.startScript;
+  if (
+    typeof confirmed.port === 'number' &&
+    Number.isInteger(confirmed.port) &&
+    confirmed.port >= 1 &&
+    confirmed.port <= 65535
+  ) {
+    devServer.portMap = [{ internalPort: confirmed.port, label: 'web', primary: true }];
+  }
   if (Array.isArray(confirmed.captureRoutes) && confirmed.captureRoutes.length > 0) {
-    preview.captureRoutes = confirmed.captureRoutes
+    devServer.captureRoutes = confirmed.captureRoutes
       .map((r: any) => (typeof r === 'string' ? r.trim() : ''))
       .filter(Boolean);
   }
@@ -290,16 +300,16 @@ export function buildPreviewPatch(confirmed: any) {
   // `Number('') === 0` and `Number.isInteger(0) === true`, so a naive check
   // would silently coerce a cleared input to 0 — which the server may either
   // reject (PATCH swallowed by best-effort try/catch, no user signal) or
-  // accept (preview idles out immediately). Clamp to the `<input min/max>`
-  // range (60..86400) when a positive integer is supplied; otherwise omit
-  // the field so the server default applies.
+  // accept (the dev server idles out immediately). Clamp to the
+  // `<input min/max>` range (60..86400) when a positive integer is supplied;
+  // otherwise omit the field so the server default applies.
   if (confirmed.idleTTL !== '' && confirmed.idleTTL != null) {
     const n = Number(confirmed.idleTTL);
     if (Number.isInteger(n) && n > 0) {
-      preview.idleTTL = Math.min(86400, Math.max(60, n));
+      devServer.idleTTL = Math.min(86400, Math.max(60, n));
     }
   }
   return {
-    prEnv: { enabled: false, preview },
+    prEnv: { enabled: false, devServer },
   };
 }

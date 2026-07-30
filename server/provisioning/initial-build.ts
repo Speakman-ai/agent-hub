@@ -176,11 +176,11 @@ export function kickoffInitialBuild(opts: InitialBuildOpts): void {
       `The scaffold seeded \`.agent-hub/ci.yaml\` (version 2). Update it so the jobs run the REAL test/lint ` +
       `commands your implementation ended up with, and make sure they pass locally. Commit the result.\n\n` +
       `### Phase 3 — Preview\n` +
-      `Configure the web preview so a human can try the app from the browser: create a compose-based preview ` +
-      `and persist it via \`POST $AGENT_HUB_URL/api/projects/${project.id}/preview/setup-apply\` with ` +
-      `\`session_id\` set to YOUR session id and \`preview.compose\` (entry service, port, healthPath) — this ` +
-      `writes \`.agent-hub/preview.json\` and commits it. Validate with \`POST .../preview/build\` (or ` +
-      `\`.../preview/test\`) and report pass/fail. Never use script/startScript preview mode.\n\n` +
+      `Configure the web preview so a human can try the app from the browser: persist a dev-server config via ` +
+      `\`POST $AGENT_HUB_URL/api/projects/${project.id}/dev-server/setup-apply\` with \`session_id\` set to ` +
+      `YOUR session id and \`devServer\` (startCommand, portMap, healthPath). Run backing services such as a ` +
+      `database from \`devServer.startCommand\` (e.g. \`docker compose up -d --wait db && npm run dev\`). ` +
+      `Then start the preview and report pass/fail.\n\n` +
       `### Phase 4 — Pause for verification\n` +
       `STOP after Phase 3 with a clean committed tree. Do NOT push and do NOT open a PR. Post a short summary ` +
       `of what was built and how to verify it in the preview. The operator will verify and click ` +

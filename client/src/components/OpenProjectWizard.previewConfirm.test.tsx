@@ -160,9 +160,9 @@ describe('OpenProjectWizard — preview-defaults confirmation', () => {
     expect(body!).toEqual({
       prEnv: {
         enabled: false,
-        preview: {
-          enabled: true,
-          startScript: 'npm run dev',
+        devServer: {
+          startCommand: 'npm run dev',
+          portMap: [{ internalPort: 5173, label: 'web', primary: true }],
           captureRoutes: ['/'],
           idleTTL: 600,
         },
@@ -170,7 +170,7 @@ describe('OpenProjectWizard — preview-defaults confirmation', () => {
     });
   });
 
-  it('PATCHes a disabled preview when the user skips', async () => {
+  it('PATCHes a prEnv with no dev-server block when the user skips', async () => {
     (fetchMock as any).mockResolvedValueOnce(ok({ id: 'cloned-project' }));
     (fetchMock as any).mockResolvedValueOnce(ok({}));
 
@@ -194,7 +194,7 @@ describe('OpenProjectWizard — preview-defaults confirmation', () => {
     });
     const patchBody = JSON.parse((fetchMock as any).mock.calls[1][1].body);
     expect(patchBody!).toEqual({
-      prEnv: { enabled: false, preview: { enabled: false } },
+      prEnv: { enabled: false },
     });
   });
 

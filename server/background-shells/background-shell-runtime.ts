@@ -17,7 +17,7 @@
  *
  * Reaping is owned by the caller (session-delete / archive hook in
  * `routes/sessions.ts`), which calls {@link BackgroundShellRuntime.stopBySessionId}.
- * This mirrors how `preview-runtime.ts` delegates session-end teardown.
+ * This mirrors how the dev-server runtime delegates session-end teardown.
  *
  * Distinct from the older `background_tasks` table / `BackgroundTaskRow`
  * (async agent prompt turns) — this owns real OS shell processes.
@@ -162,7 +162,7 @@ export const systemClock: Clock = {
 
 /**
  * Where stdout/stderr are persisted. Production wraps Node's `fs`; tests
- * inject an in-memory accumulator. Mirrors `preview-runtime`'s sink.
+ * inject an in-memory accumulator. Mirrors the dev-server runtime's sink.
  */
 export interface BackgroundShellLogSink {
   /** Open a fresh log buffer for `shellId`. `path` is null for in-memory sinks. */
@@ -294,7 +294,7 @@ export class BackgroundShellRuntime {
     this.readProcStartTime = deps.readProcStartTime ?? defaultReadProcStartTime;
     this.probeGroupAlive = deps.probeGroupAlive ?? defaultProbeGroupAlive;
     // Apply schema so a caller can pass a hand-built DB (tests) without a
-    // separate init step — same convention as PreviewRuntime.
+    // separate init step — same convention as other managed runtimes.
     this.db.exec(BACKGROUND_SHELLS_SCHEMA);
     this.ensurePidStartTimeColumn();
     // A prior Hub process may have left rows marked `running` whose detached

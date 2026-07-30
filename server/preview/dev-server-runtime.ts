@@ -3,7 +3,7 @@
  *
  * Runs the project as one long-lived process started from
  * `prEnv.devServer.startCommand` inside the session's `SessionEnv`,
- * replacing the compose app-wrapping model. The Hub owns
+ * replacing the retired app-wrapping model. The Hub owns
  * start/stop/restart, streams stdout/stderr into an in-memory tail (and
  * the optional `notifyLog` fan-out), injects the configured env plus
  * resolved secret references at spawn, and reaps on idle TTL /
@@ -16,12 +16,11 @@
  *
  * Persistence reuses the `worktree_preview_*` tables:
  *   - one `worktree_preview_groups` row per active dev server, marked
- *     `runtime = 'dev-server'` so the legacy PreviewRuntime's teardown
- *     paths skip it (the compose runtime already skips rows with a NULL
- *     `compose_project_name`);
+ *     `runtime = 'dev-server'` so startup cleanup can distinguish live
+ *     rows from rows left by older runtimes;
  *   - one `worktree_preview_processes` row per portMap entry, all
  *     carrying the REAL pid of the single spawned process (pid-less
- *     rows are a compose-only artifact). `port` stores the host port
+ *     rows from older runtimes). `port` stores the host port
  *     the preview proxy dials; `internal_port` / `is_primary` are the
  *     dev-server companion columns.
  *
@@ -50,9 +49,8 @@ import {
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
 } from './preview-schema.js';
 import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-port-reclaim.js';
-import { parseDbTime } from './preview-reaper.js';
-import type { Clock, HealthFetchFn, PortRange } from './preview-runtime.js';
-import { systemClock } from './preview-runtime.js';
+import type { Clock, HealthFetchFn, PortRange } from './preview-runtime-primitives.js';
+import { parseDbTime, systemClock } from './preview-runtime-primitives.js';
 import { appendPreviewLogTailLine, DEFAULT_PREVIEW_LOG_TAIL_LINES } from './preview-log-tail.js';
 import {
   installDevServerSystemDeps,
@@ -206,7 +204,7 @@ export interface DevServerRuntimeDeps {
 /** Dev servers boot fast (no image build) — 2 min is generous. */
 export const DEFAULT_DEV_SERVER_READY_TIMEOUT_MS = 120_000;
 const DEFAULT_HEALTH_INTERVAL_MS = 1_000;
-/** Shared with the compose runtime so late joiners see the same depth. */
+/** Shared log-tail depth for late joiners. */
 const DEFAULT_LOG_TAIL_LINES = DEFAULT_PREVIEW_LOG_TAIL_LINES;
 const DEFAULT_DISPOSE_GRACE_MS = 5_000;
 const DEFAULT_IDLE_TTL_SECONDS = 14_400;
@@ -516,7 +514,7 @@ export class DevServerRuntime {
    * Every dev-server group in `starting` / `ready` / `failed`, ordered by
    * `started_at` ASC — the WS connect snapshot walks this so a late
    * joiner (reconnect after tab sleep / WS drop) can rebuild its preview
-   * pane, same contract as the compose runtime's `listActive`.
+   * pane, same contract as `listActive`.
    */
   listActive(): DevServerRow[] {
     // INNER JOIN on the primary process row: a group with no primary yet
@@ -561,7 +559,7 @@ export class DevServerRuntime {
    * `/preview/proxy` mount); pass one to resolve an extra portMap entry
    * (the `/preview/proxy/p/<internalPort>` sub-mount). Resolves only once
    * the group is `ready`, mirroring `getSessionPreviewPort`'s gate for the
-   * compose/legacy runtimes.
+   * older runtimes.
    */
   getSessionUpstreamPort(sessionId: string, internalPort?: number): number | null {
     const row = this.getActiveBySessionId(sessionId);
@@ -659,7 +657,7 @@ export class DevServerRuntime {
         }
         continue;
       }
-      const ttlRaw = project?.prEnv?.preview?.idleTTL;
+      const ttlRaw = project?.prEnv?.devServer?.idleTTL;
       const ttlSec =
         typeof ttlRaw === 'number' && Number.isFinite(ttlRaw) && ttlRaw > 0
           ? Math.floor(ttlRaw)

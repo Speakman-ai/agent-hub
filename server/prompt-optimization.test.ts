@@ -117,6 +117,26 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('"tool":"browser"');
   });
 
+  it('does not advertise previews for an empty dev-server config', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ prEnv: { devServer: {} } }), makeAgent(), {
+      isFirstMessage: true,
+    });
+
+    expect(prompt).not.toContain('`preview` — observe and drive');
+    expect(prompt).not.toContain('## Worktree preview (lifecycle is human-only)');
+  });
+
+  it('does not advertise previews for a whitespace-only start command', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject({ prEnv: { devServer: { startCommand: '   ' } } }),
+      makeAgent(),
+      { isFirstMessage: true },
+    );
+
+    expect(prompt).not.toContain('`preview` — observe and drive');
+    expect(prompt).not.toContain('## Worktree preview (lifecycle is human-only)');
+  });
+
   it('surfaces an early "Browser Automation Available" callout above the ReAct Loop section on first message', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: true,

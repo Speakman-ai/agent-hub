@@ -19,28 +19,29 @@
  * live event, with no new event kind to handle.
  *
  * Pure: takes the narrowed runtime surface so tests pass a stub with no
- * real runtime / docker daemon.
+ * real runtime.
  */
-import { previewSnapshotEventFromRow, type PreviewSnapshotEvent } from './preview-snapshot.js';
-import type { ComposePreviewRow } from './preview-compose-runtime.js';
+import {
+  previewSnapshotEventFromRow,
+  type PreviewSnapshotEvent,
+  type PreviewSnapshotRow,
+} from './preview-snapshot.js';
 
 /**
- * The compose-runtime surface this resolver needs. Narrowed from
- * `PreviewComposeRuntime` so tests can pass a stub.
+ * The runtime surface this resolver needs. Narrowed from
+ * `DevServerRuntime` so tests can pass a stub.
  */
 export interface SessionPreviewStateRuntime {
-  getActiveBySessionId(sessionId: string): ComposePreviewRow | null;
+  getActiveBySessionId(sessionId: string): PreviewSnapshotRow | null;
   getLogTail(groupId: string): string[];
 }
 
 /**
  * Resolve the current `agenthub_preview` snapshot event for `sessionId`,
- * or `null` when no compose preview group is active for it.
+ * or `null` when no preview group is active for it.
  *
- * `getLogTail` is best-effort — on the production runtime it hits the
- * docker daemon for a fresh `docker compose logs --tail`; if that throws
- * we still return the event with an empty tail rather than failing the
- * whole hydration request.
+ * `getLogTail` is best-effort — we still return the event with an empty
+ * tail rather than failing the whole hydration request.
  */
 export function getSessionPreviewStateEvent(
   runtime: SessionPreviewStateRuntime | null | undefined,

@@ -9,29 +9,25 @@
  * a throwing log-tail read.
  */
 import { describe, it, expect, vi } from 'vitest';
-import type { ComposePreviewRow } from './preview-compose-runtime.js';
+import type { PreviewSnapshotRow } from './preview-snapshot.js';
 import {
   getSessionPreviewStateEvent,
   type SessionPreviewStateRuntime,
 } from './get-session-preview-state.js';
 
-function row(overrides: Partial<ComposePreviewRow> = {}): ComposePreviewRow {
+function row(overrides: Partial<PreviewSnapshotRow> = {}): PreviewSnapshotRow {
   return {
     id: 'grp-1',
     session_id: 'sess-1',
-    project_id: 'proj-1',
     port: 4101,
     url: '/api/sessions/sess-1/preview/proxy',
-    compose_project_name: 'agenthub-session-sess-1',
     status: 'ready',
-    started_at: '2026-06-08 22:07:01',
-    last_active_at: '2026-06-08 22:07:34',
     ...overrides,
   };
 }
 
 function stubRuntime(
-  activeRow: ComposePreviewRow | null,
+  activeRow: PreviewSnapshotRow | null,
   logTail: string[] | (() => string[]) = [],
 ): SessionPreviewStateRuntime {
   return {
@@ -41,7 +37,7 @@ function stubRuntime(
 }
 
 describe('getSessionPreviewStateEvent', () => {
-  it('returns null when the runtime is null/undefined (compose preview not configured)', () => {
+  it('returns null when the runtime is null/undefined (preview not configured)', () => {
     expect(getSessionPreviewStateEvent(null, 'sess-1')).toBeNull();
     expect(getSessionPreviewStateEvent(undefined, 'sess-1')).toBeNull();
   });
@@ -87,7 +83,7 @@ describe('getSessionPreviewStateEvent', () => {
 
   it('still returns the event with an empty tail when getLogTail throws', () => {
     const runtime = stubRuntime(row({ status: 'ready' }), () => {
-      throw new Error('docker compose logs failed');
+      throw new Error('log tail failed');
     });
     const event = getSessionPreviewStateEvent(runtime, 'sess-1');
     expect(event?.kind).toBe('preview');

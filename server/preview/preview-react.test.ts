@@ -8,9 +8,9 @@ import {
   PREVIEW_LOGS_MAX_TAIL,
   __resetPreviewDocumentGuardsForTests,
   resolvePreviewReactRuntime,
+  type PreviewReactRow,
   type PreviewRuntimeForReact,
 } from './preview-react.js';
-import type { ComposePreviewRow } from './preview-compose-runtime.js';
 import {
   __registerBrowserSessionForTests,
   __resetBrowserRegistryForTests,
@@ -21,21 +21,18 @@ const SESSION_ID = 'sess-preview-react-test';
 const PORT = 4123;
 const ORIGIN = `http://localhost:${PORT}`;
 
-function makeRow(status: ComposePreviewRow['status'] = 'ready'): ComposePreviewRow {
+function makeRow(status: PreviewReactRow['status'] = 'ready'): PreviewReactRow {
   return {
     id: 'grp-1',
-    session_id: SESSION_ID,
-    project_id: 'agent-hub',
     port: PORT,
     url: ORIGIN,
-    compose_project_name: 'agenthub-session-sess',
     status,
     started_at: '2026-06-12 00:00:00',
     last_active_at: '2026-06-12 00:00:00',
   };
 }
 
-function makeRuntime(overrides?: { row?: ComposePreviewRow | null; logLines?: string[] }) {
+function makeRuntime(overrides?: { row?: PreviewReactRow | null; logLines?: string[] }) {
   const row = overrides && 'row' in overrides ? (overrides.row ?? null) : makeRow();
   const runtime = {
     getActiveBySessionId: vi.fn((_sessionId: string) => row),
@@ -135,7 +132,7 @@ describe('preview-react — op surface', () => {
 });
 
 describe('preview-react — availability gates', () => {
-  it('returns hostExit 2 when the compose runtime is unwired', async () => {
+  it('returns hostExit 2 when the preview runtime is unwired', async () => {
     const r = await runPreviewReActStep(SESSION_ID, { op: 'state' }, { runtime: null });
     expect(r.hostExit).toBe(2);
     expect(r.hostDetail).toBe('runtime_unwired');
@@ -180,30 +177,30 @@ describe('preview-react — runtime resolver', () => {
   });
 
   it('returns the runtime that owns the session row, unwrapped', async () => {
-    const compose = makeRuntime({ row: null });
+    const empty = makeRuntime({ row: null });
     const devServer = makeRuntime({ logLines: ['dev-server-line'] });
-    const resolved = resolvePreviewReactRuntime(SESSION_ID, [compose, devServer]);
+    const resolved = resolvePreviewReactRuntime(SESSION_ID, [empty, devServer]);
     expect(resolved).toBe(devServer);
     const r = await runPreviewReActStep(SESSION_ID, { op: 'logs' }, { runtime: resolved });
     expect(r.hostExit).toBe(0);
     expect(r.markdown).toContain('dev-server-line');
-    expect(compose.getLogTail).not.toHaveBeenCalled();
+    expect(empty.getLogTail).not.toHaveBeenCalled();
     expect(devServer.getLogTail).toHaveBeenCalledWith('grp-1');
     expect(devServer.touchPreview).toHaveBeenCalledWith('grp-1');
   });
 
   it('prefers the first runtime with an active row', () => {
-    const compose = makeRuntime();
+    const first = makeRuntime();
     const devServer = makeRuntime();
-    expect(resolvePreviewReactRuntime(SESSION_ID, [compose, devServer])).toBe(compose);
+    expect(resolvePreviewReactRuntime(SESSION_ID, [first, devServer])).toBe(first);
     expect(devServer.getActiveBySessionId).not.toHaveBeenCalled();
   });
 
   it('falls back to the first wired runtime when no preview is active (no_preview path)', async () => {
-    const compose = makeRuntime({ row: null });
+    const first = makeRuntime({ row: null });
     const devServer = makeRuntime({ row: null });
-    const resolved = resolvePreviewReactRuntime(SESSION_ID, [compose, devServer]);
-    expect(resolved).toBe(compose);
+    const resolved = resolvePreviewReactRuntime(SESSION_ID, [first, devServer]);
+    expect(resolved).toBe(first);
     const r = await runPreviewReActStep(SESSION_ID, { op: 'state' }, { runtime: resolved });
     expect(r.hostExit).toBe(2);
     expect(r.hostDetail).toBe('no_preview');
@@ -601,7 +598,7 @@ describe('preview-react — drive ops', () => {
     const r = await runPreviewReActStep(SESSION_ID, { op: 'close' }, { runtime });
     expect(r.hostExit).toBe(0);
     expect(close).toHaveBeenCalled();
-    // Lifecycle untouched — close never stops the compose preview itself.
+    // Lifecycle untouched — close never stops the managed preview itself.
     expect(runtime.touchPreview).not.toHaveBeenCalled();
   });
 });

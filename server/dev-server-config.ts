@@ -57,9 +57,16 @@ const APT_PACKAGE_RE = /^[a-z0-9][a-z0-9+.-]*(=[A-Za-z0-9.+:~-]+)?$/;
 // upstream mapping.
 const RESERVED_PLAIN_KEYS = new Set(['PORT']);
 
-/** Bounds match `PreviewComposeConfig.readyTimeoutMs` (5 s – 60 min). */
+/** Readiness budget bounds: 5 s – 60 min. */
 const READY_TIMEOUT_MIN_MS = 5_000;
 const READY_TIMEOUT_MAX_MS = 3_600_000;
+
+/** Idle-reap bounds: 60 s – 24 h. */
+const IDLE_TTL_MIN_SECONDS = 60;
+const IDLE_TTL_MAX_SECONDS = 86_400;
+
+const MAX_CAPTURE_ROUTES = 10;
+const MAX_CAPTURE_ROUTE_LEN = 512;
 
 function isReservedKey(key: string): boolean {
   return RESERVED_KEY_RE.test(key) || RESERVED_PLAIN_KEYS.has(key);
@@ -113,6 +120,27 @@ export const devServerConfigSchema = z
       .optional(),
     /** Max ms to wait for `healthPath` 2xx before flipping to failed. */
     readyTimeoutMs: z.number().int().min(READY_TIMEOUT_MIN_MS).max(READY_TIMEOUT_MAX_MS).optional(),
+    /**
+     * Routes the session preview opens by default. The first entry wins;
+     * when unset the preview falls back to `healthPath`, then `/`.
+     */
+    captureRoutes: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(MAX_CAPTURE_ROUTE_LEN)
+          .regex(/^\//, 'routes must start with `/`'),
+      )
+      .max(MAX_CAPTURE_ROUTES)
+      .optional(),
+    /**
+     * Seconds of inactivity before the reap pass tears the dev server
+     * down. Bounds are 60 s – 24 h; when unset the runtime's own default
+     * applies.
+     */
+    idleTTL: z.number().int().min(IDLE_TTL_MIN_SECONDS).max(IDLE_TTL_MAX_SECONDS).optional(),
     /**
      * Working-directory override relative to the worktree root (monorepo
      * subdir). Absolute paths and `..` segments are rejected.
@@ -246,6 +274,20 @@ export interface DevServerPortMapEntry {
 }
 
 export type DevServerConfig = z.output<typeof devServerConfigSchema>;
+
+/**
+ * Whether a raw project config can start a managed dev server.
+ *
+ * Keep this deliberately narrower than `devServerConfigSchema`: prompt and
+ * start-surface gates must not advertise a preview for a saved-but-empty
+ * `{}` block (or a whitespace-only command).
+ */
+export function isDevServerConfigured(
+  devServer: { startCommand?: unknown } | null | undefined,
+): boolean {
+  const startCommand = devServer?.startCommand;
+  return typeof startCommand === 'string' && startCommand.trim().length > 0;
+}
 
 // Compile-time guard: the inferred portMap entry stays assignable to the
 // documented interface (which types.ts re-exports for the Project shape).

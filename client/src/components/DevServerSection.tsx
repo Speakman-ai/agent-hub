@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import RunningPreviewsPanel from './RunningPreviewsPanel';
 import {
   buildDevServerConfig,
   buildSecretsPutPayload,
@@ -229,7 +230,9 @@ export default function DevServerSection({ projects = [], onProjectsChange, onOp
       //    snapshot — otherwise a freshly-typed secret would linger with no
       //    config reference (orphaned data / inconsistent config).
       const devServer = buildDevServerConfig(form);
-      const prEnv = { ...(project.prEnv || {}), devServer };
+      const previousPrEnv = (project.prEnv || {}) as Record<string, any>;
+      const { preview: _legacyPreview, ...prEnvWithoutLegacyPreview } = previousPrEnv;
+      const prEnv = { ...prEnvWithoutLegacyPreview, devServer };
       try {
         await api.updateProject(projectId, { prEnv });
       } catch (patchErr) {
@@ -637,6 +640,8 @@ export default function DevServerSection({ projects = [], onProjectsChange, onOp
           ))}
         </div>
       </section>
+
+      {projectId && <RunningPreviewsPanel projectId={projectId} onOpenSession={onOpenSession} />}
 
       <div className="fixed bottom-0 left-0 right-0 md:left-64 z-20 flex items-center gap-3 px-6 py-4 bg-gray-950/95 border-t border-gray-800 backdrop-blur">
         <button

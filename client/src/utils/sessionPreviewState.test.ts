@@ -476,7 +476,7 @@ describe('previewIdFromEvent / clearSessionPreviewStorage', () => {
 });
 
 describe('shouldShowSessionPreviewPane', () => {
-  const project = { prEnv: { preview: { compose: { entryService: 'web' } } } };
+  const project = { prEnv: { devServer: { startCommand: 'npm run dev' } } };
   const startingEvent = {
     type: 'agenthub_preview',
     kind: 'preview_starting',
@@ -502,11 +502,11 @@ describe('shouldShowSessionPreviewPane', () => {
     ).toBe(false);
   });
 
-  it('returns false when the project has no preview compose entry service', () => {
+  it('returns false when the project has no dev-server config', () => {
     expect(
       shouldShowSessionPreviewPane({
         activeSessionId: 's-1',
-        project: { prEnv: { preview: {} } },
+        project: { prEnv: {} },
         activePreviewEvent: readyEvent,
         paneOpenBySession: {},
       }),
@@ -639,11 +639,11 @@ describe('shouldShowSessionPreviewPane', () => {
     });
   });
 
-  it('returns false when the project has neither dev-server nor compose config', () => {
+  it('returns false when the project has no dev-server config', () => {
     expect(
       shouldShowSessionPreviewPane({
         activeSessionId: 's-1',
-        project: { prEnv: { preview: {} } },
+        project: { prEnv: {} },
         activePreviewEvent: readyEvent,
         paneOpenBySession: {},
       }),

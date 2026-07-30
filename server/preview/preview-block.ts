@@ -1,8 +1,8 @@
 /**
  * `<agenthub:preview>` block parser + handler.
  *
- * Wires the per-session preview runtime (see `preview-runtime.ts`) into
- * the chat protocol. An agent emits a fenced block at the end of its
+ * Wires the per-session preview runtime (see `dev-server-runtime.ts`)
+ * into the chat protocol. An agent emits a fenced block at the end of its
  * turn to request a live preview of the current worktree:
  *
  *     <agenthub:preview>
@@ -28,18 +28,16 @@
 
 import type { BroadcastFn, Project } from '../types.js';
 import { extractJsonFromTagBody } from '../action-block-parsing.js';
-import type { PreviewRuntime } from './preview-runtime.js';
-import type { PreviewComposeRuntime } from './preview-compose-runtime.js';
-
+import { isDevServerConfigured } from '../dev-server-config.js';
 /**
  * Minimal runtime contract the `<agenthub:preview>` handler depends on.
- * Both {@link PreviewRuntime} (legacy spawn) and {@link PreviewComposeRuntime}
- * implement this shape, so the dispatch site can hand either one to
- * {@link handlePreviewBlock} without per-runtime branching here.
+ * The dev-server runtime speaks its own vocabulary (`start`,
+ * `devServerId`), so the dispatch site in `start-session-preview.ts`
+ * adapts it to this shape rather than making the handler know about
+ * runtime internals.
  *
  * The handler only reads `status` from `getById` and treats `getLogTail`
- * as best-effort (compose returns `[]` until a future enhancement pipes
- * `docker compose logs` through an in-memory ring buffer).
+ * as best-effort.
  */
 export interface PreviewRuntimeLike {
   startPreview: (
@@ -50,14 +48,6 @@ export interface PreviewRuntimeLike {
   getById: (previewId: string) => { status: 'starting' | 'ready' | 'failed' } | null;
   getLogTail: (previewId: string) => string[];
 }
-// Compile-time assertion: both production runtimes satisfy
-// PreviewRuntimeLike. If a future refactor drops a method, this line
-// breaks the build instead of the test suite.
-type _AssertCompatible = PreviewRuntime | PreviewComposeRuntime extends PreviewRuntimeLike
-  ? true
-  : never;
-
-const _previewRuntimeLikeAssertion: _AssertCompatible = true;
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -116,7 +106,7 @@ export type PreviewEventKind =
   | 'preview_stopped'
   /**
    * Per-line log forwarding for a still-running preview process. Emitted
-   * by `PreviewRuntime` via its `notifyLog` seam when production wires it
+   * by the runtime via its `notifyLog` seam when production wires it
    * to the broadcast bus. Each event carries exactly one line so the
    * client can append without de-duping. Producers must coalesce or
    * drop on backpressure — the runtime fires once per stdout/stderr
@@ -143,14 +133,14 @@ export interface PreviewBroadcastEvent {
   screenshotPath?: string | null;
 
   // — `kind === 'preview_unavailable'` payload ——
-  /** Sub-reason: project has no `prEnv` block, or its `preview.enabled` is false. */
+  /** Sub-reason: project has no `prEnv` block, or no `devServer` config. */
   unavailableReason?: 'no-pr-env' | 'preview-disabled';
   /**
    * Navigation intent for the client to resolve via `setCurrentView`.
    * The Agent Hub web app doesn't use URL routing (see
    * `client/src/App.jsx`), so a string URL like `/projects/.../settings/...`
    * never resolves to a real view. `wizard` is the preferred contract:
-   * `view` is a `currentView` token (e.g. `preview:<projectId>`) the client
+   * `view` is a `currentView` token (e.g. `devserver:<projectId>`) the client
    * passes directly to `setCurrentView`, and `projectId` lets the client
    * switch active project before navigating.
    */
@@ -189,11 +179,6 @@ export interface PreviewHandlerDeps {
    * Runtime constructed at server startup. May be `null` when the runtime
    * isn't wired (e.g. in tests of the chat layer that don't exercise the
    * preview surface) — the handler treats that as `preview_unavailable`.
-   *
-   * Accepts either the legacy {@link PreviewRuntime} (spawn-based) or the
-   * one-release compose app-wrapping fallback. New dev-server projects use
-   * the managed runtime; compose metadata without an entry service does not
-   * select this runtime.
    */
   runtime: PreviewRuntimeLike | null;
   broadcast: BroadcastFn;
@@ -219,7 +204,7 @@ export interface PreviewHandlerDeps {
   buildWizardUrl?: (projectId: string) => string;
   /**
    * Build the structured navigation intent for the client to resolve
-   * via `setCurrentView`. Defaults to `{ view: 'preview:<projectId>',
+   * via `setCurrentView`. Defaults to `{ view: 'devserver:<projectId>',
    * projectId }`. Tests can inject a fake to assert on the emitted
    * payload without depending on the client's view-router conventions.
    */
@@ -227,7 +212,7 @@ export interface PreviewHandlerDeps {
   /**
    * How long to wait for the preview to flip to `ready` before giving
    * up and surfacing `preview_failed`. When omitted, derived from
-   * {@link resolvePreviewHandlerReadyTimeoutMs} (compose → 10 min default).
+   * {@link resolvePreviewHandlerReadyTimeoutMs}.
    */
   readyTimeoutMs?: number;
   /** Polling cadence for the ready check. Defaults to 500ms. */
@@ -337,24 +322,15 @@ export function describePreviewReason(reason: PreviewMalformedReason): string {
 
 const DEFAULT_READY_TIMEOUT_MS = 120_000;
 
-/** Compose cold-boot budget (prod dump + npm ci + ng serve). Keep in sync with compose runtime default. */
-const COMPOSE_PREVIEW_READY_TIMEOUT_MS = 600_000;
-
 /**
  * How long {@link handlePreviewBlock} waits for `runtime.getById` → `ready`.
- * Compose previews use the longer budget; legacy spawn keeps 120s.
+ * A project can widen the budget via `prEnv.devServer.readyTimeoutMs` — a
+ * cold boot that runs `npm install` before the first compile needs far
+ * more than the default.
  */
-export function resolvePreviewHandlerReadyTimeoutMs(
-  project: {
-    prEnv?: {
-      preview?: {
-        compose?: { entryService?: string; entryPort?: number; readyTimeoutMs?: number };
-      };
-      devServer?: { readyTimeoutMs?: number };
-    };
-  },
-  composeReadyTimeoutMs: number = COMPOSE_PREVIEW_READY_TIMEOUT_MS,
-): number {
+export function resolvePreviewHandlerReadyTimeoutMs(project: {
+  prEnv?: { devServer?: { readyTimeoutMs?: number } };
+}): number {
   const devServerTimeout = project.prEnv?.devServer?.readyTimeoutMs;
   if (
     typeof devServerTimeout === 'number' &&
@@ -362,20 +338,6 @@ export function resolvePreviewHandlerReadyTimeoutMs(
     devServerTimeout > 0
   ) {
     return devServerTimeout;
-  }
-  const legacyCompose = project.prEnv?.preview?.compose;
-  const legacyComposeConfigured =
-    typeof legacyCompose?.entryService === 'string' &&
-    legacyCompose.entryService.trim().length > 0 &&
-    typeof legacyCompose.entryPort === 'number';
-  const perProject = legacyComposeConfigured
-    ? project.prEnv?.preview?.compose?.readyTimeoutMs
-    : undefined;
-  if (typeof perProject === 'number' && Number.isFinite(perProject) && perProject > 0) {
-    return perProject;
-  }
-  if (legacyComposeConfigured) {
-    return composeReadyTimeoutMs;
   }
   return DEFAULT_READY_TIMEOUT_MS;
 }
@@ -392,17 +354,17 @@ const DEFAULT_STARTING_REBROADCAST_INTERVAL_MS = 2_000;
  * render the teach-moment card (the CTA link will simply not navigate).
  */
 function defaultBuildWizardUrl(projectId: string): string {
-  return `/projects/${encodeURIComponent(projectId)}/settings/preview?focus=preview`;
+  return `/projects/${encodeURIComponent(projectId)}/settings/dev-server?focus=dev-server`;
 }
 
 /**
  * Default wizard intent builder. Points the client at the per-project
- * Preview view (`preview:<projectId>` — see the sidebar entry in
+ * Dev server view (`devserver:<projectId>` — see the sidebar entry in
  * `client/src/components/Sidebar.jsx` and the route in
  * `client/src/App.jsx`), which is what the chat-side CTA lands on.
  */
 function defaultBuildWizard(projectId: string): { view: string; projectId: string } {
-  return { view: `preview:${projectId}`, projectId };
+  return { view: `devserver:${projectId}`, projectId };
 }
 
 /**
@@ -412,7 +374,7 @@ function defaultBuildWizard(projectId: string): { view: string; projectId: strin
  * `preview_failed` broadcast so the chat UI always gets a final state.
  *
  * Outcome matrix:
- *   - Project has no `prEnv.preview.enabled === true` → `preview_unavailable`
+ *   - Project has no `prEnv.devServer` config → `preview_unavailable`
  *     with a wizard deep-link. Nothing is spawned.
  *   - `runtime` is null (wiring incomplete) → `preview_unavailable` with
  *     `unavailableReason: 'no-pr-env'`. Nothing is spawned.
@@ -440,14 +402,11 @@ export async function handlePreviewBlock(
     sleep = (ms) => new Promise<void>((r) => setTimeout(r, ms)),
     now = () => Date.now(),
   } = deps;
-  const readyTimeoutMs =
-    deps.readyTimeoutMs ??
-    resolvePreviewHandlerReadyTimeoutMs(project, COMPOSE_PREVIEW_READY_TIMEOUT_MS);
+  const readyTimeoutMs = deps.readyTimeoutMs ?? resolvePreviewHandlerReadyTimeoutMs(project);
 
   // ── Gate 1: project has a preview config? ───────────────────────────
-  const previewCfg = project.prEnv?.preview;
-  const devServerConfigured = !!project.prEnv?.devServer;
-  if (!project.prEnv || ((!previewCfg || previewCfg.enabled !== true) && !devServerConfigured)) {
+  const devServerConfigured = isDevServerConfigured(project.prEnv?.devServer);
+  if (!project.prEnv || !devServerConfigured) {
     broadcast({
       type: 'agenthub_preview',
       kind: 'preview_unavailable',
@@ -480,12 +439,13 @@ export async function handlePreviewBlock(
     return;
   }
 
-  // ── Spawn ───────────────────────────────────────────────────────────
+  // ── Start managed dev server ────────────────────────────────────────
   let previewId = '';
   let port: number;
   let url: string;
-  // Immediate feedback — compose boot (clone wait, build) can take minutes
-  // before `startPreview` returns and the runtime emits its own starting event.
+  // Immediate feedback — a cold boot (install, first compile) can take
+  // minutes before `startPreview` returns and the runtime emits its own
+  // starting event.
   broadcast({
     type: 'agenthub_preview',
     kind: 'preview_starting',

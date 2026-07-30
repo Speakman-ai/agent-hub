@@ -286,15 +286,26 @@ export function buildImportPreviewPatch(
   decision: ImportPreviewDecision | null,
 ): Record<string, unknown> | null {
   if (!decision) return null;
-  if (!decision.enabled) return { prEnv: { enabled: false, preview: { enabled: false } } };
-  const preview: Record<string, unknown> = { enabled: true };
-  if (decision.startScript?.trim()) preview.startScript = decision.startScript.trim();
+  // A skipped preview is expressed as the absence of a dev-server block:
+  // the config carries no on/off switch, so omitting it is what leaves the
+  // project without a preview.
+  if (!decision.enabled) return { prEnv: { enabled: false } };
+  const devServer: Record<string, unknown> = {};
+  if (decision.startScript?.trim()) devServer.startCommand = decision.startScript.trim();
+  if (
+    typeof decision.port === 'number' &&
+    Number.isInteger(decision.port) &&
+    decision.port >= 1 &&
+    decision.port <= 65535
+  ) {
+    devServer.portMap = [{ internalPort: decision.port, label: 'web', primary: true }];
+  }
   if (Array.isArray(decision.captureRoutes) && decision.captureRoutes.length > 0) {
-    preview.captureRoutes = decision.captureRoutes.map((route) => route.trim()).filter(Boolean);
+    devServer.captureRoutes = decision.captureRoutes.map((route) => route.trim()).filter(Boolean);
   }
   if (decision.idleTTL !== '' && decision.idleTTL != null) {
     const ttl = Number(decision.idleTTL);
-    if (Number.isInteger(ttl) && ttl > 0) preview.idleTTL = Math.min(86400, Math.max(60, ttl));
+    if (Number.isInteger(ttl) && ttl > 0) devServer.idleTTL = Math.min(86400, Math.max(60, ttl));
   }
-  return { prEnv: { enabled: false, preview } };
+  return { prEnv: { enabled: false, devServer } };
 }

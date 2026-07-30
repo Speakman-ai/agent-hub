@@ -8,7 +8,7 @@
  *
  * All IO is injectable (`spawn`, PTY factory, `kill`, port allocator,
  * clock, fs probe) so unit tests never touch real processes — same pattern
- * as `preview/preview-runtime.ts`.
+ * as `preview/dev-server-runtime.ts`.
  */
 
 import { spawn as nodeSpawn } from 'child_process';

@@ -23,11 +23,6 @@ import { ensureSpawnCredsForSession } from './spawn-creds-mint.js';
 import { resolvePersonalOAuthConfig } from './personal-oauth-config.js';
 import { resolveGithubAppConfig } from './github-app-config.js';
 import { resolveGoogleOAuthConfig } from './google-oauth-config.js';
-import {
-  DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
-  PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS,
-  PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS,
-} from './preview/preview-ready-timeout-bounds.js';
 import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
@@ -445,21 +440,6 @@ const config: AppConfig = {
     1,
     resolveInt('AGENT_HUB_SCHEDULED_JOBS_CONCURRENCY', 'scheduledJobsConcurrency', 10),
   ),
-  // Compose preview health poll — how long `PreviewComposeRuntime` waits for
-  // 2xx on the entry service before marking the group failed. Override via
-  // `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS` or `previewComposeReadyTimeoutMs`
-  // in config.json. Per-project override: `prEnv.preview.compose.readyTimeoutMs`.
-  previewComposeReadyTimeoutMs: clampFiniteInt(
-    resolveInt(
-      'AGENT_HUB_PREVIEW_READY_TIMEOUT_MS',
-      'previewComposeReadyTimeoutMs',
-      DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
-    ),
-    DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
-    PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS,
-    PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS,
-  ),
-
   // Wildcard subdomain base for "subdomain preview" mode. When set
   // (e.g. `preview.agenthub.dev.example.com`), the request
   // dispatcher accepts `<sessionId>.<base>` hostnames and rewrites

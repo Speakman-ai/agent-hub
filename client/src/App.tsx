@@ -84,7 +84,6 @@ import ProjectWorkflowsPage from './components/ProjectWorkflowsPage';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder';
 import FinalizeSettingsSection from './components/FinalizeSettingsSection';
 import ProjectStatsView from './components/ProjectStatsView';
-import PreviewSection from './components/PreviewSection';
 import DevServerSection from './components/DevServerSection';
 import RumSettingsSection from './components/RumSettingsSection';
 import LogsPage from './components/logs/LogsPage';
@@ -2459,21 +2458,6 @@ export default function App({ initialView }: any = {}) {
         case 'preview-defaults-detected':
           window.dispatchEvent(new CustomEvent('preview-defaults-ws', { detail: data }));
           break;
-        // AI-assisted preview setup wizard broadcasts. The route spawns
-        // a session (`preview_wizard_started`) and the skill pings the
-        // completion endpoint after persisting config + secrets
-        // (`preview_wizard_complete`). PreviewSection listens for the
-        // completion event to refetch the project record.
-        case 'preview_wizard_started':
-          window.dispatchEvent(
-            new CustomEvent('agenthub:preview_wizard_started', { detail: data }),
-          );
-          break;
-        case 'preview_wizard_complete':
-          window.dispatchEvent(
-            new CustomEvent('agenthub:preview_wizard_complete', { detail: data }),
-          );
-          break;
         // AI-assisted Dev Server (prEnv.devServer) setup wizard. The route
         // spawns a session (`dev_server_wizard_started`) and the skill pings
         // the completion endpoint after persisting config + secrets
@@ -3997,7 +3981,8 @@ export default function App({ initialView }: any = {}) {
   const handlePreviewConfigure = useCallback(
     (event: any) => {
       const projectId = event?.wizard?.projectId || activeChatProjectRef.current?.id;
-      setCurrentView(projectId ? `preview:${projectId}` : 'settings');
+      // The dev-server settings view is the only place a preview is configured.
+      setCurrentView(projectId ? `devserver:${projectId}` : 'settings');
     },
     [setCurrentView],
   );
@@ -4069,8 +4054,8 @@ export default function App({ initialView }: any = {}) {
     [],
   );
 
-  // Single-project arrays for the `runners:`/`preview:` views, memoized so the
-  // prop reference only changes when the project list or active view does.
+  // Single-project arrays for the `runners:`/`devserver:` views, memoized so
+  // the prop reference only changes when the project list or active view does.
   const runnersScopedProjects = useMemo(() => {
     if (!currentView.startsWith('runners:')) return [];
     const id = currentView.slice('runners:'.length);
@@ -4080,12 +4065,6 @@ export default function App({ initialView }: any = {}) {
   const statsScopedProjects = useMemo(() => {
     if (!currentView.startsWith('stats:')) return [];
     const id = currentView.slice('stats:'.length);
-    return projects.filter((p: any) => p.id === id);
-  }, [currentView, projects]);
-
-  const previewScopedProjects = useMemo(() => {
-    if (!currentView.startsWith('preview:')) return [];
-    const id = currentView.slice('preview:'.length);
     return projects.filter((p: any) => p.id === id);
   }, [currentView, projects]);
 
@@ -5053,7 +5032,6 @@ export default function App({ initialView }: any = {}) {
     if (projectMenuRoute) return projectMenuRoute.projectId;
     if (currentView.startsWith('runners:')) return currentView.slice('runners:'.length);
     if (currentView.startsWith('stats:')) return currentView.slice('stats:'.length);
-    if (currentView.startsWith('preview:')) return currentView.slice('preview:'.length);
     if (currentView.startsWith('devserver:')) return currentView.slice('devserver:'.length);
     if (currentView.startsWith('aws:')) return currentView.slice('aws:'.length);
     if (workflowEditRoute) return workflowEditRoute.projectId;
@@ -5668,19 +5646,6 @@ export default function App({ initialView }: any = {}) {
               ) : currentView.startsWith('stats:') ? (
                 <div className="flex-1 overflow-y-auto p-4 md:p-6">
                   <ProjectStatsView projects={statsScopedProjects} />
-                </div>
-              ) : currentView.startsWith('preview:') ? (
-                <div className="flex-1 overflow-y-auto p-4 md:p-6">
-                  {/* No `registerGuard` here: the Settings tab-change guard was
-                      tab-local. Sidebar navigation away from this view is not
-                      intercepted; PreviewSection treats the prop as optional. */}
-                  <PreviewSection
-                    projects={previewScopedProjects}
-                    onProjectsChange={refreshProjects}
-                    onOpenSession={({ sessionId, agentId }: any) =>
-                      focusAgentSession(agentId, sessionId)
-                    }
-                  />
                 </div>
               ) : currentView.startsWith('devserver:') ? (
                 <div className="flex-1 overflow-y-auto p-4 md:p-6">

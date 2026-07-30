@@ -242,7 +242,6 @@ export default function createDevServerWizardRoutes(deps: RouteDeps): Router {
 
       const prEnvResult = buildPrEnvPatchFromWizardApply(project, {
         devServer: body.devServer,
-        enabled: true,
       });
       if (!prEnvResult.ok) {
         res.status(400).json({ error: prEnvResult.error });

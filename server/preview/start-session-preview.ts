@@ -1,15 +1,13 @@
 /**
  * Start a worktree preview for a chat session (user toolbar / API only).
  */
-import config from '../config.js';
 import { sessionUsesWorktree } from '../project-mode.js';
 import { effectiveCwdForSession } from '../routes/hooks.js';
+import { isDevServerConfigured } from '../dev-server-config.js';
 import type { BroadcastFn, Project, SessionRow } from '../types.js';
 import type { PreviewRuntimeLike } from './preview-block.js';
 import { handlePreviewBlock, resolvePreviewHandlerReadyTimeoutMs } from './preview-block.js';
 import type { PreviewTask } from './preview-block.js';
-import { projectWithWorktreePreviewOverride } from './worktree-preview-config.js';
-import { isLegacyPreviewComposeConfig } from './preview-compose-config.js';
 
 export interface StartSessionPreviewBody {
   route?: string;
@@ -21,16 +19,14 @@ export type StartSessionPreviewDeps = {
   body?: StartSessionPreviewBody;
   broadcast: BroadcastFn;
   findAgent: (agentId: string) => { project: Project; agent: { id: string } } | null;
-  getPreviewRuntime?: () => PreviewRuntimeLike | null;
-  getPreviewComposeRuntime?: () => PreviewRuntimeLike | null;
   getDevServerRuntime?: () => DevServerRuntimeLike | null;
   getSession: (sessionId: string) => SessionRow | undefined;
 };
 
 /**
  * The managed dev-server has its own runtime vocabulary (`start` and
- * `devServerId`). Adapt it here to the preview block's shared runtime shape
- * rather than making the legacy/compose handler know about each runtime.
+ * `devServerId`). Adapt it here to the preview block's runtime shape
+ * rather than teaching the handler about runtime internals.
  */
 type DevServerRuntimeLike = {
   start: (
@@ -47,14 +43,14 @@ export type StartSessionPreviewResult =
   | { ok: false; error: string; statusCode: number };
 
 function defaultPreviewRoute(project: Project): string {
-  const routes = project.prEnv?.preview?.captureRoutes;
+  const routes = project.prEnv?.devServer?.captureRoutes;
   if (Array.isArray(routes) && routes.length > 0 && typeof routes[0] === 'string') {
     const t = routes[0].trim();
     if (t.startsWith('/')) return t;
   }
-  const composeHealth = project.prEnv?.preview?.compose?.healthPath;
-  if (typeof composeHealth === 'string' && composeHealth.trim().startsWith('/')) {
-    return composeHealth.trim();
+  const healthPath = project.prEnv?.devServer?.healthPath;
+  if (typeof healthPath === 'string' && healthPath.trim().startsWith('/')) {
+    return healthPath.trim();
   }
   return '/';
 }
@@ -93,10 +89,6 @@ export async function startSessionPreview(
     };
   }
   const worktreePath = effectiveCwdForSession(project.cwd, session);
-  // Let the session worktree's .agent-hub/preview.json drive its own preview
-  // compose config (e.g. entryWorkdir live-mount → HMR). The runtime otherwise
-  // reads only the project record, so a committed repo edit wouldn't take effect.
-  const effectiveProject = projectWithWorktreePreviewOverride(project, worktreePath);
   const route =
     typeof body?.route === 'string' && body.route.trim().startsWith('/')
       ? body.route.trim()
@@ -111,26 +103,16 @@ export async function startSessionPreview(
         : 'Started from session toolbar',
   };
 
-  const devServerConfigured = !!effectiveProject.prEnv?.devServer;
-  const composeConfigured = isLegacyPreviewComposeConfig(effectiveProject.prEnv?.preview?.compose);
-  const devServerRuntime = devServerConfigured ? (deps.getDevServerRuntime?.() ?? null) : null;
-  const previewRuntime = devServerConfigured
-    ? devServerRuntime
-      ? adaptDevServerRuntime(devServerRuntime)
-      : null
-    : composeConfigured
-      ? (deps.getPreviewComposeRuntime?.() ?? null)
-      : (deps.getPreviewRuntime?.() ?? null);
+  const devServerRuntime = isDevServerConfigured(project.prEnv?.devServer)
+    ? (deps.getDevServerRuntime?.() ?? null)
+    : null;
 
   void handlePreviewBlock(sessionId, task, {
-    runtime: previewRuntime,
+    runtime: devServerRuntime ? adaptDevServerRuntime(devServerRuntime) : null,
     broadcast,
-    project: effectiveProject,
+    project,
     worktreePath,
-    readyTimeoutMs: resolvePreviewHandlerReadyTimeoutMs(
-      effectiveProject,
-      config.previewComposeReadyTimeoutMs,
-    ),
+    readyTimeoutMs: resolvePreviewHandlerReadyTimeoutMs(project),
   }).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[preview] startSessionPreview handler error:', message);

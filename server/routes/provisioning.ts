@@ -176,7 +176,7 @@ interface PreviewDetectionDeps {
  * Subscribe to a provisioning job's event stream and, the first time
  * the `copy-template` phase reports `ok`, run the preview detector
  * against the project workspace and write the detected defaults onto
- * `project.prEnv.preview`.
+ * `project.prEnv.devServer`.
  *
  * Pulled out of the route handler so the test suite can drive it with
  * a synthetic job and confirm the project mutation independently of
@@ -200,10 +200,10 @@ export function subscribePreviewDetection(deps: PreviewDetectionDeps): () => voi
       detected = null;
     }
     if (!detected) {
-      // Unknown stack — leave preview unset; the wizard will surface
-      // empty fields in the final review step. Broadcast a zero-detection
-      // signal so any UI panel watching for the result can clear its
-      // pending spinner.
+      // Unknown stack — leave the dev server unset; the wizard will
+      // surface empty fields in the final review step. Broadcast a
+      // zero-detection signal so any UI panel watching for the result can
+      // clear its pending spinner.
       broadcast({
         type: 'preview-defaults-detected',
         projectId,
@@ -213,11 +213,10 @@ export function subscribePreviewDetection(deps: PreviewDetectionDeps): () => voi
       return;
     }
 
-    // Merge detected defaults into the project. Enable both the parent
-    // prEnv block and preview.  Pre-fill startScript and internalPort from
-    // the detection result so the persisted shape satisfies
-    // validatePrEnvProjectConfig (requires non-empty startScript and
-    // internalPort ∈ [1, 65535] when enabled=true).  Any existing
+    // Merge detected defaults into the project. Pre-fill startScript and
+    // internalPort from the detection result so the persisted shape
+    // satisfies validatePrEnvProjectConfig (requires non-empty startScript
+    // and internalPort ∈ [1, 65535] when enabled=true).  Any existing
     // user-configured values spread over those defaults below.
     const existingPrEnv = project.prEnv ?? {};
     project.prEnv = {
@@ -225,12 +224,14 @@ export function subscribePreviewDetection(deps: PreviewDetectionDeps): () => voi
       internalPort: detected.port,
       ...existingPrEnv,
       enabled: true,
-      preview: {
-        enabled: true,
-        startScript: detected.startScript,
-        port: detected.port,
+      devServer: {
+        startCommand: detected.startScript,
+        portMap: [{ internalPort: detected.port, label: 'web', primary: true }],
         captureRoutes: detected.captureRoutes,
         idleTTL: detected.idleTTL,
+        env: {},
+        secretKeys: [],
+        aptPackages: [],
       },
     };
 
@@ -462,16 +463,16 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
       stmts,
     });
 
-    // Subscribe to the job so we can auto-bake `prEnv.preview` defaults
+    // Subscribe to the job so we can auto-bake `prEnv.devServer` defaults
     // into the project as soon as the template tree lands on disk. The
     // detection helper inspects `<workspace>/package.json` and falls
     // back to `<workspace>/apps/*/package.json` for monorepos. When it
-    // returns null (unknown stack), the project keeps an unset preview
+    // returns null (unknown stack), the project keeps an unset dev-server
     // block and the wizard surfaces empty fields.
     //
     // Failures here are swallowed: if detection or projects.json save
     // fails we don't want to wedge the provisioning job that already
-    // succeeded. Worst case the user configures the preview manually.
+    // succeeded. Worst case the user configures the dev server manually.
     subscribePreviewDetection({
       jobId,
       projectId,

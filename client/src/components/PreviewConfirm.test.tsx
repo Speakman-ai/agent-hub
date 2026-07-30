@@ -140,26 +140,27 @@ describe('buildPreviewPatch', () => {
     expect(buildPreviewPatch(undefined)).toBeNull();
   });
 
-  it('emits a disabled preview block when skipped', () => {
+  it('omits the devServer block entirely when skipped', () => {
     expect(buildPreviewPatch({ enabled: false })).toEqual({
-      prEnv: { enabled: false, preview: { enabled: false } },
+      prEnv: { enabled: false },
     });
   });
 
-  it('emits enabled preview with the accepted form fields', () => {
+  it('emits a devServer block with the accepted form fields', () => {
     expect(
       buildPreviewPatch({
         enabled: true,
         startScript: 'npm run dev',
+        port: 5173,
         captureRoutes: ['/', '/about'],
         idleTTL: 600,
       }),
     ).toEqual({
       prEnv: {
         enabled: false,
-        preview: {
-          enabled: true,
-          startScript: 'npm run dev',
+        devServer: {
+          startCommand: 'npm run dev',
+          portMap: [{ internalPort: 5173, label: 'web', primary: true }],
           captureRoutes: ['/', '/about'],
           idleTTL: 600,
         },
@@ -167,7 +168,17 @@ describe('buildPreviewPatch', () => {
     });
   });
 
-  it('skips startScript when blank and skips idleTTL when not an integer', () => {
+  it('omits portMap when the detected port is missing or out of range', () => {
+    expect(
+      buildPreviewPatch({ enabled: true, startScript: 'npm run dev', port: null })!.prEnv.devServer,
+    ).not.toHaveProperty('portMap');
+    expect(
+      buildPreviewPatch({ enabled: true, startScript: 'npm run dev', port: 70000 })!.prEnv
+        .devServer,
+    ).not.toHaveProperty('portMap');
+  });
+
+  it('skips startCommand when blank and skips idleTTL when not an integer', () => {
     expect(
       buildPreviewPatch({
         enabled: true,
@@ -178,7 +189,7 @@ describe('buildPreviewPatch', () => {
     ).toEqual({
       prEnv: {
         enabled: false,
-        preview: { enabled: true, captureRoutes: ['/'] },
+        devServer: { captureRoutes: ['/'] },
       },
     });
   });
@@ -194,36 +205,36 @@ describe('buildPreviewPatch', () => {
       captureRoutes: ['/'],
       idleTTL: '',
     });
-    expect(patch!.prEnv.preview).not.toHaveProperty('idleTTL');
+    expect(patch!.prEnv.devServer).not.toHaveProperty('idleTTL');
     expect(patch!).toEqual({
       prEnv: {
         enabled: false,
-        preview: { enabled: true, startScript: 'npm run dev', captureRoutes: ['/'] },
+        devServer: { startCommand: 'npm run dev', captureRoutes: ['/'] },
       },
     });
   });
 
   it('omits idleTTL when null or zero or negative', () => {
-    expect(buildPreviewPatch({ enabled: true, idleTTL: null })!.prEnv.preview).not.toHaveProperty(
+    expect(buildPreviewPatch({ enabled: true, idleTTL: null })!.prEnv.devServer).not.toHaveProperty(
       'idleTTL',
     );
-    expect(buildPreviewPatch({ enabled: true, idleTTL: 0 })!.prEnv.preview).not.toHaveProperty(
+    expect(buildPreviewPatch({ enabled: true, idleTTL: 0 })!.prEnv.devServer).not.toHaveProperty(
       'idleTTL',
     );
-    expect(buildPreviewPatch({ enabled: true, idleTTL: -60 })!.prEnv.preview).not.toHaveProperty(
+    expect(buildPreviewPatch({ enabled: true, idleTTL: -60 })!.prEnv.devServer).not.toHaveProperty(
       'idleTTL',
     );
   });
 
   it('clamps idleTTL to the input min/max range (60..86400)', () => {
     // Below min — clamps up to 60.
-    expect(buildPreviewPatch({ enabled: true, idleTTL: 30 })!.prEnv.preview.idleTTL).toBe(60);
+    expect(buildPreviewPatch({ enabled: true, idleTTL: 30 })!.prEnv.devServer!.idleTTL).toBe(60);
     // Above max — clamps down to 86400.
-    expect(buildPreviewPatch({ enabled: true, idleTTL: 999999 })!.prEnv.preview.idleTTL).toBe(
+    expect(buildPreviewPatch({ enabled: true, idleTTL: 999999 })!.prEnv.devServer!.idleTTL).toBe(
       86400,
     );
     // In-range — passes through.
-    expect(buildPreviewPatch({ enabled: true, idleTTL: 600 })!.prEnv.preview.idleTTL).toBe(600);
+    expect(buildPreviewPatch({ enabled: true, idleTTL: 600 })!.prEnv.devServer!.idleTTL).toBe(600);
   });
 
   it('drops empty / whitespace routes from captureRoutes', () => {
@@ -237,9 +248,8 @@ describe('buildPreviewPatch', () => {
     ).toEqual({
       prEnv: {
         enabled: false,
-        preview: {
-          enabled: true,
-          startScript: 'npm run dev',
+        devServer: {
+          startCommand: 'npm run dev',
           captureRoutes: ['/', '/about'],
           idleTTL: 600,
         },

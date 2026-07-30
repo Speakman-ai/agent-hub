@@ -2,7 +2,7 @@
  * Worktree-preview secrets schema.
  *
  * Per-project key/value pairs merged into the env when the preview
- * runtime spawns a dev server (see `preview-runtime.ts`). Values are
+ * runtime spawns a dev server (see `dev-server-runtime.ts`). Values are
  * stored at rest with the same AES-256-GCM helper used for skill
  * credentials and Slack tokens (`secret-crypto.ts`).
  *

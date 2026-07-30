@@ -3005,253 +3005,19 @@ export interface PrEnvProjectConfig {
    */
   env?: Record<string, string>;
   /**
-   * Optional per-project "client-only preview" config. Distinct from the
-   * full PR-env start script so projects with a heavyweight backend can
-   * still ship a quick visual preview (Vite dev server, Storybook, etc.)
-   * without spinning the whole stack. When `enabled` is false (or the
-   * block is omitted) the preview runtime is off — only the regular
-   * PR-env path runs.
-   *
-   * Requires the parent `enabled: true` — a preview is meaningless when
-   * the project's PR-env feature itself is off, and the validator
-   * rejects that combination.
-   */
-  preview?: PrEnvPreviewConfig;
-  /**
    * Optional dev-server config: the project runs as a managed long-lived
    * process started from `startCommand` (default `npm run dev`) inside the
    * session env, with the Hub owning start/stop/restart, log streaming,
    * env/secret injection, and port mapping through the authenticated
-   * preview proxy. Replaces the compose app-wrapping model for session
-   * previews; independent of the parent `enabled` flag (which gates the
-   * PR-env runner only), same as `preview`.
+   * preview proxy. This is the only session-preview runtime; it is
+   * independent of the parent `enabled` flag, which gates the PR-env
+   * runner only.
    *
    * Secrets are key references into the project-secrets store
    * (`secretKeys[]`) — plaintext values never live in this block. Schema +
    * validation in `dev-server-config.ts`.
    */
   devServer?: DevServerConfig;
-}
-
-/**
- * Lightweight preview sub-config attached to {@link PrEnvProjectConfig}.
- *
- * Used by the per-PR runner to spawn a *second* (or replacement) command
- * that serves a client-only preview (Vite dev server, Storybook, static
- * `npx serve dist`, etc.). Routes listed in `captureRoutes` are
- * auto-screenshotted by the screenshot worker for the PR description.
- */
-export interface PrEnvPreviewConfig {
-  /** Master switch. When false (or the block is absent), preview is off. */
-  enabled: boolean;
-  /**
-   * Optional preview-specific start command, relative to repo root.
-   * Falls back to the parent `startScript` when unset — handy for
-   * projects whose normal start script already serves a static preview
-   * but who still want preview-specific routes/idle-TTL tuning.
-   */
-  startScript?: string;
-  /**
-   * Optional preview port. Defaults to the parent `internalPort` when
-   * unset. Same nginx-mapped contract as `internalPort` (1024–65535).
-   */
-  port?: number;
-  /**
-   * Routes to auto-screenshot for the PR description (e.g. `/`,
-   * `/components/Button`). Each entry must start with `/`. Capped at
-   * 10 routes to keep screenshot time bounded per PR.
-   */
-  captureRoutes?: string[];
-  /**
-   * Idle TTL in seconds. After this many seconds with no traffic, the
-   * preview runtime is torn down and re-spawned on the next request.
-   * Defaults to 600 (10 min). Bounded 60–86400 (1 min – 24 h).
-   */
-  idleTTL?: number;
-  /**
-   * Max ms the runtime should wait for a process's `healthPath` to
-   * return 2xx before flipping the process to `failed`. Defaults to
-   * 120000 (2 min) so a cold worktree that runs `npm install` on its
-   * first boot has room. Bounded 5000–600000 (5 s – 10 min) at config
-   * save time. Currently a documented hook — the runtime accepts the
-   * value via its construction `config`; per-project plumbing into the
-   * production wiring is a follow-up.
-   */
-  healthTimeoutMs?: number;
-  /**
-   * @deprecated Ignored — preview boot is human-only via the chat toolbar
-   * (`POST /api/sessions/:id/preview/start`). Agents must not emit
-   * `<agenthub:preview>`; the host rejects those blocks. While a
-   * user-started preview is `ready`, file edits may trigger an iframe
-   * refresh / compose backend restart only.
-   */
-  autoStart?: boolean;
-  /**
-   * Optional multi-process preview graph. When non-empty, `startScript`
-   * (above) is ignored and the runtime spawns each entry in topological
-   * order based on `dependsOn`. Used for "fullstack" repos that need a
-   * backend AND a frontend running in tandem (e.g. Django runserver +
-   * Vite dev server) with per-process status, logs, and health checks.
-   *
-   * Capped at 6 processes — the cap exists to keep host resource usage
-   * (file handles, log streams, port pool) bounded; bump the constant
-   * in `preview-process-graph.ts` if the cap ever becomes the limit.
-   */
-  processes?: PreviewProcess[];
-  /**
-   * Optional compose metadata for the project's backing services. The
-   * managed app process belongs in `devServer.startCommand`; it may run
-   * `docker compose up -d --wait db redis` before starting the app.
-   *
-   * Existing configs that contain `entryService` and `entryPort` receive a
-   * one-release compatibility fallback through the legacy compose runtime.
-   * New configs must omit those app-wrapping fields.
-   */
-  compose?: PreviewComposeConfig;
-}
-
-/**
- * Docker-compose preview orchestration sub-config attached to
- * {@link PrEnvPreviewConfig}.
- *
- * Compose metadata for backing services (Postgres, Redis, etc.) used by a
- * managed dev server. The Hub does not run the app as a compose entry
- * service. The project's `devServer.startCommand` owns the compose command
- * and app startup lifecycle.
- *
- * `entryService` and `entryPort` are deprecated compatibility fields. They
- * are accepted for one release so existing projects can migrate; when both
- * are present the temporary legacy compose app-wrapping fallback is used.
- */
-export interface PreviewComposeConfig {
-  /**
-   * Path to the compose file relative to the worktree root.
-   * Default: `docker-compose.yml`.
-   *
-   * Must resolve to a path inside the worktree (path-traversal is
-   * rejected at config-save time). Symlinks are followed by the docker
-   * client itself; the runtime does not pre-resolve them.
-   */
-  file?: string;
-  /**
-   * @deprecated App-wrapping compatibility field. Omit for services-only
-   * compose metadata.
-   */
-  entryService?: string;
-  /**
-   * @deprecated App-wrapping compatibility field. Required together with
-   * `entryService` only for the one-release fallback.
-   */
-  entryPort?: number;
-  /**
-   * Optional dotenv file passed to `docker compose --env-file`,
-   * relative to the worktree root. Missing files are a no-op (compose's
-   * own behaviour). Use this for project-level secrets that the compose
-   * file references via `${VAR}` interpolation.
-   */
-  envFile?: string;
-  /**
-   * HTTP path the runtime polls on `http://<host>:<allocatedPort>` to
-   * decide when the preview is ready. Default `/`. Must start with `/`.
-   */
-  healthPath?: string;
-  /**
-   * Override the host port range. Defaults to the same 4100–4999 pool
-   * as the legacy spawn runtime — both modes can coexist on the same
-   * host because the underlying `worktree_preview_processes.port`
-   * UNIQUE invariant prevents collisions.
-   */
-  hostPortRange?: { min: number; max: number };
-  /**
-   * Max ms the runtime waits for a 2xx from `healthPath` before flipping
-   * the group to `failed`. Defaults to 600_000 (10 min) — sized so a
-   * first-time `docker compose build` + prod-dump restore on a cold cache
-   * has room. Bounded 5000..3600000 (5 s – 60 min) at config save time.
-   */
-  readyTimeoutMs?: number;
-  /**
-   * Live-edit binding. When set, the runtime bind-mounts the host
-   * worktree onto this absolute path inside the `entryService`
-   * container so the dev server's file watcher sees agent edits
-   * directly — no `docker compose up --build` per change. Must start
-   * with `/`. Common values: `/workspace`, `/app`, `/srv`. When unset
-   * the runtime behaves as before (image-baked source, no bind).
-   */
-  entryWorkdir?: string;
-  /**
-   * Subdirectory of the worktree root to bind-mount at `entryWorkdir`.
-   * Defaults to `.` (the worktree root itself). For monorepos where
-   * the Dockerfile build context is a subdirectory (e.g. `frontend/`),
-   * set this to that subdirectory so the bind source matches what the
-   * image expects at `entryWorkdir`. Must be a relative path without
-   * `..` segments. Ignored when `entryWorkdir` is unset.
-   */
-  entrySourceDir?: string;
-  /**
-   * Paths under `entryWorkdir` that should remain image-provided
-   * rather than coming from the host bind mount. Compose anonymous
-   * volumes "punch holes" in the parent bind — without this,
-   * `<entryWorkdir>/node_modules` from the host shadows the image's
-   * pre-installed deps and `ng serve` / `vite dev` fail immediately.
-   * Empty list = no shadows (bind covers everything; usually wrong).
-   * Conventional defaults if you don't override: `["node_modules"]`.
-   * Ignored when `entryWorkdir` is unset.
-   */
-  shadowDirs?: string[];
-}
-
-/**
- * A single process inside a multi-process preview graph. Names are
- * the stable identifier — they appear in URLs, log file paths, and the
- * `dependsOn` adjacency list. Each process is spawned with its own
- * cwd / env / port; the runtime polls `healthPath` (default `/`) on its
- * allocated port and only kicks off dependents once 2xx is observed.
- */
-export interface PreviewProcess {
-  /**
-   * Short kebab-case identifier. Must match `/^[a-z][a-z0-9_-]*$/` and
-   * be unique within `processes[]`. Surfaces in `/api/sessions/:id/
-   * preview/processes` and is the join key for `dependsOn`.
-   */
-  name: string;
-  /**
-   * Shell command run via `sh -c <startScript>` from `cwd` (or the
-   * worktree root when `cwd` is omitted). Same contract as the
-   * single-process `PrEnvPreviewConfig.startScript`.
-   */
-  startScript: string;
-  /**
-   * Optional working directory relative to the worktree root. Defaults
-   * to the worktree root itself. Absolute paths are rejected (the
-   * runtime treats this field as a worktree-relative path and rebases
-   * each spawn to the live session worktree).
-   */
-  cwd?: string;
-  /**
-   * Optional preferred listen port. Ignored by the runtime — port
-   * allocation comes from the worktree-preview pool to preserve the
-   * `UNIQUE(port)` invariant. Persisted so the UI can show the
-   * configured-vs-actual mapping when troubleshooting.
-   */
-  port?: number;
-  /**
-   * Path the runtime polls for readiness. Defaults to `/`. 2xx flips
-   * the process to `ready` and unblocks dependents. Must start with `/`.
-   */
-  healthPath?: string;
-  /**
-   * Names of other processes in the same graph that must reach `ready`
-   * before this one is spawned. Forms a DAG; cycles are rejected at
-   * config save time. Empty / omitted = root (spawned in wave 0).
-   */
-  dependsOn?: string[];
-  /**
-   * Optional path to a dotenv file (relative to the worktree root)
-   * whose contents are parsed and overlaid onto this process's spawn
-   * env after the project-wide preview secrets — per-process values
-   * win against project-wide ones. Missing file is a no-op.
-   */
-  envFile?: string;
 }
 
 export interface Project {
@@ -3671,13 +3437,6 @@ export interface AppConfig {
    * `AGENT_HUB_SCHEDULED_JOBS_CONCURRENCY`; config.json: `scheduledJobsConcurrency`.
    */
   scheduledJobsConcurrency: number;
-  /**
-   * Server-wide default for compose preview health polling (ms). Overridden
-   * per project via `prEnv.preview.compose.readyTimeoutMs`. Env:
-   * `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS`; config.json:
-   * `previewComposeReadyTimeoutMs`. Clamped 5000–3600000 (5 s – 60 min).
-   */
-  previewComposeReadyTimeoutMs: number;
   /**
    * Wildcard subdomain base for "subdomain preview" mode. When set
    * (e.g. `preview.agenthub.dev.example.com`), the request
@@ -4199,7 +3958,7 @@ export interface WebSocketDeps {
   /**
    * Optional preview-runtime accessor used by the WS connect handler to
    * replay `agenthub_preview` snapshots for active previews. Returns one
-   * runtime or several (compose + dev-server). Optional so legacy test
+   * runtime. Optional so test
    * wirings that don't construct a real runtime continue to work — the
    * snapshot block is skipped when this is absent.
    */
@@ -4275,19 +4034,12 @@ export interface RouteDeps {
   tryAutonomousDispatch?: () => void;
   runClaude?: (...args: unknown[]) => unknown;
   /**
-   * Per-session preview runtimes — wired at server startup. `null` is
-   * returned when the singletons aren't constructed yet (e.g. test
+   * Per-session preview runtime — wired at server startup. `null` is
+   * returned when the singleton isn't constructed yet (e.g. test
    * harnesses that exercise the route layer without the full
    * `createPreviewRuntimes` boot). The session archive/delete handlers
-   * call `stopBySessionId` on both so spawn-managed and compose-managed
-   * preview groups for the deleted session are torn down.
+   * call `stopBySessionId` so the deleted session's preview is torn down.
    */
-  getPreviewRuntime?: () => {
-    stopBySessionId: (sessionId: string) => Promise<number>;
-  } | null;
-  getPreviewComposeRuntime?: () => {
-    stopBySessionId: (sessionId: string) => Promise<number>;
-  } | null;
   getDevServerRuntime?: () => {
     stopBySessionId: (sessionId: string) => Promise<number>;
   } | null;

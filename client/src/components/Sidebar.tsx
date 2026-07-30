@@ -12,7 +12,6 @@ import {
   ListTodo,
   List,
   ListOrdered,
-  Monitor,
   Terminal,
   Play,
   Cloud,
@@ -816,7 +815,6 @@ export default function Sidebar({
                       const showReviewer = project.agents?.some((a: any) => a.role === 'reviewer');
                       const showRunners = !workflowProject;
                       const showDevserver = !workflowProject;
-                      const showPreview = !workflowProject;
                       // A group renders only when it has at least one visible item.
                       const hasGit = showRepo || showPulls || showDeployments;
                       const NavGroupHeader = ({ groupKey, label }: any) => (
@@ -1149,18 +1147,6 @@ export default function Sidebar({
                                 >
                                   <Terminal size={14} className="flex-shrink-0" />
                                   <span className="truncate">Dev server</span>
-                                </button>
-                              )}
-                              {showPreview && (
-                                <button
-                                  type="button"
-                                  onClick={() => onNavigate(`preview:${project.id}`)}
-                                  className={projectMenuLinkClass(
-                                    currentView === `preview:${project.id}`,
-                                  )}
-                                >
-                                  <Monitor size={14} className="flex-shrink-0" />
-                                  <span className="truncate">Previews</span>
                                 </button>
                               )}
                               <button

@@ -1,26 +1,18 @@
 /**
- * Container -> host path translation for docker-compose previews.
+ * Container -> host path translation for sibling docker spawns.
  *
  * Why this exists:
  *
  *   The Agent Hub server runs in a container with `/var/run/docker.sock`
  *   bind-mounted in. That makes the container a docker **client** while
- *   the **daemon** still runs on the EC2 host. When we shell out to
- *   `docker compose`, the CLI (running in our container) resolves any
- *   relative bind-mount sources in the compose YAML against its own
- *   working directory and ships absolute paths to the daemon. The daemon
- *   then opens those absolute paths on the **host** filesystem — where
- *   our container-local paths like `/home/node/projects/<id>` either
- *   don't exist or point at unrelated content. The result: services that
- *   bind-mount source (e.g. a frontend running `npm ci` against
- *   `./frontend:/app`) see an empty directory and fail in a loop.
+ *   the **daemon** still runs on the host. Any bind-mount source we hand
+ *   the daemon is opened on the **host** filesystem — where our
+ *   container-local paths like `/home/node/projects/<id>` either don't
+ *   exist or point at unrelated content, so the mount silently resolves
+ *   to an empty directory.
  *
- *   Confirmed against compose-go (`paths/resolve.go::ResolveRelativePaths`
- *   uses `project.WorkingDir` as the base for `filepath.Join` over volume
- *   sources) and the docker CLI reference. The supported way to override
- *   that working-dir base is `--project-directory <hostPath>` on the
- *   `docker compose` invocation. compose-go then ships the host-rooted
- *   absolute path to the daemon, which can resolve it correctly.
+ *   The Finalize runner uses this to mount a session worktree into a job
+ *   container by its host-side path.
  *
  * Design choice — env-var-driven, NOT `/proc/self/mountinfo`:
  *
@@ -80,7 +72,7 @@
  *   - `AGENT_HUB_HOST_MAC_PROJECTS_DIR` / `AGENT_HUB_CONTAINER_MAC_PROJECTS_DIR`
  *     (env, optional): second projects root for macOS dev layouts where
  *     `projects.json` stores `cwd` as `~/projects/<repo>` bind-mounted at
- *     the same absolute path inside the Hub container (local docker compose).
+ *     the same absolute path inside the Hub container (local docker).
  *
  *   - {@link translateContainerPathToHost} rewrites a container path that
  *     starts with EITHER the projects root OR the workspaces root so the
@@ -162,7 +154,7 @@ export interface TranslateContainerPathOptions {
   readonly hostMacProjectsDir?: string | null;
   /**
    * Container mount for {@link hostMacProjectsDir}. Often the same absolute
-   * path on Docker Desktop so compose build contexts resolve in-container.
+   * path on Docker Desktop so build contexts resolve in-container.
    */
   readonly containerMacProjectsDir?: string | null;
 }
@@ -305,102 +297,4 @@ export function translateContainerPathToHost(
     hostPath: null,
     skippedReason: `path is outside the bind-mounted ${triedLabels} root (expected prefix one of: ${triedRoots})`,
   };
-}
-
-export interface ResolveComposeProjectDirectoryOptions {
-  /** Tests inject a stub; production uses {@link existsSync}. */
-  readonly pathExists?: (path: string) => boolean;
-}
-
-/**
- * `--project-directory` for `docker compose` spawns from this Node process.
- * Compose-go stats `build.context` locally before talking to the daemon. When
- * Hub runs in Docker, translated macOS host paths (e.g. `/Users/...`) are not
- * visible here — use the bind-mounted `worktreePath` instead. Docker Desktop
- * forwards that path to the host via the socket mount mapping.
- */
-function hostPreviewPathMappingConfigured(): boolean {
-  return Boolean(
-    process.env.AGENT_HUB_HOST_PROJECTS_DIR?.trim() ||
-    process.env.AGENT_HUB_HOST_WORKSPACES_DIR?.trim(),
-  );
-}
-
-export function resolveComposeProjectDirectory(
-  worktreePath: string,
-  translation: HostPathTranslation,
-  options: ResolveComposeProjectDirectoryOptions = {},
-): string {
-  const exists = options.pathExists ?? existsSync;
-  const trimmedWorktree = worktreePath.trim();
-  const hostPath = translation.hostPath?.trim();
-
-  if (hostPreviewPathMappingConfigured()) {
-    if (hostPath) return hostPath;
-    throw new Error(
-      translation.skippedReason
-        ? `worktree path is not under configured host roots: ${translation.skippedReason}`
-        : 'worktree path could not be translated to host filesystem',
-    );
-  }
-
-  if (hostPath && hostPath !== trimmedWorktree && exists(hostPath)) {
-    return hostPath;
-  }
-  return trimmedWorktree;
-}
-
-/**
- * Strict variant of {@link resolveComposeProjectDirectory} used at the
- * `docker compose ... up --build` spawn site.
- *
- * When the Hub server runs inside a container and we emit
- * `--project-directory <hostPath>`, compose-go (running INSIDE this
- * container) tars the build context locally before posting it to the
- * docker daemon. If the host path is not visible at the same absolute
- * path inside this container (i.e. no identity-style bind mount), the
- * tar read fails with the opaque message:
- *
- *   `unable to prepare context: path "<hostPath>" not found`
- *
- * That manifests ~minutes later (after the compose CLI start-up
- * overhead) instead of immediately, and the build-test surface returns
- * a 600s timeout instead of an actionable hint. This helper preflights
- * the visibility check and throws an actionable error pointing at the
- * required identity-style bind mount.
- *
- * Tear-down / restart callers MUST continue to use the lenient
- * {@link resolveComposeProjectDirectory} — throwing on stop would leak
- * the compose project (no `down -v`, no volume removal, port stays
- * claimed) when the mapping moves between start and stop. Only the
- * up-build path needs this preflight.
- */
-export function requireVisibleComposeProjectDirectory(
-  worktreePath: string,
-  translation: HostPathTranslation,
-  options: ResolveComposeProjectDirectoryOptions = {},
-): string {
-  const exists = options.pathExists ?? existsSync;
-  const directory = resolveComposeProjectDirectory(worktreePath, translation, options);
-  // Only fire the preflight when we're about to emit the TRANSLATED host
-  // path (env mapping configured and translation succeeded). When the
-  // resolver falls back to the container worktree, that path is already
-  // a container-local path the CLI can stat — a missing worktree is a
-  // different failure mode and not the identity-mount bug this check
-  // exists to catch. Skipping this guard for the worktree case also
-  // means dev / Electron / test deployments that don't configure the
-  // env mapping keep working without injecting a pathExists stub.
-  const emittingHostPath = translation.hostPath !== null && directory === translation.hostPath;
-  if (!emittingHostPath) return directory;
-  if (exists(directory)) return directory;
-  throw new Error(
-    `Compose project directory ${directory} is not readable inside this process. ` +
-      `When the Hub server runs in a container with /var/run/docker.sock mounted in, ` +
-      `compose-go (inside this container) must be able to stat the build context at ` +
-      `the same absolute path the docker daemon sees on the host. Add an identity-style ` +
-      `bind mount to the Hub container, e.g. \`-v ${directory}:${directory}\`. ` +
-      `The terraform user-data template (ops/terraform/agent-hub-user-data.tftpl) ships ` +
-      `these mounts by default; see lines 240-269 there or docker-compose.yml at the ` +
-      `repo root for the local-dev equivalent.`,
-  );
 }

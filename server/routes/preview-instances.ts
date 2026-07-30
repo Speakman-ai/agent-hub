@@ -13,21 +13,17 @@ import {
   purgeProjectPreviewInstances,
   stopProjectPreviewInstance,
 } from '../preview/project-preview-instances.js';
-import type { PreviewComposeRuntime } from '../preview/preview-compose-runtime.js';
-import type { PreviewRuntime } from '../preview/preview-runtime.js';
 import type { DevServerRuntime } from '../preview/dev-server-runtime.js';
 import type { RouteDeps } from '../types.js';
 
 export interface PreviewInstancesRouteDeps extends RouteDeps {
-  getPreviewComposeRuntime?: () => PreviewComposeRuntime | null;
-  getPreviewRuntime?: () => PreviewRuntime | null;
   getDevServerRuntime?: () => DevServerRuntime | null;
 }
 
 export default function createPreviewInstancesRoutes(deps: PreviewInstancesRouteDeps): Router {
-  const { findProject, getPreviewComposeRuntime, getPreviewRuntime, getDevServerRuntime } = deps;
+  const { findProject, getDevServerRuntime } = deps;
   const router = Router();
-  const stopDeps = { getPreviewComposeRuntime, getPreviewRuntime, getDevServerRuntime };
+  const stopDeps = { getDevServerRuntime };
 
   router.get(
     '/api/projects/:projectId/previews',

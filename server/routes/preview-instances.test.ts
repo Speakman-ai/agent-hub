@@ -42,9 +42,6 @@ function makeApp(deps: Record<string, unknown>) {
 beforeEach(() => {
   db = new Database(':memory:');
   db.exec(WORKTREE_PREVIEW_GROUPS_SCHEMA);
-  // Compose companion column, added by the compose runtime's migration
-  // rather than the base schema, but still selected by the list query.
-  db.exec(`ALTER TABLE worktree_preview_groups ADD COLUMN worktree_path TEXT`);
   db.exec(`
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
@@ -67,13 +64,13 @@ beforeEach(() => {
 });
 
 describe('preview instances routes', () => {
-  it("lists a dev-server group as kind 'dev-server' with its primary port", async () => {
+  it('lists a dev-server group with its primary port', async () => {
     const app = makeApp({});
     const res = await request(app).get('/api/projects/proj-a/previews').expect(200);
     expect(res.body.previews).toHaveLength(1);
     expect(res.body.previews[0]).toMatchObject({
       id: 'g-dev',
-      kind: 'dev-server',
+      agentId: 'a1',
       port: 4200,
       url: 'http://localhost:4200',
     });
@@ -81,15 +78,11 @@ describe('preview instances routes', () => {
 
   it('stop routes a dev-server group to DevServerRuntime.stop', async () => {
     const stop = vi.fn().mockResolvedValue(undefined);
-    const stopPreview = vi.fn().mockResolvedValue(undefined);
     const app = makeApp({
       getDevServerRuntime: () => ({ stop }),
-      getPreviewRuntime: () => ({ stopPreview }),
-      getPreviewComposeRuntime: () => ({ stopPreview }),
     });
     await request(app).post('/api/projects/proj-a/previews/g-dev/stop').expect(200);
     expect(stop).toHaveBeenCalledWith('g-dev');
-    expect(stopPreview).not.toHaveBeenCalled();
   });
 
   it('purge routes a dev-server group to DevServerRuntime.stop', async () => {
@@ -101,7 +94,7 @@ describe('preview instances routes', () => {
   });
 
   it('reports a 500 rather than a silent success when no dev-server runtime is wired', async () => {
-    const app = makeApp({ getPreviewRuntime: () => ({ stopPreview: vi.fn() }) });
+    const app = makeApp({});
     const res = await request(app).post('/api/projects/proj-a/previews/g-dev/stop').expect(500);
     expect(res.body.error).toMatch(/Dev server runtime is not available/);
   });
