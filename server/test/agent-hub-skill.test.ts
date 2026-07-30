@@ -6,7 +6,7 @@
  * below was previously a standalone file:
  *
  *   agent-hub-skill-coverage.test.ts        — required-surface markers in skill markdown
- *   agent-hub-skill-distribution.test.ts    — scripts/ executable bits + cpSync sync path
+ *   agent-hub-skill-distribution.test.ts    — scripts/ executable bits
  *   agent-hub-skill-evals.test.ts           — eval JSON shape + run.mjs --dry-run
  *   agent-hub-skill-no-prod-infra.test.ts   — forbidden production-infrastructure strings
  *   agent-hub-skill-shape.test.ts           — SKILL.md frontmatter + body invariants
@@ -35,10 +35,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
 const DEFAULT_SKILL_DIR = path.join(DEFAULT_SKILLS_DIR, 'agent-hub');
-const PLUGIN_SKILL_DIR = path.join(__dirname, '..', '..', 'plugin', 'skills', 'agent-hub');
-const PLUGIN_ROOT = path.join(__dirname, '..', '..', 'plugin');
 const DEFAULT_EVALS = path.join(DEFAULT_SKILL_DIR, 'evals');
-const PLUGIN_EVALS = path.join(PLUGIN_SKILL_DIR, 'evals');
 
 // Domain sub-skills introduced by the agent-hub skill split. The core
 // `agent-hub` skill is the navigational entry point; each sub-skill owns
@@ -177,14 +174,6 @@ describe('agent-hub skill — required surface coverage', () => {
     assertAllMarkersPresent(family, 'default-skills family');
   });
 
-  it('plugin/skills/agent-hub/ mentions every required surface (if shipped)', () => {
-    if (!existsSync(PLUGIN_SKILL_DIR)) return;
-    // Plugin still ships the legacy monolithic agent-hub skill. Scan
-    // just that dir for now — when the plugin mirror gets the same
-    // split, change this to scan the family.
-    assertAllMarkersPresent([PLUGIN_SKILL_DIR], 'plugin skill');
-  });
-
   it('coverage markers are specific enough to fail on accidental deletion', () => {
     const minimalCorpus = '---\nname: agent-hub\n---\n# Just a title\n';
     const missing = REQUIRED_MARKERS.filter(({ patterns }) =>
@@ -201,47 +190,22 @@ describe('agent-hub skill — required surface coverage', () => {
 const STRUCTURE_DIRS = ['scripts', 'references', 'evals'] as const;
 
 describe('agent-hub skill — distribution integrity', () => {
-  it.each([
-    ['default-skills', DEFAULT_SKILL_DIR],
-    ['plugin mirror', PLUGIN_SKILL_DIR],
-  ])('%s ships the full structure (scripts/, references/, evals/)', (label, dir) => {
-    if (label === 'plugin mirror' && !existsSync(dir)) return;
+  it('default-skills ships the full structure (scripts/, references/, evals/)', () => {
+    const label = 'default-skills';
+    const dir = DEFAULT_SKILL_DIR;
     for (const sub of STRUCTURE_DIRS) {
       expect(existsSync(path.join(dir, sub)), `${label}: ${sub}/ missing from ${dir}`).toBe(true);
     }
   });
 
-  it.each([
-    ['default-skills', DEFAULT_SKILL_DIR],
-    ['plugin mirror', PLUGIN_SKILL_DIR],
-  ])('%s ships every scripts/*.sh with the executable bit set', (label, dir) => {
-    if (label === 'plugin mirror' && !existsSync(dir)) return;
+  it('default-skills ships every scripts/*.sh with the executable bit set', () => {
+    const label = 'default-skills';
+    const dir = DEFAULT_SKILL_DIR;
     const scriptsDir = path.join(dir, 'scripts');
     const scripts = readdirSync(scriptsDir).filter((f) => f.endsWith('.sh'));
     expect(scripts.length, `${label}: scripts/ is empty`).toBeGreaterThan(0);
     for (const name of scripts) {
       assertExecutable(path.join(scriptsDir, name), label);
-    }
-  });
-
-  it('cpSync (the plugin sync path) preserves executable bits end-to-end', () => {
-    if (!existsSync(PLUGIN_ROOT)) return;
-    const tmpDest = path.join(os.tmpdir(), `agent-hub-skill-sync-${Date.now()}`);
-    try {
-      mkdirSync(tmpDest, { recursive: true });
-      cpSync(PLUGIN_ROOT, tmpDest, { recursive: true });
-      const copiedScripts = path.join(tmpDest, 'skills', 'agent-hub', 'scripts');
-      expect(
-        existsSync(copiedScripts),
-        `sync destination is missing skills/agent-hub/scripts/`,
-      ).toBe(true);
-      const scripts = readdirSync(copiedScripts).filter((f) => f.endsWith('.sh'));
-      expect(scripts.length, 'sync destination scripts/ is empty').toBeGreaterThan(0);
-      for (const name of scripts) {
-        assertExecutable(path.join(copiedScripts, name), 'sync destination');
-      }
-    } finally {
-      rmSync(tmpDest, { recursive: true, force: true });
     }
   });
 
@@ -386,25 +350,6 @@ describe('agent-hub skill — evals harness', () => {
   it('default-skills/agent-hub/evals ships a runnable run.mjs', () => {
     assertRunnerShape(DEFAULT_EVALS, 'default-skills');
   });
-
-  it('plugin/skills/agent-hub/evals stays in sync with default-skills', () => {
-    if (!existsSync(PLUGIN_EVALS)) return;
-    assertEvalShape(PLUGIN_EVALS, 'plugin');
-    assertRunnerShape(PLUGIN_EVALS, 'plugin');
-
-    const defaults = readdirSync(DEFAULT_EVALS)
-      .filter((f) => f.endsWith('.json'))
-      .sort();
-    const plugins = readdirSync(PLUGIN_EVALS)
-      .filter((f) => f.endsWith('.json'))
-      .sort();
-    expect(plugins, 'plugin evals list mismatch vs default-skills').toEqual(defaults);
-    for (const name of defaults) {
-      const a = readFileSync(path.join(DEFAULT_EVALS, name), 'utf8');
-      const b = readFileSync(path.join(PLUGIN_EVALS, name), 'utf8');
-      expect(a, `plugin/skills/agent-hub/evals/${name} diverges from default-skills`).toBe(b);
-    }
-  });
 });
 
 // =====================================================================
@@ -453,15 +398,6 @@ describe('agent-hub skill — no production infrastructure leaks', () => {
     expect(
       hits,
       `Forbidden strings found in default-skills:\n${JSON.stringify(hits, null, 2)}`,
-    ).toEqual([]);
-  });
-
-  it('plugin/skills/agent-hub/ contains no forbidden strings (if shipped)', () => {
-    if (!existsSync(PLUGIN_SKILL_DIR)) return;
-    const hits = scanSkillDir(PLUGIN_SKILL_DIR);
-    expect(
-      hits,
-      `Forbidden strings found in plugin skill:\n${JSON.stringify(hits, null, 2)}`,
     ).toEqual([]);
   });
 
@@ -618,13 +554,6 @@ describe('agent-hub SKILL.md — discovery rewrite shape', () => {
 
   it('default-skills/agent-hub ships all referenced references/*.md', () => {
     assertReferencesPresent(DEFAULT_SKILL_DIR, 'default-skills');
-  });
-
-  it('plugin/skills/agent-hub stays in sync (shape)', () => {
-    if (!existsSync(PLUGIN_SKILL_DIR)) return;
-    assertSkillShape(PLUGIN_SKILL_DIR, 'plugin skill');
-    assertScriptsPresent(PLUGIN_SKILL_DIR, 'plugin skill');
-    assertReferencesPresent(PLUGIN_SKILL_DIR, 'plugin skill');
   });
 });
 

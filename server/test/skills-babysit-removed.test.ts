@@ -6,7 +6,6 @@ import type supertest from 'supertest';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
-const PLUGIN_SKILLS_DIR = path.join(__dirname, '..', '..', 'plugin', 'skills');
 
 let request: supertest.Agent;
 
@@ -17,13 +16,6 @@ beforeAll(async () => {
 describe('babysit skill deprecation', () => {
   it('default-skills/ no longer ships a babysit directory', () => {
     expect(existsSync(path.join(DEFAULT_SKILLS_DIR, 'babysit'))).toBe(false);
-  });
-
-  it('plugin/skills/ no longer ships a babysit directory', () => {
-    // plugin dir is optional, but if present it also must not contain babysit
-    if (existsSync(PLUGIN_SKILLS_DIR)) {
-      expect(existsSync(path.join(PLUGIN_SKILLS_DIR, 'babysit'))).toBe(false);
-    }
   });
 
   it('GET /api/agents/:agentId/skills does not return babysit', async () => {

@@ -8,8 +8,8 @@ import { removeSkillFromClaude, syncSkillsToClaude } from './routes/skills.js';
  * removeSkillFromClaude is the delete-side inverse of syncSkillsToClaude. Since
  * the sync is purely additive (cpSync on top, never prunes), a deleted global
  * skill would linger in Claude's native skill targets until restart — so delete
- * must actively remove from both the plugin target and the flat commands
- * fallback. These tests pin that behavior under a throwaway HOME.
+ * must actively remove it from the plugin target. These tests pin that
+ * behavior under a throwaway HOME.
  */
 describe('removeSkillFromClaude', () => {
   let tmpHome: string;
@@ -43,16 +43,6 @@ describe('removeSkillFromClaude', () => {
 
     removeSkillFromClaude('gone');
     expect(existsSync(pluginSkillDir)).toBe(false);
-  });
-
-  it('removes the flat commands fallback file', () => {
-    const commandsDir = path.join(tmpHome, '.claude', 'commands');
-    mkdirSync(commandsDir, { recursive: true });
-    const commandFile = path.join(commandsDir, 'flatskill.md');
-    writeFileSync(commandFile, '# flat');
-
-    removeSkillFromClaude('flatskill');
-    expect(existsSync(commandFile)).toBe(false);
   });
 
   it('is a no-op (no throw) when the skill is not present', () => {
@@ -99,7 +89,7 @@ describe('native-target tier precedence when a global skill changes', () => {
     return dir;
   }
 
-  /** Read whichever native target syncSkillsToClaude wrote to (plugin or flat). */
+  /** Read the native plugin target syncSkillsToClaude writes to. */
   function nativeSkillContent(id: string): string | null {
     const pluginMd = path.join(
       tmpHome,
@@ -112,8 +102,6 @@ describe('native-target tier precedence when a global skill changes', () => {
       'SKILL.md',
     );
     if (existsSync(pluginMd)) return readFileSync(pluginMd, 'utf-8');
-    const flat = path.join(tmpHome, '.claude', 'commands', `${id}.md`);
-    if (existsSync(flat)) return readFileSync(flat, 'utf-8');
     return null;
   }
 

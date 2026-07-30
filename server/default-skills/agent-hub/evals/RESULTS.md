@@ -64,7 +64,7 @@ Should-not-fire matrix (anti-trigger — skill must stay out of the way):
 ## Shape validation
 
 The structural side of the harness — eval JSON shape, runner executability,
-plugin/default-skills parity — is validated in CI by
+Bundled skill structure — is validated in CI by
 `server/test/agent-hub-skill-evals.test.ts`. Green CI means the evals are
 ready to run; it does **not** mean the model responses pass.
 

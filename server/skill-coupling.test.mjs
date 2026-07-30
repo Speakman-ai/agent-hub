@@ -9,23 +9,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT_PATH = path.resolve(
-  __dirname,
-  '..',
-  '.github',
-  'scripts',
-  'skill-coupling.mjs',
-);
-const CONFIG_PATH = path.resolve(
-  __dirname,
-  '..',
-  '.github',
-  'skill-coupling.yml',
-);
+const SCRIPT_PATH = path.resolve(__dirname, '..', '.github', 'scripts', 'skill-coupling.mjs');
+const CONFIG_PATH = path.resolve(__dirname, '..', '.github', 'skill-coupling.yml');
 
 const mod = await import(SCRIPT_PATH);
-const { parseCouplingYaml, globToRegex, matchesAny, evaluateCoupling, formatFailureMessage } =
-  mod;
+const { parseCouplingYaml, globToRegex, matchesAny, evaluateCoupling, formatFailureMessage } = mod;
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const CONFIG_TEXT = readFileSync(CONFIG_PATH, 'utf8');
@@ -61,13 +49,8 @@ describe('parseCouplingYaml', () => {
     }
   });
 
-  it('includes both the plugin and default-skills SKILL.md locations', () => {
-    expect(SHIPPED_CONFIG.skill_doc_paths).toContain(
-      'plugin/skills/agent-hub/SKILL.md',
-    );
-    expect(SHIPPED_CONFIG.skill_doc_paths).toContain(
-      'server/default-skills/agent-hub/SKILL.md',
-    );
+  it('includes the default-skills SKILL.md location', () => {
+    expect(SHIPPED_CONFIG.skill_doc_paths).toContain('server/default-skills/agent-hub/SKILL.md');
   });
 
   it('ignores comments and blank lines', () => {
@@ -85,9 +68,7 @@ items:
   });
 
   it('strips surrounding quotes on scalar values', () => {
-    expect(parseCouplingYaml('label: "skill-freeze-override"').label).toBe(
-      'skill-freeze-override',
-    );
+    expect(parseCouplingYaml('label: "skill-freeze-override"').label).toBe('skill-freeze-override');
     expect(parseCouplingYaml("label: 'x'").label).toBe('x');
   });
 });
@@ -204,16 +185,13 @@ describe('evaluateCoupling', () => {
 
   it('passes when card-auto-close.ts change is accompanied by a SKILL.md touch', () => {
     const result = evaluateCoupling({
-      changedFiles: [
-        'server/card-auto-close.ts',
-        'plugin/skills/agent-hub/SKILL.md',
-      ],
+      changedFiles: ['server/card-auto-close.ts', 'server/default-skills/agent-hub/SKILL.md'],
       labels: [],
       config,
     });
     expect(result.ok).toBe(true);
     expect(result.reason).toBe('skill-doc-touched');
-    expect(result.matchedDoc).toContain('plugin/skills/agent-hub/SKILL.md');
+    expect(result.matchedDoc).toContain('server/default-skills/agent-hub/SKILL.md');
   });
 
   it('accepts a references/ file as satisfying the coupling', () => {
@@ -276,9 +254,7 @@ describe('evaluateCoupling', () => {
         labels: [],
         config,
       });
-      expect(result.matchedCoupled, `pattern ${p} should self-match`).toEqual([
-        p,
-      ]);
+      expect(result.matchedCoupled, `pattern ${p} should self-match`).toEqual([p]);
     }
   });
 });
@@ -293,7 +269,7 @@ describe('formatFailureMessage', () => {
     const msg = formatFailureMessage(result, SHIPPED_CONFIG);
     expect(msg).toContain('server/card-auto-close.ts');
     expect(msg).toContain('server/users-store.ts');
-    expect(msg).toContain('plugin/skills/agent-hub/SKILL.md');
+    expect(msg).toContain('server/default-skills/agent-hub/SKILL.md');
     expect(msg).toContain('skill-freeze-override');
     expect(msg).toContain('.github/skill-coupling.yml');
   });

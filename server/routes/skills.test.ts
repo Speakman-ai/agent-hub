@@ -28,9 +28,14 @@ describe('syncSkillsToClaude', () => {
     // Drop a fake-skill/SKILL.md into the simulated project skillsDir.
     const fakeSkillDir = path.join(extraSkillsDir, 'fake-skill');
     mkdirSync(fakeSkillDir, { recursive: true });
+    mkdirSync(path.join(fakeSkillDir, 'scripts'), { recursive: true });
     writeFileSync(
       path.join(fakeSkillDir, 'SKILL.md'),
       '---\nname: fake-skill\ndescription: regression guard\ncategory: test\n---\nbody\n',
+    );
+    writeFileSync(
+      path.join(fakeSkillDir, 'scripts', 'probe.sh'),
+      '#!/usr/bin/env bash\necho probe\n',
     );
 
     originalHome = process.env.HOME;
@@ -52,31 +57,21 @@ describe('syncSkillsToClaude', () => {
   it('registers a project-scoped skill with the Claude Code CLI', () => {
     syncSkillsToClaude([extraSkillsDir]);
 
-    // In plugin mode (plugin/ exists in the repo), the target is
-    // ~/.claude/plugins/local/agent-hub-skills/skills/<skill>/SKILL.md.
-    // In fallback mode, the target is ~/.claude/commands/<skill>.md.
-    // The function handles whichever applies — accept either shape here
-    // so the test works regardless of the checkout state.
-    const pluginPath = path.join(
-      fakeHome,
-      '.claude',
-      'plugins',
-      'local',
-      'agent-hub-skills',
-      'skills',
-      'fake-skill',
-      'SKILL.md',
+    // Skills always land in the Claude plugin target, even when the server
+    // is running from a checkout that has no repository plugin scaffold.
+    const pluginRoot = path.join(fakeHome, '.claude', 'plugins', 'local', 'agent-hub-skills');
+    const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
+    const pluginPath = path.join(pluginRoot, 'skills', 'fake-skill', 'SKILL.md');
+    expect(existsSync(manifestPath)).toBe(true);
+    expect(JSON.parse(readFileSync(manifestPath, 'utf-8'))).toMatchObject({
+      name: 'agent-hub-skills',
+      version: '1.0.0',
+    });
+    expect(existsSync(pluginPath)).toBe(true);
+    expect(existsSync(path.join(pluginRoot, 'skills', 'fake-skill', 'scripts', 'probe.sh'))).toBe(
+      true,
     );
-    const commandsPath = path.join(fakeHome, '.claude', 'commands', 'fake-skill.md');
-
-    const landedAtPlugin = existsSync(pluginPath);
-    const landedAtCommands = existsSync(commandsPath);
-    expect(
-      landedAtPlugin || landedAtCommands,
-      `fake-skill missing from both\n  plugin: ${pluginPath}\n  commands: ${commandsPath}`,
-    ).toBe(true);
-
-    const body = readFileSync(landedAtPlugin ? pluginPath : commandsPath, 'utf-8');
+    const body = readFileSync(pluginPath, 'utf-8');
     expect(body).toContain('name: fake-skill');
     expect(body).toContain('regression guard');
   });

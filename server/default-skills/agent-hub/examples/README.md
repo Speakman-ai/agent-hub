@@ -6,11 +6,11 @@ reference under [`../references/`](../references/) for full API surface; come
 here when you want to see the exact script calls in sequence with their
 expected output.
 
-| File                                 | Scenario                                              |
-| ------------------------------------ | ----------------------------------------------------- |
-| [create-ticket-from-bug-report.md](create-ticket-from-bug-report.md) | User drops a bug report → triage into a kanban card   |
-| [post-heartbeat-summary.md](post-heartbeat-summary.md)               | End-of-heartbeat summary: log findings + drop cards   |
-| [search-and-link-wiki-page.md](search-and-link-wiki-page.md)         | FTS5 wiki search + link page into a card comment      |
+| File                                                                 | Scenario                                            |
+| -------------------------------------------------------------------- | --------------------------------------------------- |
+| [create-ticket-from-bug-report.md](create-ticket-from-bug-report.md) | User drops a bug report → triage into a kanban card |
+| [post-heartbeat-summary.md](post-heartbeat-summary.md)               | End-of-heartbeat summary: log findings + drop cards |
+| [search-and-link-wiki-page.md](search-and-link-wiki-page.md)         | FTS5 wiki search + link page into a card comment    |
 | [move-card-through-workflow.md](move-card-through-workflow.md)       | Walk a card To Do → In Progress (merge writes Done) |
 
 ## Conventions used in these examples
@@ -22,8 +22,9 @@ expected output.
   by `scripts/ah-api.sh` (checks env, then the on-disk Owner key).
 - Expected output blocks abbreviate long fields (IDs, timestamps) with `…` —
   your real responses will contain full UUIDs and ISO-8601 timestamps.
-- All `scripts/…` paths are relative to `plugin/skills/agent-hub/`. If you're
-  running from the project root, prefix with `plugin/skills/agent-hub/`.
+- All `scripts/…` paths are relative to `server/default-skills/agent-hub/`. If
+  you're running from the project root, prefix with
+  `server/default-skills/agent-hub/`.
 
 ## Running an example end-to-end
 

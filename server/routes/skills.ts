@@ -42,7 +42,22 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
-const PLUGIN_DIR = path.join(__dirname, '..', '..', 'plugin');
+
+const CLAUDE_PLUGIN_MANIFEST =
+  JSON.stringify(
+    {
+      name: 'agent-hub-skills',
+      version: '1.0.0',
+      description:
+        'Agent Hub platform skills — kanban boards, wiki search, git worktrees, and platform API knowledge for AI agents running on Agent Hub',
+      author: {
+        name: 'Agent Hub',
+        email: 'support@agenthub.dev',
+      },
+    },
+    null,
+    2,
+  ) + '\n';
 
 interface SkillFrontmatter {
   name: string;
@@ -67,8 +82,7 @@ export interface SkillWithSource extends SkillInfo {
 /**
  * Merge-sync skills from DEFAULT_SKILLS_DIR and any extra skill directories
  * (e.g. per-project skillsDir entries) into the Claude Code CLI's
- * `~/.claude/plugins/local/agent-hub-skills` plugin target (or the
- * `~/.claude/commands/` fallback when no plugin scaffolding exists).
+ * `~/.claude/plugins/local/agent-hub-skills` plugin target.
  *
  * Called at server startup with every project's skillsDir so bundled and
  * per-project skills register with the CLI.
@@ -82,52 +96,26 @@ export function syncSkillsToClaude(extraSkillDirs: string[] = []): void {
     const home = process.env.HOME || process.env.USERPROFILE;
     if (!home) return;
 
-    const pluginMode =
-      existsSync(PLUGIN_DIR) && existsSync(path.join(PLUGIN_DIR, '.claude-plugin'));
+    const pluginDest = path.join(home, '.claude', 'plugins', 'local', 'agent-hub-skills');
+    mkdirSync(path.join(pluginDest, '.claude-plugin'), { recursive: true });
+    writeFileSync(path.join(pluginDest, '.claude-plugin', 'plugin.json'), CLAUDE_PLUGIN_MANIFEST);
 
-    if (pluginMode) {
-      const pluginDest = path.join(home, '.claude', 'plugins', 'local', 'agent-hub-skills');
-      mkdirSync(pluginDest, { recursive: true });
-      // 1) Install plugin scaffolding (.claude-plugin/plugin.json + bundled skills).
-      cpSync(PLUGIN_DIR, pluginDest, { recursive: true });
-
-      // 2) Merge-sync DEFAULT_SKILLS_DIR + extras into <pluginDest>/skills.
-      const skillsTarget = path.join(pluginDest, 'skills');
-      mkdirSync(skillsTarget, { recursive: true });
-      const sources = [DEFAULT_SKILLS_DIR, ...extraSkillDirs].filter((d) => !!d && existsSync(d));
-      let merged = 0;
-      for (const src of sources) {
-        for (const entry of readdirSync(src, { withFileTypes: true })) {
-          if (!entry.isDirectory()) continue;
-          const skillSrc = path.join(src, entry.name);
-          if (!existsSync(path.join(skillSrc, 'SKILL.md'))) continue;
-          cpSync(skillSrc, path.join(skillsTarget, entry.name), { recursive: true });
-          merged++;
-        }
-      }
-      console.log(
-        `[skills] Installed agent-hub-skills plugin to ${pluginDest} (+${merged} merged from ${sources.length} source(s))`,
-      );
-      return;
-    }
-
-    // Fallback: flat commands dir — one SKILL.md per skill name.
-    const commandsDir = path.join(home, '.claude', 'commands');
+    const skillsTarget = path.join(pluginDest, 'skills');
+    mkdirSync(skillsTarget, { recursive: true });
     const sources = [DEFAULT_SKILLS_DIR, ...extraSkillDirs].filter((d) => !!d && existsSync(d));
-    if (sources.length === 0) return;
-    mkdirSync(commandsDir, { recursive: true });
-    let count = 0;
+    let merged = 0;
     for (const src of sources) {
       for (const entry of readdirSync(src, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        const skillMd = path.join(src, entry.name, 'SKILL.md');
-        if (!existsSync(skillMd)) continue;
-        const dest = path.join(commandsDir, entry.name + '.md');
-        writeFileSync(dest, readFileSync(skillMd, 'utf-8'));
-        count++;
+        const skillSrc = path.join(src, entry.name);
+        if (!existsSync(path.join(skillSrc, 'SKILL.md'))) continue;
+        cpSync(skillSrc, path.join(skillsTarget, entry.name), { recursive: true });
+        merged++;
       }
     }
-    console.log(`[skills] Synced ${count} skills to ${commandsDir}`);
+    console.log(
+      `[skills] Installed agent-hub-skills plugin to ${pluginDest} (+${merged} merged from ${sources.length} source(s))`,
+    );
   } catch (e) {
     console.warn('[skills] Failed to sync skills:', (e as Error).message);
   }
@@ -140,9 +128,9 @@ export function syncSkillsToClaude(extraSkillDirs: string[] = []): void {
  *
  * This is the inverse of {@link syncSkillsToClaude}, which is purely additive
  * (`cpSync` on top) and therefore can NOT prune a deleted skill — so delete
- * needs its own targeted removal rather than a re-sync. Removes both the
- * plugin-mode target (`~/.claude/plugins/local/agent-hub-skills/skills/<id>`)
- * and the flat commands fallback (`~/.claude/commands/<id>.md`). Best-effort.
+ * needs its own targeted removal rather than a re-sync. Removes the
+ * plugin target (`~/.claude/plugins/local/agent-hub-skills/skills/<id>`).
+ * Best-effort.
  */
 export function removeSkillFromClaude(skillId: string): void {
   // TODO(skill-gateway): remove after one release once no active sessions rely on the native Skill tool.
@@ -159,8 +147,6 @@ export function removeSkillFromClaude(skillId: string): void {
       skillId,
     );
     if (existsSync(pluginSkillDir)) rmSync(pluginSkillDir, { recursive: true, force: true });
-    const commandFile = path.join(home, '.claude', 'commands', `${skillId}.md`);
-    if (existsSync(commandFile)) rmSync(commandFile, { force: true });
   } catch (e) {
     console.warn('[skills] Failed to remove skill from Claude:', (e as Error).message);
   }

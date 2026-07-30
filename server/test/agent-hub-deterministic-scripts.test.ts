@@ -34,7 +34,6 @@ function spawnAsync(
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SCRIPTS = path.join(__dirname, '..', 'default-skills', 'agent-hub', 'scripts');
-const PLUGIN_SCRIPTS = path.join(__dirname, '..', '..', 'plugin', 'skills', 'agent-hub', 'scripts');
 
 /**
  * Shape guards for the deterministic script wrappers added alongside the
@@ -111,10 +110,7 @@ function runScript(
 }
 
 describe('agent-hub deterministic script wrappers — shape', () => {
-  describe.each([
-    ['default-skills', DEFAULT_SCRIPTS],
-    ['plugin mirror', PLUGIN_SCRIPTS],
-  ])('%s', (_label, dir) => {
+  describe.each([['default-skills', DEFAULT_SCRIPTS]])('%s', (_label, dir) => {
     it('scripts/ directory exists', () => {
       expect(existsSync(dir)).toBe(true);
     });
@@ -229,7 +225,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
   // --epic-id is provided. Pinning the contract at the source level protects
   // future edits from silently re-introducing the bug.
   describe('kanban-create-card.sh source invariants', () => {
-    it.each([DEFAULT_SCRIPTS, PLUGIN_SCRIPTS])(
+    it.each([DEFAULT_SCRIPTS])(
       'chains POST /board/cards/:id/epic when --epic-id is set (%s)',
       (dir) => {
         const src = readFileSync(path.join(dir, 'kanban-create-card.sh'), 'utf8');
@@ -245,10 +241,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     const hasPython = spawnSync('python3', ['--version']).status === 0;
     const fn = hasPython ? it : it.skip;
 
-    for (const [label, dir] of [
-      ['default-skills', DEFAULT_SCRIPTS],
-      ['plugin mirror', PLUGIN_SCRIPTS],
-    ] as const) {
+    for (const [label, dir] of [['default-skills', DEFAULT_SCRIPTS]] as const) {
       fn(
         `returns the selected template JSON (${label})`,
         async () => {
@@ -303,10 +296,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     const hasPython = spawnSync('python3', ['--version']).status === 0;
     const fn = hasPython ? it : it.skip;
 
-    for (const [label, dir] of [
-      ['default-skills', DEFAULT_SCRIPTS],
-      ['plugin mirror', PLUGIN_SCRIPTS],
-    ] as const) {
+    for (const [label, dir] of [['default-skills', DEFAULT_SCRIPTS]] as const) {
       fn(
         `honors explicit --priority medium over template priority (${label})`,
         async () => {
@@ -491,19 +481,16 @@ describe('agent-hub deterministic script wrappers — shape', () => {
   // ignores any body slug field. The wrapper must validate slug/title
   // agreement up-front so callers don't silently land on the wrong slug.
   describe('wiki-upsert.sh source invariants', () => {
-    it.each([DEFAULT_SCRIPTS, PLUGIN_SCRIPTS])(
-      'does NOT send "slug" in the POST body (%s)',
-      (dir) => {
-        const src = readFileSync(path.join(dir, 'wiki-upsert.sh'), 'utf8');
-        // The payload dict in the embedded python block must not have a
-        // "slug" key — server ignores it anyway and its presence creates
-        // the false impression that the caller can pin the slug.
-        expect(src).not.toMatch(/"slug":\s*os\.environ\["AH_SLUG"\]/);
-        // And the validation must run (slugify mirror + exit 2).
-        expect(src).toMatch(/def slugify/);
-        expect(src).toMatch(/slug\/title mismatch/);
-      },
-    );
+    it.each([DEFAULT_SCRIPTS])('does NOT send "slug" in the POST body (%s)', (dir) => {
+      const src = readFileSync(path.join(dir, 'wiki-upsert.sh'), 'utf8');
+      // The payload dict in the embedded python block must not have a
+      // "slug" key — server ignores it anyway and its presence creates
+      // the false impression that the caller can pin the slug.
+      expect(src).not.toMatch(/"slug":\s*os\.environ\["AH_SLUG"\]/);
+      // And the validation must run (slugify mirror + exit 2).
+      expect(src).toMatch(/def slugify/);
+      expect(src).toMatch(/slug\/title mismatch/);
+    });
   });
 
   describe('wiki-upsert.sh slug validation (mock server)', () => {

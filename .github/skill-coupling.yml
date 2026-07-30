@@ -31,8 +31,6 @@ coupled_paths:
 # Any change that touches at least one of these "satisfies" the coupling.
 # Accepts the top-level SKILL.md or a one-level-deep file under references/.
 skill_doc_paths:
-  - plugin/skills/agent-hub/SKILL.md
-  - plugin/skills/agent-hub/references/*
   - server/default-skills/agent-hub/SKILL.md
   - server/default-skills/agent-hub/references/*
 

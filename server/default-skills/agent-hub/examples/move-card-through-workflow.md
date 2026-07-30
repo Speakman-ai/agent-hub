@@ -76,14 +76,19 @@ Expected output:
 ```bash
 PROJECT_ID=agent-hub scripts/board.sh comment "$CARD_ID" '{
   "author": "agent-hub-backend",
-  "content": "Drafted the five example files under plugin/skills/agent-hub/examples/. Running through each to confirm the copy-paste snippets work against a live instance."
+  "content": "Drafted the five example files under server/default-skills/agent-hub/examples/. Running through each to confirm the copy-paste snippets work against a live instance."
 }'
 ```
 
 Expected output:
 
 ```json
-{"id":"c4a1…","card_id":"a3f8c1e9-…","author":"agent-hub-backend","created_at":"2026-04-19T05:42:11.000Z"}
+{
+  "id": "c4a1…",
+  "card_id": "a3f8c1e9-…",
+  "author": "agent-hub-backend",
+  "created_at": "2026-04-19T05:42:11.000Z"
+}
 ```
 
 ### 5. Open a PR → move **In Progress → Review**
@@ -119,7 +124,10 @@ lands (finalize post-push detach / PR card-on-merge). A premature
 has not pushed yet is rejected:
 
 ```json
-{"error":"premature_done_move","message":"Done is written on merge for Finalize-gated sessions. …"}
+{
+  "error": "premature_done_move",
+  "message": "Done is written on merge for Finalize-gated sessions. …"
+}
 ```
 
 Leave the card in In Progress and comment instead:
@@ -136,11 +144,11 @@ PROJECT_ID=agent-hub scripts/board.sh comment "$CARD_ID" '{
 If you realize the work is already done or duplicates another card, don't
 just park the card — end your turn with the close-card block instead:
 
-````markdown
+```markdown
 <agenthub:close-card>
 {"reason": "duplicate", "note": "Covered by card 5c8f2a — see PR #313.", "duplicateOfCardId": "5c8f2a-…"}
 </agenthub:close-card>
-````
+```
 
 The server moves the **session-linked** card to Done and appends an
 explanatory comment. Requires step 2 (`session_id` patched onto the card).

@@ -15,16 +15,6 @@ const DEFAULT_SKILL = path.join(
   'references',
   'kanban.md',
 );
-const PLUGIN_SKILL = path.join(
-  __dirname,
-  '..',
-  '..',
-  'plugin',
-  'skills',
-  'agent-hub-kanban',
-  'references',
-  'kanban.md',
-);
 
 /**
  * Coverage guard for the `agent-hub-kanban` skill.
@@ -90,16 +80,6 @@ describe('agent-hub-kanban skill documents card blockers', () => {
   it('default-skills/agent-hub-kanban/references/kanban.md covers every blocker surface', () => {
     expect(existsSync(DEFAULT_SKILL)).toBe(true);
     assertAllMarkersPresent(DEFAULT_SKILL, 'default-skills/agent-hub-kanban/references/kanban.md');
-  });
-
-  it('plugin/skills/agent-hub-kanban/references/kanban.md stays byte-identical to default-skills', () => {
-    if (!existsSync(PLUGIN_SKILL)) return;
-    const a = readFileSync(DEFAULT_SKILL, 'utf8');
-    const b = readFileSync(PLUGIN_SKILL, 'utf8');
-    expect(
-      b,
-      'plugin/skills/agent-hub-kanban/references/kanban.md diverges from default-skills — re-run the copy',
-    ).toBe(a);
   });
 
   it('markers are specific enough to fail on accidental deletion', () => {
