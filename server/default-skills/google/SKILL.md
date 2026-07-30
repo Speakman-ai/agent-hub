@@ -70,7 +70,7 @@ scripts/google-sheets.sh append <spreadsheetId> --range Sheet1!A1 --values '[["N
 scripts/google-sheets.sh update <spreadsheetId> --range Sheet1!A1:B2 --values '[["a",1],["b",2]]' [--input-option RAW]
 
 # Drive / Docs
-scripts/google-drive.sh list [--q TEXT] [--page-size N] [--page-token TOKEN] [--order-by TEXT]
+scripts/google-drive.sh list [--q TEXT] [--page-size N] [--page-token TOKEN] [--order-by TEXT] [--drive-id ID]
 scripts/google-drive.sh get  <fileId>
 scripts/google-drive.sh save --file ./report.pdf [--name "Report.pdf"] [--mime-type application/pdf] [--folder-id ID]
 scripts/google-drive.sh save --file ./notes.txt --as-doc [--name "Notes"] [--mime-type text/plain]

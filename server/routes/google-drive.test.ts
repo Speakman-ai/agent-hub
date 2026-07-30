@@ -115,7 +115,6 @@ describe('Google Drive proxy routes', () => {
         pageSize: 10,
         orderBy: 'modifiedTime desc',
         spaces: 'drive',
-        corpora: 'user',
       }),
     );
     expect(res.body).toEqual({
@@ -151,6 +150,38 @@ describe('Google Drive proxy routes', () => {
     expect(arg.spaces).toBe('drive');
   });
 
+  it('GET /files includes shared drive items', async () => {
+    googleMock.files.list.mockResolvedValue({ data: { files: [] } });
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const res = await request(app).get('/api/google/drive/files');
+
+    expect(res.status).toBe(200);
+    expect(googleMock.files.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        corpora: 'allDrives',
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
+        driveId: undefined,
+      }),
+    );
+  });
+
+  it('GET /files scopes to one shared drive when driveId is supplied', async () => {
+    googleMock.files.list.mockResolvedValue({ data: { files: [] } });
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const res = await request(app).get('/api/google/drive/files').query({ driveId: '0ASharedX' });
+
+    expect(res.status).toBe(200);
+    expect(googleMock.files.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        corpora: 'drive',
+        driveId: '0ASharedX',
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
+      }),
+    );
+  });
+
   it('GET /files/:id reads a single file metadata', async () => {
     googleMock.files.get.mockResolvedValue({
       data: { id: 'f1', name: 'Notes', mimeType: 'application/vnd.google-apps.document' },
@@ -160,7 +191,9 @@ describe('Google Drive proxy routes', () => {
     const res = await request(app).get('/api/google/drive/files/f1');
 
     expect(res.status).toBe(200);
-    expect(googleMock.files.get).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'f1' }));
+    expect(googleMock.files.get).toHaveBeenCalledWith(
+      expect.objectContaining({ fileId: 'f1', supportsAllDrives: true }),
+    );
     expect(res.body).toMatchObject({ id: 'f1', name: 'Notes' });
   });
 
@@ -188,6 +221,8 @@ describe('Google Drive proxy routes', () => {
       expect.objectContaining({
         requestBody: expect.objectContaining({ name: 'notes.md', mimeType: 'text/markdown' }),
         media: expect.objectContaining({ mimeType: 'text/markdown' }),
+        // Without this, creating into a shared drive folder 404s.
+        supportsAllDrives: true,
         fields: expect.stringContaining('webViewLink'),
       }),
     );

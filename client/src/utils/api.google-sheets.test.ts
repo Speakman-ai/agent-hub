@@ -33,6 +33,13 @@ describe('api Google Sheets + Drive helpers', () => {
     expect(init.method ?? 'GET').toBe('GET');
   });
 
+  it('passes driveId through so a shared drive can be searched', async () => {
+    await api.listGoogleDriveFiles({ driveId: '0ASharedX' });
+
+    const [url] = fetchSpy.mock.calls[0];
+    expect(String(url)).toContain('driveId=0ASharedX');
+  });
+
   it('creates Drive or Docs files through the user-scoped proxy', async () => {
     await api.createGoogleDriveFile({
       name: 'Notes',

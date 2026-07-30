@@ -2,6 +2,7 @@
 # google-drive.sh — Google Drive via the Hub proxy (scoped to the session owner).
 #
 #   google-drive.sh list [--q TEXT] [--page-size N] [--page-token TOKEN] [--order-by TEXT]
+#                        [--drive-id ID]
 #   google-drive.sh get  <fileId>
 #   google-drive.sh save --file ./report.pdf [--name "Report.pdf"] [--mime-type application/pdf] \
 #                        [--folder-id ID] [--description TEXT]
@@ -11,6 +12,9 @@
 # metadata JSON, including `webViewLink` when Google returns it. `--as-doc`
 # converts text-like input into a Google Docs file via Drive's Google Workspace
 # MIME conversion path.
+#
+# `list` covers My Drive plus every shared drive the owner belongs to. Pass
+# `--drive-id` to search a single shared drive.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./_common.sh
@@ -20,7 +24,9 @@ GOOGLE_DOC_MIME_TYPE="application/vnd.google-apps.document"
 MAX_UPLOAD_BYTES=$((5 * 1024 * 1024))
 
 usage() {
-  sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # Print the leading comment block after the shebang, so editing the docs
+  # here never desyncs from a hardcoded line range.
+  awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
 }
 
 require_jq_for_write() {
@@ -29,13 +35,14 @@ require_jq_for_write() {
 }
 
 cmd_list() {
-  local q="" page_size="" page_token="" order_by=""
+  local q="" page_size="" page_token="" order_by="" drive_id=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --q) q="${2:-}"; shift 2 ;;
       --page-size) page_size="${2:-}"; shift 2 ;;
       --page-token) page_token="${2:-}"; shift 2 ;;
       --order-by) order_by="${2:-}"; shift 2 ;;
+      --drive-id) drive_id="${2:-}"; shift 2 ;;
       -h | --help) usage; exit 0 ;;
       *) google_usage_die "google-drive list: unknown arg: $1" ;;
     esac
@@ -45,6 +52,7 @@ cmd_list() {
   [[ -n "$page_size" ]] && qs+="${qs:+&}pageSize=$(urlenc "$page_size")"
   [[ -n "$page_token" ]] && qs+="${qs:+&}pageToken=$(urlenc "$page_token")"
   [[ -n "$order_by" ]] && qs+="${qs:+&}orderBy=$(urlenc "$order_by")"
+  [[ -n "$drive_id" ]] && qs+="${qs:+&}driveId=$(urlenc "$drive_id")"
   google_api GET "/api/google/drive/files${qs:+?$qs}"
 }
 

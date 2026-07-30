@@ -25655,9 +25655,17 @@ paths:
           description: Comma-separated sort keys, e.g. `modifiedTime desc`.
           name: orderBy
           in: query
+        - schema:
+            type: string
+            minLength: 1
+            description: Restrict the search to a single shared drive. Omit to search My Drive plus every shared drive the user belongs to.
+          required: false
+          description: Restrict the search to a single shared drive. Omit to search My Drive plus every shared drive the user belongs to.
+          name: driveId
+          in: query
       responses:
         "200":
-          description: Files this app created or that the user opened with it.
+          description: Files this app created or that the user opened with it, across My Drive and shared drives.
           content:
             application/json:
               schema:

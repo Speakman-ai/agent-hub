@@ -19,6 +19,13 @@ import { registerComponent, registerPath, z } from '../openapi/registry.js';
  * The scope gate accepts only `drive.file`. We never grant the restricted
  * scopes, so there is no back-compat case to widen the gate for, and keeping it
  * narrow makes the "no drive.readonly/full" guarantee enforceable in code.
+ *
+ * Every call opts into shared drives (`supportsAllDrives`, plus
+ * `includeItemsFromAllDrives` + a non-`user` corpus on list). Without those,
+ * Drive silently omits anything living in a shared drive, so a user who granted
+ * access to a shared-drive file would still see an empty picker. Listing the
+ * shared drives themselves (`drives.list`) needs a restricted scope, so callers
+ * that want to scope a search pass a `driveId` they already know.
  */
 
 const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
@@ -81,6 +88,10 @@ const ListDriveFilesQuerySchema = z.object({
     description: 'Comma-separated sort keys, e.g. `modifiedTime desc`.',
     example: 'modifiedTime desc',
   }),
+  driveId: z.string().trim().min(1).optional().openapi({
+    description:
+      'Restrict the search to a single shared drive. Omit to search My Drive plus every shared drive the user belongs to.',
+  }),
 });
 
 const DriveFileIdParamsSchema = z.object({
@@ -135,7 +146,8 @@ registerPath({
   request: { query: ListDriveFilesQuerySchema },
   responses: {
     200: {
-      description: 'Files this app created or that the user opened with it.',
+      description:
+        'Files this app created or that the user opened with it, across My Drive and shared drives.',
       content: jsonContent(
         z.object({
           files: z.array(DriveFileSchema),
@@ -431,6 +443,7 @@ export default function createGoogleDriveRoutes(deps: RouteDeps): Router {
           mimeType: decoded.mediaMimeType,
           body: Readable.from(decoded.buffer),
         },
+        supportsAllDrives: true,
         fields: DRIVE_GET_FIELDS,
       });
       return res.json(shapeFile(result.data));
@@ -456,10 +469,14 @@ export default function createGoogleDriveRoutes(deps: RouteDeps): Router {
         pageSize: query.data.pageSize,
         pageToken: query.data.pageToken,
         orderBy: query.data.orderBy,
-        // `user` corpus + the default `drive` space: with drive.file granted,
-        // Drive already restricts results to app-created/opened files.
         spaces: 'drive',
-        corpora: 'user',
+        // Shared-drive items are excluded unless the request opts in on both
+        // flags, and the `user` corpus drops them even with the flags set.
+        // drive.file still narrows the result set to app-created/opened files.
+        corpora: query.data.driveId ? 'drive' : 'allDrives',
+        driveId: query.data.driveId,
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
         fields: DRIVE_LIST_FIELDS,
       });
       return res.json({
@@ -487,6 +504,7 @@ export default function createGoogleDriveRoutes(deps: RouteDeps): Router {
       const drive = createDriveClient(token);
       const result = await drive.files.get({
         fileId: params.data.fileId,
+        supportsAllDrives: true,
         fields: DRIVE_GET_FIELDS,
       });
       return res.json(shapeFile(result.data));

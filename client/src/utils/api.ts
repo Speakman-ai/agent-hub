@@ -568,17 +568,20 @@ export const api = {
     pageSize,
     pageToken,
     orderBy,
+    driveId,
   }: {
     q?: string;
     pageSize?: number;
     pageToken?: string;
     orderBy?: string;
+    driveId?: string;
   } = {}) => {
     const params = new URLSearchParams();
     if (q) params.set('q', q);
     if (pageSize) params.set('pageSize', String(pageSize));
     if (pageToken) params.set('pageToken', pageToken);
     if (orderBy) params.set('orderBy', orderBy);
+    if (driveId) params.set('driveId', driveId);
     const qs = params.toString();
     return fetchJSON(`/google/drive/files${qs ? `?${qs}` : ''}`);
   },

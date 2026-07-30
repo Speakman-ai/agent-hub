@@ -63,7 +63,12 @@ scripts/google-drive.sh list --q "mimeType = 'application/pdf'" --page-size 25 -
 scripts/google-drive.sh get <fileId>
 scripts/google-drive.sh save --file ./report.pdf --name "Report.pdf" --mime-type application/pdf
 scripts/google-drive.sh save --file ./notes.txt --as-doc --name "Notes" --mime-type text/plain
+scripts/google-drive.sh list --drive-id 0AByShared123 --q "name contains 'budget'"
 ```
+
+`list` covers My Drive plus every shared drive the owner belongs to; `--drive-id`
+narrows it to one shared drive. Results stay limited to files the app created or
+the owner opened with it, because the connection only holds `drive.file`.
 
 `save` uploads through the Hub proxy and prints the created file metadata JSON.
 Use `webViewLink` as the link. `--as-doc` creates a Google Docs file using

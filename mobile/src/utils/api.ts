@@ -792,7 +792,7 @@ export const api = {
     }),
     // Drive proxy (user-scoped, drive.file only). Lists and creates
     // app-accessible Drive / Docs files. Tokens stay server-side.
-    listGoogleDriveFiles: ({ q, pageSize, pageToken, orderBy }: any = {}) => {
+    listGoogleDriveFiles: ({ q, pageSize, pageToken, orderBy, driveId }: any = {}) => {
         const params = new URLSearchParams();
         if (q)
             params.set('q', q);
@@ -802,6 +802,8 @@ export const api = {
             params.set('pageToken', pageToken);
         if (orderBy)
             params.set('orderBy', orderBy);
+        if (driveId)
+            params.set('driveId', driveId);
         const qs = params.toString();
         return fetchJSON(`/google/drive/files${qs ? `?${qs}` : ''}`);
     },

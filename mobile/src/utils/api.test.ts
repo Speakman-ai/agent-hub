@@ -343,6 +343,12 @@ describe('api Google connection helpers — mobile parity with web client', () =
         expect(init.method ?? 'GET').toBe('GET');
     });
 
+    it('listGoogleDriveFiles passes driveId through for a shared drive search', async () => {
+        await api.listGoogleDriveFiles({ driveId: '0ASharedX' });
+        const [url] = lastCall();
+        expect(url).toContain('driveId=0ASharedX');
+    });
+
     it('createGoogleDriveFile → POST /google/drive/files with Drive / Docs payload', async () => {
         await api.createGoogleDriveFile({
             name: 'Notes',

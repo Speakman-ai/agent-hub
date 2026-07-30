@@ -372,6 +372,20 @@ describe('google-drive.sh', () => {
     expect(qp.get('orderBy')).toBe('modifiedTime desc');
   });
 
+  it('list --drive-id → scopes the search to one shared drive', () => {
+    const r = run(DRIVE, ['list', '--drive-id', '0ASharedX']);
+    expect(r.status).toBe(0);
+    expect(queryParams(r.log).get('driveId')).toBe('0ASharedX');
+  });
+
+  it('usage lists every list flag', () => {
+    const r = run(DRIVE, ['--help']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('--drive-id');
+    expect(r.stdout).toContain('--order-by');
+    expect(r.stdout).toContain('--as-doc');
+  });
+
   it('save → POST /drive/files with base64 file content', () => {
     const file = path.join(stubDir, 'report.txt');
     writeFileSync(file, 'hello drive\n');
