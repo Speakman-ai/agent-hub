@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { minVersion, satisfies, subset } from 'semver';
+import { major, minVersion, satisfies, subset } from 'semver';
 
 /**
  * Regression guards for PR #272 (security: bump 20 dependencies).
@@ -126,6 +127,29 @@ function packageNameOf(lockKey: string): string {
   return i === -1 ? '' : lockKey.slice(i + 'node_modules/'.length);
 }
 
+/**
+ * npm's nearest-ancestor resolution: a dependency of the package at `fromKey`
+ * resolves to `<fromKey>/node_modules/<dep>` if present, otherwise we walk up
+ * the nesting chain to the lockfile root.
+ */
+function resolveDependency(
+  packages: Record<string, LockEntry>,
+  fromKey: string,
+  dep: string,
+): string | null {
+  let prefix = fromKey;
+  for (;;) {
+    const candidate = `${prefix ? `${prefix}/` : ''}node_modules/${dep}`;
+    if (packages[candidate]) return candidate;
+    if (!prefix) return null;
+    const i = prefix.lastIndexOf('/node_modules/');
+    prefix = i === -1 ? '' : prefix.slice(0, i);
+  }
+}
+
+/** Specifiers that carry no comparable semver range. */
+const NON_REGISTRY_SPEC = /^(npm:|file:|link:|git|https?:)/;
+
 describe('dependency security guards (high-severity advisory floors)', () => {
   /**
    * Advisory floors cleared by the 22-finding audit fix. `line` narrows the
@@ -150,11 +174,21 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     { pkg: 'app-builder-lib', min: '26.15.0', advisory: 'GHSA-7g7r-gx96-252g' },
     // GHSA-p2f4-r6v6-j797: cross-origin redirect leaks Authorization credentials.
     { pkg: 'builder-util-runtime', min: '9.7.0', advisory: 'GHSA-p2f4-r6v6-j797' },
-    // GHSA-mh99-v99m-4gvg: unbounded expansion OOM. Patched only on the 5.x
-    // line, and brace-expansion@3 dropped the callable CJS/default export that
-    // minimatch 3/5/9 rely on -- so the 1.x and 2.x copies under those parents
-    // cannot be forced to 5.x without breaking them at runtime. Guard the 5.x
-    // line only; the older copies are assessed, not fixed.
+    // GHSA-mh99-v99m-4gvg: unbounded expansion OOM. brace-expansion@3 dropped
+    // the callable CJS/default export that minimatch 3/5/9 rely on, so the 1.x
+    // and 2.x copies under those parents can never be forced onto the 5.x line
+    // without breaking them at runtime (see the callability assertion below).
+    // The fix instead rides the maintenance backports -- 1.1.18 and 2.1.4 both
+    // carry the EXPANSION_MAX_LENGTH cap and both sit inside every declared
+    // parent range (^1.1.7, ^2.0.1, ^2.0.2), so no override or parent bump is
+    // needed. Each live line gets its own floor.
+    //
+    // The registry advisory still records the vulnerable range as `<=5.0.7`,
+    // which predates the backports, so `npm audit` keeps reporting the 1.x/2.x
+    // copies. That is stale advisory metadata, not an unpatched dependency --
+    // the behavioural guard further down asserts the installed code is bounded.
+    { pkg: 'brace-expansion', min: '1.1.18', advisory: 'GHSA-mh99-v99m-4gvg', line: '1.x' },
+    { pkg: 'brace-expansion', min: '2.1.4', advisory: 'GHSA-mh99-v99m-4gvg', line: '2.x' },
     { pkg: 'brace-expansion', min: '5.0.8', advisory: 'GHSA-mh99-v99m-4gvg', line: '5.x' },
 
     // --- 33-finding audit (electron / uuid / qs / protobufjs / hono / ...) ---
@@ -227,6 +261,148 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       }
       expect(checked, `expected at least one ${pkg} entry across the lockfiles`).toBeGreaterThan(0);
     });
+  }
+});
+
+/**
+ * Behavioural guard for GHSA-mh99-v99m-4gvg (CVE-2026-14257), the one advisory
+ * whose fix a version floor alone cannot express honestly.
+ *
+ * Two things have to hold at once and they pull in opposite directions:
+ *
+ *   1. Every resolved copy must actually bound expansion output. The bug is a
+ *      pattern of chained brace groups whose *combined length* explodes while
+ *      the result count stays under the pre-existing `EXPANSION_MAX` cap:
+ *      `({a*20000,b*20000}) x 8` is an 0.8 MB pattern that expands to 41 MB on
+ *      1.1.16 / 2.1.2 and is capped at 4 MB on 1.1.18 / 2.1.4 / 5.0.8. The
+ *      registry advisory range (`<=5.0.7`) predates the 1.x/2.x backports and
+ *      still flags them, so npm audit cannot settle this -- running the code
+ *      can.
+ *   2. Copies on the 1.x and 2.x lines must stay callable as a bare CJS export.
+ *      minimatch 3/5/9 do `require('brace-expansion')(pattern)`, while 3.x
+ *      onwards exports `{ expand }`. Forcing those copies to 5.x to satisfy the
+ *      stale advisory range is the obvious "fix" and it breaks every glob in
+ *      the tree at runtime with `expand is not a function`.
+ *
+ * Asserts only on copies whose on-disk version matches what the lockfile
+ * resolved. A missing `node_modules` is a legitimate local state, and a *stale*
+ * one is install drift rather than a lockfile defect -- this repo's own mobile
+ * tree carries copies several patches behind its lock. Either way the lockfile
+ * floors above are the authority on what ships; this block proves the code those
+ * versions actually contain is bounded.
+ */
+describe('brace-expansion bounds expansion length (GHSA-mh99-v99m-4gvg)', () => {
+  const require_ = createRequire(import.meta.url);
+
+  /** 0.8 MB of chained two-option groups: 256 results x 160 KB when unbounded. */
+  const LENGTH_BOMB = `{${'a'.repeat(20000)},${'b'.repeat(20000)}}`.repeat(8);
+  const UNBOUNDED_CHARS = 40_960_000;
+  /** Patched lines cap at EXPANSION_MAX_LENGTH (4 MB); leave headroom for a re-tune. */
+  const MAX_CHARS = 6_000_000;
+
+  /**
+   * Every `brace-expansion` copy that is installed at the version its lockfile
+   * resolved. A version mismatch means the tree predates the lock, so the code
+   * on disk says nothing about what a fresh `npm ci` would install.
+   */
+  function copiesMatchingLock(): Array<{
+    workspace: string;
+    key: string;
+    dir: string;
+    version: string;
+  }> {
+    const found: Array<{ workspace: string; key: string; dir: string; version: string }> = [];
+    for (const { name, lock } of LOCKFILES) {
+      const root = dirname(join(here, lock));
+      for (const [key, meta] of Object.entries(lockPackages(lock))) {
+        if (packageNameOf(key) !== 'brace-expansion' || !meta.version) continue;
+        const manifest = join(root, key, 'package.json');
+        if (!existsSync(manifest)) continue;
+        const installed = (JSON.parse(readFileSync(manifest, 'utf8')) as { version?: string })
+          .version;
+        if (installed !== meta.version) continue;
+        found.push({ workspace: name, key, dir: join(root, key), version: meta.version });
+      }
+    }
+    return found;
+  }
+
+  /**
+   * The callability invariant, asserted from the lockfile so it holds even when
+   * nothing is installed and even if someone adds an `overrides` entry (which
+   * would make the coherence check further down skip brace-expansion entirely).
+   *
+   * A consumer whose declared range admits a pre-3.x version calls the module
+   * object directly. Resolving it onto 3.x+ swaps that for a named `expand`
+   * export and every glob in the tree throws `expand is not a function`.
+   */
+  it('never resolves a pre-3.x consumer onto the named-export line', () => {
+    const violations: string[] = [];
+    let checked = 0;
+    for (const { name, lock } of LOCKFILES) {
+      const packages = lockPackages(lock);
+      for (const [key, entry] of Object.entries(packages)) {
+        const range = entry.dependencies?.['brace-expansion'];
+        if (!range || NON_REGISTRY_SPEC.test(range)) continue;
+        const floor = minVersion(range);
+        if (!floor || major(floor.version) >= 3) continue; // consumer already on the named export
+        checked++;
+        const target = resolveDependency(packages, key, 'brace-expansion');
+        const version = target ? packages[target]?.version : undefined;
+        if (!version) continue;
+        if (major(version) >= 3) {
+          violations.push(
+            `${name}: ${key || '(root)'} declares brace-expansion@${range} but resolved ${version}`,
+          );
+        }
+      }
+    }
+    expect(checked, 'expected at least one pre-3.x brace-expansion consumer').toBeGreaterThan(0);
+    expect(
+      violations,
+      'these consumers call brace-expansion as a bare function; 3.x+ only exports { expand }, ' +
+        'so forcing them up to satisfy the stale GHSA-mh99-v99m-4gvg range breaks globbing at ' +
+        'runtime. Use the 1.1.18 / 2.1.4 backports instead.',
+    ).toEqual([]);
+  });
+
+  const copies = copiesMatchingLock();
+
+  if (copies.length === 0) {
+    it.skip('no brace-expansion copy is installed at its lockfile version (run npm ci --include=dev)', () => {});
+  }
+
+  for (const { workspace, key, dir, version } of copies) {
+    it(`${workspace}: ${key}@${version} caps total expansion length`, () => {
+      const mod = require_(dir) as unknown;
+      const expand = (typeof mod === 'function' ? mod : (mod as { expand?: unknown }).expand) as (
+        pattern: string,
+      ) => string[];
+      expect(typeof expand, `${key} exposes no callable expander`).toBe('function');
+
+      // A neutered expander would trivially satisfy the length cap below.
+      expect(expand('a{b,c}d'), `${key} no longer expands correctly`).toEqual(['abd', 'acd']);
+
+      const chars = expand(LENGTH_BOMB).reduce((n, s) => n + s.length, 0);
+      expect(
+        chars,
+        `${workspace}: ${key}@${version} expanded an 0.8 MB pattern to ${chars} chars ` +
+          `(unbounded is ${UNBOUNDED_CHARS}); it is missing the CVE-2026-14257 length cap`,
+      ).toBeLessThanOrEqual(MAX_CHARS);
+    });
+
+    if (satisfies(version, '1.x || 2.x')) {
+      it(`${workspace}: ${key}@${version} stays callable as a bare CJS export`, () => {
+        // minimatch 3/5/9 call the module object directly. Bumping these copies
+        // onto the 3.x+ `{ expand }` shape to satisfy the stale advisory range
+        // breaks every glob in the tree at runtime.
+        expect(
+          typeof require_(dir),
+          `${key}@${version} must stay callable: its minimatch parent does ` +
+            `require('brace-expansion')(pattern), which the 3.x+ named export breaks`,
+        ).toBe('function');
+      });
+    }
   }
 });
 
@@ -413,26 +589,6 @@ describe('declared Node engines cover every dependency', () => {
  * drift, and that is exactly what this asserts.
  */
 describe('lockfile coherence (no hand-edited version strings)', () => {
-  /**
-   * npm's nearest-ancestor resolution: a dependency of the package at
-   * `fromKey` resolves to `<fromKey>/node_modules/<dep>` if present, otherwise
-   * we walk up the nesting chain to the lockfile root.
-   */
-  function resolveDependency(
-    packages: Record<string, LockEntry>,
-    fromKey: string,
-    dep: string,
-  ): string | null {
-    let prefix = fromKey;
-    for (;;) {
-      const candidate = `${prefix ? `${prefix}/` : ''}node_modules/${dep}`;
-      if (packages[candidate]) return candidate;
-      if (!prefix) return null;
-      const i = prefix.lastIndexOf('/node_modules/');
-      prefix = i === -1 ? '' : prefix.slice(0, i);
-    }
-  }
-
   /** Top-level `overrides` keys, with any `name@range` suffix stripped. */
   function overriddenPackages(manifestPath: string): Set<string> {
     const overrides = (readJson(manifestPath).overrides ?? {}) as Record<string, unknown>;
@@ -455,7 +611,7 @@ describe('lockfile coherence (no hand-edited version strings)', () => {
         const declared = { ...entry.dependencies, ...entry.optionalDependencies };
         for (const [dep, range] of Object.entries(declared)) {
           // Aliases and non-registry specifiers carry no comparable range.
-          if (/^(npm:|file:|link:|git|https?:)/.test(range)) continue;
+          if (NON_REGISTRY_SPEC.test(range)) continue;
           if (overridden.has(dep)) continue;
           const target = resolveDependency(packages, key, dep);
           const version = target ? packages[target]?.version : undefined;
