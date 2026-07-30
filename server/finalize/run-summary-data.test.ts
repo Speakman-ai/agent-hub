@@ -1,3 +1,4 @@
+import { NO_COMMITS_MESSAGE } from '../../shared/utils/finalizeSummaryCopy.js';
 import { describe, it, expect } from 'vitest';
 import {
   MAX_COMMIT_SUBJECTS,
@@ -282,7 +283,7 @@ describe('renderFinalizeRunSummaryMarkdown', () => {
       }),
     );
 
-    expect(md).toContain('No commits found on the branch.');
+    expect(md).toContain(NO_COMMITS_MESSAGE);
     expect(md).toContain('No review rounds recorded for this run.');
     expect(md).toContain('No manual testing steps were generated for this change.');
   });

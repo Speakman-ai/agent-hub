@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolvePushGateBaseline, runFinalizePush, runSessionPushToGithub } from './push-run.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
+import { getSessionCommittableChanges } from './worktree-changes.js';
 import type { FinalizeRunRow, KanbanCardRow, Project, SessionRow } from '../types.js';
 
 vi.mock('./worktree-changes.js', () => ({
@@ -713,5 +714,78 @@ describe('runFinalizePush validated head', () => {
     if (!outcome.ok) {
       expect(outcome.error).toBe('reviewer_not_approved');
     }
+  });
+});
+
+describe('push gate requires a pushable HEAD', () => {
+  // Regression: surveytracker session-04ebfae9 / PR #470. The session staged 14
+  // files and never committed, so its branch was identical to `master`. The
+  // committable gate's dirty-worktree shortcut passed, and Finalize pushed and
+  // auto-merged a zero-diff PR. The push seams must ask the gate about HEAD, not
+  // about the working tree.
+  it('runFinalizePush asks the gate for a pushable HEAD', async () => {
+    const { deps } = makeDeps();
+    const gate = vi.mocked(getSessionCommittableChanges);
+    gate.mockClear();
+    gate.mockResolvedValue({ ok: true, changes: { hasUnpushed: true } } as never);
+
+    await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+    });
+
+    expect(gate.mock.calls[0]![1]).toMatchObject({ requirePushableHead: true });
+  });
+
+  it('runSessionPushToGithub asks the gate for a pushable HEAD', async () => {
+    const { deps } = makeDeps();
+    const gate = vi.mocked(getSessionCommittableChanges);
+    gate.mockClear();
+    gate.mockResolvedValue({ ok: true, changes: { hasUnpushed: true } } as never);
+
+    await runSessionPushToGithub({
+      deps: deps as never,
+      project,
+      session,
+      card,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+    } as never);
+
+    expect(gate.mock.calls[0]![1]).toMatchObject({ requirePushableHead: true });
+  });
+
+  it('refuses the push and never calls pushFn when HEAD has no commits vs base', async () => {
+    const { deps } = makeDeps();
+    const gate = vi.mocked(getSessionCommittableChanges);
+    gate.mockClear();
+    gate.mockResolvedValue({
+      ok: false,
+      error: 'no_pushable_commits',
+      message: 'This branch has no committed changes against its base branch.',
+    } as never);
+    const pushAndCreatePr = vi.fn();
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toBe('no_pushable_commits');
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
+    gate.mockResolvedValue({ ok: true, changes: { hasUnpushed: true } } as never);
   });
 });

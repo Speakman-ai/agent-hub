@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { NO_COMMITS_MESSAGE } from '../../shared/utils/finalizeSummaryCopy.js';
 import { emitFinalizeRunSummary } from './run-summary.js';
 import type { EmitFinalizeRunSummaryDeps } from './run-summary.js';
 
@@ -215,7 +216,7 @@ describe('emitFinalizeRunSummary', () => {
     const id = await emitFinalizeRunSummary(deps, baseArgs);
 
     expect(id).toBe('msg-1');
-    expect(inserted[0]!.content).toContain('No commits found on the branch.');
+    expect(inserted[0]!.content).toContain(NO_COMMITS_MESSAGE);
   });
 
   it('skips the git reads entirely when there is no worktree', async () => {
@@ -226,7 +227,56 @@ describe('emitFinalizeRunSummary', () => {
 
     expect(collectCommits).not.toHaveBeenCalled();
     expect(id).toBe('msg-1');
-    expect(inserted[0]!.content).toContain('No commits found on the branch.');
+    expect(inserted[0]!.content).toContain(NO_COMMITS_MESSAGE);
+  });
+
+  // Regression: surveytracker session-04ebfae9 / PR #470. The branch had no
+  // commits, so the narrative's only context was the card — and the model wrote
+  // confident prose ("This change removes the Agent Hub configuration…") about
+  // work that was never committed, sitting directly above the empty-state line.
+  it('does not ask for a narrative when there are no commits and no diff', async () => {
+    const generateNarrative = vi.fn(async () => ({
+      summary: 'Removes the Agent Hub configuration.',
+      reviewNotes: 'Nothing raised.',
+      manualTesting: ['Check the settings page'],
+    }));
+    const { deps, inserted } = makeDeps({
+      collectCommits: vi.fn(async () => []),
+      collectDiffStat: vi.fn(async () => ''),
+      generateNarrative,
+      messages: [reviewRoundMessage('run-1', 1, 'approved', [])],
+    });
+
+    const id = await emitFinalizeRunSummary(deps, baseArgs);
+
+    expect(id).toBe('msg-1');
+    expect(generateNarrative).not.toHaveBeenCalled();
+    const metadata = JSON.parse(inserted[0]!.metadata);
+    expect(metadata.summary).toBe('');
+    expect(metadata.summarySource).toBe('none');
+    expect(metadata.manualTesting).toEqual([]);
+    expect(inserted[0]!.content).not.toContain('Removes the Agent Hub configuration.');
+    expect(inserted[0]!.content).toContain(NO_COMMITS_MESSAGE);
+  });
+
+  it('still narrates when the diff stat is present but commit subjects are not', async () => {
+    // A shallow / grafted history can yield a diff stat with no readable commit
+    // subjects. There IS a change to describe there, so the narrative stands.
+    const generateNarrative = vi.fn(async () => ({
+      summary: 'Adds a widget.',
+      reviewNotes: '',
+      manualTesting: ['Open the widget page'],
+    }));
+    const { deps, inserted } = makeDeps({
+      collectCommits: vi.fn(async () => []),
+      collectDiffStat: vi.fn(async () => ' 1 file changed, 3 insertions(+)'),
+      generateNarrative,
+    });
+
+    await emitFinalizeRunSummary(deps, baseArgs);
+
+    expect(generateNarrative).toHaveBeenCalled();
+    expect(inserted[0]!.content).toContain('Adds a widget.');
   });
 
   it('returns null without writing when the run has no session', async () => {

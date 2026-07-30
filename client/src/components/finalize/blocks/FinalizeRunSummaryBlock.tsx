@@ -9,6 +9,7 @@ import {
   GitCommit,
   MessageSquare,
 } from 'lucide-react';
+import { NO_COMMITS_MESSAGE } from '@shared/utils/finalizeSummaryCopy';
 import { parseFinalizeRunSummaryMetadata } from '../../../utils/finalizeTimeline';
 import { relativeTime } from '../../../utils/time';
 
@@ -152,7 +153,7 @@ export default function FinalizeRunSummaryBlock({ message }: any) {
                 ) : null}
               </ul>
             ) : (
-              <p className="text-slate-500">No commits found on the branch.</p>
+              <p className="text-slate-500">{NO_COMMITS_MESSAGE}</p>
             )}
             {meta.diffStat ? (
               <pre className="mt-2 max-h-48 overflow-auto rounded bg-slate-950/60 p-2 font-mono text-[10px] leading-relaxed text-slate-400">

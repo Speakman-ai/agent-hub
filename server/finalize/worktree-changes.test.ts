@@ -169,3 +169,163 @@ describe('getSessionCommittableChanges', () => {
     expect(out.ok).toBe(true);
   });
 });
+
+describe('getSessionCommittableChanges with requirePushableHead (the ship gate)', () => {
+  // Regression: surveytracker session-04ebfae9 / PR #470. The agent staged 14
+  // files and never committed, so the branch was identical to `master`. The
+  // dirty-worktree shortcut passed the push gate, Finalize reviewed and tested
+  // an unchanged tree, then pushed and auto-merged a zero-diff PR while the run
+  // summary correctly reported "no commits found on the branch".
+  it('blocks a staged-but-uncommitted session whose HEAD is empty vs base', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: true,
+      hasUnpushed: false,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt', {
+      requirePushableHead: true,
+      probe: async () => false,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error).toBe('no_pushable_commits');
+      // The refusal has to name the uncommitted work, or the operator reads it
+      // as Finalize losing their staged files.
+      expect(out.message).toContain('uncommitted');
+      expect(out.message).toContain('commit them');
+    }
+  });
+
+  it('probes the base even when the worktree is dirty', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: true,
+      hasUnpushed: false,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const probe = vi.fn(async () => false);
+    await getSessionCommittableChanges('/tmp/wt', { requirePushableHead: true, probe });
+    expect(probe).toHaveBeenCalledWith('/tmp/wt');
+  });
+
+  it('allows a dirty worktree whose HEAD still carries a real diff vs base', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: true,
+      hasUnpushed: true,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt', {
+      requirePushableHead: true,
+      probe: async () => true,
+    });
+    expect(out.ok).toBe(true);
+  });
+
+  it('allows an already-pushed branch (hasUnpushed false) that still diffs vs base', async () => {
+    // `hasUnpushed` is measured against the branch's upstream, so it goes false
+    // as soon as the branch is pushed. A re-push of real work must not be
+    // mistaken for an empty branch.
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: false,
+      hasUnpushed: false,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt', {
+      requirePushableHead: true,
+      probe: async () => true,
+    });
+    expect(out.ok).toBe(true);
+  });
+
+  // The ship gate must prove a diff. Failing open on an undeterminable probe
+  // would let a transient git / base-resolution failure recreate the zero-diff
+  // PR this gate exists to prevent.
+  it('fails CLOSED when the net diff is undeterminable against a default base', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: false,
+      hasUnpushed: true,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt', {
+      requirePushableHead: true,
+      probe: async () => null,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toBe('base_unresolved');
+  });
+
+  it('fails closed on an undeterminable probe even with a dirty worktree', async () => {
+    // The dirty-worktree shortcut is skipped in this mode, so dirtiness must not
+    // smuggle an unproven branch past the gate either.
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: true,
+      hasUnpushed: false,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt', {
+      requirePushableHead: true,
+      probe: async () => null,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toBe('base_unresolved');
+  });
+
+  it('leaves the non-push gate failing open on an undeterminable default base', async () => {
+    // Regression guard on the split: the Finalize-offer affordance must keep its
+    // fail-open behavior so a detection miss never strands real work behind a
+    // disabled button. Only the ship gate tightened.
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: false,
+      hasUnpushed: true,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt', { probe: async () => null });
+    expect(out.ok).toBe(true);
+  });
+
+  it('fails closed with base_unresolved when an explicit base cannot be proven', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: true,
+      hasUnpushed: false,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt', {
+      requirePushableHead: true,
+      base: { kind: 'explicit', baseBranch: 'feature/epic' },
+      probe: async () => null,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toBe('base_unresolved');
+  });
+
+  it('an unresolved base blocks before any probing', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: true,
+      hasUnpushed: false,
+      branch: 'agent-hub/dev/session-x',
+      headSha: 'abc123',
+    });
+    const probe = vi.fn(async () => true);
+    const out = await getSessionCommittableChanges('/tmp/wt', {
+      requirePushableHead: true,
+      base: { kind: 'unresolved' },
+      probe,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toBe('base_unresolved');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('still reports no_worktree with no path', async () => {
+    const out = await getSessionCommittableChanges(null, { requirePushableHead: true });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toBe('no_worktree');
+  });
+});

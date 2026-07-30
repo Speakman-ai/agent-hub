@@ -1,3 +1,4 @@
+import { NO_COMMITS_MESSAGE } from '@shared/utils/finalizeSummaryCopy';
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import FinalizeRunSummaryBlock from './FinalizeRunSummaryBlock';
@@ -114,9 +115,7 @@ describe('FinalizeRunSummaryBlock', () => {
 
     expect(screen.queryByTestId('finalize-summary-prose')).not.toBeInTheDocument();
     expect(screen.queryByTestId('finalize-summary-verdict')).not.toBeInTheDocument();
-    expect(screen.getByTestId('finalize-summary-changes')).toHaveTextContent(
-      'No commits found on the branch.',
-    );
+    expect(screen.getByTestId('finalize-summary-changes')).toHaveTextContent(NO_COMMITS_MESSAGE);
     expect(screen.getByTestId('finalize-summary-review')).toHaveTextContent(
       'No review rounds recorded for this run.',
     );
@@ -187,9 +186,7 @@ describe('FinalizeRunSummaryBlock', () => {
     });
     render(<FinalizeRunSummaryBlock message={{ id: 'm4', metadata: nested }} />);
     expect(screen.queryByTestId('finalize-summary-prose')).not.toBeInTheDocument();
-    expect(screen.getByTestId('finalize-summary-changes')).toHaveTextContent(
-      'No commits found on the branch.',
-    );
+    expect(screen.getByTestId('finalize-summary-changes')).toHaveTextContent(NO_COMMITS_MESSAGE);
   });
 
   it('renders nothing for a message that is not a run summary', () => {

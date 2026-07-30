@@ -99,14 +99,22 @@ export async function emitFinalizeRunSummary(
     }
     const reviewRounds = collectFinalizeReviewRounds(messages, args.runId);
 
-    const narrative = await generateNarrative({
-      cardTitle: args.card?.title ?? null,
-      cardDescription: args.card?.description ?? null,
-      commits,
-      diffStat,
-      reviewRounds,
-      openaiApiKey: args.config?.openaiApiKey ?? null,
-    });
+    // With no commits and no diff there is no change to describe, and the only
+    // context left is the card — from which the model happily writes confident
+    // prose about work that was never committed. That narrative then sits
+    // directly above "No commits found on the branch", which reads as a broken
+    // summary rather than the empty branch it actually is. Stay silent instead.
+    const hasChangeToDescribe = commits.length > 0 || diffStat.length > 0;
+    const narrative = hasChangeToDescribe
+      ? await generateNarrative({
+          cardTitle: args.card?.title ?? null,
+          cardDescription: args.card?.description ?? null,
+          commits,
+          diffStat,
+          reviewRounds,
+          openaiApiKey: args.config?.openaiApiKey ?? null,
+        })
+      : null;
 
     const payload = buildFinalizeRunSummaryPayload({
       runId: args.runId,

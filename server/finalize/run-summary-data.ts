@@ -12,6 +12,7 @@
  * timeline is the durable record of what the reviewer actually raised.
  */
 
+import { NO_COMMITS_MESSAGE } from '../../shared/utils/finalizeSummaryCopy.js';
 import { parseFinalizeTimelineMetadata } from './timeline-message.js';
 
 /** Cap on findings kept per round — a 200-finding round is a wall, not a summary. */
@@ -244,7 +245,7 @@ export function renderFinalizeRunSummaryMarkdown(payload: FinalizeRunSummaryPayl
     }
     out.push(commitLines.join('\n'));
   } else {
-    out.push('No commits found on the branch.');
+    out.push(NO_COMMITS_MESSAGE);
   }
 
   out.push('### Review');

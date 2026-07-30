@@ -411,8 +411,14 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     worktreePath: session.worktree_path,
     getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
+  // `requirePushableHead`: this is the ship gate, so it must judge HEAD, not the
+  // working tree. A session that staged its work without committing has a dirty
+  // worktree and an empty HEAD; without this the dirty-worktree shortcut passes
+  // the gate and pushes a branch identical to base (zero-diff PR, then a
+  // zero-diff merge under auto-merge automation).
   const committable = await getSessionCommittableChanges(session.worktree_path, {
     base: gateBase,
+    requirePushableHead: true,
   });
   if (!committable.ok) {
     return {
@@ -599,8 +605,14 @@ export async function runSessionPushToGithub(
     worktreePath: session.worktree_path,
     getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
+  // `requirePushableHead`: this is the ship gate, so it must judge HEAD, not the
+  // working tree. A session that staged its work without committing has a dirty
+  // worktree and an empty HEAD; without this the dirty-worktree shortcut passes
+  // the gate and pushes a branch identical to base (zero-diff PR, then a
+  // zero-diff merge under auto-merge automation).
   const committable = await getSessionCommittableChanges(session.worktree_path, {
     base: gateBase,
+    requirePushableHead: true,
   });
   if (!committable.ok) {
     return {
