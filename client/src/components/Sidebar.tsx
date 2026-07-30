@@ -1175,32 +1175,19 @@ export default function Sidebar({
                   >
                     {(() => {
                       // Hide the reviewer agent row; it's edited via the per-project Reviewer page below.
-                      const topLevel = activeAgents.filter(
-                        (a: any) =>
-                          !a.parentAgentId && a.role !== 'reviewer' && a.role !== 'skill-builder',
+                      const visibleAgents = activeAgents.filter(
+                        (a: any) => a.role !== 'reviewer' && a.role !== 'skill-builder',
                       );
-                      const subAgentMap: Record<string, any> = {};
-                      activeAgents.forEach((a: any) => {
-                        if (a.parentAgentId) {
-                          if (!subAgentMap[a.parentAgentId]) subAgentMap[a.parentAgentId] = [];
-                          subAgentMap[a.parentAgentId].push(a);
-                        }
-                      });
 
-                      const renderAgent = (agent: any, indent: any = 0) => {
+                      const renderAgent = (agent: any) => {
                         const isActive = activeAgentId === agent.id;
                         const isExpanded = !!expandedAgents[agent.id];
                         const agentSessions = sessionsForAgent(agent.id);
-                        const subs = subAgentMap[agent.id] || [];
-                        const isTopLevel =
-                          agent.role === 'lead' || agent.role === 'docs' || subs.length > 0;
-                        const isLead = agent.role === 'lead' || subs.length > 0;
+                        const isTopLevel = true;
+                        const isLead = agent.role === 'lead';
 
                         return (
-                          <div
-                            key={agent.id}
-                            style={indent > 0 ? { marginLeft: `${indent * 12}px` } : {}}
-                          >
+                          <div key={agent.id}>
                             <div
                               className={`w-full flex items-center gap-1 rounded-lg mb-0.5 transition-colors ${
                                 isActive && currentView === 'chat'
@@ -1226,9 +1213,6 @@ export default function Sidebar({
                                 }`}
                               >
                                 <div className="relative flex-shrink-0">
-                                  {indent > 0 && (
-                                    <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
-                                  )}
                                   {agent.avatar ? (
                                     <AgentAvatar
                                       avatar={agent.avatar}
@@ -1623,18 +1607,11 @@ export default function Sidebar({
                                   </div>
                                 );
                               })()}
-
-                            {/* Render sub-agents nested under lead */}
-                            {subs.length > 0 && (!collapsedAgents[agent.id] || isExpanded) && (
-                              <div className="border-l border-gray-700/50 ml-3">
-                                {subs.map((sub: any) => renderAgent(sub, indent + 1))}
-                              </div>
-                            )}
                           </div>
                         );
                       };
 
-                      return topLevel.map((agent: any) => renderAgent(agent, 0));
+                      return visibleAgents.map((agent: any) => renderAgent(agent));
                     })()}
                   </div>
                 )}

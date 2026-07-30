@@ -1,6 +1,6 @@
 // ─── Shared helpers for parsing agent action-block payloads ──────────────
 //
-// Action blocks (`<agenthub:close-card>`, `<handoff>`, `<delegate>`,
+// Action blocks (`<agenthub:close-card>`,
 // `<agenthub:skill>`, `<agenthub:react>`, …) all share the same shape:
 // an XML-style tag with a JSON body inside. Each detector historically
 // did its own ad-hoc `text.match(/<tag>...<\/tag>/)` followed by a
@@ -125,8 +125,7 @@ export function stripOuterMarkdownFence(body: string): string {
 export function sliceFirstBalancedJson(body: string): string | null {
   if (typeof body !== 'string' || !body.length) return null;
 
-  // Find the first opener. We accept either { or [ (delegate emits an
-  // array, the others an object).
+  // Find the first opener. Action payloads may be objects or arrays.
   let openIdx = -1;
   let openCh = '';
   for (let i = 0; i < body.length; i += 1) {

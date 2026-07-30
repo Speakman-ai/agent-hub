@@ -33,7 +33,7 @@
  * the rest of the tool surface remain untouched.
  *
  * Apply this to every Claude Code spawn that runs an Agent-Hub-enriched
- * system prompt (chat, delegation, room chat, heartbeats/crons via
+ * system prompt (chat, room chat, heartbeats/crons via
  * `runClaude`, workflow runner, slack, memory, design).
  * ─────────────────────────────────────────────────────────────────────────
  */
@@ -84,7 +84,7 @@ export const CODE_MUTATION_NATIVE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Notebo
  *   2. Insert a `--` end-of-options separator immediately before the
  *      positional prompt.
  *
- * Bare-prompt call sites (heartbeat/memory/slack/room-chat/delegation
+ * Bare-prompt call sites (heartbeat/memory/slack/room-chat
  * fan-out) use option (2). See those files for the inline comments.
  */
 export function disableShadowedNativeToolsArgs(

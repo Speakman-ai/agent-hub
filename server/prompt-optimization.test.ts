@@ -767,12 +767,7 @@ describe('buildEnrichedPrompt — tasks-only project (no GitHub)', () => {
   });
 });
 
-describe('buildEnrichedPrompt — lead agent delegation (removed)', () => {
-  // The <delegate>/<handoff> sub-agent system has been removed. Lead agents
-  // no longer receive a `## Delegation`, `## Sub-Agents`, or `## Handoff`
-  // section in their prompt regardless of `subAgents` configuration. Only
-  // the `## Lead Response Contract` (a structured-output rule) remains on
-  // first-message leads.
+describe('buildEnrichedPrompt — lead response contract', () => {
   beforeEach(() => {
     mkdirSync(tmpBase, { recursive: true });
     mkdirSync(path.join(tmpBase, 'skills'), { recursive: true });
@@ -782,7 +777,7 @@ describe('buildEnrichedPrompt — lead agent delegation (removed)', () => {
     rmSync(tmpBase, { recursive: true, force: true });
   });
 
-  it('does NOT include delegation instructions on first message for leads', () => {
+  it('includes the lead response contract on the first message', () => {
     const mockGetEnrichedAgent = (id: string) => ({
       id,
       name: 'Sub Agent',
@@ -795,21 +790,14 @@ describe('buildEnrichedPrompt — lead agent delegation (removed)', () => {
       workspace: tmpBase,
     });
 
-    const prompt = buildEnrichedPrompt(
-      makeProject(),
-      makeAgent({ role: 'lead', subAgents: ['sub-1'] }),
-      { isFirstMessage: true, _getEnrichedAgent: mockGetEnrichedAgent },
-    );
-    expect(prompt).not.toContain('## Delegation');
-    expect(prompt).not.toContain('## Sub-Agents');
-    expect(prompt).not.toContain('## Handoff');
-    expect(prompt).not.toContain('<delegate>');
-    expect(prompt).not.toContain('<handoff>');
-    // The Lead Response Contract is independent of delegation and remains.
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ role: 'lead' }), {
+      isFirstMessage: true,
+      _getEnrichedAgent: mockGetEnrichedAgent,
+    });
     expect(prompt).toContain('## Lead Response Contract');
   });
 
-  it('does NOT include a sub-agent list on subsequent messages for leads', () => {
+  it('does not include the lead response contract on subsequent messages', () => {
     const mockGetEnrichedAgent = (id: string) => ({
       id,
       name: 'Sub Agent',
@@ -822,13 +810,10 @@ describe('buildEnrichedPrompt — lead agent delegation (removed)', () => {
       workspace: tmpBase,
     });
 
-    const prompt = buildEnrichedPrompt(
-      makeProject(),
-      makeAgent({ role: 'lead', subAgents: ['sub-1'] }),
-      { isFirstMessage: false, _getEnrichedAgent: mockGetEnrichedAgent },
-    );
-    expect(prompt).not.toContain('## Sub-Agents');
-    expect(prompt).not.toContain('## Delegation');
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ role: 'lead' }), {
+      isFirstMessage: false,
+      _getEnrichedAgent: mockGetEnrichedAgent,
+    });
     expect(prompt).not.toContain('Guidelines');
     // Subsequent-message leads do NOT get the Lead Response Contract either
     // — that section is first-message-only.

@@ -571,10 +571,6 @@ describe('retireIntakeAgents (retired — never creates, purges existing)', () =
       role: 'intake',
       engine: 'claude-code',
     });
-    // A surviving dev agent that still references the intake agent as a sub —
-    // the stale ref must be scrubbed too.
-    const dev = project.agents!.find((a) => a.id === `${projId}-dev`)!;
-    dev.subAgents = [intakeId];
     saveProjects();
 
     const db = getDb();
@@ -594,10 +590,9 @@ describe('retireIntakeAgents (retired — never creates, purges existing)', () =
     // Roster no longer exposes the intake agent.
     expect(updated.agents?.some((a) => a.role === 'intake')).toBe(false);
     expect(updated.agents?.some((a) => a.id === intakeId)).toBe(false);
-    // The dev agent survives but its stale sub-agent ref is scrubbed.
+    // The dev agent survives.
     const survivingDev = updated.agents?.find((a) => a.id === `${projId}-dev`);
     expect(survivingDev).toBeTruthy();
-    expect(survivingDev?.subAgents ?? []).not.toContain(intakeId);
     // Child DB rows keyed by the intake agent are gone.
     expect(
       db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE agent_id = ?').get(intakeId),

@@ -10,10 +10,8 @@ Today the host already composes several “loops,” but they solve different pr
 
 | Mechanism | Scope | Persisted? | Typical stop condition |
 |-----------|--------|------------|-------------------------|
-| Inner ReAct (`<agenthub:react>`) | One assistant turn → host tool actions → optional auto-continue | Observations merged into `pending_skill_context`; continuation depth capped (`MAX_AUTO_CONTINUATION_DEPTH`) | No `<handoff>` / `<delegate>` / `<agenthub:close-card>`; budgets not exhausted |
-| Auto-continuation retry | Scheduling when continuation is blocked (busy session / delegation) | Retry counter in memory for the scheduling path | `AUTO_CONTINUATION_MAX_RETRIES` |
-| `<delegate>` | Lead → parallel sub-sessions, results folded back | `delegations` rows + child sessions | Sub-agents finish or fail |
-| `<handoff>` | Lead → single owner transfer | `handoffs` + new session | Target session starts with injected context |
+| Inner ReAct (`<agenthub:react>`) | One assistant turn → host tool actions → optional auto-continue | Observations merged into `pending_skill_context`; continuation depth capped (`MAX_AUTO_CONTINUATION_DEPTH`) | No `<agenthub:close-card>`; budgets not exhausted |
+| Auto-continuation retry | Scheduling when continuation is blocked (busy session) | Retry counter in memory for the scheduling path | `AUTO_CONTINUATION_MAX_RETRIES` |
 | Autonomous epic dispatch | Kanban-driven “next card” work | Card `session_id`, iteration counters, epic flags | Max iterations, empty queue, human gate (Review) |
 
 **Gap:** there is no **first-class outer phase** (e.g. “we are verifying PR #601, not planning”) that survives process restarts, shows up in the UI, and drives **explicit stop / escalate** policy independent of “did the model emit another ReAct block.”
@@ -37,7 +35,7 @@ States are **ordered** for a typical ticket, but **transitions are not strictly 
              │ plan approved / user message locks scope
              ▼
         ┌──────────┐
-        │  ACTING  │  Edits, commits, delegates, runs CI locally
+        │  ACTING  │  Edits, commits, runs CI locally
         └────┬─────┘
              │ artifact ready (PR, patch, or explicit non-code outcome)
              ▼
@@ -56,16 +54,16 @@ States are **ordered** for a typical ticket, but **transitions are not strictly 
 | Phase | Primary actor | Allowed / expected side-effects | Exit when |
 |-------|----------------|-----------------------------------|-----------|
 | PLANNING | Lead (usually) | Read-only by default in ask mode; otherwise repo reads + design notes | Written plan + acceptance criteria agreed, or user overrides with “implement now” |
-| ACTING | Lead or sub | File mutations, `git`, `<delegate>` fan-out, local test runs | Code + tests + commit (or intentional docs-only change) meet plan |
+| ACTING | Lead or peer | File mutations, `git`, local test runs | Code + tests + commit (or intentional docs-only change) meet plan |
 | VERIFYING | Lead or reviewer agent | CI interpretation, PR comment triage, targeted fixes | Green checks + review policy satisfied, or explicit waiver in meta |
 | DONE | — | Auto-close card (`<agenthub:close-card>`), merge handoff receipt | Terminal |
-| ESCALATED | Human / other agent | `<handoff>` to specialist, or kanban move to Blocked | Terminal for this session’s ownership |
+| ESCALATED | Human / other agent | User reassignment or kanban move to Blocked | Terminal for this session’s ownership |
 
 ## Stop rules (outer)
 
 **Hard stops** (outer loop must not auto-advance without new user input or policy):
 
-1. **Control blocks present** — same as ReAct auto-continue guard: `<handoff>`, `<delegate>`, `<agenthub:close-card>` terminate the *current* inner continuation chain; outer phase should **not** assume the next turn belongs to the same macro-step without an explicit policy (e.g. “handoff to verify” is a phase change + session change).
+1. **Control blocks present** — `<agenthub:close-card>` terminates the *current* inner continuation chain; outer phase should **not** assume the next turn belongs to the same macro-step without explicit policy.
 2. **Ask mode** — `ask_mode=1`: outer loop should stay in PLANNING or VERIFYING (read-only analysis) unless user flips mode.
 3. **Budget exhaustion** — web/wiki RAG budgets, `MAX_AUTO_CONTINUATION_DEPTH`, `AUTO_CONTINUATION_MAX_RETRIES`: stop **inner** auto-continue; outer loop may transition to ESCALATED or wait for user.
 4. **Verify failure** — failing checks with no auto-fix path: transition ACTING → VERIFYING stays, or VERIFYING → ESCALATED with structured reason in `orchestration_meta`.
@@ -79,18 +77,16 @@ States are **ordered** for a typical ticket, but **transitions are not strictly 
 
 | Signal | Example | Proposed outer transition |
 |--------|---------|----------------------------|
-| Specialist ownership needed | Security / native / infra | PLANNING or ACTING → handoff (`<handoff>`) → **new session** starts in ACTING with inherited note |
-| Parallel evidence gathering | Audit three modules | ACTING → `<delegate>` → remain ACTING until synthesis (delegate is inner to ACTING) |
-| Wrong agent / overloaded | Lead cannot verify | VERIFYING → ESCALATED + `<handoff>` to reviewer |
+| Specialist ownership needed | Security / native / infra | PLANNING or ACTING → user reassignment or **new session** starts in ACTING with inherited note |
+| Parallel evidence gathering | Audit three modules | ACTING → explicit multi-agent session coordination → remain ACTING until synthesis |
+| Wrong agent / overloaded | Lead cannot verify | VERIFYING → ESCALATED + user reassignment to reviewer |
 | Duplicate work | Card already done | Any → `<agenthub:close-card>` → DONE |
 
-## Interaction with `<delegate>` and `<handoff>`
+## Interaction with the flat agent model
 
-- **`<delegate>`** is a **fan-out / join** primitive inside **ACTING** (or VERIFYING if limited to read-only subtasks — discouraged). The **outer phase** on the **lead session** should remain ACTING while child sessions run; on join, the lead synthesizes and may advance to VERIFYING.
-
-- **`<handoff>`** is **terminal for the emitting turn** and usually **changes session id**. Outer orchestration should:
-  1. Persist **phase handoff** in `orchestration_meta` on the **source** session as `{ handedOffTo, at, noteSummary }` (future work).
-  2. Initialize the **target** session with phase **ACTING** (or VERIFYING if the note explicitly says “only review”) via `buildHandoffPromptSection` metadata — today the note is prose; a future v2 could carry `{ suggestedPhase: "VERIFYING" }` in JSON **inside** the fenced block (requires protocol extension).
+Agent Hub keeps agents as peers. Outer phases can span multiple sessions when
+the operator explicitly reassigns work, but the host does not fan out or
+transfer work through assistant-emitted coordination tags.
 
 - **Inner ReAct** can run **inside any phase**; the outer phase tells the host **which automatic transitions are legal** after the inner loop drains (e.g. do not auto-continue from VERIFYING into “more feature work” without user ack).
 
@@ -114,15 +110,14 @@ Until the server exposes `orchestration_phase`:
 ## Related code (reference anchors)
 
 - Inner ReAct + auto-continue guard vs control flow: `server/chat.ts` (`controlFlowPresent`, `shouldAutoContinue`).
-- Handoff lifecycle: `server/handoff.ts`, `handoffs` table.
-- Delegation: `server/delegation.ts` (and tests under `server/delegation*.test.ts`).
+- Agent lifecycle: `server/project-model.ts` and the session ownership helpers.
 - Autonomous kanban: epic + dispatcher (see types on `KanbanEpicRow`, `tryAutonomousDispatch` wiring in `server/chat.ts` tail).
 
 ## Open questions
 
 1. Should **VERIFYING** be a **separate session template** (reviewer agent) vs a phase flag on the implementer session?
 2. How should outer state interact with **threads** (heartbeats / crons) — ignore, or allow “VERIFYING” on a thread run?
-3. Do we need a **user-visible timeline** of phase transitions for compliance / handoff audits?
+3. Do we need a **user-visible timeline** of phase transitions for compliance audits?
 
 ---
 

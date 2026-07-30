@@ -79,7 +79,6 @@ import {
   createRumLifecycleState,
   reconcileRumLifecycle,
 } from './replays/rum-lifecycle-reconciler.js';
-import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
 import {
   getSessionEnvSelection,
@@ -204,17 +203,7 @@ import createGoogleDriveRoutes from './routes/google-drive.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
 
-import {
-  initDelegation,
-  activeDelegationSessions,
-  parseDelegateBlock,
-  handleDelegationCancel,
-  handleDelegation,
-  synthesizeResults,
-} from './delegation.js';
 import { drainIdleQueuedSessions } from './session-chat-busy.js';
-
-import { initHandoff } from './handoff.js';
 
 import { handleMultiAgentCancel } from './session-multi-agent.js';
 
@@ -243,11 +232,7 @@ import {
   setFinalizeAutomationRouteDeps,
 } from './finalize/automation-runner.js';
 
-import createChatHandler, {
-  buildEnrichedPrompt,
-  type ChatHandlerDeps,
-  type WebSocketLike,
-} from './chat.js';
+import createChatHandler, { type ChatHandlerDeps, type WebSocketLike } from './chat.js';
 
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
 import { createBackgroundShellRuntime } from './background-shells/background-shell-runtime-setup.js';
@@ -719,38 +704,6 @@ initAutoGit({
   nativePr,
 });
 
-initDelegation({
-  stmts: stmts!,
-  broadcast,
-  getEnrichedAgent,
-  buildEnrichedPrompt,
-  get saveErrorMessage() {
-    return saveErrorMessage!;
-  },
-  appendDailyNote,
-  getActiveProcesses: () => activeProcesses,
-  getClaudeBin: () => CLAUDE_BIN,
-  getCursorBin: () => CURSOR_BIN,
-  getGeminiBin: () => GEMINI_BIN,
-  getCodexBin: () => CODEX_BIN,
-  getDefaultModel: () => DEFAULT_MODEL,
-  getConfig: () => config,
-});
-
-initHandoff({
-  stmts: stmts!,
-  broadcast,
-  getEnrichedAgent,
-  findAgent,
-  getActiveProcesses: () => activeProcesses,
-  getClaudeBin: () => CLAUDE_BIN,
-  getDefaultModel: () => DEFAULT_MODEL,
-  getConfig: () => config,
-  // handleChat is assigned after createChatHandler below, so we read it
-  // lazily via a getter.
-  getHandleChat: () => handleChat,
-});
-
 function getDesignsRoot(): string {
   return path.join(_activeDataDir, 'designs');
 }
@@ -786,7 +739,6 @@ initAutonomous({
     drainIdleQueuedSessions({
       stmts: stmts!,
       activeProcesses,
-      activeDelegationSessions,
       drainQueue,
     }),
 } as Parameters<typeof initAutonomous>[0]);
@@ -1466,7 +1418,6 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
   getProjects,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws as WebSocketLike | null, msg),
   handleCancel,
-  handleDelegationCancel,
   handleDequeue,
   handleEditQueueItem,
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) =>
@@ -1531,7 +1482,6 @@ const chatHandler = createChatHandler({
   findAgent,
   getEnrichedAgent,
   activeProcesses,
-  activeDelegationSessions,
   autonomousProjects,
   getClaudeBin: () => CLAUDE_BIN,
   getCursorBin: () => CURSOR_BIN,
@@ -1544,10 +1494,6 @@ const chatHandler = createChatHandler({
   ensureWorktree,
   drainQueue: (sessionId: string) => drainQueue(sessionId),
   rescheduleCron,
-  handleDelegation: handleDelegation as ChatHandlerDeps['handleDelegation'],
-  handleDelegationCancel,
-  synthesizeResults: synthesizeResults as ChatHandlerDeps['synthesizeResults'],
-  parseDelegateBlock,
   getDevServerRuntime: () => devServerRuntime,
   getPtyHost: () => ptyHost,
   autoCommitAndPR,
@@ -1597,7 +1543,6 @@ setChecksPassedHook(({ project, branch }) => {
 function handleCancel(sessionId: string): void {
   cancelSessionChatRun({ sessionId, activeProcesses });
   handleMultiAgentCancel(sessionId);
-  handleDelegationCancel(sessionId);
   stmts!.clearSessionQueue.run(sessionId);
   broadcast({ type: 'queue_updated', sessionId, queue: [] });
 }
@@ -1629,7 +1574,6 @@ function handleEditQueueItem(sessionId: string, messageId: string, content: stri
 
 function drainQueue(sessionId: string): void {
   if (activeProcesses.has(sessionId)) return;
-  if (activeDelegationSessions.has(sessionId)) return;
   if (isSessionWorktreeLocked(sessionId)) return;
   if (drainingLock.has(sessionId)) return;
 
@@ -2009,7 +1953,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       const drained = drainIdleQueuedSessions({
         stmts: stmts!,
         activeProcesses,
-        activeDelegationSessions,
         drainQueue,
       });
       if (drained > 0) {

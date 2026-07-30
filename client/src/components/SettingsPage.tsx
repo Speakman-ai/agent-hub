@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, Component } from 'react';
+import { useState, useEffect, useRef, useMemo, Component } from 'react';
 import { api } from '../utils/api';
 import {
   buildOrchestrationBudgetsPayload,
@@ -97,8 +97,6 @@ import {
   Trash2,
   ArrowRightLeft,
   GitBranch,
-  Server,
-  Terminal,
   Globe,
   ChevronDown,
   ChevronRight,
@@ -4859,38 +4857,8 @@ export function AgentConfigSection({
       )}
 
       <div className="space-y-3">
-        {(() => {
-          // Group agents: leads first, then subs indented under their lead
-          const leads = configurableAgents.filter((a: any) => a.role === 'lead');
-          const subs = configurableAgents.filter((a: any) => a.role === 'sub');
-          const standalone = configurableAgents.filter(
-            (a: any) => a.role !== 'lead' && a.role !== 'sub',
-          );
-          const subsByParent: Record<string, any> = {};
-          for (const s of subs) {
-            const pid = s.parentAgentId;
-            if (!subsByParent[pid]) subsByParent[pid] = [];
-            subsByParent[pid].push(s);
-          }
-          // Build ordered list: lead, then its subs, then next lead, etc., then standalone
-          const ordered: any[] = [];
-          for (const lead of leads) {
-            ordered.push({ agent: lead, indent: 0, isLead: true });
-            for (const sub of subsByParent[lead.id] || []) {
-              ordered.push({ agent: sub, indent: 1, isSub: true });
-            }
-          }
-          for (const a of standalone) {
-            ordered.push({ agent: a, indent: 0 });
-          }
-          // Any orphan subs
-          for (const s of subs) {
-            if (!leads.find((l: any) => l.id === s.parentAgentId)) {
-              ordered.push({ agent: s, indent: 0, isSub: true });
-            }
-          }
-          return ordered;
-        })().map(({ agent, indent, isLead, isSub }: any) => {
+        {configurableAgents.map((agent: any) => {
+          const isLead = agent.role === 'lead';
           const isExpanded = expanded === agent.id;
           const edit = getEdit(agent.id);
           const isDirty = !!edits[agent.id];
@@ -4898,13 +4866,11 @@ export function AgentConfigSection({
             <div
               key={agent.id}
               className={`bg-gray-800 rounded-xl overflow-hidden${agent.active === false ? ' opacity-50' : ''}`}
-              style={indent > 0 ? { marginLeft: `${indent * 24}px` } : {}}
             >
               <div
                 className="flex items-center gap-3 p-4 cursor-pointer hover:bg-gray-750"
                 onClick={() => setExpanded(isExpanded ? null : agent.id)}
               >
-                {isSub && <span className="text-gray-600 text-xs -ml-1">└</span>}
                 <span
                   className={`w-3 h-3 flex-shrink-0 ${isLead ? 'rounded-sm' : 'rounded-full'}`}
                   style={{ backgroundColor: agent.color }}
@@ -4915,11 +4881,6 @@ export function AgentConfigSection({
                     {isLead && (
                       <span className="bg-amber-900/50 text-amber-300 px-1.5 py-0.5 rounded-full text-xs font-medium">
                         Lead
-                      </span>
-                    )}
-                    {isSub && (
-                      <span className="bg-indigo-900/50 text-indigo-300 px-1.5 py-0.5 rounded-full text-xs">
-                        Sub
                       </span>
                     )}
                     <span className="text-xs text-gray-500 font-mono">{agent.id}</span>
@@ -5440,61 +5401,6 @@ export function AgentConfigSection({
                       className={inputClass}
                     />
                   </div>
-
-                  {/*
-                    Delegation gate (per-agent operator switch).
-
-                    Surfaced only for lead agents (those with one or more
-                    sub-agents). Default is ON (treat undefined/true as
-                    enabled); the only state that disables dispatch is the
-                    explicit literal `false`. See
-                    `server/delegation-gate.ts` for the matching server-side
-                    semantics. Toggling here flips `delegationEnabled` in
-                    the agent edit buffer; saving sends it through the
-                    standard `PATCH /api/agents/:id` flow.
-                  */}
-                  {Array.isArray(agent.subAgents) && agent.subAgents.length > 0 && (
-                    <div className="border-t border-gray-700 pt-3">
-                      <div className="flex items-center gap-3 mb-2">
-                        <label className="text-xs text-gray-400 font-medium">
-                          Delegation to sub-agents
-                        </label>
-                        <button
-                          data-testid="agent-delegation-toggle"
-                          onClick={() => {
-                            const current =
-                              edit.delegationEnabled !== undefined
-                                ? edit.delegationEnabled
-                                : agent.delegationEnabled !== false;
-                            setEdit(agent.id, 'delegationEnabled', !current);
-                          }}
-                          className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                            (
-                              edit.delegationEnabled !== undefined
-                                ? edit.delegationEnabled
-                                : agent.delegationEnabled !== false
-                            )
-                              ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                              : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                          }`}
-                        >
-                          {(
-                            edit.delegationEnabled !== undefined
-                              ? edit.delegationEnabled
-                              : agent.delegationEnabled !== false
-                          )
-                            ? 'ON'
-                            : 'OFF'}
-                        </button>
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        When OFF, this lead&apos;s{' '}
-                        <code className="font-mono">&lt;delegate&gt;</code> blocks are ignored and
-                        an in-chat nudge is shown instead. Use this when sub-agent fan-out is more
-                        harmful than helpful — the lead will complete the work inline.
-                      </p>
-                    </div>
-                  )}
 
                   {/* Heartbeat settings */}
                   <div className="border-t border-gray-700 pt-3">

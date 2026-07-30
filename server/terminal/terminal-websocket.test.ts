@@ -294,7 +294,6 @@ describe('terminal WebSocket route', () => {
       getProjects: () => [],
       handleChat: vi.fn(),
       handleCancel: vi.fn(),
-      handleDelegationCancel: vi.fn(),
       handleDequeue: vi.fn(),
       handleEditQueueItem: vi.fn(),
       handleDesignChat: vi.fn(),

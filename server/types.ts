@@ -2870,16 +2870,6 @@ export interface Agent {
   avatar?: string;
   systemPrompt?: string;
   heartbeat?: HeartbeatConfig;
-  parentAgentId?: string;
-  subAgents?: string[];
-  /**
-   * When set to `false`, the lead agent's `<delegate>` blocks are gated:
-   * the server skips spawning sub-agent sessions and emits a system-message
-   * + `delegation_disabled` WS event so the lead is nudged to complete work
-   * inline. Only meaningful for lead agents (those with `subAgents`).
-   * `undefined` / `true` → delegation enabled (default behaviour).
-   */
-  delegationEnabled?: boolean;
   /**
    * When explicitly `false`, host-mediated browser tools (`<agenthub:react>`
    * `tool: browser`) are omitted from the enriched prompt and rejected at
@@ -3500,7 +3490,7 @@ export interface AppConfig {
   transcriptionProvider: TranscriptionProvider;
   /**
    * Optional Codex CLI profile name. When set, every `codex exec` spawn
-   * (chat, room, design, delegation) gets `--profile <name>` appended so
+   * (chat, room, design) gets `--profile <name>` appended so
    * the CLI loads the matching profile from `~/.codex/config.toml`
    * (model / provider / approval / sandbox overrides). Empty / whitespace
    * is treated as unset. Configure via `codexProfile` in config.json,
@@ -3512,7 +3502,7 @@ export interface AppConfig {
   codexProfile: string | null;
   /**
    * When true (the default), interactive Codex spawns (chat, rooms, design,
-   * delegation) outside Ask Mode pass `--dangerously-bypass-approvals-and-sandbox`
+   * outside Ask Mode pass `--dangerously-bypass-approvals-and-sandbox`
    * instead of `--full-auto`, so Codex works in environments where Linux
    * bubblewrap cannot create user namespaces. Set false to keep Codex's
    * sandbox on hosts that support it. Configure via `codexDangerBypass` in
@@ -3925,7 +3915,6 @@ export type WSIncomingMessage =
   | CancelMessage
   | DesignChatMessage
   | DesignCancelMessage
-  | { type: 'delegation_cancel'; sessionId: string }
   | { type: 'dequeue'; sessionId: string; messageId: string }
   | { type: 'edit_queue_item'; sessionId: string; messageId: string; content: string }
   | { type: 'ping' };
@@ -3940,7 +3929,6 @@ export interface WebSocketDeps {
   getProjects: () => Project[];
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
   handleCancel: (sessionId: string) => void;
-  handleDelegationCancel: (sessionId: string) => void;
   handleDequeue: (sessionId: string, messageId: string) => void;
   handleEditQueueItem: (sessionId: string, messageId: string, content: string) => void;
   handleDesignChat: (ws: unknown, msg: DesignChatMessage) => Promise<void>;

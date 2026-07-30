@@ -10,8 +10,8 @@
  *      "reason":"Show new card-blocker badge"}
  *     </agenthub:preview>
  *
- * Parsing follows the same shape as `<agenthub:close-card>` and
- * `<handoff>` — XML-style tag whose body is JSON. We reuse
+ * Parsing follows the same shape as `<agenthub:close-card>` — an XML-style
+ * tag whose body is JSON. We reuse
  * {@link extractJsonFromTagBody} so the same fence/blockquote/control-char
  * permissiveness applies. Each typed field is validated explicitly so
  * malformed payloads produce a structured `reason` for the chat UI to
@@ -249,7 +249,7 @@ const BLOCK_TAG_RE = /<agenthub:preview>\s*([\s\S]*?)\s*<\/agenthub:preview>/;
  *     silently so the rest of the payload still validates.
  *
  * Only the first block in `text` is considered (consistent with
- * `detectCloseCardBlock` and `detectHandoffBlock`).
+ * `detectCloseCardBlock`).
  */
 export function detectPreviewBlock(text: string): PreviewDetectionResult {
   if (typeof text !== 'string') {

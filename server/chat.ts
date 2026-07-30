@@ -36,21 +36,12 @@ import {
 } from './spawn-github-credentials.js';
 import { resolveGithubSpawnToken } from './github-spawn-token-resolver.js';
 import { getRepoOwnerForCwd } from './github-remote-owner.js';
-import type { DelegationResult } from './delegation.js';
 import {
   handleMultiAgentChat,
   initSessionMultiAgent,
   sessionHasAdvisors,
   activeMultiAgentRounds,
-  handleMultiAgentCancel,
 } from './session-multi-agent.js';
-import {
-  detectHandoffBlock,
-  recordMalformedHandoff,
-  handoffHasTrailingContent,
-  handleHandoff,
-  buildHandoffPromptSection,
-} from './handoff.js';
 import {
   detectCloseCardBlock,
   describeCloseCardReason,
@@ -140,7 +131,6 @@ import {
 } from './claude-session-id-conflict.js';
 import { allAgents, findProject } from './project-model.js';
 import { setSessionOwner, getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
-import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { shouldResetResumeAttemptsOnTurnStart } from './resume-attempts.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
 import { recomputeSessionState } from './session-state.js';
@@ -174,8 +164,6 @@ import {
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import { applyAssistantTextChunk } from './assistant-stream-buffer.js';
 import { isSessionChatBusy } from './session-chat-busy.js';
-import { clearDelegationUiMeta } from './delegation-state.js';
-import { isDelegationDisabledForAgent } from './delegation-gate.js';
 import type {
   Project,
   Agent,
@@ -191,7 +179,6 @@ import type {
   MessageQueueRow,
   Stmts,
   StreamEvent,
-  AppConfig,
   BroadcastFn,
   ChatMessage,
   BrowserToolActivityEvent,
@@ -287,25 +274,9 @@ interface SlashSkillResult {
   userArgs?: string;
 }
 
-interface DelegateTask {
-  agentId: string;
-  task: string;
-  owner: string;
-  scope: string;
-  expectedArtifact: string;
-  deadline: string;
-  returnFormat: string;
-}
-
 interface BuildEnrichedPromptOptions {
   useWorktree?: boolean;
   isFirstMessage?: boolean;
-  /**
-   * Target session id for which the prompt is being built. When provided,
-   * the builder checks for an incoming (delivered) handoff and appends a
-   * `## HANDOFF FROM ...` section on the first turn so the agent picks up
-   * the source session's transcript + handoff note.
-   */
   sessionId?: string;
   /** Outer PAV — `sessions.orchestration_phase` / `orchestration_meta`. */
   orchestrationPhase?: string | null;
@@ -422,7 +393,6 @@ export interface ChatHandlerDeps {
   findAgent: (agentId: string) => AgentLookup | null;
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
   activeProcesses: Map<string, ChildProcess>;
-  activeDelegationSessions: Set<string>;
   autonomousProjects: Set<string>;
   getClaudeBin: () => string;
   getCursorBin: () => string;
@@ -445,25 +415,6 @@ export interface ChatHandlerDeps {
     hostedBarePath?: string | null,
   ) => Promise<string>;
   drainQueue: (sessionId: string) => void;
-  handleDelegation: (
-    sessionId: string,
-    messageId: string,
-    tasks: DelegateTask[],
-    enrichedAgent: EnrichedAgent,
-    project: Project,
-    cwd: string,
-  ) => Promise<DelegationResult[]>;
-  handleDelegationCancel: (sessionId: string) => void;
-  synthesizeResults: (
-    sessionId: string,
-    agentId: string,
-    enrichedAgent: EnrichedAgent,
-    project: Project,
-    results: DelegationResult[],
-    originalContent: string,
-    cwd: string,
-  ) => Promise<void>;
-  parseDelegateBlock: (content: string) => DelegateTask[] | null;
   /**
    * Accessor for the managed dev-server runtime. Returns `null` when the
    * runtime has not been wired (e.g. tests of unrelated chat surface).
@@ -513,7 +464,7 @@ const MAX_PENDING_CONTEXT_BYTES = 128 * 1024;
 
 /**
  * Max times an auto-continuation turn will reschedule itself when the
- * session already has an active task or an in-flight delegation round.
+ * session already has an active task.
  * Pure constant so callers (and tests) can reason about the cap
  * independently of the `setTimeout`-based scheduler.
  */
@@ -637,16 +588,10 @@ export type ProjectAgentRosterPeer = { id: string; name: string; role?: string }
  * Markdown block listing peer agents for injection into the enriched system prompt.
  * Excludes the current agent; empty when there are no peers.
  *
- * The `delegateAllowlist` parameter is retained for source compatibility but
- * is intentionally ignored — the `<delegate>`/`<handoff>` sub-agent system
- * has been removed. Peers are listed neutrally; agents coordinate via plain
- * chat or multi-agent sessions, not via dispatched blocks.
+ * Peers are listed neutrally so agents can reference one another in chat and
+ * multi-agent sessions.
  */
-export function formatProjectAgentRosterSection(
-  peers: ProjectAgentRosterPeer[],
-  delegateAllowlist?: string[],
-): string {
-  void delegateAllowlist;
+export function formatProjectAgentRosterSection(peers: ProjectAgentRosterPeer[]): string {
   if (peers.length === 0) return '';
   const lines = peers.map((p) => {
     const display = (p.name || '').trim() || p.id;
@@ -772,8 +717,7 @@ export function buildEnrichedPrompt(
     undefined;
   const projectMode = getProjectMode(project as Project);
   const promptWorktree = !!(options.useWorktree && projectMode !== 'workflow');
-  // The sub-agent delegation system has been removed; the roster is now a
-  // neutral list of project peers without a delegate-allowlist annotation.
+  // The roster is a neutral list of project peers.
   const rosterSection = projectId
     ? formatProjectAgentRosterSection(peersOnProject(projectId, agent.id))
     : '';
@@ -1221,13 +1165,10 @@ When you need a secret from the user (a password, API key, login, token, or any 
 The submitted secret stays retrievable until the request's TTL expires, so you can call \`consume\` again with the **same \`requestId\`** if you lost the value (for example you fetched it inside a throwaway subprocess or a probe step that then exited). **Do that instead of asking the user to resubmit.** Consume the value in the same step that uses it, and hold it in process memory only as long as you need it— never echo it back to chat, log it, or write it to a file. Only when consume returns 404 or an \`expired\` status is the secret actually gone: then ask the user to resubmit by emitting a fresh \`agenthub:credential-request\` block.`;
   }
 
-  // The <delegate>/<handoff> sub-agent system has been removed. We no longer
-  // inject HANDOFF FROM transcripts on session start nor any Delegation/
-  // Sub-Agents/Handoff guidance on lead agents. Agents are now flat
-  // ("full-stack" or otherwise dedicated) and coordinate via plain chat or
-  // conference rooms. The Lead Response Contract still applies for any
-  // agent whose `role === 'lead'` because it's a structured-output rule,
-  // not a delegation instruction.
+  // Agents are flat ("full-stack" or otherwise dedicated) and coordinate via
+  // plain chat or conference rooms. The Lead Response Contract still applies
+  // for any agent whose `role === 'lead'` because it is a structured-output
+  // rule.
   if (agent.role === 'lead' && isFirstMessage) {
     prompt += `\n\n## Lead Response Contract
 For non-trivial execution updates, end with a compact structured block in prose (not JSON) using these headings:
@@ -1822,7 +1763,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     findAgent,
     getEnrichedAgent,
     activeProcesses,
-    activeDelegationSessions,
     autonomousProjects,
     getClaudeBin,
     getCursorBin,
@@ -1834,10 +1774,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     createCursorChat: _createCursorChat,
     ensureWorktree,
     drainQueue,
-    handleDelegation,
-    handleDelegationCancel,
-    synthesizeResults,
-    parseDelegateBlock,
     getDevServerRuntime,
     getPtyHost,
     autoCommitAndPR,
@@ -2192,11 +2128,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         finalizeLockOwned =
           msg._finalizeInternal === true && getSessionWorktreeLockOwner(sessionId) === 'finalize';
-        if (
-          !finalizeLockOwned &&
-          !activeProcesses.has(sessionId) &&
-          !activeDelegationSessions.has(sessionId)
-        ) {
+        if (!finalizeLockOwned && !activeProcesses.has(sessionId)) {
           turnStartLockHeld = tryAcquireSessionWorktreeLock(sessionId, 'turn-start');
         }
       }
@@ -2208,7 +2140,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         !finalizeLockOwned &&
         !turnStartLockHeld;
       const sessionBusy =
-        isSessionChatBusy(sessionId, activeProcesses, activeDelegationSessions, existingTask) ||
+        isSessionChatBusy(sessionId, activeProcesses, existingTask) ||
         activeMultiAgentRounds.has(sessionId) ||
         worktreeTurnStartBlocked;
 
@@ -2231,7 +2163,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           const plan = planAutoContinuationRetry({ retries });
           if (plan.action === 'retry') {
             console.warn(
-              `[auto-continuation] session ${sessionId}: active task or delegation present; ` +
+              `[auto-continuation] session ${sessionId}: active task present; ` +
                 `scheduling retry ${plan.nextRetry}/${AUTO_CONTINUATION_MAX_RETRIES}`,
             );
             setTimeout(() => {
@@ -2279,12 +2211,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             console.info(`[chat] chat_interrupt_queued: sending SIGTERM session=${sessionId}`);
             killProcessGroup(proc, 'SIGTERM');
           }
-          if (activeDelegationSessions.has(sessionId)) {
-            handleDelegationCancel(sessionId);
-            setTimeout(runExistingQueued, 500);
-          } else {
-            setTimeout(runExistingQueued, 100);
-          }
+          setTimeout(runExistingQueued, 100);
           broadcast({ type: 'interrupted', sessionId });
           return;
         }
@@ -2371,10 +2298,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             markSessionTermination(sessionId, 'chat_interrupt');
             console.info(`[chat] chat_interrupt: sending SIGTERM session=${sessionId}`);
             killProcessGroup(proc, 'SIGTERM');
-          }
-          if (activeDelegationSessions.has(sessionId)) {
-            handleDelegationCancel(sessionId);
-            setTimeout(() => drainQueue(sessionId), 500);
           }
           broadcast({ type: 'interrupted', sessionId });
         }
@@ -3489,61 +3412,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       //   codex → unknown `codex error: ...`
       let streamErrorMessage = '';
 
-      /** Set once we have a complete `<delegate>...</delegate>` block in the stream — workers may start before the lead CLI exits. Synthesis still runs after close (see `synthesizeResults`). */
-      let delegationWorkPromise: Promise<DelegationResult[]> | null = null;
-      let delegationSafetyTimer: ReturnType<typeof setTimeout> | null = null;
-
-      function clearDelegationSafetyTimer(): void {
-        if (delegationSafetyTimer != null) {
-          clearTimeout(delegationSafetyTimer);
-          delegationSafetyTimer = null;
-        }
-      }
-
-      function startDelegationOnce(tasks: DelegateTask[]): void {
-        if (delegationWorkPromise !== null) return;
-        activeDelegationSessions.add(sessionId);
-        delegationSafetyTimer = setTimeout(
-          () => {
-            if (activeDelegationSessions.has(sessionId)) {
-              console.error(
-                `[Delegation] Safety timeout reached for session ${sessionId} — force-unlocking`,
-              );
-              handleDelegationCancel(sessionId);
-              broadcast({
-                type: 'delegation_error',
-                sessionId,
-                parentMessageId: assistantMsgId,
-                error: 'Delegation timed out (safety limit reached)',
-              });
-              drainQueue(sessionId);
-            }
-          },
-          (config as AppConfig & { delegationSafetyTimeoutMs?: number })
-            .delegationSafetyTimeoutMs || 900000,
-        );
-
-        delegationWorkPromise = handleDelegation(
-          sessionId,
-          assistantMsgId,
-          tasks,
-          enrichedAgent!,
-          project,
-          effectiveCwd,
-        );
-        void delegationWorkPromise.finally(() => {
-          clearDelegationSafetyTimer();
-        });
-      }
-
-      function tryKickoffDelegationFromStream(assistantAccumulated: string): void {
-        // Sub-agent delegation has been removed. This function is retained as a
-        // no-op so existing call sites continue to compile while the surrounding
-        // infrastructure is progressively deleted.
-        void assistantAccumulated;
-        return;
-      }
-
       if (engine === 'claude-code') {
         // Scrub a `.claude/mcp-config.json` written by the removed MCP spawn
         // path before it stops being read. Unconditional because the old
@@ -3700,7 +3568,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         applyAgentHubGitSpawnCredentials(base, config);
         // AGENT_HUB_API_KEY + AGENT_HUB_DATA_DIR are now injected by
         // `buildSpawnEnv` (server/config.ts) so every spawn site —
-        // heartbeat, cron, delegation, room-chat, etc. — picks them up
+        // heartbeat, cron, room-chat, etc. — picks them up
         // uniformly. Only AGENT_HUB_SESSION_ID is per-session and stays
         // here.
         base.AGENT_HUB_SESSION_ID = sessionId;
@@ -3892,7 +3760,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (event.type === 'assistant_text') {
           const text =
             typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-          const { next, accumulatedText } = applyAssistantTextChunk(
+          const { next } = applyAssistantTextChunk(
             { finalText, partialFallback },
             text,
             event.partial,
@@ -3903,7 +3771,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           try {
             S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
           } catch {}
-          tryKickoffDelegationFromStream(accumulatedText);
         }
 
         if (event.type === 'system' && event.gitWorktree != null) {
@@ -4112,8 +3979,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
         // spawn-prompt-payload.ts). Failures are swallowed inside
-        // cleanup(); we null the ref so a long-lived closure (e.g.
-        // delegationWorkPromise) can't accidentally re-trigger.
+        // cleanup();
         if (systemPromptFileCleanup) {
           systemPromptFileCleanup();
           systemPromptFileCleanup = null;
@@ -4150,10 +4016,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 err instanceof Error ? err.message : String(err)
               }`,
             );
-          }
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
           }
           drainQueue(sessionId);
           return;
@@ -4192,10 +4054,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
 
         if (termination) {
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
-          }
           finalizeChatRunAfterTermination({
             stmts: S,
             broadcast,
@@ -4307,10 +4165,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     drainQueue(sessionId);
                   });
                 });
-                if (delegationWorkPromise) {
-                  handleDelegationCancel(sessionId);
-                  delegationWorkPromise = null;
-                }
                 return;
               }
               errorMsg = buildNoConversationFoundRecoveryMessage(missing.sessionId);
@@ -4343,10 +4197,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 buildTransientRetryNotice(errorMsg, attempt, retryPlan.delayMs),
                 { kind: 'turn_error_retry', attempt, errorText: errorMsg.slice(0, 500) },
               );
-              if (delegationWorkPromise) {
-                handleDelegationCancel(sessionId);
-                delegationWorkPromise = null;
-              }
               setTimeout(() => {
                 void handleChat(null, {
                   ...msg,
@@ -4384,10 +4234,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               triedEngines: msg._engineFailoverTried ?? [],
             });
             if (failover) {
-              if (delegationWorkPromise) {
-                handleDelegationCancel(sessionId);
-                delegationWorkPromise = null;
-              }
               setImmediate(() => {
                 void handleChat(null, {
                   ...msg,
@@ -4458,10 +4304,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: errorMsg,
           });
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
-          }
           try {
             const bgTask = S.getBackgroundTaskBySession.get(sessionId) as
               | BackgroundTaskRow
@@ -4535,23 +4377,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // preview. Detected here alongside the other action blocks so the
         // post-stream hook below can dispatch boot + screenshot async.
         const previewDetection = detectPreviewBlock(rawFinalContent);
-        // Sub-agent delegation and handoff have been removed. We retain the
-        // local symbols as `null` so the rest of this handler — which still
-        // branches on `handoffDetection` / `delegateTasks` while the rest of
-        // the system is being progressively deleted — compiles and behaves as
-        // if the model had emitted neither a `<delegate>` nor a `<handoff>`
-        // block. Any literal `<delegate>...</delegate>` text the model still
-        // produces is left in the assistant message as inert prose; the
-        // dispatcher will not run.
-        const handoffDetection = null as ReturnType<typeof detectHandoffBlock> | null;
-        const delegationDisabled = false;
-        const delegateTasks = null as ReturnType<typeof parseDelegateBlock> | null;
-        // Platform-wide kill-switch: both systems are globally off. Guards the
-        // malformed-gate and disabled-gate branches below so they behave
-        // consistently instead of giving a misleading "bad JSON shape" nudge
-        // when the real cause is global removal.
-        // TODO(cleanup-card): delete with delegation modules
-        const delegationGloballyOff = true;
         let shouldAutoContinue = false;
         let budgetResult: { ok: boolean; reasons: string[] } = { ok: false, reasons: [] };
         let continuationContextAdded = false;
@@ -5197,14 +5022,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             : '(empty response)';
         }
 
-        const hasDelegateBlock = /<delegate>\s*[\s\S]*?\s*<\/delegate>/.test(rawFinalContent);
-        const controlFlowPresent =
-          !!closeTask ||
-          !!closeCardDetection.present ||
-          !!handoffDetection?.present ||
-          !!handoffDetection?.task ||
-          !!delegateTasks ||
-          hasDelegateBlock;
+        const controlFlowPresent = !!closeTask || !!closeCardDetection.present;
         budgetResult = evaluateReactContinuationBudgets({
           reactLoopEnabled,
           continuationContextAdded,
@@ -5264,10 +5082,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           console.warn(`[stream] Dropping assistant message for ${sessionId}: ${message}`);
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
-          }
           drainQueue(sessionId);
           return;
         }
@@ -5612,235 +5426,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             });
           });
           return;
-        }
-
-        // Handoff takes precedence over delegate — if the agent emitted a
-        // <handoff> block, ownership transfers to the target agent and we do
-        // not run the delegate/synthesize flow for this turn. Per design,
-        // <handoff> is terminal: any prose after the closing tag is dropped.
-        if (enrichedAgent) {
-          // No fallback to detectHandoffBlock — handoff dispatch is globally off.
-          // When handoffDetection is null the entire block below is skipped.
-          const detection = handoffDetection;
-          if (detection !== null && detection.task) {
-            if (delegationWorkPromise) {
-              handleDelegationCancel(sessionId);
-              delegationWorkPromise = null;
-            }
-            if (handoffHasTrailingContent(rawFinalContent)) {
-              console.warn(
-                `[Handoff] Trailing content after </handoff> in session ${sessionId} — dropped (handoff is terminal).`,
-              );
-            }
-            handleHandoff(sessionId, assistantMsgId, detection.task, enrichedAgent, project).catch(
-              (err: unknown) => {
-                const message = err instanceof Error ? err.message : String(err);
-                console.error('[Handoff] Failed:', message);
-                broadcast({ type: 'handoff_error', sessionId, error: message });
-              },
-            );
-            drainQueue(sessionId);
-            return;
-          }
-          if (detection !== null && detection.present && detection.reason) {
-            if (delegationWorkPromise) {
-              handleDelegationCancel(sessionId);
-              delegationWorkPromise = null;
-            }
-            // The agent emitted a <handoff> tag but the payload was malformed
-            // (bad JSON, missing fields, etc.). Previously this path silently
-            // dropped the handoff with no UI feedback. Now: record a failed
-            // row + broadcast handoff_error so the widget renders the failure
-            // state instead of leaving the user staring at a dead-air turn.
-            const projectId =
-              (project as Project & { id?: string }).id ||
-              (enrichedAgent as EnrichedAgent & { projectId?: string }).projectId ||
-              '';
-            recordMalformedHandoff({
-              stmts,
-              broadcast,
-              sessionId,
-              fromAgentId: enrichedAgent.id,
-              fromAgentName: enrichedAgent.name,
-              projectId,
-              detection,
-            });
-            console.warn(
-              `[Handoff] Malformed <handoff> block in session ${sessionId}: ${detection.reason}`,
-            );
-            drainQueue(sessionId);
-            return;
-          }
-        }
-
-        // Operator-controlled gate (`delegationEnabled === false`): the lead is
-        // configured for inline-only completion. Surface a clear in-chat nudge
-        // and a `delegation_disabled` WS event for the message-anchored
-        // DelegateCard so the user knows exactly why nothing dispatched. This
-        // case takes priority over the malformed-gate branch below — when
-        // delegation is disabled we don't care whether the block parsed, the
-        // outcome is the same: nothing spawns.
-        const leadHasSubAgents =
-          agent.role === 'lead' && !!agent.subAgents && agent.subAgents.length > 0;
-        if (leadHasSubAgents && hasDelegateBlock && (delegationDisabled || delegationGloballyOff)) {
-          const sysId = uuidv4();
-          const body = delegationGloballyOff
-            ? '**Sub-agent delegation has been removed.** The `<delegate>` block was ignored — the delegation/handoff system is no longer active on this platform. Use direct chat or multi-agent sessions to coordinate with other agents.'
-            : '**Delegation disabled for this lead.** The `<delegate>` block was ignored — this lead agent is configured to complete work inline. Re-enable delegation in agent settings to use sub-agents, or finish the task yourself.';
-          try {
-            stmts.addMessage.run(
-              sysId,
-              sessionId,
-              'system',
-              body,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-            );
-            stmts.touchSession.run(sessionId);
-            const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
-              id: sysId,
-              session_id: sessionId,
-              role: 'system' as const,
-              content: body,
-              engine: null,
-              model: null,
-              attachments: null,
-              metadata: null,
-              created_at: new Date().toISOString(),
-            };
-            broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-          } catch (err: unknown) {
-            const m = err instanceof Error ? err.message : String(err);
-            console.warn(`[delegation] failed to persist disabled-gate notice: ${m}`);
-            const fallback: MessageRow = {
-              id: sysId,
-              session_id: sessionId,
-              role: 'system',
-              content: body,
-              engine: null,
-              model: null,
-              attachments: null,
-              metadata: null,
-              created_at: new Date().toISOString(),
-            };
-            broadcast({ type: 'message_added', sessionId, message: fallback });
-          }
-          // Anchored banner on the DelegateCard. Same shape as
-          // `delegation_error` so the client's existing dispatchError
-          // correlation logic works without a parallel state machine.
-          broadcast({
-            type: 'delegation_disabled',
-            sessionId,
-            parentMessageId: assistantMsgId,
-            reason: 'Delegation disabled for this lead',
-          });
-        }
-
-        if (
-          leadHasSubAgents &&
-          hasDelegateBlock &&
-          !delegateTasks &&
-          !delegationDisabled &&
-          !delegationGloballyOff
-        ) {
-          const sysId = uuidv4();
-          const body =
-            '**Delegation gate rejected.** `<delegate>` payload must be a JSON array of task objects (or a single task object — it will be coerced to a one-element array). Every task must include `agentId`, `task`, `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`. No delegation was started.';
-          try {
-            stmts.addMessage.run(
-              sysId,
-              sessionId,
-              'system',
-              body,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-            );
-            stmts.touchSession.run(sessionId);
-            const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
-              id: sysId,
-              session_id: sessionId,
-              role: 'system' as const,
-              content: body,
-              engine: null,
-              model: null,
-              attachments: null,
-              metadata: null,
-              created_at: new Date().toISOString(),
-            };
-            broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-          } catch (err: unknown) {
-            const m = err instanceof Error ? err.message : String(err);
-            console.warn(`[delegation] failed to persist malformed delegate notice: ${m}`);
-            const fallback: MessageRow = {
-              id: sysId,
-              session_id: sessionId,
-              role: 'system',
-              content: body,
-              engine: null,
-              model: null,
-              attachments: null,
-              metadata: null,
-              created_at: new Date().toISOString(),
-            };
-            broadcast({ type: 'message_added', sessionId, message: fallback });
-          }
-        }
-
-        if (agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0) {
-          const parsedDelegateTasks = delegateTasks;
-          const hasDelegateTasks = !!parsedDelegateTasks?.length;
-          if (hasDelegateTasks || delegationWorkPromise != null) {
-            if (hasDelegateTasks && delegationWorkPromise == null) {
-              startDelegationOnce(parsedDelegateTasks!);
-            }
-
-            if (delegationWorkPromise) {
-              void delegationWorkPromise
-                .then((results) => {
-                  if (results.length > 0) {
-                    return synthesizeResults(
-                      sessionId,
-                      agentId,
-                      enrichedAgent!,
-                      project,
-                      results,
-                      content,
-                      effectiveCwd,
-                    );
-                  }
-                })
-                .catch((err: unknown) => {
-                  const message = err instanceof Error ? err.message : String(err);
-                  console.error('[Delegation] Failed:', message);
-                  broadcast({
-                    type: 'delegation_error',
-                    sessionId,
-                    parentMessageId: assistantMsgId,
-                    error: message,
-                  });
-                })
-                .finally(() => {
-                  clearDelegationSafetyTimer();
-                  activeDelegationSessions.delete(sessionId);
-                  clearDelegationUiMeta(sessionId);
-                  broadcastActiveTasksSnapshot(stmts, broadcast);
-                  drainQueue(sessionId);
-                });
-            } else {
-              drainQueue(sessionId);
-            }
-            return;
-          }
         }
 
         // Errored-but-assembled turn: auto-commit so work-in-progress is

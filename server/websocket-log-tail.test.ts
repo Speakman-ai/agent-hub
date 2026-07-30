@@ -61,7 +61,6 @@ describe('WebSocket log live tail', () => {
       getProjects: () => [project('project-a'), project('project-b')],
       handleChat: vi.fn().mockResolvedValue(undefined),
       handleCancel: vi.fn(),
-      handleDelegationCancel: vi.fn(),
       handleDequeue: vi.fn(),
       handleEditQueueItem: vi.fn(),
       handleDesignChat: vi.fn().mockResolvedValue(undefined),

@@ -398,7 +398,7 @@ interface AutonomousDeps {
    * synchronously.
    */
   getDb: () => Database;
-  /** Drain per-session message queues when no CLI/delegation is in flight. */
+  /** Drain per-session message queues when no CLI is in flight. */
   drainIdleSessionQueues?: () => number;
 }
 
@@ -1040,32 +1040,10 @@ async function runAutonomousLoopInner(
   }
 
   // Reviewer/docs are out-of-band roles — never autonomously assigned.
-  // Leads are always assignable: they can implement directly or `<handoff>`
-  // to a specialist, and they're the right safety net when a project's
-  // `subAgents` list is stale or empty.
+  // Leads are always assignable and are the safety net for cards without a
+  // matching specialist label.
   const roleFiltered = project.agents.filter((a) => a.role !== 'docs' && a.role !== 'reviewer');
-  const leadAgent = project.agents.find((a) => a.role === 'lead');
-  const allLeads = project.agents.filter((a) => a.role === 'lead');
-  let assignableAgents: Agent[];
-  if (leadAgent && leadAgent.subAgents?.length) {
-    const resolvedSubAgents = leadAgent.subAgents
-      .map((sa) => {
-        const saId = typeof sa === 'string' ? sa : (sa as { id: string }).id;
-        return project.agents.find((a) => a.id === saId) || d.findAgent(saId)?.agent;
-      })
-      .filter((a): a is Agent => !!a);
-    // Union of resolved subAgents and all leads, deduped by id.
-    const byId = new Map<string, Agent>();
-    for (const a of [...resolvedSubAgents, ...allLeads]) byId.set(a.id, a);
-    assignableAgents = Array.from(byId.values());
-    // Stale/unresolved subAgent IDs and no leads in the project → fall back
-    // to the role-filter so a misconfigured roster doesn't strand the loop.
-    if (assignableAgents.length === 0) {
-      assignableAgents = roleFiltered;
-    }
-  } else {
-    assignableAgents = roleFiltered;
-  }
+  let assignableAgents: Agent[] = roleFiltered;
 
   // Honour the per-agent "Dev" flag: an agent that is not a Dev (explicit
   // `isDev: false`) never receives autonomously-dispatched tickets. Default
@@ -1086,7 +1064,7 @@ async function runAutonomousLoopInner(
 
   const agentCount = assignableAgents.length;
   if (agentCount === 0) {
-    const msg = `No assignable agents for project "${project.name}" — check subAgents config or agent roles`;
+    const msg = `No assignable agents for project "${project.name}" — check agent roles`;
     console.log(`[Autonomous] ${msg}`);
     const firstCard = eligible[0];
     if (firstCard?.id) {
@@ -1161,12 +1139,12 @@ async function runAutonomousLoopInner(
   // Routing pool for `pickAgentForCard`:
   //   - The project lead is treated as fallback-only; it never matches as a
   //     specialist. Even when the dispatcher's `assignableAgents` includes
-  //     the lead (no-subAgents projects), we strip it from the routing
+  //     the lead, we strip it from the routing
   //     pool here so a card labelled "lead" doesn't accidentally land on
   //     the lead via id/role-match.
   //   - The lead's slot count comes from `agentSlotsCopy` if it's already
   //     in the assignable pool, otherwise from a synthetic per-agent cap so
-  //     the lead can absorb overflow on subAgents-scoped projects too. The
+  //     the lead can absorb overflow on specialist-scoped projects too. The
   //     synthetic cap mirrors `perAgentLimit` (= epic.autonomous_max_concurrent)
   //     so a fallback lead isn't artificially capped at one overflow card.
   const lead = pickLead(project);
@@ -1181,8 +1159,7 @@ async function runAutonomousLoopInner(
 
   // Label-based routing: every eligible card is dispatchable. Cards carry
   // specialty labels; we route to the first specialist whose id/role/name
-  // matches a label, falling back to the project lead (which can implement
-  // directly or `<handoff>`).
+  // matches a label, falling back to the project lead.
   const dispatchable = eligible;
 
   // `cursor` walks the eligible list; `assigned` counts only *actual*

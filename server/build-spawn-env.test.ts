@@ -385,7 +385,7 @@ describe('mergeAllowlistedExtraEnv — spawn env integration', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT_HUB_API_KEY + AGENT_HUB_DATA_DIR injection — every spawn site
-// (heartbeat, cron, delegation, room-chat, slack, design-chat, one-shot, …)
+// (heartbeat, cron, room-chat, slack, design-chat, one-shot, …)
 // goes through `buildSpawnEnv`, so config rotations propagate uniformly
 // instead of only through the chat.ts spawn path. See server/spawn-creds-file.ts
 // for the long-running-chat recovery path that complements this.

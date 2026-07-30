@@ -2850,13 +2850,9 @@ This workspace has no git repo and no PR automation — your job is planning, or
     }
 
     // Flat agent model — every onboarded agent lands as a peer `role: 'dev'`.
-    // The legacy lead/sub hierarchy (with `parentAgentId` / `subAgents`
-    // wiring) is no longer set automatically here; `<delegate>` / `<handoff>`
-    // are deprecated and CLI engines manage their own internal sub-agent
-    // orchestration. The wizard should be sending a single dev agent in
-    // most cases — but we tolerate multiple peers in case the caller
-    // explicitly wants them (e.g. for power users who already have a
-    // multi-specialist setup in mind).
+    // The wizard should be sending a single dev agent in most cases, but we
+    // tolerate multiple peers when a caller explicitly wants a multi-specialist
+    // setup.
     if (Array.isArray(agentDefs)) {
       for (const def of agentDefs) {
         if (!def.id || !/^[a-zA-Z0-9-]+$/.test(def.id)) continue;

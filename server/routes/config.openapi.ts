@@ -84,7 +84,7 @@ export const AppConfigComponent = registerComponent(
       codexDangerBypass: z.boolean().optional(),
       codexProfile: z.string().nullable().optional().openapi({
         description:
-          'Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, delegation, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.',
+          'Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.',
       }),
       _file: z.object({
         claudeBin: z.string().nullable(),

@@ -374,7 +374,6 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       'reviewer',
       'role',
       'canReview',
-      'delegationEnabled',
     ] as const;
     for (const key of allowed) {
       if ((parsed as Record<string, unknown>)[key] !== undefined) {
@@ -544,8 +543,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   // Hard-delete an agent. Agents are stored in projects.json (not a DB table)
   // so there are no FK cascades from an "agents" row — we have to wipe every
   // child store keyed by agent_id explicitly. Sessions cascade their own
-  // children (messages, delegations, handoffs, skill_invocations,
-  // background_tasks, message_queue, checkpoints). The on-disk workspace
+  // children (messages, skill invocations, background tasks, message_queue,
+  // checkpoints). The on-disk workspace
   // directory at <project.ahw>/agents/<agentId>/ is also removed so a
   // re-created agent with the same id starts clean.
   router.delete('/api/agents/:agentId', (req: Request, res: Response) => {
@@ -564,8 +563,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     // 2. Atomically wipe every child row keyed by this agent.
     try {
       getDb().transaction(() => {
-        // sessions cascade messages/delegations/handoffs/skill_invocations/
-        // background_tasks/message_queue/checkpoints via FK ON DELETE CASCADE
+        // sessions cascade messages/skill_invocations/background_tasks/
+        // message_queue/checkpoints via FK ON DELETE CASCADE
         stmts.deleteSessionsByAgent.run(agentId);
         stmts.deleteHeartbeatLogsByAgent.run(agentId);
         stmts.deleteSlackMessagesByAgent.run(agentId);
@@ -578,13 +577,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       return res.status(500).json({ error: 'Failed to clean up agent data' });
     }
 
-    // 3. Remove the agent from projects.json and drop stale sub-agent refs.
+    // 3. Remove the agent from projects.json.
     project.agents = project.agents.filter((a) => a.id !== agentId);
-    for (const a of project.agents) {
-      if (Array.isArray(a.subAgents)) {
-        a.subAgents = a.subAgents.filter((sid) => sid !== agentId);
-      }
-    }
     saveProjects();
 
     // 4. Refresh the project room so the participant list drops the agent.

@@ -2040,10 +2040,9 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
     expect(commentArgs[3]).toMatch(/Autonomous dispatch skipped/);
   });
 
-  it('respects lead.subAgents config when set', async () => {
+  it('routes a labeled card to its matching specialist', async () => {
     // Card carries label "dev-2" so the routing layer prefers the specialist
-    // over the lead fallback. With subAgents=['dev-2'], dev-1 is filtered out
-    // of the routing pool, so only dev-2 (or the lead fallback) can be picked.
+    // over the lead fallback when multiple peer agents are available.
     const card = makeCard({ labels: 'dev-2' });
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
@@ -2060,7 +2059,6 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
             name: 'Lead',
             role: 'lead',
             engine: 'claude-code',
-            subAgents: ['dev-2'],
           },
           { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
           { id: 'dev-2', name: 'Dev Two', role: 'sub', engine: 'claude-code' },
@@ -2077,11 +2075,7 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
     expect(sessionArgs[1]).toBe('dev-2');
   });
 
-  it('keeps the lead assignable as fallback even when subAgents is configured', async () => {
-    // subAgents=['dev-2'] would historically have stripped lead-1 from the
-    // assignable pool entirely. The card has no matching label, so the
-    // routing layer must fall back to the lead — verifying the lead is
-    // still in `assignableAgents`.
+  it('keeps the lead assignable as fallback for unlabeled cards', async () => {
     const card = makeCard({ labels: '' });
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
@@ -2098,7 +2092,6 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
             name: 'Lead',
             role: 'lead',
             engine: 'claude-code',
-            subAgents: ['dev-2'],
           },
           { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
           { id: 'dev-2', name: 'Dev Two', role: 'sub', engine: 'claude-code' },
@@ -2116,11 +2109,7 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
     expect(stmts.createKanbanCardComment.run).not.toHaveBeenCalled();
   });
 
-  it('falls back to role-filter when every subAgent id is stale/unresolved', async () => {
-    // subAgents references agents that don't exist in the project (the
-    // real-world Hub Lead Dev case). Old behavior: empty pool → "No
-    // assignable agents". New behavior: drop back to the role-filter so
-    // the lead + any specialists still pick up work.
+  it('keeps peer agents eligible when labels are absent', async () => {
     const card = makeCard({ labels: '' });
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
@@ -2137,7 +2126,6 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
             name: 'Lead',
             role: 'lead',
             engine: 'claude-code',
-            subAgents: ['ghost-1', 'ghost-2'],
           },
           { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
         ] as never,
@@ -2148,9 +2136,7 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
 
     await runAutonomousLoop('proj-1');
 
-    // No label match → routing falls to the lead. The new fallback put
-    // lead-1 + dev-1 back in the pool (instead of bailing with the
-    // "No assignable agents" notice), and the lead absorbs the card.
+    // No label match → routing falls to the lead and the lead absorbs the card.
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
     const sessionArgs = stmts.createSession.run.mock.calls[0];
     expect(sessionArgs[1]).toBe('lead-1');
@@ -2911,8 +2897,7 @@ describe('runAutonomousLoop — blocker filter', () => {
 //
 //  Triage is gone. Cards now dispatch to the first specialist whose
 //  id/role/name/id-tail matches a label on the card. When no label matches,
-//  the project lead picks the card up (and can `<handoff>` if it would
-//  rather route the work).
+//  the project lead picks the card up directly.
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('runAutonomousLoop — label routing', () => {

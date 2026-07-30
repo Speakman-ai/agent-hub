@@ -76,7 +76,6 @@ function makeDeps(agentId: string, bin: string): ChatHandlerDeps {
     findAgent: (id) => (id === agentId ? { project, agent } : null),
     getEnrichedAgent: (id) => (id === agentId ? enriched : null),
     activeProcesses: new Map<string, ChildProcess>(),
-    activeDelegationSessions: new Set(),
     autonomousProjects: new Set(),
     getClaudeBin: () => bin,
     getCursorBin: () => bin,
@@ -87,10 +86,6 @@ function makeDeps(agentId: string, bin: string): ChatHandlerDeps {
     resolveSlashSkill: vi.fn(),
     ensureWorktree: vi.fn(async () => '/tmp'),
     drainQueue: vi.fn(),
-    handleDelegation: vi.fn(async () => []),
-    handleDelegationCancel: vi.fn(),
-    synthesizeResults: vi.fn(),
-    parseDelegateBlock: vi.fn(),
     autoCommitAndPR: vi.fn(async () => undefined),
     tryAutonomousDispatch: vi.fn(),
   };

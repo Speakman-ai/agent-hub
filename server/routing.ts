@@ -6,8 +6,8 @@ import type { Agent, KanbanCardRow, Project } from './types.js';
 // carry specialty labels, and the autonomous
 // dispatcher routes the card to the first specialist whose `id`, `role`, or
 // `name` matches one of those labels (case-insensitive). When no specialist
-// matches, the card falls through to the project lead, who can implement
-// directly or `<handoff>` to a sub-agent.
+// matches, the card falls through to the project lead, who can implement it
+// directly.
 //
 // Pure — no DB / no broadcast. Tested in routing.test.ts.
 
@@ -101,8 +101,7 @@ export function pickAgentForCard(args: {
     }
   }
 
-  // 2. Fallback: project lead. The lead is allowed to take work directly
-  // and can `<handoff>` to a sub-agent if it would rather route the card.
+  // 2. Fallback: project lead, when configured and available.
   if (lead) {
     const slots = ctx.slotsByAgentId.get(lead.id) ?? 0;
     if (slots > 0) return lead;

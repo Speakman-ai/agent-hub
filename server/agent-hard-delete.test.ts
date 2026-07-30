@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
-import { randomUUID } from 'crypto';
 import type supertest from 'supertest';
 import { createProject, createAgent, createSession, getRequest } from './test/helpers.js';
 
@@ -204,28 +203,5 @@ describe('DELETE /api/agents/:agentId — hard delete', () => {
     const sessions = await request.get(`/api/agents/${recreated.id}/sessions`).expect(200);
     expect(Array.isArray(sessions.body)).toBe(true);
     expect(sessions.body).toHaveLength(0);
-  });
-
-  it('strips deleted agent id from remaining agents subAgents lists', async () => {
-    const project = await createProject();
-    const pid = project.id as string;
-    const leadId = `ld-${randomUUID().slice(0, 8)}`;
-    const subId = `sb-${randomUUID().slice(0, 8)}`;
-    await createAgent({ projectId: pid, id: leadId, role: 'lead' });
-    await createAgent({ projectId: pid, id: subId, role: 'sub' });
-
-    const { getProjects, saveProjects } = await import('./project-model.js');
-    const proj = getProjects().find((p) => p.id === pid);
-    expect(proj).toBeTruthy();
-    const leadAgent = proj!.agents.find((a) => a.id === leadId);
-    expect(leadAgent).toBeTruthy();
-    leadAgent!.subAgents = [subId, 'other-kept'];
-    saveProjects();
-
-    await request.delete(`/api/agents/${subId}`).expect(204);
-
-    const after = getProjects().find((p) => p.id === pid)!;
-    expect(after.agents.find((a) => a.id === subId)).toBeUndefined();
-    expect(after.agents.find((a) => a.id === leadId)!.subAgents).toEqual(['other-kept']);
   });
 });

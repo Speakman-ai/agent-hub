@@ -988,8 +988,8 @@ export function normalizeCommitInputs(
  * We prefer the newest non-generic subject — it usually reflects the final
  * shape of the change after any fixups.
  *
- * Accepts either a `string[]` (subjects only — legacy callers like
- * `handoff.ts` and pre-body tests) or a `CommitInfo[]` (subject + body). Only
+ * Accepts either a `string[]` (subjects only — legacy callers and pre-body
+ * tests) or a `CommitInfo[]` (subject + body). Only
  * subjects are inspected for genericness, so the body field is structurally
  * irrelevant here — but accepting both shapes keeps the call sites single.
  */
@@ -1070,7 +1070,7 @@ export interface PrBodyInput {
    * Commits on the branch, newest first.
    *
    * - Legacy `string[]` form (subjects only): preserved for back-compat with
-   *   tests and handoff-style callers that don't have bodies.
+   *   tests and callers that don't have bodies.
    * - `CommitInfo[]` form: subject + optional body. When a body is present,
    *   `buildPrBody` will use it in the Summary (single-commit branches) and
    *   render it as indented detail under each bullet (multi-commit

@@ -1,4 +1,3 @@
-import { v4 as uuidv4 } from 'uuid';
 import {
   readFileSync,
   writeFileSync,
@@ -584,13 +583,8 @@ function retireIntakeAgents(): void {
 
     if (removedIds.size === 0) continue;
 
-    // 3. Drop the retired agents from the roster + clean stale sub-agent refs.
+    // 3. Drop the retired agents from the roster.
     project.agents = (project.agents || []).filter((a) => !removedIds.has(a.id));
-    for (const a of project.agents) {
-      if (Array.isArray(a.subAgents)) {
-        a.subAgents = a.subAgents.filter((sid) => !removedIds.has(sid));
-      }
-    }
     changed = true;
   }
 

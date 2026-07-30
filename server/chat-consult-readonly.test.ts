@@ -57,7 +57,6 @@ function makeDeps(
     findAgent: (id) => (id === agentId ? { project, agent } : null),
     getEnrichedAgent: (id) => (id === agentId ? enriched : null),
     activeProcesses,
-    activeDelegationSessions: new Set(),
     autonomousProjects: new Set(),
     getClaudeBin: () => argvRecorderBin,
     getCursorBin: () => argvRecorderBin,
@@ -68,10 +67,6 @@ function makeDeps(
     resolveSlashSkill: vi.fn(),
     ensureWorktree: vi.fn(async () => tmpRoot),
     drainQueue: vi.fn(),
-    handleDelegation: vi.fn(async () => []),
-    handleDelegationCancel: vi.fn(),
-    synthesizeResults: vi.fn(),
-    parseDelegateBlock: vi.fn(),
     autoCommitAndPR: vi.fn(async () => undefined),
     tryAutonomousDispatch: vi.fn(),
   };

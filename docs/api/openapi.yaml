@@ -109,8 +109,6 @@ components:
           description: Whether this agent accepts autonomously-dispatched kanban tickets. Default Dev roles (dev/lead) are always eligible and out-of-band roles (docs/reviewer) never are, regardless of this field; for other agents an explicit `false` opts out and `undefined` preserves pre-flag eligibility.
         active:
           type: boolean
-        delegationEnabled:
-          type: boolean
         browserToolsEnabled:
           type: boolean
         browserViewportWidth:
@@ -136,7 +134,7 @@ components:
         - id
         - name
         - engine
-      description: An agent. Many additional optional fields exist on the row (subAgents, hooks, …) — only the stable, documented surface is enumerated here.
+      description: An agent. Many additional optional fields exist on the row (hooks, …) — only the stable, documented surface is enumerated here.
     AgentEnriched:
       allOf:
         - $ref: "#/components/schemas/Agent"
@@ -3028,7 +3026,7 @@ components:
         codexProfile:
           type: string
           nullable: true
-          description: Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, delegation, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.
+          description: Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.
         _file:
           type: object
           properties:
@@ -11973,8 +11971,6 @@ paths:
                 isDev:
                   type: boolean
                   description: Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/reviewer → must be false) is rejected with 400; a matching value is a no-op.
-                delegationEnabled:
-                  type: boolean
                 browserToolsEnabled:
                   type: boolean
                 browserViewportWidth:
@@ -12014,7 +12010,7 @@ paths:
       tags:
         - Agents
       summary: Hard-delete an agent and its dependent rows
-      description: Stops the in-memory heartbeat, transactionally clears every child store keyed by `agent_id` (sessions cascade messages/delegations/handoffs/skill_invocations/background_tasks/message_queue/checkpoints via FK ON DELETE CASCADE), drops the agent from `projects.json`, refreshes the project room, and best-effort removes the on-disk agent workspace. Returns 204 on success.
+      description: Stops the in-memory heartbeat, transactionally clears every child store keyed by `agent_id` (sessions cascade messages, skill invocations, background tasks, queue entries, and checkpoints via FK ON DELETE CASCADE), drops the agent from `projects.json`, refreshes the project room, and best-effort removes the on-disk agent workspace. Returns 204 on success.
       parameters:
         - schema:
             type: string

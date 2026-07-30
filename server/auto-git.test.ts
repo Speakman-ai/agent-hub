@@ -2472,15 +2472,13 @@ describe('buildPrTitle', () => {
     expect(buildPrTitle('   ')).toBe('Untitled change');
   });
 
-  it('produces a clean PR title for a handoff-derived session name (regression for PR #363)', () => {
-    // `server/handoff.ts` now stores the session name as a `buildPrTitle`-
-    // normalised first line of the handoff note. auto-git.ts:510 falls back
-    // to that session name when no kanban card is linked, then re-runs it
-    // through buildPrTitle. The pipeline must be idempotent and must never
-    // regress to a locale-timestamp format.
-    const sessionName = buildPrTitle('Fix PR titles for handoff-sourced sessions');
+  it('produces a clean PR title for a transferred-session name (regression for PR #363)', () => {
+    // The session title is normalized before auto-git uses it as a fallback
+    // when no kanban card is linked. The pipeline must be idempotent and must
+    // never regress to a locale-timestamp format.
+    const sessionName = buildPrTitle('Fix PR titles for transferred sessions');
     const prTitle = buildPrTitle(sessionName);
-    expect(prTitle).toBe('Fix PR titles for handoff-sourced sessions');
+    expect(prTitle).toBe('Fix PR titles for transferred sessions');
     expect(prTitle).not.toMatch(/\d{1,2}:\d{2}/);
     expect(prTitle).not.toMatch(/ — /);
   });
@@ -2706,7 +2704,7 @@ describe('buildPrBody', () => {
   // `CommitInfo[]` form lets us surface the agent's commit *bodies* — which
   // is where the rationale usually lives — in the PR Summary and the
   // per-bullet detail. Empty bodies fall back to the subject-only behaviour
-  // so legacy callers (handoff.ts, older tests) are unaffected.
+  // so older callers remain unaffected.
 
   it('uses the commit body as the Summary when a single commit has a body', () => {
     const body = buildPrBody({

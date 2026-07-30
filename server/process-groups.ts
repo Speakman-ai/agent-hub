@@ -14,7 +14,7 @@
  *   2. Track the child here via `trackChild(proc)`.
  *   3. On server SIGTERM/SIGINT, signal every tracked group (including
  *      grandchildren) and force-kill survivors after a grace period.
- *   4. User-initiated cancel paths (handleCancel, delegation cancel, timeouts)
+ *   4. User-initiated cancel paths (handleCancel, timeouts)
  *      use `killProcessGroup(proc)` instead of `proc.kill()` so the signal
  *      reaches the full subtree, not just the top-level child.
  */

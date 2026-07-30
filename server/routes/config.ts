@@ -203,7 +203,7 @@ interface ProjectExportData {
   version: number;
   type: string;
   // The export endpoint serializes the entire project record (id, name, cwd,
-  // ahw, color, agents, commands, leadAgent, subAgents, …). The merge-into-
+  // ahw, color, agents, commands, leadAgent, …). The merge-into-
   // existing path only consumes a subset, but the create-from-export path
   // needs id/name/cwd to seed a brand-new project, so the type lists those
   // explicitly.
@@ -215,7 +215,6 @@ interface ProjectExportData {
     agents?: unknown[];
     color?: string;
     leadAgent?: string;
-    subAgents?: string[];
     commands?: Record<string, string>;
     [key: string]: unknown;
   };
@@ -1315,8 +1314,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         targetProject.color = data.project!.color || targetProject.color;
         (targetProject as Record<string, unknown>).leadAgent =
           data.project!.leadAgent || (targetProject as Record<string, unknown>).leadAgent;
-        (targetProject as Record<string, unknown>).subAgents =
-          data.project!.subAgents || (targetProject as Record<string, unknown>).subAgents;
         if (data.project!.commands)
           (targetProject as Record<string, unknown>).commands = data.project!.commands;
         saveProjects();

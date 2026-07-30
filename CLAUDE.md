@@ -85,7 +85,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **heartbeat_logs**: Scheduled agent check-in results
 - **crons**: Automated task definitions and execution logs
 - **slack_messages**: Slack bot interaction history
-- **delegations** / **handoffs** (legacy): retained for historical data only — the `<delegate>` / `<handoff>` sub-agent system has been removed. New rows are no longer written.
+- **delegations** / **handoffs** (legacy): historical read surfaces are transitional and scheduled for removal with the history cleanup migration. The dispatch modules are gone, and new rows are no longer written.
 
 ### File Structure Conventions
 

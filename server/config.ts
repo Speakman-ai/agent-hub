@@ -868,7 +868,7 @@ export function buildSpawnEnv(
 
   // Hub API access for shell wrappers under the agent-hub skill (scripts/*.sh).
   // Reads `cfg.apiKey` at every call so a config rotation propagates to every
-  // *new* spawn (heartbeat, cron, delegation, room-chat, slack, design-chat,
+  // *new* spawn (heartbeat, cron, room-chat, slack, design-chat,
   // one-shot, …) without a server restart. Long-running chat sessions whose
   // env was frozen pre-rotation recover via the per-session spawn-creds file
   // (see `server/spawn-creds-file.ts`); this var is the env-first path that

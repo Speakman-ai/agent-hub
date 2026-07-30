@@ -105,13 +105,12 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
   // "Couldnt find tool skill" fix; new spawn sites should be added here.
   const spawnSites: Array<{ file: string; reason: string }> = [
     { file: 'chat.ts', reason: 'main interactive chat session' },
-    { file: 'delegation.ts', reason: '<delegate> sub-agent + synthesis' },
-    // Multi-agent session advisor/executor spawns delegate spawn-arg planning to
+    // Multi-agent session advisor/executor spawns use the same spawn-arg planning to
     // session-multi-engine.ts (same pattern as design-chat.ts → design-multi-engine.ts).
     { file: 'session-multi-engine.ts', reason: 'multi-agent session advisor/executor spawns' },
     { file: 'heartbeat.ts', reason: 'runClaude — heartbeats / crons / workflow' },
     { file: 'slack.ts', reason: 'Slack one-shot' },
-    // memory.ts used to spawn Claude directly; it now delegates to the
+    // memory.ts used to spawn Claude directly; it now routes through the
     // unified one-shot spawner so the Skill-disable wiring lives in
     // one-shot-spawn.ts (covered below) instead of memory.ts itself.
     { file: 'one-shot-spawn.ts', reason: 'unified one-shot spawner (memory / analyze / etc.)' },
@@ -153,19 +152,17 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
     // (and project analyze fallback). Pin the separator there instead.
     { file: 'one-shot-spawn.ts', reason: 'unified one-shot spawner (memory / analyze / etc.)' },
     { file: 'slack.ts', reason: 'Slack one-shot' },
-    // session-multi-agent.ts delegates Claude spawns to session-multi-engine.ts
+    // session-multi-agent.ts routes Claude spawns through session-multi-engine.ts
     // (same pattern as design-multi-engine.ts).
     { file: 'session-multi-engine.ts', reason: 'multi-agent session advisor/executor spawns' },
-    { file: 'delegation.ts', reason: '<delegate> sub-agent fan-out (claude-code default)' },
   ];
 
   it.each(bareTrailingPromptSites)(
     '$file inserts `--` end-of-options before the trailing positional prompt ($reason)',
     ({ file }) => {
       const src = readFileSync(path.join(__dirname, file), 'utf-8');
-      // Some modules (e.g. delegation.ts) call `disableNativeSkillToolArgs()`
-      // at multiple spawn sites — sub-agent fan-out AND synthesis. Every
-      // occurrence whose argv ends with a bare positional prompt must have
+      // Some modules call `disableNativeSkillToolArgs()` at multiple spawn
+      // sites. Every occurrence whose argv ends with a bare positional prompt must have
       // a `'--'` separator between the helper call and the prompt push, or
       // Claude CLI's variadic `--disallowed-tools <tools...>` will swallow
       // the prompt and fail with "Input must be provided…". Walk every

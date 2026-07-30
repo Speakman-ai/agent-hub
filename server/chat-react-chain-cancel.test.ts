@@ -43,7 +43,6 @@ function stubChatDeps(): {
     findAgent: findAgent as unknown as ChatHandlerDeps['findAgent'],
     getEnrichedAgent: () => null,
     activeProcesses: new Map<string, ChildProcess>(),
-    activeDelegationSessions: new Set(),
     autonomousProjects: new Set(),
     getClaudeBin: () => '/bin/true',
     getCursorBin: () => '/bin/true',
@@ -54,10 +53,6 @@ function stubChatDeps(): {
     resolveSlashSkill: vi.fn(),
     ensureWorktree: vi.fn(async () => '/tmp'),
     drainQueue,
-    handleDelegation: vi.fn(async () => []),
-    handleDelegationCancel: vi.fn(),
-    synthesizeResults: vi.fn(),
-    parseDelegateBlock: vi.fn(),
     autoCommitAndPR: vi.fn(async () => undefined),
     tryAutonomousDispatch: vi.fn(),
   };

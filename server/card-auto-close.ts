@@ -17,7 +17,7 @@ import { recomputeSessionState } from './session-state.js';
 //   </agenthub:close-card>
 //
 // The server parses this from the final assistant message after the CLI
-// process closes (same hook point as `<delegate>` / `<handoff>`), looks up
+// process closes, looks up
 // the card linked to the current session via `kanban_cards.session_id`,
 // moves it to the Done column, and drops an explanatory comment on the
 // card referencing the session. All of it is best-effort: if anything

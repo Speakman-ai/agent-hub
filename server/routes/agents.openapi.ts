@@ -53,7 +53,6 @@ export const AgentComponent = registerComponent(
           'Whether this agent accepts autonomously-dispatched kanban tickets. Default Dev roles (dev/lead) are always eligible and out-of-band roles (docs/reviewer) never are, regardless of this field; for other agents an explicit `false` opts out and `undefined` preserves pre-flag eligibility.',
       }),
       active: z.boolean().optional(),
-      delegationEnabled: z.boolean().optional(),
       browserToolsEnabled: z.boolean().optional(),
       browserViewportWidth: z.number().int().optional(),
       browserViewportHeight: z.number().int().optional(),
@@ -68,7 +67,7 @@ export const AgentComponent = registerComponent(
     })
     .openapi({
       description:
-        'An agent. Many additional optional fields exist on the row (subAgents, hooks, …) — only the stable, documented surface is enumerated here.',
+        'An agent. Many additional optional fields exist on the row (hooks, …) — only the stable, documented surface is enumerated here.',
     }),
 );
 
@@ -225,7 +224,6 @@ export const UpdateAgentRequestSchema = z.object({
     description:
       'Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/reviewer → must be false) is rejected with 400; a matching value is a no-op.',
   }),
-  delegationEnabled: z.boolean().optional(),
   browserToolsEnabled: BrowserToolsEnabled,
   browserViewportWidth: BrowserDim(320, 3840),
   browserViewportHeight: BrowserDim(240, 2160),
@@ -318,7 +316,7 @@ registerPath({
   tags: ['Agents'],
   summary: 'Hard-delete an agent and its dependent rows',
   description:
-    'Stops the in-memory heartbeat, transactionally clears every child store keyed by `agent_id` (sessions cascade messages/delegations/handoffs/skill_invocations/background_tasks/message_queue/checkpoints via FK ON DELETE CASCADE), drops the agent from `projects.json`, refreshes the project room, and best-effort removes the on-disk agent workspace. Returns 204 on success.',
+    'Stops the in-memory heartbeat, transactionally clears every child store keyed by `agent_id` (sessions cascade messages, skill invocations, background tasks, queue entries, and checkpoints via FK ON DELETE CASCADE), drops the agent from `projects.json`, refreshes the project room, and best-effort removes the on-disk agent workspace. Returns 204 on success.',
   request: { params: agentIdParams },
   responses: {
     204: { description: 'Agent and dependent rows removed.' },
