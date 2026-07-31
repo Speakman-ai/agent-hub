@@ -41,6 +41,7 @@ import { buildNativePrUrl } from './native-pr/url.js';
 import type { NativePrService } from './native-pr/service.js';
 import type { PullRequestRow } from './types.js';
 import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
+import { collectPrCommits, collectPrDiffStat } from './finalize/branch-facts.js';
 import {
   shouldAutoShipSessionAtEnd,
   clearSessionAutoShipOnComplete,
@@ -1242,82 +1243,6 @@ export function buildPrBody(input: PrBodyInput): string {
   return sections.join('\n');
 }
 
-/**
- * Collect the commit subjects that would appear in this PR: commits on the
- * current branch that are not on `main`. Newest first. Best-effort — returns
- * an empty array on any git failure (missing `main` ref, detached HEAD, etc.).
- *
- * Retained for back-compat with any future callers that only need subjects.
- * The PR pipeline uses {@link collectCommits} so that bodies make it into the
- * PR description.
- */
-async function collectCommitSubjects(cwd: string): Promise<string[]> {
-  try {
-    const { stdout } = await execAsync('git log main..HEAD --format=%s', {
-      cwd,
-      timeout: 10000,
-    });
-    return stdout
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Collect the full commit message for each commit on the branch (subject +
- * body), newest first. Returns an empty array on any git failure so callers
- * can degrade to the card / session title pipeline without special-casing.
- *
- * Implementation: `git log -z` separates commits with a NUL byte, which lets
- * the body contain arbitrary characters (newlines, blank lines, even literal
- * separators) without escaping. Within each NUL-separated record we use the
- * first line as the subject (`%s`) and the remainder (after the standard
- * blank line) as the body (`%b`). Empty bodies become `undefined` on the
- * returned `CommitInfo` so downstream formatters can branch on presence.
- */
-async function collectCommits(cwd: string): Promise<CommitInfo[]> {
-  try {
-    const { stdout } = await execAsync('git log main..HEAD -z --format=%s%n%b', {
-      cwd,
-      timeout: 10000,
-    });
-    if (!stdout) return [];
-    const records = stdout.split('\0');
-    const out: CommitInfo[] = [];
-    for (const rec of records) {
-      const trimmed = rec.replace(/\n+$/, '');
-      if (!trimmed) continue;
-      const newlineIdx = trimmed.indexOf('\n');
-      const subject = (newlineIdx === -1 ? trimmed : trimmed.slice(0, newlineIdx)).trim();
-      if (!subject) continue;
-      const rawBody = newlineIdx === -1 ? '' : trimmed.slice(newlineIdx + 1).trim();
-      out.push(rawBody ? { subject, body: rawBody } : { subject });
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Collect a `git diff --stat` summary of the branch vs. `main`. Best-effort —
- * returns an empty string on failure.
- */
-async function collectDiffStat(cwd: string): Promise<string> {
-  try {
-    const { stdout } = await execAsync('git diff --stat main...HEAD', {
-      cwd,
-      timeout: 10000,
-    });
-    return stdout;
-  } catch {
-    return '';
-  }
-}
-
 // ─── Auto-commit & PR on agent completion ───────────────────────────
 
 /**
@@ -2017,9 +1942,14 @@ async function commitPushAndCreatePR(
       );
     }
 
+    // Resolve the same base the PR is opened against, and let branch-facts
+    // prefer `origin/<base>` over the worktree's clone-time local branch —
+    // otherwise a rebase pulls other sessions' merged commits into this PR's
+    // commit list and diff stat.
+    const prFactsBase = resolvedBaseBranch ?? (await resolveDefaultBranch(effectiveCwd)) ?? 'main';
     const [commits, diffStat] = await Promise.all([
-      collectCommits(effectiveCwd),
-      collectDiffStat(effectiveCwd),
+      collectPrCommits(effectiveCwd, prFactsBase, process.env),
+      collectPrDiffStat(effectiveCwd, prFactsBase, process.env),
     ]);
     // Pass commits into buildPrTitle so the agent's actual commit subject(s)
     // win over the card / session title — see buildPrTitle JSDoc for why.

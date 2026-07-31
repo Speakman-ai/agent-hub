@@ -49,61 +49,103 @@ export async function execGit(
 }
 
 /**
- * Commits on the branch that are not on `baseBranch`, newest first. Tries the
- * local ref then `origin/<base>`; returns `[]` when neither resolves so callers
- * degrade to card data rather than failing.
+ * Ref candidates for a base branch, most-authoritative first.
+ *
+ * The remote-tracking ref has to win over the local branch of the same name. A
+ * session worktree is a clone whose local `main` is pinned at clone time and
+ * never fast-forwarded, while `origin/main` is refreshed by the fetch that
+ * precedes every rebase. Once a session rebases, everything that landed on the
+ * base in the meantime — other sessions' merged work — becomes an ancestor of
+ * HEAD but is still unreachable from the stale local `main`, so a
+ * `main..HEAD` range reports it as this branch's own.
+ *
+ * A base that is already remote- or fully-qualified is used verbatim, as is
+ * anything the first two forms cannot resolve (a raw SHA, say).
+ */
+function baseRefCandidates(baseBranch: string): string[] {
+  const base = baseBranch.trim();
+  if (!base) return [];
+  if (base.startsWith('refs/') || base.startsWith('origin/')) return [base];
+  return [`refs/remotes/origin/${base}`, `refs/heads/${base}`, base];
+}
+
+/**
+ * The ref this branch should be compared against, or `null` when the base
+ * cannot be resolved at all. Both readers below go through this so a PR body
+ * and its session summary can never disagree about what the base was.
+ */
+export async function resolveBaseRef(
+  worktreePath: string,
+  baseBranch: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  for (const ref of baseRefCandidates(baseBranch)) {
+    try {
+      const { stdout } = await execGit(
+        'git',
+        ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+        { cwd: worktreePath, env, timeout: READ_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+      );
+      if (stdout.trim()) return ref;
+    } catch {
+      // Ref does not exist here; try the next candidate.
+    }
+  }
+  return null;
+}
+
+/**
+ * Commits on the branch that are not on `baseBranch`, newest first. Returns
+ * `[]` when the base cannot be resolved so callers degrade to card data rather
+ * than failing.
  */
 export async function collectPrCommits(
   worktreePath: string,
   baseBranch: string,
   env: NodeJS.ProcessEnv,
 ): Promise<CommitInfo[]> {
-  const refs = [baseBranch, `origin/${baseBranch}`];
-  for (const ref of refs) {
-    try {
-      const { stdout } = await execGit('git', ['log', `${ref}..HEAD`, '-z', '--format=%s%n%b'], {
-        cwd: worktreePath,
-        env,
-        timeout: READ_TIMEOUT_MS,
-        maxBuffer: MAX_BUFFER,
-      });
-      const commits: CommitInfo[] = [];
-      for (const record of stdout.split('\0')) {
-        const trimmed = record.replace(/\n+$/, '');
-        if (!trimmed) continue;
-        const newlineIdx = trimmed.indexOf('\n');
-        const subject = (newlineIdx === -1 ? trimmed : trimmed.slice(0, newlineIdx)).trim();
-        if (!subject) continue;
-        const body = newlineIdx === -1 ? '' : trimmed.slice(newlineIdx + 1).trim();
-        commits.push(body ? { subject, body } : { subject });
-      }
-      return commits;
-    } catch {
-      // Try the next ref. If neither resolves, callers fall back to card data.
+  const ref = await resolveBaseRef(worktreePath, baseBranch, env);
+  if (!ref) return [];
+  try {
+    const { stdout } = await execGit('git', ['log', `${ref}..HEAD`, '-z', '--format=%s%n%b'], {
+      cwd: worktreePath,
+      env,
+      timeout: READ_TIMEOUT_MS,
+      maxBuffer: MAX_BUFFER,
+    });
+    const commits: CommitInfo[] = [];
+    for (const record of stdout.split('\0')) {
+      const trimmed = record.replace(/\n+$/, '');
+      if (!trimmed) continue;
+      const newlineIdx = trimmed.indexOf('\n');
+      const subject = (newlineIdx === -1 ? trimmed : trimmed.slice(0, newlineIdx)).trim();
+      if (!subject) continue;
+      const body = newlineIdx === -1 ? '' : trimmed.slice(newlineIdx + 1).trim();
+      commits.push(body ? { subject, body } : { subject });
     }
+    return commits;
+  } catch {
+    return [];
   }
-  return [];
 }
 
-/** `git diff --stat <base>...HEAD`, or `''` when neither base ref resolves. */
+/** `git diff --stat <base>...HEAD`, or `''` when the base ref does not resolve. */
 export async function collectPrDiffStat(
   worktreePath: string,
   baseBranch: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
-  const refs = [baseBranch, `origin/${baseBranch}`];
-  for (const ref of refs) {
-    try {
-      const { stdout } = await execGit('git', ['diff', '--stat', `${ref}...HEAD`], {
-        cwd: worktreePath,
-        env,
-        timeout: READ_TIMEOUT_MS,
-        maxBuffer: MAX_BUFFER,
-      });
-      return stdout.trim();
-    } catch {
-      // Try the next ref. Missing diff stat should not block the caller.
-    }
+  const ref = await resolveBaseRef(worktreePath, baseBranch, env);
+  if (!ref) return '';
+  try {
+    const { stdout } = await execGit('git', ['diff', '--stat', `${ref}...HEAD`], {
+      cwd: worktreePath,
+      env,
+      timeout: READ_TIMEOUT_MS,
+      maxBuffer: MAX_BUFFER,
+    });
+    return stdout.trim();
+  } catch {
+    return '';
   }
-  return '';
 }

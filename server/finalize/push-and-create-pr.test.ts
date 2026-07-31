@@ -258,6 +258,17 @@ describe('createPushAndCreatePr', () => {
           cb(null, { stdout: '[]\n', stderr: '' });
           return;
         }
+        if (cmd === 'git' && args[0] === 'rev-parse') {
+          // Only the remote-tracking ref resolves, so the collectors have to
+          // pick it over the worktree's stale clone-time local `main`.
+          cb(null, {
+            stdout: args.includes('refs/remotes/origin/main^{commit}')
+              ? '2222222222222222222222222222222222222222\n'
+              : '',
+            stderr: '',
+          });
+          return;
+        }
         if (cmd === 'git' && args[0] === 'log') {
           cb(null, {
             stdout:
@@ -295,10 +306,10 @@ describe('createPushAndCreatePr', () => {
     });
     expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/7' });
 
-    // Seven execFile calls: git remote get-url (push-target lock), git
-    // ls-remote (lease pin), git push, gh pr list, git log, git diff, then
-    // gh pr create.
-    expect(mockExecFile).toHaveBeenCalledTimes(7);
+    // Nine execFile calls: git remote get-url (push-target lock), git
+    // ls-remote (lease pin), git push, gh pr list, one git rev-parse base
+    // probe per collector, git log, git diff, then gh pr create.
+    expect(mockExecFile).toHaveBeenCalledTimes(9);
     const originArgs = mockExecFile.mock.calls[0]!;
     expect(originArgs[0]).toBe('git');
     expect(originArgs[1]).toEqual(['remote', 'get-url', 'origin']);
@@ -335,15 +346,32 @@ describe('createPushAndCreatePr', () => {
       '1',
     ]);
 
-    const thirdArgs = mockExecFile.mock.calls[4]!;
+    const baseProbeArgs = mockExecFile.mock.calls[4]!;
+    expect(baseProbeArgs[0]).toBe('git');
+    expect(baseProbeArgs[1]).toEqual([
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      'refs/remotes/origin/main^{commit}',
+    ]);
+
+    // Both ranges hang off the remote-tracking ref. Against the local `main` a
+    // rebase would fold every commit merged while this session was open into
+    // this PR's commit list and diff stat.
+    const thirdArgs = mockExecFile.mock.calls[6]!;
     expect(thirdArgs[0]).toBe('git');
-    expect(thirdArgs[1]).toEqual(['log', 'main..HEAD', '-z', '--format=%s%n%b']);
+    expect(thirdArgs[1]).toEqual([
+      'log',
+      'refs/remotes/origin/main..HEAD',
+      '-z',
+      '--format=%s%n%b',
+    ]);
 
-    const fourthArgs = mockExecFile.mock.calls[5]!;
+    const fourthArgs = mockExecFile.mock.calls[7]!;
     expect(fourthArgs[0]).toBe('git');
-    expect(fourthArgs[1]).toEqual(['diff', '--stat', 'main...HEAD']);
+    expect(fourthArgs[1]).toEqual(['diff', '--stat', 'refs/remotes/origin/main...HEAD']);
 
-    const fifthArgs = mockExecFile.mock.calls[6]!;
+    const fifthArgs = mockExecFile.mock.calls[8]!;
     expect(fifthArgs[0]).toBe('gh');
     expect(fifthArgs[1]).toEqual([
       'pr',
