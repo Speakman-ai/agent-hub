@@ -20,6 +20,7 @@ export type WorktreeFailureCause =
   | 'permissions'
   | 'dependency-install'
   | 'destination-exists'
+  | 'concurrent-clone'
   | 'unknown';
 
 export interface WorktreeFailureDiagnosis {
@@ -72,6 +73,14 @@ const RULES: ReadonlyArray<{
     reason: 'A previous failed clone left a non-empty directory where the new clone should go.',
     prevention:
       'The zombie directory is normally removed automatically before retry (removeZombieCloneDir); if it persists, clear the stale session workspace by hand.',
+  },
+  {
+    cause: 'concurrent-clone',
+    test: /BUG: refs\/files-backend|initial ref transaction called with existing refs/i,
+    reason:
+      'Another workspace operation wrote refs into the session clone while `git clone` was still running, so git aborted its initial ref transaction.',
+    prevention:
+      'Workspace setup is serialised per session (withKeyedLock in worktree.ts) and the clone now retries after wiping the partial directory. If this still recurs, check whether a second Agent Hub process shares the same workspaces root.',
   },
   {
     cause: 'dependency-install',

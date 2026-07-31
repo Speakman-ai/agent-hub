@@ -2,6 +2,7 @@ import { execFile, exec } from 'child_process';
 import { promisify } from 'util';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   cpSync,
   rmSync,
@@ -264,6 +265,17 @@ const CLONE_RETRY_BASE_MS = 500;
  *   remote: Internal Server Error
  *   fatal: the remote end hung up unexpectedly
  *   fatal: early EOF
+ *
+ * `BUG: refs/files-backend.c:NNNN: initial ref transaction called with existing
+ * refs` is in this list too. It is not a network blip: it fires when something
+ * wrote refs into the destination while `git clone` was still running, so the
+ * clone's *initial* ref transaction found refs it was about to create (see
+ * `files_initial_transaction_commit`). `withKeyedLock` now serialises workspace
+ * setup per session so that race should not recur, but the failure is still
+ * retryable — and classifying it as transient is what makes `cloneWithRetry`
+ * run `cleanupPartialClone` between attempts. Without that, git's `BUG()` path
+ * aborts via SIGABRT *without* running its own junk-dir cleanup, leaving a
+ * half-built `.git` that poisons the session directory permanently.
  */
 const TRANSIENT_CLONE_PATTERNS: ReadonlyArray<RegExp> = [
   /RPC failed/i,
@@ -281,6 +293,8 @@ const TRANSIENT_CLONE_PATTERNS: ReadonlyArray<RegExp> = [
   /Connection reset by peer/i,
   /Connection timed out/i,
   /Could not resolve host/i,
+  /BUG: refs\/files-backend/i,
+  /initial ref transaction called with existing refs/i,
 ];
 
 /**
@@ -653,20 +667,648 @@ function ensureWorkspaceDir(projectCwd: string): string {
 }
 
 /**
- * If `cloneDir` exists but is not a git repo (no `.git` subdir), remove it so
+ * Tail of the in-flight chain for each workspace key. Entries are deleted as
+ * soon as the last waiter drains, so this never grows with session count.
+ */
+const workspaceLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Serialise `fn` against every other call sharing `key`.
+ *
+ * Workspace setup is *not* idempotent under concurrency. `ensureSessionWorkspace`
+ * and `getOrCreateProcessWorktree` both branch on "does a clone already exist
+ * here?" and then either clone or fetch-and-reuse. Two overlapping calls for the
+ * same session would each pick a branch against the same directory: one starts
+ * `git clone`, the other sees the `.git` that clone just created, concludes the
+ * clone is done, and fetches into it. The fetch writes `refs/remotes/origin/*`,
+ * and the still-running clone then aborts in `initial_ref_transaction_commit`
+ * with `BUG: refs/files-backend.c:NNNN: initial ref transaction called with
+ * existing refs`, leaving a half-built repo behind.
+ *
+ * This is a mutex, not a promise-dedupe: each caller runs its own body with its
+ * own arguments (they differ — `prBaseBranch`, `installCommand`, callbacks), it
+ * just runs after the previous one finishes rather than alongside it. The second
+ * caller then correctly observes a completed clone and takes the reuse path.
+ *
+ * A rejecting `fn` does not poison the chain: successors run regardless of how
+ * their predecessor settled.
+ */
+async function withKeyedLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = workspaceLocks.get(key) ?? Promise.resolve();
+  // `then(fn, fn)` runs `fn` whether the predecessor fulfilled or rejected.
+  const current = prev.then(fn, fn);
+  const tail = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  workspaceLocks.set(key, tail);
+  try {
+    return await current;
+  } finally {
+    // Only clear when nobody queued behind us, so a later waiter still chains.
+    if (workspaceLocks.get(key) === tail) workspaceLocks.delete(key);
+  }
+}
+
+/**
+ * Marker file written inside the git dir once `git clone` has returned
+ * successfully. It lives under `.git/` so it never shows up in `git status`
+ * and can never be committed.
+ *
+ * For any workspace this Hub created, the marker is the authoritative answer
+ * to "did the clone finish?" — no filesystem heuristic can match it, because
+ * only the process that saw `git clone` exit 0 writes it. The heuristics below
+ * exist purely to classify directories cloned before the marker existed.
+ */
+const CLONE_COMPLETE_MARKER = 'agent-hub-clone-complete';
+
+/** sha1 (40 hex) or sha256 (64 hex) object id. */
+const OBJECT_ID_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/**
+ * Resolve `<cloneDir>/.git` to a real git directory, or null when it is
+ * missing, is neither a directory nor a regular file, or is a linked-worktree
+ * pointer that does not resolve.
+ *
+ * `git worktree add` writes `.git` as a *file* containing `gitdir: <path>`.
+ * Accepting any non-directory `.git` unconditionally would let a truncated,
+ * empty, or dangling pointer masquerade as a healthy worktree, so the pointer
+ * is parsed and its target verified.
+ */
+function resolveGitDir(cloneDir: string): string | null {
+  const gitPath = path.join(cloneDir, '.git');
+  let stat;
+  try {
+    stat = statSync(gitPath);
+  } catch {
+    return null;
+  }
+  if (stat.isDirectory()) return gitPath;
+  // Anything that is not a directory and not a regular file (socket, fifo,
+  // device) is not a git dir pointer.
+  if (!stat.isFile()) return null;
+  let contents: string;
+  try {
+    contents = readFileSync(gitPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const match = /^gitdir:\s*(.+?)\s*$/m.exec(contents);
+  if (!match) return null;
+  const target = path.isAbsolute(match[1]) ? match[1] : path.resolve(cloneDir, match[1]);
+  try {
+    if (!statSync(target).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  return target;
+}
+
+/**
+ * Resolve the *common* git directory for `gitDir`.
+ *
+ * A linked worktree's gitdir (`.git/worktrees/<name>/`) holds only per-worktree
+ * state — HEAD, index, logs — and a `commondir` file pointing at the shared
+ * repository, which is where `objects/`, `refs/` and `packed-refs` actually
+ * live. Checking those under the per-worktree gitdir would find nothing and
+ * wrongly classify every healthy linked worktree as incomplete.
+ *
+ * Returns `gitDir` unchanged for an ordinary (non-linked) repository.
+ */
+function resolveCommonDir(gitDir: string): string {
+  let raw: string;
+  try {
+    raw = readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+  } catch {
+    return gitDir;
+  }
+  if (!raw) return gitDir;
+  const resolved = path.isAbsolute(raw) ? raw : path.resolve(gitDir, raw);
+  try {
+    return statSync(resolved).isDirectory() ? resolved : gitDir;
+  } catch {
+    return gitDir;
+  }
+}
+
+/**
+ * Characters `git check-ref-format` forbids anywhere in a refname: ASCII
+ * control characters and space (`\0`-`\x20`), DEL, and `~ ^ : ? * [ \`.
+ */
+// eslint-disable-next-line no-control-regex
+const FORBIDDEN_REFNAME_CHARS = /[\u0000-\u0020\u007f~^:?*[\\]/;
+
+/**
+ * Is `name` a valid full refname, per the rules `git check-ref-format`
+ * enforces?
+ *
+ * Checking only `startsWith('refs/')` accepted the bare namespace — `refs/`,
+ * `refs/heads/` — so a truncated symref or a malformed `packed-refs` line
+ * counted as a real branch and made an incomplete clone look healthy.
+ *
+ * Rules implemented: at least two slash-separated components; no empty
+ * component; no component starting with `.` or ending with `.lock`; no `..`,
+ * `@{`, leading/trailing slash, consecutive slashes, or trailing `.`; not the
+ * single character `@`; and none of the forbidden characters above.
+ *
+ * Cross-checked against `git check-ref-format` in the test suite.
+ */
+function isValidRefName(name: string): boolean {
+  if (!name || name === '@') return false;
+  if (name.startsWith('/') || name.endsWith('/') || name.endsWith('.')) return false;
+  if (name.includes('//') || name.includes('..') || name.includes('@{')) return false;
+  if (FORBIDDEN_REFNAME_CHARS.test(name)) return false;
+  const components = name.split('/');
+  if (components.length < 2) return false;
+  for (const component of components) {
+    if (!component) return false;
+    if (component.startsWith('.') || component.endsWith('.lock')) return false;
+  }
+  return true;
+}
+
+/**
+ * Is `name` a concrete ref beneath a namespace — `refs/<namespace>/<name>` with
+ * a non-empty, valid name part?
+ *
+ * `isValidRefName` alone is not enough here: git considers `refs/heads` a
+ * well-formed refname, but as the *target* of a symref or as a `packed-refs`
+ * entry it names the namespace rather than a branch, and treating it as one
+ * would make an incomplete clone look healthy.
+ */
+function isConcreteRefPath(name: string): boolean {
+  return name.startsWith('refs/') && name.split('/').length >= 3 && isValidRefName(name);
+}
+
+/** A loose ref file holds either an object id or a `ref: <valid refname>` symref. */
+function isValidRefContent(text: string): boolean {
+  const line = text.trim();
+  if (!line) return false;
+  if (line.startsWith('ref:')) return isConcreteRefPath(line.slice(4).trim());
+  return OBJECT_ID_RE.test(line);
+}
+
+/**
+ * Walk loose refs under `<gitDir>/refs/<namespace>` looking for one file whose
+ * contents are a well-formed ref.
+ *
+ * Recursive because refs nest: session branches live at
+ * `refs/heads/agent-hub/<agentId>/session-<id>`, so the top level of
+ * `refs/heads` is often a *directory*. Counting directory entries (as the first
+ * version of this did) would accept an empty `refs/heads/agent-hub/` left by an
+ * interrupted write.
+ */
+function hasLooseRefUnder(gitDir: string, namespace: string): boolean {
+  const base = path.join(gitDir, 'refs', namespace);
+  const stack = [base];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      // Validate the reconstructed refname, not just the file contents, so a
+      // `.lock` file or a stray dotfile is never mistaken for a branch.
+      const relative = path.relative(base, full).split(path.sep).join('/');
+      if (!isConcreteRefPath(`refs/${namespace}/${relative}`)) continue;
+      try {
+        if (isValidRefContent(readFileSync(full, 'utf8'))) return true;
+      } catch {
+        /* unreadable ref — keep looking */
+      }
+    }
+  }
+  return false;
+}
+
+/** Is there a well-formed `<oid> refs/<namespace>/…` line in `packed-refs`? */
+function hasPackedRefUnder(gitDir: string, namespace: string): boolean {
+  let text: string;
+  try {
+    text = readFileSync(path.join(gitDir, 'packed-refs'), 'utf8');
+  } catch {
+    return false;
+  }
+  const prefix = `refs/${namespace}/`;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    // `#` is the header, `^` is a peeled-tag continuation line.
+    if (!line || line.startsWith('#') || line.startsWith('^')) continue;
+    const [oid, name] = line.split(/\s+/);
+    if (!name || !name.startsWith(prefix)) continue;
+    // Rejects the bare namespace (`refs/heads/`) along with every other
+    // malformed shape, so a truncated line is not counted as a branch.
+    if (!isConcreteRefPath(name)) continue;
+    if (OBJECT_ID_RE.test(oid ?? '')) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `gitDir` contain at least one *local* branch?
+ *
+ * Checks loose refs first, then `packed-refs` — a repo whose branches have been
+ * packed has an empty (or missing) `refs/heads` directory, so the loose check
+ * alone would report false for a perfectly healthy clone.
+ */
+function hasLocalBranch(gitDir: string): boolean {
+  return hasLooseRefUnder(gitDir, 'heads') || hasPackedRefUnder(gitDir, 'heads');
+}
+
+/** Does `gitDir` contain at least one remote-tracking ref? */
+function hasRemoteTrackingRef(gitDir: string): boolean {
+  return hasLooseRefUnder(gitDir, 'remotes') || hasPackedRefUnder(gitDir, 'remotes');
+}
+
+/**
+ * Has anything been written into the object store?
+ *
+ * This is what separates the two shapes that both present as "HEAD but no
+ * refs". `git clone` populates objects (pack transport) or hardlinks them
+ * (local clone) *before* it writes refs, so:
+ *
+ *  - empty object store  → nothing was ever transferred → the upstream really
+ *    is empty and this clone finished (verified against real git: a clone of
+ *    an empty bare repo has no index, no refs, and an empty `objects/`).
+ *  - populated object store, still no refs → the clone died between fetching
+ *    objects and `write_remote_refs`. Sweep it.
+ *
+ * `objects/info` is skipped: it holds `commit-graph` / `alternates` metadata
+ * rather than objects, and its presence says nothing about transfer.
+ */
+function objectStoreIsEmpty(gitDir: string): boolean {
+  const objectsDir = path.join(gitDir, 'objects');
+  let entries;
+  try {
+    entries = readdirSync(objectsDir, { withFileTypes: true });
+  } catch {
+    return true;
+  }
+  for (const entry of entries) {
+    if (entry.name === 'info') continue;
+    if (!entry.isDirectory()) return false;
+    let inner: string[];
+    try {
+      inner = readdirSync(path.join(objectsDir, entry.name));
+    } catch {
+      continue;
+    }
+    // `objects/pack` holds .pack/.idx; `objects/<xx>` fanout dirs hold loose
+    // objects. A non-empty entry in either means objects arrived.
+    if (inner.length > 0) return false;
+  }
+  return true;
+}
+
+/**
+ * Record that provisioning of `cloneDir` completed.
+ *
+ * Written once the workspace is genuinely reusable — cloned, positioned on its
+ * session branch, checked out, hooks wired — **not** when `git clone` returned.
+ * The marker is authoritative for {@link cloneLooksComplete}, so claiming it
+ * earlier would let a workspace whose branch creation or positioning failed be
+ * adopted on the next call as though it were fully provisioned, skipping
+ * clone recovery.
+ *
+ * Dependency install sits outside the marker on purpose: it is idempotent and
+ * re-run on every reuse, so its failure must not condemn an otherwise sound
+ * workspace.
+ */
+function markCloneComplete(cloneDir: string): void {
+  const gitDir = resolveGitDir(cloneDir);
+  if (!gitDir) return;
+  try {
+    writeFileSync(path.join(gitDir, CLONE_COMPLETE_MARKER), `${new Date().toISOString()}\n`);
+  } catch (err: unknown) {
+    // Best-effort: without the marker we simply fall back to the structural
+    // heuristics below, exactly as we do for pre-marker clones.
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[Workspace] Could not write clone-complete marker in ${cloneDir}:`, message);
+  }
+}
+
+/**
+ * Did `checkout` — the last phase of `git clone` — actually run?
+ *
+ * `cmd_clone` writes the branch in `update_head` and only then checks out, so a
+ * clone killed in that window has a perfectly good `refs/heads/<branch>`, no
+ * index, and an empty working tree. The index is the invariant that separates
+ * the two: git always writes one when it checks out.
+ *
+ * Existence is the whole test, deliberately. It is *necessary* but never
+ * *sufficient* — the only caller pairs it with a local-branch check — and a
+ * corrupt or truncated index still proves checkout ran, which is the single
+ * question being asked here.
+ */
+function checkoutLooksDone(gitDir: string): boolean {
+  return existsSync(path.join(gitDir, 'index'));
+}
+
+/** Every object id named by a loose or packed ref under `refs/<namespace>`. */
+function collectRefOids(gitDir: string, namespace: string): Set<string> {
+  const oids = new Set<string>();
+  const base = path.join(gitDir, 'refs', namespace);
+  const stack = [base];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        // Symrefs (`refs/remotes/origin/HEAD`) name a ref, not an object.
+        const text = readFileSync(full, 'utf8').trim();
+        if (OBJECT_ID_RE.test(text)) oids.add(text);
+      } catch {
+        /* unreadable ref */
+      }
+    }
+  }
+  try {
+    const prefix = `refs/${namespace}/`;
+    for (const raw of readFileSync(path.join(gitDir, 'packed-refs'), 'utf8').split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#') || line.startsWith('^')) continue;
+      const [oid, name] = line.split(/\s+/);
+      if (name?.startsWith(prefix) && OBJECT_ID_RE.test(oid ?? '')) oids.add(oid as string);
+    }
+  } catch {
+    /* no packed-refs */
+  }
+  return oids;
+}
+
+/**
+ * Is there a local branch whose tip is not also a remote-tracking tip?
+ *
+ * `git clone` writes `refs/heads/<branch>` pointing exactly at the fetched
+ * remote tip, so a clone that died before checkout has a branch that merely
+ * duplicates the remote. Only a branch that has *moved* represents commits a
+ * re-clone could not reproduce.
+ *
+ * Tip equality rather than reachability is the right test for this question: it
+ * is exactly what distinguishes "clone created this" from "someone committed
+ * here", and it errs toward treating a branch as real work when in doubt.
+ */
+function hasUnpushedLocalBranch(commonDir: string): boolean {
+  const localTips = collectRefOids(commonDir, 'heads');
+  if (localTips.size === 0) return false;
+  const remoteTips = collectRefOids(commonDir, 'remotes');
+  for (const tip of localTips) {
+    if (!remoteTips.has(tip)) return true;
+  }
+  return false;
+}
+
+/**
+ * Does the working tree contain any regular file outside `.git`?
+ *
+ * A clone that never checked out leaves nothing behind, so any file here was
+ * put there by a person or a build and must not be deleted. Returns on the
+ * first hit, so the common case costs one `readdir`.
+ */
+function workingTreeHasFiles(cloneDir: string): boolean {
+  const stack = [cloneDir];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (dir === cloneDir && entry.name === '.git') continue;
+      if (entry.isFile()) return true;
+      // Symlinks are not followed: agent-hub itself creates `node_modules`
+      // symlinks during dependency setup, and those are not user work.
+      if (entry.isDirectory()) stack.push(path.join(dir, entry.name));
+    }
+  }
+  return false;
+}
+
+/** Is HEAD detached — a raw object id rather than `ref: refs/…`? */
+function headIsDetached(gitDir: string): boolean {
+  try {
+    return OBJECT_ID_RE.test(readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Did `update_head` run — i.e. does HEAD point at something real?
+ *
+ * `git clone` settles HEAD one of two ways: it creates `refs/heads/<branch>`
+ * and points HEAD at it, or — for `--branch <tag>` and other non-branch
+ * checkouts — it writes the object id straight into HEAD. Only checking for a
+ * local branch misses the second, which is a completely healthy clone shape:
+ *
+ *     git clone --branch v1.0 …  →  0 local branches, remote refs, detached HEAD
+ *
+ * A clone that died before `update_head` has neither: HEAD is still the
+ * symbolic placeholder written by `init_db`, pointing at a branch that was
+ * never created.
+ */
+function headIsSettled(gitDir: string, commonDir: string): boolean {
+  return hasLocalBranch(commonDir) || headIsDetached(gitDir);
+}
+
+/**
+ * Does this repository hold local state that only a working session produces —
+ * something a re-clone would destroy?
+ *
+ * Three signals, any of which means "not disposable":
+ *  - a `.git/index`, which carries staged content;
+ *  - a local branch, which carries commits;
+ *  - a detached HEAD, which names a commit directly and so implies a real
+ *    checkout rather than a half-built clone.
+ *
+ * Unlike {@link cloneLooksComplete}, this asks whether anything would be *lost*,
+ * not whether `git clone` finished. That is why bare existence of the index is
+ * the right test here: a corrupt or truncated index still means someone staged
+ * something, and the cost of being wrong is refusing to delete rather than
+ * deleting someone's work.
+ */
+function hasLocalState(gitDir: string, commonDir: string, cloneDir: string): boolean {
+  if (headIsDetached(gitDir)) return true;
+  if (existsSync(path.join(gitDir, 'index'))) return true;
+  // A branch is only evidence of work if it has moved off the remote. `update_head`
+  // creates `refs/heads/<branch>` pointing exactly at the fetched tip, so a clone
+  // that died before checkout carries a branch that duplicates the remote and
+  // holds nothing a re-clone would not reproduce.
+  if (hasUnpushedLocalBranch(commonDir)) return true;
+  return workingTreeHasFiles(cloneDir);
+}
+
+/**
+ * Is `cloneDir` a *finished* clone, as opposed to the carcass of one that died
+ * partway through?
+ *
+ * The presence of `.git` alone is not proof: `git clone` creates it about 5ms
+ * into a clone that takes ~885ms warm and >10s cold on a large repo. Treating
+ * that as "clone already done" is what let a second concurrent
+ * `ensureSessionWorkspace` call fetch into a live clone and kill it, and what
+ * then made the resulting half-built `.git` un-sweepable by
+ * `removeZombieCloneDir`.
+ *
+ * Both callers treat `false` as "delete and re-clone", so a false negative
+ * destroys a workspace. The ladder below is ordered accordingly:
+ *
+ *  1. `.git` must resolve to a real git dir holding both `HEAD` and an
+ *     `objects/` directory (this also validates the `gitdir:` pointer for
+ *     linked worktrees). `init_db` writes both, so anything missing them is
+ *     not a usable repository.
+ *  2. The structural invariants of a finished clone: HEAD settled *and*
+ *     checkout done. Checked first, and on every call, so a workspace damaged
+ *     after provisioning cannot hide behind a stale marker.
+ *  3. Remote-tracking refs without those invariants — the partial-clone
+ *     signature.
+ *  4. Our own completion marker. It corroborates the ambiguous shapes below
+ *     rather than overriding the checks above.
+ *  5. Local state that only a working session produces — a staged index or a
+ *     detached HEAD. A clone of an *empty* upstream legitimately has no branch
+ *     and no commits, so once an agent stages work in one it would otherwise
+ *     fall through to step 6 and be classified incomplete.
+ *  6. No refs and no local state at all is ambiguous, so it is resolved on the
+ *     object store: empty means nothing was ever transferred and the upstream
+ *     is genuinely empty (a finished clone), while populated means the clone
+ *     died between fetching objects and writing refs.
+ *
+ * Note the ordering of 4 and 5: the remote-tracking check runs first, so a
+ * partially fetched clone can never be rescued by a stray index.
+ *
+ * Step 3 models `cmd_clone`'s last two phases directly rather than proxying
+ * them. `update_head` settles HEAD — creating `refs/heads/<branch>`, or writing
+ * a raw object id for `--branch <tag>` and other non-branch checkouts — and
+ * only then does `checkout` write the index and working tree. Requiring both
+ * catches an interruption in that window, which leaves HEAD settled but no
+ * files, and reusing *that* hands an agent an empty repository.
+ *
+ * Testing for a local branch alone would be wrong in the other direction:
+ * `git clone --branch v1.0` legitimately produces 0 local branches, remote
+ * refs, an index and a detached HEAD. That shape must not fall through to
+ * step 4 and be called poisoned.
+ *
+ * `.git/index` is the checkout invariant, tested by mere existence. That is the
+ * right granularity: presence is *necessary* (checkout always writes one) but
+ * never *sufficient* here, since step 3 demands the branch too, and a corrupt
+ * index still means checkout ran. Deeper parsing would add risk without
+ * changing any answer.
+ */
+function cloneLooksComplete(cloneDir: string): boolean {
+  const gitDir = resolveGitDir(cloneDir);
+  if (!gitDir) return false;
+  if (!existsSync(path.join(gitDir, 'HEAD'))) return false;
+  // HEAD and the index are per-worktree; objects and refs live in the common
+  // dir, which differs from `gitDir` only for linked worktrees.
+  const commonDir = resolveCommonDir(gitDir);
+  try {
+    if (!statSync(path.join(commonDir, 'objects')).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  // Structure is checked BEFORE the marker: the marker records that
+  // provisioning once succeeded, which is not the same as the workspace still
+  // being sound. Reuse-time operations (fetch, base-branch rebase, branch
+  // positioning) mutate the clone and can fail, and a marker consulted first
+  // would mask that forever.
+  if (headIsSettled(gitDir, commonDir) && checkoutLooksDone(gitDir)) return true;
+  if (hasRemoteTrackingRef(commonDir)) return false;
+  if (existsSync(path.join(gitDir, CLONE_COMPLETE_MARKER))) return true;
+  if (hasLocalState(gitDir, commonDir, cloneDir)) return true;
+  return objectStoreIsEmpty(commonDir);
+}
+
+/**
+ * If `cloneDir` exists but does not hold a *finished* git clone, remove it so
  * `git clone` can succeed. This recovers from zombie directories left behind
- * by interrupted clones (OOM, disk-full, SIGKILL mid-clone, etc.) — without
- * this, every subsequent clone attempt fails because `git clone` refuses a
- * non-empty target directory, permanently trapping the session/process.
+ * by interrupted clones (OOM, disk-full, SIGKILL mid-clone, or a `BUG()` abort
+ * that skipped git's own junk-dir cleanup) — without this, every subsequent
+ * clone attempt fails because `git clone` refuses a non-empty target
+ * directory, permanently trapping the session/process.
+ *
+ * This is a recursive delete, so it does **not** rely on
+ * {@link cloneLooksComplete} alone. That predicate answers "can we reuse this
+ * clone?", which is a different question from "is it safe to destroy this
+ * directory?" — and conflating them is how a legitimate workspace gets removed.
+ * Two independent vetoes block the sweep even when the clone itself looks
+ * unfinished:
+ *  - a `.git` entry that exists but does not resolve (unreadable, malformed,
+ *    or a linked-worktree pointer whose host repo is gone) — there is no git
+ *    dir to inspect, and the working tree beside it may hold uncommitted work;
+ *  - {@link hasLocalState}: a staged index, a local branch, or a detached HEAD.
+ *
+ * When the veto fires the directory is left in place, so the subsequent
+ * `git clone` fails with "destination path already exists" and the session
+ * falls back to the project checkout with a diagnosable error. That is a much
+ * better outcome than silently deleting someone's work.
  *
  * Returns true if a zombie directory was removed.
  */
 function removeZombieCloneDir(cloneDir: string): boolean {
   if (!existsSync(cloneDir)) return false;
-  if (existsSync(path.join(cloneDir, '.git'))) return false;
+  if (cloneLooksComplete(cloneDir)) return false;
+
+  // `lstatSync`, not `existsSync`: a dangling `.git` *symlink* still means
+  // someone had a repository here, and `existsSync` follows the link and would
+  // report it missing.
+  let gitEntryPresent = true;
+  try {
+    lstatSync(path.join(cloneDir, '.git'));
+  } catch {
+    gitEntryPresent = false;
+  }
+
+  const gitDir = resolveGitDir(cloneDir);
+
+  // A `.git` we cannot make sense of — unreadable, malformed, or a linked
+  // worktree pointer whose host repo has been moved or deleted — is NOT
+  // licence to recursively delete. The working tree next to it can still hold
+  // uncommitted files, and `hasLocalState` cannot vouch for them because there
+  // is no git dir to inspect. Bail out and let a human look.
+  if (gitEntryPresent && !gitDir) {
+    console.warn(
+      `[Workspace] Refusing to sweep ${cloneDir}: a .git entry exists but does not resolve ` +
+        `(unreadable, malformed, or a dangling worktree pointer). It may still hold ` +
+        `uncommitted files. Inspect it by hand.`,
+    );
+    return false;
+  }
+
+  if (gitDir && hasLocalState(gitDir, resolveCommonDir(gitDir), cloneDir)) {
+    console.warn(
+      `[Workspace] Refusing to sweep ${cloneDir}: the clone looks unfinished but holds ` +
+        `local state (detached HEAD, staged index, a branch ahead of its remote, or ` +
+        `files in the working tree). Inspect it by hand.`,
+    );
+    return false;
+  }
+
   try {
     rmSync(cloneDir, { recursive: true, force: true });
-    console.warn(`[Workspace] Removed zombie clone dir (no .git inside): ${cloneDir}`);
+    console.warn(
+      `[Workspace] Removed zombie clone dir (${gitDir ? 'half-built .git — clone never settled HEAD or checked out' : 'no .git inside'}): ${cloneDir}`,
+    );
     return true;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1428,7 +2070,23 @@ export async function updateProjectCloneToOrigin(
   }
 }
 
-export async function getOrCreateProcessWorktree(
+/**
+ * Get (or create) the dedicated workspace clone for a heartbeat/cron process.
+ *
+ * Serialised per `processKey` — see {@link withKeyedLock} for why overlapping
+ * calls against one clone directory are unsafe.
+ */
+export function getOrCreateProcessWorktree(
+  ...args: Parameters<typeof getOrCreateProcessWorktreeUnlocked>
+): Promise<string> {
+  return withKeyedLock(`process:${args[1]}`, () => getOrCreateProcessWorktreeUnlocked(...args));
+}
+
+/**
+ * Callers must go through {@link getOrCreateProcessWorktree} so the per-key
+ * lock is held — this body is not safe to run concurrently against itself.
+ */
+async function getOrCreateProcessWorktreeUnlocked(
   projectCwd: string,
   processKey: string,
   installCommand?: string | null,
@@ -1518,7 +2176,7 @@ export async function getOrCreateProcessWorktree(
   const safeName = processKey.replace(/[^a-zA-Z0-9_-]/g, '-');
   const cloneDir = path.join(wsDir, safeName);
 
-  if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
+  if (cloneLooksComplete(cloneDir)) {
     if (hostedBarePath) {
       // Process worktrees created before hosting was enabled still point
       // at GitHub — repoint so heartbeat/cron pushes land on the Hub.
@@ -1621,6 +2279,11 @@ export async function getOrCreateProcessWorktree(
       );
     }
     await enableHuskyHooks(cloneDir);
+    // Git-level provisioning is done: cloned, user config copied, synced to the
+    // base tip, hooks wired. Dependency install is deliberately outside the
+    // marker — it is idempotent and re-run on every reuse, so a failure there
+    // must not condemn the workspace.
+    markCloneComplete(cloneDir);
     await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
       awaitInstall: false,
       preferInstallAllScript: false,
@@ -2095,6 +2758,20 @@ export async function switchSessionWorkspaceBranch(
 }
 
 /**
+ * Get (or create) the dedicated worktree clone for a chat session.
+ *
+ * Serialised per session id — see {@link withKeyedLock}. Every spawn path
+ * (chat, autonomous, reviewer, webhook, resume) funnels through here, and more
+ * than one of them can fire for a single session at once; without the lock the
+ * second call would fetch into the clone the first is still creating.
+ */
+export function ensureSessionWorkspace(
+  ...args: Parameters<typeof ensureSessionWorkspaceUnlocked>
+): Promise<string> {
+  return withKeyedLock(`session:${args[0].id}`, () => ensureSessionWorkspaceUnlocked(...args));
+}
+
+/**
  * Provision or reuse the per-session git clone under `~/.agent-hub/workspaces/`.
  *
  * All chat/autonomous/reviewer/webhook spawn paths converge on `ensureWorktree`
@@ -2102,8 +2779,11 @@ export async function switchSessionWorkspaceBranch(
  * call when the clone already exists (persisted `worktree_path`, on-disk reuse,
  * or resume). Fresh clones sync to `origin/<default>` or `origin/<pr_base_branch>`
  * before cutting `agent-hub/<agentId>/session-<id>`.
+ *
+ * Callers must go through {@link ensureSessionWorkspace} so the per-session
+ * lock is held — this body is not safe to run concurrently against itself.
  */
-export async function ensureSessionWorkspace(
+async function ensureSessionWorkspaceUnlocked(
   session: SessionRow,
   projectCwd: string,
   agentId: string,
@@ -2264,7 +2944,7 @@ export async function ensureSessionWorkspace(
   const cloneDir = path.join(wsDir, safeName);
   const branchName = `agent-hub/${agentId}/${safeName}`;
 
-  if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
+  if (cloneLooksComplete(cloneDir)) {
     await refreshSessionCloneRemotes({
       cloneDir,
       projectCwd,
@@ -2374,7 +3054,6 @@ export async function ensureSessionWorkspace(
         );
       }
     }
-
     // The branch the session worktree ends up on. A resolve-PR session or a
     // user-chosen `worktree_checkout_branch` positions the worktree directly on
     // that existing branch (see below); everything else cuts the default
@@ -2506,6 +3185,20 @@ export async function ensureSessionWorkspace(
 
     await copyGitUserConfig(projectCwd, cloneDir);
     await enableHuskyHooks(cloneDir);
+
+    // Only now is the workspace genuinely reusable: cloned, positioned on
+    // `effectiveBranch`, checked out, and hooks wired. Writing the marker at
+    // clone time would have claimed completeness before branch creation and
+    // positioning ran, so a failure in between left a workspace that the next
+    // call adopted as authoritative — without the session branch it is
+    // supposed to be on, and with clone-recovery skipped.
+    //
+    // Dependency install is deliberately left outside the marker. It is
+    // idempotent and re-run on every reuse, and its failure returns
+    // `projectCwd` without throwing; condemning the workspace for it would
+    // strand the session, since the sweep is (correctly) vetoed once a session
+    // branch exists.
+    markCloneComplete(cloneDir);
 
     try {
       await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
@@ -2708,6 +3401,26 @@ export const __test = {
   fetchWithRetry,
   isTransientCloneError,
   cleanupPartialClone,
+  checkoutLooksDone,
+  headIsDetached,
+  headIsSettled,
+  cloneLooksComplete,
+  hasLocalBranch,
+  collectRefOids,
+  hasLocalState,
+  hasUnpushedLocalBranch,
+  workingTreeHasFiles,
+  hasRemoteTrackingRef,
+  isConcreteRefPath,
+  isValidRefContent,
+  isValidRefName,
+  objectStoreIsEmpty,
+  resolveCommonDir,
+  markCloneComplete,
+  resolveGitDir,
+  removeZombieCloneDir,
+  withKeyedLock,
+  CLONE_COMPLETE_MARKER,
   defaultResolveInstallationToken,
   detectAndHandleBaseBranchDrift,
   deepenBaseForMergeBase,
