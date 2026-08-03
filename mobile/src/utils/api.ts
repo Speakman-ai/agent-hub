@@ -4,6 +4,20 @@ import { uploadFile as uploadFileImpl } from './uploadFile';
 import { transcribeAudio as transcribeAudioImpl } from './transcribeAudio';
 import { getToken as getJwt, clearToken } from './auth';
 import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
+/** A machine error code (`no_pushable_commits`) rather than human copy. */
+const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
+/**
+ * Error text for a failed response, as surfaced in toasts. Mirrors the web
+ * client: routes that pair a machine `error` code with a human `message` get
+ * the message, since "400: no_pushable_commits" tells an operator nothing.
+ */
+export function errorDetail(body: any, status: number) {
+    const code = typeof body?.error === 'string' ? body.error.trim() : '';
+    const message = typeof body?.message === 'string' ? body.message.trim() : '';
+    const preferred = code && !ERROR_CODE_RE.test(code) ? code : message || code;
+    const detail = preferred || (body ? JSON.stringify(body) : '');
+    return detail ? `${status}: ${detail}` : `API error: ${status}`;
+}
 async function fetchJSON(url: any, options: any = {}) {
     const base = getApiBaseUrl();
     if (!base)
@@ -36,8 +50,7 @@ async function fetchJSON(url: any, options: any = {}) {
         if (deadSession && getJwt()) {
             await clearToken().catch(() => { });
         }
-        const detail = errBody ? errBody.error || errBody.message || JSON.stringify(errBody) : '';
-        throw new Error(detail ? `${res.status}: ${detail}` : `API error: ${res.status}`);
+        throw new Error(errorDetail(errBody, res.status));
     }
     return res.json();
 }

@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { resolveAutoMergeDefault, parseChangesReady, hydrateChangesReady, } from './changesReady';
+import { resolveAutoMergeDefault, parseChangesReady, hydrateChangesReady, hasCommittableChangesFromReady, } from './changesReady';
 describe('resolveAutoMergeDefault', () => {
     it('returns false for null/undefined project', () => {
         expect(resolveAutoMergeDefault(null)).toBe(false);
@@ -106,5 +106,20 @@ describe('hydrateChangesReady', () => {
         ];
         const out = hydrateChangesReady(sessions);
         expect(Object.keys(out)).toEqual(['s2']);
+    });
+});
+describe('hasCommittableChangesFromReady', () => {
+    it('returns false for null/empty input', () => {
+        expect(hasCommittableChangesFromReady(null)).toBe(false);
+        expect(hasCommittableChangesFromReady({})).toBe(false);
+    });
+    it('returns true when the branch carries commits', () => {
+        expect(hasCommittableChangesFromReady({ hasUncommitted: false, hasUnpushed: true })).toBe(true);
+    });
+    // Regression, mirroring the web client: uncommitted edits are not shippable
+    // work. Counting them lit Finalize for a commit-less session, which then ran
+    // a full review + CI cycle only to report that nothing would ship.
+    it('returns false for uncommitted-only work', () => {
+        expect(hasCommittableChangesFromReady({ hasUncommitted: true, hasUnpushed: false })).toBe(false);
     });
 });

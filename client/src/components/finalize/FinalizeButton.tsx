@@ -74,6 +74,10 @@ export default function FinalizeButton({
   const [stopping, setStopping] = useState(false);
   const [githubConnected, setGithubConnected] = useState(false);
   const [worktreeCommittable, setWorktreeCommittable] = useState(false);
+  // Uncommitted work is not shippable, but it changes WHY the trigger is
+  // disabled: the hint has to say "commit it" rather than "nothing here", or a
+  // Changes badge counting those files reads as a contradiction.
+  const [worktreeUncommitted, setWorktreeUncommitted] = useState(false);
   const [worktreeBranch, setWorktreeBranch] = useState<any>(null);
   // Current worktree HEAD — used to expire a phase's done-state once new
   // commits land (the validated commit no longer matches HEAD).
@@ -100,6 +104,7 @@ export default function FinalizeButton({
   useEffect(() => {
     if (!sessionId) {
       setWorktreeCommittable(false);
+      setWorktreeUncommitted(false);
       setWorktreeBranch(null);
       setWorktreeHeadSha(null);
       return undefined;
@@ -111,6 +116,7 @@ export default function FinalizeButton({
         .then((data: any) => {
           if (!cancelled) {
             setWorktreeCommittable(Boolean(data?.committable));
+            setWorktreeUncommitted(Boolean(data?.hasUncommitted));
             setWorktreeBranch(typeof data?.branch === 'string' ? data.branch : null);
             setWorktreeHeadSha(typeof data?.headSha === 'string' ? data.headSha : null);
           }
@@ -118,6 +124,7 @@ export default function FinalizeButton({
         .catch(() => {
           if (!cancelled) {
             setWorktreeCommittable(false);
+            setWorktreeUncommitted(false);
             setWorktreeBranch(null);
             setWorktreeHeadSha(null);
           }
@@ -137,7 +144,9 @@ export default function FinalizeButton({
   const hasCommittableChanges =
     worktreeCommittable || hasCommittableChangesFromReady(pendingChanges);
   const canShip = hasCommittableChanges || readyToPush;
-  const noChangesHint = noCommittableChangesTooltip(worktreeBranch || branchLabel);
+  const noChangesHint = noCommittableChangesTooltip(worktreeBranch || branchLabel, {
+    hasUncommitted: worktreeUncommitted || Boolean(pendingChanges?.hasUncommitted),
+  });
 
   const handleStart = useCallback(async () => {
     // A run already in flight blocks a second trigger. A prior

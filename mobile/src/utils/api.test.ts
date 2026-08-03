@@ -21,7 +21,7 @@ vi.mock('./auth', () => ({
     clearToken: vi.fn(async () => { }),
 }));
 // Import after mocks are registered.
-const { api } = await import('./api.js');
+const { api, errorDetail } = await import('./api.js');
 const uploadFileMock = (await import('./uploadFile')).uploadFile;
 // Mock global fetch. Each test can override `mockFetch` to shape the response.
 let mockFetch: any;
@@ -1020,5 +1020,20 @@ describe('api.linkSupportTicketToCard — mobile parity with web client', () => 
         await api.linkSupportTicketToCard('agent-hub', 'tkt-1', { cardId: 'card-9', comment: '   ' });
         const [, init] = lastCall();
         expect(JSON.parse(init.body)).toEqual({ cardId: 'card-9' });
+    });
+});
+
+describe('errorDetail', () => {
+    it('prefers the human message over a machine error code', () => {
+        expect(errorDetail({ error: 'no_pushable_commits', message: 'This branch has no committed changes.' }, 400)).toBe('400: This branch has no committed changes.');
+    });
+    it('keeps an error field that is already human copy', () => {
+        expect(errorDetail({ error: 'agentId is required' }, 400)).toBe('400: agentId is required');
+    });
+    it('falls back to the code when no message is present', () => {
+        expect(errorDetail({ error: 'no_worktree' }, 400)).toBe('400: no_worktree');
+    });
+    it('falls back to the status when the body carries nothing usable', () => {
+        expect(errorDetail(null, 500)).toBe('API error: 500');
     });
 });

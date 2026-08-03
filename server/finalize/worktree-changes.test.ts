@@ -1,25 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { getSessionCommittableChanges, isCommittable } from './worktree-changes.js';
+import { getSessionCommittableChanges } from './worktree-changes.js';
 
 vi.mock('../auto-git.js', () => ({
   checkWorktreeChanges: vi.fn(),
 }));
 
 import { checkWorktreeChanges } from '../auto-git.js';
-
-describe('isCommittable', () => {
-  it('is true when uncommitted or unpushed', () => {
-    expect(
-      isCommittable({ hasUncommitted: true, hasUnpushed: false, branch: 'x', headSha: 'h' }),
-    ).toBe(true);
-    expect(
-      isCommittable({ hasUncommitted: false, hasUnpushed: true, branch: 'x', headSha: 'h' }),
-    ).toBe(true);
-    expect(
-      isCommittable({ hasUncommitted: false, hasUnpushed: false, branch: 'x', headSha: 'h' }),
-    ).toBe(false);
-  });
-});
 
 describe('getSessionCommittableChanges', () => {
   it('returns no_worktree when path is missing', async () => {
@@ -60,10 +46,12 @@ describe('getSessionCommittableChanges', () => {
       branch: 'feature/x',
       headSha: 'abc123',
     });
-    // Probe reports no net diff → nothing would land → not committable.
+    // Probe reports no net diff → nothing would land → not committable. The
+    // session is not empty (it has commits), so the reason names what is wrong
+    // rather than claiming there is nothing here.
     const out = await getSessionCommittableChanges('/tmp/wt', { probe: async () => false });
     expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.error).toBe('no_committable_changes');
+    if (!out.ok) expect(out.error).toBe('no_pushable_commits');
   });
 
   it('fails open (committable) when the net diff cannot be determined', async () => {
@@ -78,17 +66,56 @@ describe('getSessionCommittableChanges', () => {
     expect(out.ok).toBe(true);
   });
 
-  it('uncommitted changes are committable without probing the base', async () => {
+  // Regression: the reported "session finalized with no changes but says 7
+  // changes". An agent left seven files edited and never committed. The
+  // dirty-worktree shortcut lit the Finalize button and passed this gate, so
+  // the run rebased, reviewed, and ran the full CI suite before parking at a
+  // summary reading "No commits on this branch, so nothing would ship" next to
+  // a Changes badge counting the seven files. Refuse at the gate instead.
+  it('uncommitted changes with no commits are NOT committable', async () => {
     vi.mocked(checkWorktreeChanges).mockResolvedValue({
       hasUncommitted: true,
       hasUnpushed: false,
       branch: 'feature/x',
       headSha: 'abc123',
     });
-    const probe = vi.fn(async () => false);
+    const probe = vi.fn(async () => true);
     const out = await getSessionCommittableChanges('/tmp/wt', { probe });
-    expect(out.ok).toBe(true);
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error).toBe('no_pushable_commits');
+      // The refusal has to name the uncommitted work, or it reads as Finalize
+      // losing the operator's files.
+      expect(out.message).toContain('uncommitted');
+      expect(out.message).toContain('commit them');
+    }
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('reports the empty session distinctly from uncommitted-only work', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: false,
+      hasUnpushed: false,
+      branch: 'feature/x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt');
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error).toBe('no_committable_changes');
+      expect(out.message).not.toContain('uncommitted changes');
+    }
+  });
+
+  it('is committable when commits exist alongside uncommitted work', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: true,
+      hasUnpushed: true,
+      branch: 'feature/x',
+      headSha: 'abc123',
+    });
+    const out = await getSessionCommittableChanges('/tmp/wt', { probe: async () => true });
+    expect(out.ok).toBe(true);
   });
 
   it('blocks with base_unresolved when the authoritative base cannot be proven', async () => {
@@ -158,7 +185,7 @@ describe('getSessionCommittableChanges', () => {
     expect(out.ok).toBe(true);
   });
 
-  it('a dirty worktree is committable even when the base is unresolved', async () => {
+  it('a dirty worktree with no commits blocks even before the base is consulted', async () => {
     vi.mocked(checkWorktreeChanges).mockResolvedValue({
       hasUncommitted: true,
       hasUnpushed: false,
@@ -166,7 +193,8 @@ describe('getSessionCommittableChanges', () => {
       headSha: 'abc123',
     });
     const out = await getSessionCommittableChanges('/tmp/wt', { base: { kind: 'unresolved' } });
-    expect(out.ok).toBe(true);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toBe('no_pushable_commits');
   });
 });
 

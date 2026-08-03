@@ -26,8 +26,26 @@ const { userCanReadSession, userOwnsSession } = vi.hoisted(() => ({
 
 const execFileAsyncMock = vi.hoisted(() => vi.fn());
 
+// The Finalize gate's net-diff probe calls `execFile` with a callback (it does
+// not go through the promisified path below), so the fake has to invoke it or
+// the kickoff hangs. Canned answers: the base ref resolves, and HEAD differs
+// from it, i.e. the branch has something to ship.
+const execFileCallbackMock = vi.hoisted(() =>
+  vi.fn((_file: unknown, args: string[], opts: unknown, cb?: unknown) => {
+    const done = (typeof cb === 'function' ? cb : typeof opts === 'function' ? opts : null) as
+      | ((err: unknown, stdout: string, stderr: string) => void)
+      | null;
+    if (!done) return;
+    if (args?.[0] === 'diff') {
+      done(Object.assign(new Error('differences found'), { code: 1 }), '', '');
+      return;
+    }
+    done(null, 'deadbeef\n', '');
+  }),
+);
+
 vi.mock('child_process', () => ({
-  execFile: vi.fn(),
+  execFile: execFileCallbackMock,
   exec: vi.fn(),
 }));
 
@@ -223,6 +241,44 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       .send({})
       .expect(400);
     expect(res.body.error).toBe('no_branch');
+  });
+
+  // Regression: the reported "session finalized with no changes but says 7
+  // changes". The agent edited files and never committed, so the branch was
+  // identical to its base. Finalize started anyway, rebased, reviewed, and ran
+  // the whole CI suite before parking at a summary reading "No commits on this
+  // branch, so nothing would ship" beside a Changes badge counting the edits.
+  // The kickoff must refuse instead, and name the uncommitted work.
+  it('400 no_pushable_commits when the worktree is dirty but has no commits', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    // `git status --porcelain` reports edits; `git log <upstream>..HEAD` is empty.
+    execFileAsyncMock.mockImplementation(async (cmd: string) =>
+      typeof cmd === 'string' && cmd.includes('git log')
+        ? { stdout: '', stderr: '' }
+        : { stdout: ' M server/index.ts\n', stderr: '' },
+    );
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .expect(400);
+
+    expect(res.body.error).toBe('no_pushable_commits');
+    expect(res.body.message).toContain('uncommitted');
+    expect(res.body.message).toContain('commit them');
+    expect(runFinalize).not.toHaveBeenCalled();
   });
 
   it('409 when the linked session already pushed code through Finalize', async () => {

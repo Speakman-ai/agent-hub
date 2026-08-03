@@ -219,6 +219,25 @@ function clearRecentReloadMarker(): void {
   }
 }
 
+/** A machine error code (`no_pushable_commits`) rather than human copy. */
+const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
+
+/**
+ * Error text for a failed response, as surfaced in toasts.
+ *
+ * Routes that pair a machine `error` code with a human `message` get the
+ * message: "400: no_pushable_commits" tells an operator nothing, while the
+ * message it ships with says exactly which state they are in and what to do.
+ * Routes whose `error` is already a sentence keep it.
+ */
+export function errorDetail(body: ApiErrorBody | null, status: number): string {
+  const code = typeof body?.error === 'string' ? body.error.trim() : '';
+  const message = typeof body?.message === 'string' ? body.message.trim() : '';
+  const preferred = code && !ERROR_CODE_RE.test(code) ? code : message || code;
+  const detail = preferred || (body ? JSON.stringify(body) : '');
+  return detail ? `${status}: ${detail}` : `API error: ${status}`;
+}
+
 /** Options passed to fetchJSON — extends RequestInit with a client-side timeout. */
 export interface FetchJsonOptions extends Omit<RequestInit, 'signal'> {
   timeout?: number | null;
@@ -261,8 +280,7 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
       if (getJwt()) clearToken();
       window.location.reload();
     }
-    const detail = errBody ? errBody.error || errBody.message || JSON.stringify(errBody) : '';
-    throw new Error(detail ? `${res.status}: ${detail}` : `API error: ${res.status}`);
+    throw new Error(errorDetail(errBody, res.status));
   }
   clearRecentReloadMarker();
   return res.json() as Promise<T>;

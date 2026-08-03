@@ -54,7 +54,7 @@ const baseProps = {
   cardId: 'card-1',
   sessionId: 'session-1',
   branchLabel: 'feature/x',
-  pendingChanges: { branch: 'feature/x', hasUncommitted: true, hasUnpushed: false },
+  pendingChanges: { branch: 'feature/x', hasUncommitted: false, hasUnpushed: true },
 };
 
 describe('FinalizeButton', () => {
@@ -593,11 +593,33 @@ describe('FinalizeButton', () => {
     render(
       <FinalizeButton
         {...baseProps}
-        pendingChanges={{ branch: 'feature/x', hasUncommitted: true, hasUnpushed: false }}
+        pendingChanges={{ branch: 'feature/x', hasUncommitted: false, hasUnpushed: true }}
       />,
     );
     const finalize = await screen.findByTestId('finalize-button');
     await waitFor(() => expect(finalize!).not.toBeDisabled());
+  });
+
+  // Regression: an agent that edited files but never committed left the trigger
+  // enabled, so Finalize ran a full review + CI cycle and ended at "no commits
+  // on this branch, so nothing would ship" beside a Changes badge counting
+  // those files. Refuse up front, and say why.
+  it('disables the trigger for uncommitted-only work and explains it in the hint', async () => {
+    (api.getSessionWorktreeChanges as any).mockResolvedValue({
+      committable: false,
+      hasUncommitted: true,
+      hasUnpushed: false,
+      branch: 'feature/x',
+    });
+    render(
+      <FinalizeButton
+        {...baseProps}
+        pendingChanges={{ branch: 'feature/x', hasUncommitted: true, hasUnpushed: false }}
+      />,
+    );
+    const finalize = await screen.findByTestId('finalize-button');
+    await waitFor(() => expect(finalize!).toBeDisabled());
+    expect(finalize!.getAttribute('title')).toMatch(/uncommitted changes but no commits/i);
   });
 
   it('disables Push when there are no code changes, even at ready_to_push', async () => {

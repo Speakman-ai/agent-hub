@@ -39,9 +39,13 @@ describe('hasPublishableChanges', () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it('is true for a dirty worktree without probing the base', async () => {
-    const probe = vi.fn<NetDiffProbe>(async () => false);
-    expect(await hasPublishableChanges('/wt', dirty, probe)).toBe(true);
+  it('is false for a dirty worktree with no commits, without probing the base', async () => {
+    // Regression: uncommitted edits are not shippable work. Counting them lit
+    // the Finalize button for a commit-less session, which then ran a full
+    // review + CI cycle and reported "no commits on this branch, so nothing
+    // would ship" while the Changes badge advertised the edited files.
+    const probe = vi.fn<NetDiffProbe>(async () => true);
+    expect(await hasPublishableChanges('/wt', dirty, probe)).toBe(false);
     expect(probe).not.toHaveBeenCalled();
   });
 
@@ -57,6 +61,12 @@ describe('hasPublishableChanges', () => {
 
   it('fails open (true) when the net diff is undeterminable', async () => {
     expect(await hasPublishableChanges('/wt', unpushed, async () => null)).toBe(true);
+  });
+
+  it('still judges the commits when the worktree is also dirty', async () => {
+    const dirtyAndUnpushed = { hasUncommitted: true, hasUnpushed: true };
+    expect(await hasPublishableChanges('/wt', dirtyAndUnpushed, async () => true)).toBe(true);
+    expect(await hasPublishableChanges('/wt', dirtyAndUnpushed, async () => false)).toBe(false);
   });
 });
 

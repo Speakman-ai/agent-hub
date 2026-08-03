@@ -162,13 +162,19 @@ export function isPublishableVerdict(
 /**
  * True when the session worktree has changes worth shipping.
  *
- * A dirty worktree always qualifies (it carries an uncommitted diff). Committed
- * -but-unpushed commits qualify only when they produce a real net diff against
- * the base branch — a branch whose commits are net-zero / already integrated is
- * NOT publishable, so Finalize / changes_ready / push are not offered for an
- * empty diff. When the net diff can't be determined, `opts.explicitBase`
- * decides: an authoritative PR base fails closed; the repo-default path fails
- * open (see `isPublishableVerdict`).
+ * Only commits count. Finalize reviews, tests, and pushes commits — it never
+ * commits the working tree — so a worktree full of uncommitted edits has
+ * nothing Finalize could ship, however many files the Changes badge counts.
+ * Letting dirtiness stand in for shippable work is what put an operator in
+ * front of an enabled Finalize button, a full review + CI cycle, and a run
+ * summary reading "no commits on this branch, so nothing would ship".
+ *
+ * Commits qualify only when they produce a real net diff against the base
+ * branch — a branch whose commits are net-zero / already integrated is NOT
+ * publishable, so Finalize / changes_ready / push are not offered for an empty
+ * diff. When the net diff can't be determined, `opts.explicitBase` decides: an
+ * authoritative PR base fails closed; the repo-default path fails open (see
+ * `isPublishableVerdict`).
  */
 export async function hasPublishableChanges(
   worktreePath: string,
@@ -176,7 +182,6 @@ export async function hasPublishableChanges(
   probe: NetDiffProbe = defaultNetDiffProbe,
   opts: { explicitBase?: boolean } = {},
 ): Promise<boolean> {
-  if (changes.hasUncommitted) return true;
   if (!changes.hasUnpushed) return false;
   const net = await probe(worktreePath);
   return isPublishableVerdict(net, { explicitBase: opts.explicitBase ?? false });

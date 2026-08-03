@@ -13,10 +13,6 @@ export type CommittableChangesResult =
       message: string;
     };
 
-export function isCommittable(changes: WorktreeChanges): boolean {
-  return changes.hasUncommitted || changes.hasUnpushed;
-}
-
 export interface CommittableChangesOptions {
   /**
    * The session's resolved gate base (see `resolveFinalizeGateBase`). When it
@@ -30,12 +26,11 @@ export interface CommittableChangesOptions {
    * Push-time semantics: the caller is about to push HEAD, so the only question
    * that matters is whether HEAD produces a net diff on the base.
    *
-   * Uncommitted work is deliberately ignored here. Finalize reviews, tests, and
-   * pushes commits — it never commits the working tree — so a session that
-   * staged its work but never committed has a dirty worktree AND an empty HEAD.
-   * Letting the dirty-worktree short-circuit stand in for "something to ship"
-   * is how a branch identical to base reaches the push step and opens a
-   * zero-diff pull request.
+   * Neither mode counts uncommitted work — Finalize ships commits, never the
+   * working tree. What this flag adds is the `hasUnpushed` skip and fail-closed
+   * arbitration: `hasUnpushed` is measured against the branch's *upstream*, so
+   * it goes false the moment the branch is pushed even though HEAD still
+   * carries a real diff vs base, and a push must not be refused on that.
    *
    * This mode is fail-closed end to end: it must *prove* a net diff, so an
    * undeterminable probe blocks (`base_unresolved`) instead of taking the
@@ -59,19 +54,19 @@ function baseUnresolvedMessage(base: FinalizeGateBase): string {
 }
 
 /**
- * Refusal text for the push-time gate. Names the uncommitted case explicitly:
- * "no commits against the base" reads like lost work to an operator staring at a
- * Changes badge counting their staged files, when the actual problem is that
- * those files were never committed.
+ * Refusal text when the branch has nothing to ship. Names the uncommitted case
+ * explicitly: "no commits against the base" reads like lost work to an operator
+ * staring at a Changes badge counting their edited files, when the actual
+ * problem is that those files were never committed.
  */
 function noPushableCommitsMessage(changes: WorktreeChanges): string {
   const base =
-    'This branch has no committed changes against its base branch, so pushing it ' +
-    'would open an empty pull request.';
+    'This branch has no committed changes against its base branch, so nothing ' +
+    'would ship and pushing it would open an empty pull request.';
   if (!changes.hasUncommitted) return base;
   return (
-    `${base} The worktree does have uncommitted changes — Finalize pushes ` +
-    'commits, not the working tree, so commit them and run Finalize again.'
+    `${base} The worktree does have uncommitted changes — Finalize reviews and ` +
+    'pushes commits, not the working tree, so commit them and run Finalize again.'
   );
 }
 
@@ -89,18 +84,22 @@ export async function getSessionCommittableChanges(
   const base: FinalizeGateBase = opts.base ?? { kind: 'default' };
   const changes = await checkWorktreeChanges(worktreePath);
   if (!opts.requirePushableHead) {
-    // A dirty worktree always carries an uncommitted diff — committable regardless
-    // of the base branch.
-    if (changes.hasUncommitted) return { ok: true, changes };
+    // Dirtiness is NOT committable work. Finalize reviews, tests, and pushes
+    // commits; it never commits the working tree. Treating an uncommitted
+    // worktree as shippable is what let a commit-less session start a full
+    // review + CI cycle and park at "no commits on this branch, so nothing
+    // would ship" while the Changes badge advertised the edited files. Refuse
+    // up front instead, and say which of the two states this is.
     if (!changes.hasUnpushed) {
-      return { ok: false, error: 'no_committable_changes', message: NO_CHANGES_MESSAGE };
+      return changes.hasUncommitted
+        ? { ok: false, error: 'no_pushable_commits', message: noPushableCommitsMessage(changes) }
+        : { ok: false, error: 'no_committable_changes', message: NO_CHANGES_MESSAGE };
     }
   }
-  // Under `requirePushableHead` both shortcuts above are skipped on purpose:
-  // dirtiness says nothing about HEAD, and `hasUnpushed` is measured against the
-  // branch's upstream, so it goes false the moment the branch is pushed even
-  // though HEAD still carries a real diff vs base. Only the probe answers the
-  // push-time question.
+  // Under `requirePushableHead` the `hasUnpushed` shortcut above is skipped on
+  // purpose: it is measured against the branch's upstream, so it goes false the
+  // moment the branch is pushed even though HEAD still carries a real diff vs
+  // base. Only the probe answers the push-time question.
   //
   // Unpushed commits alone are not enough: the net-diff gate must show the
   // branch produces something on its real target. An authoritative base that
@@ -134,7 +133,9 @@ export async function getSessionCommittableChanges(
   if (net === null && explicitBase) {
     return { ok: false, error: 'base_unresolved', message: baseUnresolvedMessage(base) };
   }
-  return opts.requirePushableHead
-    ? { ok: false, error: 'no_pushable_commits', message: noPushableCommitsMessage(changes) }
-    : { ok: false, error: 'no_committable_changes', message: NO_CHANGES_MESSAGE };
+  // Local work exists (commits, and possibly uncommitted edits) but none of it
+  // lands on the base. `no_committable_changes` is reserved for the literally
+  // empty session, so the operator can tell "nothing here" from "nothing that
+  // would ship".
+  return { ok: false, error: 'no_pushable_commits', message: noPushableCommitsMessage(changes) };
 }

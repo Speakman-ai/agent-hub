@@ -49,8 +49,15 @@ export function hydrateChangesReady(sessions: any) {
     }
     return out;
 }
+/**
+ * Whether a session has local work the operator can ship.
+ *
+ * Only commits count, matching the web client and the server gate: Finalize
+ * reviews, tests, and pushes commits and never commits the working tree, so
+ * uncommitted edits are not shippable work.
+ */
 export function hasCommittableChangesFromReady(changes: any) {
     if (!changes || typeof changes !== 'object')
         return false;
-    return Boolean(changes.hasUncommitted || changes.hasUnpushed);
+    return Boolean(changes.hasUnpushed);
 }
