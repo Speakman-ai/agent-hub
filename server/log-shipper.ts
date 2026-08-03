@@ -386,6 +386,24 @@ export function initLogShipperFromEnv(env: NodeJS.ProcessEnv = process.env): Log
   return shipper;
 }
 
+/**
+ * Whether self log-shipping is currently active.
+ *
+ * Exists because the only other signal of the disabled state is a single
+ * `console.warn` at boot, and `/api/server-logs` is a bounded ring buffer that
+ * rotates that line out within the hour. After that there is no way to tell a
+ * healthy pipe from a silently-disabled one, which is exactly how an unset
+ * `AHLOG_TOKEN` went unnoticed for two weeks while the Logs module sat empty.
+ *
+ * Deliberately returns only a boolean — no token, and no endpoint. `/api/health`
+ * is mounted ahead of the auth middleware (server/index.ts), so anything added
+ * here is world-readable; the ingest endpoint can carry an internal hostname and
+ * stays out of the payload.
+ */
+export function isLogShippingEnabled(): boolean {
+  return active !== null;
+}
+
 /** Test/shutdown helper: detach and clear the module-level singleton. */
 export async function _resetLogShipper(): Promise<void> {
   if (active) {

@@ -24,6 +24,17 @@ export const HealthResponseComponent = registerComponent(
       authRequired: z.boolean(),
       apiKeyAuthEnabled: z.boolean(),
       jwtAuthEnabled: z.boolean(),
+      logShipping: z
+        .object({
+          enabled: z.boolean().openapi({
+            description:
+              'True when AHLOG_TOKEN is configured and the server is shipping its own console logs to the Logs module. False means self log-shipping is disabled.',
+          }),
+        })
+        .openapi({
+          description:
+            'Self log-shipping status (server/log-shipper.ts). Boolean only — the ingest endpoint and token are never exposed, since /api/health is unauthenticated.',
+        }),
     })
     .openapi({ description: 'Liveness + runtime info for the server.' }),
 );

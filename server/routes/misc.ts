@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { db } from '../db.js';
 import type { RouteDeps, EnrichedAgent, AppConfig, Project } from '../types.js';
 import { getLogBuffer } from '../server-log.js';
+import { isLogShippingEnabled } from '../log-shipper.js';
 import { PUSH_EVENT_TYPES } from '../push.js';
 import { isAuthConfigured } from '../auth-store.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -75,6 +76,10 @@ export function createHealthRoute(deps: HealthRouteDeps): Router {
       authRequired: !!config.apiKey || isAuthConfigured(),
       apiKeyAuthEnabled: !!config.apiKey,
       jwtAuthEnabled: isAuthConfigured(),
+      // Boolean only — see isLogShippingEnabled(). False means AHLOG_TOKEN is
+      // unset and the Hub is not shipping its own console logs to the Logs
+      // module, which otherwise presents only as an indefinitely-empty module.
+      logShipping: { enabled: isLogShippingEnabled() },
     });
   });
 

@@ -7925,6 +7925,15 @@ components:
           type: boolean
         jwtAuthEnabled:
           type: boolean
+        logShipping:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              description: True when AHLOG_TOKEN is configured and the server is shipping its own console logs to the Logs module. False means self log-shipping is disabled.
+          required:
+            - enabled
+          description: Self log-shipping status (server/log-shipper.ts). Boolean only — the ingest endpoint and token are never exposed, since /api/health is unauthenticated.
       required:
         - status
         - version
@@ -7935,6 +7944,7 @@ components:
         - authRequired
         - apiKeyAuthEnabled
         - jwtAuthEnabled
+        - logShipping
       description: Liveness + runtime info for the server.
     BrowseResponse:
       type: object

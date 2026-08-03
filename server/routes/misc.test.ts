@@ -5,6 +5,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createHealthRoute } from './misc.js';
+import { initLogShipperFromEnv, _resetLogShipper } from '../log-shipper.js';
 import type { AppConfig, EnrichedAgent, Project } from '../types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,6 +74,59 @@ describe('GET /api/health', () => {
     if (res.body.gitHash.length > 0) {
       // Short SHAs are hex and at least 7 chars.
       expect(res.body.gitHash).toMatch(/^[0-9a-f]{7,40}$/);
+    }
+  });
+
+  // Regression tests for the self log-shipping status field.
+  //
+  // Background: the Hub's `agent-hub` log source sat at lastIngestAt=null for
+  // two weeks because AHLOG_TOKEN was never set on the deployment. The only
+  // signal was one console.warn at boot, which rotates out of the bounded
+  // /api/server-logs ring buffer within the hour — so the disabled state was
+  // undetectable at runtime. These lock in the at-a-glance check.
+  it('reports logShipping.enabled=false when no shipper is active', async () => {
+    await _resetLogShipper();
+    const app = buildApp();
+    const res = await supertest(app).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body.logShipping).toEqual({ enabled: false });
+  });
+
+  it('reports logShipping.enabled=true once a shipper is initialized', async () => {
+    await _resetLogShipper();
+    try {
+      const shipper = initLogShipperFromEnv({
+        AHLOG_TOKEN: 'ahlog_test_token_value',
+        AHLOG_ENDPOINT: 'http://127.0.0.1:3051/api/logs/ingest',
+      } as unknown as NodeJS.ProcessEnv);
+      expect(shipper).not.toBeNull();
+
+      const res = await supertest(buildApp()).get('/api/health');
+      expect(res.status).toBe(200);
+      expect(res.body.logShipping).toEqual({ enabled: true });
+    } finally {
+      await _resetLogShipper();
+    }
+  });
+
+  it('never leaks the ingest token or endpoint on the unauthenticated health route', async () => {
+    await _resetLogShipper();
+    try {
+      initLogShipperFromEnv({
+        AHLOG_TOKEN: 'ahlog_super_secret_value',
+        AHLOG_ENDPOINT: 'http://internal-host.example.internal/api/logs/ingest',
+      } as unknown as NodeJS.ProcessEnv);
+
+      const res = await supertest(buildApp()).get('/api/health');
+      // /api/health is mounted ahead of authMiddleware (server/index.ts), so the
+      // whole payload is world-readable. Assert on the serialized body so a
+      // future field added anywhere in the response can't smuggle either value.
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain('ahlog_super_secret_value');
+      expect(body).not.toContain('internal-host.example.internal');
+      expect(res.body.logShipping).toEqual({ enabled: true });
+    } finally {
+      await _resetLogShipper();
     }
   });
 
