@@ -8,6 +8,7 @@ import {
   writeSystemPromptFile,
   applyArgvPromptCap,
   logArgvCapTruncation,
+  buildHistoryBootstrapPrompt,
 } from './spawn-prompt-payload.js';
 
 describe('spawn-prompt-payload', () => {
@@ -132,5 +133,139 @@ describe('spawn-prompt-payload', () => {
       expect(logged).toContain('"argv-cap"');
       expect(logged).toContain('"cursor-agent"');
     });
+  });
+});
+
+describe('buildHistoryBootstrapPrompt', () => {
+  const forwardedTranscript = (bytes: number) =>
+    [
+      'Please pick up where we left off and finish the migration.',
+      '',
+      '--- Forwarded from session with Survey Tracker Dev ---',
+      '[User]:\n' + 'x'.repeat(bytes),
+      '--- End of forwarded context ---',
+    ].join('\n');
+
+  it('inlines the full history when it fits under the cap', () => {
+    const res = buildHistoryBootstrapPrompt(
+      [
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: 'hi there' },
+      ],
+      'continue',
+    );
+    expect(res.truncated).toBe(false);
+    expect(res.omittedMessages).toBe(0);
+    expect(res.prompt).toBe(
+      'Previous conversation:\nHuman: hello\n\nAssistant: hi there\n\nHuman: continue',
+    );
+  });
+
+  it('returns the current turn untouched when there is no history', () => {
+    const res = buildHistoryBootstrapPrompt([], 'just this');
+    expect(res.prompt).toBe('just this');
+    expect(res.truncated).toBe(false);
+  });
+
+  // Regression: an oversized forwarded transcript used to be dropped
+  // wholesale, so the target agent received only the user's new message and
+  // looked like it had ignored the forward. Both ends of the transcript must
+  // survive — the head carries the forwarder's instructions and provenance.
+  it('keeps head and tail of an oversized forwarded transcript instead of dropping it', () => {
+    const content = forwardedTranscript(400_000);
+    const res = buildHistoryBootstrapPrompt(
+      [{ role: 'user', content }],
+      'What is the first thing I should do?',
+    );
+
+    expect(res.truncated).toBe(true);
+    expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(SAFE_ARG_STRLEN_BYTES);
+    expect(res.prompt).toContain('Please pick up where we left off');
+    expect(res.prompt).toContain('--- Forwarded from session with Survey Tracker Dev ---');
+    expect(res.prompt).toContain('--- End of forwarded context ---');
+    expect(res.prompt).toContain('omitted from the middle of this message');
+    expect(res.prompt).toContain('Human: What is the first thing I should do?');
+    expect(res.originalBytes).toBeGreaterThan(400_000);
+  });
+
+  it('never drops the current turn', () => {
+    const res = buildHistoryBootstrapPrompt(
+      [{ role: 'user', content: 'y'.repeat(500_000) }],
+      'the actual question',
+    );
+    expect(res.prompt).toContain('the actual question');
+    expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(SAFE_ARG_STRLEN_BYTES);
+  });
+
+  it('fills history newest-first and reports how many older messages it dropped', () => {
+    const messages = Array.from({ length: 40 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `msg-${i} ` + 'z'.repeat(10_000),
+    }));
+    const res = buildHistoryBootstrapPrompt(messages, 'now what');
+
+    expect(res.truncated).toBe(true);
+    expect(res.omittedMessages).toBeGreaterThan(0);
+    expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(SAFE_ARG_STRLEN_BYTES);
+    expect(res.prompt).toContain('msg-39');
+    expect(res.prompt).not.toContain('msg-0 ');
+    expect(res.prompt).toContain(`${res.omittedMessages} earlier messages omitted`);
+  });
+
+  it('sends the current turn alone when it alone exceeds the cap', () => {
+    const huge = 'q'.repeat(SAFE_ARG_STRLEN_BYTES + 10);
+    const res = buildHistoryBootstrapPrompt([{ role: 'user', content: 'context' }], huge);
+    expect(res.prompt).toBe(huge);
+    expect(res.truncated).toBe(true);
+    expect(res.omittedMessages).toBe(1);
+  });
+
+  it('respects an explicit cap', () => {
+    const res = buildHistoryBootstrapPrompt(
+      [{ role: 'user', content: 'a'.repeat(50_000) }],
+      'go',
+      20_000,
+    );
+    expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(20_000);
+    expect(res.truncated).toBe(true);
+  });
+
+  // When no history slice fits, the framing is still worth keeping: it is what
+  // tells the agent that history existed and was dropped.
+  it('keeps the omission notice when only the framing fits under a small cap', () => {
+    const res = buildHistoryBootstrapPrompt(
+      [{ role: 'user', content: 'a'.repeat(50_000) }],
+      'go',
+      300,
+    );
+
+    expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(300);
+    expect(res.prompt).toContain('Previous conversation:');
+    expect(res.prompt).toContain('1 earlier message omitted');
+    expect(res.prompt).toContain('Human: go');
+    expect(res.omittedMessages).toBe(1);
+  });
+
+  it('drops the framing rather than exceed a cap too small to hold it', () => {
+    const res = buildHistoryBootstrapPrompt(
+      [{ role: 'user', content: 'a'.repeat(50_000) }],
+      'go',
+      100,
+    );
+
+    expect(res.prompt).toBe('go');
+    expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(100);
+  });
+
+  it('stays within every cap that can hold the current turn', () => {
+    const messages = Array.from({ length: 12 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `msg-${i} ` + 'z'.repeat(9_000),
+    }));
+    for (const cap of [120, 300, 1_000, 2_500, 5_000, 20_000, 100_000]) {
+      const res = buildHistoryBootstrapPrompt(messages, 'now what', cap);
+      expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(cap);
+      expect(res.prompt).toContain('now what');
+    }
   });
 });

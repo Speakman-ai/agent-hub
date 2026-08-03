@@ -106,6 +106,7 @@ import {
   writeSystemPromptFile,
   applyArgvPromptCap,
   logArgvCapTruncation,
+  buildHistoryBootstrapPrompt,
   SAFE_ARG_STRLEN_BYTES,
 } from './spawn-prompt-payload.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
@@ -3075,23 +3076,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       });
 
       const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
-      const promptWithHistory: string = (() => {
-        if (!needsHistoryBootstrap) return cliContent;
-        let p = 'Previous conversation:\n';
-        for (const m of priorMessages) {
-          const prefix = m.role === 'user' ? 'Human' : 'Assistant';
-          p += `${prefix}: ${m.content}\n\n`;
-        }
-        p += `Human: ${cliContent}`;
-        if (Buffer.byteLength(p, 'utf8') > SAFE_ARG_STRLEN_BYTES) {
-          console.warn(
-            `[chat] session=${sessionId} history bootstrap ${Buffer.byteLength(p, 'utf8')}B ` +
-              `exceeds argv cap ${SAFE_ARG_STRLEN_BYTES}B — using current turn only`,
-          );
-          return cliContent;
-        }
-        return p;
-      })();
+      // A forwarded / pre-seeded session stores its context as message rows
+      // before any engine session exists, so this is the only chance the CLI
+      // gets to see it. Trim to fit rather than dropping the whole history.
+      const bootstrap = needsHistoryBootstrap
+        ? buildHistoryBootstrapPrompt(priorMessages, cliContent, SAFE_ARG_STRLEN_BYTES)
+        : null;
+      if (bootstrap?.truncated) {
+        logArgvCapTruncation(
+          'history-bootstrap',
+          sessionId,
+          bootstrap.originalBytes,
+          SAFE_ARG_STRLEN_BYTES,
+        );
+      }
+      const promptWithHistory: string = bootstrap ? bootstrap.prompt : cliContent;
 
       let imagePromptSuffix = '';
       if (images && images.length > 0) {

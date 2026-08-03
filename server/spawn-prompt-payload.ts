@@ -156,6 +156,185 @@ export function logArgvCapTruncation(
 }
 
 /**
+ * Header the history-bootstrap prompt opens with. Kept as a constant so
+ * tests and the budget accounting agree on the exact bytes.
+ */
+export const HISTORY_BOOTSTRAP_HEADER = 'Previous conversation:\n';
+
+/**
+ * Smallest slice of a single message worth inlining. Below this a partial
+ * message is more confusing than helpful, so the message is dropped and
+ * counted in the omission notice instead.
+ */
+const MIN_MESSAGE_KEEP_BYTES = 2_000;
+
+/** Fraction of a middle-truncated message's budget spent on its head. */
+const MIDDLE_TRUNCATE_HEAD_RATIO = 0.4;
+
+export interface HistoryBootstrapMessage {
+  role: string;
+  content: string;
+}
+
+export interface HistoryBootstrapResult {
+  /**
+   * Prompt to hand the engine, within `cap` — with exactly one exception:
+   * when `currentTurn` alone exceeds `cap` the turn is passed through
+   * untrimmed, because dropping the user's actual question is worse than
+   * overshooting a soft cap the engine branch trims again.
+   */
+  prompt: string;
+  /** True when any history content was elided to fit. */
+  truncated: boolean;
+  /** Prior messages left out entirely (oldest-first). */
+  omittedMessages: number;
+  /** Byte size of the untruncated prompt, for logging. */
+  originalBytes: number;
+}
+
+function historyRoleLabel(role: string): string {
+  return role === 'user' ? 'Human' : 'Assistant';
+}
+
+function renderHistoryBlock(m: HistoryBootstrapMessage): string {
+  return `${historyRoleLabel(m.role)}: ${m.content}\n\n`;
+}
+
+function renderOmissionNotice(count: number): string {
+  return (
+    `[NOTE: ${count} earlier message${count === 1 ? '' : 's'} omitted — this conversation ` +
+    `exceeded the engine's prompt budget. Ask the user for anything you need from the ` +
+    `missing history rather than assuming it was never said.]\n\n`
+  );
+}
+
+/**
+ * Smallest prompt that still carries the current turn.
+ *
+ * Keeps the header and the omission notice when they fit inside `cap` so the
+ * agent still learns that history was dropped; falls back to the bare current
+ * turn when even that framing would overflow. Returns something larger than
+ * `cap` only when `currentTurn` alone already exceeds it — the current turn is
+ * never trimmed here, because losing the user's actual question is worse than
+ * overshooting a soft cap the engine branch trims again.
+ */
+function currentTurnOnlyPrompt(currentTurn: string, omittedMessages: number, cap: number): string {
+  const framed =
+    HISTORY_BOOTSTRAP_HEADER + renderOmissionNotice(omittedMessages) + `Human: ${currentTurn}`;
+  return Buffer.byteLength(framed, 'utf8') <= cap ? framed : currentTurn;
+}
+
+/**
+ * Keep the head and the tail of an oversized message, eliding the middle.
+ *
+ * Head-and-tail rather than tail-only because a forwarded transcript puts
+ * the forwarder's own instructions and the provenance marker at the very
+ * top — dropping those is what makes an agent look like it ignored the
+ * forward entirely.
+ */
+function truncateMessageMiddle(text: string, budget: number): string {
+  let headChars = Math.floor(budget * MIDDLE_TRUNCATE_HEAD_RATIO);
+  let tailChars = Math.floor(budget * (1 - MIDDLE_TRUNCATE_HEAD_RATIO));
+  // Budget is bytes, the slices are characters; shrink until multi-byte
+  // content stops overshooting.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (headChars + tailChars >= text.length) return text;
+    const omitted = text.length - headChars - tailChars;
+    const marker = `\n\n[... ${omitted} characters omitted from the middle of this message ...]\n\n`;
+    const out = text.slice(0, headChars) + marker + text.slice(text.length - tailChars);
+    if (Buffer.byteLength(out, 'utf8') <= budget) return out;
+    headChars = Math.floor(headChars * 0.85);
+    tailChars = Math.floor(tailChars * 0.85);
+  }
+  return '';
+}
+
+/**
+ * Build the "history bootstrap" prompt sent on the first turn of a session
+ * that already has stored messages but no engine session id yet (a forwarded
+ * session, a pre-seeded card session, a session whose resume id was cleared).
+ *
+ * The current turn is never sacrificed; history is filled in newest-first up
+ * to `cap`, and anything that doesn't fit is elided with a marker the agent
+ * can see. Silently returning the current turn alone — the previous behavior —
+ * meant a forwarded session's entire context vanished with no signal to the
+ * user or the agent.
+ */
+export function buildHistoryBootstrapPrompt(
+  priorMessages: HistoryBootstrapMessage[],
+  currentTurn: string,
+  cap: number = SAFE_ARG_STRLEN_BYTES,
+): HistoryBootstrapResult {
+  if (priorMessages.length === 0) {
+    return {
+      prompt: currentTurn,
+      truncated: false,
+      omittedMessages: 0,
+      originalBytes: Buffer.byteLength(currentTurn, 'utf8'),
+    };
+  }
+
+  const turnBlock = `Human: ${currentTurn}`;
+  const blocks = priorMessages.map(renderHistoryBlock);
+  const full = HISTORY_BOOTSTRAP_HEADER + blocks.join('') + turnBlock;
+  const originalBytes = Buffer.byteLength(full, 'utf8');
+  if (originalBytes <= cap) {
+    return { prompt: full, truncated: false, omittedMessages: 0, originalBytes };
+  }
+
+  const reserved = Buffer.byteLength(
+    HISTORY_BOOTSTRAP_HEADER + renderOmissionNotice(priorMessages.length) + turnBlock,
+    'utf8',
+  );
+  let budget = cap - reserved;
+  if (budget < MIN_MESSAGE_KEEP_BYTES) {
+    // The current turn plus the framing already eats the budget — there is no
+    // room left for a history slice worth reading.
+    return {
+      prompt: currentTurnOnlyPrompt(currentTurn, priorMessages.length, cap),
+      truncated: true,
+      omittedMessages: priorMessages.length,
+      originalBytes,
+    };
+  }
+
+  const kept: string[] = [];
+  let omittedMessages = 0;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i]!;
+    const blockBytes = Buffer.byteLength(block, 'utf8');
+    if (blockBytes <= budget) {
+      kept.unshift(block);
+      budget -= blockBytes;
+      continue;
+    }
+    const partial = budget >= MIN_MESSAGE_KEEP_BYTES ? truncateMessageMiddle(block, budget) : '';
+    if (partial) {
+      kept.unshift(partial);
+      omittedMessages = i;
+    } else {
+      omittedMessages = i + 1;
+    }
+    break;
+  }
+
+  const notice = omittedMessages > 0 ? renderOmissionNotice(omittedMessages) : '';
+  const prompt = HISTORY_BOOTSTRAP_HEADER + notice + kept.join('') + turnBlock;
+  if (Buffer.byteLength(prompt, 'utf8') <= cap) {
+    return { prompt, truncated: true, omittedMessages, originalBytes };
+  }
+  // Defensive: the budget accounting above should keep us under `cap`. If a
+  // future edit breaks that, drop the history rather than hand the engine an
+  // oversized argv element.
+  return {
+    prompt: currentTurnOnlyPrompt(currentTurn, priorMessages.length, cap),
+    truncated: true,
+    omittedMessages: priorMessages.length,
+    originalBytes,
+  };
+}
+
+/**
  * Test-only helper for callers that need a deterministic temp root.
  * Returns the parent dir we'll create per-spawn subdirs under. Kept
  * here so tests don't have to second-guess the `os.tmpdir()` location.
