@@ -66,7 +66,13 @@ export interface SessionEnvPtyOpts {
   args?: string[];
   /** Same relative-to-worktree contract as {@link SessionEnvSpawnOpts.cwd}. */
   cwd?: string;
-  env?: Record<string, string>;
+  /**
+   * Extra env merged over the adapter's base env. An `undefined` value unsets
+   * the inherited variable rather than passing the string "undefined" through
+   * (how the terminal drops ambient AWS credentials, see
+   * `terminal/terminal-shell-env.ts`).
+   */
+  env?: Record<string, string | undefined>;
   cols?: number;
   rows?: number;
   name?: string;

@@ -31,13 +31,23 @@ export interface MergeProjectAwsSpawnEnvOpts {
   credentialsPath?: string;
 }
 
+/**
+ * Ambient AWS credential / profile-selection vars a spawn must not inherit
+ * from the Hub server process: they would shadow the project-scoped config and
+ * credentials files (e.g. an inherited `AWS_PROFILE` naming a profile that only
+ * exists in the operator's own config).
+ */
+export const AWS_AMBIENT_CREDENTIAL_KEYS = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_SECURITY_TOKEN',
+  'AWS_PROFILE',
+  'AWS_DEFAULT_PROFILE',
+] as const;
+
 export function scrubAwsCredentialEnv(env: NodeJS.ProcessEnv): void {
-  delete env.AWS_ACCESS_KEY_ID;
-  delete env.AWS_SECRET_ACCESS_KEY;
-  delete env.AWS_SESSION_TOKEN;
-  delete env.AWS_SECURITY_TOKEN;
-  delete env.AWS_PROFILE;
-  delete env.AWS_DEFAULT_PROFILE;
+  for (const key of AWS_AMBIENT_CREDENTIAL_KEYS) delete env[key];
 }
 
 /**

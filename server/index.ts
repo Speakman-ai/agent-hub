@@ -243,6 +243,7 @@ import {
 import { attachDefaultPreviewProxyUpgrade } from './preview/preview-proxy.js';
 import { PtyHost } from './terminal/pty-host.js';
 import { PtySession } from './terminal/pty-session.js';
+import { buildTerminalShellEnv } from './terminal/terminal-shell-env.js';
 import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
@@ -1044,7 +1045,13 @@ export const ptyHost = new PtyHost({
       ownsEnv = true;
     }
 
-    const ptySession = new PtySession({ sessionId, env });
+    const ptySession = new PtySession({
+      sessionId,
+      env,
+      // Same project AWS profiles the agent's spawns get, so `aws --profile
+      // <name>` in the Terminal tab resolves instead of erroring out.
+      shellEnv: buildTerminalShellEnv(found.project, { envKind: env.kind }),
+    });
     if (ownsEnv) {
       ptySession.onExit(() => {
         if (terminalOwnedEnvs.get(sessionId) !== env) return;

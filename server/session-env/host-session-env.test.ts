@@ -292,6 +292,23 @@ describe('HostSessionEnv.openPty', () => {
     expect(env.liveProcessCount()).toBe(0);
   });
 
+  it('unsets an inherited variable when the overlay maps it to undefined', async () => {
+    const fake = new FakePty();
+    const calls: Parameters<HostPtyFactory>[0][] = [];
+    const { env } = makeEnv({
+      baseEnv: { PATH: '/usr/bin', SHELL: '/bin/zsh', AWS_PROFILE: 'operator-only' },
+      openPty: async (opts) => {
+        calls.push(opts);
+        return fake;
+      },
+    });
+
+    await env.openPty({ env: { AWS_PROFILE: undefined, AWS_CONFIG_FILE: '/data/aws/config' } });
+
+    expect('AWS_PROFILE' in calls[0].env).toBe(false);
+    expect(calls[0].env.AWS_CONFIG_FILE).toBe('/data/aws/config');
+  });
+
   it('uses a line-editing shell when the host environment has no SHELL', async () => {
     const fake = new FakePty();
     const calls: Parameters<HostPtyFactory>[0][] = [];

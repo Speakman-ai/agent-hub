@@ -80,8 +80,11 @@ export interface SysboxPortPublish {
   hostPort: number;
 }
 
-function pushEnvArgs(args: string[], env: Record<string, string> | undefined): void {
+function pushEnvArgs(args: string[], env: Record<string, string | undefined> | undefined): void {
   for (const [key, value] of Object.entries(env ?? {})) {
+    // An undefined value means "unset" — the container env is the image env
+    // (no host env leaks in), so simply omitting the `-e` is the unset.
+    if (value === undefined) continue;
     args.push('-e', `${key}=${value}`);
   }
 }
@@ -234,7 +237,8 @@ export interface ExecSysboxPtyOptions {
   command?: string;
   args?: string[];
   cwd: string;
-  env?: Record<string, string>;
+  /** `undefined` values mean "unset" and are omitted from the exec argv. */
+  env?: Record<string, string | undefined>;
 }
 
 /**

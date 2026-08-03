@@ -65,8 +65,11 @@ export interface PtySessionDeps {
   shellArgs?: string[];
   /** Worktree-relative cwd for the shell. Default: worktree root. */
   cwd?: string;
-  /** Extra env merged over the adapter's base env for the shell. */
-  shellEnv?: Record<string, string>;
+  /**
+   * Extra env merged over the adapter's base env for the shell. An `undefined`
+   * value unsets the inherited variable (see `terminal-shell-env.ts`).
+   */
+  shellEnv?: Record<string, string | undefined>;
   /** Initial PTY geometry before the first viewer resizes it. */
   cols?: number;
   rows?: number;
@@ -198,7 +201,7 @@ export class PtySession {
   readonly #shell?: string;
   readonly #shellArgs: string[];
   readonly #cwd?: string;
-  readonly #shellEnv?: Record<string, string>;
+  readonly #shellEnv?: Record<string, string | undefined>;
   readonly #initialCols: number;
   readonly #initialRows: number;
   readonly #scrollback: number;

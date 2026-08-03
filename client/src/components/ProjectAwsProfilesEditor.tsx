@@ -196,9 +196,10 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
           <Cloud size={12} /> AWS profiles
         </h5>
         <p className="text-xs text-gray-500">
-          IAM Identity Center or static profiles for this project. Spawned sessions receive
-          project-scoped AWS config and credentials files, so profiles stay isolated to this
-          project.
+          IAM Identity Center or static profiles for this project. Spawned sessions and the session
+          Terminal receive project-scoped AWS config and credentials files, so profiles stay
+          isolated to this project. In the Terminal, IAM Identity Center profiles need their own{' '}
+          <code className="text-gray-400">aws sso login --profile &lt;name&gt;</code>.
         </p>
       </div>
 

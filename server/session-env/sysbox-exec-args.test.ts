@@ -192,6 +192,17 @@ describe('buildExecSysboxPtyArgs', () => {
     expect(args.slice(-2)).toEqual(['agenthub-session-s1', '/bin/bash']);
   });
 
+  it('omits env entries whose value is undefined (an unset, not the string)', () => {
+    const args = buildExecSysboxPtyArgs({
+      containerName: 'c',
+      cwd: '/workspace',
+      env: { TERM: 'xterm-256color', AWS_PROFILE: undefined },
+    });
+    const joined = args.join(' ');
+    expect(joined).toContain('-e TERM=xterm-256color');
+    expect(joined).not.toContain('AWS_PROFILE');
+  });
+
   it('honors an explicit command with args', () => {
     const args = buildExecSysboxPtyArgs({
       containerName: 'c',
