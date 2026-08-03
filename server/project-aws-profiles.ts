@@ -206,6 +206,56 @@ export function isProjectAwsStaticProfile(
   return profile?.type === 'static';
 }
 
+/**
+ * Normalize the operator-designated default profile. Empty / absent means "no
+ * designation"; a name that is not in `profiles` is a 400 rather than a silent
+ * drop, so a rename that orphans the designation surfaces at save time.
+ */
+export function validateProjectAwsDefaultProfile(
+  raw: unknown,
+  profiles: ProjectAwsSsoProfilesMap,
+): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') {
+    throw new ProjectAwsProfileValidationError('defaultProfile must be a string');
+  }
+  const name = raw.trim();
+  if (!name) return null;
+  if (!profiles[name]) {
+    throw new ProjectAwsProfileValidationError(
+      `defaultProfile "${name}" is not a configured profile — configured: ${
+        Object.keys(profiles).join(', ') || '(none)'
+      }`,
+    );
+  }
+  return name;
+}
+
+/**
+ * Which profile bare `aws …` commands (no `--profile`) should resolve to.
+ *
+ * The AWS CLI falls back to a profile literally named `default`, which a
+ * project-scoped config file never has — so an un-flagged `aws sso login` dies
+ * with "Missing the following required SSO configuration values". Exporting
+ * `AWS_PROFILE` overrides that fallback (see the AWS CLI env-var reference).
+ *
+ * Resolution order:
+ *   1. the operator's explicit designation, when it still names a live profile;
+ *   2. the sole configured profile — with one profile there is nothing to
+ *      disambiguate, and the alternative is a guaranteed error;
+ *   3. nothing, so a multi-profile project without a designation keeps the
+ *      "say which account you mean" behaviour.
+ */
+export function resolveProjectAwsDefaultProfile(
+  profiles: ProjectAwsSsoProfilesMap,
+  configured?: string | null,
+): string | null {
+  const designated = typeof configured === 'string' ? configured.trim() : '';
+  if (designated && profiles[designated]) return designated;
+  const names = Object.keys(profiles);
+  return names.length === 1 ? names[0] : null;
+}
+
 /** Render `~/.aws/config`-style ini for the given profiles. */
 export function renderProjectAwsConfigIni(profiles: ProjectAwsSsoProfilesMap): string {
   const lines: string[] = [];

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateProjectAwsSsoProfiles,
+  validateProjectAwsDefaultProfile,
+  resolveProjectAwsDefaultProfile,
   renderProjectAwsConfigIni,
   renderProjectAwsCredentialsIni,
   ProjectAwsProfileValidationError,
@@ -105,5 +107,54 @@ describe('renderProjectAwsCredentialsIni', () => {
     expect(ini).toContain('aws_secret_access_key = secret-test-key');
     expect(ini).toContain('aws_session_token = session-token');
     expect(ini).not.toContain('[prod]');
+  });
+});
+
+describe('validateProjectAwsDefaultProfile', () => {
+  it('normalizes absent / empty designations to null', () => {
+    for (const raw of [undefined, null, '', '   ']) {
+      expect(validateProjectAwsDefaultProfile(raw, { dev: VALID })).toBeNull();
+    }
+  });
+
+  it('trims and accepts a name present in the profile map', () => {
+    expect(validateProjectAwsDefaultProfile(' dev ', { dev: VALID })).toBe('dev');
+  });
+
+  it('rejects a name that is not a configured profile', () => {
+    expect(() => validateProjectAwsDefaultProfile('staging', { dev: VALID })).toThrow(
+      ProjectAwsProfileValidationError,
+    );
+  });
+
+  it('rejects a non-string designation', () => {
+    expect(() => validateProjectAwsDefaultProfile(42, { dev: VALID })).toThrow(
+      ProjectAwsProfileValidationError,
+    );
+  });
+});
+
+describe('resolveProjectAwsDefaultProfile', () => {
+  // Without a resolved default, `aws sso login` (no --profile) falls back to a
+  // `[default]` section the generated config never has and errors out.
+  it('falls back to the sole profile when none is designated', () => {
+    expect(resolveProjectAwsDefaultProfile({ dev: VALID }, null)).toBe('dev');
+  });
+
+  it('prefers the designation over the alphabetical first', () => {
+    expect(resolveProjectAwsDefaultProfile({ dev: VALID, prod: VALID }, 'prod')).toBe('prod');
+  });
+
+  it('returns null when several profiles exist and none is designated', () => {
+    expect(resolveProjectAwsDefaultProfile({ dev: VALID, prod: VALID }, null)).toBeNull();
+  });
+
+  it('ignores a stale designation naming a deleted profile', () => {
+    expect(resolveProjectAwsDefaultProfile({ dev: VALID, prod: VALID }, 'gone')).toBeNull();
+    expect(resolveProjectAwsDefaultProfile({ dev: VALID }, 'gone')).toBe('dev');
+  });
+
+  it('returns null for an empty profile map', () => {
+    expect(resolveProjectAwsDefaultProfile({}, 'dev')).toBeNull();
   });
 });

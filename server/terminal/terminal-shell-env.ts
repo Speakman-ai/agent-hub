@@ -15,8 +15,13 @@
  * tree to share Hub SSO tokens would also move the shell's dotfiles, history,
  * git and gh config. Consequences:
  *   - static profiles work immediately (the credentials file carries the keys);
- *   - SSO profiles resolve by name, and `aws sso login --profile <name>` run
- *     inside the terminal caches its token under the shell's own HOME.
+ *   - SSO profiles resolve by name, and `aws sso login` run inside the terminal
+ *     caches its token under the shell's own HOME.
+ *
+ * The overlay also carries `AWS_PROFILE` when the project resolves a default
+ * profile, because the generated config has no `[default]` section: without it
+ * every un-flagged `aws` command dies with "Missing the following required SSO
+ * configuration values".
  *
  * A value of `undefined` means "unset this inherited variable" — both SessionEnv
  * adapters drop undefined entries when materializing the PTY env.
@@ -60,7 +65,11 @@ export function buildTerminalShellEnv(
   if (!applied) return {};
 
   // `mergeProjectAwsSpawnEnv` scrubs by deleting keys, which on an overlay just
-  // lets the inherited value through. Re-state them as explicit unsets.
-  for (const key of AWS_AMBIENT_CREDENTIAL_KEYS) overlay[key] = undefined;
+  // lets the inherited value through. Re-state them as explicit unsets — but
+  // never clobber a key the merge deliberately set afterwards (`AWS_PROFILE`,
+  // the project's default profile).
+  for (const key of AWS_AMBIENT_CREDENTIAL_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(overlay, key)) overlay[key] = undefined;
+  }
   return overlay;
 }

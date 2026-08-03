@@ -96,6 +96,14 @@ const ProfilesEnvelope = registerComponent(
   z
     .object({
       profiles: ProjectAwsProfilesMap,
+      defaultProfile: z.string().nullable().openapi({
+        description:
+          'Profile the operator explicitly designated as the project default, or null when none is designated.',
+      }),
+      effectiveDefaultProfile: z.string().nullable().openapi({
+        description:
+          'Profile exported as `AWS_PROFILE` to spawns and the session Terminal: the designation when set, else the sole configured profile, else null. Without it, un-flagged `aws` commands fall back to a `[default]` section the project-scoped config file never has.',
+      }),
     })
     .openapi({
       description: 'Current AWS profiles configured on the project.',
@@ -109,6 +117,10 @@ const PutProfilesBody = registerComponent(
       profiles: z.union([ProjectAwsProfilesMap, z.array(z.unknown())]).openapi({
         description:
           'Replacement set of profiles. Accepts either a `{ name: stanza }` map or an array of `{ name, ...stanza }` objects. Pass `{}` to clear all profiles.',
+      }),
+      defaultProfile: z.string().nullable().optional().openapi({
+        description:
+          'Profile to export as `AWS_PROFILE` for spawns and the session Terminal, so un-flagged `aws` commands resolve. Must name one of the profiles in this same request; pass null or omit to clear the designation.',
       }),
     })
     .openapi({ description: 'Body for PUT /aws-profiles.' }),

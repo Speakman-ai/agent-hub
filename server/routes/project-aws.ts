@@ -13,12 +13,18 @@ import config, { buildSpawnEnv } from '../config.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import {
   validateProjectAwsSsoProfiles,
+  validateProjectAwsDefaultProfile,
+  resolveProjectAwsDefaultProfile,
   ProjectAwsProfileValidationError,
   isProjectAwsStaticProfile,
   type ProjectAwsSsoProfilesMap,
 } from '../project-aws-profiles.js';
 import { writeProjectAwsFiles } from '../project-aws-config-file.js';
-import { getProjectAwsSsoProfiles, scrubAwsCredentialEnv } from '../project-aws-spawn.js';
+import {
+  getProjectAwsDefaultProfile,
+  getProjectAwsSsoProfiles,
+  scrubAwsCredentialEnv,
+} from '../project-aws-spawn.js';
 import {
   checkAwsSsoStatusAcrossHomes,
   runAwsStsIdentity,
@@ -33,7 +39,21 @@ import {
   clearActiveAwsSsoLoginIfOwner,
 } from '../aws-sso-active-login.js';
 
-type ProjectWithAws = Project & { awsSsoProfiles?: ProjectAwsSsoProfilesMap };
+type ProjectWithAws = Project & {
+  awsSsoProfiles?: ProjectAwsSsoProfilesMap;
+  awsDefaultProfile?: string;
+};
+
+/** GET/PUT envelope: what the operator designated plus what spawns will use. */
+function profilesEnvelope(project: ProjectWithAws) {
+  const profiles = getProjectAwsSsoProfiles(project);
+  const configured = getProjectAwsDefaultProfile(project);
+  return {
+    profiles,
+    defaultProfile: configured,
+    effectiveDefaultProfile: resolveProjectAwsDefaultProfile(profiles, configured),
+  };
+}
 
 function resolveProfileName(project: ProjectWithAws, raw: unknown): string {
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -77,7 +97,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         res.status(404).json({ error: 'Project not found' });
         return;
       }
-      res.json({ profiles: getProjectAwsSsoProfiles(project) });
+      res.json(profilesEnvelope(project));
     },
   );
 
@@ -93,14 +113,23 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       try {
         const body = (req.body ?? {}) as Record<string, unknown>;
         const profiles = validateProjectAwsSsoProfiles(body.profiles);
+        // Validate against the *incoming* profiles so a save that renames or
+        // deletes the designated profile is rejected instead of silently
+        // leaving spawns pointed at a profile that no longer exists.
+        const defaultProfile = validateProjectAwsDefaultProfile(body.defaultProfile, profiles);
         if (Object.keys(profiles).length === 0) {
           delete project.awsSsoProfiles;
         } else {
           project.awsSsoProfiles = profiles;
         }
+        if (defaultProfile) {
+          project.awsDefaultProfile = defaultProfile;
+        } else {
+          delete project.awsDefaultProfile;
+        }
         saveProjects();
         writeProjectAwsFiles(project.id, profiles);
-        res.json({ profiles });
+        res.json(profilesEnvelope(project));
       } catch (err) {
         if (err instanceof ProjectAwsProfileValidationError) {
           res.status(err.statusCode).json({ error: err.message });

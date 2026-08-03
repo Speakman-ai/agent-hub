@@ -4,12 +4,23 @@ import type { Project } from './types.js';
 import config from './config.js';
 import { writeProjectAwsFiles } from './project-aws-config-file.js';
 import { hostCliHomePath } from './host-cli-home.js';
-import type { ProjectAwsSsoProfilesMap } from './project-aws-profiles.js';
+import {
+  resolveProjectAwsDefaultProfile,
+  type ProjectAwsSsoProfilesMap,
+} from './project-aws-profiles.js';
 
 export function getProjectAwsSsoProfiles(project: Project): ProjectAwsSsoProfilesMap {
   const raw = (project as Project & { awsSsoProfiles?: ProjectAwsSsoProfilesMap }).awsSsoProfiles;
   if (!raw || typeof raw !== 'object') return {};
   return raw;
+}
+
+/** Operator-designated default profile stored on the project, if any. */
+export function getProjectAwsDefaultProfile(project: Project): string | null {
+  const raw = (project as Project & { awsDefaultProfile?: string }).awsDefaultProfile;
+  if (typeof raw !== 'string') return null;
+  const name = raw.trim();
+  return name ? name : null;
 }
 
 function awsSsoCacheHasTokens(cacheDir: string): boolean {
@@ -114,6 +125,14 @@ export function mergeProjectAwsSpawnEnv(
     base.AWS_CONFIG_FILE = configPath;
     base.AWS_SHARED_CREDENTIALS_FILE = credentialsPath;
     base.AGENT_HUB_AWS_PROFILE_NAMES = names.join(',');
+    // Set AFTER the scrub: the scrub drops an *inherited* AWS_PROFILE naming a
+    // profile that only exists in the operator's own config, this puts back a
+    // project-scoped one so `aws …` without `--profile` resolves.
+    const defaultProfile = resolveProjectAwsDefaultProfile(
+      profiles,
+      getProjectAwsDefaultProfile(project),
+    );
+    if (defaultProfile) base.AWS_PROFILE = defaultProfile;
     return configPath;
   } catch (err) {
     const summary = (err as Error).message

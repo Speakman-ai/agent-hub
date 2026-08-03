@@ -94,6 +94,68 @@ describe('PUT/GET /api/projects/:id/aws-profiles', () => {
     expect(readFileSync(credentialsPath, 'utf-8')).toBe('');
   });
 
+  it('round-trips the designated default profile', async () => {
+    const projectId = await freshProject();
+    const profiles = { ...SAMPLE, prod: { ...SAMPLE.dev, sso_account_id: '210987654321' } };
+
+    const put = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles, defaultProfile: 'prod' })
+      .expect(200);
+    expect(put.body.defaultProfile).toBe('prod');
+    expect(put.body.effectiveDefaultProfile).toBe('prod');
+
+    const res = await request.get(`/api/projects/${projectId}/aws-profiles`).expect(200);
+    expect(res.body.defaultProfile).toBe('prod');
+    expect(res.body.effectiveDefaultProfile).toBe('prod');
+  });
+
+  // Without a resolved default, an un-flagged `aws sso login` in the Terminal
+  // falls back to a `[default]` section the generated config never has.
+  it('reports the sole profile as effective default with no designation', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: SAMPLE })
+      .expect(200);
+    expect(res.body.defaultProfile).toBeNull();
+    expect(res.body.effectiveDefaultProfile).toBe('dev');
+  });
+
+  it('reports no effective default for several profiles without a designation', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: { ...SAMPLE, prod: { ...SAMPLE.dev } } })
+      .expect(200);
+    expect(res.body.effectiveDefaultProfile).toBeNull();
+  });
+
+  it('clears the designation when sent null', async () => {
+    const projectId = await freshProject();
+    const profiles = { ...SAMPLE, prod: { ...SAMPLE.dev } };
+    await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles, defaultProfile: 'prod' })
+      .expect(200);
+
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles, defaultProfile: null })
+      .expect(200);
+    expect(res.body.defaultProfile).toBeNull();
+    expect(res.body.effectiveDefaultProfile).toBeNull();
+  });
+
+  it('rejects a default profile that is not in the same request', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: SAMPLE, defaultProfile: 'staging' })
+      .expect(400);
+    expect(res.body.error).toMatch(/defaultProfile/);
+  });
+
   it('rejects invalid account id', async () => {
     const projectId = await freshProject();
     const res = await request

@@ -12,6 +12,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
     const [error, setError] = useState<any>(null);
     const [statusByProfile, setStatusByProfile] = useState<any>({});
     const [loginByProfile, setLoginByProfile] = useState<any>({});
+    const [defaultProfile, setDefaultProfile] = useState('');
     const load = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -21,10 +22,12 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
                 .sort(([a]: any, [b]: any) => a.localeCompare(b))
                 .map(([name, p]: any) => ({ name, ...p }));
             setProfiles(rows);
+            setDefaultProfile(body?.effectiveDefaultProfile || '');
         }
         catch (err: any) {
             setError(err?.message || 'Failed to load AWS profiles');
             setProfiles([]);
+            setDefaultProfile('');
         }
         finally {
             setLoading(false);
@@ -76,6 +79,9 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.desc}>
           AWS profiles for this project. Agents use project-scoped config and credentials files.
+          {defaultProfile
+            ? ` "${defaultProfile}" is exported as AWS_PROFILE, so aws commands without --profile resolve to it.`
+            : ''}
         </Text>
         {loading && <ActivityIndicator color={colors.gray400}/>}
         {error && <Text style={styles.error}>{error}</Text>}
@@ -86,7 +92,10 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
             const loggedIn = st?.data?.loggedIn;
             const isStatic = row.type === 'static';
             return (<View key={row.name} style={styles.card}>
-              <Text style={styles.profileName}>{row.name}</Text>
+              <Text style={styles.profileName}>
+                {row.name}
+                {row.name === defaultProfile ? '  ·  default' : ''}
+              </Text>
               <Text style={styles.meta}>Type: {isStatic ? 'static' : 'SSO'}</Text>
               {!isStatic && <Text style={styles.meta}>Account: {row.sso_account_id || '-'}</Text>}
               {!isStatic && <Text style={styles.meta}>Role: {row.sso_role_name || '-'}</Text>}

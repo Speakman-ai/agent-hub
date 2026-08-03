@@ -76,7 +76,6 @@ describe('buildTerminalShellEnv', () => {
       'AWS_SECRET_ACCESS_KEY',
       'AWS_SESSION_TOKEN',
       'AWS_SECURITY_TOKEN',
-      'AWS_PROFILE',
       'AWS_DEFAULT_PROFILE',
     ]) {
       expect(Object.hasOwn(overlay, key)).toBe(true);
@@ -84,13 +83,43 @@ describe('buildTerminalShellEnv', () => {
     }
 
     // The adapters materialize the PTY env by dropping undefined entries, so an
-    // inherited AWS_PROFILE naming an unknown profile disappears.
+    // inherited AWS_PROFILE naming a profile outside this project disappears —
+    // replaced by the project's own default rather than left to shadow it.
     const merged: Record<string, string> = {};
     for (const [k, v] of Object.entries({ AWS_PROFILE: 'operator-only', ...overlay })) {
       if (v !== undefined) merged[k] = v;
     }
-    expect(merged.AWS_PROFILE).toBeUndefined();
+    expect(merged.AWS_PROFILE).toBe('dev');
     expect(merged.AWS_CONFIG_FILE).toBeDefined();
+  });
+
+  // The regression this ticket fixes: the generated config has no `[default]`
+  // section, so `aws sso login` with no `--profile` died with "Missing the
+  // following required SSO configuration values: sso_start_url, sso_region".
+  it('exports the sole profile as AWS_PROFILE so un-flagged aws commands resolve', () => {
+    const overlay = buildTerminalShellEnv(projectWith({ dev: SSO_PROFILE }), { envKind: 'host' });
+
+    expect(overlay.AWS_PROFILE).toBe('dev');
+    expect(readFileSync(overlay.AWS_CONFIG_FILE!, 'utf-8')).not.toContain('[default]');
+  });
+
+  it('exports the operator-designated default when the project has several profiles', () => {
+    const project = {
+      id: 'agent-hub',
+      awsSsoProfiles: { dev: SSO_PROFILE, prod: STATIC_PROFILE },
+      awsDefaultProfile: 'prod',
+    } as unknown as Project;
+
+    expect(buildTerminalShellEnv(project, { envKind: 'host' }).AWS_PROFILE).toBe('prod');
+  });
+
+  it('leaves AWS_PROFILE unset when several profiles exist and none is designated', () => {
+    const overlay = buildTerminalShellEnv(projectWith({ dev: SSO_PROFILE, prod: STATIC_PROFILE }), {
+      envKind: 'host',
+    });
+
+    expect(Object.hasOwn(overlay, 'AWS_PROFILE')).toBe(true);
+    expect(overlay.AWS_PROFILE).toBeUndefined();
   });
 
   it('leaves the terminal env untouched when the project configures no profiles', () => {

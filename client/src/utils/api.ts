@@ -659,10 +659,10 @@ export const api = {
       }),
     }),
   getProjectAwsProfiles: (projectId: any) => fetchJSON(`/projects/${projectId}/aws-profiles`),
-  putProjectAwsProfiles: (projectId: any, profiles: any) =>
+  putProjectAwsProfiles: (projectId: any, profiles: any, defaultProfile: any = null) =>
     fetchJSON(`/projects/${projectId}/aws-profiles`, {
       method: 'PUT',
-      body: JSON.stringify({ profiles }),
+      body: JSON.stringify({ profiles, defaultProfile: defaultProfile || null }),
     }),
   getProjectAwsSsoStatus: (projectId: any, profile: any) =>
     fetchJSON(`/projects/${projectId}/aws-sso/status?profile=${encodeURIComponent(profile)}`),

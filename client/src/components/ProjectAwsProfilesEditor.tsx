@@ -93,10 +93,23 @@ export function rowsToProfiles(rows: any) {
 }
 
 /**
+ * Which profile bare `aws …` commands resolve to. Mirrors the server's
+ * `resolveProjectAwsDefaultProfile`: the operator's designation when it still
+ * names a live profile, else the sole profile, else none.
+ */
+export function effectiveDefaultProfile(rows: any, designated: any) {
+  const names = rows.map((r: any) => trimmed(r.name)).filter(Boolean);
+  const picked = trimmed(designated);
+  if (picked && names.includes(picked)) return picked;
+  return names.length === 1 ? names[0] : '';
+}
+
+/**
  * Per-project AWS profile editor.
  */
 export default function ProjectAwsProfilesEditor({ projectId }: any) {
   const [rows, setRows] = useState<any[]>([]);
+  const [defaultProfile, setDefaultProfile] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
   const [saving, setSaving] = useState(false);
@@ -114,9 +127,11 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
     try {
       const body = await api.getProjectAwsProfiles(projectId);
       setRows(profilesToRows(body?.profiles));
+      setDefaultProfile(body?.defaultProfile || '');
     } catch (err: any) {
       setError(err?.message || String(err));
       setRows([]);
+      setDefaultProfile('');
     } finally {
       setLoading(false);
     }
@@ -131,7 +146,14 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
     setSaved(false);
     setError(null);
     try {
-      await api.putProjectAwsProfiles(projectId, rowsToProfiles(rows));
+      // Send the designation only while it still names a live row — renaming or
+      // deleting the designated profile should not fail the whole save.
+      const stillValid = rows.some((r: any) => trimmed(r.name) === trimmed(defaultProfile));
+      await api.putProjectAwsProfiles(
+        projectId,
+        rowsToProfiles(rows),
+        stillValid ? trimmed(defaultProfile) : null,
+      );
       await load();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -199,7 +221,8 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
           IAM Identity Center or static profiles for this project. Spawned sessions and the session
           Terminal receive project-scoped AWS config and credentials files, so profiles stay
           isolated to this project. In the Terminal, IAM Identity Center profiles need their own{' '}
-          <code className="text-gray-400">aws sso login --profile &lt;name&gt;</code>.
+          <code className="text-gray-400">aws sso login</code> — its token caches under the
+          shell&apos;s own home, separate from the SSO login button below.
         </p>
       </div>
 
@@ -333,6 +356,40 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
           );
         })}
       </div>
+
+      {rows.length > 0 && (
+        <div className="border border-gray-800 rounded-lg p-3 bg-gray-950/40 space-y-1">
+          <label className={labelClass} htmlFor={`aws-default-profile-${projectId}`}>
+            Default profile
+          </label>
+          <select
+            id={`aws-default-profile-${projectId}`}
+            value={defaultProfile}
+            onChange={(e: any) => setDefaultProfile(e.target.value)}
+            className={`${inputClass} md:w-1/2`}
+            data-testid="project-aws-default-profile"
+          >
+            <option value="">None</option>
+            {rows
+              .map((r: any) => trimmed(r.name))
+              .filter(Boolean)
+              .map((name: string) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+          </select>
+          <p className="text-xs text-gray-500">
+            Exported as <code className="text-gray-400">AWS_PROFILE</code> so{' '}
+            <code className="text-gray-400">aws</code> commands without{' '}
+            <code className="text-gray-400">--profile</code> resolve in agent sessions and the
+            Terminal.{' '}
+            {effectiveDefaultProfile(rows, defaultProfile)
+              ? `Currently: ${effectiveDefaultProfile(rows, defaultProfile)}.`
+              : 'With none selected, un-flagged commands error until you pass --profile.'}
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         <button

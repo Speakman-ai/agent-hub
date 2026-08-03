@@ -8398,8 +8398,18 @@ components:
       properties:
         profiles:
           $ref: "#/components/schemas/ProjectAwsProfilesMap"
+        defaultProfile:
+          type: string
+          nullable: true
+          description: Profile the operator explicitly designated as the project default, or null when none is designated.
+        effectiveDefaultProfile:
+          type: string
+          nullable: true
+          description: "Profile exported as `AWS_PROFILE` to spawns and the session Terminal: the designation when set, else the sole configured profile, else null. Without it, un-flagged `aws` commands fall back to a `[default]` section the project-scoped config file never has."
       required:
         - profiles
+        - defaultProfile
+        - effectiveDefaultProfile
       description: Current AWS profiles configured on the project.
     ProjectAwsProfilesRequest:
       type: object
@@ -8411,6 +8421,10 @@ components:
               items:
                 nullable: true
           description: "Replacement set of profiles. Accepts either a `{ name: stanza }` map or an array of `{ name, ...stanza }` objects. Pass `{}` to clear all profiles."
+        defaultProfile:
+          type: string
+          nullable: true
+          description: Profile to export as `AWS_PROFILE` for spawns and the session Terminal, so un-flagged `aws` commands resolve. Must name one of the profiles in this same request; pass null or omit to clear the designation.
       required:
         - profiles
       description: Body for PUT /aws-profiles.

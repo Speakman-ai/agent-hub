@@ -9,6 +9,7 @@ vi.mock('./config.js', () => ({
 }));
 
 const {
+  getProjectAwsDefaultProfile,
   linkAwsSsoHostCacheIntoSpawnHome,
   mergeProjectAwsSpawnEnv,
   projectHasAwsSsoProfiles,
@@ -83,7 +84,9 @@ describe('project-aws-spawn', () => {
     expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(env.AWS_SESSION_TOKEN).toBeUndefined();
-    expect(env.AWS_PROFILE).toBeUndefined();
+    // The inherited profile named a profile from another project's config; the
+    // spawn gets this project's own default instead.
+    expect(env.AWS_PROFILE).toBe('staticdev');
     expect(env.AWS_CONFIG_FILE).toContain(path.join('project-aws-config', 'agent-hub', 'config'));
     expect(env.AWS_SHARED_CREDENTIALS_FILE).toContain(
       path.join('project-aws-config', 'agent-hub', 'credentials'),
@@ -163,5 +166,74 @@ describe('project-aws-spawn', () => {
     const userCache = path.join(userHome, '.aws', 'sso', 'cache');
     expect(existsSync(userCache)).toBe(true);
     expect(readlinkSync(userCache)).toBe(hostCache);
+  });
+});
+
+describe('project-aws default profile export', () => {
+  let tmpDataDir: string;
+
+  beforeEach(() => {
+    tmpDataDir = mkdtempSync(path.join(os.tmpdir(), 'project-aws-default-'));
+    (configMod.default as { dataDir: string }).dataDir = tmpDataDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDataDir, { recursive: true, force: true });
+  });
+
+  const SSO = {
+    sso_start_url: 'https://example.awsapps.com/start',
+    sso_region: 'us-east-1',
+    sso_account_id: '111111111111',
+    sso_role_name: 'Admin',
+    region: 'us-east-1',
+  };
+
+  it('exports the designated profile as AWS_PROFILE', () => {
+    const project = {
+      id: 'agent-hub',
+      awsSsoProfiles: { dev: SSO, prod: SSO },
+      awsDefaultProfile: 'prod',
+    } as unknown as Project;
+    const env: NodeJS.ProcessEnv = {};
+
+    mergeProjectAwsSpawnEnv(env, project);
+
+    expect(env.AWS_PROFILE).toBe('prod');
+  });
+
+  it('leaves AWS_PROFILE unset for a multi-profile project with no designation', () => {
+    const project = {
+      id: 'agent-hub',
+      awsSsoProfiles: { dev: SSO, prod: SSO },
+    } as unknown as Project;
+    const env: NodeJS.ProcessEnv = { AWS_PROFILE: 'inherited' };
+
+    mergeProjectAwsSpawnEnv(env, project);
+
+    expect(env.AWS_PROFILE).toBeUndefined();
+  });
+
+  it('ignores a designation naming a profile that no longer exists', () => {
+    const project = {
+      id: 'agent-hub',
+      awsSsoProfiles: { dev: SSO, prod: SSO },
+      awsDefaultProfile: 'deleted',
+    } as unknown as Project;
+    const env: NodeJS.ProcessEnv = {};
+
+    mergeProjectAwsSpawnEnv(env, project);
+
+    expect(env.AWS_PROFILE).toBeUndefined();
+  });
+
+  it('getProjectAwsDefaultProfile trims and normalizes blanks to null', () => {
+    expect(
+      getProjectAwsDefaultProfile({ id: 'p', awsDefaultProfile: ' prod ' } as unknown as Project),
+    ).toBe('prod');
+    expect(
+      getProjectAwsDefaultProfile({ id: 'p', awsDefaultProfile: '  ' } as unknown as Project),
+    ).toBeNull();
+    expect(getProjectAwsDefaultProfile({ id: 'p' } as unknown as Project)).toBeNull();
   });
 });
