@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -187,9 +188,15 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // which predates the backports, so `npm audit` keeps reporting the 1.x/2.x
     // copies. That is stale advisory metadata, not an unpatched dependency --
     // the behavioural guard further down asserts the installed code is bounded.
-    { pkg: 'brace-expansion', min: '1.1.18', advisory: 'GHSA-mh99-v99m-4gvg', line: '1.x' },
-    { pkg: 'brace-expansion', min: '2.1.4', advisory: 'GHSA-mh99-v99m-4gvg', line: '2.x' },
-    { pkg: 'brace-expansion', min: '5.0.8', advisory: 'GHSA-mh99-v99m-4gvg', line: '5.x' },
+    //
+    // GHSA-rgw5-rvv9-x895 is the follow-up: the length cap above only measured
+    // the *combined output*, so a pattern could still drive an unbounded
+    // intermediate array before the cap ever applied. Its patched set is
+    // (<1.1.18, <2.1.4, <3.0.6, <5.0.9), which the 1.x and 2.x backports
+    // already satisfy at the versions pinned here -- only the 5.x floor moved.
+    { pkg: 'brace-expansion', min: '1.1.18', advisory: 'GHSA-rgw5-rvv9-x895', line: '1.x' },
+    { pkg: 'brace-expansion', min: '2.1.4', advisory: 'GHSA-rgw5-rvv9-x895', line: '2.x' },
+    { pkg: 'brace-expansion', min: '5.0.9', advisory: 'GHSA-rgw5-rvv9-x895', line: '5.x' },
 
     // --- 33-finding audit (electron / uuid / qs / protobufjs / hono / ...) ---
 
@@ -283,6 +290,13 @@ describe('dependency security guards (high-severity advisory floors)', () => {
  *      onwards exports `{ expand }`. Forcing those copies to 5.x to satisfy the
  *      stale advisory range is the obvious "fix" and it breaks every glob in
  *      the tree at runtime with `expand is not a function`.
+ *   3. Every resolved copy must also bound the *intermediate* arrays it builds
+ *      on the way to that output (GHSA-rgw5-rvv9-x895). 5.0.8 concatenated each
+ *      comma part's full sub-expansion into one array and only capped the
+ *      result afterwards, so a 3.6 KB pattern could allocate hundreds of MB
+ *      while returning a perfectly legal 1.8 MB. Output assertions cannot see
+ *      that -- 5.0.8 and 5.0.9 return byte-identical results for it -- so the
+ *      guard measures the footprint instead.
  *
  * Asserts only on copies whose on-disk version matches what the lockfile
  * resolved. A missing `node_modules` is a legitimate local state, and a *stale*
@@ -291,7 +305,7 @@ describe('dependency security guards (high-severity advisory floors)', () => {
  * floors above are the authority on what ships; this block proves the code those
  * versions actually contain is bounded.
  */
-describe('brace-expansion bounds expansion length (GHSA-mh99-v99m-4gvg)', () => {
+describe('brace-expansion bounds expansion (GHSA-mh99-v99m-4gvg, GHSA-rgw5-rvv9-x895)', () => {
   const require_ = createRequire(import.meta.url);
 
   /** 0.8 MB of chained two-option groups: 256 results x 160 KB when unbounded. */
@@ -403,6 +417,69 @@ describe('brace-expansion bounds expansion length (GHSA-mh99-v99m-4gvg)', () => 
         ).toBe('function');
       });
     }
+  }
+
+  /**
+   * GHSA-rgw5-rvv9-x895: 5.0.8 walked every comma part of a group and appended
+   * that part's *entire* sub-expansion to one array, checking the length cap
+   * only once the whole array was built. 60 parts x ~100k short results is a
+   * 3.6 KB pattern that allocates ~500 MB before returning the same 1.8 MB
+   * 5.0.9 returns in ~95 MB, so the results are identical and only the
+   * footprint separates them.
+   *
+   * Measured in a child process with a hard old-space cap rather than by
+   * sampling `memoryUsage()` in-process: the intermediate is freed before
+   * `expand` returns, so a post-hoc heap read sees nothing, and the vitest
+   * worker's own heap would make any threshold depend on test ordering.
+   *
+   * 1.1.18, 2.1.4 and 5.0.9 all complete this in ~200 ms and still pass with
+   * the cap as low as 64 MB, while 5.0.8 exhausts every cap from 128 MB up.
+   * 128 MB therefore leaves 2x headroom on the patched side without landing
+   * anywhere near the vulnerable side. The timeout only bounds the failing
+   * path -- V8 GC-thrashes for well over a minute before conceding OOM -- and
+   * a kill is reported as a failure just like a non-zero exit.
+   */
+  const HEAP_CAP_MB = 128;
+  const CHILD_TIMEOUT_MS = 45_000;
+  const PARTS_BOMB = `{${new Array(60).fill('{a,b}'.repeat(18)).join(',')}}`;
+  const PARTS_BOMB_RESULTS = 100_000;
+
+  /** One representative copy per distinct version -- the bomb costs ~1s a run. */
+  const byVersion = new Map<string, (typeof copies)[number]>();
+  for (const copy of copies) if (!byVersion.has(copy.version)) byVersion.set(copy.version, copy);
+
+  for (const { workspace, key, dir, version } of byVersion.values()) {
+    // Above the suite-wide 15 s testTimeout: a patched copy returns in ~200 ms,
+    // but a vulnerable one has to be allowed to reach CHILD_TIMEOUT_MS so the
+    // failure reads as "exhausted the heap" and not as a bare vitest timeout.
+    it(`${workspace}: ${key}@${version} bounds intermediate expansion arrays`, () => {
+      const child = spawnSync(
+        process.execPath,
+        [
+          `--max-old-space-size=${HEAP_CAP_MB}`,
+          '-e',
+          `const m = require(${JSON.stringify(dir)});
+           const expand = typeof m === 'function' ? m : m.expand;
+           process.stdout.write('RESULTS=' + expand(process.env.BRACE_BOMB).length);`,
+        ],
+        {
+          env: { ...process.env, BRACE_BOMB: PARTS_BOMB },
+          encoding: 'utf8',
+          timeout: CHILD_TIMEOUT_MS,
+        },
+      );
+
+      const detail =
+        `${workspace}: ${key}@${version} could not expand a ${PARTS_BOMB.length}-byte pattern ` +
+        `within a ${HEAP_CAP_MB} MB heap; it is missing the GHSA-rgw5-rvv9-x895 intermediate-` +
+        `array bound. exit=${child.status} signal=${child.signal} ` +
+        `stderr=${(child.stderr || '').slice(-400)}`;
+
+      expect(child.status, detail).toBe(0);
+      // Guards the other direction: a copy that bailed out early would also fit
+      // in the cap, so the run has to produce the full, correct result set.
+      expect(child.stdout, detail).toBe(`RESULTS=${PARTS_BOMB_RESULTS}`);
+    }, 60_000);
   }
 });
 
