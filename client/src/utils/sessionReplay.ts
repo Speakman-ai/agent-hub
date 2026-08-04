@@ -13,6 +13,7 @@ import { BUG_REPORT_ENDPOINT } from './bugReport';
 import { importMetaEnv } from './importMetaEnv';
 import { trimTrailingSlashes } from '@shared/utils/trimTrailingSlashes';
 import { FrustrationDetector } from '../rum/frustration';
+import { installReplayInstrumentation } from './replayInstrumentation';
 
 /**
  * Segment-flush reasons that GENUINELY TERMINATE the current view, so the
@@ -2695,9 +2696,19 @@ export class SessionReplayRecorder {
     flushTimeoutMs = FLUSH_TIMEOUT_MS,
     recordOptions = DEFAULT_RECORD_PRIVACY_OPTIONS,
     takeFullSnapshot = null,
+    // Console + network capture (rrweb Custom events). Opt-IN at construction:
+    // it patches page-global `console` / `fetch` / `XMLHttpRequest`, which a
+    // directly-constructed recorder (every unit test) must not do to the shared
+    // test environment. The module singleton (`getRecorder`) — the only
+    // recorder that ever runs in a real page — enables it, so production
+    // captures the error / failed request behind a user's rage-click.
+    captureTelemetry = false,
   }: any = {}) {
     this._record = record;
     this._submit = submit;
+    this.captureTelemetry = captureTelemetry;
+    // Uninstall fn for the console/network patches, or null when not installed.
+    this._telemetryUninstall = null;
     // An explicitly-injected snapshot fn (tests) always wins; otherwise it's
     // picked up from rrweb's `record.takeFullSnapshot` static in start().
     this._injectedTakeFullSnapshot = takeFullSnapshot;
@@ -2762,6 +2773,54 @@ export class SessionReplayRecorder {
         emit: (event: any) => this._handleEmit(event),
         checkoutEveryNms: this.windowMs,
       }) || null;
+    this._startTelemetryCapture();
+  }
+
+  /**
+   * Install console + network capture, interleaving rrweb Custom (type 5)
+   * events into the same stream as the DOM events.
+   *
+   * rrweb records the DOM but not the runtime, so without this a replay shows a
+   * user rage-clicking with no trace of the TypeError or the 500 that caused
+   * it. Events are pushed through `_handleEmit`, exactly like rrweb's own
+   * emissions, so they reach the rolling buffer AND the continuous/segment sink
+   * and land in the uploaded capture in timestamp order.
+   *
+   * **Bound to the RECORDING lifecycle, never to construction.** `start()`
+   * installs and `stop()` uninstalls, symmetrically, so every recording cycle
+   * on a reused recorder — a masking-mode change, a runtime disable/enable, a
+   * bfcache resume — captures telemetry again. Installing from the constructor
+   * instead would patch page globals for a recorder that may never record, and
+   * would silently lose telemetry on every cycle after the first (`stop()`
+   * clears the handle). Regression coverage lives in
+   * `sessionReplayTelemetry.test.ts`.
+   *
+   * Any stale handle is torn down first, so a start after a missed `stop()`
+   * still yields a fresh installation rather than reusing a dangling one.
+   */
+  _startTelemetryCapture() {
+    if (this.captureTelemetry === false) return;
+    this._stopTelemetryCapture();
+    try {
+      this._telemetryUninstall = installReplayInstrumentation({
+        emit: (event: any) => this._handleEmit(event),
+        now: this._now,
+      });
+    } catch {
+      // Telemetry capture is strictly additive — never let it break recording.
+      this._telemetryUninstall = null;
+    }
+  }
+
+  /** Restore every console/network patch installed by `_startTelemetryCapture`. */
+  _stopTelemetryCapture() {
+    if (!this._telemetryUninstall) return;
+    try {
+      this._telemetryUninstall();
+    } catch {
+      // ignore — teardown is best-effort
+    }
+    this._telemetryUninstall = null;
   }
 
   _handleEmit(event: any) {
@@ -2964,6 +3023,7 @@ export class SessionReplayRecorder {
       }
     }
     this._stopFn = null;
+    this._stopTelemetryCapture();
     this.active = false;
   }
 }
@@ -2986,7 +3046,11 @@ let _tailFlushListenersWired = false;
 let _rumToken: string | null = null;
 
 export function getRecorder() {
-  if (!_recorder) _recorder = new SessionReplayRecorder({});
+  // The page-level recorder opts into console/network capture: it is the only
+  // recorder that runs against a real document, and a replay without the
+  // console error / failed request that preceded a rage-click is not
+  // actionable for whoever (human or agent) has to fix the bug.
+  if (!_recorder) _recorder = new SessionReplayRecorder({ captureTelemetry: true });
   return _recorder;
 }
 

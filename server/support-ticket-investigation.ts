@@ -39,6 +39,9 @@ import {
 } from './support-tickets-store.js';
 import configDefault, { buildSpawnEnv } from './config.js';
 import { escapeUntrustedForPrompt } from './untrusted-prompt.js';
+import { getStmts } from './db.js';
+import { parseReplayIdFromRef } from './replays/replay-store.js';
+import { loadReplayRefResult } from './replays/replay-context-loader.js';
 
 /** Engines that can be selected for an operator-triggered investigation. */
 export const SUPPORT_INVESTIGATION_ENGINES: readonly SupportedEngine[] = [
@@ -48,8 +51,10 @@ export const SUPPORT_INVESTIGATION_ENGINES: readonly SupportedEngine[] = [
   'grok-cli',
 ] as const;
 
-/** Cap on how much replay text we splice into the prompt. */
+/** Cap on how much raw replay text the LEGACY fallback splices into the prompt. */
 const MAX_REPLAY_CONTEXT_CHARS = 4000;
+/** Byte budget for the rendered replay transcript in a triage prompt. */
+const MAX_REPLAY_TRANSCRIPT_BYTES = 8 * 1024;
 /** One-shot investigation timeout. Triage is short; keep it bounded. */
 const DEFAULT_INVESTIGATION_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -75,7 +80,7 @@ export function escapeTicketUntrusted(value: string | null | undefined): string 
  */
 export function buildSupportTicketInvestigationPrompt(
   ticket: Pick<SupportTicketRow, 'type' | 'severity' | 'subject' | 'body' | 'replay_ref'>,
-  opts: { replayContext?: string | null } = {},
+  opts: { replayContext?: string | null; replayContextKind?: 'transcript' | 'raw' } = {},
 ): string {
   const lines: string[] = [];
   lines.push('# Support Ticket — Initial Triage Investigation');
@@ -103,7 +108,12 @@ export function buildSupportTicketInvestigationPrompt(
   lines.push(escapeTicketUntrusted(ticket.body) || '(no body provided)');
   if (opts.replayContext) {
     lines.push('');
-    lines.push('Session replay context (truncated):');
+    lines.push(
+      opts.replayContextKind === 'transcript'
+        ? 'Session replay transcript (redacted timeline of what the user did — ' +
+            '`+MM:SS.s  kind  detail`, relative to the start of the capture):'
+        : 'Session replay context (truncated raw capture):',
+    );
     lines.push(escapeTicketUntrusted(opts.replayContext));
   }
   lines.push(TICKET_UNTRUSTED_END);
@@ -229,10 +239,15 @@ function matchingBraceEnd(text: string, start: number): number {
 }
 
 /**
- * Resolve a bounded text snippet from an attached session replay, when one is
- * present and locally readable. Only local uploads (`/uploads/...`) that look
- * textual (json / txt) are spliced in; remote URLs and binary captures
- * (zip / video) are referenced by their ref in the prompt but not inlined.
+ * LEGACY fallback: a bounded slice of the raw `/uploads/replay-<id>.json`
+ * companion file.
+ *
+ * This was the original (and only) replay context path, and it never really
+ * worked: 4 KB of a 250–400 KB rrweb capture is the head of a `FullSnapshot`,
+ * i.e. serialized DOM node soup with zero interactions and zero errors. It is
+ * kept only for captures whose stored blob can't be read back (no row, storage
+ * gone) — {@link resolveReplayTranscriptContext} is the real path now, and it
+ * is tried first.
  */
 export function resolveReplayContext(
   replayRef: string | null | undefined,
@@ -255,6 +270,39 @@ export function resolveReplayContext(
       ? `${buf.slice(0, MAX_REPLAY_CONTEXT_CHARS)}\n…(truncated)`
       : buf;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the attached replay as a readable TRANSCRIPT (clicks, inputs,
+ * navigations, console errors, network failures) rather than a raw JSON prefix.
+ *
+ * Reads the stored capture through the replay store, so it works for both
+ * storage layouts and for chunked/streamed ingests — which never wrote the
+ * `/uploads` companion the legacy path depends on, and therefore always got
+ * `null` from it. Returns null (never throws) when there is no resolvable
+ * capture; the caller falls back to the legacy slice.
+ */
+export async function resolveReplayTranscriptContext(
+  replayRef: string | null | undefined,
+  cfg: AppConfig,
+): Promise<string | null> {
+  try {
+    if (!parseReplayIdFromRef(replayRef)) return null;
+    const result = await loadReplayRefResult(
+      { stmts: getStmts(), config: cfg },
+      replayRef,
+      // The triage prompt is a short one-shot; keep the replay portion tight.
+      { maxBytes: MAX_REPLAY_TRANSCRIPT_BYTES },
+    );
+    // The transcript TEXT, not the full context pack: this prompt has its own
+    // untrusted fence + preamble, and the text is escaped into it by
+    // `buildSupportTicketInvestigationPrompt`.
+    return result?.transcript.text || null;
+  } catch {
+    // Never let replay resolution fail an investigation — the ticket text
+    // alone still produces a useful triage.
     return null;
   }
 }
@@ -336,6 +384,12 @@ export interface InvestigateDeps {
   userId?: string | null;
   /** Override the model runner — tests pass a stub to avoid spawning a CLI. */
   runner?: InvestigationRunner;
+  /** Override replay-transcript resolution — tests inject a stub so they need
+   *  no stored capture / artifact store. */
+  resolveReplayTranscript?: (
+    replayRef: string | null | undefined,
+    cfg: AppConfig,
+  ) => Promise<string | null>;
 }
 
 /**
@@ -356,8 +410,18 @@ export async function investigateSupportTicket(
   const cwd = deps.cwd && existsSync(deps.cwd) ? deps.cwd : process.env.HOME || '/tmp';
   const runner = deps.runner ?? defaultRunner;
 
-  const replayContext = resolveReplayContext(ticket.replay_ref, serverDir);
-  const prompt = buildSupportTicketInvestigationPrompt(ticket, { replayContext });
+  // Transcript first (a readable timeline of what the user did), raw-JSON slice
+  // only as a fallback for captures whose stored blob can't be read back.
+  // Guarded here as well as inside the default resolver: replay context is
+  // additive, so NO resolver — including an injected one — may fail a triage
+  // that the ticket body alone can still produce.
+  const resolveTranscript = deps.resolveReplayTranscript ?? resolveReplayTranscriptContext;
+  const transcript = await resolveTranscript(ticket.replay_ref, cfg).catch(() => null);
+  const replayContext = transcript ?? resolveReplayContext(ticket.replay_ref, serverDir);
+  const prompt = buildSupportTicketInvestigationPrompt(ticket, {
+    replayContext,
+    replayContextKind: transcript ? 'transcript' : 'raw',
+  });
 
   const raw = await runner({
     prompt,

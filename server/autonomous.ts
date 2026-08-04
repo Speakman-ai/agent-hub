@@ -49,6 +49,7 @@ import { autoGitChildEnv, resolveOrgOwnerGithubToken } from './auto-git.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from './session-ship.js';
 import { assignedFinalizeAutomationLevel } from './finalize/automation.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
+import { loadCardReplayContext } from './replays/replay-context-loader.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1492,6 +1493,15 @@ async function runAutonomousLoopInner(
           );
           if (specBlock) contextLines.push(`\n${specBlock}`);
         }
+        // Same replay seeding as the manual assign path (server/routes/board.ts):
+        // an autonomously-dispatched bug card must see what the customer did,
+        // not just the ticket text. Non-fatal — returns null when the card has
+        // no replay or the capture can't be read.
+        const replayContext = await loadCardReplayContext(
+          { stmts: d.stmts, config: d.getConfig() },
+          card.id,
+        );
+        if (replayContext) contextLines.push(`\n${replayContext}`);
         contextLines.push(
           `\n---\nYou have been assigned this task by the autonomous dispatch system. Review the description above and begin working on it.`,
           ``,

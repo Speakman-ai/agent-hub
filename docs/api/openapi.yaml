@@ -9698,6 +9698,64 @@ components:
         - sessionReplaySampleRate
         - effectiveReplaySampleRate
       description: Server-delivered per-project session-replay policy.
+    ReplayTranscript:
+      type: object
+      properties:
+        replayId:
+          type: string
+        transcript:
+          type: string
+          description: The rendered timeline, one event per line (`+MM:SS.s  kind  detail`). Redacted and bounded.
+        stats:
+          type: object
+          properties:
+            eventCount:
+              type: number
+            lineCount:
+              type: number
+            interactionCount:
+              type: number
+            errorCount:
+              type: number
+            networkFailureCount:
+              type: number
+            rageClickCount:
+              type: number
+            droppedEventCount:
+              type: number
+            durationMs:
+              type: number
+            truncated:
+              type: boolean
+            pageUrls:
+              type: array
+              items:
+                type: string
+            hasTelemetry:
+              type: boolean
+              description: False for captures recorded before browser console/network capture shipped — an empty error count then means "not recorded", not "no errors".
+          required:
+            - eventCount
+            - lineCount
+            - interactionCount
+            - errorCount
+            - networkFailureCount
+            - rageClickCount
+            - droppedEventCount
+            - durationMs
+            - truncated
+            - pageUrls
+            - hasTelemetry
+          description: Counts derived while rendering the timeline.
+        contextBlock:
+          type: string
+          description: "Prompt-ready block: safety preamble + trusted capture facts + the transcript inside BEGIN/END untrusted-data fences. Embed this verbatim when seeding an agent."
+      required:
+        - replayId
+        - transcript
+        - stats
+        - contextBlock
+      description: A human/agent-readable rendering of a stored rrweb capture.
     SessionSegmentManifest:
       type: object
       properties:
@@ -33614,6 +33672,53 @@ paths:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
         "404":
           description: No replay with that id, or the caller is not authorized to manage it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/replays/{id}/transcript:
+    get:
+      tags:
+        - Bug Reports
+      summary: Agent-readable session-replay transcript (authenticated)
+      description: Renders a stored capture as a readable timeline — page loads, clicks (with rapid-repeat/rage bursts collapsed), typed-value shapes, scrolls, viewport changes, coalesced DOM mutation bursts, plus console errors and network outcomes when the capture carries browser telemetry. Element targets are resolved against the capture’s own node mirror, so a click reads `button#submit.primary "Place order"` rather than `node 147`. All replay-derived text is redacted through the shared secret pipeline. Works for both `monolithic` and `segmented` captures. Same per-replay authorization as the events endpoint — unauthorized access is masked as 404.
+      parameters:
+        - schema:
+            type: string
+            description: Replay id (uuid).
+          required: true
+          description: Replay id (uuid).
+          name: id
+          in: path
+        - schema:
+            type: number
+            nullable: true
+            description: Byte budget for the rendered timeline (default 24576). Middle-elided to fit.
+          required: false
+          description: Byte budget for the rendered timeline (default 24576). Middle-elided to fit.
+          name: maxBytes
+          in: query
+      responses:
+        "200":
+          description: The transcript.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayTranscript"
+        "404":
+          description: No replay with that id, or the caller is not authorized to read it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "500":
+          description: Failed to read or render the capture.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "503":
+          description: The replay’s storage backend could not be resolved.
           content:
             application/json:
               schema:

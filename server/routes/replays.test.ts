@@ -752,6 +752,133 @@ describe('GET /api/replays/:id (metadata) + /events (paginated)', () => {
   });
 });
 
+describe('GET /api/replays/:id/transcript (agent-readable rendering)', () => {
+  let app: Express;
+  let serverDir: string;
+
+  beforeEach(() => {
+    _resetRateLimit();
+    ({ app, serverDir } = makeApp());
+  });
+
+  afterEach(() => {
+    try {
+      if (serverDir && existsSync(serverDir)) rmSync(serverDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
+  });
+
+  /** A capture with a real DOM, a click, a failed request, and a JS error. */
+  const RICH_CAPTURE = [
+    {
+      type: 4,
+      timestamp: 1000,
+      data: { href: 'https://shop.example.com/cart', width: 1280, height: 720 },
+    },
+    {
+      type: 2,
+      timestamp: 1001,
+      data: {
+        node: {
+          type: 0,
+          id: 1,
+          childNodes: [
+            {
+              type: 2,
+              id: 2,
+              tagName: 'button',
+              attributes: { id: 'buy' },
+              childNodes: [{ type: 3, id: 3, textContent: 'Buy' }],
+            },
+          ],
+        },
+      },
+    },
+    { type: 3, timestamp: 3000, data: { source: 2, type: 2, id: 2 } },
+    {
+      type: 5,
+      timestamp: 3100,
+      data: {
+        tag: 'agent-hub/network',
+        payload: {
+          kind: 'fetch',
+          method: 'POST',
+          url: 'https://api.example.com/cart',
+          status: 503,
+          durationMs: 88,
+        },
+      },
+    },
+    {
+      type: 5,
+      timestamp: 3150,
+      data: { tag: 'agent-hub/console', payload: { level: 'error', message: 'Cart sync failed' } },
+    },
+  ];
+
+  async function ingest(events: object[]): Promise<string> {
+    const res = await supertest(app).post('/api/replays').send({ events }).expect(201);
+    return res.body.replayId as string;
+  }
+
+  it('404s for an unknown replay id', async () => {
+    await supertest(app).get('/api/replays/nope/transcript').expect(404);
+  });
+
+  it('renders the capture as a readable timeline with resolved element targets', async () => {
+    const id = await ingest(RICH_CAPTURE);
+    const res = await supertest(app).get(`/api/replays/${id}/transcript`).expect(200);
+
+    expect(res.body.replayId).toBe(id);
+    expect(res.body.transcript).toContain('https://shop.example.com/cart');
+    // The click resolves against the capture's own node mirror, not "node 2".
+    expect(res.body.transcript).toContain('button#buy "Buy"');
+    expect(res.body.transcript).toContain('POST https://api.example.com/cart → 503 (88ms)');
+    expect(res.body.transcript).toContain('Cart sync failed');
+    expect(res.body.transcript).toMatch(/^\+00:00\.0/m);
+  });
+
+  it('reports signal counts a triager can sort on', async () => {
+    const id = await ingest(RICH_CAPTURE);
+    const res = await supertest(app).get(`/api/replays/${id}/transcript`).expect(200);
+    expect(res.body.stats).toMatchObject({
+      interactionCount: 1,
+      errorCount: 1,
+      networkFailureCount: 1,
+      hasTelemetry: true,
+    });
+  });
+
+  it('returns a prompt-ready context block fenced as untrusted data', async () => {
+    const id = await ingest(RICH_CAPTURE);
+    const res = await supertest(app).get(`/api/replays/${id}/transcript`).expect(200);
+    expect(res.body.contextBlock).toContain('----- BEGIN UNTRUSTED SESSION REPLAY DATA -----');
+    expect(res.body.contextBlock).toContain('----- END UNTRUSTED SESSION REPLAY DATA -----');
+    expect(res.body.contextBlock).toContain(`- Replay id: ${id}`);
+  });
+
+  it('honors a maxBytes budget', async () => {
+    const events: object[] = [RICH_CAPTURE[0]!, RICH_CAPTURE[1]!];
+    for (let i = 0; i < 200; i++) {
+      events.push({ type: 3, timestamp: 5000 + i * 5000, data: { source: 2, type: 2, id: 2 } });
+    }
+    const id = await ingest(events);
+    const res = await supertest(app).get(`/api/replays/${id}/transcript?maxBytes=800`).expect(200);
+    expect(Buffer.byteLength(res.body.transcript as string, 'utf8')).toBeLessThanOrEqual(800);
+    expect(res.body.stats.truncated).toBe(true);
+    // The elision is explicit, not a silent cut.
+    expect(res.body.transcript).toContain('lines elided');
+  });
+
+  it('flags a capture with no browser telemetry so silence is not read as success', async () => {
+    const id = await ingest([META, SNAPSHOT, INCREMENTAL]);
+    const res = await supertest(app).get(`/api/replays/${id}/transcript`).expect(200);
+    expect(res.body.stats.hasTelemetry).toBe(false);
+    expect(res.body.contextBlock).toContain('No console/network telemetry in this capture');
+  });
+});
+
 describe('POST /api/replays/:id/retention (extended-retention flag)', () => {
   let app: Express;
   let serverDir: string;

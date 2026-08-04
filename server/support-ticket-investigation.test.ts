@@ -76,14 +76,31 @@ describe('buildSupportTicketInvestigationPrompt', () => {
     expect(p).toContain('"severity_assessment"');
   });
 
-  it('inlines replay context when provided', () => {
+  it('inlines raw replay context when that is all we could resolve', () => {
     const p = buildSupportTicketInvestigationPrompt(
       { ...ticket, replay_ref: '/uploads/x.json' },
-      { replayContext: 'rrweb-event-dump' },
+      { replayContext: 'rrweb-event-dump', replayContextKind: 'raw' },
     );
-    expect(p).toContain('Session replay context (truncated):');
+    expect(p).toContain('Session replay context (truncated raw capture):');
     expect(p).toContain('rrweb-event-dump');
     expect(p).toContain('Session replay attached:');
+  });
+
+  it('labels a rendered transcript as a timeline, not a raw dump', () => {
+    const p = buildSupportTicketInvestigationPrompt(
+      { ...ticket, replay_ref: '/uploads/replay-abc.json' },
+      {
+        replayContext: '+00:03.2  click          button#pay "Pay now"',
+        replayContextKind: 'transcript',
+      },
+    );
+    expect(p).toContain('Session replay transcript (redacted timeline of what the user did');
+    expect(p).toContain('button#pay "Pay now"');
+    // Still inside the untrusted fence — a transcript is replay-derived text.
+    const begin = p.indexOf(TICKET_UNTRUSTED_BEGIN);
+    const end = p.indexOf(TICKET_UNTRUSTED_END);
+    expect(p.indexOf('button#pay')).toBeGreaterThan(begin);
+    expect(p.indexOf('button#pay')).toBeLessThan(end);
   });
 });
 
@@ -246,6 +263,86 @@ describe('investigateSupportTicket — write-back', () => {
 
     await investigateSupportTicket(ticket.id, { config: cfg, serverDir, runner });
     expect(seenPrompt).toContain('{"clicks":42}');
+  });
+
+  it('prefers the rendered replay transcript over the raw capture slice', async () => {
+    // Both paths are available: a readable transcript AND the legacy /uploads
+    // companion. The transcript must win — 4 KB of raw rrweb is DOM node soup
+    // with zero interactions, which is what made the old path useless.
+    const serverDir = mkdtempSync(path.join(tmpdir(), 'sti-srv-'));
+    mkdirSync(path.join(serverDir, 'uploads'), { recursive: true });
+    writeFileSync(path.join(serverDir, 'uploads', 'replay-xyz.json'), '{"raw":"node-soup"}');
+
+    const ticket = createSupportTicket({
+      projectId: 'p1',
+      type: 'bug',
+      body: 'checkout explodes',
+      replayRef: '/uploads/replay-xyz.json',
+    });
+    let seenPrompt = '';
+    const runner = vi.fn().mockImplementation(async ({ prompt }: { prompt: string }) => {
+      seenPrompt = prompt;
+      return JSON.stringify({ summary: 'checkout 500' });
+    });
+
+    await investigateSupportTicket(ticket.id, {
+      config: cfg,
+      serverDir,
+      runner,
+      resolveReplayTranscript: async () => '+00:03.2  click          button#pay "Pay now"',
+    });
+
+    expect(seenPrompt).toContain('Session replay transcript (redacted timeline');
+    expect(seenPrompt).toContain('button#pay "Pay now"');
+    expect(seenPrompt).not.toContain('node-soup');
+  });
+
+  it('falls back to the raw slice when no transcript can be built', async () => {
+    const serverDir = mkdtempSync(path.join(tmpdir(), 'sti-srv-'));
+    mkdirSync(path.join(serverDir, 'uploads'), { recursive: true });
+    writeFileSync(path.join(serverDir, 'uploads', 'legacy.json'), '{"raw":"node-soup"}');
+
+    const ticket = createSupportTicket({
+      projectId: 'p1',
+      type: 'bug',
+      body: 'old ticket',
+      replayRef: '/uploads/legacy.json',
+    });
+    let seenPrompt = '';
+    const runner = vi.fn().mockImplementation(async ({ prompt }: { prompt: string }) => {
+      seenPrompt = prompt;
+      return JSON.stringify({ summary: 'legacy' });
+    });
+
+    await investigateSupportTicket(ticket.id, {
+      config: cfg,
+      serverDir,
+      runner,
+      resolveReplayTranscript: async () => null,
+    });
+
+    expect(seenPrompt).toContain('node-soup');
+    expect(seenPrompt).toContain('truncated raw capture');
+  });
+
+  it('still investigates when replay resolution throws', async () => {
+    const ticket = createSupportTicket({
+      projectId: 'p1',
+      type: 'bug',
+      body: 'storage down',
+      replayRef: '/uploads/replay-boom.json',
+    });
+    const runner = vi.fn().mockResolvedValue(JSON.stringify({ summary: 'still triaged' }));
+
+    const updated = await investigateSupportTicket(ticket.id, {
+      config: cfg,
+      runner,
+      resolveReplayTranscript: async () => {
+        throw new Error('S3 down');
+      },
+    });
+
+    expect(updated?.ai_summary).toBe('still triaged');
   });
 
   it('passes an operator-selected engine, model, and user through to the runner', async () => {

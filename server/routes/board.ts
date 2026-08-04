@@ -43,6 +43,7 @@ import { prsForEpicFeatureBranch } from '../native-pr/epic-branch-link.js';
 import { loadAssignableUsers, normalizeAssignedUserId } from '../kanban-assigned-user.js';
 import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-templates.js';
 import { getDb } from '../db.js';
+import { loadCardReplayContext } from '../replays/replay-context-loader.js';
 import {
   scheduleAutonomousPhase,
   startAutonomousPhase,
@@ -1525,6 +1526,18 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         if (assignmentNote) {
           contextLines.push(`\n## Assignment Note\n${assignmentNote}`);
         }
+
+        // Seed the session replay attached to this card (support tickets carry
+        // one; conversion moves the attribution to `session_replays.card_id`).
+        // Without this the agent inherits only the inert `/uploads/replay-*.json`
+        // string that survives inside the card description, and has no way to
+        // know what the customer actually did. Non-fatal by contract: a missing
+        // blob or a storage outage returns null and the assignment proceeds.
+        const replayContext = await loadCardReplayContext(
+          { stmts, config },
+          req.params.cardId as string,
+        );
+        if (replayContext) contextLines.push(`\n${replayContext}`);
 
         contextLines.push(
           `\n---`,

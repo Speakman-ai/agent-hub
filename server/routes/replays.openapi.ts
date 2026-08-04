@@ -472,6 +472,64 @@ registerPath({
   },
 });
 
+const ReplayTranscriptResponse = registerComponent(
+  'ReplayTranscript',
+  z
+    .object({
+      replayId: z.string(),
+      transcript: z.string().openapi({
+        description:
+          'The rendered timeline, one event per line (`+MM:SS.s  kind  detail`). Redacted and bounded.',
+      }),
+      stats: z
+        .object({
+          eventCount: z.number(),
+          lineCount: z.number(),
+          interactionCount: z.number(),
+          errorCount: z.number(),
+          networkFailureCount: z.number(),
+          rageClickCount: z.number(),
+          droppedEventCount: z.number(),
+          durationMs: z.number(),
+          truncated: z.boolean(),
+          pageUrls: z.array(z.string()),
+          hasTelemetry: z.boolean().openapi({
+            description:
+              'False for captures recorded before browser console/network capture shipped — an empty error count then means "not recorded", not "no errors".',
+          }),
+        })
+        .openapi({ description: 'Counts derived while rendering the timeline.' }),
+      contextBlock: z.string().openapi({
+        description:
+          'Prompt-ready block: safety preamble + trusted capture facts + the transcript inside BEGIN/END untrusted-data fences. Embed this verbatim when seeding an agent.',
+      }),
+    })
+    .openapi({ description: 'A human/agent-readable rendering of a stored rrweb capture.' }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/replays/{id}/transcript',
+  tags: ['Bug Reports'],
+  summary: 'Agent-readable session-replay transcript (authenticated)',
+  description:
+    'Renders a stored capture as a readable timeline — page loads, clicks (with rapid-repeat/rage bursts collapsed), typed-value shapes, scrolls, viewport changes, coalesced DOM mutation bursts, plus console errors and network outcomes when the capture carries browser telemetry. Element targets are resolved against the capture’s own node mirror, so a click reads `button#submit.primary "Place order"` rather than `node 147`. All replay-derived text is redacted through the shared secret pipeline. Works for both `monolithic` and `segmented` captures. Same per-replay authorization as the events endpoint — unauthorized access is masked as 404.',
+  request: {
+    ...replayIdParam,
+    query: z.object({
+      maxBytes: z.coerce.number().optional().openapi({
+        description: 'Byte budget for the rendered timeline (default 24576). Middle-elided to fit.',
+      }),
+    }),
+  },
+  responses: {
+    200: { description: 'The transcript.', content: jsonContent(ReplayTranscriptResponse) },
+    404: errorResponse('No replay with that id, or the caller is not authorized to read it.'),
+    500: errorResponse('Failed to read or render the capture.'),
+    503: errorResponse('The replay’s storage backend could not be resolved.'),
+  },
+});
+
 // ── Segmented-capture playback API ────────────────────────────────
 // A `segmented` capture stores its bytes as append-only per-segment objects
 // (rum_segments) keyed by the client-minted session id, not a session_replays

@@ -27,6 +27,9 @@ import {
   SegmentNeedsSnapshotError,
 } from '../replays/segment-store.js';
 import { computeEnrichment } from '../replays/rum-enrichment.js';
+import { readAllReplayEvents } from '../replays/replay-context-loader.js';
+import { buildReplayTranscript } from '../replays/replay-transcript.js';
+import { buildReplayContextPack } from '../replays/replay-context-pack.js';
 import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
@@ -964,6 +967,50 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[Replays] Failed to read events:', message);
       return res.status(500).json({ error: 'Failed to read replay events' });
+    }
+  });
+
+  // ── Read: agent-readable transcript ───────────────────────────────
+  // The events endpoint above returns raw rrweb — a DOM-diff stream keyed by
+  // opaque node ids, useless to anything but a player. This renders the same
+  // capture as a timeline (clicks, inputs, navigations, console errors,
+  // network outcomes) so a human OR an agent can read what the user did
+  // without replaying 400 KB of node soup. Same per-replay authorization as
+  // every other read; handles both storage layouts.
+  router.get('/api/replays/:id/transcript', async (req: Request, res: Response) => {
+    const row = loadAuthorizedReplay(req, res);
+    if (!row) return; // 404 already sent
+
+    const maxBytes = parseIntParam(req.query.maxBytes);
+    try {
+      const events = await readAllReplayEvents({ stmts, config }, row);
+      // `maxBytes` bounds the RENDERED timeline (and, below, the fenced context
+      // block built from it) — not the number of events read, which is capped
+      // separately by the loader.
+      const transcript = buildReplayTranscript(events, maxBytes ? { maxBytes } : {});
+      const pack = buildReplayContextPack({
+        transcript,
+        replay: {
+          id: row.id,
+          createdAt: row.created_at,
+          durationMs: row.duration_ms,
+          eventCount: row.event_count,
+        },
+        ...(maxBytes ? { maxBytes } : {}),
+      });
+      return res.json({
+        replayId: row.id,
+        transcript: transcript.text,
+        stats: transcript.stats,
+        contextBlock: pack.contextBlock,
+      });
+    } catch (err) {
+      if (err instanceof ArtifactStoreUnavailableError) {
+        return res.status(503).json({ error: err.message });
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[Replays] Failed to build transcript:', message);
+      return res.status(500).json({ error: 'Failed to build replay transcript' });
     }
   });
 
