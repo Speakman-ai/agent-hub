@@ -85,7 +85,23 @@ jobs:
   push:
     name: Build + push image
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Must fit a COLD (cache-miss) build of BOTH images, not just the usual
+    # warm one. Warm builds are ~7s per image because every layer hits the gha
+    # cache; but the Finalize runner Dockerfile's `FROM ubuntu:24.04` floats, so
+    # whenever Docker Hub republishes that tag every layer invalidates and the
+    # runner rebuilds from scratch (~30m+, dominated by the big apt-get layer
+    # against a frequently-slow archive.ubuntu.com).
+    #
+    # At 30m that cold rebuild could not finish, and the failure was
+    # SELF-PERPETUATING: `cache-to` only exports after a successful build, so a
+    # timed-out run wrote no cache and every retry started cold again. Release
+    # run 30917756003 died this way hours after ubuntu:24.04 was republished
+    # (base digest 4fbb8e6a -> 561618e2 on 2026-08-04).
+    #
+    # Keep this well above the cold-build cost; it only binds on the rare
+    # cache-miss run and never slows a warm one. Guarded by
+    # server/push-image-workflow.test.ts.
+    timeout-minutes: 75
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:

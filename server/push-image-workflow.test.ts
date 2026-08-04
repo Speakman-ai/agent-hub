@@ -137,6 +137,33 @@ describe('ECR publish + push-image deploy contract', () => {
     // sleep before the inspect block is the regression we are guarding against.
     expect(yml, 'fixed `sleep 8` before inspect must not return').not.toMatch(/^\s*sleep 8\s*$/m);
   });
+
+  // Regression guard for Release run 30917756003. The push job builds BOTH the
+  // server image and the Finalize runner image under ONE timeout. Warm builds
+  // take ~7s each (full gha cache hit), which made 30m look generous — but the
+  // runner Dockerfile's `FROM ubuntu:24.04` floats, so when Docker Hub
+  // republished that tag (base digest 4fbb8e6a -> 561618e2 on 2026-08-04) every
+  // layer invalidated and the cold rebuild blew straight through 30m inside a
+  // single apt-get layer.
+  //
+  // That failure is self-perpetuating and cannot be retried out of:
+  // `cache-to` only exports on SUCCESS, so a timed-out run writes no cache and
+  // the next attempt starts cold again. The timeout must therefore carry enough
+  // headroom for a full cold build of both images. It only ever binds on a
+  // cache-miss run, so raising it costs a warm release nothing.
+  it('gives the push job enough timeout headroom for a cold, cache-miss image build', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    const jobMatch = yml.match(/^ {2}push:\s*\n([\s\S]*?)^ {4}steps:\s*$/m);
+    expect(jobMatch, 'push job header must exist in ECR workflow').toBeTruthy();
+    const timeoutMatch = jobMatch![1].match(/^ {4}timeout-minutes:\s*(\d+)\s*$/m);
+    expect(timeoutMatch, 'push job must declare a job-level `timeout-minutes`').toBeTruthy();
+    // 30m demonstrably could not fit a cold build of the runner image; require
+    // meaningful headroom above the observed ~30m cold-build floor.
+    expect(
+      Number(timeoutMatch![1]),
+      'push job timeout must leave room for a cold rebuild of both images (a timed-out build exports no cache, so retries stay cold)',
+    ).toBeGreaterThanOrEqual(60);
+  });
 });
 
 // Hard gate for going public (AH-1395 / AH-1341 flip): no account-specific
