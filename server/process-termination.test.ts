@@ -145,6 +145,93 @@ describe('process-termination', () => {
     expect(broadcasts.some((b) => b.type === 'chat')).toBe(false);
   });
 
+  // Regression: "Sessions kill processes but continue to wait". A hub kill that
+  // landed before the CLI produced any assistant text broadcast nothing
+  // terminal — `finalizeChatRunAfterTermination` returned early on empty
+  // partial content. The client gates its streaming indicator on
+  // `done`/`error`/`interrupted`, so every tab except the one that pressed Stop
+  // kept the green "streaming" dot and the Interrupt badge indefinitely.
+  it('finalizeChatRunAfterTermination emits a terminal frame when there is no partial output', () => {
+    const stmts = getStmts();
+    const agentId = `term-empty-${randomUUID().slice(0, 8)}`;
+    const sessionId = `term-empty-${randomUUID().slice(0, 8)}`;
+    const assistantMsgId = `term-empty-asst-${randomUUID().slice(0, 8)}`;
+    stmts.createSession.run(
+      sessionId,
+      agentId,
+      'empty cancel test',
+      'claude-code',
+      'claude-opus-4-8',
+      0,
+      0,
+      1,
+    );
+
+    const broadcasts: Array<Record<string, unknown>> = [];
+    finalizeChatRunAfterTermination({
+      stmts,
+      broadcast: (msg) => {
+        broadcasts.push(msg as Record<string, unknown>);
+      },
+      sessionId,
+      assistantMsgId,
+      engine: 'claude-code',
+      model: 'claude-opus-4-8',
+      agentId,
+      agentName: 'Empty agent',
+      assembled: '',
+    });
+
+    expect(broadcasts.some((b) => b.type === 'interrupted' && b.sessionId === sessionId)).toBe(
+      true,
+    );
+    // No assistant text means no phantom empty message.
+    const messages = stmts.getMessages.all(sessionId) as Array<{ id: string }>;
+    expect(messages.some((m) => m.id === assistantMsgId)).toBe(false);
+  });
+
+  it('finalizeChatRunAfterTermination emits the terminal frame even when the partial save throws', () => {
+    const stmts = getStmts();
+    const sessionId = `term-throw-${randomUUID().slice(0, 8)}`;
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const throwingStmts = {
+      ...stmts,
+      addMessage: {
+        run: () => {
+          throw new Error('disk full');
+        },
+      },
+    } as unknown as typeof stmts;
+
+    finalizeChatRunAfterTermination({
+      stmts: throwingStmts,
+      broadcast: (msg) => {
+        broadcasts.push(msg as Record<string, unknown>);
+      },
+      sessionId,
+      assistantMsgId: 'asst-throw',
+      engine: 'claude-code',
+      model: null,
+      agentId: 'agent-throw',
+      agentName: 'Throwing agent',
+      assembled: 'Some partial text.',
+    });
+
+    expect(broadcasts.some((b) => b.type === 'interrupted' && b.sessionId === sessionId)).toBe(
+      true,
+    );
+  });
+
+  it('chat termination path recomputes session state so the sidebar glyph converges', async () => {
+    const { readFile } = await import('fs/promises');
+    const src = await readFile(new URL('./chat.ts', import.meta.url), 'utf8');
+    const termIdx = src.indexOf('finalizeChatRunAfterTermination({');
+    expect(termIdx).toBeGreaterThan(-1);
+    const returnIdx = src.indexOf('return;', termIdx);
+    const between = src.slice(termIdx, returnIdx);
+    expect(between).toMatch(/recomputeSessionState\(stmts, sessionId/);
+  });
+
   it('chat close handler bails out before shouldAutoContinue when termination is set', async () => {
     const { readFile } = await import('fs/promises');
     const src = await readFile(new URL('./chat.ts', import.meta.url), 'utf8');

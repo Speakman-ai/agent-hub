@@ -22,7 +22,7 @@ vi.mock('./react-chain-cancel.js', async (importOriginal) => {
   return { ...actual, requestReactChainCancel: requestReactChainCancelMock };
 });
 
-const { cancelSessionChatRun } = await import('./session-chat-cancel.js');
+const { cancelSessionChatRun, CANCEL_SIGKILL_GRACE_MS } = await import('./session-chat-cancel.js');
 
 describe('cancelSessionChatRun', () => {
   beforeEach(() => {
@@ -55,6 +55,77 @@ describe('cancelSessionChatRun', () => {
       activeProcesses: new Map<string, ChildProcess>([[sessionId, proc]]),
     });
     expect(requestReactChainCancelMock).toHaveBeenCalledWith(sessionId);
+  });
+
+  // Regression: "Sessions kill processes but continue to wait". Every terminal
+  // frame that releases the client's streaming state is emitted from the chat
+  // `close` handler. A CLI that traps or blocks SIGTERM therefore never closes,
+  // never emits, and leaves the session spinning with no way back. Stop must
+  // escalate to SIGKILL, which cannot be caught.
+  it('escalates to SIGKILL when the proc is still registered after the grace window', () => {
+    const sessionId = 'sess-sigterm-ignored';
+    const proc = Object.assign(new EventEmitter(), { pid: 4242 }) as ChildProcess;
+    const activeProcesses = new Map<string, ChildProcess>([[sessionId, proc]]);
+    let escalate: (() => void) | null = null;
+
+    cancelSessionChatRun({
+      sessionId,
+      activeProcesses,
+      scheduleEscalation: (fn, ms) => {
+        expect(ms).toBe(CANCEL_SIGKILL_GRACE_MS);
+        escalate = fn;
+      },
+    });
+
+    expect(killProcessGroupMock).toHaveBeenCalledWith(proc, 'SIGTERM');
+    expect(escalate).toBeTypeOf('function');
+    escalate!();
+    expect(killProcessGroupMock).toHaveBeenCalledWith(proc, 'SIGKILL');
+  });
+
+  it('does not escalate once the close handler has deregistered the proc', () => {
+    const sessionId = 'sess-clean-exit';
+    const proc = Object.assign(new EventEmitter(), { pid: 4343 }) as ChildProcess;
+    const activeProcesses = new Map<string, ChildProcess>([[sessionId, proc]]);
+    let escalate: (() => void) | null = null;
+
+    cancelSessionChatRun({
+      sessionId,
+      activeProcesses,
+      scheduleEscalation: (fn) => {
+        escalate = fn;
+      },
+    });
+
+    // The chat `close` handler deletes the entry — the child honoured SIGTERM.
+    activeProcesses.delete(sessionId);
+    escalate!();
+
+    expect(killProcessGroupMock).toHaveBeenCalledTimes(1);
+    expect(killProcessGroupMock).toHaveBeenCalledWith(proc, 'SIGTERM');
+  });
+
+  it('does not SIGKILL a different proc that reused the session slot', () => {
+    const sessionId = 'sess-reused-slot';
+    const proc = Object.assign(new EventEmitter(), { pid: 5151 }) as ChildProcess;
+    const nextProc = Object.assign(new EventEmitter(), { pid: 5252 }) as ChildProcess;
+    const activeProcesses = new Map<string, ChildProcess>([[sessionId, proc]]);
+    let escalate: (() => void) | null = null;
+
+    cancelSessionChatRun({
+      sessionId,
+      activeProcesses,
+      scheduleEscalation: (fn) => {
+        escalate = fn;
+      },
+    });
+
+    // Cancelled turn exited; the next turn registered its own child.
+    activeProcesses.set(sessionId, nextProc);
+    escalate!();
+
+    expect(killProcessGroupMock).not.toHaveBeenCalledWith(nextProc, 'SIGKILL');
+    expect(killProcessGroupMock).toHaveBeenCalledTimes(1);
   });
 
   it('requests a ReAct chain-cancel even when the session has no active proc', () => {

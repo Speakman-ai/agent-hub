@@ -4065,6 +4065,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             agentColor: agent.color ?? null,
             assembled,
           });
+          // The `active_tasks` row is gone (deleted at the top of this handler),
+          // so the session is no longer `working`. Without this the cached
+          // `sessions.state` and the sidebar glyph stay stuck until a refetch.
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
           drainQueue(sessionId);
           return;
         }

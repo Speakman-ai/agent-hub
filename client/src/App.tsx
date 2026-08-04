@@ -189,6 +189,7 @@ import {
 } from './utils/sessionDerivedState';
 import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
+import { resolveStreamingFromSnapshot } from '@shared/utils/activeTaskSnapshot';
 import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentColor';
 import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLive';
 import { deriveSessionState } from './utils/deriveSessionState';
@@ -1548,20 +1549,22 @@ export default function App({ initialView }: any = {}) {
             };
           }
           setActiveTasks(next);
-          // If the currently viewed session has an in-flight task, restore streaming state.
-          const sid = activeSessionIdRef.current;
-          if (sid && next[sid]) {
-            const t = next[sid];
-            setStreamingMsgId(t.messageId);
-            setStreamingContent(t.content);
-            setStreamingEngine(t.engine);
-            setThinking(!t.content);
-            const agent = agentsRef.current.find((a: any) => a.id === t.agentId);
+          // Authoritative in BOTH directions — a session absent from the
+          // snapshot has no live run, so clear rather than leave the previous
+          // streaming state standing.
+          const streaming = resolveStreamingFromSnapshot(next, activeSessionIdRef.current);
+          if (streaming) {
+            if (!streaming.streamingMsgId) pinChatTail(streamingMsgIdRef.current);
+            setStreamingMsgId(streaming.streamingMsgId);
+            setStreamingContent(streaming.streamingContent);
+            setStreamingEngine(streaming.streamingEngine);
+            setThinking(streaming.thinking);
+            const agent = agentsRef.current.find((a: any) => a.id === streaming.agentId);
             setStreamingAgent(
-              t.agentId
+              streaming.agentId
                 ? {
-                    agentId: t.agentId,
-                    agentName: agent?.name || t.agentId,
+                    agentId: streaming.agentId,
+                    agentName: agent?.name || streaming.agentId,
                     agentColor: agent?.color,
                   }
                 : null,

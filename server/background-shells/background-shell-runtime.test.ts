@@ -385,6 +385,51 @@ describe('BackgroundShellRuntime.list / boot reconcile', () => {
     expect(runtime.getById('z')!.status).toBe('failed');
   });
 
+  // The restart auto-resume names these shells in the resume prompt so the
+  // agent stops polling work the Hub already killed. It runs on `listen`, which
+  // races the async reap, so the list must come from a snapshot taken at
+  // construction rather than a live `status = 'running'` query.
+  it('exposes boot orphans per session after the reconcile has flipped them terminal', async () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE background_shells (
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, project_id TEXT NOT NULL,
+      command TEXT NOT NULL, label TEXT, cwd TEXT, pid INTEGER,
+      status TEXT NOT NULL DEFAULT 'running', exit_code INTEGER, log_path TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')));`);
+    const insert = db.prepare(
+      `INSERT INTO background_shells (id, session_id, project_id, command, label, status, created_at, updated_at)
+       VALUES (?, ?, 'p', ?, ?, ?, '2020-01-01', '2020-01-01')`,
+    );
+    insert.run('a', 'sess-a', 'pytest -q', 'backend tests', 'running');
+    insert.run('b', 'sess-b', 'npm run dev', null, 'running');
+    insert.run('c', 'sess-a', 'already done', null, 'exited');
+
+    const logSink: BackgroundShellLogSink = { open: () => ({ path: null, append: () => {} }) };
+    const runtime = new BackgroundShellRuntime({
+      db,
+      spawn: (() => {
+        throw new Error('should not spawn');
+      }) as unknown as SpawnFn,
+      logSink,
+      clock: systemClock,
+    });
+    await runtime.bootReconcile;
+
+    expect(runtime.getById('a')!.status).toBe('failed');
+    const orphans = runtime.listBootOrphans('sess-a');
+    expect(orphans.map((r) => r.id)).toEqual(['a']);
+    expect(orphans[0].command).toBe('pytest -q');
+    expect(orphans[0].label).toBe('backend tests');
+    expect(runtime.listBootOrphans('sess-b').map((r) => r.id)).toEqual(['b']);
+    expect(runtime.listBootOrphans('sess-unknown')).toEqual([]);
+  });
+
+  it('does not report shells started by this Hub process as boot orphans', () => {
+    const h = makeHarness();
+    h.runtime.start({ ...START, command: 'fresh' });
+    expect(h.runtime.listBootOrphans('sess-1')).toEqual([]);
+  });
+
   it('broadcasts an update on start and on terminal transition', () => {
     const db = new Database(':memory:');
     const events: string[] = [];

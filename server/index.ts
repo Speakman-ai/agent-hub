@@ -104,6 +104,11 @@ import {
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers } from './process-groups.js';
 import { markSessionTermination } from './process-termination.js';
+import {
+  buildRestartResumeNotice,
+  buildRestartResumePrompt,
+  type KilledBackgroundShell,
+} from './restart-resume-notice.js';
 import { cancelSessionChatRun } from './session-chat-cancel.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
@@ -1760,10 +1765,26 @@ function reconcileOrphanedTasks(): ResumeEntry[] {
       continue;
     }
 
+    // The restart drained this session's CLI child by process *group*, so every
+    // background job, dev server, test run and build it had started died too.
+    // Both the transcript line and the resume prompt say so explicitly —
+    // otherwise the resumed agent keeps polling work the Hub already killed.
+    let killedShells: KilledBackgroundShell[] = [];
+    try {
+      killedShells = backgroundShellRuntime.listBootOrphans(t.session_id).map((row) => ({
+        id: row.id,
+        command: row.command,
+        label: row.label,
+      }));
+    } catch (err) {
+      console.warn(
+        `[Resume] Failed to list killed background shells for ${t.session_id}:`,
+        (err as Error).message,
+      );
+    }
+
     const infoMsgId: string = uuidv4();
-    const infoText: string = partial
-      ? `ℹ️ Session interrupted by server restart. Resuming automatically…\n\nPartial output before interruption:\n${partial}`
-      : 'ℹ️ Session interrupted by server restart. Resuming automatically…';
+    const infoText: string = buildRestartResumeNotice({ partial, killedShells });
     try {
       stmts!.addMessage.run(
         infoMsgId,
@@ -1786,13 +1807,11 @@ function reconcileOrphanedTasks(): ResumeEntry[] {
       );
     }
 
-    let resumeContent: string;
-    if (session.engine_session_id) {
-      resumeContent =
-        'The server restarted while you were working. Please continue where you left off. If you were in the middle of a task, pick up from where you stopped.';
-    } else {
-      resumeContent = t.prompt || 'The server restarted. Please continue where you left off.';
-    }
+    const resumeContent: string = buildRestartResumePrompt({
+      hasEngineSession: Boolean(session.engine_session_id),
+      taskPrompt: t.prompt,
+      killedShells,
+    });
 
     // Record the attempt before re-spawning. A clean process exit later resets
     // this to 0 (see resetSessionResumeAttempts in chat.ts proc.on('close')),

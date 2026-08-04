@@ -22,6 +22,7 @@ import { createReloadMessages } from '../utils/sessionReload';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import { firstEngineWithAuthenticatedModels, defaultModelForAuthenticatedEngine, } from '../utils/authModelEngines';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
+import { resolveStreamingFromSnapshot } from '@shared/utils/activeTaskSnapshot';
 import { buildInterruptQueuedMessageDispatch, isPersistedUploadAttachment, } from '@shared/utils/queuedMessageAttachments';
 import { appendImportEvent } from '@shared/utils/projectImportWizard';
 import { addKanbanRefreshProject, createRefreshScheduler } from '@shared/utils/kanbanRefresh';
@@ -304,13 +305,15 @@ export function AppProvider({ children }: any) {
                     };
                 }
                 setActiveTasks(next);
-                const sid = activeSessionIdRef.current;
-                if (sid && next[sid]) {
-                    const t = next[sid];
-                    setStreamingMsgId(t.messageId);
-                    setStreamingContent(t.content);
-                    setStreamingEngine(t.engine);
-                    setThinking(!t.content);
+                // Authoritative in BOTH directions — a session absent from the
+                // snapshot has no live run, so clear rather than leave the
+                // previous streaming state standing.
+                const streaming = resolveStreamingFromSnapshot(next, activeSessionIdRef.current);
+                if (streaming) {
+                    setStreamingMsgId(streaming.streamingMsgId);
+                    setStreamingContent(streaming.streamingContent);
+                    setStreamingEngine(streaming.streamingEngine);
+                    setThinking(streaming.thinking);
                 }
                 break;
             }

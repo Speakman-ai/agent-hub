@@ -276,6 +276,14 @@ export class BackgroundShellRuntime {
   /** Live handles keyed by shell id. Populated on start, pruned on terminal status. */
   private readonly handles = new Map<string, ShellHandle>();
 
+  /**
+   * Rows left `running` by a prior Hub process, captured synchronously at
+   * construction. `reconcileOrphansOnBoot` flips them terminal asynchronously,
+   * so a later reader (the restart auto-resume, which runs on `listen`) cannot
+   * recover the list from the table — it races the reap. Snapshot it once.
+   */
+  private readonly bootOrphans: readonly BackgroundShellRow[];
+
   constructor(deps: BackgroundShellRuntimeDeps) {
     this.db = deps.db;
     this.spawn = deps.spawn;
@@ -297,6 +305,7 @@ export class BackgroundShellRuntime {
     // separate init step — same convention as other managed runtimes.
     this.db.exec(BACKGROUND_SHELLS_SCHEMA);
     this.ensurePidStartTimeColumn();
+    this.bootOrphans = this.readBootOrphans();
     // A prior Hub process may have left rows marked `running` whose detached
     // children can still be alive. Reap them (escalating SIGTERM→SIGKILL) and
     // only then flip the row terminal. Runs in the background so it never
@@ -417,6 +426,16 @@ export class BackgroundShellRuntime {
         `SELECT * FROM background_shells WHERE session_id = ? ORDER BY created_at DESC, rowid DESC`,
       )
       .all(sessionId) as BackgroundShellRow[];
+  }
+
+  /**
+   * Shells for `sessionId` that a prior Hub process left `running` — i.e. the
+   * ones this boot is reaping. The restart auto-resume names them in the
+   * prompt so the resumed agent knows its long-running work is gone instead of
+   * going back to polling it.
+   */
+  listBootOrphans(sessionId: string): BackgroundShellRow[] {
+    return this.bootOrphans.filter((row) => row.session_id === sessionId);
   }
 
   /** Single shell by id, or null. */
@@ -601,25 +620,21 @@ export class BackgroundShellRuntime {
    * is still torn down before the row goes terminal. Runs asynchronously so
    * it never blocks the constructor / server startup.
    */
-  private async reconcileOrphansOnBoot(): Promise<void> {
-    let rows: Array<{
-      id: string;
-      pid: number | null;
-      pid_start_time: string | null;
-      command: string;
-    }> = [];
+  private readBootOrphans(): BackgroundShellRow[] {
     try {
-      rows = this.db
-        .prepare(
-          `SELECT id, pid, pid_start_time, command FROM background_shells WHERE status = 'running'`,
-        )
-        .all() as typeof rows;
+      return this.db
+        .prepare(`SELECT * FROM background_shells WHERE status = 'running'`)
+        .all() as BackgroundShellRow[];
     } catch (err) {
       this.logger.warn(
         `[bg-shell] boot reconcile query failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return;
+      return [];
     }
+  }
+
+  private async reconcileOrphansOnBoot(): Promise<void> {
+    const rows = this.bootOrphans;
     const markFailed = this.db.prepare(
       `UPDATE background_shells SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'running'`,
     );

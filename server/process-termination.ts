@@ -172,11 +172,44 @@ export interface FinalizeTerminatedChatTurnParams {
 }
 
 /**
+ * Tell every connected client the run is over.
+ *
+ * `interrupted` is the only terminal frame that clears the chat's streaming
+ * state without appending a message, which is what a hub-initiated kill needs:
+ * the transcript already carries the `role=system` cancel line, and there may
+ * be no assistant text to show. Clients gate their streaming indicator purely
+ * on this (plus `done` / `error`), so skipping it strands the green
+ * "streaming" dot and the Interrupt badge until the user switches sessions.
+ */
+export function broadcastRunTerminated(broadcast: BroadcastFn, sessionId: string): void {
+  try {
+    broadcast({ type: 'interrupted', sessionId });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[chat] run-terminated broadcast failed session=${sessionId}: ${message}`);
+  }
+}
+
+/**
  * Persist partial assistant output after a hub-initiated kill, without running
  * ReAct / auto-continuation. Called from the chat `close` handler once the
  * cancel system message has been written.
+ *
+ * The terminal `interrupted` frame is emitted unconditionally — including when
+ * the child died before producing any assistant text (the "0 turns / 0.1s"
+ * case) and including when persisting the partial throws. A kill that emits no
+ * terminal frame leaves every client except the one that pressed Stop waiting
+ * on a process the Hub already reaped.
  */
 export function finalizeChatRunAfterTermination(params: FinalizeTerminatedChatTurnParams): void {
+  try {
+    saveTerminatedTurnPartial(params);
+  } finally {
+    broadcastRunTerminated(params.broadcast, params.sessionId);
+  }
+}
+
+function saveTerminatedTurnPartial(params: FinalizeTerminatedChatTurnParams): void {
   const partialContent = (stripAssistantControlBlocks(params.assembled) ?? '').trim();
   if (!partialContent) return;
 
