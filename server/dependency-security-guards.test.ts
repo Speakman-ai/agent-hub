@@ -167,8 +167,11 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-6g55-p6wh-862q (8.5.12) + GHSA-r28c-9q8g-f849 (8.5.18): sourceMappingURL
     // path traversal / arbitrary .map file disclosure.
     { pkg: 'postcss', min: '8.5.18', advisory: 'GHSA-r28c-9q8g-f849' },
-    // GHSA-4c8g-83qw-93j6 (3.1.3) + GHSA-v2hh-gcrm-f6hx (3.1.4): host confusion.
-    { pkg: 'fast-uri', min: '3.1.4', advisory: 'GHSA-v2hh-gcrm-f6hx' },
+    // GHSA-4c8g-83qw-93j6 (3.1.3) + GHSA-v2hh-gcrm-f6hx (3.1.4) +
+    // GHSA-7p8r-x3mc-p8w7 (3.1.5): host confusion, most recently via a
+    // backslash authority introducer. Every copy sits under `ajv`'s
+    // `fast-uri: ^3.0.1`, so each patch re-resolves in range with no override.
+    { pkg: 'fast-uri', min: '3.1.5', advisory: 'GHSA-7p8r-x3mc-p8w7' },
     // GHSA-v245-v573-v5vm: quadratic-complexity DoS in the `mailto:` validator.
     { pkg: 'linkify-it', min: '5.0.2', advisory: 'GHSA-v245-v573-v5vm' },
     // GHSA-7g7r-gx96-252g: uncontrolled AppImage search path.
@@ -217,8 +220,11 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-q6x5-8v7m-xcrf: overlong UTF-8 decoding.
     { pkg: '@protobufjs/utf8', min: '1.1.1', advisory: 'GHSA-q6x5-8v7m-xcrf' },
     // GHSA-hvrm-45r6-mjfj (cross-request JSX context leak), GHSA-w62v-xxxg-mg59
-    // (cx() escaping bypass), GHSA-xgm2-5f3f-mvvc (header de-dup drop).
-    { pkg: 'hono', min: '4.12.27', advisory: 'GHSA-hvrm-45r6-mjfj' },
+    // (cx() escaping bypass), GHSA-xgm2-5f3f-mvvc (header de-dup drop), and
+    // GHSA-8j4g-w8fx-2239 (4.12.34) quadratic backtracking in the hono/cors
+    // preflight parser. The last one is behaviour-preserving on outputs, so it
+    // gets the CPU-footprint guard further down as well as this floor.
+    { pkg: 'hono', min: '4.12.34', advisory: 'GHSA-8j4g-w8fx-2239' },
     // GHSA-frvp-7c67-39w9: serve-static path traversal via encoded backslash.
     // The advisory covers `< 2.0.5` with no backport, so the whole 1.x line is
     // affected. Its sole consumer, @modelcontextprotocol/sdk, declares
@@ -249,6 +255,24 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // Scoped to `server`: the advisory covers the 0.27.x line that tsx pulled in,
     // and client's esbuild@0.25 (via vite@6) is outside the affected range.
     { pkg: 'esbuild', min: '0.28.1', advisory: 'GHSA-g7r4-m6w7-qqqr', only: ['server'] },
+
+    // --- 17-finding audit (fast-uri / undici / hono) ---
+
+    // Five advisories against undici, patched across both live lines:
+    //   GHSA-m8rv-5g2x-5cg5  CRLF injection via a blob-like body `type`
+    //   GHSA-v3r7-h72x-cjcm  cookie attribute injection via unsanitized domain
+    //   GHSA-8xcm-r25x-g524  response desync via the retry interceptor
+    //   GHSA-4cwx-7wf7-3272  cross-user disclosure + parse crash on degenerate
+    //                        private cache directives          (7.x/8.x only)
+    //   GHSA-jr45-8vmc-qm54  cross-user disclosure via whitespace around `=`
+    //                        in Cache-Control directives        (7.x/8.x only)
+    // The first three are patched on both 6.28.0 and 7.29.0; the last two never
+    // affected the 6.x line. Both lines stay in the tree on purpose -- root's
+    // node-gyp declares `^6.25.0` and mobile's @expo/cli `^6.18.2`, while jsdom
+    // (root + client) declares `^7.24.5`. Every patched version sits inside its
+    // parent's range, so this is a plain re-resolve with no override.
+    { pkg: 'undici', min: '6.28.0', advisory: 'GHSA-8xcm-r25x-g524', line: '6.x' },
+    { pkg: 'undici', min: '7.29.0', advisory: 'GHSA-4cwx-7wf7-3272', line: '7.x' },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -480,6 +504,107 @@ describe('brace-expansion bounds expansion (GHSA-mh99-v99m-4gvg, GHSA-rgw5-rvv9-
       // in the cap, so the run has to produce the full, correct result set.
       expect(child.stdout, detail).toBe(`RESULTS=${PARTS_BOMB_RESULTS}`);
     }, 60_000);
+  }
+});
+
+/**
+ * GHSA-8j4g-w8fx-2239: `hono/cors` reflects `Access-Control-Request-Headers` on
+ * a preflight when `allowHeaders` is unset (the default), and parsed it with a
+ * whitespace-tolerant regex whose backtracking is quadratic in the value's
+ * length. A single OPTIONS request carrying one long whitespace run with no
+ * delimiter burns seconds of CPU: measured on 4.12.32, 50 000 spaces takes
+ * 2.7 s, 100 000 takes 8.5 s and 200 000 takes 39.5 s. 4.12.34 answers all
+ * three in ~4 ms.
+ *
+ * Both versions return the *identical* reflected header, so no output
+ * assertion can separate them -- the resource the fix bounds is CPU time. As
+ * with the brace-expansion heap guard above, the reliable way to constrain
+ * that is a child process under a hard timeout, which turns it into a binary
+ * exit-code assertion instead of a flaky in-process wall-clock threshold.
+ *
+ * The whitespace has to sit *between* two tokens. A leading or trailing run is
+ * stripped by the `Headers` constructor before the middleware ever sees it, so
+ * `x-a<spaces>x-b` is the shape that actually reaches the parser.
+ *
+ * 200 000 spaces puts the patched path at ~0.24 s wall (including node boot)
+ * and the vulnerable path at ~40 s, so a 10 s cap leaves ~40x headroom on the
+ * patched side and still fires ~4x before the vulnerable side could finish.
+ */
+describe('hono/cors bounds preflight header parsing (GHSA-8j4g-w8fx-2239)', () => {
+  const WHITESPACE_RUN = 200_000;
+  const CHILD_TIMEOUT_MS = 10_000;
+  /** `x-a` + the run + `x-b`, i.e. what the middleware must reflect back. */
+  const EXPECTED_ALLOW_LENGTH = WHITESPACE_RUN + 6;
+
+  /**
+   * Every `hono` copy installed at the version its lockfile resolved. A
+   * mismatch means the tree predates the lock, so the code on disk says
+   * nothing about what a fresh `npm ci` would install.
+   */
+  const copies: Array<{ workspace: string; key: string; cwd: string; version: string }> = [];
+  for (const { name, lock } of LOCKFILES) {
+    const root = dirname(join(here, lock));
+    for (const [key, meta] of Object.entries(lockPackages(lock))) {
+      if (packageNameOf(key) !== 'hono' || !meta.version) continue;
+      const manifest = join(root, key, 'package.json');
+      if (!existsSync(manifest)) continue;
+      const installed = (JSON.parse(readFileSync(manifest, 'utf8')) as { version?: string })
+        .version;
+      if (installed !== meta.version) continue;
+      // Resolve from the parent of the copy's own `node_modules` so the bare
+      // specifier below can only land on this copy, not a hoisted sibling.
+      const cwd = join(root, key.slice(0, key.lastIndexOf('node_modules/')) || '.');
+      copies.push({ workspace: name, key, cwd, version: meta.version });
+    }
+  }
+
+  if (copies.length === 0) {
+    it.skip('no hono copy is installed at its lockfile version (run npm ci --include=dev)', () => {});
+  }
+
+  for (const { workspace, key, cwd, version } of copies) {
+    // Above the suite-wide 15 s testTimeout: a vulnerable copy has to be
+    // allowed to run into CHILD_TIMEOUT_MS so the failure reads as "the
+    // preflight parse never returned" and not as a bare vitest timeout.
+    it(`${workspace}: ${key}@${version} answers a whitespace-padded preflight promptly`, () => {
+      const child = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `const { Hono } = await import('hono');
+           const { cors } = await import('hono/cors');
+           const app = new Hono();
+           app.use('*', cors());
+           app.get('/probe', (c) => c.text('ok'));
+           const headers = new Headers({
+             Origin: 'https://example.test',
+             'Access-Control-Request-Method': 'GET',
+           });
+           headers.set(
+             'Access-Control-Request-Headers',
+             'x-a' + ' '.repeat(${WHITESPACE_RUN}) + 'x-b',
+           );
+           const res = await app.request('/probe', { method: 'OPTIONS', headers });
+           process.stdout.write(
+             'ALLOW=' + String(res.headers.get('access-control-allow-headers') ?? '').length,
+           );`,
+        ],
+        { cwd, encoding: 'utf8', timeout: CHILD_TIMEOUT_MS },
+      );
+
+      const detail =
+        `${workspace}: ${key}@${version} did not answer a preflight carrying a ` +
+        `${WHITESPACE_RUN}-space run within ${CHILD_TIMEOUT_MS} ms; it is missing the ` +
+        `GHSA-8j4g-w8fx-2239 fix for quadratic backtracking in the Access-Control-Request-` +
+        `Headers parser. exit=${child.status} signal=${child.signal} ` +
+        `stderr=${(child.stderr || '').slice(-400)}`;
+
+      expect(child.status, detail).toBe(0);
+      // Guards the other direction: a middleware that stopped reflecting the
+      // requested headers would also finish inside the timeout.
+      expect(child.stdout, detail).toBe(`ALLOW=${EXPECTED_ALLOW_LENGTH}`);
+    }, 30_000);
   }
 });
 
