@@ -22,6 +22,11 @@ import { hostedRepoDefaultBranch, hostedRepoExists } from '../git-host/repo-stor
 import type { AdvisorySource } from './types.js';
 import { OsvAdvisorySource } from './osv.js';
 import { runSecurityScan } from './run.js';
+import {
+  maybeAutofixAfterUnattendedScan,
+  maybeDispatchAutofixAfterScan,
+  type SecurityAutofixDeps,
+} from './autofix.js';
 
 export interface PushSecurityScanDeps {
   stmts: Stmts;
@@ -31,6 +36,14 @@ export interface PushSecurityScanDeps {
   advisorySource?: AdvisorySource;
   /** Test seam — defaults to {@link runSecurityScan}. */
   runScan?: typeof runSecurityScan;
+  /**
+   * Collaborators for dispatching a fix session when the project opted into
+   * `securityAutoPr.enabled`. Omitted (e.g. in tests that only assert on the
+   * scan) means the push scan reports findings but never auto-fixes.
+   */
+  autofix?: SecurityAutofixDeps;
+  /** Test seam — defaults to {@link maybeDispatchAutofixAfterScan}. */
+  dispatchAutofix?: typeof maybeDispatchAutofixAfterScan;
   /** Override for tests to silence console noise. */
   log?: (msg: string) => void;
 }
@@ -98,6 +111,14 @@ export function maybeRunPushSecurityScan(
             `${result.summary.reopenedFindings.length} reopened${result.cardId ? ` → card ${result.cardId}` : ''}`,
         );
       }
+      maybeAutofixAfterUnattendedScan({
+        project,
+        result,
+        autofix: deps.autofix,
+        dispatchAutofix: deps.dispatchAutofix,
+        log,
+        tag: 'security-on-push',
+      });
     } catch (err: unknown) {
       log(
         `[security-on-push] scan failed for ${project.id}: ${

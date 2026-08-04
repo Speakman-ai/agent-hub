@@ -47,6 +47,27 @@ export function isEligibleSecurityActor(userId: string, orgId: string | undefine
 }
 
 /**
+ * Write-time actor resolution for the project PATCH route: the actor already on
+ * the record wins; otherwise fall back to the Admin making the request, who
+ * holds merge rights by virtue of passing the route's role gate. Returns null
+ * when neither resolves — the caller then refuses to enable auto-merge rather
+ * than leaving unattended automation with no accountable identity.
+ *
+ * Defaulting to the caller is what lets a UI toggle read "Auto-merge" instead
+ * of also making someone pick an actor out of a member list.
+ */
+export function resolveSecurityActorForWrite(args: {
+  configured: unknown;
+  callerUserId: string | null | undefined;
+  orgId: string | undefined;
+}): string | null {
+  if (typeof args.configured === 'string' && args.configured.trim()) return args.configured;
+  const caller = args.callerUserId;
+  if (caller && isEligibleSecurityActor(caller, args.orgId)) return caller;
+  return null;
+}
+
+/**
  * The configured unattended-automation actor for a project, or null when none
  * is set / the configured user no longer resolves to a real Hub user.
  *

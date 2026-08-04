@@ -278,3 +278,63 @@ describe('POST /security-audit/scan — Autofix gate', () => {
       .expect(400);
   });
 });
+
+// ── PR vs. auto-merge ─────────────────────────────────────────────────────
+// `securityAutoPr.autoMerge` used to be dead config: the dispatcher pinned
+// `push` unconditionally, so a project that asked for unattended merging still
+// parked the fix at an open PR.
+describe('POST /security-audit/scan — Autofix automation level', () => {
+  function captureDispatch() {
+    const calls: Array<{ automation?: string }> = [];
+    const dispatchFixSession = vi.fn((_deps: unknown, args: { automation?: string }) => {
+      calls.push({ automation: args.automation });
+      return {
+        sessionId: 'sess-1',
+        agentId: 'dev-1',
+        findingCount: 1,
+        reused: false,
+        session: {},
+      };
+    }) as unknown as RouteOpts['dispatchFixSession'];
+    return { dispatchFixSession, calls };
+  }
+
+  it('opens a PR for review by default', async () => {
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = captureDispatch();
+    const app = makeApp({
+      project: project({ securityAutoPr: { enabled: true } }),
+      dispatch: dispatchFixSession,
+      result: RESULT_WITH_NEW,
+    });
+    await request(app).post('/api/projects/p1/security-audit/scan').send({}).expect(200);
+    expect(calls).toEqual([{ automation: 'push' }]);
+  });
+
+  it('pins merge automation when the project opted into auto-merge', async () => {
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = captureDispatch();
+    const app = makeApp({
+      project: project({
+        securityAutoPr: { enabled: true, autoMerge: true, actorUserId: 'u1' },
+      }),
+      dispatch: dispatchFixSession,
+      result: RESULT_WITH_NEW,
+    });
+    await request(app).post('/api/projects/p1/security-audit/scan').send({}).expect(200);
+    expect(calls).toEqual([{ automation: 'merge' }]);
+  });
+
+  it('applies the same choice to a manual per-finding Fix', async () => {
+    seedOpenFinding(store);
+    const { dispatchFixSession, calls } = captureDispatch();
+    const p = project({ securityAutoPr: { enabled: true, autoMerge: true, actorUserId: 'u1' } });
+    const app = makeApp({ project: p, dispatch: dispatchFixSession });
+    const findingId = store.listFindings('p1', { status: 'open' })[0]!.id;
+    await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${findingId}/fix`)
+      .send({})
+      .expect(201);
+    expect(calls).toEqual([{ automation: 'merge' }]);
+  });
+});

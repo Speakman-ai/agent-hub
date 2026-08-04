@@ -28,6 +28,7 @@ import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import { resolveEffectiveModel } from '../effective-model.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { setSessionOwner } from '../session-ownership.js';
+import type { FinalizeAutomationLevel } from '../finalize/automation.js';
 
 const SEVERITY_ORDER: Severity[] = ['critical', 'high', 'medium', 'low', 'unknown'];
 
@@ -77,7 +78,11 @@ export function resolveSecurityFixAgentId(project: Project): string | null {
  * lockfiles with the real package manager (never hand-edit), run tests, and
  * dismiss findings that don't apply.
  */
-export function buildSecurityFixPrompt(findings: SecurityFindingRow[]): string {
+export function buildSecurityFixPrompt(
+  findings: SecurityFindingRow[],
+  opts: { automation?: FinalizeAutomationLevel } = {},
+): string {
+  const autoMerge = opts.automation === 'merge';
   const sorted = [...findings].sort(
     (a, b) =>
       severityRank(b.severity) - severityRank(a.severity) ||
@@ -97,7 +102,11 @@ export function buildSecurityFixPrompt(findings: SecurityFindingRow[]): string {
     `An automated dependency security audit flagged ${findings.length} vulnerable ` +
       `dependency occurrence${findings.length === 1 ? '' : 's'}${breakdown ? ` (${breakdown})` : ''} ` +
       `in this repository. Resolve them on this session's branch; the session-end ` +
-      `pipeline will run the review/test phase and open a pull request with your fix.`,
+      (autoMerge
+        ? `pipeline will run the review/test phase, open a pull request with your fix, and ` +
+          `MERGE it automatically once the gates pass. Nobody reviews it by hand, so do not ` +
+          `commit a change you are not confident in — leave a note instead.`
+        : `pipeline will run the review/test phase and open a pull request with your fix.`),
   );
   lines.push('');
   lines.push('### Advisories');
@@ -216,7 +225,11 @@ export function findActiveSecurityFixSession(stmts: Stmts, project: Project): Se
  * Create and kick off a session tasked with resolving `findings`. Returns
  * `null` when there is no eligible agent or nothing to fix; the caller maps
  * that to a 409 / no-op. Mirrors routes/pr-resolve.ts: session + finalize
- * automation `push` + background task + `handleChat`.
+ * automation + background task + `handleChat`.
+ *
+ * `automation` selects how far the session-end pipeline goes on its own:
+ * `push` (default) stops at an open pull request a human merges, `merge` lets
+ * Finalize enable auto-merge so the fix lands unattended.
  */
 export function dispatchSecurityFixSession(
   deps: DispatchSecurityFixDeps,
@@ -224,6 +237,7 @@ export function dispatchSecurityFixSession(
     project: Project;
     findings: SecurityFindingRow[];
     ownerUserId?: string | null;
+    automation?: FinalizeAutomationLevel;
   },
 ): DispatchSecurityFixResult | null {
   const { project } = args;
@@ -248,7 +262,8 @@ export function dispatchSecurityFixSession(
     };
   }
 
-  const prompt = buildSecurityFixPrompt(args.findings);
+  const automation: FinalizeAutomationLevel = args.automation ?? 'push';
+  const prompt = buildSecurityFixPrompt(args.findings, { automation });
 
   const sessionId = uuidv4();
   const taskId = uuidv4();
@@ -269,9 +284,10 @@ export function dispatchSecurityFixSession(
   const wt = defaultSessionUseWorktreeFlag(project);
   deps.stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
   setSessionOwner(sessionId, args.ownerUserId ?? null);
-  // Start at the "Build and Push" finalize level so the session-end pipeline
-  // reviews, tests, and pushes (opening a PR) without a human re-toggling it.
-  deps.stmts.updateSessionFinalizeAutomation.run('push', sessionId);
+  // Pin the finalize level so the session-end pipeline reviews, tests, and
+  // pushes without a human re-toggling it — `merge` additionally hands the PR
+  // to GitHub auto-merge (project opted into unattended security auto-merge).
+  deps.stmts.updateSessionFinalizeAutomation.run(automation, sessionId);
   deps.stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
 
   // Kick the agent. handleChat runs the whole turn, so it is intentionally NOT

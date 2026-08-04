@@ -36,7 +36,10 @@ import { createPage } from '../wiki.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { userHasEngineCreds, resolveUserCliCredOverride } from '../per-user-cli-spawn.js';
 import type { AuthenticatedRequest } from '../auth.js';
-import { isEligibleSecurityActor } from '../security-audit/actor-user.js';
+import {
+  isEligibleSecurityActor,
+  resolveSecurityActorForWrite,
+} from '../security-audit/actor-user.js';
 import {
   canViewProject,
   canDeleteProject,
@@ -2158,6 +2161,17 @@ This workspace has no git repo and no PR automation — your job is planning, or
         if (hasActor) {
           if (actorUserId === null) delete nextSec.actorUserId;
           else nextSec.actorUserId = actorUserId;
+        }
+        // Turning auto-merge on shouldn't force the caller to also name an
+        // actor: default to the Admin flipping the switch. Only when there is
+        // no eligible caller does the fail-safe below reject.
+        if (nextSec.autoMerge === true) {
+          const resolved = resolveSecurityActorForWrite({
+            configured: nextSec.actorUserId,
+            callerUserId: (req as AuthenticatedRequest).authUserId,
+            orgId: (req as AuthenticatedRequest).authOrgId,
+          });
+          if (resolved) nextSec.actorUserId = resolved;
         }
         // Fail-safe coupling: auto-merge cannot be on without a configured actor
         // — unattended automation would have no one to attribute the PR/merge to.

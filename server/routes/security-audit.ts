@@ -30,6 +30,11 @@ import {
   selectFixableFindings,
 } from '../security-audit/fix-session.js';
 import {
+  maybeDispatchAutofixAfterScan,
+  resolveSecurityFixAutomation,
+  NO_FIX_AGENT_ERROR,
+} from '../security-audit/autofix.js';
+import {
   BatchFixRequestSchema,
   DismissRequestSchema,
   FindingsQuerySchema,
@@ -94,26 +99,31 @@ export default function createSecurityAuditRoutes(
   const runScan = opts.runScan ?? runSecurityScan;
   const dispatchFixSession = opts.dispatchFixSession ?? dispatchSecurityFixSession;
 
-  // Dispatch a session to resolve a group of open findings. Shared by the
-  // per-finding Fix route, the batch "fix all by severity" route, and the
-  // scan-path Autofix so all three converge on the same behavior: hand the
-  // findings to an agent session (bump + re-resolve lockfile + tests), which
-  // Finalize then turns into a PR. Threading `deps.config`/`findAgent`/
-  // `handleChat` here keeps the dispatch collaborators in one place.
+  // Dispatch collaborators, shared by the per-finding Fix route, the batch
+  // "fix all by severity" route, and the scan-path Autofix so all three
+  // converge on the same behavior: hand the findings to an agent session (bump
+  // + re-resolve lockfile + tests), which Finalize then turns into a PR — or
+  // an auto-merged PR when the project opted into that.
+  const dispatchDeps = () => ({
+    stmts: deps.stmts,
+    config: deps.config,
+    findAgent: deps.findAgent,
+    handleChat: deps.handleChat,
+  });
+
   const dispatchFix = (
     project: Project,
     findings: SecurityFindingRow[],
     ownerUserId: string | null,
   ) =>
-    dispatchFixSession(
-      {
-        stmts: deps.stmts,
-        config: deps.config,
-        findAgent: deps.findAgent,
-        handleChat: deps.handleChat,
-      },
-      { project, findings, ownerUserId },
-    );
+    dispatchFixSession(dispatchDeps(), {
+      project,
+      findings,
+      ownerUserId,
+      // Same PR-vs-auto-merge choice the unattended scans honour, so a manual
+      // Fix click behaves like the automatic one for the same project.
+      automation: resolveSecurityFixAutomation(project),
+    });
 
   // Project ACCESS (view) is enforced upstream by the project-visibility gate
   // mounted at `/api/projects/:projectId` (server/project-visibility-middleware.ts),
@@ -165,21 +175,12 @@ export default function createSecurityAuditRoutes(
       const ref = parsed.data.ref;
       const generateCard = parsed.data.generateCard !== false;
       const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
-      // Autofix (Hub-hosted only — findings exist only there) dispatches an
-      // agent session over the open findings AFTER the scan persists them,
-      // instead of opening a hand-edited bump PR. Two trigger kinds, gated
-      // differently for idempotency:
-      //   - explicitAutofix: the "Autofix" button (autoPr:true) is a deliberate
-      //     one-off click, so it always acts on the CURRENT open findings.
-      //   - optInAutofix: securityAutoPr.enabled fires on EVERY scan of the
-      //     project (including plain Rescans and any future scheduled trigger
-      //     that routes through here). Dispatching unconditionally would spawn a
-      //     duplicate session for the same unresolved findings on every scan
-      //     until one lands, so it only dispatches when the scan surfaced NEW or
-      //     reopened findings — mirroring the card-generation idempotency.
+      // Autofix dispatches an agent session over the open findings AFTER the
+      // scan persists them. The gating (hosted-only, explicit click vs. the
+      // `securityAutoPr.enabled` opt-in, dry-run and fresh-findings rules) lives
+      // in security-audit/autofix.ts so the scheduled and on-push scans behave
+      // identically.
       const explicitAutofix = parsed.data.autoPr === true;
-      const optInAutofix = project.securityAutoPr?.enabled === true;
-      const autofixRequested = (explicitAutofix || optInAutofix) && project.gitHost === 'agenthub';
       try {
         const result = await runScan(
           {
@@ -190,37 +191,21 @@ export default function createSecurityAuditRoutes(
           },
           { project, ref, generateCard, createdBy },
         );
-        // Dispatch the fix session only for a real (persisted) scan — a dry run
-        // wrote nothing, so there is no authoritative open-finding set to act on.
-        // For the auto opt-in, additionally require fresh findings this scan so
-        // repeated scans don't re-dispatch for the same unresolved set.
-        const freshFindings =
-          result.summary.newFindings.length + result.summary.reopenedFindings.length > 0;
-        let fixSession = null;
-        // Set when autofix WANTED to dispatch (open findings exist) but couldn't
-        // — currently only "no eligible agent on the roster". Distinct from a
-        // legit no-op (no open findings), which leaves both null. Surfaced so the
-        // UI reports the config problem instead of a false "nothing to resolve".
-        let fixSessionError: string | null = null;
-        if (autofixRequested && !result.dryRun && (explicitAutofix || freshFindings)) {
-          const open = selectFixableFindings(store().listFindings(project.id, { status: 'open' }));
-          if (open.length > 0) {
-            const dispatched = dispatchFix(project, open, createdBy);
-            if (dispatched) {
-              fixSession = {
-                sessionId: dispatched.sessionId,
-                agentId: dispatched.agentId,
-                findingCount: dispatched.findingCount,
-                reused: dispatched.reused,
-              };
-            } else {
-              // open findings but dispatch returned null → no eligible agent
-              // (the only remaining null cause once open.length > 0).
-              fixSessionError =
-                'No agent is available to resolve security findings for this project.';
-            }
-          }
-        }
+        const autofix = maybeDispatchAutofixAfterScan(
+          { ...dispatchDeps(), store: store(), dispatch: dispatchFixSession },
+          {
+            project,
+            scan: {
+              dryRun: result.dryRun,
+              newFindings: result.summary.newFindings.length,
+              reopened: result.summary.reopenedFindings.length,
+            },
+            explicit: explicitAutofix,
+            ownerUserId: createdBy,
+          },
+        );
+        const fixSession = autofix.session;
+        const fixSessionError = autofix.error;
         res.json({
           ref: result.ref,
           dryRun: result.dryRun,
@@ -278,9 +263,7 @@ export default function createSecurityAuditRoutes(
       const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
       const dispatched = dispatchFix(project, open, createdBy);
       if (!dispatched) {
-        return res.status(409).json({
-          error: 'No agent is available to resolve security findings for this project.',
-        });
+        return res.status(409).json({ error: NO_FIX_AGENT_ERROR });
       }
       // 200 when an already-running fix session was reused (idempotency guard),
       // 201 when a new one was started.
@@ -334,9 +317,7 @@ export default function createSecurityAuditRoutes(
             session: null,
           });
         }
-        return res.status(409).json({
-          error: 'No agent is available to resolve security findings for this project.',
-        });
+        return res.status(409).json({ error: NO_FIX_AGENT_ERROR });
       }
       // 200 when an already-running fix session was reused, 201 when new.
       res.status(dispatched.reused ? 200 : 201).json({

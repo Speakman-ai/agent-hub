@@ -160,3 +160,46 @@ describe('maybeRunPushSecurityScan', () => {
     expect(maxActive).toBe(1); // never overlapped
   });
 });
+
+// ── autofix dispatch ──────────────────────────────────────────────────────
+// Before the shared autofix module, `securityAutoPr.enabled` only fired on the
+// REST scan route, so a project that opted in never got an automatic fix from
+// the scan that actually runs unattended. These pin the wiring.
+describe('maybeRunPushSecurityScan — autofix', () => {
+  const autofixDeps = {
+    stmts: {} as never,
+    config: {} as never,
+    findAgent: vi.fn() as never,
+    handleChat: vi.fn() as never,
+    store: { listFindings: vi.fn(() => []) } as never,
+  };
+
+  it('dispatches a fix session when the project opted in and the scan found something new', async () => {
+    const runScan = vi.fn().mockResolvedValue(
+      fakeResult({
+        summary: { newFindings: [{}], reopenedFindings: [], updated: 0, fixed: 0, suppressed: 0 },
+      } as never),
+    );
+    const dispatchAutofix = vi.fn(() => ({ session: null, error: null }));
+    await maybeRunPushSecurityScan(
+      fakeProject({ securityScan: { onPush: true }, securityAutoPr: { enabled: true } }),
+      ['refs/heads/main'],
+      { ...deps(runScan), autofix: autofixDeps, dispatchAutofix: dispatchAutofix as never },
+    );
+    expect(dispatchAutofix).toHaveBeenCalledWith(
+      autofixDeps,
+      expect.objectContaining({ scan: { dryRun: false, newFindings: 1, reopened: 0 } }),
+    );
+  });
+
+  it('does not dispatch when the project did not opt into autofix', async () => {
+    const runScan = vi.fn().mockResolvedValue(fakeResult());
+    const dispatchAutofix = vi.fn(() => ({ session: null, error: null }));
+    await maybeRunPushSecurityScan(
+      fakeProject({ securityScan: { onPush: true } }),
+      ['refs/heads/main'],
+      { ...deps(runScan), autofix: autofixDeps, dispatchAutofix: dispatchAutofix as never },
+    );
+    expect(dispatchAutofix).not.toHaveBeenCalled();
+  });
+});

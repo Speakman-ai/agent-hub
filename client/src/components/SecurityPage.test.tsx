@@ -567,3 +567,101 @@ describe('ScheduleControl (auto-scan schedule)', () => {
     await waitFor(() => expect(select.value).toBe('weekly'));
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// Auto-fix mode — collapses the persisted securityAutoPr booleans
+// (`enabled` + `autoMerge`) into one Off / Open PR / Auto-merge choice.
+// ═══════════════════════════════════════════════════════════════════
+describe('ScheduleControl (auto-fix mode)', () => {
+  beforeEach(() => {
+    (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
+  });
+
+  it('reflects the persisted securityAutoPr state', async () => {
+    (api.getProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityAutoPr: { enabled: true, autoMerge: true, actorUserId: 'u1' },
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    const select = (await screen.findByTestId('security-autofix-select')) as HTMLSelectElement;
+    expect(select.value).toBe('merge');
+  });
+
+  it('defaults to off when the project never opted in', async () => {
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', gitHost: 'agenthub' });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    const select = (await screen.findByTestId('security-autofix-select')) as HTMLSelectElement;
+    expect(select.value).toBe('off');
+  });
+
+  it('PATCHes both booleans when auto-merge is chosen', async () => {
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', gitHost: 'agenthub' });
+    (api.updateProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityAutoPr: { enabled: true, autoMerge: true },
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    const select = (await screen.findByTestId('security-autofix-select')) as HTMLSelectElement;
+
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'merge' } });
+    });
+
+    expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+      securityAutoPr: { enabled: true, autoMerge: true },
+    });
+  });
+
+  it('clears autoMerge when stepping back down to Open PR', async () => {
+    (api.getProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityAutoPr: { enabled: true, autoMerge: true, actorUserId: 'u1' },
+    });
+    (api.updateProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityAutoPr: { enabled: true, autoMerge: false },
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    const select = (await screen.findByTestId('security-autofix-select')) as HTMLSelectElement;
+
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'pr' } });
+    });
+
+    // autoMerge:false must be sent explicitly — the server deep-merges, so an
+    // omitted key would leave unattended merging on.
+    expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+      securityAutoPr: { enabled: true, autoMerge: false },
+    });
+  });
+
+  it('reverts and notifies when the PATCH fails', async () => {
+    (api.getProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityAutoPr: { enabled: true },
+    });
+    (api.updateProject as any).mockRejectedValue(new Error('Forbidden'));
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    const select = (await screen.findByTestId('security-autofix-select')) as HTMLSelectElement;
+
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'merge' } });
+    });
+
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Forbidden'), 'error');
+    await waitFor(() => expect(select.value).toBe('pr'));
+  });
+
+  it('is hidden for a non-hosted project', async () => {
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', gitHost: 'github' });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    await waitFor(() => expect(api.getProject).toHaveBeenCalled());
+    expect(screen.queryByTestId('security-autofix-select')).toBeNull();
+  });
+});

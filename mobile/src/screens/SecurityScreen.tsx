@@ -13,6 +13,14 @@ import {
     SECURITY_SCHEDULE_OPTIONS,
     type SecurityScheduleConfig,
 } from '../utils/securitySchedule';
+import {
+    buildSecurityAutofixPatch,
+    nextAutofixConfig,
+    readSecurityAutofixConfig,
+    securityAutofixMode,
+    SECURITY_AUTOFIX_OPTIONS,
+    type SecurityAutofixConfig,
+} from '../utils/securityAutofix';
 const SEVERITY_COLOR: Record<string, any> = {
     critical: colors.red500,
     high: colors.red400,
@@ -207,6 +215,38 @@ export default function SecurityScreen({ route }: any) {
     const toggleOnPush = () => {
         persistSchedule({ ...scheduleConfig, onPush: !scheduleConfig.onPush });
     };
+    // Auto-fix writes a different project key (`securityAutoPr`), so it gets its
+    // own optimistic write rather than riding along with the schedule patch.
+    const [autofixConfig, setAutofixConfig] = useState<SecurityAutofixConfig>(() => readSecurityAutofixConfig(project));
+    useEffect(() => {
+        if (scheduleSaving)
+            return;
+        setAutofixConfig(readSecurityAutofixConfig(project));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [project?.securityAutoPr]);
+    const persistAutofix = useCallback(async (next: SecurityAutofixConfig) => {
+        if (!projectId || scheduleSaving)
+            return;
+        const prev = autofixConfig;
+        setAutofixConfig(next); // optimistic
+        setScheduleSaving(true);
+        try {
+            const updated: any = await api.updateProject(projectId, { securityAutoPr: buildSecurityAutofixPatch(securityAutofixMode(next)) });
+            setAutofixConfig(readSecurityAutofixConfig(updated));
+        }
+        catch (err: any) {
+            setAutofixConfig(prev); // revert on failure (e.g. 403 not an Admin)
+            Alert.alert('Could not update auto-fix', err?.message || 'Failed to update auto-fix setting');
+        }
+        finally {
+            setScheduleSaving(false);
+        }
+    }, [projectId, scheduleSaving, autofixConfig]);
+    const setAutofixMode = (value: string) => {
+        const next = nextAutofixConfig(autofixConfig, value);
+        if (next)
+            persistAutofix(next);
+    };
     const load = useCallback(async () => {
         if (!projectId)
             return;
@@ -388,6 +428,34 @@ export default function SecurityScreen({ route }: any) {
               {scheduleConfig.onPush ? '☑' : '☐'} On push
             </Text>
           </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {hosted ? (
+        <View style={styles.scheduleRow} testID="security-autofix-mode">
+          <Text style={styles.scheduleLabel}>Auto-fix</Text>
+          {SECURITY_AUTOFIX_OPTIONS.map((opt) => (
+            <TouchableOpacity
+              key={opt.value}
+              testID={`security-autofix-mode-${opt.value}`}
+              onPress={() => setAutofixMode(opt.value)}
+              disabled={scheduleSaving}
+              style={[
+                styles.scheduleButton,
+                securityAutofixMode(autofixConfig) === opt.value && styles.scheduleButtonActive,
+                scheduleSaving && styles.actionDisabled,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.scheduleButtonText,
+                  securityAutofixMode(autofixConfig) === opt.value && styles.scheduleButtonTextActive,
+                ]}
+              >
+                {opt.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
       ) : null}
 

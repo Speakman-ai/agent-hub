@@ -249,3 +249,52 @@ describe('startScheduledSecurityScanner', () => {
     }
   });
 });
+
+// ── autofix dispatch ──────────────────────────────────────────────────────
+// The scheduled sweep is the trigger that actually runs unattended, so it is
+// the one that most needs to honour `securityAutoPr.enabled`. It previously
+// only reported findings.
+describe('runScheduledSecurityScans — autofix', () => {
+  const autofixDeps = {
+    stmts: {} as never,
+    config: {} as never,
+    findAgent: vi.fn() as never,
+    handleChat: vi.fn() as never,
+    store: { listFindings: vi.fn(() => []) } as never,
+  };
+
+  it('dispatches a fix session for an opted-in project after a scan with new findings', async () => {
+    const runScan = vi.fn().mockResolvedValue(
+      fakeResult({
+        summary: { newFindings: [{}], reopenedFindings: [], updated: 0, fixed: 0, suppressed: 0 },
+      } as never),
+    );
+    const dispatchAutofix = vi.fn(() => ({ session: null, error: null }));
+    const projects = [
+      fakeProject({ securityScan: { schedule: 'daily' }, securityAutoPr: { enabled: true } }),
+    ];
+    await runScheduledSecurityScans(
+      baseDeps(projects, runScan, {
+        autofix: autofixDeps,
+        dispatchAutofix: dispatchAutofix as never,
+      }),
+    );
+    expect(dispatchAutofix).toHaveBeenCalledWith(
+      autofixDeps,
+      expect.objectContaining({ scan: { dryRun: false, newFindings: 1, reopened: 0 } }),
+    );
+  });
+
+  it('does not dispatch for a project that did not opt into autofix', async () => {
+    const runScan = vi.fn().mockResolvedValue(fakeResult());
+    const dispatchAutofix = vi.fn(() => ({ session: null, error: null }));
+    const projects = [fakeProject({ securityScan: { schedule: 'daily' } })];
+    await runScheduledSecurityScans(
+      baseDeps(projects, runScan, {
+        autofix: autofixDeps,
+        dispatchAutofix: dispatchAutofix as never,
+      }),
+    );
+    expect(dispatchAutofix).not.toHaveBeenCalled();
+  });
+});

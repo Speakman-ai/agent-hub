@@ -222,6 +222,22 @@ describe('dispatchSecurityFixSession', () => {
     expect(msg.content).toContain('Resolve vulnerable dependencies');
   });
 
+  it('pins merge automation when the caller asks for an auto-merged fix', () => {
+    const stmts = fakeStmts();
+    const handleChat = vi.fn().mockResolvedValue(undefined);
+    const findAgent = vi.fn(() => ({ agent: agent({ id: 'lead' }), project }));
+    dispatchSecurityFixSession(
+      { stmts, config: {} as any, findAgent: findAgent as any, handleChat },
+      { project, findings: [row()], ownerUserId: null, automation: 'merge' },
+    );
+    expect(stmts.updateSessionFinalizeAutomation.run).toHaveBeenCalledWith(
+      'merge',
+      expect.any(String),
+    );
+    // The agent is told nobody reviews the PR by hand, so it can calibrate.
+    expect(handleChat.mock.calls[0][1].content).toMatch(/merge it automatically/i);
+  });
+
   it('reuses an already-running fix session instead of starting a duplicate', () => {
     // A running background task for a project agent, on a session named with the
     // security-fix prefix → the guard reuses it.

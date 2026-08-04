@@ -18,6 +18,14 @@ import {
   SECURITY_SCHEDULE_OPTIONS,
   type SecurityScheduleConfig,
 } from '../utils/securitySchedule';
+import {
+  buildSecurityAutofixPatch,
+  nextAutofixConfig,
+  readSecurityAutofixConfig,
+  securityAutofixMode,
+  SECURITY_AUTOFIX_OPTIONS,
+  type SecurityAutofixConfig,
+} from '../utils/securityAutofix';
 
 function relativeTime(ms: any) {
   if (!ms) return '';
@@ -377,6 +385,7 @@ function FixAllMenu({ disabled, busy, onPick }: any) {
 // and the optimistic change reverts.
 function ScheduleControl({ projectId, onNotify }: any) {
   const [config, setConfig] = useState<SecurityScheduleConfig | null>(null);
+  const [autofix, setAutofix] = useState<SecurityAutofixConfig | null>(null);
   const [hosted, setHosted] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -388,6 +397,7 @@ function ScheduleControl({ projectId, onNotify }: any) {
         if (cancelled) return;
         setHosted(project?.gitHost === 'agenthub');
         setConfig(readSecurityScheduleConfig(project));
+        setAutofix(readSecurityAutofixConfig(project));
       } catch {
         // Non-fatal: leave the control hidden if the project can't be read.
         if (!cancelled) setConfig(null);
@@ -418,6 +428,26 @@ function ScheduleControl({ projectId, onNotify }: any) {
     }
   };
 
+  // Auto-fix writes a different project key (`securityAutoPr`), so it gets its
+  // own optimistic write rather than riding along with the schedule patch.
+  const persistAutofix = async (next: SecurityAutofixConfig) => {
+    if (saving) return;
+    const prev = autofix;
+    setAutofix(next);
+    setSaving(true);
+    try {
+      const updated: any = await api.updateProject(projectId, {
+        securityAutoPr: buildSecurityAutofixPatch(securityAutofixMode(next)),
+      });
+      setAutofix(readSecurityAutofixConfig(updated));
+    } catch (err: any) {
+      setAutofix(prev);
+      onNotify?.(err?.message || 'Failed to update auto-fix setting', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (!config || !hosted) return null;
 
   const onScheduleChange = (value: string) => {
@@ -426,6 +456,11 @@ function ScheduleControl({ projectId, onNotify }: any) {
   };
   const onTogglePush = () => {
     persist({ ...config, onPush: !config.onPush });
+  };
+  const onAutofixChange = (value: string) => {
+    if (!autofix) return;
+    const next = nextAutofixConfig(autofix, value);
+    if (next) persistAutofix(next);
   };
 
   return (
@@ -463,6 +498,26 @@ function ScheduleControl({ projectId, onNotify }: any) {
         />
         On push
       </label>
+      {autofix ? (
+        <label className="flex items-center gap-1 text-[11px] text-gray-400">
+          <Wrench size={12} className="text-gray-500" />
+          Auto-fix
+          <select
+            value={securityAutofixMode(autofix)}
+            onChange={(e) => onAutofixChange(e.target.value)}
+            disabled={saving}
+            data-testid="security-autofix-select"
+            title="Whether a scan that finds new vulnerabilities starts a session to fix them, and how far that fix ships on its own"
+            className="bg-gray-800 border border-gray-700 rounded text-[11px] text-gray-200 px-1.5 py-1 disabled:opacity-50"
+          >
+            {SECURITY_AUTOFIX_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value} title={opt.title}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       {/* Own the separator so it disappears with the control on non-hosted
           projects / during the initial load (no orphaned divider). */}
       <span className="w-px h-4 bg-gray-700 mx-1" />

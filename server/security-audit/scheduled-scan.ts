@@ -26,6 +26,11 @@ import type { BroadcastFn, Project, Stmts } from '../types.js';
 import type { AdvisorySource } from './types.js';
 import { OsvAdvisorySource } from './osv.js';
 import { runSecurityScan } from './run.js';
+import {
+  maybeAutofixAfterUnattendedScan,
+  maybeDispatchAutofixAfterScan,
+  type SecurityAutofixDeps,
+} from './autofix.js';
 
 export type SecurityScanSchedule = 'off' | 'daily' | 'weekly';
 
@@ -93,6 +98,14 @@ export interface ScheduledSecurityScanDeps {
    */
   defaultSchedule?: SecurityScanSchedule;
   dataDir?: string;
+  /**
+   * Collaborators for dispatching a fix session when a project opted into
+   * `securityAutoPr.enabled`. Omitted means the sweep reports findings but
+   * never auto-fixes.
+   */
+  autofix?: SecurityAutofixDeps;
+  /** Test seam — defaults to {@link maybeDispatchAutofixAfterScan}. */
+  dispatchAutofix?: typeof maybeDispatchAutofixAfterScan;
   /** Override for tests to silence console noise. */
   log?: (msg: string) => void;
 }
@@ -165,6 +178,14 @@ export async function runScheduledSecurityScans(deps: ScheduledSecurityScanDeps)
             }`,
         );
       }
+      maybeAutofixAfterUnattendedScan({
+        project,
+        result,
+        autofix: deps.autofix,
+        dispatchAutofix: deps.dispatchAutofix,
+        log,
+        tag: 'security-schedule',
+      });
     } catch (err: unknown) {
       log(
         `[security-schedule] scan failed for ${project.id}: ${

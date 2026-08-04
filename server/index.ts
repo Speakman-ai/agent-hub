@@ -35,6 +35,8 @@ import {
 } from './git-host/push-ci.js';
 import { maybeRunPushSecurityScan } from './security-audit/on-push.js';
 import { startScheduledSecurityScanner } from './security-audit/scheduled-scan.js';
+import type { SecurityAutofixDeps } from './security-audit/autofix.js';
+import { createSecurityAuditStore } from './security-audit/findings-store.js';
 import { recordRecentPush } from './git-host/recent-pushes.js';
 import { createNativePrService } from './native-pr/service.js';
 import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
@@ -298,6 +300,25 @@ let CODEX_BIN: string = config.codexBin;
 let GROK_BIN: string = config.grokBin;
 
 let handleChat: ((ws: unknown, msg: ChatMessage) => Promise<void>) | undefined;
+
+/**
+ * Collaborators the unattended security scans (on-push, scheduled) need to
+ * dispatch a fix session for projects that opted into `securityAutoPr.enabled`.
+ * Built lazily per call: `handleChat` and the db handle are initialised later in
+ * module order, long before any scan can fire.
+ */
+let securityAuditStore: ReturnType<typeof createSecurityAuditStore> | null = null;
+const securityAutofixDeps = (): SecurityAutofixDeps => {
+  if (!securityAuditStore) securityAuditStore = createSecurityAuditStore(getDb());
+  return {
+    stmts: stmts!,
+    config,
+    findAgent: routeDeps.findAgent,
+    handleChat: routeDeps.handleChat,
+    store: securityAuditStore,
+  };
+};
+
 let saveErrorMessage:
   | ((
       sessionId: string,
@@ -555,7 +576,11 @@ app.use(
       // Opt-in dependency security re-scan when the default branch moved.
       // Fire-and-forget — the module gates on `securityScan.onPush`, serializes
       // per project, and swallows failures so it never breaks the push path.
-      void maybeRunPushSecurityScan(project, refs, { stmts: stmts!, broadcast });
+      void maybeRunPushSecurityScan(project, refs, {
+        stmts: stmts!,
+        broadcast,
+        autofix: securityAutofixDeps(),
+      });
       // Operator-configured deploy triggers: a matching branch update enqueues a
       // deployment for the mapped environment. Fire-and-forget — the module gates
       // on a cheap indexed query, honors the per-env concurrency lock, and
@@ -666,6 +691,7 @@ const nativePr = createNativePrService({
     void maybeRunPushSecurityScan(project, [`refs/heads/${baseBranch}`], {
       stmts: stmts!,
       broadcast,
+      autofix: securityAutofixDeps(),
     });
     // A native merge is the `merge` deploy-trigger event: enqueue a deployment
     // for any environment whose merge trigger matches the moved base branch.
@@ -2050,6 +2076,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         stmts: stmts!,
         broadcast,
         getProjects,
+        autofix: securityAutofixDeps(),
       });
 
       // Session-replay retention GC. No-op unless `replayRetentionDays > 0`;

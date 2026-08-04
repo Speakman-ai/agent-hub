@@ -6,6 +6,7 @@ import {
   resolveSecurityAutoPrActor,
   isSecurityAutoMergeEnabled,
   isEligibleSecurityActor,
+  resolveSecurityActorForWrite,
 } from './actor-user.js';
 import type { Project } from '../types.js';
 
@@ -114,5 +115,46 @@ describe('isSecurityAutoMergeEnabled', () => {
     expect(isSecurityAutoMergeEnabled(project({ autoMerge: true, actorUserId: 'user-1' }))).toBe(
       true,
     );
+  });
+});
+
+describe('resolveSecurityActorForWrite', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('keeps an explicitly configured actor', () => {
+    expect(
+      resolveSecurityActorForWrite({
+        configured: 'user-1',
+        callerUserId: 'caller',
+        orgId: 'org1',
+      }),
+    ).toBe('user-1');
+  });
+
+  it('defaults to the eligible caller when none is configured', () => {
+    vi.spyOn(memberships, 'getMembershipRole').mockReturnValue('Admin');
+    expect(
+      resolveSecurityActorForWrite({
+        configured: undefined,
+        callerUserId: 'caller',
+        orgId: 'org1',
+      }),
+    ).toBe('caller');
+  });
+
+  it('returns null when the caller is not eligible, so auto-merge stays refused', () => {
+    vi.spyOn(memberships, 'getMembershipRole').mockReturnValue('User');
+    vi.spyOn(authorUser, 'attributionOptional').mockReturnValue(false);
+    expect(
+      resolveSecurityActorForWrite({ configured: '  ', callerUserId: 'caller', orgId: 'org1' }),
+    ).toBeNull();
+  });
+
+  it('returns null when there is no caller at all', () => {
+    expect(
+      resolveSecurityActorForWrite({ configured: null, callerUserId: null, orgId: undefined }),
+    ).toBeNull();
   });
 });
