@@ -175,7 +175,7 @@ import {
   shouldNotifyForAwaitingInput,
 } from './utils/awaitingInputState';
 import { getDefaultShortcuts } from './utils/shortcuts';
-import { buildNavigationHash, getInitialNavigation } from './utils/navigation';
+import { buildNavigationHash, getInitialNavigation, parseNavigationPath } from './utils/navigation';
 import { isSessionOwnedByOtherUser } from './utils/sessionNotificationOwnership';
 import {
   firstEngineWithAuthenticatedModels,
@@ -845,6 +845,23 @@ export default function App({ initialView }: any = {}) {
       window.removeEventListener('popstate', onRouteChange);
     };
   }, [applyNavigationState, initialView]);
+
+  // A path deep-link (`/projects/acme/pulls/306`) has already been folded into
+  // the initial navigation state, so collapse the path back to the app root
+  // before the hash-writing effect below reads `location.pathname`. Otherwise
+  // the URL keeps growing a stale path in front of the canonical hash.
+  useEffect(() => {
+    if (initialView) return;
+    if (typeof window === 'undefined' || !window.history) return;
+    const parsed = parseNavigationPath(window.location.pathname);
+    if (!parsed) return;
+    const base = parsed.basePath || '';
+    window.history.replaceState(
+      null,
+      '',
+      `${base}/${window.location.search}${window.location.hash}`,
+    );
+  }, [initialView]);
 
   useEffect(() => {
     if (initialView) return;
@@ -5891,6 +5908,7 @@ export default function App({ initialView }: any = {}) {
                   project={projects.find((p: any) => p.id === pullsProjectId)}
                   listRefreshNonce={pullsListRefreshNonce}
                   initialPrNumber={pullsOpenPrNumber}
+                  onPrNumberChange={(prNumber: any) => setPullsOpenPrNumber(prNumber ?? null)}
                   onOpenSession={handleOpenHandoffSession}
                   onToast={showToast}
                   onOpenCard={() => setCurrentView(`kanban:${pullsProjectId}`)}

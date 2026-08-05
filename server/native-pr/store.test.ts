@@ -14,6 +14,8 @@ import { buildNativePrUrl, isNativePrUrl, parseNativePrUrl } from './url.js';
 import type { Stmts } from '../types.js';
 
 let stmts: Stmts;
+/** Force every PR row in a project to the same `updated_at` (tie-breaker tests). */
+let pinUpdatedAt: (projectId: string, updatedAt: number) => void;
 
 beforeAll(async () => {
   // test/setup initializes the DB into the per-process tmp data dir.
@@ -21,6 +23,12 @@ beforeAll(async () => {
   await helpers.getRequest(); // boots the app + initDb
   const dbModule = await import('../db.js');
   stmts = dbModule.stmts!;
+  pinUpdatedAt = (projectId, updatedAt) => {
+    dbModule
+      .getDb()
+      .prepare('UPDATE pull_requests SET updated_at = ? WHERE project_id = ?')
+      .run(updatedAt, projectId);
+  };
 });
 
 function freshArgs(projectId: string, overrides: Record<string, unknown> = {}) {
@@ -132,6 +140,54 @@ describe('native-pr store', () => {
     expect(listPullRequests(stmts, projectId, 'all', 50)).toHaveLength(2);
     expect(getPullRequest(stmts, projectId, a.number)?.status).toBe('closed');
     expect(getPullRequest(stmts, projectId, 999)).toBeNull();
+  });
+
+  it('list pages with offset — no row is repeated or skipped across pages', async () => {
+    const projectId = `np-${uuidv4().slice(0, 8)}`;
+    for (let i = 0; i < 7; i++) {
+      createOrGetOpenPullRequest(stmts, freshArgs(projectId));
+      // updated_at is millisecond-resolution; keep the ORDER BY deterministic.
+      await new Promise((r) => setTimeout(r, 2));
+    }
+
+    const pageOne = listPullRequests(stmts, projectId, 'all', 3, 0);
+    const pageTwo = listPullRequests(stmts, projectId, 'all', 3, 3);
+    const pageThree = listPullRequests(stmts, projectId, 'all', 3, 6);
+
+    expect(pageOne.map((r) => r.number)).toHaveLength(3);
+    expect(pageTwo).toHaveLength(3);
+    expect(pageThree).toHaveLength(1);
+    const seen = [...pageOne, ...pageTwo, ...pageThree].map((r) => r.number);
+    expect(new Set(seen).size).toBe(7);
+    // Newest activity first, so page 2 must not overlap page 1.
+    expect(pageTwo.map((r) => r.number)).not.toContain(pageOne[0].number);
+    // Offset defaults to 0 for callers that don't page.
+    expect(listPullRequests(stmts, projectId, 'all', 3).map((r) => r.number)).toEqual(
+      pageOne.map((r) => r.number),
+    );
+    expect(listPullRequests(stmts, projectId, 'all', 3, 99)).toHaveLength(0);
+  });
+
+  it('pages deterministically when every row shares an updated_at', () => {
+    // The real collision: a Finalize run touches several PRs inside the same
+    // millisecond. Ordering on updated_at alone leaves tied rows in whatever
+    // order SQLite feels like per query, so a row can be served on two pages
+    // while another is never served at all.
+    const projectId = `np-${uuidv4().slice(0, 8)}`;
+    for (let i = 0; i < 7; i++) createOrGetOpenPullRequest(stmts, freshArgs(projectId));
+    pinUpdatedAt(projectId, 1_760_000_000_000);
+
+    const pages = [0, 3, 6].map((offset) => listPullRequests(stmts, projectId, 'all', 3, offset));
+    const seen = pages.flat().map((r) => r.number);
+
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen).size).toBe(7);
+    // Total order: newest number first, and every page picks up where the
+    // previous one stopped.
+    expect(seen).toEqual([7, 6, 5, 4, 3, 2, 1]);
+
+    // Same query, same answer — no per-call reshuffling of the tied rows.
+    expect(listPullRequests(stmts, projectId, 'all', 3, 3).map((r) => r.number)).toEqual([4, 3, 2]);
   });
 
   it('listPullRequestsForBranch returns branch matches even beyond a 200-PR page', async () => {

@@ -300,4 +300,64 @@ describe('githubUserApiRequest', () => {
       githubUserApiRequest({ accessToken: 'x', endpoint: '/foo', fetchImpl }),
     ).rejects.toThrow(/403.*forbidden/);
   });
+
+  it('hands the response headers to onResponseHeaders (paginated reads need Link)', async () => {
+    const link = '<https://api.github.com/repos/a/b/pulls?page=2>; rel="next"';
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ link }),
+      json: async () => [{ number: 1 }],
+      text: async () => '',
+    })) as unknown as typeof fetch;
+
+    const seen: Array<string | null> = [];
+    await githubUserApiRequest({
+      accessToken: 'x',
+      endpoint: '/repos/a/b/pulls',
+      fetchImpl,
+      onResponseHeaders: (headers) => seen.push(headers.get('link')),
+    });
+
+    expect(seen).toEqual([link]);
+  });
+
+  it('does not fail the request when the header callback throws', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({ ok: true }),
+      text: async () => '',
+    })) as unknown as typeof fetch;
+
+    const data = await githubUserApiRequest<{ ok: boolean }>({
+      accessToken: 'x',
+      endpoint: '/foo',
+      fetchImpl,
+      onResponseHeaders: () => {
+        throw new Error('boom');
+      },
+    });
+    expect(data.ok).toBe(true);
+  });
+
+  it('skips the callback when the response has no headers object', async () => {
+    // Older stubs (and some mocked fetches) return a bare object.
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+      text: async () => '',
+    })) as unknown as typeof fetch;
+
+    const onResponseHeaders = vi.fn();
+    await githubUserApiRequest({
+      accessToken: 'x',
+      endpoint: '/foo',
+      fetchImpl,
+      onResponseHeaders,
+    });
+    expect(onResponseHeaders).not.toHaveBeenCalled();
+  });
 });

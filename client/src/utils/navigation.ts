@@ -123,12 +123,73 @@ export function buildNavigationHash(state: NavigationState) {
   return `#${path || `/${encodeURIComponent(view)}`}${query ? `?${query}` : ''}`;
 }
 
+/**
+ * Parse a *path*-shaped deep link: `/projects/<projectId>/<view>[/<prNumber>]`.
+ *
+ * The app routes on the hash, but people share and bookmark path URLs (the
+ * shape GitHub uses), and the server's SPA catch-all happily serves them. So a
+ * pasted `/projects/acme/pulls/306` has to resolve to the same place as
+ * `#/pulls/acme?pr=306` instead of silently dumping the user on the dashboard.
+ *
+ * `basePath` is whatever precedes `/projects` (a deployment path prefix, if
+ * any) so the caller can rewrite the URL to the canonical hash form without
+ * losing the prefix.
+ */
+export function parseNavigationPath(
+  pathname?: any,
+): { state: NavigationState; basePath: string } | null {
+  const raw = typeof pathname === 'string' ? pathname.trim() : '';
+  if (!raw) return null;
+  const parts = raw.split('/');
+  // Last occurrence: a prefix could itself be named "projects".
+  const anchor = parts.lastIndexOf('projects');
+  if (anchor === -1) return null;
+
+  const segments = parts
+    .slice(anchor + 1)
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return '';
+      }
+    })
+    .filter(Boolean);
+  const [projectId, view, extra] = segments;
+  if (!projectId || !view || !PROJECT_SCOPED_VIEWS.has(view)) return null;
+
+  const basePath = parts.slice(0, anchor).join('/');
+  return {
+    state: {
+      view,
+      projectId,
+      prNumber: view === 'pulls' ? parsePositiveInt(extra) : null,
+    },
+    basePath,
+  };
+}
+
 export function readNavigationStateFromLocation(locationLike?: any): NavigationState | null {
   const loc =
     locationLike ??
     (typeof window !== 'undefined' && window.location ? window.location : undefined);
   if (!loc) return null;
-  return parseNavigationHash(loc.hash);
+  const fromHash = parseNavigationHash(loc.hash);
+  const fromPath = parseNavigationPath(loc.pathname)?.state ?? null;
+  if (!fromHash) return fromPath;
+  // The hash is canonical, but a path deep-link can still supply a PR number
+  // the hash lacks — that is exactly the `/projects/x/pulls/306#/pulls/x` URL
+  // older builds produced when they appended a hash to a pasted path link.
+  if (
+    fromPath &&
+    !fromHash.prNumber &&
+    fromPath.prNumber &&
+    fromHash.view === fromPath.view &&
+    fromHash.projectId === fromPath.projectId
+  ) {
+    return { ...fromHash, prNumber: fromPath.prNumber };
+  }
+  return fromHash;
 }
 
 /**

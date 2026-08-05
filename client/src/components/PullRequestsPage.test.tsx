@@ -1042,3 +1042,212 @@ describe('<PullRequestsPage /> — Revert on a merged native PR', () => {
     expect(screen.queryByTestId('pr-revert-button')).toBeNull();
   });
 });
+
+describe('<PullRequestsPage /> — pagination', () => {
+  function page(numbers: number[], hasMore: boolean) {
+    return {
+      pulls: numbers.map((n) => ({ ...prSummary, number: n, title: `PR ${n}` })),
+      hasMore,
+    };
+  }
+
+  beforeEach(() => {
+    (api.getProjectPulls as any).mockReset();
+    (api.getProjectPullDetail as any).mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('requests page 1 on mount and hides the pager when there is only one page', async () => {
+    (api.getProjectPulls as any).mockResolvedValue(page([1, 2], false));
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+
+    expect(await screen.findByText('PR 1')).toBeInTheDocument();
+    expect(api.getProjectPulls).toHaveBeenCalledWith(
+      'proj-1',
+      expect.objectContaining({ state: 'open', page: 1 }),
+    );
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+  });
+
+  it('pages forward and back, fetching the matching page each time', async () => {
+    (api.getProjectPulls as any)
+      .mockResolvedValueOnce(page([1, 2], true))
+      .mockResolvedValueOnce(page([3, 4], false))
+      .mockResolvedValueOnce(page([1, 2], true));
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+
+    const next = await screen.findByRole('button', { name: 'Next' });
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+    fireEvent.click(next);
+
+    expect(await screen.findByText('PR 3')).toBeInTheDocument();
+    expect(screen.queryByText('PR 1')).toBeNull();
+    expect(screen.getByText('Page 2')).toBeInTheDocument();
+    expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+      'proj-1',
+      expect.objectContaining({ page: 2 }),
+    );
+    // Last page — nowhere further to go, but Previous is now live.
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+    expect(await screen.findByText('PR 1')).toBeInTheDocument();
+    expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+      'proj-1',
+      expect.objectContaining({ page: 1 }),
+    );
+  });
+
+  it('resets to page 1 when the state tab changes', async () => {
+    (api.getProjectPulls as any).mockResolvedValue(page([1, 2], true));
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByText('Page 2')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Closed' }));
+
+    await waitFor(() =>
+      expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+        'proj-1',
+        expect.objectContaining({ state: 'closed', page: 1 }),
+      ),
+    );
+    expect(screen.getByText('Page 1')).toBeInTheDocument();
+  });
+
+  it('keeps the pager usable when a later page fails to load', async () => {
+    // The regression: a failed page cleared the list and hid the pager, so a
+    // user on page 2+ had no Previous and no way back to page 1.
+    (api.getProjectPulls as any)
+      .mockResolvedValueOnce(page([1, 2], true))
+      .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+      .mockResolvedValueOnce(page([1, 2], true));
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Next' }));
+
+    expect(await screen.findByText('502 Bad Gateway')).toBeInTheDocument();
+    expect(screen.getByText(/Failed to load pull requests \(page 2\)/)).toBeInTheDocument();
+
+    // Pager survives the failure, and Previous is live.
+    const previous = screen.getByRole('button', { name: 'Previous' });
+    expect(previous).toBeEnabled();
+
+    fireEvent.click(previous);
+    expect(await screen.findByText('PR 1')).toBeInTheDocument();
+    expect(screen.queryByText('502 Bad Gateway')).toBeNull();
+    expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+      'proj-1',
+      expect.objectContaining({ page: 1 }),
+    );
+  });
+
+  it('retries the failed page, and offers a jump back to the first page', async () => {
+    (api.getProjectPulls as any)
+      .mockResolvedValueOnce(page([1, 2], true))
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockRejectedValueOnce(new Error('boom again'))
+      .mockResolvedValueOnce(page([1, 2], true));
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    await screen.findByText('boom');
+
+    // Retry re-requests the SAME page, not page 1.
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByText('boom again')).toBeInTheDocument());
+    expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+      'proj-1',
+      expect.objectContaining({ page: 2 }),
+    );
+
+    // ...and there is a one-click escape back to the start of the list.
+    fireEvent.click(screen.getByRole('button', { name: /first page/i }));
+    expect(await screen.findByText('PR 1')).toBeInTheDocument();
+    expect(screen.getByText('Page 1')).toBeInTheDocument();
+  });
+
+  it('offers a way back when a later page comes up empty', async () => {
+    (api.getProjectPulls as any)
+      .mockResolvedValueOnce(page([1, 2], true))
+      .mockResolvedValueOnce(page([], false))
+      .mockResolvedValueOnce(page([1, 2], true));
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Next' }));
+
+    expect(await screen.findByText('Nothing on page 2')).toBeInTheDocument();
+    // Not the generic "no open pull requests" empty state — the project has PRs.
+    expect(screen.queryByText(/No open pull requests/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /back to the first page/i }));
+    expect(await screen.findByText('PR 1')).toBeInTheDocument();
+  });
+});
+
+describe('<PullRequestsPage /> — PR deep linking', () => {
+  beforeEach(() => {
+    (api.getProjectPulls as any).mockReset();
+    (api.getProjectPullDetail as any).mockReset();
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary], hasMore: false });
+    (api.getProjectPullDetail as any).mockResolvedValue(detailResponse);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('opens the detail for initialPrNumber without a click', async () => {
+    render(<PullRequestsPage projectId="proj-1" project={project} initialPrNumber={123} />);
+
+    expect(await screen.findByRole('button', { name: /resolve pr/i })).toBeInTheDocument();
+    expect(api.getProjectPullDetail).toHaveBeenCalledWith('proj-1', 123);
+  });
+
+  it('reports the open PR number so the URL can be shared, and clears it on back', async () => {
+    const onPrNumberChange = vi.fn();
+    render(
+      <PullRequestsPage projectId="proj-1" project={project} onPrNumberChange={onPrNumberChange} />,
+    );
+
+    fireEvent.click(await screen.findByText('Fix the flaky test'));
+    await screen.findByRole('button', { name: /resolve pr/i });
+    expect(onPrNumberChange).toHaveBeenCalledWith(123);
+
+    fireEvent.click(screen.getByRole('button', { name: /back to list/i }));
+    await waitFor(() => expect(onPrNumberChange).toHaveBeenLastCalledWith(null));
+  });
+
+  it('does not re-fetch the detail when the click round-trips back through the URL', async () => {
+    const { rerender } = render(
+      <PullRequestsPage projectId="proj-1" project={project} initialPrNumber={null} />,
+    );
+
+    fireEvent.click(await screen.findByText('Fix the flaky test'));
+    await screen.findByRole('button', { name: /resolve pr/i });
+    expect(api.getProjectPullDetail).toHaveBeenCalledTimes(1);
+
+    // App echoes the selection back down as a prop (the hash changed).
+    rerender(<PullRequestsPage projectId="proj-1" project={project} initialPrNumber={123} />);
+    await waitFor(() => expect(api.getProjectPullDetail).toHaveBeenCalledTimes(1));
+  });
+
+  it('closes the detail when the PR number leaves the URL (browser Back)', async () => {
+    const { rerender } = render(
+      <PullRequestsPage projectId="proj-1" project={project} initialPrNumber={123} />,
+    );
+    await screen.findByRole('button', { name: /resolve pr/i });
+
+    rerender(<PullRequestsPage projectId="proj-1" project={project} initialPrNumber={null} />);
+
+    // Back on the list: the detail-only "Back to list" affordance is gone.
+    await waitFor(() => expect(screen.queryByRole('button', { name: /back to list/i })).toBeNull());
+    expect(await screen.findByText('Fix the flaky test')).toBeInTheDocument();
+  });
+});

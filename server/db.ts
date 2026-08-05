@@ -6812,12 +6812,25 @@ function initDb(dataDir: string): void {
     getPullRequestByNumber: db.prepare(
       'SELECT * FROM pull_requests WHERE project_id = ? AND number = ?',
     ),
+    // Paged by the PR list endpoint. `number DESC` is not decoration: it is the
+    // tie-breaker that makes the order total. `updated_at` is a millisecond
+    // epoch and a Finalize run touches several PRs inside the same
+    // millisecond, so ordering on it alone leaves SQLite free to return tied
+    // rows in any order — and a different order per page means a row served on
+    // page 1 can reappear on page 2 while another is never served at all.
+    // `number` is unique per project and immutable, so appending it fixes the
+    // order completely.
+    //
+    // Rows can still cross a page boundary if their `updated_at` changes
+    // between two page requests — inherent to offset paging over a mutable
+    // sort key, and the same behaviour as the GitHub-backed path
+    // (`sort=updated&direction=desc` with `page=`), which this mirrors.
     listPullRequestsForProject: db.prepare(
       `SELECT * FROM pull_requests
         WHERE project_id = ?
           AND (? = 'all' OR (? = 'open' AND status = 'open') OR (? = 'closed' AND status != 'open'))
-        ORDER BY updated_at DESC
-        LIMIT ?`,
+        ORDER BY updated_at DESC, number DESC
+        LIMIT ? OFFSET ?`,
     ),
     // Every PR (any state) touching a branch as base or head. Unbounded on
     // purpose: the epic-pulls endpoint filters by an epic's feature branch, so
@@ -6825,7 +6838,7 @@ function initDb(dataDir: string): void {
     listPullRequestsForBranch: db.prepare(
       `SELECT * FROM pull_requests
         WHERE project_id = ? AND (base_branch = ? OR head_branch = ?)
-        ORDER BY updated_at DESC`,
+        ORDER BY updated_at DESC, number DESC`,
     ),
     getOpenPullRequestByHeadBranch: db.prepare(
       `SELECT * FROM pull_requests

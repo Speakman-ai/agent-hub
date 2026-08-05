@@ -112,6 +112,9 @@ const STATE_TABS = [
   { key: 'all', label: 'All' },
 ];
 
+/** Rows per page. The server clamps `limit` to 100. */
+const PAGE_SIZE = 25;
+
 function PrListItem({
   pr,
   onOpen,
@@ -1712,10 +1715,14 @@ export default function PullRequestsPage({
   onOpenEpic = null,
   /** Bumped from App when GitHub/kanban activity should re-sync the open PR list. */
   listRefreshNonce = 0,
-  /** When set, opens this PR's detail view on mount (e.g. from session summary). */
+  /** When set, opens this PR's detail view (deep link / browser history). */
   initialPrNumber = null,
+  /** Reports the open PR number (null when back on the list) so the URL stays shareable. */
+  onPrNumberChange = null,
 }: any) {
   const [state, setState] = useState('open');
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
   const [pulls, setPulls] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
@@ -1740,6 +1747,10 @@ export default function PullRequestsPage({
         : project.agents[0]?.id
       : null;
 
+  /** Latest `onPrNumberChange`, so callers don't have to memoize it for our handlers to stay stable. */
+  const notifyPrNumberRef = useRef<any>(null);
+  notifyPrNumberRef.current = typeof onPrNumberChange === 'function' ? onPrNumberChange : null;
+
   /** Monotonic counter so an older in-flight list fetch cannot clobber newer results (Strict Mode / rapid tab switches). */
   const listFetchGenRef = useRef(0);
   const detailFetchGenRef = useRef(0);
@@ -1757,14 +1768,19 @@ export default function PullRequestsPage({
       if (soft) setRefreshing(true);
       else setLoading(true);
       try {
-        const data = await api.getProjectPulls(projectId, { state, limit: 50 });
+        const data = await api.getProjectPulls(projectId, { state, limit: PAGE_SIZE, page });
         if (gen !== listFetchGenRef.current) return;
         setPulls(data.pulls || []);
+        setHasMore(Boolean(data.hasMore));
       } catch (err: any) {
         if (gen !== listFetchGenRef.current) return;
         console.warn('Failed to load PRs:', err?.message || err);
         setError(err?.message || 'Failed to load PRs');
         setPulls([]);
+        // `hasMore` is left alone: a dropped request says nothing about
+        // whether a next page exists, and clearing it would strip the pager
+        // (see the pager's render condition) right when the user needs it to
+        // step back off a page that will not load.
       } finally {
         if (gen === listFetchGenRef.current) {
           setLoading(false);
@@ -1772,8 +1788,14 @@ export default function PullRequestsPage({
         }
       }
     },
-    [projectId, state],
+    [projectId, state, page],
   );
+
+  // A project switch invalidates the page cursor. (The state tabs reset it in
+  // their click handler so the stale page never gets fetched at all.)
+  useEffect(() => {
+    setPage(1);
+  }, [projectId]);
 
   const loadListRef = useRef(loadList);
   loadListRef.current = loadList;
@@ -1814,6 +1836,7 @@ export default function PullRequestsPage({
       setSelectedNumber(res.number);
       setDetail(null);
       loadDetailRef.current?.(res.number);
+      notifyPrNumberRef.current?.(res.number);
       return res;
     },
     [projectId, onToast, loadRecentPushes],
@@ -1858,10 +1881,22 @@ export default function PullRequestsPage({
     [projectId],
   );
 
+  // The open PR number is owned by the URL: a deep link, a browser Back out of
+  // a detail view, and a row click all arrive here. Selecting a row updates the
+  // URL first (`onPrNumberChange`), so the guard below keeps that round trip
+  // from re-fetching a detail the click already loaded.
   useEffect(() => {
-    if (initialPrNumber == null || !projectId) return;
-    const n = Number.parseInt(String(initialPrNumber), 10);
-    if (!Number.isFinite(n) || n < 1) return;
+    if (!projectId) return;
+    const n = Number.parseInt(String(initialPrNumber ?? ''), 10);
+    if (!Number.isFinite(n) || n < 1) {
+      if (selectedNumberRef.current != null) {
+        setSelectedNumber(null);
+        setDetail(null);
+        setDetailError(null);
+      }
+      return;
+    }
+    if (selectedNumberRef.current === n) return;
     setSelectedNumber(n);
     setDetail(null);
     loadDetail(n);
@@ -1885,12 +1920,14 @@ export default function PullRequestsPage({
     setSelectedNumber(pr.number);
     setDetail(null);
     loadDetail(pr.number);
+    notifyPrNumberRef.current?.(pr.number);
   };
 
   const handleBack = () => {
     setSelectedNumber(null);
     setDetail(null);
     setDetailError(null);
+    notifyPrNumberRef.current?.(null);
   };
 
   const handleRefresh = () => {
@@ -2267,7 +2304,10 @@ export default function PullRequestsPage({
             <button
               type="button"
               key={tab.key}
-              onClick={() => setState(tab.key)}
+              onClick={() => {
+                setState(tab.key);
+                setPage(1);
+              }}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                 state === tab.key
                   ? 'bg-gray-700 text-white'
@@ -2289,20 +2329,34 @@ export default function PullRequestsPage({
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 flex items-start gap-2">
             <AlertCircle size={16} className="text-red-400 mt-0.5 flex-shrink-0" />
             <div className="flex-1 text-sm">
-              <p className="text-red-400 font-medium">Failed to load pull requests</p>
+              <p className="text-red-400 font-medium">
+                Failed to load pull requests{page > 1 ? ` (page ${page})` : ''}
+              </p>
               <p className="text-gray-400 mt-1">{error}</p>
             </div>
-            <button
-              type="button"
-              onClick={loadList}
-              className="text-sm text-red-300 hover:text-red-100 underline"
-            >
-              Retry
-            </button>
+            <div className="flex items-center gap-3">
+              {/* A page that will not load must not be a dead end. */}
+              {page > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setPage(1)}
+                  className="text-sm text-red-300 hover:text-red-100 underline"
+                >
+                  First page
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={loadList}
+                className="text-sm text-red-300 hover:text-red-100 underline"
+              >
+                Retry
+              </button>
+            </div>
           </div>
         )}
 
-        {!loading && !error && pulls.length === 0 && (
+        {!loading && !error && pulls.length === 0 && page === 1 && (
           <div className="text-center py-16">
             <GitPullRequest size={48} className="mx-auto text-gray-600 mb-4" />
             <h3 className="text-lg font-medium text-gray-300 mb-2">No {state} pull requests</h3>
@@ -2310,6 +2364,21 @@ export default function PullRequestsPage({
               Once this project&apos;s repo has PRs in the <code>{state}</code> state, they&apos;ll
               show up here.
             </p>
+          </div>
+        )}
+
+        {/* Page past the end (PRs merged or closed since the page loaded). */}
+        {!loading && !error && pulls.length === 0 && page > 1 && (
+          <div className="text-center py-16">
+            <GitPullRequest size={48} className="mx-auto text-gray-600 mb-4" />
+            <h3 className="text-lg font-medium text-gray-300 mb-2">Nothing on page {page}</h3>
+            <button
+              type="button"
+              onClick={() => setPage(1)}
+              className="text-sm text-blue-400 hover:text-blue-300 underline"
+            >
+              Back to the first page
+            </button>
           </div>
         )}
 
@@ -2331,6 +2400,30 @@ export default function PullRequestsPage({
                 onOpenEpic={onOpenEpic}
               />
             ))}
+          </div>
+        )}
+
+        {/* Rendered on the error path too — Previous is how the user steps back
+            off a page that will not load. */}
+        {(page > 1 || hasMore) && (
+          <div className="flex items-center justify-between gap-3 mt-4">
+            <button
+              type="button"
+              disabled={page <= 1 || loading}
+              onClick={() => setPage((p: number) => Math.max(1, p - 1))}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-800 disabled:hover:text-gray-300"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-gray-500">Page {page}</span>
+            <button
+              type="button"
+              disabled={!hasMore || loading}
+              onClick={() => setPage((p: number) => p + 1)}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-800 disabled:hover:text-gray-300"
+            >
+              Next
+            </button>
           </div>
         )}
       </div>

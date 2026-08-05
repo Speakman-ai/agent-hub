@@ -1129,12 +1129,14 @@ export const api = {
     getSessionChanges: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/changes`),
     getSessionChangesDiff: (sessionId: any, file: any) => fetchJSON(`/sessions/${sessionId}/changes/diff?file=${encodeURIComponent(file)}`),
     // Pull Requests (read-only viewer)
-    getProjectPulls: (projectId: any, { state = 'open', limit = 30 }: any = {}) => {
+    getProjectPulls: (projectId: any, { state = 'open', limit = 30, page = 1 }: any = {}) => {
         const params = new URLSearchParams();
         if (state)
             params.set('state', state);
         if (limit)
             params.set('limit', String(limit));
+        if (page && page > 1)
+            params.set('page', String(page));
         const qs = params.toString();
         return fetchJSON(`/projects/${projectId}/pulls${qs ? '?' + qs : ''}`);
     },

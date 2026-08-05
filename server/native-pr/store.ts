@@ -84,6 +84,7 @@ export function listPullRequests(
   projectId: string,
   state: PrListState,
   limit: number,
+  offset = 0,
 ): PullRequestRow[] {
   return stmts.listPullRequestsForProject.all(
     projectId,
@@ -91,6 +92,7 @@ export function listPullRequests(
     state,
     state,
     limit,
+    Math.max(0, Math.trunc(offset)),
   ) as PullRequestRow[];
 }
 

@@ -2576,10 +2576,11 @@ export const api = {
     fetchJSON(`/projects/${projectId}/ios-builds/${buildId}/artifacts`),
 
   // Pull Requests (read-only viewer) — project-scoped
-  getProjectPulls: (projectId: any, { state = 'open', limit = 30 }: any = {}) => {
+  getProjectPulls: (projectId: any, { state = 'open', limit = 30, page = 1 }: any = {}) => {
     const params = new URLSearchParams();
     if (state) params.set('state', state);
     if (limit) params.set('limit', String(limit));
+    if (page && page > 1) params.set('page', String(page));
     const qs = params.toString();
     return fetchJSON(`/projects/${projectId}/pulls${qs ? '?' + qs : ''}`);
   },

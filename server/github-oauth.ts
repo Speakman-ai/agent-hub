@@ -280,6 +280,13 @@ export async function githubUserApiRequest<T = Record<string, unknown>>(opts: {
   method?: string;
   body?: Record<string, unknown>;
   fetchImpl?: typeof fetch;
+  /**
+   * Observe the raw response headers before the body is parsed. Paginated
+   * reads use this for `Link` (rel="next" is GitHub's only exact
+   * "another page exists" signal — the REST body carries no total).
+   * Not called when the request throws.
+   */
+  onResponseHeaders?: (headers: Headers) => void;
 }): Promise<T> {
   const f = opts.fetchImpl ?? fetch;
   const url = opts.endpoint.startsWith('https://')
@@ -301,6 +308,13 @@ export async function githubUserApiRequest<T = Record<string, unknown>>(opts: {
     throw new Error(
       `GitHub user-API ${opts.method || 'GET'} ${opts.endpoint} failed (${res.status}): ${text}`,
     );
+  }
+  if (opts.onResponseHeaders && res.headers && typeof res.headers.get === 'function') {
+    try {
+      opts.onResponseHeaders(res.headers);
+    } catch {
+      /* header inspection must never fail the request */
+    }
   }
   if (res.status === 204) return {} as T;
   return (await res.json()) as T;

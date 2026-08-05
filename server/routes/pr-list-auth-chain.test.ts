@@ -158,3 +158,95 @@ describe('pr-list auth contract — user OAuth required (no App fallback)', () =
     expect(mockGithubUserApiRequest).not.toHaveBeenCalled();
   });
 });
+
+describe('pr-list GitHub pagination — hasMore comes from the Link header', () => {
+  beforeEach(() => freshEnv());
+
+  const project = { id: 'proj-1', githubRepo: 'speakman-ai/agent-hub' };
+
+  function connectedUser() {
+    const user = createUser({
+      username: `u-${Math.random().toString(36).slice(2)}`,
+      passwordHash: 'x',
+    });
+    upsertGithubConnection({
+      userId: user.id,
+      login: 'speakmanra',
+      accessToken: 'user-access',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      refreshToken: 'r',
+      refreshExpiresAt: new Date(Date.now() + 180 * 24 * 3600 * 1000).toISOString(),
+    });
+    return user;
+  }
+
+  /** Reply with `count` PRs and the given Link header (undefined = no headers observable). */
+  function respondWith(count: number, link?: string | null) {
+    mockGithubUserApiRequest.mockImplementationOnce(
+      async (opts: { onResponseHeaders?: (headers: Headers) => void }) => {
+        if (link !== undefined) {
+          opts.onResponseHeaders?.(new Headers(link ? { link } : {}));
+        }
+        return Array.from({ length: count }, (_, i) => ({
+          number: i + 1,
+          title: `PR ${i + 1}`,
+          state: 'open',
+        }));
+      },
+    );
+  }
+
+  it('forwards page and per_page to GitHub', async () => {
+    const user = connectedUser();
+    respondWith(2, null);
+
+    const app = makeApp(buildDeps(project), user.id);
+    const res = await request(app).get('/api/projects/proj-1/pulls?limit=25&page=4');
+
+    expect(res.status).toBe(200);
+    expect(res.body.page).toBe(4);
+    expect(res.body.limit).toBe(25);
+    const { endpoint } = mockGithubUserApiRequest.mock.calls[0][0] as { endpoint: string };
+    expect(endpoint).toContain('per_page=25');
+    expect(endpoint).toContain('page=4');
+  });
+
+  it('reports another page when GitHub advertises rel="next"', async () => {
+    const user = connectedUser();
+    respondWith(2, '<https://api.github.com/repositories/1/pulls?page=2>; rel="next"');
+
+    const app = makeApp(buildDeps(project), user.id);
+    const res = await request(app).get('/api/projects/proj-1/pulls?limit=2');
+    expect(res.body.hasMore).toBe(true);
+  });
+
+  it('does NOT report another page when the final page is exactly full', async () => {
+    // The regression: a length-only heuristic says "full page → more", which
+    // sends the client to fetch an empty page 2.
+    const user = connectedUser();
+    respondWith(2, '<https://api.github.com/repositories/1/pulls?page=1>; rel="prev"');
+
+    const app = makeApp(buildDeps(project), user.id);
+    const res = await request(app).get('/api/projects/proj-1/pulls?limit=2');
+    expect(res.body.pulls).toHaveLength(2);
+    expect(res.body.hasMore).toBe(false);
+  });
+
+  it('treats a Link-less response as a single page', async () => {
+    const user = connectedUser();
+    respondWith(2, null);
+
+    const app = makeApp(buildDeps(project), user.id);
+    const res = await request(app).get('/api/projects/proj-1/pulls?limit=2');
+    expect(res.body.hasMore).toBe(false);
+  });
+
+  it('falls back to the full-page guess when no headers are observable', async () => {
+    const user = connectedUser();
+    respondWith(2, undefined);
+
+    const app = makeApp(buildDeps(project), user.id);
+    const res = await request(app).get('/api/projects/proj-1/pulls?limit=2');
+    expect(res.body.hasMore).toBe(true);
+  });
+});

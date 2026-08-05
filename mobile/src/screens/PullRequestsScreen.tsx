@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
 import { View, Text, TouchableOpacity, FlatList, ScrollView, StyleSheet, ActivityIndicator, RefreshControl, Linking, Alert, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -9,6 +9,7 @@ import { relativePrTime, diffSummary, prStateBadge, summarizeChecks, checksBadge
 import { resolveAgentIdFromProject } from '../utils/projectAgents';
 import { isWorkflowProject } from '../utils/project-mode';
 import { prDetailCapabilities } from '../utils/prReviewActions';
+import { appendPrPage, canLoadMore, createListRequestGate, initialPrPaging, pagingAfterFailure, pagingAfterPage, } from '../utils/prPaging';
 import PrDiffView from '../components/PrDiffView';
 import PrReviewSheet from '../components/PrReviewSheet';
 import PrCommentSheet from '../components/PrCommentSheet';
@@ -18,6 +19,8 @@ const STATE_TABS = [
     { key: 'closed', label: 'Closed' },
     { key: 'all', label: 'All' },
 ];
+/** Rows per request. Older PRs are reachable through the "Load more" footer. */
+const PAGE_SIZE = 25;
 function Badge({ label, color, bg, title }: any) {
     const a11y = title ? `${label}. ${title}` : label;
     return (<View style={[styles.badge, { backgroundColor: bg || colors.gray700_40 }]} accessibilityLabel={a11y}>
@@ -381,6 +384,29 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
       <PrEditSheet visible={editOpen} pr={pr} onClose={() => setEditOpen(false)} onSubmit={handleSaveEdit}/>
     </ScrollView>);
 }
+/**
+ * List footer for append-style paging.
+ *
+ * A failed "Load more" leaves `hasMore` alone — a dropped request tells us
+ * nothing about whether more pages exist — and offers a retry, so a flaky
+ * network can't permanently strand the rest of the list behind a footer that
+ * silently disappeared.
+ */
+export function LoadMoreFooter({ hasMore, loading, error, onPress }: any) {
+    if (!hasMore)
+        return null;
+    if (loading) {
+        return (<View style={styles.loadMoreButton}>
+        <ActivityIndicator color={colors.gray400}/>
+      </View>);
+    }
+    return (<TouchableOpacity style={styles.loadMoreButton} onPress={onPress}>
+      {error ? (<>
+          <Text style={styles.loadMoreErrorText}>{String(error)}</Text>
+          <Text style={styles.loadMoreText}>Tap to retry</Text>
+        </>) : (<Text style={styles.loadMoreText}>Load more</Text>)}
+    </TouchableOpacity>);
+}
 export default function PullRequestsScreen({ route, navigation }: any) {
     const { projects, setActiveAgentId, setActiveSessionId } = useApp();
     const { openSidebar } = useContext(SidebarContext);
@@ -389,6 +415,10 @@ export default function PullRequestsScreen({ route, navigation }: any) {
     const resolveAgentId = resolveAgentIdFromProject(project);
     const [state, setState] = useState('open');
     const [pulls, setPulls] = useState<any[]>([]);
+    const [paging, setPaging] = useState(initialPrPaging);
+    const [loadingMore, setLoadingMore] = useState(false);
+    /** Shared by both list fetches so a superseded response can never write the list. */
+    const listGateRef = useRef(createListRequestGate());
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState<any>(null);
@@ -433,21 +463,67 @@ export default function PullRequestsScreen({ route, navigation }: any) {
             setLoading(false);
             return;
         }
+        // Claim the newest list request. A tab switch, project switch or
+        // refresh started while a page is in flight invalidates that page, so
+        // its rows can never land in the list they no longer belong to.
+        const token = listGateRef.current.begin();
         try {
             setError(null);
-            const data = await api.getProjectPulls(projectId, { state, limit: 50 });
+            const data = await api.getProjectPulls(projectId, { state, limit: PAGE_SIZE, page: 1 });
+            if (!listGateRef.current.isCurrent(token))
+                return;
             setPulls(data.pulls || []);
+            setPaging(pagingAfterPage({ page: 1, hasMore: data.hasMore }));
         }
         catch (err: any) {
+            if (!listGateRef.current.isCurrent(token))
+                return;
             console.warn('Failed to load PRs:', err?.message || err);
             setError(err?.message || 'Failed to load PRs');
             setPulls([]);
+            setPaging(initialPrPaging);
         }
         finally {
-            setLoading(false);
-            setRefreshing(false);
+            if (listGateRef.current.isCurrent(token)) {
+                setLoading(false);
+                setRefreshing(false);
+            }
         }
     }, [projectId, state]);
+    // Append-style paging: the list keeps what's already on screen and pulls
+    // the next page in behind it. A failed fetch preserves `hasMore` (see
+    // prPaging.ts) so the footer stays available as a retry.
+    const loadMore = useCallback(async () => {
+        // A whole-list load in flight owns the list, so no page is appended on
+        // top of results that are about to be replaced.
+        if (!projectId || !canLoadMore(paging, loadingMore || loading || refreshing))
+            return;
+        const next = paging.page + 1;
+        // Capture, don't claim: a page append rides on the list generation it
+        // was requested for. A reload started meanwhile retires this token and
+        // the response is dropped.
+        const token = listGateRef.current.current();
+        setLoadingMore(true);
+        try {
+            const data = await api.getProjectPulls(projectId, { state, limit: PAGE_SIZE, page: next });
+            if (!listGateRef.current.isCurrent(token))
+                return;
+            setPulls((prev: any[]) => appendPrPage(prev, data.pulls || []));
+            setPaging(pagingAfterPage({ page: next, hasMore: data.hasMore }));
+        }
+        catch (err: any) {
+            if (!listGateRef.current.isCurrent(token))
+                return;
+            console.warn('Failed to load more PRs:', err?.message || err);
+            setPaging((prev: any) => pagingAfterFailure(prev, err?.message || 'Failed to load more pull requests'));
+        }
+        finally {
+            // Unconditional: this flag belongs to this request alone, and
+            // nothing else clears it. Gating it on the token would leave a
+            // superseded page spinning forever, blocking every later press.
+            setLoadingMore(false);
+        }
+    }, [projectId, state, paging, loadingMore, loading, refreshing]);
     useEffect(() => {
         setLoading(true);
         loadList();
@@ -653,7 +729,7 @@ export default function PullRequestsScreen({ route, navigation }: any) {
               <Text style={styles.emptyText}>No {state} pull requests.</Text>
             </View>)}
 
-          <FlatList data={pulls} keyExtractor={(item: any) => String(item.number)} renderItem={({ item }: any) => (<PrListItem pr={item} onPress={() => handleSelect(item)} onResolveRow={handleResolveFromList} resolveAgentId={resolveAgentId} resolvingThisRow={resolvingFromList === item.number} bulkResolving={bulkResolving} spawnedSessionId={sessionSpawnedByPr[item.number] || null} onOpenChat={openResolverChat}/>)} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.gray400}/>} contentContainerStyle={{ paddingVertical: 8 }}/>
+          <FlatList data={pulls} keyExtractor={(item: any) => String(item.number)} renderItem={({ item }: any) => (<PrListItem pr={item} onPress={() => handleSelect(item)} onResolveRow={handleResolveFromList} resolveAgentId={resolveAgentId} resolvingThisRow={resolvingFromList === item.number} bulkResolving={bulkResolving} spawnedSessionId={sessionSpawnedByPr[item.number] || null} onOpenChat={openResolverChat}/>)} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.gray400}/>} contentContainerStyle={{ paddingVertical: 8 }} ListFooterComponent={<LoadMoreFooter hasMore={paging.hasMore} loading={loadingMore} error={paging.error} onPress={loadMore}/>}/>
         </>)}
     </SafeAreaView>);
 }
@@ -811,6 +887,16 @@ const styles = StyleSheet.create({
         borderRadius: 6,
     },
     retryButtonText: { color: colors.white, fontSize: 13 },
+    loadMoreButton: {
+        marginTop: 8,
+        marginHorizontal: 12,
+        paddingVertical: 12,
+        alignItems: 'center',
+        backgroundColor: colors.gray800,
+        borderRadius: 8,
+    },
+    loadMoreText: { color: colors.gray300, fontSize: 13, fontWeight: '600' },
+    loadMoreErrorText: { color: colors.red400, fontSize: 12, marginBottom: 4, textAlign: 'center' },
     backButton: {
         paddingHorizontal: 8,
         paddingVertical: 8,

@@ -56,6 +56,24 @@ export function mergeableFromCli(value: unknown): boolean | null {
   return null;
 }
 
+/**
+ * Does a GitHub `Link` header advertise a next page?
+ *
+ * GitHub's REST list responses carry no total count, so `Link` is the only
+ * exact "another page exists" signal — the alternative (a full page means
+ * more) over-reports whenever the last page happens to be exactly full, and
+ * sends the client off to fetch an empty page.
+ *
+ * `undefined` means we never observed the headers (a caller that can't see
+ * them); `null` means GitHub sent no `Link` at all, which it only does when
+ * the whole result fits on one page.
+ */
+export function githubLinkHasNextPage(linkHeader: string | null | undefined): boolean | null {
+  if (linkHeader === undefined) return null;
+  if (!linkHeader) return false;
+  return /(?:^|,)\s*<[^>]+>\s*;[^,]*\brel\s*=\s*"?next"?/i.test(linkHeader);
+}
+
 export function normalizePrSummary(raw: Record<string, unknown>): Record<string, unknown> {
   const user = raw.user as Record<string, unknown> | null | undefined;
   const head = raw.head as Record<string, unknown> | null | undefined;
@@ -151,18 +169,32 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
       let limit = Number.parseInt((req.query.limit as string) || '', 10);
       if (!Number.isFinite(limit) || limit <= 0) limit = DEFAULT_LIST_LIMIT;
       if (limit > MAX_LIST_LIMIT) limit = MAX_LIST_LIMIT;
+      let page = Number.parseInt((req.query.page as string) || '', 10);
+      if (!Number.isFinite(page) || page <= 0) page = 1;
 
       // Agent Hub-hosted projects serve from the native PR table — no
       // GitHub token involved; project access alone (visibility gate on
       // the /api/projects/:projectId mount) is the authz.
       if (isAgentHubHosted(project) && deps.nativePr) {
         try {
-          const pulls = deps.nativePr.listPulls({
+          // One extra row tells us whether another page exists without a
+          // second COUNT query.
+          const rows = deps.nativePr.listPulls({
             project,
             state: state as 'open' | 'closed' | 'all',
-            limit,
+            limit: limit + 1,
+            offset: (page - 1) * limit,
           });
-          return res.json({ repo: project.id, state, source: 'agenthub', pulls });
+          const hasMore = rows.length > limit;
+          return res.json({
+            repo: project.id,
+            state,
+            source: 'agenthub',
+            page,
+            limit,
+            hasMore,
+            pulls: hasMore ? rows.slice(0, limit) : rows,
+          });
         } catch (err: unknown) {
           const status = err instanceof NativePrError ? err.status : 500;
           const msg = err instanceof Error ? err.message : String(err);
@@ -178,7 +210,7 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
         });
       }
 
-      const listPath = `/repos/${repo.owner}/${repo.repo}/pulls?state=${state}&per_page=${limit}&sort=updated&direction=desc`;
+      const listPath = `/repos/${repo.owner}/${repo.repo}/pulls?state=${state}&per_page=${limit}&page=${page}&sort=updated&direction=desc`;
 
       const userToken = await resolveUserToken(req, config);
       if (!userToken) {
@@ -186,9 +218,13 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
       }
 
       try {
+        let linkHeader: string | null | undefined;
         const userData = await githubUserApiRequest<Array<Record<string, unknown>>>({
           accessToken: userToken,
           endpoint: listPath,
+          onResponseHeaders: (headers) => {
+            linkHeader = headers.get('link');
+          },
         });
         if (!Array.isArray(userData)) {
           return res.status(502).json({ error: 'Unexpected GitHub response when listing PRs' });
@@ -209,6 +245,13 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
           repo: `${repo.owner}/${repo.repo}`,
           state,
           source: 'user-oauth',
+          page,
+          limit,
+          // GitHub's `Link` header is exact, so prefer it. The full-page guess
+          // is only a fallback for a response whose headers we never saw — the
+          // native path's over-fetch trick is unavailable here because
+          // `per_page` is capped at 100 and page offsets are server-side.
+          hasMore: githubLinkHasNextPage(linkHeader) ?? pulls.length >= limit,
           pulls,
         });
       } catch (err: unknown) {

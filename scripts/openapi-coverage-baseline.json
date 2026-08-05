@@ -9,7 +9,7 @@
   "ios-builds": { "allowed_unregistered": 8, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "orgs": { "allowed_unregistered": 8, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "pr-actions": { "allowed_unregistered": 6, "note": "pre-existing migration debt (card 3ed3bfc9)" },
-  "pr-list": { "allowed_unregistered": 2, "note": "pre-existing migration debt (card 3ed3bfc9)" },
+  "pr-list": { "allowed_unregistered": 1, "note": "GET /api/projects/:projectId/pulls registered in pr-list.openapi.ts; the detail route is still pre-existing migration debt (card 3ed3bfc9)" },
   "pr-resolve": { "allowed_unregistered": 1, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "finalize-quarantine": { "allowed_unregistered": 0, "note": "fully registered in finalize-quarantine.openapi.ts" },
   "preview-secrets": { "allowed_unregistered": 0, "note": "fully registered in preview-secrets.openapi.ts (PR #1055)" },

@@ -122,6 +122,8 @@ export interface NativePrService {
     project: Project;
     state: PrListState;
     limit: number;
+    /** Rows to skip for offset pagination (page N → (N-1) * pageSize). Defaults to 0. */
+    offset?: number;
   }): Array<Record<string, unknown>>;
   /**
    * All PRs (any state) whose base or head branch equals `branch`, summarized.
@@ -668,13 +670,13 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       return { row, prUrl, created };
     },
 
-    listPulls({ project, state, limit }) {
+    listPulls({ project, state, limit, offset = 0 }) {
       if (!isAgentHubHosted(project)) {
         throw new NativePrError('Project is not Agent Hub-hosted', 400);
       }
       // Load the board's feature-branch epics once, not per row.
       const epics = epicsForProject(stmts, project.id);
-      return listPullRequests(stmts, project.id, state, limit).map((row) =>
+      return listPullRequests(stmts, project.id, state, limit, offset).map((row) =>
         summarize(project.id, row, {
           review_decision: reviewDecisionFor(stmts, project.id, row),
           // CI status badge on list rows. Uses the recorded head_sha (no

@@ -9,6 +9,7 @@ import {
   normalizeIssueComments,
   normalizeCheckRuns,
   mergeableFromCli,
+  githubLinkHasNextPage,
 } from './pr-list.js';
 
 vi.mock('child_process', () => ({
@@ -80,6 +81,37 @@ describe('pr-list — pure helpers', () => {
       expect(parseRepoFullName('just-a-name')).toBeNull();
       expect(parseRepoFullName('a/b/c')).toBeNull();
       expect(parseRepoFullName('has space/repo')).toBeNull();
+    });
+  });
+
+  describe('githubLinkHasNextPage', () => {
+    const NEXT =
+      '<https://api.github.com/repositories/1/pulls?page=3>; rel="next", <https://api.github.com/repositories/1/pulls?page=5>; rel="last"';
+    const LAST_PAGE =
+      '<https://api.github.com/repositories/1/pulls?page=1>; rel="prev", <https://api.github.com/repositories/1/pulls?page=1>; rel="first"';
+
+    it('finds a next link', () => {
+      expect(githubLinkHasNextPage(NEXT)).toBe(true);
+    });
+
+    it('reports no next page on the last page, even though prev/first are present', () => {
+      expect(githubLinkHasNextPage(LAST_PAGE)).toBe(false);
+    });
+
+    it('treats a missing Link header as a single page', () => {
+      expect(githubLinkHasNextPage(null)).toBe(false);
+      expect(githubLinkHasNextPage('')).toBe(false);
+    });
+
+    it('returns null when the headers were never observed', () => {
+      expect(githubLinkHasNextPage(undefined)).toBeNull();
+    });
+
+    it('does not mistake "prev"/"nextish" rels for a next link', () => {
+      expect(githubLinkHasNextPage('<https://api.github.com/x?page=1>; rel="prevnext"')).toBe(
+        false,
+      );
+      expect(githubLinkHasNextPage('<https://api.github.com/x?page=2>; rel=next')).toBe(true);
     });
   });
 
@@ -298,5 +330,87 @@ describe('pr-list — routes', () => {
     app = await mountWithFindProject(vi.fn().mockReturnValue({ id: 'p' }));
     const res = await request(app).get('/api/projects/p/pulls/42');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('pr-list — list pagination (Agent Hub-hosted)', () => {
+  const project = { id: 'hub', gitHost: 'agenthub' };
+
+  async function mountWithNativePr(listPulls: ReturnType<typeof vi.fn>) {
+    vi.resetModules();
+    const { default: createPrListRoutes } = await import('./pr-list.js');
+    const deps = buildMockDeps({
+      findProject: vi.fn().mockReturnValue(project),
+      nativePr: { listPulls } as unknown as RouteDeps['nativePr'],
+    });
+    const e = express();
+    e.use(express.json());
+    e.use(createPrListRoutes(deps));
+    return e;
+  }
+
+  function rows(count: number, startNumber = 1) {
+    return Array.from({ length: count }, (_, i) => ({ number: startNumber + i }));
+  }
+
+  it('defaults to page 1 and offset 0', async () => {
+    const listPulls = vi.fn().mockReturnValue(rows(3));
+    const app = await mountWithNativePr(listPulls);
+    const res = await request(app).get('/api/projects/hub/pulls');
+    expect(res.status).toBe(200);
+    expect(listPulls).toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'open', offset: 0, limit: 31 }),
+    );
+    expect(res.body.page).toBe(1);
+    expect(res.body.limit).toBe(30);
+    expect(res.body.hasMore).toBe(false);
+    expect(res.body.pulls).toHaveLength(3);
+  });
+
+  it('translates page + limit into an offset', async () => {
+    const listPulls = vi.fn().mockReturnValue(rows(2));
+    const app = await mountWithNativePr(listPulls);
+    const res = await request(app).get('/api/projects/hub/pulls?limit=25&page=3');
+    expect(res.status).toBe(200);
+    expect(listPulls).toHaveBeenCalledWith(expect.objectContaining({ offset: 50, limit: 26 }));
+    expect(res.body.page).toBe(3);
+    expect(res.body.limit).toBe(25);
+  });
+
+  it('over-fetches one row to report hasMore, and trims it from the payload', async () => {
+    const listPulls = vi.fn().mockReturnValue(rows(6));
+    const app = await mountWithNativePr(listPulls);
+    const res = await request(app).get('/api/projects/hub/pulls?limit=5');
+    expect(listPulls).toHaveBeenCalledWith(expect.objectContaining({ limit: 6, offset: 0 }));
+    expect(res.body.hasMore).toBe(true);
+    expect(res.body.pulls).toHaveLength(5);
+    expect(res.body.pulls.map((p: { number: number }) => p.number)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('reports hasMore false on an exactly-full final page', async () => {
+    const listPulls = vi.fn().mockReturnValue(rows(5));
+    const app = await mountWithNativePr(listPulls);
+    const res = await request(app).get('/api/projects/hub/pulls?limit=5');
+    expect(res.body.hasMore).toBe(false);
+    expect(res.body.pulls).toHaveLength(5);
+  });
+
+  it('falls back to page 1 for junk or non-positive page values', async () => {
+    const listPulls = vi.fn().mockReturnValue([]);
+    const app = await mountWithNativePr(listPulls);
+    for (const page of ['0', '-4', 'abc', '']) {
+      await request(app).get(`/api/projects/hub/pulls?page=${page}`);
+      expect(listPulls).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }));
+    }
+    const res = await request(app).get('/api/projects/hub/pulls?page=abc');
+    expect(res.body.page).toBe(1);
+  });
+
+  it('clamps limit to 100 before deriving the offset', async () => {
+    const listPulls = vi.fn().mockReturnValue([]);
+    const app = await mountWithNativePr(listPulls);
+    const res = await request(app).get('/api/projects/hub/pulls?limit=500&page=2');
+    expect(listPulls).toHaveBeenCalledWith(expect.objectContaining({ limit: 101, offset: 100 }));
+    expect(res.body.limit).toBe(100);
   });
 });

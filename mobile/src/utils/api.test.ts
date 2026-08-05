@@ -1037,3 +1037,15 @@ describe('errorDetail', () => {
         expect(errorDetail(null, 500)).toBe('API error: 500');
     });
 });
+describe('api.getProjectPulls — pagination params', () => {
+    it('omits page on the first page and sends the requested size', async () => {
+        await api.getProjectPulls('agent-hub', { state: 'open', limit: 25 });
+        const [url] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/pulls?state=open&limit=25');
+    });
+    it('sends page for later pages', async () => {
+        await api.getProjectPulls('agent-hub', { state: 'all', limit: 25, page: 3 });
+        const [url] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/pulls?state=all&limit=25&page=3');
+    });
+});

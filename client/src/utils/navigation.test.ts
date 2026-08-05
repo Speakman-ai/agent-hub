@@ -5,6 +5,8 @@ import {
   getInitialNavigation,
   getInitialView,
   parseNavigationHash,
+  parseNavigationPath,
+  readNavigationStateFromLocation,
 } from './navigation';
 
 describe('navigation defaults', () => {
@@ -140,5 +142,84 @@ describe('navigation defaults', () => {
 
     expect(hash).toBe('#/kanban%3Aagent-hub');
     expect(parseNavigationHash(hash)?.view).toBe('kanban:agent-hub');
+  });
+});
+
+describe('path deep links', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('resolves /projects/<id>/pulls/<number> to the PR detail route', () => {
+    expect(parseNavigationPath('/projects/surveytracker/pulls/306')).toEqual({
+      state: { view: 'pulls', projectId: 'surveytracker', prNumber: 306 },
+      basePath: '',
+    });
+  });
+
+  it('resolves a project-scoped path with no detail segment', () => {
+    expect(parseNavigationPath('/projects/agent-hub/wiki')?.state).toEqual({
+      view: 'wiki',
+      projectId: 'agent-hub',
+      prNumber: null,
+    });
+  });
+
+  it('keeps a deployment path prefix as the basePath', () => {
+    expect(parseNavigationPath('/hub/projects/agent-hub/pulls/12')).toEqual({
+      state: { view: 'pulls', projectId: 'agent-hub', prNumber: 12 },
+      basePath: '/hub',
+    });
+  });
+
+  it('ignores paths that are not project-scoped view deep links', () => {
+    expect(parseNavigationPath('/')).toBeNull();
+    expect(parseNavigationPath('/projects/agent-hub')).toBeNull();
+    expect(parseNavigationPath('/projects/agent-hub/not-a-view')).toBeNull();
+    expect(parseNavigationPath('/dashboard')).toBeNull();
+    expect(parseNavigationPath('')).toBeNull();
+  });
+
+  it('ignores a non-numeric or non-positive PR segment', () => {
+    expect(parseNavigationPath('/projects/p/pulls/abc')?.state.prNumber).toBeNull();
+    expect(parseNavigationPath('/projects/p/pulls/0')?.state.prNumber).toBeNull();
+  });
+
+  it('routes a pasted path link when there is no hash at all', () => {
+    window.history.replaceState(null, '', '/projects/surveytracker/pulls/306');
+
+    expect(getInitialNavigation()).toEqual({
+      view: 'pulls',
+      projectId: 'surveytracker',
+      prNumber: 306,
+    });
+  });
+
+  it('recovers the PR number from the path when the hash lost it', () => {
+    // The exact URL older builds produced: a pasted path link plus the hash
+    // the app appended, which only carried the project.
+    window.history.replaceState(null, '', '/projects/surveytracker/pulls/306#/pulls/surveytracker');
+
+    expect(readNavigationStateFromLocation()).toMatchObject({
+      view: 'pulls',
+      projectId: 'surveytracker',
+      prNumber: 306,
+    });
+  });
+
+  it('lets the hash win when it points somewhere else entirely', () => {
+    window.history.replaceState(null, '', '/projects/surveytracker/pulls/306#/wiki/agent-hub');
+
+    expect(readNavigationStateFromLocation()).toMatchObject({
+      view: 'wiki',
+      projectId: 'agent-hub',
+      prNumber: null,
+    });
+  });
+
+  it('lets the hash PR number win over the path one', () => {
+    window.history.replaceState(null, '', '/projects/p/pulls/306#/pulls/p?pr=99');
+
+    expect(readNavigationStateFromLocation()?.prNumber).toBe(99);
   });
 });

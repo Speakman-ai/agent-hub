@@ -8162,6 +8162,86 @@ components:
         - mergeMethod
         - pr
       description: Auto-merge toggle result.
+    PullRequestSummary:
+      type: object
+      properties:
+        number:
+          type: number
+        title:
+          type: string
+        state:
+          type: string
+        draft:
+          type: boolean
+        html_url:
+          type: string
+        user:
+          type: string
+          nullable: true
+        head:
+          type: string
+          nullable: true
+        base:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          nullable: true
+        updated_at:
+          type: string
+          nullable: true
+        merged_at:
+          type: string
+          nullable: true
+        closed_at:
+          type: string
+          nullable: true
+      required:
+        - number
+        - title
+        - state
+      additionalProperties:
+        nullable: true
+      description: One row of the PR list. Additional fields (labels, review_decision, check_rollup, linked_card, linked_epic, …) vary by backend and are passed through.
+    PullRequestListResponse:
+      type: object
+      properties:
+        repo:
+          type: string
+          description: "`owner/repo` for GitHub-backed projects, or the project id for Agent Hub-hosted ones."
+        state:
+          type: string
+          enum:
+            - open
+            - closed
+            - all
+        source:
+          type: string
+          enum:
+            - agenthub
+            - user-oauth
+        page:
+          type: number
+          description: 1-based page that was served.
+        limit:
+          type: number
+          description: Page size actually applied (max 100).
+        hasMore:
+          type: boolean
+          description: 'Whether another page exists. Exact on both backends: Agent Hub-hosted projects over-fetch one row, GitHub-backed projects read `rel="next"` off GitHub’s `Link` header. Only falls back to a "the page came back full" guess if the upstream response carried no headers to read.'
+        pulls:
+          type: array
+          items:
+            $ref: "#/components/schemas/PullRequestSummary"
+      required:
+        - repo
+        - state
+        - source
+        - page
+        - limit
+        - hasMore
+        - pulls
+      description: One page of pull requests, newest activity first.
     ProjectPreviewInstance:
       type: object
       properties:
@@ -30521,6 +30601,180 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls:
+    get:
+      tags:
+        - PR Actions
+      summary: List a project’s pull requests (paginated)
+      description: Returns one page of pull requests for the project, ordered by most recent activity. Agent Hub-hosted projects are served from the native PR table; GitHub-backed projects are proxied through the caller’s connected GitHub account. Page through with `page`; `hasMore` says whether to offer a next page.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - open
+              - closed
+              - all
+            description: Which PRs to include. Defaults to `open`; unknown values fall back to `open`.
+          required: false
+          description: Which PRs to include. Defaults to `open`; unknown values fall back to `open`.
+          name: state
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            description: Page size. Defaults to 30, clamped to 100.
+          required: false
+          description: Page size. Defaults to 30, clamped to 100.
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            description: 1-based page number. Defaults to 1; invalid values fall back to 1.
+          required: false
+          description: 1-based page number. Defaults to 1; invalid values fall back to 1.
+          name: page
+          in: query
+      responses:
+        "200":
+          description: One page of pull requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PullRequestListResponse"
+        "400":
+          description: Project has no `githubRepo` configured (GitHub-backed path only).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  hint:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  hint:
+                    type: string
+                required:
+                  - error
+        "412":
+          description: 'Caller has not connected a GitHub account (`code: "github_not_connected"`).'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  hint:
+                    type: string
+                required:
+                  - error
+        "502":
+          description: GitHub rejected or failed the list request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  hint:
+                    type: string
+                required:
+                  - error
+    post:
+      tags:
+        - Projects
+      summary: Create (or reuse) a native pull request on an Agent Hub-hosted project
+      description: Creates a DB-backed Hub PR for a branch already pushed to the hosted repo. Idempotent per open head branch. 400 for projects not hosted on Agent Hub — use gh pr create there.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                headBranch:
+                  type: string
+                baseBranch:
+                  type: string
+                  description: Defaults to the default branch.
+                title:
+                  type: string
+                  minLength: 1
+                body:
+                  type: string
+                sessionId:
+                  type: string
+                  nullable: true
+                  description: Acting session id used to attribute the PR author to the session owner when the caller has no per-user identity (e.g. the global break-glass apiKey). Falls back to the X-Agent-Hub-Session-Id header / spawn-creds key.
+              required:
+                - headBranch
+                - title
+      responses:
+        "201":
+          description: PR created (or reused when one was already open for the branch).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prUrl:
+                    type: string
+                  number:
+                    type: number
+                  created:
+                    type: boolean
+                required:
+                  - prUrl
+                  - number
+                  - created
+        "400":
+          description: Not Hub-hosted, invalid branch, or missing fields.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or head branch not pushed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/previews:
     get:
       summary: List active worktree previews for a project
@@ -31640,82 +31894,6 @@ paths:
           description: Missing description or no connected Claude account.
         "502":
           description: Model invocation failed.
-  /api/projects/{projectId}/pulls:
-    post:
-      tags:
-        - Projects
-      summary: Create (or reuse) a native pull request on an Agent Hub-hosted project
-      description: Creates a DB-backed Hub PR for a branch already pushed to the hosted repo. Idempotent per open head branch. 400 for projects not hosted on Agent Hub — use gh pr create there.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                headBranch:
-                  type: string
-                baseBranch:
-                  type: string
-                  description: Defaults to the default branch.
-                title:
-                  type: string
-                  minLength: 1
-                body:
-                  type: string
-                sessionId:
-                  type: string
-                  nullable: true
-                  description: Acting session id used to attribute the PR author to the session owner when the caller has no per-user identity (e.g. the global break-glass apiKey). Falls back to the X-Agent-Hub-Session-Id header / spawn-creds key.
-              required:
-                - headBranch
-                - title
-      responses:
-        "201":
-          description: PR created (or reused when one was already open for the branch).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  prUrl:
-                    type: string
-                  number:
-                    type: number
-                  created:
-                    type: boolean
-                required:
-                  - prUrl
-                  - number
-                  - created
-        "400":
-          description: Not Hub-hosted, invalid branch, or missing fields.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project or head branch not pushed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
   /api/projects/{projectId}/pulls/branch-changes:
     post:
       tags:
