@@ -1714,14 +1714,20 @@ export default function App({ initialView }: any = {}) {
           // The common case is strictly increasing seq, so fast-path the append.
           const { messageId, seq, event } = data;
           if (!messageId) break;
+          // Keep the server's wall clock alongside the event: it is the anchor
+          // a relative tool arg needs to become an absolute time (ScheduleWakeup's
+          // `delaySeconds`). Older servers omit it — fall back to receive time.
+          const timestamp = data.timestamp || new Date().toISOString();
           setEventsByMessage((prev: any) => {
             const existing = prev[messageId] || [];
             const last = existing[existing.length - 1];
             if (!last || last.seq < seq) {
-              return { ...prev, [messageId]: [...existing, { seq, event }] };
+              return { ...prev, [messageId]: [...existing, { seq, event, timestamp }] };
             }
             if (existing.some((e: any) => e.seq === seq)) return prev;
-            const next = [...existing, { seq, event }].sort((a: any, b: any) => a.seq - b.seq);
+            const next = [...existing, { seq, event, timestamp }].sort(
+              (a: any, b: any) => a.seq - b.seq,
+            );
             return { ...prev, [messageId]: next };
           });
 

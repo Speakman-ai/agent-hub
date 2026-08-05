@@ -8,6 +8,7 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { shouldPersistStreamEvent } from './benign-stream-events.js';
 import { clampPayload } from './session-events-store.js';
+import { buildSessionEventBroadcast } from './session-event-broadcast.js';
 import { offloadToolResultImages } from './tool-result-images.js';
 import config, { resolveAgentHubApiBaseForSpawn, resolveGrokSpawnModel } from './config.js';
 import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
@@ -3703,13 +3704,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             err instanceof Error ? err.message : err,
           );
         }
-        broadcast({
-          type: 'session-event',
-          sessionId,
-          messageId: assistantMsgId,
-          seq: nextSeq,
-          event: evt,
-        });
+        broadcast(
+          buildSessionEventBroadcast({
+            sessionId,
+            messageId: assistantMsgId,
+            seq: nextSeq,
+            event: evt,
+          }),
+        );
       };
 
       activeProcesses.set(sessionId, proc);
@@ -3920,13 +3922,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           });
         }
 
-        broadcast({
-          type: 'session-event',
-          messageId: assistantMsgId,
-          sessionId,
-          seq,
-          event,
-        });
+        broadcast(buildSessionEventBroadcast({ sessionId, messageId: assistantMsgId, seq, event }));
 
         if (event.type === 'assistant_text') {
           const chunkText =

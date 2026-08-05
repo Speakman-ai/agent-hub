@@ -586,7 +586,17 @@ export function AppProvider({ children }: any) {
                 if (forActiveSession && data.messageId && data.event) {
                     setEventsByMessage((prev: any) => ({
                         ...prev,
-                        [data.messageId]: [...(prev[data.messageId] || []), { seq: data.seq, event: data.event }],
+                        // Keep the server's wall clock: it is the anchor a relative
+                        // tool arg needs to become an absolute time (ScheduleWakeup's
+                        // `delaySeconds`). Older servers omit it — use receive time.
+                        [data.messageId]: [
+                            ...(prev[data.messageId] || []),
+                            {
+                                seq: data.seq,
+                                event: data.event,
+                                timestamp: data.timestamp || new Date().toISOString(),
+                            },
+                        ],
                     }));
                 }
                 break;

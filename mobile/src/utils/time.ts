@@ -27,6 +27,16 @@ export function formatDateTime(val: any, opts?: Intl.DateTimeFormatOptions): str
     return d.toLocaleString(undefined, opts);
 }
 /**
+ * Format a server timestamp as an absolute local time-of-day.
+ * UTC-aware and null-safe. Mirrors `client/src/utils/time.ts#formatTime`.
+ */
+export function formatTime(val: any, opts?: Intl.DateTimeFormatOptions): string {
+    const d = parseDate(val);
+    if (!d || Number.isNaN(d.getTime()))
+        return '';
+    return d.toLocaleTimeString(undefined, opts);
+}
+/**
  * Format a date string as relative time ("2 min ago", "1h ago", etc.)
  */
 export function relativeTime(dateStr: any) {

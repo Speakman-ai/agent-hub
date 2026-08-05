@@ -60,13 +60,19 @@ describe('sessionTailEventsLoad (mobile SessionTail lazy-fetch)', () => {
             const r = applyLazyMessageEventsResult({
                 cancelled: false,
                 ok: true,
-                data: [{ seq: 1, event: '{"type":"result","text":"done"}' }],
+                data: [
+                    { seq: 1, event: '{"type":"result","text":"done"}', timestamp: '2026-08-05 12:00:00' },
+                ],
                 messageId: 'm1',
                 onEventsLoaded: on,
             });
             expect(r.parentNotified).toBe(true);
             expect(on).toHaveBeenCalledWith('m1', [
-                { seq: 1, event: { type: 'result', text: 'done' } },
+                {
+                    seq: 1,
+                    event: { type: 'result', text: 'done' },
+                    timestamp: '2026-08-05 12:00:00',
+                },
             ]);
         });
     });

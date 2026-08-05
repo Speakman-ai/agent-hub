@@ -10,6 +10,7 @@
 import { stripAssistantControlBlocks } from '@shared/utils/stripAssistantControlBlocks';
 import { shouldSuppressStreamEvent } from '@shared/utils/benignStreamEvents';
 import { extractCredentialRequestBlocks } from './credentialRequests';
+import { isScheduleWakeupTool } from '@shared/utils/scheduledWakeup';
 const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
 /**
  * @param {{ seq?: number, event: object }[]|null|undefined} events
@@ -23,11 +24,18 @@ export function eventsToBlocks(events: any) {
     // pairing is keyed by id string and is therefore order-independent.
     const latestToolUseById = new Map();
     const lastToolUseIndex = new Map();
-    list.forEach(({ event }: any, i: any) => {
+    // Wall clock per tool_use id — the anchor that turns ScheduleWakeup's
+    // relative `delaySeconds` into an absolute fire time. Recorded off the first
+    // revision; a later same-id revision only upgrades args.
+    const firstToolUseTimestamp = new Map();
+    list.forEach(({ event, timestamp }: any, i: any) => {
         if (event?.type === 'tool_use' && event.id != null && String(event.id)) {
             const id = String(event.id);
             latestToolUseById.set(id, event);
             lastToolUseIndex.set(id, i);
+            if (timestamp != null && !firstToolUseTimestamp.has(id)) {
+                firstToolUseTimestamp.set(id, timestamp);
+            }
         }
     });
     const resultByToolId: Record<string, any> = {};
@@ -126,6 +134,7 @@ export function eventsToBlocks(events: any) {
             const isSubagent = use.tool === 'Task' || use.tool === 'Agent';
             const isExitPlanMode = use.tool === 'ExitPlanMode';
             const isTodoWrite = use.tool === 'TodoWrite';
+            const isWakeup = isScheduleWakeupTool(use.tool);
             const result = resultByToolId[use.id];
             const isExplore = EXPLORE_TOOLS.has(use.tool) && !result?.isError;
             if (isExplore) {
@@ -144,6 +153,17 @@ export function eventsToBlocks(events: any) {
                 kind = 'plan_proposal';
             else if (isTodoWrite)
                 kind = 'todos';
+            else if (isWakeup)
+                kind = 'wakeup';
+            if (isWakeup) {
+                blocks.push({
+                    kind,
+                    use,
+                    result,
+                    scheduledAt: firstToolUseTimestamp.get(toolId) ?? list[i].timestamp ?? null,
+                });
+                continue;
+            }
             blocks.push({ kind, use, result });
             continue;
         }

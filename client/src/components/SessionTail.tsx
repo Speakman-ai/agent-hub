@@ -3,7 +3,14 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api';
-import { relativeTime } from '../utils/time';
+import { relativeTime, parseDate, formatTime } from '../utils/time';
+import {
+  isScheduleWakeupTool,
+  parseScheduledWakeup,
+  wakeupCountdown,
+  wakeupTickIntervalMs,
+  wakeupResultPanel,
+} from '@shared/utils/scheduledWakeup';
 import { markdownComponents } from './MarkdownRenderer';
 import {
   isFileModifyingTool,
@@ -51,6 +58,8 @@ import {
   Bookmark,
   ClipboardList,
   Loader2,
+  AlarmClock,
+  BellOff,
 } from 'lucide-react';
 
 /**
@@ -124,8 +133,15 @@ function SessionTail({
       .getMessageEvents(messageId)
       .then((rows: any) => {
         if (cancelled) return;
-        // API returns [{ id, seq, event_type, event, timestamp }, ...]
-        const mapped = rows.map((r: any) => ({ seq: r.seq, event: r.event }));
+        // API returns [{ id, seq, event_type, event, timestamp }, ...]. Keep the
+        // timestamp — it is the wall-clock anchor for relative tool args (the
+        // ScheduleWakeup countdown), and dropping it made a replayed wakeup
+        // indistinguishable from one scheduled just now.
+        const mapped = rows.map((r: any) => ({
+          seq: r.seq,
+          event: r.event,
+          timestamp: r.timestamp,
+        }));
         setLocalEvents(mapped);
         setEventFetchState('ok');
         onEventsLoaded?.(messageId, mapped);
@@ -401,6 +417,15 @@ function SessionTail({
                 return <SubagentCard key={`b${i}`} use={block.use} result={block.result} />;
               case 'tool':
                 return <ToolCard key={`b${i}`} use={block.use} result={block.result} />;
+              case 'wakeup':
+                return (
+                  <ScheduleWakeupCard
+                    key={`b${i}`}
+                    use={block.use}
+                    result={block.result}
+                    scheduledAt={block.scheduledAt}
+                  />
+                );
               case 'todos':
                 return <TodoListCard key={`b${i}`} use={block.use} result={block.result} />;
               case 'explored':
@@ -501,11 +526,19 @@ export function eventsToBlocks(events: any) {
   // against the test in SessionTail.test.jsx covering same-id tool_use revisions.
   const latestToolUseById = new Map();
   const lastToolUseIndex = new Map();
-  list.forEach(({ event }: any, i: any) => {
+  // Wall clock per tool_use id, so a relative tool arg (ScheduleWakeup's
+  // `delaySeconds`) can be resolved to an absolute fire time. Recorded off the
+  // *first* revision: a later same-id revision only upgrades the args, it does
+  // not mean the call was re-issued.
+  const firstToolUseTimestamp = new Map();
+  list.forEach(({ event, timestamp }: any, i: any) => {
     if (event?.type === 'tool_use' && event.id != null && String(event.id)) {
       const id = String(event.id);
       latestToolUseById.set(id, event);
       lastToolUseIndex.set(id, i);
+      if (timestamp != null && !firstToolUseTimestamp.has(id)) {
+        firstToolUseTimestamp.set(id, timestamp);
+      }
     }
   });
 
@@ -636,6 +669,7 @@ export function eventsToBlocks(events: any) {
       // ("plan approval declined" is the expected flow).
       const isExitPlanMode = use.tool === 'ExitPlanMode';
       const isTodoWrite = use.tool === 'TodoWrite';
+      const isWakeup = isScheduleWakeupTool(use.tool);
       const result = resultByToolId[use.id];
       const isExplore = EXPLORE_TOOLS.has(use.tool) && !result?.isError;
       if (isExplore) {
@@ -650,6 +684,16 @@ export function eventsToBlocks(events: any) {
       if (isSubagent) kind = 'subagent';
       else if (isExitPlanMode) kind = 'plan_proposal';
       else if (isTodoWrite) kind = 'todos';
+      else if (isWakeup) kind = 'wakeup';
+      if (isWakeup) {
+        blocks.push({
+          kind,
+          use,
+          result,
+          scheduledAt: firstToolUseTimestamp.get(toolId) ?? list[i].timestamp ?? null,
+        });
+        continue;
+      }
       blocks.push({ kind, use, result });
       continue;
     }
@@ -1269,6 +1313,166 @@ export function ToolCard({ use, result, defaultOpen }: any) {
                 className={`text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-96 ${errored ? 'bg-red-950/40 text-red-300' : 'bg-black/30 text-gray-300'}`}
               >
                 {result.output || '(empty)'}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * useWakeupNow — wall clock that re-renders a pending countdown and stops once
+ * the wakeup is due (or was never pending). Keeping the ticker here rather than
+ * in the card body means a settled/stopped wakeup holds no interval, so a long
+ * transcript full of finished wakeups costs nothing.
+ */
+function useWakeupNow(firesAtMs: number | null) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (firesAtMs === null) return;
+    let timer: any = null;
+    const tick = () => {
+      const current = Date.now();
+      setNow(current);
+      const remaining = firesAtMs - current;
+      if (remaining <= 0) return; // due — stop scheduling
+      timer = setTimeout(tick, wakeupTickIntervalMs(remaining));
+    };
+    const initialRemaining = firesAtMs - Date.now();
+    if (initialRemaining > 0) {
+      timer = setTimeout(tick, wakeupTickIntervalMs(initialRemaining));
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [firesAtMs]);
+  return now;
+}
+
+/**
+ * ScheduleWakeupCard — dedicated rendering for the CLI's `ScheduleWakeup` tool.
+ *
+ * The generic ToolCard collapsed this to "ScheduleWakeup <prompt…>", which hid
+ * the one thing a reader actually wants: *when*. The tool input only carries a
+ * relative `delaySeconds`, so the fire time comes from pairing it with the
+ * session-event's wall clock (`scheduledAt`).
+ *
+ * The label says "wakeup time reached" rather than "woke up" once the clock
+ * runs out — Agent Hub schedules nothing itself, so it cannot claim the loop
+ * actually re-entered.
+ */
+export function ScheduleWakeupCard({ use, result, scheduledAt, defaultOpen }: any) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  const anchor = useMemo(() => {
+    const d = parseDate(scheduledAt);
+    return d && !isNaN(d.getTime()) ? d.getTime() : null;
+  }, [scheduledAt]);
+  const wakeup = useMemo(() => parseScheduledWakeup(use?.input, anchor), [use?.input, anchor]);
+  const now = useWakeupNow(wakeup.firesAtMs);
+  const countdown = wakeupCountdown(wakeup, now);
+
+  const errored = result?.isError;
+  const stillRunning = !result;
+  const stopped = wakeup.stop;
+  const resultPanel = wakeupResultPanel(result);
+
+  const accent = stopped
+    ? 'border-gray-700/60 bg-gray-900/40'
+    : countdown.state === 'due'
+      ? 'border-amber-700/60 bg-amber-950/20'
+      : 'border-indigo-700/60 bg-indigo-950/20';
+
+  const headline = stopped
+    ? 'Loop stopped'
+    : countdown.state === 'due'
+      ? 'Wakeup due'
+      : 'Wakeup scheduled';
+
+  return (
+    <div
+      data-testid="schedule-wakeup-card"
+      className={`border rounded-lg overflow-hidden ${accent} ${errored ? 'border-red-700/80' : ''}`}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v: any) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-black/20"
+      >
+        <span className="flex-shrink-0 text-indigo-300">
+          {stopped ? <BellOff size={16} /> : <AlarmClock size={16} />}
+        </span>
+        <span className="text-gray-200 shrink-0">{headline}</span>
+        {countdown.label && (
+          <span
+            data-testid="schedule-wakeup-countdown"
+            className={`font-mono text-[11px] px-1.5 py-0.5 rounded tabular-nums ${
+              countdown.state === 'due'
+                ? 'bg-amber-900/40 text-amber-200'
+                : 'bg-black/30 text-indigo-200'
+            }`}
+          >
+            {countdown.label}
+          </span>
+        )}
+        {wakeup.reason && (
+          <span className="text-gray-500 truncate min-w-0 hidden sm:inline">{wakeup.reason}</span>
+        )}
+        <span className="ml-auto flex items-center gap-2 shrink-0">
+          {stillRunning && <span className="text-emerald-400 text-[10px] animate-pulse">…</span>}
+          {errored && (
+            <span className="text-red-400 text-[10px] uppercase tracking-wide">error</span>
+          )}
+          <span className="text-gray-500 text-2xl leading-none flex items-center">
+            {open ? '▼' : '▶'}
+          </span>
+        </span>
+      </button>
+
+      {/* Elapsed bar — only meaningful while a real countdown is running. */}
+      {countdown.progress !== null && countdown.state === 'pending' && (
+        <div className="h-0.5 bg-black/40">
+          <div
+            data-testid="schedule-wakeup-progress"
+            className="h-full bg-indigo-500/70 transition-[width] duration-500"
+            style={{ width: `${Math.round(countdown.progress * 100)}%` }}
+          />
+        </div>
+      )}
+
+      {open && (
+        <div className="border-t border-black/30 p-3 space-y-2 text-xs">
+          {wakeup.reason && (
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">reason</div>
+              <div className="text-gray-300">{wakeup.reason}</div>
+            </div>
+          )}
+          {wakeup.firesAtMs !== null && (
+            <div className="text-[11px] text-gray-400" data-testid="schedule-wakeup-times">
+              Scheduled {formatTime(scheduledAt)} · fires {formatTime(wakeup.firesAtMs)}
+            </div>
+          )}
+          {wakeup.prompt && (
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">
+                on wake-up
+              </div>
+              <pre className="text-xs text-gray-300 bg-black/30 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-64">
+                {wakeup.prompt}
+              </pre>
+            </div>
+          )}
+          {resultPanel && (
+            <div data-testid="schedule-wakeup-result">
+              <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">
+                {resultPanel.label}
+              </div>
+              <pre
+                className={`text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-96 ${resultPanel.errored ? 'bg-red-950/40 text-red-300' : 'bg-black/30 text-gray-300'}`}
+              >
+                {resultPanel.text}
               </pre>
             </div>
           )}

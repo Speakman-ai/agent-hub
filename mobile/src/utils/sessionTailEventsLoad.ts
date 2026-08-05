@@ -7,13 +7,19 @@
  * rows" — hiding `ask_user_question` pickers while prose had fences stripped.
  */
 /**
- * @param {Array<{ seq: number, event: unknown }>|null|undefined} data
- * @returns {Array<{ seq: number, event: unknown }>}
+ * Keep the row's `timestamp` alongside the event — it is the wall-clock anchor
+ * that turns a relative tool arg into an absolute time (ScheduleWakeup's
+ * `delaySeconds`). Dropping it made a replayed wakeup indistinguishable from
+ * one scheduled just now.
+ *
+ * @param {Array<{ seq: number, event: unknown, timestamp?: string }>|null|undefined} data
+ * @returns {Array<{ seq: number, event: unknown, timestamp: string|null }>}
  */
 export function mapRowsFromMessageEventsApi(data: any) {
     return (data || []).map((e: any) => ({
         seq: e.seq,
         event: typeof e.event === 'string' ? JSON.parse(e.event) : e.event,
+        timestamp: e.timestamp ?? null,
     }));
 }
 export function notifyParentOfLoadedEvents(onEventsLoaded: any, messageId: any, data: any) {

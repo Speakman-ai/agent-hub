@@ -9,6 +9,8 @@ import { shouldAutoLoadEvents } from '../utils/shouldAutoLoadEvents';
 import { applyLazyMessageEventsResult } from '../utils/sessionTailEventsLoad';
 import { deriveStreamingBrowserHint, mergeBrowserTimelineRows, } from '@shared/utils/browserActivityTimeline';
 import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
+import { parseScheduledWakeup, wakeupCountdown, wakeupTickIntervalMs, wakeupResultPanel, } from '@shared/utils/scheduledWakeup';
+import { parseDate, formatTime } from '../utils/time';
 import { resolveToolImageSrc } from '../utils/toolImageSrc';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
@@ -142,6 +144,86 @@ function TodoListCard({ use, result }: any) {
                 </Text>
               </View>);
             })}
+        </View>) : null}
+    </View>);
+}
+/**
+ * Wall clock that re-renders a pending countdown and stops once it is due.
+ * Mobile twin of `useWakeupNow` in `client/src/components/SessionTail.tsx`.
+ */
+function useWakeupNow(firesAtMs: number | null) {
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        if (firesAtMs === null)
+            return;
+        let timer: any = null;
+        const tick = () => {
+            const current = Date.now();
+            setNow(current);
+            const remaining = firesAtMs - current;
+            if (remaining <= 0)
+                return;
+            timer = setTimeout(tick, wakeupTickIntervalMs(remaining));
+        };
+        const initialRemaining = firesAtMs - Date.now();
+        if (initialRemaining > 0) {
+            timer = setTimeout(tick, wakeupTickIntervalMs(initialRemaining));
+        }
+        return () => {
+            if (timer)
+                clearTimeout(timer);
+        };
+    }, [firesAtMs]);
+    return now;
+}
+/**
+ * ScheduleWakeupCard — mobile twin of the web card. Surfaces *when* a
+ * `ScheduleWakeup` call is due rather than collapsing it to an opaque tool row.
+ * "wakeup time reached" (not "woke up") because the Hub schedules nothing
+ * itself and cannot claim the loop actually re-entered.
+ */
+function ScheduleWakeupCard({ use, result, scheduledAt }: any) {
+    const [open, setOpen] = useState(false);
+    const anchor = useMemo(() => {
+        const d = parseDate(scheduledAt);
+        return d && !Number.isNaN(d.getTime()) ? d.getTime() : null;
+    }, [scheduledAt]);
+    const wakeup = useMemo(() => parseScheduledWakeup(use?.input, anchor), [use?.input, anchor]);
+    const now = useWakeupNow(wakeup.firesAtMs);
+    const countdown = wakeupCountdown(wakeup, now);
+    const errored = result?.isError;
+    const stillRunning = !result;
+    const resultPanel = wakeupResultPanel(result);
+    const headline = wakeup.stop
+        ? 'Loop stopped'
+        : countdown.state === 'due'
+            ? 'Wakeup due'
+            : 'Wakeup scheduled';
+    return (<View style={[wakeupStyles.card, countdown.state === 'due' && wakeupStyles.cardDue]} testID="schedule-wakeup-card">
+      <TouchableOpacity style={wakeupStyles.header} onPress={() => setOpen((v: any) => !v)} accessibilityRole="button">
+        <Text style={wakeupStyles.icon}>{wakeup.stop ? '⏹' : '⏰'}</Text>
+        <Text style={wakeupStyles.title}>{headline}</Text>
+        {countdown.label ? (<Text style={[wakeupStyles.countdown, countdown.state === 'due' && wakeupStyles.countdownDue]} testID="schedule-wakeup-countdown">
+            {countdown.label}
+          </Text>) : null}
+        {stillRunning ? <Text style={wakeupStyles.running}>…</Text> : null}
+        {errored ? <Text style={wakeupStyles.err}>error</Text> : null}
+        <Text style={wakeupStyles.chevron}>{open ? '▼' : '▶'}</Text>
+      </TouchableOpacity>
+      {open ? (<View style={wakeupStyles.body}>
+          {wakeup.reason ? <Text style={wakeupStyles.reason}>{wakeup.reason}</Text> : null}
+          {wakeup.firesAtMs !== null ? (<Text style={wakeupStyles.times} testID="schedule-wakeup-times">
+              Scheduled {formatTime(scheduledAt)} · fires {formatTime(wakeup.firesAtMs)}
+            </Text>) : null}
+          {wakeup.prompt ? (<Text style={wakeupStyles.prompt} numberOfLines={8}>
+              {wakeup.prompt}
+            </Text>) : null}
+          {resultPanel ? (<View style={[wakeupStyles.codeBox, resultPanel.errored && wakeupStyles.errorCodeBox]} testID="schedule-wakeup-result">
+              <Text style={wakeupStyles.codeLabel}>{resultPanel.label}</Text>
+              <Text style={[wakeupStyles.codeText, resultPanel.errored && wakeupStyles.codeTextError]}>
+                {resultPanel.text}
+              </Text>
+            </View>) : null}
         </View>) : null}
     </View>);
 }
@@ -288,7 +370,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
     const askBlocks = useMemo<any>(() => blocks.filter((b: any) => b.kind === 'ask_question'), [blocks]);
     const credentialBlocks = useMemo<any>(() => blocks.filter((b: any) => b.kind === 'credential_request'), [blocks]);
     const browserPanel = hasBrowserTimeline ? (<BrowserActivityPanel timelineEntries={events ?? []} streaming={streaming} screenshots={browserScreenshots}/>) : null;
-    const toolCount = blocks.filter((b: any) => ['tool', 'subagent', 'explored', 'todos', 'plan_proposal'].includes(b.kind)).length;
+    const toolCount = blocks.filter((b: any) => ['tool', 'subagent', 'explored', 'todos', 'plan_proposal', 'wakeup'].includes(b.kind)).length;
     const thinkingCount = blocks.filter((b: any) => b.kind === 'thinking').length;
     const resultBlock = blocks.find((b: any) => b.kind === 'result');
     if (!expanded) {
@@ -383,6 +465,10 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
                 case 'plan_proposal':
                     return (<View key={idx} style={styles.cardWrapper}>
                 <PlanProposalCard use={block.use} result={block.result}/>
+              </View>);
+                case 'wakeup':
+                    return (<View key={idx} style={styles.cardWrapper}>
+                <ScheduleWakeupCard use={block.use} result={block.result} scheduledAt={block.scheduledAt}/>
               </View>);
                 case 'tool': {
                     const use = block.use;
@@ -594,6 +680,66 @@ const todoStyles = StyleSheet.create({
     content: { flex: 1, fontSize: 12, color: colors.gray300 },
     contentDone: { textDecorationLine: 'line-through', color: colors.gray500 },
     contentCancelled: { textDecorationLine: 'line-through', color: colors.gray600 },
+});
+const wakeupStyles = StyleSheet.create({
+    card: {
+        borderWidth: 1,
+        borderColor: 'rgba(99, 102, 241, 0.45)',
+        borderRadius: 8,
+        backgroundColor: 'rgba(30, 27, 75, 0.25)',
+        overflow: 'hidden',
+    },
+    cardDue: {
+        borderColor: 'rgba(180, 83, 9, 0.6)',
+        backgroundColor: 'rgba(69, 26, 3, 0.25)',
+    },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: 6,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+    },
+    icon: { fontSize: 12 },
+    title: { fontSize: 12, fontWeight: '700', color: '#c7d2fe' },
+    countdown: {
+        fontSize: 11,
+        color: '#a5b4fc',
+        fontFamily: 'monospace',
+        backgroundColor: 'rgba(0,0,0,0.3)',
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
+    countdownDue: { color: '#fcd34d', backgroundColor: 'rgba(120, 53, 15, 0.4)' },
+    running: { fontSize: 10, color: colors.blue400, fontStyle: 'italic' },
+    err: { fontSize: 9, color: colors.red400, fontWeight: '700', textTransform: 'uppercase' },
+    chevron: { fontSize: 12, color: colors.gray500, marginLeft: 'auto' },
+    body: {
+        paddingHorizontal: 12,
+        paddingBottom: 12,
+        paddingTop: 8,
+        borderTopWidth: 1,
+        borderTopColor: 'rgba(0,0,0,0.2)',
+        gap: 6,
+    },
+    reason: { fontSize: 12, color: colors.gray300 },
+    times: { fontSize: 11, color: colors.gray400 },
+    prompt: {
+        fontSize: 11,
+        color: colors.gray300,
+        backgroundColor: 'rgba(0,0,0,0.3)',
+        borderRadius: 6,
+        padding: 8,
+    },
+    // Mirrors the generic tool row's result panel so a scheduling confirmation —
+    // or the error text when the call failed — reads the same wherever it lands.
+    codeBox: { backgroundColor: colors.gray800, borderRadius: 6, padding: 8 },
+    errorCodeBox: { borderWidth: 1, borderColor: colors.red600 },
+    codeLabel: { fontSize: 10, color: colors.gray500, marginBottom: 4, fontWeight: '600' },
+    codeText: { fontSize: 11, color: colors.gray300, fontFamily: 'monospace' },
+    codeTextError: { color: colors.red400 },
 });
 const planStyles = StyleSheet.create({
     card: {
