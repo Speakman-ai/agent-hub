@@ -74,6 +74,47 @@ output "docker_env_path" {
   value       = "${var.docker_app_path}/.env"
 }
 
+# Consumed by ops/scripts/sync-hub-env.sh (wired into the release pipeline) to
+# adopt env changes on the RUNNING Hub instead of replacing it. Secrets and
+# UI-owned keys are filtered out upstream — see local.hub_env_managed_lines.
+# Marked sensitive purely so it is never echoed into a workflow log: the values
+# are non-secret but carry account-specific bucket / cluster names, and this
+# repo's Actions logs are public.
+output "hub_env_managed" {
+  description = "Newline-separated KEY=VALUE lines of the Hub .env that CI may safely upsert over SSM (secret-bearing and UI-owned keys excluded). Empty when this env does not render a docker .env."
+  value       = local.hub_env_emitted ? join("\n", local.hub_env_managed_lines) : ""
+  sensitive   = true
+
+  # A key rendered into the env but missing from the inventory would be written
+  # to the live Hub and could never be retracted, because the host only removes
+  # keys it was told are managed. Fail the release rather than ship a one-way key.
+  precondition {
+    condition     = length(local.hub_env_unlisted_keys) == 0
+    error_message = "Hub env keys are not in local.hub_env_managed_key_inventory: ${join(", ", local.hub_env_unlisted_keys)}. Add them there (or exclude them as secret / UI-owned) so ops/scripts/sync-hub-env.sh can remove them when the feature that emits them is turned off."
+  }
+}
+
+# Key names only, no values, so this is safe to print. The host removes any of
+# these keys that hub_env_managed no longer carries, which is how disabling a
+# feature in Terraform actually takes effect on the running Hub.
+output "hub_env_managed_keys" {
+  description = "Newline-separated names of every Hub .env key the SSM sync owns, including ones this configuration currently omits. ops/scripts/sync-hub-env.sh removes owned keys absent from hub_env_managed."
+  value       = local.hub_env_emitted ? join("\n", local.hub_env_managed_key_inventory) : ""
+}
+
+# Key names only. The host verifies that a retracted key actually disappeared
+# from the container; these are the documented exceptions, pinned by `docker run
+# -e` or by an ENV line in the image rather than by .env.
+output "hub_env_runtime_injected_keys" {
+  description = "Newline-separated names of owned Hub .env keys that stay visible in the container after removal (set by docker run -e or baked into the image). Excluded from the host's retraction check."
+  value       = local.hub_env_emitted ? join("\n", local.hub_env_runtime_injected_keys) : ""
+}
+
+output "hub_env_file_path" {
+  description = "Absolute path of the Hub .env on the instance for the bootstrap (clone + docker/ECR) path — the file ops/scripts/sync-hub-env.sh upserts into."
+  value       = local.hub_env_emitted ? local.hub_env_file_path_on_host : null
+}
+
 output "ec2_docker_howto" {
   description = "When using legacy docker .env: rsync the repo, then compose up."
   value       = <<-EOT

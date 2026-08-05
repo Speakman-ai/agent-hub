@@ -9,12 +9,14 @@ name: Release
 #          the tag commit (`:branch`, `:sha`, `:vX.Y.Z`), then SSM restart of
 #          the docker dev sandbox (`agenthub.dev` pull :main + digest checks).
 #        - build-mac        — DMGs → S3 (non-gating vs server rollout).
-#        - terraform-apply  — OPT-IN (apply_terraform input, default off):
-#          `terraform apply` against the prod stack in ops/terraform. Off by
-#          default because a rendered-user_data change stops/starts the Hub
-#          instance (brief downtime + new public IP). Requires the CI prereqs
-#          documented on the job below (PROD_TFVARS secret, AWS_TERRAFORM_ROLE_ARN
-#          + TF_STATE_* vars).
+#        - terraform-apply  — ALWAYS runs: `terraform apply` against the prod
+#          stack in ops/terraform, so an infra change carries on the next
+#          release instead of waiting for someone to remember. The apply can
+#          never replace the Hub: the plan is gated by
+#          assert-no-protected-replacements.sh, and env-only changes reach the
+#          running host through the SSM env sync step rather than a rebuild.
+#          Requires the CI prereqs documented on the job below (PROD_TFVARS
+#          secret, AWS_TERRAFORM_ROLE_ARN + TF_STATE_* vars).
 #
 # Dev EC2 hosts that still use npm/git rather than Docker are upgraded with
 # "Deploy Dev" (`.github/workflows/deploy-dev.yml`) manually if needed — it is
@@ -38,15 +40,6 @@ on:
         description: >-
           With ECR roll: wipe Agent Hub SQLite/uploads/projects on docker dev sandbox
           before restart (fresh-setup drill). Leaves TLS + data/config intact.
-        required: false
-        type: boolean
-        default: false
-      apply_terraform:
-        description: >-
-          Run `terraform apply` on the prod stack (ops/terraform, prod env) after
-          the release. DEFAULT OFF — a user_data change stops/starts the Hub
-          (brief downtime + new public IP). Needs PROD_TFVARS secret +
-          AWS_TERRAFORM_ROLE_ARN / TF_STATE_BUCKET / TF_STATE_LOCK_TABLE vars.
         required: false
         type: boolean
         default: false
@@ -250,9 +243,22 @@ jobs:
       rollout: true
       reset_instance: ${{ inputs.docker_reset_instance }}
 
-  # OPT-IN prod infrastructure apply. Runs only when the `apply_terraform`
-  # dispatch input is true. Independent of the image rollout: the ECR/SSM path
-  # ships app code, this ships infra (buckets, IAM, ALB, fleet, Hub user_data).
+  # Prod infrastructure apply. Runs on every release so a merged Terraform change
+  # actually lands. Independent of the image rollout: the ECR/SSM path ships app
+  # code, this ships infra (buckets, IAM, ALB, fleet, Hub env).
+  #
+  # Two rails make an unattended prod apply safe, and both are load-bearing:
+  #
+  #   1. The plan is saved, converted to JSON, and checked by
+  #      ops/terraform/scripts/assert-no-protected-replacements.sh before it is
+  #      applied. If the plan would destroy or replace `aws_instance.app`,
+  #      `aws_ebs_volume.hub_data`, or `aws_volume_attachment.hub_data`, the job
+  #      fails and applies nothing. Apply consumes the SAVED plan, so what the
+  #      guard approved is exactly what lands.
+  #   2. Rendered user-data never reaches an existing host (cloud-init does not
+  #      re-run), so an env change is adopted in place by the env-sync step via
+  #      SSM. That is why the `user_data_replace_on_change` switch no longer
+  #      exists: nothing here needs to rebuild the box to change a variable.
   #
   # Required CI configuration (nothing account-specific is hardcoded here — this
   # workflow lives in a public repo):
@@ -268,7 +274,6 @@ jobs:
   terraform-apply:
     name: Terraform apply (prod infra)
     needs: release
-    if: ${{ inputs.apply_terraform }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC for AWS
@@ -325,8 +330,107 @@ jobs:
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}" \
             -backend-config="encrypt=true"
 
-      - name: Terraform apply
-        run: terraform apply -input=false -auto-approve -var-file=environments/prod/prod.tfvars
+      # Saved plan + JSON rendering. Everything downstream keys off this exact
+      # plan file so the guard cannot approve one plan while apply runs another.
+      - name: Terraform plan
+        run: |
+          set -euo pipefail
+          terraform plan -input=false \
+            -var-file=environments/prod/prod.tfvars \
+            -out="$RUNNER_TEMP/prod.plan"
+          terraform show -json "$RUNNER_TEMP/prod.plan" > "$RUNNER_TEMP/prod.plan.json"
+
+      - name: Assert the plan cannot destroy the Hub
+        run: ./scripts/assert-no-protected-replacements.sh "$RUNNER_TEMP/prod.plan.json"
+
+      - name: Terraform apply (saved plan)
+        run: terraform apply -input=false -auto-approve "$RUNNER_TEMP/prod.plan"
+
+      # The Hub .env is baked into user-data, which only a fresh instance would
+      # read. Export the managed (non-secret, non-UI-owned) subset so the next
+      # step can upsert it on the running host instead.
+      - name: Collect Hub env sync inputs
+        id: hubenv
+        run: |
+          set -euo pipefail
+
+          # NO `|| true` on these. Swallowing a terraform failure here is not
+          # graceful degradation: an empty hub_env_managed is a VALID instruction
+          # to the sync meaning "retract every managed key", so one flaky CLI
+          # call would strip the running Hub of its configuration and restart it.
+          # An empty value may only mean "empty" when the command SUCCEEDED.
+          #
+          # -json rather than -raw because hub_env_file_path is null on stacks
+          # that render no .env, and `-raw` treats null as an error. With -json
+          # that case stays valid JSON, so "this stack has nothing to sync" stays
+          # distinguishable from "terraform broke" instead of both arriving as a
+          # non-zero exit that the old `|| true` then erased.
+          tf_out() { terraform output -json "$1" | jq -r 'if . == null then "" else . end'; }
+
+          # Values are deliberately not echoed - this repo's Actions logs are public.
+          INSTANCE_ID="$(tf_out instance_id)"
+          ENV_PATH="$(tf_out hub_env_file_path)"
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "env_path=$ENV_PATH" >> "$GITHUB_OUTPUT"
+
+          # hub_env_file_path is null exactly when this stack renders no docker
+          # .env. Nothing to sync, and that is a legitimate skip rather than an
+          # error.
+          if [ -z "$ENV_PATH" ]; then
+            echo "syncable=false" >> "$GITHUB_OUTPUT"
+            echo "This stack renders no Hub .env; skipping env sync."
+            exit 0
+          fi
+
+          MANAGED="$(tf_out hub_env_managed)"
+          MANAGED_KEYS="$(tf_out hub_env_managed_keys)"
+          RUNTIME_KEYS="$(tf_out hub_env_runtime_injected_keys)"
+
+          # The stack DOES render a .env, so every input below is required and
+          # non-empty by construction: docker_bootstrap_env always carries
+          # NODE_ENV / AGENT_HUB_PORT / ALLOWED_ORIGINS and the key lists are
+          # static. An empty one therefore means the data is wrong, never that
+          # Terraform wants nothing, so fail the release rather than hand the
+          # live Hub a retract-everything instruction. (The host script still
+          # supports a genuinely empty desired set for direct invocation; what
+          # must not happen is this pipeline MANUFACTURING one from a failure.)
+          MISSING=""
+          [ -n "$INSTANCE_ID" ] || MISSING="$MISSING instance_id"
+          [ -n "$MANAGED" ] || MISSING="$MISSING hub_env_managed"
+          [ -n "$MANAGED_KEYS" ] || MISSING="$MISSING hub_env_managed_keys"
+          [ -n "$RUNTIME_KEYS" ] || MISSING="$MISSING hub_env_runtime_injected_keys"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Empty Terraform output(s) for a stack that renders a Hub .env:$MISSING. Refusing to sync, because an empty managed set would retract every key from the running Hub."
+            exit 1
+          fi
+
+          printf '%s\n' "$MANAGED" > "$RUNNER_TEMP/hub-env-managed.env"
+          # Key names only (no values). Lets the host drop keys Terraform stopped
+          # emitting; otherwise disabling a feature leaves its old lines live.
+          printf '%s\n' "$MANAGED_KEYS" > "$RUNNER_TEMP/hub-env-managed-keys.txt"
+          # Owned keys that survive removal because docker run -e or an image ENV
+          # line supplies them; exempt from the host's retraction check.
+          printf '%s\n' "$RUNTIME_KEYS" > "$RUNNER_TEMP/hub-env-runtime-keys.txt"
+
+          echo "syncable=true" >> "$GITHUB_OUTPUT"
+          echo "Managed key count: $(grep -cvE '^[[:space:]]*(#|$)' "$RUNNER_TEMP/hub-env-managed.env")"
+
+      # Restarts the Hub only when a managed value actually changed or a managed
+      # key was retracted, so a release with no env delta costs nothing.
+      - name: Sync Hub env over SSM (no instance replacement)
+        if: steps.hubenv.outputs.syncable == 'true'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Every file is written and validated above, so the arguments are
+          # unconditional; a missing one would have failed that step.
+          ops/scripts/sync-hub-env.sh \
+            --instance-id "${{ steps.hubenv.outputs.instance_id }}" \
+            --region "$AWS_REGION" \
+            --remote-path "${{ steps.hubenv.outputs.env_path }}" \
+            --env-file "$RUNNER_TEMP/hub-env-managed.env" \
+            --managed-keys-file "$RUNNER_TEMP/hub-env-managed-keys.txt" \
+            --runtime-keys-file "$RUNNER_TEMP/hub-env-runtime-keys.txt"
 
   summary:
     name: Release summary
@@ -362,5 +466,5 @@ jobs:
             echo "| Tag & release      | $(icon "$RELEASE_RESULT") $RELEASE_RESULT |"
             echo "| ECR + docker dev   | $(icon "$DOCKER_ECR_RESULT") $DOCKER_ECR_RESULT |"
             echo "| Build mac DMGs     | $(icon "$MAC_RESULT") $MAC_RESULT (non-gating) |"
-            echo "| Terraform apply    | $(icon "$TERRAFORM_RESULT") $TERRAFORM_RESULT (opt-in) |"
+            echo "| Terraform apply    | $(icon "$TERRAFORM_RESULT") $TERRAFORM_RESULT (incl. guarded plan + SSM env sync) |"
           } >> "$GITHUB_STEP_SUMMARY"

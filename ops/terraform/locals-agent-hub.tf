@@ -196,6 +196,124 @@ locals {
     local.agent_hub_ahlog_env_docker,
   ))
 
+  # ── CI-syncable subset of the Hub .env (ops/scripts/sync-hub-env.sh) ────────
+  # Rendered user-data only ever reaches a NEW host — cloud-init does not re-run
+  # on an existing instance — so the release pipeline upserts these lines into
+  # the live .env over SSM rather than replacing the box. Two classes of key are
+  # deliberately withheld from that sync:
+  #
+  #   - Secret-bearing (API key, fleet token, Owner password, AHLOG token). An
+  #     SSM SendCommand payload is retained in command history and CloudTrail, so
+  #     syncing these would hand plaintext secrets to anyone holding
+  #     ssm:GetCommandInvocation. They are written once at first boot and rotated
+  #     out-of-band.
+  #   - AGENT_HUB_REPLAY_MASK_ALL_ENFORCED, which the in-app project settings UI
+  #     owns. Re-asserting the Terraform default on every release would silently
+  #     stomp whatever an operator picked in the app.
+  hub_env_unmanaged_keys   = ["AGENT_HUB_REPLAY_MASK_ALL_ENFORCED"]
+  hub_env_secret_key_regex = "(KEY|TOKEN|PASSWORD|SECRET)"
+  hub_env_emitted          = local.use_docker_bootstrap || local.use_ecr_pull
+
+  # The file the SSM sync edits must be the exact file the container is created
+  # from, so both come from local.agent_hub_repo_dir: it is passed to the
+  # user-data template as `repo_dir`, which writes "$REPO_DIR/.env" and then
+  # starts the container with `--env-file "$REPO_DIR/.env"`. Re-deriving the path
+  # here instead would let the two drift, and the sync would silently edit a file
+  # nothing reads.
+  #
+  # NOT var.docker_app_path. That variable belongs to the legacy
+  # bootstrap.sh.tftpl path (var.docker_bootstrap, selected only when
+  # bootstrap_agent_hub = false), which never sets hub_env_emitted, so the sync
+  # does not run there at all. Pointing this output at docker_app_path would aim
+  # the sync at a file the running Hub was not created from. See
+  # output.docker_env_path for that other path.
+  hub_env_file_path_on_host = "${local.agent_hub_repo_dir}/.env"
+
+  # Every key the sync OWNS, whether or not this configuration emits it right
+  # now. The rendered env drops optional keys entirely when a feature goes off
+  # (flipping enable_finalize_runners to false removes the whole FINALIZE_* group
+  # from docker_bootstrap_env), so the desired lines alone cannot tell the host
+  # which is which: "we do not manage this" or "we manage this and it must go".
+  # Without the inventory a disabled feature keeps running on the live Hub: the
+  # stale FINALIZE_RUNNER_BACKEND=remote line survives, the file compares
+  # unchanged, and the service is never restarted. The host removes inventory
+  # keys that are absent from the desired set; anything NOT listed here is never
+  # written and never removed, which is what keeps secret-bearing and UI-owned
+  # keys safe.
+  hub_env_managed_key_inventory = [
+    "NODE_ENV",
+    "AGENT_HUB_DATA_DIR",
+    "AGENT_HUB_PORT",
+    "AGENT_HUB_HOST",
+    "AGENT_HUB_PUBLIC_URL",
+    "TRUST_PROXY",
+    "ALLOWED_ORIGINS",
+    "AGENT_HUB_DEFAULT_USERNAME",
+    "AGENT_HUB_REPLAY_RETENTION_DAYS",
+    "AGENT_HUB_CONTAINER_PROJECTS_DIR",
+    "AGENT_HUB_CONTAINER_WORKSPACES_DIR",
+    "AGENT_HUB_PREVIEW_HEALTH_HOST",
+    "AGENT_HUB_PREVIEW_READY_TIMEOUT_MS",
+    "AGENT_HUB_PREVIEW_SUBDOMAIN_BASE",
+    "AGENT_HUB_ARTIFACTS_BUCKET",
+    "AGENT_HUB_ARTIFACTS_BUCKET_REGION",
+    "AWS_REGION",
+    "FINALIZE_RUNNER_BACKEND",
+    "FINALIZE_WORKTREE_BUCKET",
+    "FINALIZE_WORKTREE_BUCKET_REGION",
+    "FINALIZE_FLEET_ECS_CLUSTER",
+    "FINALIZE_FLEET_ECS_SERVICE",
+    "FINALIZE_FLEET_MIN_AGENTS",
+    "FINALIZE_FLEET_MAX_AGENTS",
+    "FINALIZE_FLEET_DYNAMIC_SCALE_DOWN",
+    "FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS",
+    "AHLOG_ENDPOINT",
+    "AHLOG_SERVICE",
+    "AHLOG_ENVIRONMENT",
+  ]
+
+  # Owned keys that legitimately remain visible inside the container after they
+  # are removed from .env, so the host script must not treat them as a failed
+  # retraction. Two sources, both outside .env:
+  #
+  #   - `docker run -e` in agenthub-server-run.sh (agent-hub-user-data.tftpl).
+  #     Docker gives -e precedence over --env-file, so these are pinned by the
+  #     run command and .env cannot move or clear them.
+  #   - `ENV` lines baked into server/Dockerfile. --env-file overrides the image
+  #     value while the key is present, but removing the key falls back to it.
+  #
+  # Kept in lockstep with both sources by server/hub-env-managed-keys.test.ts.
+  # Everything else must actually disappear from the container, which is how a
+  # disabled feature is proven off rather than assumed off.
+  hub_env_runtime_injected_keys = [
+    "NODE_ENV",
+    "AGENT_HUB_DATA_DIR",
+    "AGENT_HUB_HOST",
+    "AGENT_HUB_CONTAINER_PROJECTS_DIR",
+    "AGENT_HUB_CONTAINER_WORKSPACES_DIR",
+    "AGENT_HUB_PREVIEW_HEALTH_HOST",
+  ]
+
+  # Non-secret, non-UI-owned lines the current configuration renders. Every key
+  # here must appear in the inventory above, or the sync would write a key it can
+  # never retract. Asserted by the precondition on output.hub_env_managed.
+  hub_env_syncable_lines = [
+    for line in split("\n", local.docker_bootstrap_env) : line
+    if length(trimspace(line)) > 0
+    && !contains(local.hub_env_unmanaged_keys, split("=", line)[0])
+    && length(regexall(local.hub_env_secret_key_regex, split("=", line)[0])) == 0
+  ]
+
+  hub_env_unlisted_keys = distinct([
+    for line in local.hub_env_syncable_lines : split("=", line)[0]
+    if !contains(local.hub_env_managed_key_inventory, split("=", line)[0])
+  ])
+
+  hub_env_managed_lines = [
+    for line in local.hub_env_syncable_lines : line
+    if contains(local.hub_env_managed_key_inventory, split("=", line)[0])
+  ]
+
   agent_hub_image_uri_trim = trimspace(var.agent_hub_image_uri)
   # Same tag as the server image; CI pushes both repos on every main merge.
   agent_hub_finalize_runner_image_uri = (
@@ -218,6 +336,12 @@ locals {
   docker_bootstrap_env_b64 = (local.use_docker_bootstrap || local.use_ecr_pull) ? base64encode(local.docker_bootstrap_env) : ""
   data_root_for_docker     = "/var/lib/agent-hub"
 
+  # The app checkout on the instance, and therefore the directory holding the
+  # .env the container is started with. Single source for the user-data template
+  # (`repo_dir`) and for local.hub_env_file_path_on_host, so the file the SSM
+  # sync edits cannot drift from the file the container reads.
+  agent_hub_repo_dir = "/home/${var.app_user}/${var.agent_hub_repo_basename}"
+
   # Embedded in EC2 user-data (base64) so first boot can compile a no-op
   # libprofiler.so.0 on AL2023 when stock nginx links a broken gperftools build.
   libprofiler_stub_c_b64 = filebase64("${path.module}/templates/libprofiler-stub.c")
@@ -235,7 +359,7 @@ locals {
       app_port                  = tostring(var.agent_hub_target_port)
       git_url                   = local.git_url_for_bootstrap
       git_ref                   = var.agent_hub_git_ref
-      repo_dir                  = "/home/${var.app_user}/${var.agent_hub_repo_basename}"
+      repo_dir                  = local.agent_hub_repo_dir
       env_b64                   = local.agent_hub_bootstrap_env_b64
       docker_env_b64            = local.docker_bootstrap_env_b64
       image_uri                 = local.agent_hub_image_uri_trim

@@ -114,19 +114,18 @@ describe('ops/terraform/main.tf — required_version floor', () => {
   });
 });
 
-describe('ops/terraform/variables.tf — user_data_replace_on_change', () => {
-  const path = join(tfDir, 'variables.tf');
-
-  it('defaults to false so bootstrap edits do not replace the host unless operators opt in', () => {
-    // True forces instance replacement whenever rendered user_data changes.
-    // Default false pairs with `lifecycle.ignore_changes = [ami]` on
-    // `aws_instance.app` so routine applies do not wipe the box; adopt bootstrap
-    // on existing hosts via SSM, or `terraform apply -replace=aws_instance.app`,
-    // or set this true temporarily for a deliberate rebuild.
-    const tf = readText(path);
-    const m = tf.match(/variable\s+"user_data_replace_on_change"\s*\{[\s\S]*?\n\}/);
-    expect(m, 'variable block must exist').toBeTruthy();
-    expect(m![0]).toMatch(/default\s*=\s*false/);
+describe('ops/terraform — the instance-replacing user_data switch stays deleted', () => {
+  it('neither declares nor wires user_data_replace_on_change', () => {
+    // Removed on purpose. The release pipeline now applies this stack on every
+    // release with nobody watching the plan, and a `true` here destroys and
+    // recreates the live Hub (wiping the host, changing its public IP) on any
+    // rendered-user_data change. Env changes reach a running host through
+    // ops/scripts/sync-hub-env.sh; a genuine rebuild is an explicit, manual
+    // `terraform apply -replace=aws_instance.app`.
+    const vars = readText(join(tfDir, 'variables.tf'));
+    const main = readText(join(tfDir, 'main.tf'));
+    expect(vars).not.toMatch(/variable\s+"user_data_replace_on_change"/);
+    expect(main).not.toMatch(/^\s*user_data_replace_on_change\s*=/m);
   });
 });
 
