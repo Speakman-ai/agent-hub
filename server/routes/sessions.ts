@@ -43,6 +43,7 @@ import { isTruncatedPayload, rehydrateTruncatedEvent } from '../session-events-s
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { appendCodexShellEnvironmentPolicyArgs } from '../codex-exec-sandbox.js';
 import { markSessionTermination } from '../process-termination.js';
+import { clearEphemeralBackgroundBash } from '../ephemeral-background-bash.js';
 import { getDb } from '../db.js';
 import { readAll } from '../db-async/read-facade.js';
 import {
@@ -462,6 +463,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   /** Tear down any preview group owned by `sessionId`. */
   async function stopPreviewsForSession(sessionId: string): Promise<void> {
+    // The session will never take another turn, so nothing will consume its
+    // pending native-background-Bash notice. Drop it rather than leak the rows.
+    clearEphemeralBackgroundBash(sessionId);
     const devServerRuntime = deps.getDevServerRuntime?.();
     const tasks: Promise<unknown>[] = [];
     if (devServerRuntime) {

@@ -5,6 +5,16 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
+import {
+  buildEphemeralBackgroundBashNotice,
+  clearEphemeralBackgroundBash,
+  isBackgroundBashToolUse,
+  noteBashOutputToolUse,
+  noteEphemeralBackgroundBashToolResult,
+  noteKillShellToolUse,
+  peekEphemeralBackgroundBash,
+  recordEphemeralBackgroundBash,
+} from './ephemeral-background-bash.js';
 import { createStreamParser } from './stream-parser.js';
 import { shouldPersistStreamEvent } from './benign-stream-events.js';
 import { clampPayload } from './session-events-store.js';
@@ -3089,6 +3099,24 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         model,
       });
 
+      // Background Bash shells the previous CLI process started are unreachable
+      // by now. Lead the turn content with that fact so the agent does not spend
+      // the turn tailing a log nothing is writing to. Goes in the turn content,
+      // not the enriched prompt: the system prompt is only re-sent on a new
+      // engine session, and this failure lands mid-session on resume turns.
+      //
+      // Peek, don't consume: several paths below this can still fail before a
+      // CLI exists (bad cwd, engine auth, spawn ENOENT). Clearing here would
+      // drop the warning on the floor and the retry that finally works would
+      // get no explanation. The records are cleared on the child's `spawn`
+      // event instead — see below.
+      const ephemeralBashNotice = buildEphemeralBackgroundBashNotice(
+        peekEphemeralBackgroundBash(sessionId),
+      );
+      if (ephemeralBashNotice) {
+        cliContent = `${ephemeralBashNotice}\n\n${cliContent}`;
+      }
+
       const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
       // A forwarded / pre-seeded session stores its context as message rows
       // before any engine session exists, so this is the only chance the CLI
@@ -3727,6 +3755,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         );
       };
 
+      // The notice built above is now committed to this turn's prompt, so the
+      // records it came from can go. Node emits `spawn` before any stdout data,
+      // so this can never race ahead of a shell THIS turn starts. A spawn that
+      // fails emits `error` instead and leaves the records for the next attempt.
+      proc.once('spawn', () => clearEphemeralBackgroundBash(sessionId));
+
       activeProcesses.set(sessionId, proc);
       if (turnStartLockHeld) {
         releaseSessionWorktreeLock(sessionId, 'turn-start');
@@ -3926,6 +3960,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
         if (event.type === 'tool_use' && typeof event.tool === 'string') {
           const toolInput = (event.input as Record<string, unknown>) || {};
+          // Native background Bash shells become unreachable when this CLI
+          // process exits. Track the outstanding ones so the next turn is told
+          // rather than left polling a dead handle, and watch BashOutput /
+          // KillShell so a shell the agent already resolved is dropped instead
+          // of warned about — see ephemeral-background-bash.ts.
+          if (isBackgroundBashToolUse(event.tool, toolInput)) {
+            recordEphemeralBackgroundBash(sessionId, event.id, toolInput);
+          } else if (event.tool === 'BashOutput') {
+            noteBashOutputToolUse(sessionId, event.id, toolInput);
+          } else if (event.tool === 'KillShell') {
+            noteKillShellToolUse(sessionId, toolInput);
+          }
           handleMutatingToolUseForCodeChange(sessionId, event.tool, toolInput, {
             stmts: S,
             broadcast,
@@ -3933,6 +3979,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             worktreePath: effectiveCwd,
             getDevServerRuntime,
           });
+        }
+
+        if (event.type === 'tool_result' && typeof event.toolUseId === 'string') {
+          // Resolves a background launch's shell handle, and retires a shell
+          // whose BashOutput poll came back with a terminal status.
+          noteEphemeralBackgroundBashToolResult(
+            sessionId,
+            event.toolUseId,
+            typeof event.output === 'string' ? event.output : '',
+            event.isError === true,
+          );
         }
 
         broadcast(buildSessionEventBroadcast({ sessionId, messageId: assistantMsgId, seq, event }));
