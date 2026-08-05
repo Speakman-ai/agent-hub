@@ -19,10 +19,23 @@ vi.mock('@xterm/xterm', () => ({
     resets = 0;
     disposed = false;
     inputDisposed = false;
+    focused = 0;
+    pasted: string[] = [];
     dataHandler: ((data: string) => void) | null = null;
 
     constructor() {
       xtermMocks.terminals.push(this);
+    }
+
+    focus() {
+      this.focused += 1;
+    }
+
+    // Real xterm applies bracketed-paste wrapping / newline transformation and
+    // then emits through onData — the same path a keystroke takes.
+    paste(data: string) {
+      this.pasted.push(data);
+      this.dataHandler?.(data);
     }
 
     loadAddon(addon: any) {
@@ -93,6 +106,7 @@ vi.mock('@xterm/addon-serialize', () => ({
 }));
 
 import SessionTerminalPane from './SessionTerminalPane';
+import { resetTerminalCommandBus, sendCommandToTerminal } from '../utils/terminalCommandBus';
 
 class MockWebSocket {
   static CONNECTING = 0;
@@ -178,6 +192,7 @@ describe('SessionTerminalPane', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    resetTerminalCommandBus();
   });
 
   it('mounts xterm addons, pipes input without local echo, reports resize, and tears down', () => {
@@ -248,5 +263,82 @@ describe('SessionTerminalPane', () => {
     expect(terminal.resets).toBe(2);
     expect(terminal.writes.at(-1)).toBe('restored snapshot');
     expect(screen.getByTestId('session-terminal-status')).toHaveTextContent('Connected');
+  });
+
+  describe('"Run in terminal" hand-off', () => {
+    it('pastes a command sent while attached, without pressing Enter', () => {
+      render(<SessionTerminalPane sessionId="session-3" />);
+      const terminal = xtermMocks.terminals[0];
+      const socket = MockWebSocket.instances[0];
+
+      act(() => {
+        socket.open();
+        socket.receive(serverData('attached', '$ '));
+      });
+      const sentBefore = socket.sent.length;
+
+      act(() => {
+        sendCommandToTerminal('session-3', 'npm test');
+      });
+
+      expect(terminal.pasted).toEqual(['npm test']);
+      expect(terminal.focused).toBeGreaterThan(0);
+      const frame = JSON.parse(socket.sent[sentBefore]);
+      expect(frame).toMatchObject({ type: 'input', encoding: 'base64' });
+      // No trailing newline: the user reviews the line and runs it themselves.
+      expect(decodeBase64(frame.data)).toBe('npm test');
+    });
+
+    it('replays a command sent before the socket attached', () => {
+      // The click that opens the pane fires before the pane mounts, so the bus
+      // holds the command; input sent pre-attach would otherwise be dropped.
+      act(() => {
+        sendCommandToTerminal('session-4', 'git status');
+      });
+
+      render(<SessionTerminalPane sessionId="session-4" />);
+      const terminal = xtermMocks.terminals[0];
+      const socket = MockWebSocket.instances[0];
+      expect(terminal.pasted).toEqual([]);
+
+      act(() => {
+        socket.open();
+        socket.receive(serverData('attached', '$ '));
+      });
+
+      expect(terminal.pasted).toEqual(['git status']);
+    });
+
+    it('ignores commands aimed at a different session', () => {
+      render(<SessionTerminalPane sessionId="session-5" />);
+      const terminal = xtermMocks.terminals[0];
+      const socket = MockWebSocket.instances[0];
+
+      act(() => {
+        socket.open();
+        socket.receive(serverData('attached', '$ '));
+        sendCommandToTerminal('session-other', 'rm -rf /');
+      });
+
+      expect(terminal.pasted).toEqual([]);
+    });
+
+    it('stops listening once unmounted', () => {
+      const view = render(<SessionTerminalPane sessionId="session-6" />);
+      const terminal = xtermMocks.terminals[0];
+      const socket = MockWebSocket.instances[0];
+
+      act(() => {
+        socket.open();
+        socket.receive(serverData('attached', '$ '));
+      });
+      view.unmount();
+
+      act(() => {
+        sendCommandToTerminal('session-6', 'npm run build');
+      });
+
+      expect(terminal.pasted).toEqual([]);
+    });
   });
 });

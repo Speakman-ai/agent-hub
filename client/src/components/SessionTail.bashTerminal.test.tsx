@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { ToolCard } from './SessionTail';
+import { RunInTerminalProvider } from './RunInTerminalContext';
 
 /**
  * Bash ToolCard — Cursor-style terminal view.
@@ -77,5 +78,25 @@ describe('ToolCard — Bash terminal view', () => {
     const toggle = screen.getByRole('button');
     fireEvent.click(toggle as any);
     expect(screen.getByTestId('bash-terminal')).toBeTruthy();
+  });
+
+  describe('Run in terminal', () => {
+    it('is absent outside the chat transcript, where there is no terminal', () => {
+      render(<ToolCard use={bashUse} result={bashResult} defaultOpen={true} />);
+      expect(screen.queryByTestId('bash-run-in-terminal')).toBeNull();
+    });
+
+    it('hands the literal command to the session terminal', () => {
+      const onRun = vi.fn();
+      render(
+        <RunInTerminalProvider onRun={onRun}>
+          <ToolCard use={bashUse} result={bashResult} defaultOpen={true} />
+        </RunInTerminalProvider>,
+      );
+
+      fireEvent.click(screen.getByTestId('bash-run-in-terminal'));
+
+      expect(onRun).toHaveBeenCalledWith(bashUse.input.command);
+    });
   });
 });

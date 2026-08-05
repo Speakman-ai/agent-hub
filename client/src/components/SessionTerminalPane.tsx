@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { getTerminalWsUrl } from '../utils/connection';
+import { subscribeToTerminalCommands } from '../utils/terminalCommandBus';
 
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
 const defaultWebSocketFactory = (url: string) => new WebSocket(url);
@@ -252,6 +253,23 @@ export default function SessionTerminalPane({
       serializeAddonRef.current = null;
     };
   }, [reportSize, sendFrame, sessionId, webSocketFactory]);
+
+  // "Run in terminal" hand-offs from the chat transcript. Subscribing only
+  // once attached is what makes the bus's hold-and-replay do its job: input
+  // sent before the socket attaches is dropped by the `onData` guard above.
+  // `terminal.paste` (rather than a hand-rolled input frame) is deliberate —
+  // it applies the same bracketed-paste wrapping and newline transformation a
+  // real paste gets, so a multi-line command lands as one editable buffer that
+  // the shell does not run until the user presses Enter.
+  useEffect(() => {
+    if (status !== 'connected') return undefined;
+    return subscribeToTerminalCommands(sessionId, (command) => {
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      terminal.focus();
+      terminal.paste(command);
+    });
+  }, [sessionId, status]);
 
   const statusLabel =
     status === 'connected'

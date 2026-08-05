@@ -2,7 +2,9 @@ import { useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { SquareTerminal } from 'lucide-react';
 import { resolveServerMediaUrl } from '../utils/resolveServerMediaUrl';
+import { useRunInTerminal } from './RunInTerminalContext';
 import MermaidDiagram from './MermaidDiagram';
 
 /** Extract `mermaid` from `language-mermaid` etc. Returns '' for no/empty class. */
@@ -49,8 +51,16 @@ export function markdownCodeIsBlock({ inline, className, children }: any) {
   return false;
 }
 
+/**
+ * "Run in terminal" is offered for every fence, not just shell-tagged ones:
+ * agents routinely emit runnable commands in an untagged fence, so gating on
+ * the language tag would miss the common case. A false positive costs nothing
+ * — the button is hover-revealed and pastes without executing.
+ */
 export function CodeBlock({ children, className }: any) {
   const [copied, setCopied] = useState(false);
+  const [sentToTerminal, setSentToTerminal] = useState(false);
+  const runInTerminal = useRunInTerminal();
   const plainText = extractText(children).replace(/\n$/, '');
   const language = className?.replace('language-', '') || '';
 
@@ -60,16 +70,37 @@ export function CodeBlock({ children, className }: any) {
     setTimeout(() => setCopied(false), 2000);
   }, [plainText]);
 
+  const handleRunInTerminal = useCallback(() => {
+    if (!runInTerminal || !plainText) return;
+    runInTerminal(plainText);
+    setSentToTerminal(true);
+    setTimeout(() => setSentToTerminal(false), 2000);
+  }, [plainText, runInTerminal]);
+
   return (
     <div className="relative group my-2">
       <div className="flex items-center justify-between bg-gray-950 rounded-t-lg px-4 py-1.5 text-xs text-gray-500">
         <span>{language || 'code'}</span>
-        <button
-          onClick={handleCopy}
-          className="sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-gray-400 hover:text-white px-2 py-1 rounded min-h-[32px]"
-        >
-          {copied ? '✓ Copied' : 'Copy'}
-        </button>
+        <div className="flex items-center gap-1">
+          {runInTerminal && plainText && (
+            <button
+              type="button"
+              data-testid="code-block-run-in-terminal"
+              onClick={handleRunInTerminal}
+              title="Paste into the session terminal — press Enter there to run it"
+              className="sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex items-center gap-1 text-gray-400 hover:text-cyan-200 px-2 py-1 rounded min-h-[32px]"
+            >
+              <SquareTerminal size={12} />
+              {sentToTerminal ? '✓ Sent' : 'Run in terminal'}
+            </button>
+          )}
+          <button
+            onClick={handleCopy}
+            className="sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-gray-400 hover:text-white px-2 py-1 rounded min-h-[32px]"
+          >
+            {copied ? '✓ Copied' : 'Copy'}
+          </button>
+        </div>
       </div>
       <pre className="!rounded-t-none !mt-0 overflow-x-auto">
         <code className={className}>{children}</code>

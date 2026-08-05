@@ -33,6 +33,8 @@ import SessionScopingModePane from './components/SessionScopingModePane';
 const SessionChangesPane = lazy(() => import('./components/SessionChangesPane'));
 const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPane'));
 const SessionTerminalPane = lazy(() => import('./components/SessionTerminalPane'));
+import { RunInTerminalProvider } from './components/RunInTerminalContext';
+import { sendCommandToTerminal } from './utils/terminalCommandBus';
 import LinkDesignModal from './components/LinkDesignModal';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton';
 import SessionBranchPicker from './components/SessionBranchPicker';
@@ -4811,6 +4813,28 @@ export default function App({ initialView }: any = {}) {
 
   const sessionConsultActive = isSessionConsultModeEnabled(activeSession);
 
+  // "Run in terminal" on a code fence / Bash tool card: open the shared
+  // terminal (it may be closed, and it shares the right-hand slot with the
+  // diff and artifacts panes) and hand the command to the pane. The pane holds
+  // it on the bus until its socket attaches, so the click works from cold.
+  const runCommandInSessionTerminal = useCallback(
+    (command: string) => {
+      if (!activeSessionId) return;
+      setTerminalPaneOpenBySession((prev: any) => ({ ...prev, [activeSessionId]: true }));
+      setDiffPaneOpenBySession((prev: any) => ({ ...prev, [activeSessionId]: false }));
+      setArtifactsPaneOpenBySession((prev: any) => ({ ...prev, [activeSessionId]: false }));
+      sendCommandToTerminal(activeSessionId, command);
+    },
+    [activeSessionId],
+  );
+
+  // Mirrors the Terminal toggle button's own availability rules — no terminal
+  // to send to means no button in the transcript.
+  const runInTerminalHandler =
+    activeSessionId && !chatProjectIsWorkflow && !sessionConsultActive
+      ? runCommandInSessionTerminal
+      : null;
+
   const sessionOwnerAgentId = activeSession?.agent_id ?? activeAgentId;
   const chatAgent = useMemo(
     () => agents.find((a: any) => a.id === sessionOwnerAgentId) ?? activeAgent ?? null,
@@ -5987,133 +6011,214 @@ export default function App({ initialView }: any = {}) {
                   <div className="flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden lg:flex-row">
                     <div className="flex flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
                       {/* Messages */}
-                      <div
-                        ref={scrollContainerRef}
-                        onScroll={handleScrollEvent}
-                        data-testid="chat-scroll-container"
-                        className="flex-1 overflow-y-auto p-3 md:p-6 relative border-t-2"
-                        // `overflowAnchor: none` hands scroll-position ownership entirely to
-                        // the JS in this component (auto-follow tail-pin + manual prepend
-                        // restore). Left at the browser default `auto`, native scroll
-                        // anchoring *also* shifts scrollTop when an older page is prepended
-                        // above the viewport — fighting `restoredScrollTop` across frames and
-                        // producing the rapid back-and-forth scroll jitter on load-older.
-                        style={{ borderTopColor: chatAccentColor, overflowAnchor: 'none' }}
-                      >
-                        <div className="mx-auto" ref={messagesColumnRef}>
-                          {/* Reverse-infinite-scroll: spinner shown at the top
+                      <RunInTerminalProvider onRun={runInTerminalHandler}>
+                        <div
+                          ref={scrollContainerRef}
+                          onScroll={handleScrollEvent}
+                          data-testid="chat-scroll-container"
+                          className="flex-1 overflow-y-auto p-3 md:p-6 relative border-t-2"
+                          // `overflowAnchor: none` hands scroll-position ownership entirely to
+                          // the JS in this component (auto-follow tail-pin + manual prepend
+                          // restore). Left at the browser default `auto`, native scroll
+                          // anchoring *also* shifts scrollTop when an older page is prepended
+                          // above the viewport — fighting `restoredScrollTop` across frames and
+                          // producing the rapid back-and-forth scroll jitter on load-older.
+                          style={{ borderTopColor: chatAccentColor, overflowAnchor: 'none' }}
+                        >
+                          <div className="mx-auto" ref={messagesColumnRef}>
+                            {/* Reverse-infinite-scroll: spinner shown at the top
                       while an older page is being fetched on scroll-up. */}
-                          {loadingOlderMessages && (
-                            <div
-                              className="flex items-center justify-center gap-2 py-3 text-xs text-gray-500"
-                              data-testid="chat-loading-older"
-                            >
-                              <Loader2 size={14} className="animate-spin" />
-                              <span>Loading earlier messages…</span>
-                            </div>
-                          )}
-                          {/* Cursor-style timed checklist — rendered at top of chat
+                            {loadingOlderMessages && (
+                              <div
+                                className="flex items-center justify-center gap-2 py-3 text-xs text-gray-500"
+                                data-testid="chat-loading-older"
+                              >
+                                <Loader2 size={14} className="animate-spin" />
+                                <span>Loading earlier messages…</span>
+                              </div>
+                            )}
+                            {/* Cursor-style timed checklist — rendered at top of chat
                       whenever the session has emitted `[[STEP:...]]` markers.
                       Collapses automatically once all steps resolve. */}
-                          {orchestrationTimelineEntries.length > 0 && (
-                            <OrchestrationTimelinePanel entries={orchestrationTimelineEntries} />
-                          )}
-                          {(sessionProgress[activeSessionId] || []).length > 0 && (
-                            <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
-                              <ProgressPanel
-                                steps={sessionProgress[activeSessionId]}
-                                sessionRunning={Boolean(
-                                  streamingMsgId || activeTasks[activeSessionId],
-                                )}
-                              />
-                            </div>
-                          )}
-                          {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
-                            <ReactLoopObservabilityPanel
-                              steps={reactLoopStepsBySession[activeSessionId]}
-                              streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                            />
-                          )}
-                          {messages.length === 0 && !thinking && !streamingContent && (
-                            <div
-                              className="flex flex-col items-center justify-center h-full text-gray-500 py-20 px-6 text-center"
-                              data-testid={
-                                sessionMessagesLoading
-                                  ? 'chat-messages-loading'
-                                  : 'chat-empty-state'
-                              }
-                            >
-                              {sessionMessagesLoading ? (
-                                <>
-                                  <Loader2 size={40} className="mb-4 text-gray-500 animate-spin" />
-                                  <p className="text-lg">Loading conversation</p>
-                                  <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
-                                </>
-                              ) : (
-                                <>
-                                  <MessageCircle size={40} className="mb-3 text-gray-600" />
-                                  {sessionsListLoading && projectDataReady && activeAgent ? (
-                                    <>
-                                      <p className="text-lg">Loading conversation</p>
-                                      <p className="text-sm mt-1 text-gray-500">
-                                        Sessions are syncing…
-                                      </p>
-                                    </>
-                                  ) : activeAgent ? (
-                                    <>
-                                      <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
-                                        Chat
-                                      </p>
-                                      <h2 className="text-xl font-semibold text-gray-200 mb-2">
-                                        Talk to {activeAgent.name}
-                                      </h2>
-                                      <p className="text-sm text-gray-500 max-w-md leading-relaxed">
-                                        This is a chat session with{' '}
-                                        <span className="text-gray-300">{activeAgent.name}</span>.
-                                        Type a message below to ask a question, hand off a task, or
-                                        pair on changes — replies stream in real time.
-                                      </p>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
-                                        Chat
-                                      </p>
-                                      <h2 className="text-xl font-semibold text-gray-200 mb-2">
-                                        No agent selected
-                                      </h2>
-                                      <p className="text-sm text-gray-500 max-w-md leading-relaxed">
-                                        Pick an agent from the sidebar to start a conversation, or
-                                        jump to the dashboard to see what&apos;s happening across
-                                        your projects.
-                                      </p>
-                                    </>
+                            {orchestrationTimelineEntries.length > 0 && (
+                              <OrchestrationTimelinePanel entries={orchestrationTimelineEntries} />
+                            )}
+                            {(sessionProgress[activeSessionId] || []).length > 0 && (
+                              <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
+                                <ProgressPanel
+                                  steps={sessionProgress[activeSessionId]}
+                                  sessionRunning={Boolean(
+                                    streamingMsgId || activeTasks[activeSessionId],
                                   )}
-                                </>
-                              )}
-                              <p className="text-xs text-gray-700 mt-5 hidden sm:block">
-                                Ctrl+K to switch agents · Esc to cancel
-                              </p>
-                            </div>
-                          )}
-                          {(() => {
-                            const queuedIds = new Set(
-                              (messageQueues[activeSessionId] || []).map((q: any) => q.id),
-                            );
-                            // Render non-queued messages inline, queued messages stick to bottom
-                            const nonQueued = messages.filter((msg: any) => !queuedIds.has(msg.id));
-                            const queued = messages.filter((msg: any) => queuedIds.has(msg.id));
-                            return (
-                              <>
-                                {nonQueued.map((msg: any) =>
-                                  msg.role === 'assistant' ? (
+                                />
+                              </div>
+                            )}
+                            {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
+                              <ReactLoopObservabilityPanel
+                                steps={reactLoopStepsBySession[activeSessionId]}
+                                streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                              />
+                            )}
+                            {messages.length === 0 && !thinking && !streamingContent && (
+                              <div
+                                className="flex flex-col items-center justify-center h-full text-gray-500 py-20 px-6 text-center"
+                                data-testid={
+                                  sessionMessagesLoading
+                                    ? 'chat-messages-loading'
+                                    : 'chat-empty-state'
+                                }
+                              >
+                                {sessionMessagesLoading ? (
+                                  <>
+                                    <Loader2
+                                      size={40}
+                                      className="mb-4 text-gray-500 animate-spin"
+                                    />
+                                    <p className="text-lg">Loading conversation</p>
+                                    <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
+                                  </>
+                                ) : (
+                                  <>
+                                    <MessageCircle size={40} className="mb-3 text-gray-600" />
+                                    {sessionsListLoading && projectDataReady && activeAgent ? (
+                                      <>
+                                        <p className="text-lg">Loading conversation</p>
+                                        <p className="text-sm mt-1 text-gray-500">
+                                          Sessions are syncing…
+                                        </p>
+                                      </>
+                                    ) : activeAgent ? (
+                                      <>
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
+                                          Chat
+                                        </p>
+                                        <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                                          Talk to {activeAgent.name}
+                                        </h2>
+                                        <p className="text-sm text-gray-500 max-w-md leading-relaxed">
+                                          This is a chat session with{' '}
+                                          <span className="text-gray-300">{activeAgent.name}</span>.
+                                          Type a message below to ask a question, hand off a task,
+                                          or pair on changes — replies stream in real time.
+                                        </p>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
+                                          Chat
+                                        </p>
+                                        <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                                          No agent selected
+                                        </h2>
+                                        <p className="text-sm text-gray-500 max-w-md leading-relaxed">
+                                          Pick an agent from the sidebar to start a conversation, or
+                                          jump to the dashboard to see what&apos;s happening across
+                                          your projects.
+                                        </p>
+                                      </>
+                                    )}
+                                  </>
+                                )}
+                                <p className="text-xs text-gray-700 mt-5 hidden sm:block">
+                                  Ctrl+K to switch agents · Esc to cancel
+                                </p>
+                              </div>
+                            )}
+                            {(() => {
+                              const queuedIds = new Set(
+                                (messageQueues[activeSessionId] || []).map((q: any) => q.id),
+                              );
+                              // Render non-queued messages inline, queued messages stick to bottom
+                              const nonQueued = messages.filter(
+                                (msg: any) => !queuedIds.has(msg.id),
+                              );
+                              const queued = messages.filter((msg: any) => queuedIds.has(msg.id));
+                              return (
+                                <>
+                                  {nonQueued.map((msg: any) =>
+                                    msg.role === 'assistant' ? (
+                                      <SessionTail
+                                        key={msg.id}
+                                        message={msg}
+                                        events={eventsByMessage[msg.id]}
+                                        agentColor={msg.agent_color || chatAccentColor}
+                                        agentName={activeAgent?.name}
+                                        onEventsLoaded={handleEventsLoaded}
+                                        onAskSubmit={handleAskSubmit}
+                                        onCredentialSubmit={handleCredentialSubmit}
+                                        askSubmittedIds={askSubmitted}
+                                        fromAgent={activeAgent}
+                                        agents={agents}
+                                        sessionHandoffs={sessionHandoffs}
+                                        sessionDelegations={delegations[activeSessionId]}
+                                        delegationDispatchError={
+                                          delegationDispatchErrors[activeSessionId]
+                                        }
+                                        onOpenSession={handleOpenHandoffSession}
+                                        browserScreenshots={
+                                          browserScreensBySession[activeSessionId]?.[msg.id] ?? {}
+                                        }
+                                      />
+                                    ) : (
+                                      <ChatMessage
+                                        key={msg.id}
+                                        message={msg}
+                                        agentColor={chatAccentColor}
+                                        projectId={activeChatProject?.id}
+                                        hosted={activeChatProject?.gitHost === 'agenthub'}
+                                        onOpenPrDetail={handleOpenPrDetail}
+                                        onStartFollowUp={() =>
+                                          handleStartFollowUpSession(activeSessionId)
+                                        }
+                                      />
+                                    ),
+                                  )}
+                                  {activeSessionId &&
+                                  activeChatProject?.id &&
+                                  !chatProjectIsWorkflow ? (
+                                    <FinalizeChecksLiveBlock
+                                      sessionId={activeSessionId}
+                                      projectId={activeChatProject.id}
+                                    />
+                                  ) : null}
+                                  {sessionRoundProcessing && (
+                                    <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
+                                      <div className="text-xs text-amber-400/90 bg-amber-950/20 border border-amber-800/40 rounded-lg px-3 py-2">
+                                        Multi-agent round in progress…
+                                      </div>
+                                    </div>
+                                  )}
+                                  {thinking && !streamingMsgId && (
+                                    <ThinkingIndicator
+                                      agentColor={streamingAgent?.agentColor || activeAgent?.color}
+                                      agentName={streamingAgent?.agentName}
+                                    />
+                                  )}
+                                  {/* Streaming assistant turn — always render via
+                                    SessionTail (Cursor-style thin stripe). The legacy
+                                    heavy grey cross-agent bubble was removed from web:
+                                    it mistriggered whenever the streaming agent differed
+                                    from the active agent and dumped raw narration text.
+                                    Mobile keeps its own StreamingMessage bubble. */}
+                                  {streamingMsgId && (
                                     <SessionTail
-                                      key={msg.id}
-                                      message={msg}
-                                      events={eventsByMessage[msg.id]}
-                                      agentColor={msg.agent_color || chatAccentColor}
+                                      key={streamingMsgId}
+                                      message={{
+                                        id: streamingMsgId,
+                                        session_id: activeSessionId,
+                                        role: 'assistant',
+                                        engine: streamingEngine,
+                                        model: sessionModel,
+                                        content: streamingContent,
+                                      }}
+                                      events={eventsByMessage[streamingMsgId]}
+                                      agentColor={streamingAgent?.agentColor || activeAgent?.color}
+                                      // Label the live tail with the active session's agent, not a
+                                      // cross-agent streamer (e.g. a Reviewer streaming in): the
+                                      // retired grey cross-agent bubble must not resurrect its label.
                                       agentName={activeAgent?.name}
-                                      onEventsLoaded={handleEventsLoaded}
+                                      streaming
+                                      onInterrupt={handleCancel}
                                       onAskSubmit={handleAskSubmit}
                                       onCredentialSubmit={handleCredentialSubmit}
                                       askSubmittedIds={askSubmitted}
@@ -6126,177 +6231,103 @@ export default function App({ initialView }: any = {}) {
                                       }
                                       onOpenSession={handleOpenHandoffSession}
                                       browserScreenshots={
-                                        browserScreensBySession[activeSessionId]?.[msg.id] ?? {}
+                                        activeSessionId
+                                          ? (browserScreensBySession[activeSessionId]?.[
+                                              streamingMsgId
+                                            ] ?? {})
+                                          : {}
                                       }
                                     />
-                                  ) : (
+                                  )}
+                                  {doneVerifyLogBySession[activeSessionId] && (
+                                    <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
+                                      <div className="rounded-lg border border-amber-600/40 bg-amber-950/25 px-3 py-2">
+                                        <div className="text-xs font-semibold text-amber-100/90 mb-1">
+                                          Pre-done verification
+                                        </div>
+                                        <pre className="text-[11px] text-gray-300 whitespace-pre-wrap font-mono max-h-72 overflow-y-auto leading-relaxed">
+                                          {doneVerifyLogBySession[activeSessionId]}
+                                        </pre>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
+                                  {delegations[activeSessionId] &&
+                                    delegations[activeSessionId].tasks.length > 0 && (
+                                      <div className="px-4 max-w-[95%] sm:max-w-[90%]">
+                                        <DelegationPanel
+                                          delegations={delegations[activeSessionId].tasks}
+                                          sessionId={activeSessionId}
+                                          throttled={throttle[activeSessionId]?.active}
+                                          onCancel={(sid: any) =>
+                                            send({ type: 'delegation_cancel', sessionId: sid })
+                                          }
+                                        />
+                                      </div>
+                                    )}
+                                  {/* Resolve PR sessions fix an existing PR — never offer Create PR / merge here */}
+                                  {changesReady[activeSessionId] &&
+                                    !streamingMsgId &&
+                                    !chatProjectIsWorkflow &&
+                                    activeResolvePrBannerInfo && (
+                                      <ResolveSessionPrBanner
+                                        prUrl={activeResolvePrBannerInfo.prUrl}
+                                        prNumber={activeResolvePrBannerInfo.prNumber}
+                                        branchLabel={changesReady[activeSessionId]?.branch}
+                                        sessionId={activeSessionId}
+                                        onDismiss={(sessionId: any) => {
+                                          setChangesReady((prev: any) => {
+                                            const next = { ...prev };
+                                            delete next[sessionId];
+                                            return next;
+                                          });
+                                        }}
+                                      />
+                                    )}
+                                  {/* Queued messages always render at the very bottom */}
+                                  {queued.map((msg: any) => (
                                     <ChatMessage
                                       key={msg.id}
-                                      message={msg}
+                                      message={{ ...msg, queued: true }}
                                       agentColor={chatAccentColor}
                                       projectId={activeChatProject?.id}
-                                      hosted={activeChatProject?.gitHost === 'agenthub'}
-                                      onOpenPrDetail={handleOpenPrDetail}
-                                      onStartFollowUp={() =>
-                                        handleStartFollowUpSession(activeSessionId)
-                                      }
+                                      onDequeue={handleDequeue}
+                                      onEditQueued={handleEditQueuedMessage}
+                                      onEditInComposer={handleEditInComposer}
+                                      onInterrupt={handleInterruptQueuedMessage}
+                                      inFlightWhileStreaming={isProcessing}
                                     />
-                                  ),
-                                )}
-                                {activeSessionId &&
-                                activeChatProject?.id &&
-                                !chatProjectIsWorkflow ? (
-                                  <FinalizeChecksLiveBlock
-                                    sessionId={activeSessionId}
-                                    projectId={activeChatProject.id}
-                                  />
-                                ) : null}
-                                {sessionRoundProcessing && (
-                                  <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
-                                    <div className="text-xs text-amber-400/90 bg-amber-950/20 border border-amber-800/40 rounded-lg px-3 py-2">
-                                      Multi-agent round in progress…
-                                    </div>
-                                  </div>
-                                )}
-                                {thinking && !streamingMsgId && (
-                                  <ThinkingIndicator
-                                    agentColor={streamingAgent?.agentColor || activeAgent?.color}
-                                    agentName={streamingAgent?.agentName}
-                                  />
-                                )}
-                                {/* Streaming assistant turn — always render via
-                                    SessionTail (Cursor-style thin stripe). The legacy
-                                    heavy grey cross-agent bubble was removed from web:
-                                    it mistriggered whenever the streaming agent differed
-                                    from the active agent and dumped raw narration text.
-                                    Mobile keeps its own StreamingMessage bubble. */}
-                                {streamingMsgId && (
-                                  <SessionTail
-                                    key={streamingMsgId}
-                                    message={{
-                                      id: streamingMsgId,
-                                      session_id: activeSessionId,
-                                      role: 'assistant',
-                                      engine: streamingEngine,
-                                      model: sessionModel,
-                                      content: streamingContent,
-                                    }}
-                                    events={eventsByMessage[streamingMsgId]}
-                                    agentColor={streamingAgent?.agentColor || activeAgent?.color}
-                                    // Label the live tail with the active session's agent, not a
-                                    // cross-agent streamer (e.g. a Reviewer streaming in): the
-                                    // retired grey cross-agent bubble must not resurrect its label.
-                                    agentName={activeAgent?.name}
-                                    streaming
-                                    onInterrupt={handleCancel}
-                                    onAskSubmit={handleAskSubmit}
-                                    onCredentialSubmit={handleCredentialSubmit}
-                                    askSubmittedIds={askSubmitted}
-                                    fromAgent={activeAgent}
-                                    agents={agents}
-                                    sessionHandoffs={sessionHandoffs}
-                                    sessionDelegations={delegations[activeSessionId]}
-                                    delegationDispatchError={
-                                      delegationDispatchErrors[activeSessionId]
-                                    }
-                                    onOpenSession={handleOpenHandoffSession}
-                                    browserScreenshots={
-                                      activeSessionId
-                                        ? (browserScreensBySession[activeSessionId]?.[
-                                            streamingMsgId
-                                          ] ?? {})
-                                        : {}
-                                    }
-                                  />
-                                )}
-                                {doneVerifyLogBySession[activeSessionId] && (
-                                  <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
-                                    <div className="rounded-lg border border-amber-600/40 bg-amber-950/25 px-3 py-2">
-                                      <div className="text-xs font-semibold text-amber-100/90 mb-1">
-                                        Pre-done verification
-                                      </div>
-                                      <pre className="text-[11px] text-gray-300 whitespace-pre-wrap font-mono max-h-72 overflow-y-auto leading-relaxed">
-                                        {doneVerifyLogBySession[activeSessionId]}
-                                      </pre>
-                                    </div>
-                                  </div>
-                                )}
-                                {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
-                                {delegations[activeSessionId] &&
-                                  delegations[activeSessionId].tasks.length > 0 && (
-                                    <div className="px-4 max-w-[95%] sm:max-w-[90%]">
-                                      <DelegationPanel
-                                        delegations={delegations[activeSessionId].tasks}
-                                        sessionId={activeSessionId}
-                                        throttled={throttle[activeSessionId]?.active}
-                                        onCancel={(sid: any) =>
-                                          send({ type: 'delegation_cancel', sessionId: sid })
-                                        }
-                                      />
-                                    </div>
-                                  )}
-                                {/* Resolve PR sessions fix an existing PR — never offer Create PR / merge here */}
-                                {changesReady[activeSessionId] &&
-                                  !streamingMsgId &&
-                                  !chatProjectIsWorkflow &&
-                                  activeResolvePrBannerInfo && (
-                                    <ResolveSessionPrBanner
-                                      prUrl={activeResolvePrBannerInfo.prUrl}
-                                      prNumber={activeResolvePrBannerInfo.prNumber}
-                                      branchLabel={changesReady[activeSessionId]?.branch}
-                                      sessionId={activeSessionId}
-                                      onDismiss={(sessionId: any) => {
-                                        setChangesReady((prev: any) => {
-                                          const next = { ...prev };
-                                          delete next[sessionId];
-                                          return next;
-                                        });
-                                      }}
-                                    />
-                                  )}
-                                {/* Queued messages always render at the very bottom */}
-                                {queued.map((msg: any) => (
-                                  <ChatMessage
-                                    key={msg.id}
-                                    message={{ ...msg, queued: true }}
-                                    agentColor={chatAccentColor}
-                                    projectId={activeChatProject?.id}
-                                    onDequeue={handleDequeue}
-                                    onEditQueued={handleEditQueuedMessage}
-                                    onEditInComposer={handleEditInComposer}
-                                    onInterrupt={handleInterruptQueuedMessage}
-                                    inFlightWhileStreaming={isProcessing}
-                                  />
-                                ))}
-                              </>
-                            );
-                          })()}
-                        </div>
+                                  ))}
+                                </>
+                              );
+                            })()}
+                          </div>
 
-                        {/* Scroll to bottom button */}
-                        {showScrollBtn && (
-                          <button
-                            onClick={() => scrollToBottom()}
-                            className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
-                            style={{ width: 'fit-content', display: 'flex' }}
-                          >
-                            <svg
-                              className="w-3.5 h-3.5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2.5}
+                          {/* Scroll to bottom button */}
+                          {showScrollBtn && (
+                            <button
+                              onClick={() => scrollToBottom()}
+                              className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
+                              style={{ width: 'fit-content', display: 'flex' }}
                             >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M19 14l-7 7m0 0l-7-7m7 7V3"
-                              />
-                            </svg>
-                            Scroll to bottom
-                          </button>
-                        )}
-                      </div>
+                              <svg
+                                className="w-3.5 h-3.5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2.5}
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M19 14l-7 7m0 0l-7-7m7 7V3"
+                                />
+                              </svg>
+                              Scroll to bottom
+                            </button>
+                          )}
+                        </div>
+                      </RunInTerminalProvider>
 
                       {/* Show-preview pill — visible only when there's a
                         preview event for this session but the user has

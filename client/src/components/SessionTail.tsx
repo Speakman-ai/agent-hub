@@ -60,7 +60,9 @@ import {
   Loader2,
   AlarmClock,
   BellOff,
+  SquareTerminal,
 } from 'lucide-react';
+import { useRunInTerminal } from './RunInTerminalContext';
 
 /**
  * SessionTail
@@ -1163,6 +1165,8 @@ export function ToolResultImages({ images }: any) {
 
 export function ToolCard({ use, result, defaultOpen }: any) {
   const [open, setOpen] = useState(defaultOpen ?? false);
+  const runInTerminal = useRunInTerminal();
+  const [sentToTerminal, setSentToTerminal] = useState(false);
   const style = TOOL_STYLES[use.tool] || {
     color: 'border-gray-700/60 bg-gray-900/40',
     icon: <Wrench size={16} />,
@@ -1259,7 +1263,25 @@ export function ToolCard({ use, result, defaultOpen }: any) {
               command (no truncation) and let it wrap so chained commands like
               `cd ... && git push ...` stay scannable. */}
           <div className="px-3 py-2 border-b border-black/30">
-            <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">command</div>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <div className="text-[10px] text-gray-500 uppercase tracking-wide">command</div>
+              {runInTerminal && (
+                <button
+                  type="button"
+                  data-testid="bash-run-in-terminal"
+                  onClick={() => {
+                    runInTerminal(use.input.command);
+                    setSentToTerminal(true);
+                    setTimeout(() => setSentToTerminal(false), 2000);
+                  }}
+                  title="Paste into the session terminal — press Enter there to run it"
+                  className="flex items-center gap-1 text-[10px] text-gray-400 hover:text-cyan-200 px-1.5 py-0.5 rounded"
+                >
+                  <SquareTerminal size={11} />
+                  {sentToTerminal ? '✓ Sent' : 'Run in terminal'}
+                </button>
+              )}
+            </div>
             <div className="flex items-start gap-2 text-gray-100 whitespace-pre-wrap break-words">
               <span className="text-emerald-500 select-none shrink-0">$</span>
               <span className="flex-1 break-all">{use.input.command}</span>
