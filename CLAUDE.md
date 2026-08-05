@@ -202,7 +202,7 @@ checks forever / fails with `fix_no_progress`).
 - When the user says "commit", commit to the **current session branch**.
 - Never commit directly to `main`, and never `git push origin main`.
 - **Never merge your own PR** — only humans merge to main.
-- Formal GitHub PR review is owned by the project's Reviewer agent.
+- Formal PR review is owned by the project's Reviewer agent.
 
 ### What NOT to Do
 - `git checkout -b feature/...` / `git switch -c ...` / `git branch <name>`
@@ -211,6 +211,33 @@ checks forever / fails with `fix_no_progress`).
 - `git push origin main` for feature work.
 - Editing files in the main repo and copying them around.
 - Merging PRs — leave that for the human.
+
+### This repo's git is hosted on Agent Hub, not GitHub
+
+`origin` points at this deployment's Agent Hub git host, on a `/git/agent-hub.git`
+path (run `git remote -v` to see the concrete URL). The `github` remote is a
+**mirror** — pushing there or opening a PR there does not reach the review flow
+anyone uses. So `gh pr create` is the wrong tool here; it targets the GitHub
+mirror.
+
+Push to `origin`, then open the PR through the Hub's native API (project id
+`agent-hub`) using the bundled `ah-api.sh` wrapper:
+
+```bash
+ah-api.sh POST /api/projects/agent-hub/pulls \
+  -d '{"headBranch":"<branch>","baseBranch":"main","title":"…","body":"…"}'
+```
+
+Use the wrapper, not raw `curl`. Native PR rows must name a real Hub user, and
+the global `AGENT_HUB_API_KEY` carries no identity — a request holding only that
+key gets `401 Authentication required to create a pull request` on auth-enabled
+deployments. `ah-api.sh` also sends `X-Agent-Hub-Session-Id`, which attributes
+the PR to the session owner (`sessionId` in the body works too).
+
+Push the branch first — the endpoint 404s on a branch missing from the hosted
+repo. Keep using `gh` for GitHub **Actions** runs and logs, since deploys and the
+ECR publish still run there. Full detail, including the review/comment endpoints,
+lives in `.cursor/rules/git-hosted-on-agent-hub.mdc`.
 
 ## Kanban Card Hygiene — Done-State Contract
 

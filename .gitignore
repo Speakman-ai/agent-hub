@@ -83,5 +83,16 @@ server/remote-orgs.json
 server/server.log
 .codex/
 .claude/
-.cursor/
+# Ignore .cursor contents (local agent config, incl. .cursor/agent-hub.env which
+# holds an API key) but track the shared .mdc rule files so conventions are
+# reviewable. Ignore the contents rather than the directory: git does not descend
+# into an ignored directory, so a negation inside `.cursor/` would never be
+# reached. `.cursor/rules/` is then re-ignored recursively and only `*.mdc` is
+# unignored — unignoring the directory alone would make a stray
+# `.cursor/rules/secret.txt` stageable by a later `git add .`.
+.cursor/*
+!.cursor/rules/
+.cursor/rules/**
+!.cursor/rules/**/
+!.cursor/rules/**/*.mdc
 server/finalize/runner/runner-agent.mjs

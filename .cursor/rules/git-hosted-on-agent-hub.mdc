@@ -1,0 +1,65 @@
+---
+description: Git and pull requests for this repo live on Agent Hub, not GitHub
+alwaysApply: true
+---
+
+# This repo is hosted on Agent Hub, not GitHub
+
+`origin` points at this deployment's Agent Hub git host, on a `/git/agent-hub.git`
+path (run `git remote -v` to see the concrete URL). The `github` remote is a
+**mirror** — pushing there or opening a PR there does not reach the review flow
+anyone actually uses.
+
+## Pushing
+
+```bash
+git push -u origin HEAD     # ✅ Agent Hub
+git push github HEAD        # ❌ mirror only; nobody reviews this
+```
+
+## Opening a pull request
+
+`gh pr create` does **not** work here — it targets `Speakman-ai/agent-hub` on
+GitHub. Use the Hub's native PR API instead (project id: `agent-hub`).
+
+Every native PR row must name a real Hub user. The global `AGENT_HUB_API_KEY` is
+a shared break-glass secret that carries **no** identity, so a request holding
+only that key is rejected with `401 Authentication required to create a pull
+request` on any auth-enabled deployment. Supply attribution one of two ways.
+
+Inside an Agent Hub session, use the bundled wrapper — it sends the key plus the
+`X-Agent-Hub-Session-Id` header, and the PR is attributed to the session owner:
+
+```bash
+ah-api.sh POST /api/projects/agent-hub/pulls \
+  -d '{"headBranch":"<branch>","baseBranch":"main","title":"<title>","body":"<markdown>"}'
+```
+
+From a local checkout with no session, authenticate as yourself with a per-user
+`ahub_*` API key (Settings → API keys) rather than the shared key:
+
+```bash
+set -a; source "$HOME/.cursor/agent-hub.env"; set +a
+
+curl -sS -X POST "$AGENT_HUB_URL/api/projects/agent-hub/pulls" \
+  -H "x-api-key: $AGENT_HUB_USER_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"headBranch":"<branch>","baseBranch":"main","title":"<title>","body":"<markdown>"}'
+```
+
+Returns `{"prUrl":"/projects/agent-hub/pulls/<n>","number":<n>}`. Cite it to the
+user as `$AGENT_HUB_URL/projects/agent-hub/pulls/<n>`. Push the branch **before**
+calling this — the API 404s on a branch it cannot find on the hosted repo.
+
+Other useful endpoints under the same prefix: `PATCH .../pulls/:number` (retitle
+or close), `POST .../pulls/:number/comments`, `POST .../pulls/:number/reviews`.
+
+## Still use `gh` for
+
+Reading GitHub Actions runs and logs — deployments and the ECR publish still run
+on GitHub. Just never for this repo's branches, PRs, or reviews.
+
+## Reminders
+
+- Never commit directly to `main`; branch, push to `origin`, open a PR.
+- Never merge your own PR — only humans merge.
