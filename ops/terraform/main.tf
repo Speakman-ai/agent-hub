@@ -335,7 +335,9 @@ resource "aws_instance" "app" {
     }))
   )
 
-  user_data_replace_on_change = var.user_data_replace_on_change
+  # `user_data_replace_on_change` is intentionally not set (and the variable no
+  # longer exists): the provider default is false, so a rendered-user_data change
+  # never replaces this instance. See the lifecycle block below.
 
   tags = {
     Name = "${var.project_name}-sandbox"
@@ -351,16 +353,17 @@ resource "aws_instance" "app" {
     #
     # user_data_base64 is deliberately NOT ignored. Ignoring it globally would
     # silently suppress future bootstrap/.env rollouts in EVERY env (non-prod
-    # included) while plans still show clean — too broad. Rendered user-data
-    # changes instead roll out through explicit managed paths:
-    #   - set user_data_replace_on_change = true for a deliberate instance
-    #     replace (fresh cloud-init), or
-    #   - apply out-of-band via SSM (edit the .env + recreate the agenthub-server
-    #     container — the path used for the FINALIZE_FLEET_MAX_AGENTS fleet bump).
-    # On the live prod host cloud-init will not re-run on a stop/start, so a
-    # plain user_data update is a no-op reboot; prefer the SSM path and run any
-    # deliberate instance change via `-target`/`-replace` rather than a routine
-    # full apply.
+    # included) while plans still show clean — too broad. Instead the rendered
+    # user-data stays in state (so drift is visible in every plan) while the
+    # live host adopts changes through SSM: the release pipeline runs
+    # `ops/scripts/sync-hub-env.sh` against the `hub_env_managed` output, which
+    # upserts the managed .env keys and restarts the container in place. That is
+    # the same path used by hand for the FINALIZE_FLEET_MAX_AGENTS fleet bump.
+    #
+    # Cloud-init does not re-run on an existing host, so an applied user-data
+    # change is inert there by design — never reach for an instance replace to
+    # "make it take". A deliberate rebuild is an explicit, out-of-band
+    # `terraform apply -replace=aws_instance.app`, never a routine apply.
     ignore_changes = [ami]
 
     # PR-env cert_renewal_email precondition removed in PR-Env Removal #6.

@@ -196,6 +196,32 @@ locals {
     local.agent_hub_ahlog_env_docker,
   ))
 
+  # ── CI-syncable subset of the Hub .env (ops/scripts/sync-hub-env.sh) ────────
+  # Rendered user-data only ever reaches a NEW host — cloud-init does not re-run
+  # on an existing instance — so the release pipeline upserts these lines into
+  # the live .env over SSM rather than replacing the box. Two classes of key are
+  # deliberately withheld from that sync:
+  #
+  #   - Secret-bearing (API key, fleet token, Owner password, AHLOG token). An
+  #     SSM SendCommand payload is retained in command history and CloudTrail, so
+  #     syncing these would hand plaintext secrets to anyone holding
+  #     ssm:GetCommandInvocation. They are written once at first boot and rotated
+  #     out-of-band.
+  #   - AGENT_HUB_REPLAY_MASK_ALL_ENFORCED, which the in-app project settings UI
+  #     owns. Re-asserting the Terraform default on every release would silently
+  #     stomp whatever an operator picked in the app.
+  hub_env_unmanaged_keys    = ["AGENT_HUB_REPLAY_MASK_ALL_ENFORCED"]
+  hub_env_secret_key_regex  = "(KEY|TOKEN|PASSWORD|SECRET)"
+  hub_env_emitted           = local.use_docker_bootstrap || local.use_ecr_pull
+  hub_env_file_path_on_host = "/home/${var.app_user}/${var.agent_hub_repo_basename}/.env"
+
+  hub_env_managed_lines = [
+    for line in split("\n", local.docker_bootstrap_env) : line
+    if length(trimspace(line)) > 0
+    && !contains(local.hub_env_unmanaged_keys, split("=", line)[0])
+    && length(regexall(local.hub_env_secret_key_regex, split("=", line)[0])) == 0
+  ]
+
   agent_hub_image_uri_trim = trimspace(var.agent_hub_image_uri)
   # Same tag as the server image; CI pushes both repos on every main merge.
   agent_hub_finalize_runner_image_uri = (

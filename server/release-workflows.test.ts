@@ -11,6 +11,23 @@ function readWorkflow(name: string): string {
   return fs.readFileSync(path.join(repoRoot, '.github', 'workflows', name), 'utf8');
 }
 
+function isExecutable(relPath: string): boolean {
+  return Boolean(fs.statSync(path.join(repoRoot, relPath)).mode & 0o100);
+}
+
+/**
+ * Comment-free view of a workflow. These files carry long explanatory headers
+ * that name the very scripts and switches under test, so asserting on the raw
+ * text either matches prose or orders steps by where they are documented rather
+ * than where they run.
+ */
+function withoutComments(workflow: string): string {
+  return workflow
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
+}
+
 describe('release workflows', () => {
   it.each(['release-all.yml', 'release-prod.yml'])(
     '%s regenerates and commits OpenAPI docs after bumping the app version',
@@ -30,4 +47,50 @@ describe('release workflows', () => {
       expect(commitOpenApi).toBeGreaterThan(generateOpenApi);
     },
   );
+});
+
+/**
+ * The prod Terraform apply runs unattended on every release. Three properties
+ * make that safe, and each is a silent-until-catastrophic failure if it drifts:
+ * the apply always runs, it cannot land an unguarded plan, and env changes are
+ * adopted in place rather than by rebuilding the Hub.
+ */
+describe('release-all.yml — unattended prod terraform apply', () => {
+  const workflow = readWorkflow('release-all.yml');
+  const steps = withoutComments(workflow);
+
+  it('applies on every release rather than behind an opt-in input', () => {
+    expect(steps).toContain('terraform-apply:');
+    // The old `apply_terraform` dispatch input gated the job off by default,
+    // which is how infra changes sat unapplied for weeks.
+    expect(steps).not.toContain('apply_terraform');
+  });
+
+  it('guards the saved plan before applying it', () => {
+    const plan = steps.indexOf('-out="$RUNNER_TEMP/prod.plan"');
+    const guard = steps.indexOf('./scripts/assert-no-protected-replacements.sh');
+    const apply = steps.indexOf(
+      'terraform apply -input=false -auto-approve "$RUNNER_TEMP/prod.plan"',
+    );
+
+    expect(plan).toBeGreaterThanOrEqual(0);
+    expect(guard).toBeGreaterThan(plan);
+    // Apply must consume the SAVED plan. A fresh `terraform apply -var-file=...`
+    // here would re-plan and could land changes the guard never inspected.
+    expect(apply).toBeGreaterThan(guard);
+  });
+
+  it('adopts env changes over SSM instead of replacing the instance', () => {
+    expect(steps).toContain('ops/scripts/sync-hub-env.sh');
+    expect(steps).toContain('hub_env_managed');
+    // Nothing the pipeline actually executes may force an instance rebuild.
+    expect(steps).not.toMatch(/user_data_replace_on_change/);
+    expect(steps).not.toMatch(/-replace=aws_instance\.app/);
+  });
+
+  it('ships the referenced helper scripts as executables', () => {
+    expect(isExecutable('ops/terraform/scripts/assert-no-protected-replacements.sh')).toBe(true);
+    expect(isExecutable('ops/scripts/sync-hub-env.sh')).toBe(true);
+    expect(isExecutable('ops/scripts/hub-env-upsert.remote.sh')).toBe(true);
+  });
 });

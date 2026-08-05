@@ -146,11 +146,13 @@ variable "agent_hub_web_port" {
   default     = 80
 }
 
-variable "user_data_replace_on_change" {
-  description = "When true, any change to rendered user_data **replaces** the EC2 instance (full rebuild). Default false so bootstrap template edits do not wipe production; cloud-init still does not re-run on an existing host unless you replace out-of-band (SSM) or force `terraform apply -replace=aws_instance.app`. Set true temporarily when you deliberately want a fresh instance after a user_data change."
-  type        = bool
-  default     = false
-}
+# `user_data_replace_on_change` was removed deliberately. It was a single bool
+# whose `true` value destroyed and recreated the live Hub instance on any
+# rendered-user_data change — a footgun with no safe use in a pipeline that now
+# applies on every release. Rendered user-data changes reach an existing host
+# through `ops/scripts/sync-hub-env.sh` (SSM upsert of the managed .env keys)
+# instead; a genuine rebuild is an explicit, out-of-band
+# `terraform apply -replace=aws_instance.app`.
 
 variable "ssh_user" {
   description = "Default SSH username for the AMI. Ubuntu AMIs use \"ubuntu\"; ECS-optimized Amazon Linux 2023 uses \"ec2-user\". Unused when create_ssh_key = false and enable_ssh_ingress = false."

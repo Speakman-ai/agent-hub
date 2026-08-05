@@ -74,6 +74,23 @@ output "docker_env_path" {
   value       = "${var.docker_app_path}/.env"
 }
 
+# Consumed by ops/scripts/sync-hub-env.sh (wired into the release pipeline) to
+# adopt env changes on the RUNNING Hub instead of replacing it. Secrets and
+# UI-owned keys are filtered out upstream — see local.hub_env_managed_lines.
+# Marked sensitive purely so it is never echoed into a workflow log: the values
+# are non-secret but carry account-specific bucket / cluster names, and this
+# repo's Actions logs are public.
+output "hub_env_managed" {
+  description = "Newline-separated KEY=VALUE lines of the Hub .env that CI may safely upsert over SSM (secret-bearing and UI-owned keys excluded). Empty when this env does not render a docker .env."
+  value       = local.hub_env_emitted ? join("\n", local.hub_env_managed_lines) : ""
+  sensitive   = true
+}
+
+output "hub_env_file_path" {
+  description = "Absolute path of the Hub .env on the instance for the bootstrap (clone + docker/ECR) path — the file ops/scripts/sync-hub-env.sh upserts into."
+  value       = local.hub_env_emitted ? local.hub_env_file_path_on_host : null
+}
+
 output "ec2_docker_howto" {
   description = "When using legacy docker .env: rsync the repo, then compose up."
   value       = <<-EOT
