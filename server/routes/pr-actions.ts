@@ -20,7 +20,7 @@ import { githubUserApiRequest } from '../github-oauth.js';
 import { resolveUserToken } from './pr-list.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { fetchPrDiff, fetchPrFiles } from '../pr-read-fetch.js';
-import { CONNECT_GITHUB_HINT } from '../github-auth-policy.js';
+import { respondGitHubNotConnected } from '../github-auth-policy.js';
 import { parseNativePrUrl } from '../native-pr/url.js';
 import { NativePrError } from '../native-pr/errors.js';
 import type { NativePrService } from '../native-pr/service.js';
@@ -194,7 +194,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
     const userToken = await resolveUserToken(req, config);
     if (!userToken) {
-      return res.status(401).json({ error: CONNECT_GITHUB_HINT });
+      return respondGitHubNotConnected(res);
     }
 
     try {
@@ -275,7 +275,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
     const userToken = await resolveUserToken(req, config);
     if (!userToken) {
-      return res.status(401).json({ error: CONNECT_GITHUB_HINT });
+      return respondGitHubNotConnected(res);
     }
 
     try {
@@ -332,7 +332,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
     const userToken = await resolveUserToken(req, config);
     if (!userToken) {
-      return res.status(401).json({ error: CONNECT_GITHUB_HINT });
+      return respondGitHubNotConnected(res);
     }
 
     try {
@@ -389,7 +389,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
 
     const userToken = await resolveUserToken(req, config);
     if (!userToken) {
-      return res.status(401).json({ error: CONNECT_GITHUB_HINT });
+      return respondGitHubNotConnected(res);
     }
 
     try {

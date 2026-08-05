@@ -32,7 +32,9 @@ vi.mock('../config.js', () => ({ default: mockConfig }));
 
 const { default: createAuthRoutes } = await import('./auth.js');
 const { authMiddleware } = await import('../auth.js');
-const { setAuthFilePathForTests, reloadAuthRecord } = await import('../auth-store.js');
+const { setAuthFilePathForTests, reloadAuthRecord, getAuthRecord } =
+  await import('../auth-store.js');
+const { signJwt } = await import('../jwt.js');
 const { initOrgsDb, setOrgsDbPathForTests, updateOrg, createOrg, setActiveOrgId } =
   await import('../orgs.js');
 const { createUser } = await import('../users-store.js');
@@ -123,5 +125,50 @@ describe('no active-org membership → coherent failure', () => {
       .send({ email: 'owner@example.com', password: 'a-strong-password' });
     expect(res.status).toBe(403);
     expect(res.body.code).toBe('no_membership');
+  });
+});
+
+/**
+ * The web client only clears its token for responses tagged as a dead
+ * session, so every genuine credential failure in the middleware must carry
+ * `code: 'invalid_session'`. An untagged 401 leaves the client holding a
+ * token it can no longer recover from.
+ */
+describe('middleware session failures carry code invalid_session', () => {
+  it('tags a request with no credentials at all', async () => {
+    const app = buildGatedApp();
+    await setupOwner(app);
+
+    const res = await supertest(app).get('/api/_protected');
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('invalid_session');
+  });
+
+  it('tags a malformed bearer token', async () => {
+    const app = buildGatedApp();
+    await setupOwner(app);
+
+    const res = await supertest(app)
+      .get('/api/_protected')
+      .set('Authorization', 'Bearer not-a-real-jwt');
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('invalid_session');
+  });
+
+  it('tags a well-signed token whose subject no longer exists', async () => {
+    const app = buildGatedApp();
+    await setupOwner(app);
+
+    const record = getAuthRecord();
+    if (!record) throw new Error('auth record missing after setup');
+    const orphan = signJwt('ghost@example.com', record.jwtSecret, {
+      claims: { role: 'Owner', uid: 'user-that-was-deleted', credentialVersion: 0 },
+    });
+
+    const res = await supertest(app)
+      .get('/api/_protected')
+      .set('Authorization', `Bearer ${orphan}`);
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('invalid_session');
   });
 });

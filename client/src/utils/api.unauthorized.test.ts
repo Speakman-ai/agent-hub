@@ -12,10 +12,14 @@ import { setToken, clearToken, isAuthenticated, setActiveOrgIsLocal } from './au
  * silently-caught console.error in App.jsx's bootstrap, and the user was
  * trapped with an empty UI and no nav.
  *
- * After: any 401 triggers `clearToken + reload` exactly once per browser
- * tab. A sessionStorage marker prevents reload-loops on pathological
- * installs that 401 even after re-bootstrap. Local bundled mode skips the
- * reload entirely (AuthGate already bypasses LoginScreen).
+ * After: a 401 tagged `code: 'invalid_session'` triggers `clearToken + reload`
+ * exactly once per browser tab. A sessionStorage marker prevents reload-loops
+ * on pathological installs that 401 even after re-bootstrap. Local bundled
+ * mode skips the reload entirely (AuthGate already bypasses LoginScreen).
+ *
+ * The tag is load-bearing. An untagged 401 means something other than the
+ * caller's credentials was rejected — see the "does not log out" cases at
+ * the bottom.
  */
 describe('api fetchJSON — 401 handling', () => {
   let fetchSpy: any;
@@ -55,7 +59,7 @@ describe('api fetchJSON — 401 handling', () => {
     expect(isAuthenticated()).toBe(true);
 
     (fetchSpy as any).mockResolvedValue(
-      new Response(JSON.stringify({ error: 'Authentication required.' }), {
+      new Response(JSON.stringify({ error: 'Authentication required.', code: 'invalid_session' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -71,7 +75,7 @@ describe('api fetchJSON — 401 handling', () => {
     expect(isAuthenticated()).toBe(false);
 
     (fetchSpy as any).mockResolvedValue(
-      new Response(JSON.stringify({ error: 'Authentication required.' }), {
+      new Response(JSON.stringify({ error: 'Authentication required.', code: 'invalid_session' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -85,7 +89,7 @@ describe('api fetchJSON — 401 handling', () => {
 
   it('does not reload twice in a row on consecutive 401s within the same tab', async () => {
     (fetchSpy as any).mockResolvedValue(
-      new Response(JSON.stringify({ error: 'Authentication required.' }), {
+      new Response(JSON.stringify({ error: 'Authentication required.', code: 'invalid_session' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -103,7 +107,7 @@ describe('api fetchJSON — 401 handling', () => {
   it('clears the reload marker after a successful request so future 401s reload again', async () => {
     // First 401 — sets the marker, reloads.
     (fetchSpy as any).mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: 'Authentication required.' }), {
+      new Response(JSON.stringify({ error: 'Authentication required.', code: 'invalid_session' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -122,7 +126,7 @@ describe('api fetchJSON — 401 handling', () => {
 
     // Second 401 in the same tab — reloads again (marker was cleared).
     (fetchSpy as any).mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: 'Authentication required.' }), {
+      new Response(JSON.stringify({ error: 'Authentication required.', code: 'invalid_session' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -173,16 +177,42 @@ describe('api fetchJSON — 401 handling', () => {
     // identity, not any org's `mode` column. True here == Electron /
     // local self-host, where AuthGate never renders LoginScreen so a
     // reload cannot recover auth.
+    // Tagged `invalid_session` on purpose: the deployment guard is what
+    // this test pins, so the response has to be one the allowlist would
+    // otherwise act on. An untagged 401 would pass for the wrong reason.
     setActiveOrgIsLocal(true);
     setToken({ token: 'jwt-test', expiresAt: null, user: { role: 'Owner' } });
     (fetchSpy as any).mockResolvedValue(
-      new Response(JSON.stringify({ error: 'Authentication required.' }), {
+      new Response(JSON.stringify({ error: 'Authentication required.', code: 'invalid_session' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' },
       }),
     );
 
     await expect(api.getProjects()).rejects.toThrow(/401/);
+    expect(reloadSpy!).not.toHaveBeenCalled();
+    expect(isAuthenticated()).toBe(true);
+  });
+
+  /**
+   * The logout-loop bug. `App.tsx` refreshes an open-PR count on every load
+   * for each project with a `githubRepo`. When the signed-in user had no
+   * GitHub connection, that route answered 401 "Connect your GitHub account",
+   * the blanket 401 rule wiped a perfectly valid JWT, and the reload dropped
+   * the user on the login screen — every single time they signed in.
+   */
+  it('does not log out on an untagged 401 from an unconnected integration', async () => {
+    setToken({ token: 'good-jwt', expiresAt: null, user: { role: 'Owner' } });
+
+    (fetchSpy as any).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Connect your GitHub account in Settings → GitHub.' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(api.getProjects()).rejects.toThrow(/401/);
+
     expect(reloadSpy!).not.toHaveBeenCalled();
     expect(isAuthenticated()).toBe(true);
   });
@@ -201,14 +231,68 @@ describe('api fetchJSON — 401 handling', () => {
     setActiveOrgIsLocal(false);
     setToken({ token: 'jwt-expired', expiresAt: null, user: { role: 'Owner' } });
     (fetchSpy as any).mockResolvedValue(
-      new Response(JSON.stringify({ error: 'Token is no longer valid.' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      new Response(
+        JSON.stringify({ error: 'Token is no longer valid.', code: 'invalid_session' }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } },
+      ),
     );
 
     await expect(api.getProjects()).rejects.toThrow(/401/);
     expect(reloadSpy!).toHaveBeenCalledTimes(1);
     expect(isAuthenticated()).toBe(false);
+  });
+
+  it('does not log out on a 412 github_not_connected', async () => {
+    setToken({ token: 'good-jwt', expiresAt: null, user: { role: 'Owner' } });
+
+    (fetchSpy as any).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'Connect your GitHub account in Settings → GitHub.',
+          code: 'github_not_connected',
+        }),
+        { status: 412, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await expect(api.getProjects()).rejects.toThrow(/412/);
+
+    expect(reloadSpy!).not.toHaveBeenCalled();
+    expect(isAuthenticated()).toBe(true);
+  });
+
+  it('logs out on a 403 tagged no_active_org_membership', async () => {
+    setToken({ token: 'good-jwt', expiresAt: null, user: { role: 'Owner' } });
+
+    (fetchSpy as any).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'You are not a member of this org.',
+          code: 'no_active_org_membership',
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await expect(api.getProjects()).rejects.toThrow(/403/);
+
+    expect(reloadSpy!).toHaveBeenCalledTimes(1);
+    expect(isAuthenticated()).toBe(false);
+  });
+
+  it('does not log out on an ordinary permission 403', async () => {
+    setToken({ token: 'good-jwt', expiresAt: null, user: { role: 'User' } });
+
+    (fetchSpy as any).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Owner role required.' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(api.getProjects()).rejects.toThrow(/403/);
+
+    expect(reloadSpy!).not.toHaveBeenCalled();
+    expect(isAuthenticated()).toBe(true);
   });
 });

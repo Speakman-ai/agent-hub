@@ -154,10 +154,14 @@ describe('native PR route branches', () => {
     await request.post('/api/pr/close').send({ prUrl }).expect(409);
   });
 
-  it('GitHub prUrls still take the GitHub path (401 without a connection)', async () => {
-    await request
+  it('GitHub prUrls still take the GitHub path (412 without a connection)', async () => {
+    // Not 401: the caller is authenticated, so tagging this as a dead session
+    // would make the web client drop its token and log out.
+    const res = await request
       .post('/api/pr/merge')
       .send({ prUrl: 'https://github.com/owner/repo/pull/5' })
-      .expect(401);
+      .expect(412);
+    expect(res.body.code).toBe('github_not_connected');
+    expect(res.body.error).toMatch(/Connect your GitHub account/i);
   });
 });

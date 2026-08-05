@@ -15,7 +15,7 @@ import { Router, Request, Response } from 'express';
 import type { RouteDeps, AppConfig } from '../types.js';
 import { githubUserApiRequest } from '../github-oauth.js';
 import { getActiveAccessToken } from '../github-connections-store.js';
-import { CONNECT_GITHUB_HINT } from '../github-auth-policy.js';
+import { respondGitHubNotConnected } from '../github-auth-policy.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { enrichPullListRowsWithGraphql } from '../pr-pull-list-enrichment.js';
@@ -182,7 +182,7 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
 
       const userToken = await resolveUserToken(req, config);
       if (!userToken) {
-        return res.status(401).json({ error: CONNECT_GITHUB_HINT });
+        return respondGitHubNotConnected(res);
       }
 
       try {

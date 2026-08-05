@@ -4,6 +4,7 @@ import { uploadFile as uploadFileImpl } from './uploadFile';
 import { transcribeAudio as transcribeAudioImpl } from './transcribeAudio';
 import { getToken as getJwt, clearToken } from './auth';
 import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
+import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 /** A machine error code (`no_pushable_commits`) rather than human copy. */
 const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 /**
@@ -37,16 +38,14 @@ async function fetchJSON(url: any, options: any = {}) {
         catch {
             /* response wasn't JSON */
         }
-        // A 401 (JWT expired / revoked) and a `no_active_org_membership`
-        // 403 (token valid but no membership in the active org) both mean
-        // the cached session is dead — drop the token so the next bootstrap
-        // surfaces the login screen. We don't force-reload here (no
-        // `window.location.reload` on RN); the app-level gate re-renders
-        // when `needsAuth` flips on the next `getAuthStatus` probe. Ordinary
-        // permission 403s (not-Owner, cross-org resource) are left alone.
-        const deadSession =
-            res.status === 401 ||
-            (res.status === 403 && errBody?.code === 'no_active_org_membership');
+        // Only responses the server tagged as a dead session drop the token,
+        // so the next bootstrap surfaces the login screen. We don't
+        // force-reload here (no `window.location.reload` on RN); the
+        // app-level gate re-renders when `needsAuth` flips on the next
+        // `getAuthStatus` probe. Untagged 401s (an upstream integration the
+        // caller hasn't connected) and ordinary permission 403s are left
+        // alone — neither means the cached credentials are bad.
+        const deadSession = isDeadSessionResponse(res.status, errBody?.code);
         if (deadSession && getJwt()) {
             await clearToken().catch(() => { });
         }

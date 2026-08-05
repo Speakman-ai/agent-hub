@@ -100,27 +100,36 @@ describe('PR Actions route', () => {
       app = await buildApp();
     });
 
-    it('/api/pr/merge returns 401 with CONNECT_GITHUB_HINT when no user OAuth token is resolved', async () => {
+    it('/api/pr/merge returns 412 github_not_connected when no user OAuth token is resolved', async () => {
       const res = await request(app)
         .post('/api/pr/merge')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42' });
-      expect(res.status).toBe(401);
+      // Not 401: the caller is authenticated, so tagging this as a dead
+      // session would make the web client drop its token and log out.
+      expect(res.status).toBe(412);
+      expect(res.body.code).toBe('github_not_connected');
       expect(res.body.error).toMatch(/Connect your GitHub account/i);
     });
 
-    it('/api/pr/close returns 401 with CONNECT_GITHUB_HINT when no user OAuth token is resolved', async () => {
+    it('/api/pr/close returns 412 github_not_connected when no user OAuth token is resolved', async () => {
       const res = await request(app)
         .post('/api/pr/close')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42' });
-      expect(res.status).toBe(401);
+      // Not 401: the caller is authenticated, so tagging this as a dead
+      // session would make the web client drop its token and log out.
+      expect(res.status).toBe(412);
+      expect(res.body.code).toBe('github_not_connected');
       expect(res.body.error).toMatch(/Connect your GitHub account/i);
     });
 
-    it('/api/pr/status returns 401 with CONNECT_GITHUB_HINT when no user OAuth token is resolved', async () => {
+    it('/api/pr/status returns 412 github_not_connected when no user OAuth token is resolved', async () => {
       const res = await request(app).get(
         '/api/pr/status?prUrl=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F42',
       );
-      expect(res.status).toBe(401);
+      // Not 401: the caller is authenticated, so tagging this as a dead
+      // session would make the web client drop its token and log out.
+      expect(res.status).toBe(412);
+      expect(res.body.code).toBe('github_not_connected');
       expect(res.body.error).toMatch(/Connect your GitHub account/i);
     });
   });
@@ -174,12 +183,15 @@ describe('PR Actions route', () => {
       expect(res.body.error).toMatch(/not supported for Agent Hub-hosted PRs/i);
     });
 
-    it('returns 401 with CONNECT_GITHUB_HINT when no user OAuth token is resolved', async () => {
+    it('returns 412 github_not_connected when no user OAuth token is resolved', async () => {
       const app = await buildApp();
       const res = await request(app)
         .post('/api/pr/auto-merge')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42', enabled: true });
-      expect(res.status).toBe(401);
+      // Not 401: the caller is authenticated, so tagging this as a dead
+      // session would make the web client drop its token and log out.
+      expect(res.status).toBe(412);
+      expect(res.body.code).toBe('github_not_connected');
       expect(res.body.error).toMatch(/Connect your GitHub account/i);
     });
   });

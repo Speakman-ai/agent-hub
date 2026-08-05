@@ -47,9 +47,27 @@ describe('mobile fetchJSON dead-session handling', () => {
         expect(clearToken).not.toHaveBeenCalled();
     });
 
-    it('still clears the token on a 401', async () => {
-        mockFetchOnce(401, { error: 'Token is no longer valid.' });
+    it('still clears the token on a tagged 401', async () => {
+        mockFetchOnce(401, { error: 'Token is no longer valid.', code: 'invalid_session' });
         await expect(api.getAgents()).rejects.toThrow(/401/);
         expect(clearToken).toHaveBeenCalledTimes(1);
+    });
+
+    // An unconnected integration answering 401 says nothing about the
+    // caller's own credentials; clearing the token here signed the user out
+    // of a valid session.
+    it('leaves an untagged 401 from an unconnected integration alone', async () => {
+        mockFetchOnce(401, { error: 'Connect your GitHub account in Settings → GitHub.' });
+        await expect(api.getAgents()).rejects.toThrow(/401/);
+        expect(clearToken).not.toHaveBeenCalled();
+    });
+
+    it('leaves a 412 github_not_connected alone', async () => {
+        mockFetchOnce(412, {
+            error: 'Connect your GitHub account in Settings → GitHub.',
+            code: 'github_not_connected',
+        });
+        await expect(api.getAgents()).rejects.toThrow(/412/);
+        expect(clearToken).not.toHaveBeenCalled();
     });
 });

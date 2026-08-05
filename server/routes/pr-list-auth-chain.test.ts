@@ -5,7 +5,7 @@
  * /api/projects/:id/pulls is user-OAuth ONLY:
  *   - present + working → 200 source:'user-oauth'
  *   - present + dead    → 502 (no App fallback)
- *   - missing           → 401 CONNECT_GITHUB_HINT
+ *   - missing           → 412 github_not_connected
  *
  * These tests mock:
  *   - `../github-oauth.js` — so the user tier returns a controlled value
@@ -110,15 +110,18 @@ describe('pr-list auth contract — user OAuth required (no App fallback)', () =
     expect(mockGithubUserApiRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('returns 401 CONNECT_GITHUB_HINT when the caller has no user connection', async () => {
-    // PR attribution is always the human at the keyboard. A user without
-    // a stored connection gets a 401 that the client surfaces as a
-    // "Connect GitHub" CTA.
+  it('returns 412 github_not_connected when the caller has no user connection', async () => {
+    // PR attribution is always the human at the keyboard. A user without a
+    // stored connection gets a precondition failure the client surfaces as a
+    // "Connect GitHub" CTA. It must NOT be 401: this route is polled on every
+    // app load for each project with a githubRepo, and a dead-session status
+    // here logged the user out in a loop.
     createUser({ username: 'alice', passwordHash: 'x' });
 
     const app = makeApp(buildDeps(project), 'some-user-without-connection');
     const res = await request(app).get('/api/projects/proj-1/pulls');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(412);
+    expect(res.body.code).toBe('github_not_connected');
     expect(res.body.error).toMatch(/Connect your GitHub account/i);
     expect(mockGithubUserApiRequest).not.toHaveBeenCalled();
   });
@@ -143,13 +146,14 @@ describe('pr-list auth contract — user OAuth required (no App fallback)', () =
     expect(res.body.error).toMatch(/Failed to list PRs/);
   });
 
-  it('returns 401 on apiKey-path requests (no authUserId, no user-token resolution possible)', async () => {
+  it('returns 412 github_not_connected on apiKey-path requests (no authUserId, no user-token resolution possible)', async () => {
     // No authUserId passed — mimics the apiKey path in the real auth
     // middleware. The apiKey path has no per-user identity to attribute
-    // the request to, so /pulls returns 401.
+    // the request to, so there is no GitHub connection to resolve.
     const app = makeApp(buildDeps(project));
     const res = await request(app).get('/api/projects/proj-1/pulls');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(412);
+    expect(res.body.code).toBe('github_not_connected');
     expect(res.body.error).toMatch(/Connect your GitHub account/i);
     expect(mockGithubUserApiRequest).not.toHaveBeenCalled();
   });

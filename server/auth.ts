@@ -8,6 +8,10 @@ import { getUserById, getUserByUsername } from './users-store.js';
 import { getMembershipRole } from './memberships-store.js';
 import { verifyApiKey as verifyUserApiKey } from './api-keys-store.js';
 import { sessionIdFromSpawnKeyName } from './kanban-caller-session.js';
+import {
+  AUTH_CODE_INVALID_SESSION,
+  AUTH_CODE_NO_ACTIVE_ORG_MEMBERSHIP,
+} from '../shared/utils/authErrorCodes.js';
 import type { Role } from './roles.js';
 import {
   buildPreviewSetCookie,
@@ -431,14 +435,18 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
           return;
         }
         if (resolved === 'stale-token') {
-          res.status(401).json({ error: 'Token is no longer valid.' });
+          res
+            .status(401)
+            .json({ error: 'Token is no longer valid.', code: AUTH_CODE_INVALID_SESSION });
           return;
         }
         if (!resolved) {
           // Token verified but the user row is gone (deleted after
           // token issuance). Treat as expired-ish — 401 so the client
           // knows to discard the token and re-auth.
-          res.status(401).json({ error: 'Token subject no longer exists.' });
+          res
+            .status(401)
+            .json({ error: 'Token subject no longer exists.', code: AUTH_CODE_INVALID_SESSION });
           return;
         }
         if (!resolved.orgId) {
@@ -450,7 +458,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
           // instead of stranding on a broken app.
           res.status(403).json({
             error: 'You are not a member of this org.',
-            code: 'no_active_org_membership',
+            code: AUTH_CODE_NO_ACTIVE_ORG_MEMBERSHIP,
           });
           return;
         }
@@ -480,7 +488,9 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
         if (verified) {
           const user = getUserById(verified.userId);
           if (!user) {
-            res.status(401).json({ error: 'API key user no longer exists.' });
+            res
+              .status(401)
+              .json({ error: 'API key user no longer exists.', code: AUTH_CODE_INVALID_SESSION });
             return;
           }
           let orgId = '';
@@ -492,7 +502,10 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
           }
           const role = orgId ? getMembershipRole(verified.userId, orgId) : null;
           if (orgId && !role) {
-            res.status(403).json({ error: 'You are not a member of this org.' });
+            res.status(403).json({
+              error: 'You are not a member of this org.',
+              code: AUTH_CODE_NO_ACTIVE_ORG_MEMBERSHIP,
+            });
             return;
           }
           authedReq.authUser = user.username;
@@ -509,7 +522,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
         // through. A client with a clearly-shaped key that doesn't
         // match should get a 401, not silently fall back to the global
         // apiKey check (which would leak whether the global is set).
-        res.status(401).json({ error: 'Invalid API key.' });
+        res.status(401).json({ error: 'Invalid API key.', code: AUTH_CODE_INVALID_SESSION });
         return;
       } catch {
         // orgs.db not initialized in some test paths — fall through to
@@ -545,11 +558,13 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   if (authRecord) {
     res.status(401).json({
       error: 'Authentication required. Provide a bearer token via Authorization header.',
+      code: AUTH_CODE_INVALID_SESSION,
     });
     return;
   }
   res.status(401).json({
     error: 'API key required. Set X-API-Key header or ?apiKey= query param.',
+    code: AUTH_CODE_INVALID_SESSION,
   });
 }
 

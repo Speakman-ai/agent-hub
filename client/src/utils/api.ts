@@ -1,6 +1,7 @@
 import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
 import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
+import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } from '@shared/types';
 import type { DeployTriggerEvent } from './deployTriggers';
 
@@ -268,21 +269,14 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
     } catch {
       /* response wasn't JSON */
     }
-    // A 401 (stale/invalid token) and a `no_active_org_membership` 403
-    // both mean the stored session is dead: clear the token and bounce
-    // to LoginScreen. The 403 is scoped by `code` so ordinary permission
-    // 403s (not-Owner, cross-org resource) are left untouched — those
-    // should surface as errors, not log the user out.
-    //
-    // `no_user_identity` 401s are the one recoverable 401: the server
-    // authenticated the caller but has no per-user `users` row for them
-    // (legacy global apiKey, local-bundled / no-auth-configured bypass).
-    // Only the `/auth/me/*` engine-credential routes emit it, and they do
-    // so on reads AND writes — the distinction is about which 401 it is,
-    // not which verb asked. Reloading here would clear a working token
-    // and bounce the user out of SetupWizard; the panels render an empty
-    // state instead. Every other 401 — including one on a write — still
-    // means "your session died", so writes are not silently swallowed.
+    // Only responses the server explicitly tagged as a dead session clear
+    // the token and bounce to LoginScreen. Both statuses are scoped by
+    // `code`: an untagged 401 means something other than the caller's own
+    // credentials was rejected (an unconnected integration, or a route
+    // whose caller has no per-user `users` row — `no_user_identity` from
+    // the `/auth/me/*` engine-credential routes, which render an empty
+    // state instead), and an untagged 403 is an ordinary permission error.
+    // None of those mean the session died, so all surface as errors.
     //
     // Local bundled mode (Electron / `AGENT_HUB_MODE=local`): AuthGate
     // already skips LoginScreen, so a reload cannot recover auth — it
@@ -299,11 +293,8 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
     // `GET /api/auth/status — activeOrgIsLocal field` in
     // server/routes/auth.test.ts (server half) and the hosted-vs-local
     // pair in utils/api.unauthorized.test.ts (client half).
-    const recoverableUnauthorized = errBody?.code === 'no_user_identity';
     const deadSession =
-      !recoverableUnauthorized &&
-      !isLocalBundledDeployment() &&
-      (res.status === 401 || (res.status === 403 && errBody?.code === 'no_active_org_membership'));
+      !isLocalBundledDeployment() && isDeadSessionResponse(res.status, errBody?.code);
     if (deadSession && typeof window !== 'undefined' && !recentlyReloadedFor401()) {
       markReloadedFor401();
       console.warn(

@@ -67,8 +67,9 @@ registerPath({
         'Missing/invalid `enabled`, invalid merge method, invalid PR URL, or a native (Agent Hub-hosted) PR.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
-    401: {
-      description: 'Caller has not connected a GitHub account.',
+    412: {
+      description:
+        'Caller has not connected a GitHub account (`code: "github_not_connected"`). Not a 401: the caller is authenticated, so clients must surface this rather than treating it as an expired session.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
     422: {

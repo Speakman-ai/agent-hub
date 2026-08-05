@@ -67,12 +67,20 @@ describe('fetchJSON dead-session handling', () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it('still clears the token and reloads on a 401', async () => {
-    mockFetchOnce(401, { error: 'Token is no longer valid.' });
+  it('still clears the token and reloads on a tagged 401', async () => {
+    mockFetchOnce(401, { error: 'Token is no longer valid.', code: 'invalid_session' });
 
     await expect(api.getProjects()).rejects.toThrow(/401/);
     expect(clearToken).toHaveBeenCalledTimes(1);
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an untagged 401 alone (unconnected integration, not a dead session)', async () => {
+    mockFetchOnce(401, { error: 'Connect your GitHub account in Settings → GitHub.' });
+
+    await expect(api.getProjects()).rejects.toThrow(/401/);
+    expect(clearToken).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
   });
 });
 
@@ -84,8 +92,9 @@ describe('fetchJSON dead-session handling', () => {
  *     no-auth-configured bypass). Recoverable; the panels render an empty
  *     state. Reloading here clears a working token and kicks the user out
  *     of SetupWizard.
- *   - anything else — a genuinely dead session (expired / revoked JWT),
- *     which must still bounce to LoginScreen.
+ *   - `code: 'invalid_session'` — a genuinely dead session (expired /
+ *     revoked JWT), which must still bounce to LoginScreen. `authMiddleware`
+ *     rejects these before the route body runs, so the tag is always present.
  *
  * Regression: the opt-out used to be a per-callsite `deadSessionOnUnauthorized:
  * false` flag applied to the mutating `putMy*Auth` helpers as well as the
@@ -110,18 +119,18 @@ describe('fetchJSON — /auth/me/* 401 disambiguation', () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it('treats an untagged 401 on a credential WRITE as a dead session', async () => {
+  it('treats an invalid_session 401 on a credential WRITE as a dead session', async () => {
     // The reviewer's case: an expired hosted JWT hitting PUT. Previously
     // swallowed, leaving the app in a dead authenticated state.
-    mockFetchOnce(401, { error: 'Token is no longer valid.' });
+    mockFetchOnce(401, { error: 'Token is no longer valid.', code: 'invalid_session' });
 
     await expect(api.putMyCursorAuth({ apiKey: 'k' })).rejects.toThrow(/401/);
     expect(clearToken).toHaveBeenCalledTimes(1);
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it('treats an untagged 401 on a credential READ as a dead session', async () => {
-    mockFetchOnce(401, { error: 'Token is no longer valid.' });
+  it('treats an invalid_session 401 on a credential READ as a dead session', async () => {
+    mockFetchOnce(401, { error: 'Token is no longer valid.', code: 'invalid_session' });
 
     await expect(api.getMyGrokAuth()).rejects.toThrow(/401/);
     expect(clearToken).toHaveBeenCalledTimes(1);
