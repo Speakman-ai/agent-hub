@@ -177,6 +177,14 @@ describe('Per-user session ownership — REST isolation', () => {
       .send({ targetAgentId: 'nope' })
       .expect(404);
 
+    // POST /api/sessions/:id/follow-up — same prefix gate. Bogus body
+    // again: the gate fires before `parseBody` shape validation.
+    await request
+      .post(`/api/sessions/${sessionId}/follow-up`)
+      .set('Authorization', `Bearer ${userB.token}`)
+      .send({})
+      .expect(404);
+
     // Sanity: User A still sees their own session through the same
     // surfaces (proves the gate isn't a blanket reject).
     await request
@@ -187,6 +195,102 @@ describe('Per-user session ownership — REST isolation', () => {
       .get(`/api/sessions/${sessionId}/messages`)
       .set('Authorization', `Bearer ${userA.token}`)
       .expect(200);
+  });
+
+  // The follow-up route reads the source session's transcript, its Finalize
+  // summary, and its PR url, then inherits its owner — so a gate regression
+  // here is an exfiltration primitive, not just an unauthorized write.
+  //
+  // The project is created by User B and the session by User A on purpose.
+  // The route's own `canViewProject` check runs against the *default target
+  // agent*, which is the source session's agent — so when the project is
+  // private to A, that check masks the result and the test would pass even
+  // with the session gate removed (verified: it did). Giving B the project
+  // outright strips that cover, leaving `userOwnsSession` in the prefix
+  // middleware as the only thing between B and A's transcript. This is also
+  // the realistic shape of the risk: teammates who share a project.
+  it('foreign user cannot exfiltrate a session’s transcript via POST /follow-up', async () => {
+    const agentId = await createProjectAndAgentAs(userB);
+    const create = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .set('Authorization', `Bearer ${userA.token}`)
+      .send({ name: 'iso-test-followup' })
+      .expect(200);
+    const sessionId = (create.body as { id: string }).id;
+    // Precondition: the session really is A's, on B's project.
+    expect(getSessionOwner(sessionId)).toBe(userA.id);
+
+    const SECRET = 'PROD_DB_PASSWORD=hunter2-iso-test';
+    const { stmts } = await import('../db.js');
+    if (!stmts) throw new Error('stmts not initialized');
+    stmts.addMessage.run(
+      uuidv4(),
+      sessionId,
+      'system',
+      `## Finalize summary\n### Follow-ups\n- [ ] Run \`export ${SECRET}\` on prod`,
+      null,
+      null,
+      null,
+      JSON.stringify({
+        kind: 'finalize_run_summary',
+        runId: 'iso-run-1',
+        followUps: [`Run \`export ${SECRET}\` on prod`],
+      }),
+      null,
+      null,
+      null,
+    );
+
+    const sessionsBefore = await request
+      .get(`/api/agents/${agentId}/sessions`)
+      .set('Authorization', `Bearer ${userB.token}`)
+      .expect(200);
+
+    const res = await request
+      .post(`/api/sessions/${sessionId}/follow-up`)
+      .set('Authorization', `Bearer ${userB.token}`)
+      .send({ prompt: 'continue this' })
+      .expect(404);
+
+    // No seeded session handed back, and nothing quoted in the error body.
+    expect(res.body.session).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain(SECRET);
+
+    // And no follow-up session was created behind the 404.
+    const sessionsAfter = await request
+      .get(`/api/agents/${agentId}/sessions`)
+      .set('Authorization', `Bearer ${userB.token}`)
+      .expect(200);
+    expect(sessionsAfter.body).toHaveLength((sessionsBefore.body as unknown[]).length);
+    expect(
+      (sessionsAfter.body as Array<{ name?: string }>).some((s) =>
+        (s.name ?? '').startsWith('[Follow-up]'),
+      ),
+    ).toBe(false);
+
+    // Positive control, and the reason this test proves what it claims: B
+    // branching from B's OWN session on the same agent succeeds. So B clears
+    // the route's `canViewProject` check on this project, which means the 404
+    // above can only have come from the session-ownership gate — not from
+    // project visibility incidentally covering for it.
+    const ownedByB = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .set('Authorization', `Bearer ${userB.token}`)
+      .send({ name: 'iso-test-followup-own' })
+      .expect(200);
+    const ownFollowUp = await request
+      .post(`/api/sessions/${(ownedByB.body as { id: string }).id}/follow-up`)
+      .set('Authorization', `Bearer ${userB.token}`)
+      .send({})
+      .expect(201);
+    expect(ownFollowUp.body.session.name).toContain('[Follow-up]');
+    expect(getSessionOwner(ownFollowUp.body.session.id as string)).toBe(userB.id);
+    // ...and it carries none of A's context.
+    const seeded = await request
+      .get(`/api/sessions/${ownFollowUp.body.session.id}/messages`)
+      .set('Authorization', `Bearer ${userB.token}`)
+      .expect(200);
+    expect(JSON.stringify(seeded.body)).not.toContain(SECRET);
   });
 
   it('foreign user cannot stop another user’s background task', async () => {

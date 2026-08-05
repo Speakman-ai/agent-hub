@@ -1,4 +1,8 @@
-import { NO_COMMITS_MESSAGE } from '../../shared/utils/finalizeSummaryCopy.js';
+import {
+  FOLLOW_UPS_UNAVAILABLE_MESSAGE,
+  NO_COMMITS_MESSAGE,
+  NO_FOLLOW_UPS_MESSAGE,
+} from '../../shared/utils/finalizeSummaryCopy.js';
 import { describe, it, expect } from 'vitest';
 import {
   MAX_COMMIT_SUBJECTS,
@@ -269,6 +273,78 @@ describe('renderFinalizeRunSummaryMarkdown', () => {
     expect(md).toContain('`server/a.ts` L4-9: guard null');
     expect(md).toContain('### Manual testing');
     expect(md).toContain('- [ ] Open the widget page and toggle it');
+  });
+
+  describe('follow-ups', () => {
+    const withNarrative = (narrative: any) =>
+      renderFinalizeRunSummaryMarkdown(
+        buildFinalizeRunSummaryPayload({
+          runId: 'run-1',
+          round: 1,
+          commits: [{ subject: 'Add widget' }],
+          diffStat: ' 1 file changed, 3 insertions(+)',
+          reviewRounds: [],
+          narrative,
+        }),
+      );
+
+    it('renders the flagged steps as a checklist', () => {
+      const md = withNarrative({
+        summary: 'Adds a widget.',
+        reviewNotes: '',
+        manualTesting: [],
+        followUps: ['Run `npm run migrate` on prod', 'Set WIDGET_TOKEN in the prod env'],
+      });
+      expect(md).toContain('### Follow-ups');
+      expect(md).toContain('- [ ] Run `npm run migrate` on prod');
+      expect(md).toContain('- [ ] Set WIDGET_TOKEN in the prod env');
+    });
+
+    // The reported failure was an operator reading a whole summary without ever
+    // learning a command had to be run in prod, so this section leads.
+    it('places follow-ups ahead of the git and review detail', () => {
+      const md = withNarrative({
+        summary: 'Adds a widget.',
+        reviewNotes: '',
+        manualTesting: [],
+        followUps: ['Run the migration'],
+      });
+      expect(md.indexOf('### Follow-ups')).toBeLessThan(md.indexOf('### What changed'));
+      expect(md.indexOf('### Follow-ups')).toBeLessThan(md.indexOf('### Manual testing'));
+    });
+
+    it('asserts nothing is needed only when a narrative actually ran', () => {
+      const md = withNarrative({
+        summary: 'Adds a widget.',
+        reviewNotes: '',
+        manualTesting: [],
+        followUps: [],
+      });
+      expect(md).toContain(NO_FOLLOW_UPS_MESSAGE);
+      expect(md).not.toContain(FOLLOW_UPS_UNAVAILABLE_MESSAGE);
+    });
+
+    // An empty list because the model found nothing and an empty list because
+    // the model never ran look identical in the payload. Telling an operator
+    // "merging is all this needs" when we never checked is the exact miss this
+    // section exists to prevent.
+    it('says the steps were not generated when no narrative was available', () => {
+      const md = withNarrative(null);
+      expect(md).toContain(FOLLOW_UPS_UNAVAILABLE_MESSAGE);
+      expect(md).not.toContain(NO_FOLLOW_UPS_MESSAGE);
+    });
+
+    it('defaults to an empty list when the narrative omits the field entirely', () => {
+      const payload = buildFinalizeRunSummaryPayload({
+        runId: 'run-1',
+        round: 1,
+        commits: [],
+        diffStat: '',
+        reviewRounds: [],
+        narrative: { summary: 'x', reviewNotes: '', manualTesting: [] },
+      });
+      expect(payload.followUps).toEqual([]);
+    });
   });
 
   it('states the empty case for each section rather than omitting it', () => {

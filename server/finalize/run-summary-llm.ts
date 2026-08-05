@@ -41,6 +41,12 @@ const MAX_COMMIT_BODY_BYTES = 800;
 const MAX_FINDING_BYTES = 600;
 /** Cap on the manual-testing checklist — a 30-item list is noise, not a checklist. */
 export const MAX_MANUAL_TESTING_STEPS = 8;
+/**
+ * Cap on the follow-up list. Deliberately tighter than the testing checklist:
+ * follow-ups are the things a human must actually go and do, and a list that
+ * long stops reading as a to-do and starts reading as prose.
+ */
+export const MAX_FOLLOW_UP_STEPS = 6;
 /** Cap on a single checklist line. */
 const MAX_MANUAL_TESTING_STEP_LEN = 200;
 
@@ -54,6 +60,17 @@ export interface FinalizeRunSummaryNarrative {
   summary: string;
   /** What a human should verify by hand. May be empty. */
   manualTesting: string[];
+  /**
+   * Out-of-band actions the change needs to actually work once it lands — a
+   * migration to run, an env var to set, a backfill script, a service restart.
+   *
+   * Deliberately separate from {@link manualTesting}: that list is "go check
+   * this still works", this one is "the change is not finished until you do
+   * this". Merging them buries the second kind, which is the exact failure the
+   * summary exists to prevent — an operator reading a checklist of things to
+   * click and never noticing the migration nobody ran.
+   */
+  followUps: string[];
   /** 1–2 sentences on what the reviewer flagged. Empty when nothing was raised. */
   reviewNotes: string;
 }
@@ -86,7 +103,8 @@ const RUN_SUMMARY_PROMPT = [
   'reviewer left across all review rounds.',
   '',
   'Respond with ONLY a JSON object, no prose, no code fence:',
-  '{"summary": string, "reviewNotes": string, "manualTesting": [string]}',
+  '{"summary": string, "reviewNotes": string, "manualTesting": [string],',
+  ' "followUps": [string]}',
   '',
   'Rules:',
   '- summary: 1 to 4 sentences of plain prose describing what the change does and',
@@ -99,6 +117,15 @@ const RUN_SUMMARY_PROMPT = [
   '  destructive actions, third-party integrations, migrations, config changes.',
   '  Return an empty array when the diff is genuinely not manually testable',
   '  (pure refactor, test-only change, docs).',
+  '- followUps: up to 6 actions someone must take OUTSIDE of merging for the',
+  '  change to work — run a migration, run a one-off or backfill script, set an',
+  '  env var or secret, update deployment config, restart or redeploy a service,',
+  '  flip a feature flag, rotate a credential, install a new dependency on a',
+  '  host. Write each as an imperative instruction, and quote the literal',
+  '  command in backticks when the diff contains one. These are actions, not',
+  '  verification: anything phrased as "check", "verify", or "confirm" belongs',
+  '  in manualTesting instead. Only list steps the diff itself implies — return',
+  '  an empty array when merging is genuinely all that is required.',
   '- Do not invent changes, findings, or files that are not in the input.',
 ].join('\n');
 
@@ -165,7 +192,7 @@ function sanitizeProse(raw: unknown): string {
     .trim();
 }
 
-function sanitizeChecklist(raw: unknown): string[] {
+function sanitizeChecklist(raw: unknown, max: number): string[] {
   if (!Array.isArray(raw)) return [];
   const out: string[] = [];
   const seen = new Set<string>();
@@ -186,7 +213,7 @@ function sanitizeChecklist(raw: unknown): string[] {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(step);
-    if (out.length >= MAX_MANUAL_TESTING_STEPS) break;
+    if (out.length >= max) break;
   }
   return out;
 }
@@ -212,9 +239,12 @@ export function parseRunSummaryResponse(text: string): FinalizeRunSummaryNarrati
   const obj = parsed as Record<string, unknown>;
   const summary = sanitizeProse(obj.summary);
   const reviewNotes = sanitizeProse(obj.reviewNotes);
-  const manualTesting = sanitizeChecklist(obj.manualTesting);
-  if (!summary && !reviewNotes && manualTesting.length === 0) return null;
-  return { summary, reviewNotes, manualTesting };
+  const manualTesting = sanitizeChecklist(obj.manualTesting, MAX_MANUAL_TESTING_STEPS);
+  const followUps = sanitizeChecklist(obj.followUps, MAX_FOLLOW_UP_STEPS);
+  if (!summary && !reviewNotes && manualTesting.length === 0 && followUps.length === 0) {
+    return null;
+  }
+  return { summary, reviewNotes, manualTesting, followUps };
 }
 
 /**

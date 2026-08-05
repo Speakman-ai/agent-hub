@@ -163,6 +163,10 @@ export function parseFinalizeRunSummaryMetadata(metadataString: any) {
     manualTesting: Array.isArray(parsed.manualTesting)
       ? parsed.manualTesting.filter((s: any) => typeof s === 'string' && s)
       : [],
+    summarySource: parsed.summarySource === 'llm' ? 'llm' : 'none',
+    followUps: Array.isArray(parsed.followUps)
+      ? parsed.followUps.filter((s: any) => typeof s === 'string' && s)
+      : [],
   };
 }
 

@@ -12,7 +12,10 @@
  * timeline is the durable record of what the reviewer actually raised.
  */
 
-import { NO_COMMITS_MESSAGE } from '../../shared/utils/finalizeSummaryCopy.js';
+import {
+  followUpsEmptyStateMessage,
+  NO_COMMITS_MESSAGE,
+} from '../../shared/utils/finalizeSummaryCopy.js';
 import { parseFinalizeTimelineMetadata } from './timeline-message.js';
 
 /** Cap on findings kept per round — a 200-finding round is a wall, not a summary. */
@@ -171,6 +174,13 @@ export interface FinalizeRunSummaryPayload {
   /** LLM prose on what the reviewer raised. Empty when unavailable. */
   reviewNotes: string;
   manualTesting: string[];
+  /**
+   * Out-of-band actions the change needs once it lands (migrations, env vars,
+   * one-off scripts). Empty when merging is all that is required — or when no
+   * narrative was available at all, which is why the UI must not read an empty
+   * list as "confirmed nothing to do".
+   */
+  followUps: string[];
 }
 
 export interface BuildRunSummaryPayloadArgs {
@@ -180,7 +190,12 @@ export interface BuildRunSummaryPayloadArgs {
   commits: readonly { subject: string }[];
   diffStat?: string | null;
   reviewRounds: readonly FinalizeReviewRoundSummary[];
-  narrative?: { summary: string; reviewNotes: string; manualTesting: string[] } | null;
+  narrative?: {
+    summary: string;
+    reviewNotes: string;
+    manualTesting: string[];
+    followUps?: string[];
+  } | null;
 }
 
 export function buildFinalizeRunSummaryPayload(
@@ -212,6 +227,7 @@ export function buildFinalizeRunSummaryPayload(
     finalVerdict: rounds.length ? (rounds[rounds.length - 1]?.verdict ?? null) : null,
     reviewNotes: args.narrative?.reviewNotes?.trim() ?? '',
     manualTesting: args.narrative?.manualTesting ?? [],
+    followUps: args.narrative?.followUps ?? [],
   };
 }
 
@@ -226,6 +242,17 @@ export function renderFinalizeRunSummaryMarkdown(payload: FinalizeRunSummaryPayl
   const out: string[] = ['## Finalize summary'];
 
   if (payload.summary) out.push(payload.summary);
+
+  // Ahead of the git/review detail on purpose. This is the one section that
+  // asks something of the reader, and the reported failure was an operator
+  // reading to the end of a summary without ever learning a command had to be
+  // run in prod.
+  out.push('### Follow-ups');
+  out.push(
+    payload.followUps.length
+      ? payload.followUps.map((step) => `- [ ] ${step}`).join('\n')
+      : followUpsEmptyStateMessage(payload.summarySource),
+  );
 
   out.push('### What changed');
   const statLine = [

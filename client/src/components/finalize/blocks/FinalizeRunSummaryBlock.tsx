@@ -7,9 +7,11 @@ import {
   ClipboardCheck,
   FileDiff,
   GitCommit,
+  ListChecks,
   MessageSquare,
+  PlayCircle,
 } from 'lucide-react';
-import { NO_COMMITS_MESSAGE } from '@shared/utils/finalizeSummaryCopy';
+import { followUpsEmptyStateMessage, NO_COMMITS_MESSAGE } from '@shared/utils/finalizeSummaryCopy';
 import { parseFinalizeRunSummaryMetadata } from '../../../utils/finalizeTimeline';
 import { relativeTime } from '../../../utils/time';
 
@@ -55,12 +57,15 @@ function DiffStatLine({ meta }: any) {
   );
 }
 
-function Section({ icon: Icon, title, count, children, testId }: any) {
+function Section({ icon: Icon, title, count, children, testId, highlighted = false }: any) {
   const [collapsed, setCollapsed] = useState(false);
   return (
     <section
       data-testid={testId}
-      className="rounded border border-slate-700 bg-slate-800/40 overflow-hidden"
+      data-highlighted={highlighted ? 'true' : undefined}
+      className={`rounded border overflow-hidden ${
+        highlighted ? 'border-amber-700/70 bg-amber-950/20' : 'border-slate-700 bg-slate-800/40'
+      }`}
     >
       <button
         type="button"
@@ -86,7 +91,16 @@ function Section({ icon: Icon, title, count, children, testId }: any) {
   );
 }
 
-export default function FinalizeRunSummaryBlock({ message }: any) {
+/**
+ * @param onStartFollowUp Called with NO arguments when the operator asks for a
+ *   follow-up session. The block has no session id — the metadata payload does
+ *   not carry one — so the host owns resolving which session to branch from.
+ *   Deliberately zero-arity: an earlier version passed `followUps` here, which
+ *   no consumer read but which made `onStartFollowUp={handleStartFollowUp}`
+ *   look like a valid wiring when it would in fact have sent the array where a
+ *   session id belongs.
+ */
+export default function FinalizeRunSummaryBlock({ message, onStartFollowUp }: any) {
   const meta = useMemo(() => parseFinalizeRunSummaryMetadata(message.metadata), [message.metadata]);
 
   const roundsWithFindings = useMemo(
@@ -97,6 +111,8 @@ export default function FinalizeRunSummaryBlock({ message }: any) {
   if (!meta) return null;
 
   const approved = meta.finalVerdict === 'approved';
+  const followUps = meta.followUps ?? [];
+  const canFollowUp = typeof onStartFollowUp === 'function';
 
   return (
     <div
@@ -131,6 +147,46 @@ export default function FinalizeRunSummaryBlock({ message }: any) {
         ) : null}
 
         <div className="space-y-2">
+          {/* First, ahead of the git detail. This is the only section that asks
+              the reader to go and do something, and the reported failure was an
+              operator finishing a summary without learning that a command had
+              to be run in prod. */}
+          <Section
+            testId="finalize-summary-follow-ups"
+            icon={ListChecks}
+            title="Follow-ups"
+            count={followUps.length || null}
+            highlighted={followUps.length > 0}
+          >
+            {followUps.length ? (
+              <ul className="space-y-1">
+                {followUps.map((step: string, i: number) => (
+                  <li
+                    key={`${i}-${step}`}
+                    data-testid="finalize-summary-follow-up-step"
+                    className="flex gap-2"
+                  >
+                    <span className="mt-0.5 shrink-0 text-amber-500">{i + 1}.</span>
+                    <span className="break-words">{step}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-slate-500">{followUpsEmptyStateMessage(meta.summarySource)}</p>
+            )}
+            {canFollowUp ? (
+              <button
+                type="button"
+                data-testid="finalize-summary-follow-up-session"
+                onClick={() => onStartFollowUp()}
+                className="mt-2 inline-flex items-center gap-1.5 rounded border border-slate-600 bg-slate-800 px-2 py-1 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
+              >
+                <PlayCircle size={12} />
+                Follow-up session
+              </button>
+            ) : null}
+          </Section>
+
           <Section
             testId="finalize-summary-changes"
             icon={GitCommit}

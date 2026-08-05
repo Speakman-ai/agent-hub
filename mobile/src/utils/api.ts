@@ -170,6 +170,18 @@ export const api = {
             ...(autoStart != null ? { autoStart: !!autoStart } : {}),
         }),
     }),
+    // Start a follow-up session from an existing one. Unlike forward, the target
+    // agent defaults to the source session's own agent and the seed is the
+    // Finalize summary rather than the whole transcript.
+    // Body: { targetAgentId?, prompt?, autoStart? }. Returns { session, seededMessageId }.
+    startFollowUpSession: (sessionId: any, { targetAgentId, prompt, autoStart }: any = {}) => fetchJSON(`/sessions/${sessionId}/follow-up`, {
+        method: 'POST',
+        body: JSON.stringify({
+            ...(targetAgentId ? { targetAgentId } : {}),
+            ...(prompt ? { prompt } : {}),
+            ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+        }),
+    }),
     updateAgent: (agentId: any, data: any) => fetchJSON(`/agents/${agentId}`, {
         method: 'PATCH',
         body: JSON.stringify(data),

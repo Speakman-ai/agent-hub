@@ -382,6 +382,7 @@ function ChatMessage({
   onEditInComposer,
   onInterrupt,
   onOpenPrDetail,
+  onStartFollowUp,
   inFlightWhileStreaming = false,
 }: any) {
   const isSystem = message.role === 'system';
@@ -430,7 +431,7 @@ function ChatMessage({
       return <FinalizeReadyToPushBlock message={message} hosted={hosted} />;
     }
     if (finalizeKind === 'finalize_run_summary') {
-      return <FinalizeRunSummaryBlock message={message} />;
+      return <FinalizeRunSummaryBlock message={message} onStartFollowUp={onStartFollowUp} />;
     }
     if (finalizeKind === 'finalize_run_terminal') {
       return (

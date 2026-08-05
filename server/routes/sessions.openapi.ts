@@ -36,6 +36,7 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { SESSION_MODES } from '../session-mode.js';
+import { MAX_FOLLOW_UP_PROMPT_LENGTH } from '../session-follow-up.js';
 
 /** Shared enum for session_mode across request/response schemas. */
 const SessionModeSchema = z.enum(SESSION_MODES);
@@ -416,6 +417,36 @@ export const ForwardSessionRequestSchema = z.object({
   }),
 });
 
+/**
+ * Unlike {@link ForwardSessionRequestSchema}, this schema is NOT
+ * documentation-only — the handler validates against it via `parseBody`. Keep
+ * it that way: `autoStart` must reject a JSON string like `"false"` (truthy in
+ * JS) because coercing it spawns a CLI process the caller never asked for.
+ */
+export const FollowUpSessionRequestSchema = z.object({
+  targetAgentId: z
+    .string({ error: 'targetAgentId must be a string' })
+    .min(1, 'targetAgentId must not be empty')
+    .optional()
+    .openapi({
+      description:
+        'Agent to run the follow-up. Defaults to the source session’s own agent. The caller must be able to view the target agent’s project.',
+    }),
+  prompt: z
+    .string({ error: 'prompt must be a string' })
+    .max(
+      MAX_FOLLOW_UP_PROMPT_LENGTH,
+      `prompt exceeds maximum length of ${MAX_FOLLOW_UP_PROMPT_LENGTH} characters`,
+    )
+    .optional()
+    .openapi({
+      description: 'What the follow-up should do, prepended to the seeded context (max 50k chars).',
+    }),
+  autoStart: z.boolean({ error: 'autoStart must be a boolean' }).optional().openapi({
+    description: 'When true, immediately dispatch the seeded message to the target agent’s CLI.',
+  }),
+});
+
 // ─── OpenAPI path registrations ───────────────────────────────────
 
 const agentIdParams = z.object({
@@ -568,6 +599,32 @@ registerPath({
     400: errorResponse(
       'Validation failed, no messages to forward, or forwarded content too large.',
     ),
+    404: errorResponse('Source session not found, or target agent not found / not viewable.'),
+    503: errorResponse('Auto-start requested but the chat handler is not initialized.'),
+  },
+});
+
+// POST /api/sessions/:sessionId/follow-up
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/follow-up',
+  tags: ['Sessions'],
+  summary: 'Start a follow-up session from this session',
+  description:
+    'Creates a new session on a fresh worktree branch, seeded with the source session’s Finalize summary (including the follow-up steps it flagged) rather than the whole transcript. Falls back to the tail of the conversation when the session never finalized. Defaults to the source session’s own agent; the new session inherits the source session’s owner.',
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(FollowUpSessionRequestSchema) },
+  },
+  responses: {
+    201: {
+      description:
+        'New follow-up session plus the pre-stored seeded message id (null when autoStart).',
+      content: jsonContent(
+        z.object({ session: SessionComponent, seededMessageId: z.string().nullable() }),
+      ),
+    },
+    400: errorResponse('Validation failed (prompt not a string or over the length cap).'),
     404: errorResponse('Source session not found, or target agent not found / not viewable.'),
     503: errorResponse('Auto-start requested but the chat handler is not initialized.'),
   },

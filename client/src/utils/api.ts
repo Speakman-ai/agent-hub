@@ -1444,6 +1444,21 @@ export const api = {
       }),
       timeout: 30000,
     }),
+  /**
+   * Start a follow-up session from an existing one. Unlike forward, the target
+   * agent defaults to the source session's own agent and the seed is the
+   * Finalize summary rather than the whole transcript.
+   */
+  startFollowUpSession: (sessionId: any, { targetAgentId, prompt, autoStart }: any = {}) =>
+    fetchJSON(`/sessions/${sessionId}/follow-up`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(targetAgentId ? { targetAgentId } : {}),
+        ...(prompt ? { prompt } : {}),
+        ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+      }),
+      timeout: 30000,
+    }),
 
   updateAgent: (agentId: any, data: any) =>
     fetchJSON(`/agents/${agentId}`, {

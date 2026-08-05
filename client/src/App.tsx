@@ -5111,6 +5111,36 @@ export default function App({ initialView }: any = {}) {
     if (currentView !== 'pulls') setPullsOpenPrNumber(null);
   }, [currentView]);
 
+  /**
+   * Spawn a follow-up session from the Finalize summary block.
+   *
+   * The seed message is pre-stored rather than auto-started: the operator lands
+   * in a session that already knows what shipped and what still has to be run
+   * by hand, and types the actual ask themselves.
+   */
+  const handleStartFollowUpSession = useCallback(
+    async (sourceSessionId: any) => {
+      // Typed check, not just truthiness: every caller must hand over a real
+      // session id. If this is ever wired straight to a child's callback that
+      // passes something else through, drop it here rather than POSTing to
+      // `/sessions/<whatever>/follow-up` and surfacing a confusing 404.
+      if (typeof sourceSessionId !== 'string' || !sourceSessionId) return;
+      try {
+        const result = await api.startFollowUpSession(sourceSessionId, {});
+        const session = result?.session;
+        if (!session) return;
+        pendingSessionIdRef.current = session.id;
+        setActiveAgentId(session.agent_id);
+        setActiveSessionId(session.id);
+        setCurrentView('chat');
+        showToast('Follow-up session started', 'success', 4000);
+      } catch (err: any) {
+        showToast(`Could not start follow-up: ${err?.message || err}`, 'error', 6000);
+      }
+    },
+    [showToast],
+  );
+
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI?.isElectron;
   const keyboardShortcutList = useMemo(() => getDefaultShortcuts(isElectron), [isElectron]);
 
@@ -6107,6 +6137,9 @@ export default function App({ initialView }: any = {}) {
                                       projectId={activeChatProject?.id}
                                       hosted={activeChatProject?.gitHost === 'agenthub'}
                                       onOpenPrDetail={handleOpenPrDetail}
+                                      onStartFollowUp={() =>
+                                        handleStartFollowUpSession(activeSessionId)
+                                      }
                                     />
                                   ),
                                 )}

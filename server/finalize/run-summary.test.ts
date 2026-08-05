@@ -57,6 +57,7 @@ function makeDeps(overrides: Partial<EmitFinalizeRunSummaryDeps> & { messages?: 
       summary: 'Adds a widget.',
       reviewNotes: 'One nit, fixed.',
       manualTesting: ['Open the widget page'],
+      followUps: ['Run `npm run migrate` on prod'],
     })),
     ...overrides,
   };
@@ -239,6 +240,7 @@ describe('emitFinalizeRunSummary', () => {
       summary: 'Removes the Agent Hub configuration.',
       reviewNotes: 'Nothing raised.',
       manualTesting: ['Check the settings page'],
+      followUps: [],
     }));
     const { deps, inserted } = makeDeps({
       collectCommits: vi.fn(async () => []),
@@ -266,6 +268,7 @@ describe('emitFinalizeRunSummary', () => {
       summary: 'Adds a widget.',
       reviewNotes: '',
       manualTesting: ['Open the widget page'],
+      followUps: [],
     }));
     const { deps, inserted } = makeDeps({
       collectCommits: vi.fn(async () => []),

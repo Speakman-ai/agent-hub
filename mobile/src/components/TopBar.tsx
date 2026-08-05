@@ -18,7 +18,30 @@ export default function TopBar() {
     const [showForward, setShowForward] = useState(false);
     const [summarizing, setSummarizing] = useState(false);
     const [extractingSkill, setExtractingSkill] = useState(false);
+    const [startingFollowUp, setStartingFollowUp] = useState(false);
     const canForward = !!activeSessionId && filterForwardTargets(agents || [], activeAgent).length > 0;
+    // A session that already pushed through Finalize is locked in ask mode, so
+    // the only way to make one more change is a fresh session. This seeds that
+    // session with the end-of-run briefing instead of making the operator
+    // rebuild the context by hand.
+    const handleStartFollowUp = async () => {
+        if (!activeSessionId || startingFollowUp)
+            return;
+        setStartingFollowUp(true);
+        try {
+            const result = await api.startFollowUpSession(activeSessionId, {});
+            const session = result?.session;
+            if (session && typeof handleOpenHandoffSession === 'function') {
+                handleOpenHandoffSession(session.agent_id, session.id);
+            }
+        }
+        catch (err: any) {
+            Alert.alert('Follow-up failed', err?.message || 'Unknown error');
+        }
+        finally {
+            setStartingFollowUp(false);
+        }
+    };
     const handleSummarize = async () => {
         if (!activeSessionId || summarizing)
             return;
@@ -104,6 +127,11 @@ export default function TopBar() {
         {/* Forward session to another agent in the same project */}
         {activeAgent && activeSessionId && (<TouchableOpacity style={styles.newButton} onPress={() => setShowForward(true)} disabled={!canForward} accessibilityRole="button" accessibilityLabel="Forward session to another agent">
             <AppIcon name="arrow-redo-outline" size={18} color={canForward ? colors.white : colors.gray500}/>
+          </TouchableOpacity>)}
+
+        {/* Start a follow-up session seeded with this session's Finalize summary */}
+        {activeAgent && (<TouchableOpacity style={styles.newButton} onPress={handleStartFollowUp} disabled={!activeSessionId || startingFollowUp} accessibilityRole="button" accessibilityLabel="Start a follow-up session from this session">
+            {startingFollowUp ? (<ActivityIndicator size="small" color={colors.white}/>) : (<AppIcon name="play-forward-outline" size={18} color={activeSessionId ? colors.white : colors.gray500}/>)}
           </TouchableOpacity>)}
 
         {/* Summarize current session — disabled when no session or mid-request */}

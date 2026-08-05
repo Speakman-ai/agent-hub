@@ -18269,6 +18269,71 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/follow-up:
+    post:
+      tags:
+        - Sessions
+      summary: Start a follow-up session from this session
+      description: Creates a new session on a fresh worktree branch, seeded with the source session’s Finalize summary (including the follow-up steps it flagged) rather than the whole transcript. Falls back to the tail of the conversation when the session never finalized. Defaults to the source session’s own agent; the new session inherits the source session’s owner.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetAgentId:
+                  type: string
+                  minLength: 1
+                  description: Agent to run the follow-up. Defaults to the source session’s own agent. The caller must be able to view the target agent’s project.
+                prompt:
+                  type: string
+                  maxLength: 50000
+                  description: What the follow-up should do, prepended to the seeded context (max 50k chars).
+                autoStart:
+                  type: boolean
+                  description: When true, immediately dispatch the seeded message to the target agent’s CLI.
+      responses:
+        "201":
+          description: New follow-up session plus the pre-stored seeded message id (null when autoStart).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+                  seededMessageId:
+                    type: string
+                    nullable: true
+                required:
+                  - session
+                  - seededMessageId
+        "400":
+          description: Validation failed (prompt not a string or over the length cap).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Source session not found, or target agent not found / not viewable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "503":
+          description: Auto-start requested but the chat handler is not initialized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/sessions/{sessionId}/messages:
     get:
       tags:

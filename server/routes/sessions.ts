@@ -17,6 +17,7 @@ import {
   RewindRequestSchema,
   PatchCheckpointRequestSchema,
   SubmitSessionCredentialRequestSchema,
+  FollowUpSessionRequestSchema,
 } from './sessions.openapi.js';
 import {
   normalizeSessionMode,
@@ -24,6 +25,12 @@ import {
   defaultSessionModeForProject,
   type SessionMode,
 } from '../session-mode.js';
+import {
+  buildFollowUpSeedMessage,
+  buildFollowUpSessionName,
+  findLatestFinalizeSummary,
+  MAX_FOLLOW_UP_TRANSCRIPT_MESSAGES,
+} from '../session-follow-up.js';
 import {
   isWorkflowProject,
   sessionCanUseDesignMode,
@@ -2777,6 +2784,195 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       res.status(201).json({ session: newSessionWire, forwardedMessageId });
     } catch (err) {
       console.error('Forward session error:', err);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * POST /api/sessions/:sessionId/follow-up
+   *
+   * Start a follow-up session from this one. Same agent by default, a fresh
+   * worktree branch, and an initial message that quotes the source session's
+   * Finalize summary (including the follow-up steps it flagged) instead of the
+   * whole transcript.
+   *
+   * This is the affordance behind `POST_FINALIZE_PUSH_LOCK_MESSAGE`: once a
+   * session has pushed, it is locked in ask mode and telling the operator to
+   * "start a new session" left them to rebuild the context by hand.
+   *
+   * ## Authorization on the SOURCE session
+   *
+   * There is no inline owner check here, and that is deliberate: the
+   * `router.use('/api/sessions/:sessionId', …)` prefix gate registered far
+   * above runs `userOwnsSession` for every non-GET method and 404s first. Same
+   * contract `/forward` relies on.
+   *
+   * That gate is load-bearing rather than belt-and-braces. This route reads the
+   * source session's transcript, its Finalize summary, and its PR url, then
+   * inherits its owner — so losing it is an exfiltration primitive, not just an
+   * unauthorized write. The `canViewProject` check below does NOT cover for it:
+   * that validates the target agent's *project*, which teammates routinely
+   * share. Pinned by `test/session-ownership-isolation.test.ts` →
+   * "foreign user cannot exfiltrate a session's transcript via POST /follow-up",
+   * which is built so it fails if the prefix gate stops enforcing ownership.
+   *
+   * Body:
+   *   targetAgentId  (optional) — defaults to the source session's own agent
+   *   prompt         (optional) — what the follow-up should actually do
+   *   autoStart      (optional) — dispatch to the CLI immediately
+   *
+   * Validated against `FollowUpSessionRequestSchema` — the same schema the
+   * OpenAPI doc publishes — rather than by hand. `autoStart` in particular
+   * must be a real boolean: a JSON string like `"false"` is truthy, and
+   * coercing it would spawn a CLI process the caller never asked for.
+   *
+   * Returns: { session, seededMessageId }
+   */
+  router.post('/api/sessions/:sessionId/follow-up', (req: Request, res: Response) => {
+    try {
+      const body = parseBody(FollowUpSessionRequestSchema, req, res);
+      if (!body) return;
+      const { targetAgentId, prompt, autoStart } = body;
+
+      const sourceSessionId = String(req.params.sessionId);
+      const sourceSession = stmts.getSession.get(sourceSessionId) as SessionRow | undefined;
+      if (!sourceSession) {
+        return res.status(404).json({ error: 'Source session not found' });
+      }
+
+      // Default to the source agent — a follow-up is normally "same agent,
+      // clean slate". An explicit target still goes through the same
+      // visibility boundary the forward route enforces, so a caller cannot
+      // seed (and optionally auto-start) a session in a project they cannot
+      // see. Mask as 404 rather than 403 so we don't leak existence.
+      const resolvedTargetAgentId = targetAgentId || sourceSession.agent_id;
+      const targetFound = findAgent(resolvedTargetAgentId);
+      if (!targetFound) {
+        return res.status(404).json({ error: `Target agent not found: ${resolvedTargetAgentId}` });
+      }
+      const caller = resolveVisibilityCaller(req as AuthenticatedRequest);
+      if (!canViewProject(targetFound.project, caller)) {
+        return res.status(404).json({ error: `Target agent not found: ${resolvedTargetAgentId}` });
+      }
+
+      if (autoStart && !handleChat) {
+        return res.status(503).json({
+          error: 'Auto-start is not available — chat handler is not initialized',
+        });
+      }
+
+      const sourceFound = findAgent(sourceSession.agent_id);
+      const sourceAgentName = sourceFound?.agent?.name || sourceSession.agent_id;
+
+      let sourceMessages: MessageRow[] = [];
+      try {
+        sourceMessages = stmts.getMessages.all(sourceSessionId) as MessageRow[];
+      } catch (err) {
+        // A follow-up with no quoted context is still more useful than a 500 —
+        // the operator's own prompt survives.
+        console.warn(
+          `[session-follow-up] getMessages failed (${sourceSessionId}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+
+      const summary = findLatestFinalizeSummary(sourceMessages);
+      const transcript = summary
+        ? null
+        : buildTranscript(sourceMessages.slice(-MAX_FOLLOW_UP_TRANSCRIPT_MESSAGES), {
+            agentName: sourceAgentName,
+          });
+
+      let prUrl: string | null = null;
+      try {
+        const pushedRun = stmts.getPushedFinalizeRunForSession.get(sourceSessionId) as
+          | FinalizeRunRow
+          | undefined;
+        prUrl = pushedRun?.pr_url ?? null;
+      } catch {
+        prUrl = null;
+      }
+
+      const seedContent = buildFollowUpSeedMessage({
+        sourceAgentName,
+        sourceSessionName: sourceSession.name,
+        prompt,
+        summary,
+        transcript,
+        prUrl,
+      });
+
+      const targetAgent = targetFound.agent;
+      const newSessionId = uuidv4();
+      const engine = targetAgent.engine || 'claude-code';
+      const ownerUid = getSessionOwner(sourceSessionId);
+      const model = resolveEffectiveModel(config, engine, {
+        agentModel: targetAgent.model,
+        ownerUserId: ownerUid,
+        agentId: resolvedTargetAgentId,
+      });
+      const wt = defaultSessionUseWorktreeFlag(targetFound.project);
+      stmts.createSession.run(
+        newSessionId,
+        resolvedTargetAgentId,
+        buildFollowUpSessionName(sourceSession.name),
+        engine,
+        model,
+        wt,
+        0,
+        1,
+      );
+      // Same rule as forward: the caller already owns the source (enforced by
+      // the prefix middleware), and the quoted context stays with that user.
+      inheritOwnerFromSession(newSessionId, sourceSessionId);
+
+      // handleChat stores the user message itself, so pre-storing on the
+      // auto-start path would duplicate it.
+      let seededMessageId: string | null = null;
+      if (!autoStart) {
+        seededMessageId = uuidv4();
+        stmts.addMessage.run(
+          seededMessageId,
+          newSessionId,
+          'user',
+          seedContent,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+        );
+        stmts.touchSession.run(newSessionId);
+      }
+
+      const newSession = stmts.getSession.get(newSessionId) as SessionRow;
+      const newSessionWire = enrichSessionForClient(newSession, stmts);
+
+      // Reuses the forward event so every client's existing sidebar-splice and
+      // navigation handling picks the new session up unchanged.
+      deps.broadcast({
+        type: 'session_forwarded',
+        sourceSessionId,
+        targetAgentId: resolvedTargetAgentId,
+        session: newSessionWire,
+        forwardedMessageId: seededMessageId,
+        followUp: true,
+      });
+
+      if (autoStart && handleChat) {
+        handleChat(null, {
+          type: 'chat',
+          agentId: resolvedTargetAgentId,
+          sessionId: newSessionId,
+          content: seedContent,
+        });
+      }
+
+      res.status(201).json({ session: newSessionWire, seededMessageId });
+    } catch (err) {
+      console.error('Follow-up session error:', err);
       res.status(500).json({ error: (err as Error).message });
     }
   });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  MAX_FOLLOW_UP_STEPS,
   MAX_MANUAL_TESTING_STEPS,
   buildRunSummaryInput,
   generateFinalizeRunSummary,
@@ -70,7 +71,43 @@ describe('parseRunSummaryResponse', () => {
       parseRunSummaryResponse(
         '{"summary":"Adds a widget.","reviewNotes":"One nit.","manualTesting":["Click it"]}',
       ),
-    ).toEqual({ summary: 'Adds a widget.', reviewNotes: 'One nit.', manualTesting: ['Click it'] });
+    ).toEqual({
+      summary: 'Adds a widget.',
+      reviewNotes: 'One nit.',
+      manualTesting: ['Click it'],
+      followUps: [],
+    });
+  });
+
+  it('parses follow-ups as their own bucket, separate from manual testing', () => {
+    const parsed = parseRunSummaryResponse(
+      '{"summary":"S","manualTesting":["Click it"],"followUps":["Run `npm run migrate` on prod"]}',
+    );
+    expect(parsed?.manualTesting).toEqual(['Click it']);
+    expect(parsed?.followUps).toEqual(['Run `npm run migrate` on prod']);
+  });
+
+  it('applies the same marker-stripping and dedupe rules to follow-ups', () => {
+    const parsed = parseRunSummaryResponse(
+      '{"summary":"S","followUps":["- [ ] Run migrate","1. Set TOKEN","RUN MIGRATE","",7]}',
+    );
+    expect(parsed?.followUps).toEqual(['Run migrate', 'Set TOKEN']);
+  });
+
+  it('caps follow-ups at their own tighter limit', () => {
+    const steps = Array.from({ length: MAX_FOLLOW_UP_STEPS + 5 }, (_, i) => `step ${i}`);
+    const parsed = parseRunSummaryResponse(JSON.stringify({ summary: 'S', followUps: steps }));
+    expect(parsed?.followUps).toHaveLength(MAX_FOLLOW_UP_STEPS);
+    expect(MAX_FOLLOW_UP_STEPS).toBeLessThan(MAX_MANUAL_TESTING_STEPS);
+  });
+
+  // A response whose only content is a follow-up step is still a usable answer;
+  // treating it as "no answer" would silently drop the migration nobody ran.
+  it('keeps a response that carries follow-ups and nothing else', () => {
+    const parsed = parseRunSummaryResponse(
+      '{"summary":"","reviewNotes":"","manualTesting":[],"followUps":["Run migrate"]}',
+    );
+    expect(parsed?.followUps).toEqual(['Run migrate']);
   });
 
   it('recovers the object from a code fence with stray prose', () => {
@@ -117,6 +154,7 @@ describe('parseRunSummaryResponse', () => {
       summary: '',
       reviewNotes: '',
       manualTesting: ['Verify the migration ran'],
+      followUps: [],
     });
   });
 });

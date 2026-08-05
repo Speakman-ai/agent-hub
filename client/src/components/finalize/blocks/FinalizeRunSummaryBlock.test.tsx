@@ -1,6 +1,10 @@
-import { NO_COMMITS_MESSAGE } from '@shared/utils/finalizeSummaryCopy';
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import {
+  FOLLOW_UPS_UNAVAILABLE_MESSAGE,
+  NO_COMMITS_MESSAGE,
+  NO_FOLLOW_UPS_MESSAGE,
+} from '@shared/utils/finalizeSummaryCopy';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import FinalizeRunSummaryBlock from './FinalizeRunSummaryBlock';
 
 function summaryMessage(payload: Record<string, unknown> = {}) {
@@ -187,6 +191,95 @@ describe('FinalizeRunSummaryBlock', () => {
     render(<FinalizeRunSummaryBlock message={{ id: 'm4', metadata: nested }} />);
     expect(screen.queryByTestId('finalize-summary-prose')).not.toBeInTheDocument();
     expect(screen.getByTestId('finalize-summary-changes')).toHaveTextContent(NO_COMMITS_MESSAGE);
+  });
+
+  describe('follow-ups', () => {
+    it('lists the flagged steps and highlights the section', () => {
+      render(
+        <FinalizeRunSummaryBlock
+          message={summaryMessage({
+            followUps: ['Run `npm run migrate` on prod', 'Set WIDGET_TOKEN in the prod env'],
+          })}
+        />,
+      );
+
+      const steps = screen.getAllByTestId('finalize-summary-follow-up-step');
+      expect(steps).toHaveLength(2);
+      expect(steps[0]).toHaveTextContent('Run `npm run migrate` on prod');
+      expect(screen.getByTestId('finalize-summary-follow-ups')).toHaveAttribute(
+        'data-highlighted',
+        'true',
+      );
+    });
+
+    it('asserts nothing is needed only when a narrative actually ran', () => {
+      render(
+        <FinalizeRunSummaryBlock
+          message={summaryMessage({ summarySource: 'llm', followUps: [] })}
+        />,
+      );
+      expect(screen.getByTestId('finalize-summary-follow-ups')).toHaveTextContent(
+        NO_FOLLOW_UPS_MESSAGE,
+      );
+    });
+
+    // An empty list because the model found nothing and an empty list because
+    // the model never ran are identical in the payload. Claiming "merging is
+    // all this needs" when we never looked is the exact miss this section
+    // exists to prevent.
+    it('says the steps were not generated when no narrative was available', () => {
+      render(
+        <FinalizeRunSummaryBlock
+          message={summaryMessage({ summary: '', summarySource: 'none', followUps: [] })}
+        />,
+      );
+      expect(screen.getByTestId('finalize-summary-follow-ups')).toHaveTextContent(
+        FOLLOW_UPS_UNAVAILABLE_MESSAGE,
+      );
+      expect(screen.getByTestId('finalize-summary-follow-ups')).not.toHaveAttribute(
+        'data-highlighted',
+      );
+    });
+
+    // Zero-arity is the contract, and it is load-bearing. The block has no
+    // session id, so the host resolves that itself; passing anything here (an
+    // earlier version passed `followUps`) makes
+    // `onStartFollowUp={handleStartFollowUpSession}` look like valid wiring
+    // while actually sending an array where a session id belongs.
+    it('invokes the follow-up handler with no arguments', () => {
+      const onStartFollowUp = vi.fn();
+      render(
+        <FinalizeRunSummaryBlock
+          message={summaryMessage({ followUps: ['Run the migration'] })}
+          onStartFollowUp={onStartFollowUp}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('finalize-summary-follow-up-session'));
+      expect(onStartFollowUp).toHaveBeenCalledTimes(1);
+      expect(onStartFollowUp).toHaveBeenCalledWith();
+      // Spelled out separately: `toHaveBeenCalledWith()` would still pass if a
+      // single `undefined` were passed, but an array must never appear here.
+      expect(onStartFollowUp.mock.calls[0]).toHaveLength(0);
+    });
+
+    it('offers the button even when no follow-up steps were flagged', () => {
+      // The operator may want one more change regardless of what the summary
+      // listed — gating the button on a non-empty list would hide the only
+      // affordance a post-push (ask-mode-locked) session has.
+      render(
+        <FinalizeRunSummaryBlock
+          message={summaryMessage({ followUps: [] })}
+          onStartFollowUp={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('finalize-summary-follow-up-session')).toBeInTheDocument();
+    });
+
+    it('hides the button when the host provides no handler', () => {
+      render(<FinalizeRunSummaryBlock message={summaryMessage()} />);
+      expect(screen.queryByTestId('finalize-summary-follow-up-session')).not.toBeInTheDocument();
+    });
   });
 
   it('renders nothing for a message that is not a run summary', () => {
