@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from './api';
-import { setToken, clearToken, isAuthenticated } from './auth';
+import { setToken, clearToken, isAuthenticated, setActiveOrgIsLocal } from './auth';
 
 /**
  * Regression coverage for the SPA-401-trap bug.
@@ -14,7 +14,8 @@ import { setToken, clearToken, isAuthenticated } from './auth';
  *
  * After: any 401 triggers `clearToken + reload` exactly once per browser
  * tab. A sessionStorage marker prevents reload-loops on pathological
- * installs that 401 even after re-bootstrap.
+ * installs that 401 even after re-bootstrap. Local bundled mode skips the
+ * reload entirely (AuthGate already bypasses LoginScreen).
  */
 describe('api fetchJSON — 401 handling', () => {
   let fetchSpy: any;
@@ -34,6 +35,7 @@ describe('api fetchJSON — 401 handling', () => {
     });
     sessionStorage.clear();
     clearToken();
+    setActiveOrgIsLocal(false);
   });
 
   afterEach(() => {
@@ -45,6 +47,7 @@ describe('api fetchJSON — 401 handling', () => {
     });
     sessionStorage.clear();
     clearToken();
+    setActiveOrgIsLocal(false);
   });
 
   it('reloads on 401 when a JWT is present (stale token path)', async () => {
@@ -138,5 +141,38 @@ describe('api fetchJSON — 401 handling', () => {
 
     await expect(api.getProjects()).rejects.toThrow(/500/);
     expect(reloadSpy!).not.toHaveBeenCalled();
+  });
+
+  it('does not reload on 401 from per-user engine auth probes', async () => {
+    // SetupWizard / Account mount MyClaudeAuthSection even when the
+    // caller has no resolvable authUserId (legacy apiKey, local-bypass
+    // gap). Those panels treat 401 as an empty state — a global
+    // clearToken+reload was kicking users back to LoginScreen mid-flow.
+    setToken({ token: 'jwt-test', expiresAt: null, user: { role: 'Owner' } });
+    (fetchSpy as any).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Authentication required' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(api.getMyClaudeAuth()).rejects.toThrow(/401/);
+    expect(reloadSpy!).not.toHaveBeenCalled();
+    expect(isAuthenticated()).toBe(true);
+  });
+
+  it('does not reload on 401 in local bundled mode (avoids org-switch storm)', async () => {
+    setActiveOrgIsLocal(true);
+    setToken({ token: 'jwt-test', expiresAt: null, user: { role: 'Owner' } });
+    (fetchSpy as any).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Authentication required.' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(api.getProjects()).rejects.toThrow(/401/);
+    expect(reloadSpy!).not.toHaveBeenCalled();
+    expect(isAuthenticated()).toBe(true);
   });
 });

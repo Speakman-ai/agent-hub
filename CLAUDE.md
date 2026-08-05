@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run dev` - Start both client and server in development mode concurrently
 - `npm run dev:client` - Start only the React client on port 3050
 - `npm run dev:server` - Start only the Node.js server on port 3051
+- `npm run dev:local` - Same as `dev` but runs the server with `AGENT_HUB_MODE=local`, the single-tenant bypass the Electron bundle uses (no login screen, synthetic Owner). Use it to reproduce desktop-install behavior; use plain `dev` when working on login, JWT, orgs, or multi-user paths, since the bypass hides them.
 
 ### Build Commands  
 - `npm run build` - Build the client React application

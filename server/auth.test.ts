@@ -706,14 +706,39 @@ describe('authMiddleware — local-bundled-server bypass (AGENT_HUB_MODE)', () =
     expect(next).toHaveBeenCalledOnce();
     const r = req as Request & {
       authUser?: string;
+      authUserId?: string;
       authRole?: string;
       authOrgId?: string;
       authLocalOrgBypass?: boolean;
     };
     expect(r.authUser).toBe('local');
+    expect(r.authUserId).toBeUndefined();
     expect(r.authRole).toBe('Owner');
     expect(r.authOrgId).toBe('default');
     expect(r.authLocalOrgBypass).toBe(true);
+  });
+
+  it('attaches the Owner user id under AGENT_HUB_MODE=local when auth.json maps to a users row', () => {
+    process.env.AGENT_HUB_MODE = 'local';
+    mockActiveOrgId = 'default';
+    seedUser({
+      id: 'owner-uid',
+      username: 'owner',
+      password_hash: 'x',
+      created_at: '2026-04-18',
+    });
+    const next = vi.fn();
+    const req = mockReq();
+    authMiddleware(req, mockRes() as unknown as Response, next);
+    expect(next).toHaveBeenCalledOnce();
+    const r = req as Request & {
+      authUser?: string;
+      authUserId?: string;
+      authLocalOrgBypass?: boolean;
+    };
+    expect(r.authLocalOrgBypass).toBe(true);
+    expect(r.authUser).toBe('owner');
+    expect(r.authUserId).toBe('owner-uid');
   });
 
   it('returns 401 when AGENT_HUB_MODE is unset and no credentials are provided', () => {

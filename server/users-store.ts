@@ -886,3 +886,41 @@ export function migrateAuthRecordIfNeeded(): { migratedUserId: string } | null {
 
   return { migratedUserId: user.id };
 }
+
+/**
+ * Ensure the `auth.json` Owner exists as a real `users` row with Owner
+ * membership in every org.
+ *
+ * Unlike {@link migrateAuthRecordIfNeeded}, this is NOT a no-op when other
+ * users already exist. Synthetic `local-<orgId>` rows (created by GitHub /
+ * Google connection flows under single-tenant bypass *before* first-run
+ * setup finishes) previously caused `/api/auth/setup` to skip Owner
+ * seeding, issue a JWT with an empty `sub`, and leave Welcome-step calls
+ * like `PUT /api/orgs/default` unauthenticated / unauthorized.
+ */
+export function ensureOwnerUserFromAuthRecord(): UserRow | null {
+  const record = getAuthRecord();
+  if (!record) return null;
+
+  const db = getOrgsDb();
+  let user = getUserByUsername(record.username);
+  if (!user) {
+    user = createUser({
+      username: record.username,
+      passwordHash: record.passwordHash,
+      createdAt: record.createdAt,
+    });
+  } else if (user.password_hash !== record.passwordHash) {
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(record.passwordHash, user.id);
+    user = getUserByUsername(record.username) ?? user;
+  }
+
+  const orgRows = db.prepare('SELECT id FROM orgs').all() as Array<{ id: string }>;
+  const upsertMembership = db.prepare(
+    'INSERT OR REPLACE INTO memberships (user_id, org_id, role) VALUES (?, ?, ?)',
+  );
+  for (const org of orgRows) {
+    upsertMembership.run(user.id, org.id, 'Owner');
+  }
+  return user;
+}

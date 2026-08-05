@@ -49,6 +49,18 @@ function buildGatedApp(): ReturnType<typeof express> {
   return app;
 }
 
+/**
+ * Point `orgs.db` at the current TMP_DIR and create the schema. The real
+ * server always runs `initOrgsDb()` at boot, so `/api/auth/setup` can seed
+ * the Owner into `users` + `memberships` and issue a token with a real
+ * `sub`. Without it the handler 500s (it refuses to hand out an empty-`sub`
+ * JWT — see the Welcome-step `PUT /api/orgs/default` 401 regression).
+ */
+function useTmpOrgsDb(): void {
+  setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
+  initOrgsDb();
+}
+
 function buildLocalBypassApp(): ReturnType<typeof express> {
   const app = express();
   app.use(express.json());
@@ -67,6 +79,11 @@ describe('POST /api/auth/setup', () => {
   beforeEach(() => {
     TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
     setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    useTmpOrgsDb();
+  });
+
+  afterEach(() => {
+    setOrgsDbPathForTests(null);
   });
 
   it('creates the single-user record and returns a token', async () => {
@@ -76,11 +93,15 @@ describe('POST /api/auth/setup', () => {
     expect(res.status).toBe(200);
     expect(res.body.token).toBeTypeOf('string');
     expect(res.body.token.split('.')).toHaveLength(3);
-    expect(res.body.user).toEqual({
+    expect(res.body.user).toMatchObject({
       email: 'owner@example.com',
       needsEmailUpdate: false,
       role: 'Owner',
     });
+    // The Owner must be a real `users` row — an empty id here means the JWT
+    // carries an empty `sub`, which 401s every `/api/auth/me/*` call and the
+    // Welcome step's `PUT /api/orgs/default`.
+    expect(res.body.user.id).toBeTruthy();
     expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
     expect(existsSync(path.join(TMP_DIR, 'auth.json'))).toBe(true);
     expect(getAuthRecord()?.username).toBe('owner@example.com');
@@ -122,6 +143,11 @@ describe('POST /api/auth/setup — apiKey-gated deployments (PR #407 regression)
     setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
     reloadAuthRecord();
     mockConfig.apiKey = null;
+    useTmpOrgsDb();
+  });
+
+  afterEach(() => {
+    setOrgsDbPathForTests(null);
   });
 
   it('rejects setup without X-API-Key when apiKey is configured', async () => {
@@ -527,6 +553,11 @@ describe('Phase 2 — role assignment', () => {
     setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
     reloadAuthRecord();
     mockConfig.apiKey = null;
+    useTmpOrgsDb();
+  });
+
+  afterEach(() => {
+    setOrgsDbPathForTests(null);
   });
 
   it('setup assigns Owner and returns it in the user payload', async () => {
@@ -534,11 +565,12 @@ describe('Phase 2 — role assignment', () => {
       .post('/api/auth/setup')
       .send({ email: 'owner@example.com', password: 'a-strong-password' });
     expect(res.status).toBe(200);
-    expect(res.body.user).toEqual({
+    expect(res.body.user).toMatchObject({
       email: 'owner@example.com',
       needsEmailUpdate: false,
       role: 'Owner',
     });
+    expect(res.body.user.id).toBeTruthy();
     reloadAuthRecord();
     expect(getAuthRecord()?.role).toBe('Owner');
   });
@@ -552,11 +584,12 @@ describe('Phase 2 — role assignment', () => {
       .post('/api/auth/login')
       .send({ email: 'owner@example.com', password: 'a-strong-password' });
     expect(res.status).toBe(200);
-    expect(res.body.user).toEqual({
+    expect(res.body.user).toMatchObject({
       email: 'owner@example.com',
       needsEmailUpdate: false,
       role: 'Owner',
     });
+    expect(res.body.user.id).toBeTruthy();
   });
 
   it('status exposes the owner role publicly', async () => {

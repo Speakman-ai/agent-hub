@@ -137,11 +137,17 @@ describe('App — first-run SetupWizard gating', () => {
     vi.clearAllMocks();
     localStorage.clear();
     delete (globalThis as any).__ahSetupWizardProps;
-    if (globalThis.window) globalThis.window.electronAPI = undefined;
+    if (globalThis.window) {
+      globalThis.window.electronAPI = undefined;
+      // Prior tests may leave `#/new-project-adaptive` via App's hash sync.
+      globalThis.window.history.replaceState(null, '', '/');
+    }
+    document.body.innerHTML = '';
   });
 
   afterEach(() => {
     cleanup();
+    document.body.innerHTML = '';
     if (globalThis.window) globalThis.window.electronAPI = origElectron;
   });
 
@@ -166,11 +172,13 @@ describe('App — first-run SetupWizard gating', () => {
   });
 
   it('skips the wizard for a returning user with no projects yet (Owner exists, orgs cached)', async () => {
-    // Existing behavior: once the Owner is set up, "firstRun:true" should
-    // open the adaptive project wizard, not the SetupWizard.
+    // Existing behavior: once the Owner is set up AND onboarding is marked
+    // complete, "firstRun:true" should open the adaptive project wizard,
+    // not the SetupWizard.
     (globalThis as any).fetch = mockFetchWithSetupStatus({
       firstRun: true,
       authConfigured: true,
+      onboardingComplete: true,
       hasAnyAiCredentials: true,
     });
 
@@ -182,6 +190,29 @@ describe('App — first-run SetupWizard gating', () => {
     expect(screen.queryByTestId('setup-wizard-mock')).not.toBeInTheDocument();
   });
 
+  it('resumes the SetupWizard when Owner exists but onboarding was interrupted', async () => {
+    // Bitwarden / reload after /api/auth/setup: auth.json exists but the
+    // wizard never reached "Open Project". Must not dump into main chrome.
+    (globalThis as any).fetch = mockFetchWithSetupStatus({
+      firstRun: true,
+      authConfigured: true,
+      onboardingComplete: false,
+      hasAnyAiCredentials: true,
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
+    });
+    // Owner already exists → land on Welcome (step 1 of the no-account plan).
+    expect(screen.getByTestId('setup-wizard-mock').dataset.initialStep).toBe('1');
+    // Adaptive project flow must not replace the interrupted SetupWizard.
+    await waitFor(() => {
+      expect(screen.queryByTestId('adaptive-flow-mock')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows the wizard at the AI-credentials step when Owner exists but engines are wiped', async () => {
     // Sandbox-reset path: Owner record + default org survive but
     // claude/cursor/codex CLIs are no longer authed. We want to land at
@@ -189,6 +220,7 @@ describe('App — first-run SetupWizard gating', () => {
     (globalThis as any).fetch = mockFetchWithSetupStatus({
       firstRun: false,
       authConfigured: true,
+      onboardingComplete: true,
       hasAnyAiCredentials: false,
       engineAuth: { 'claude-code': false, 'cursor-agent': false, 'codex-cli': false },
     });

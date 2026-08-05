@@ -1,5 +1,5 @@
 import { getApiBase, getAuthHeaders } from './connection';
-import { getToken as getJwt, clearToken } from './auth';
+import { getToken as getJwt, clearToken, isLocalMode } from './auth';
 import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
 import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } from '@shared/types';
 import type { DeployTriggerEvent } from './deployTriggers';
@@ -242,12 +242,20 @@ export function errorDetail(body: ApiErrorBody | null, status: number): string {
 export interface FetchJsonOptions extends Omit<RequestInit, 'signal'> {
   timeout?: number | null;
   signal?: AbortSignal;
+  /**
+   * When false, 401 / `no_active_org_membership` 403 do not clear the JWT
+   * or reload. Use for probes that intentionally tolerate an unauthenticated
+   * caller (e.g. `/auth/me/*` engine panels during legacy / local-bypass
+   * gaps) — those surfaces already render an "unauthenticated" empty state.
+   * Default true so a real dead session still bounces to LoginScreen.
+   */
+  deadSessionOnUnauthorized?: boolean;
 }
 
 async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): Promise<T> {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
-  const { timeout: timeoutOption, ...fetchOpts } = options;
+  const { timeout: timeoutOption, deadSessionOnUnauthorized = true, ...fetchOpts } = options;
   const timeoutMs =
     timeoutOption === null ? null : !timeoutOption || timeoutOption <= 0 ? 15000 : timeoutOption;
   const res = await fetch(`${base}${url}`, {
@@ -273,10 +281,20 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
     // to LoginScreen. The 403 is scoped by `code` so ordinary permission
     // 403s (not-Owner, cross-org resource) are left untouched — those
     // should surface as errors, not log the user out.
+    //
+    // Local bundled mode (Electron / `AGENT_HUB_MODE=local`): AuthGate
+    // already skips LoginScreen, so a reload cannot recover auth — it
+    // only remounts App, re-posts /orgs/:id/switch, and storms the
+    // server. Skip the reload; leave the error for the caller.
     const deadSession =
-      res.status === 401 || (res.status === 403 && errBody?.code === 'no_active_org_membership');
+      deadSessionOnUnauthorized &&
+      !isLocalMode() &&
+      (res.status === 401 || (res.status === 403 && errBody?.code === 'no_active_org_membership'));
     if (deadSession && typeof window !== 'undefined' && !recentlyReloadedFor401()) {
       markReloadedFor401();
+      console.warn(
+        `[api] dead session on ${fetchOpts.method || 'GET'} ${url} (${res.status}) — clearing token and reloading`,
+      );
       if (getJwt()) clearToken();
       window.location.reload();
     }
@@ -1649,27 +1667,52 @@ export const api = {
   // Per-user Claude credentials (each Hub user can attach their own
   // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN — see PR #717). Distinct
   // from the host-wide `/config/claude-auth` surface above.
-  getMyClaudeAuth: () => fetchJSON('/auth/me/claude-auth'),
+  //
+  // `deadSessionOnUnauthorized: false` — these panels intentionally treat
+  // 401 as "no per-user identity yet" (legacy apiKey / local-bypass gap)
+  // and render an empty state. A global clearToken+reload here was logging
+  // users out mid-SetupWizard / after first project.
+  getMyClaudeAuth: () => fetchJSON('/auth/me/claude-auth', { deadSessionOnUnauthorized: false }),
   putMyClaudeAuth: (body: any) =>
-    fetchJSON('/auth/me/claude-auth', { method: 'PUT', body: JSON.stringify(body) }),
+    fetchJSON('/auth/me/claude-auth', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      deadSessionOnUnauthorized: false,
+    }),
 
   // Per-user Cursor / Gemini / Codex API keys. Each engine carries one
   // key (no OAuth/expiry round-trip), so the helpers share a uniform
   // shape: `{ apiKey: string | null }` on the wire. See PR #717 for the
   // matching Claude pattern and the per-user-cli-auth wiki page for
   // precedence rules.
-  getMyCursorAuth: () => fetchJSON('/auth/me/cursor-auth'),
+  getMyCursorAuth: () => fetchJSON('/auth/me/cursor-auth', { deadSessionOnUnauthorized: false }),
   putMyCursorAuth: (body: any) =>
-    fetchJSON('/auth/me/cursor-auth', { method: 'PUT', body: JSON.stringify(body) }),
-  getMyGeminiAuth: () => fetchJSON('/auth/me/gemini-auth'),
+    fetchJSON('/auth/me/cursor-auth', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      deadSessionOnUnauthorized: false,
+    }),
+  getMyGeminiAuth: () => fetchJSON('/auth/me/gemini-auth', { deadSessionOnUnauthorized: false }),
   putMyGeminiAuth: (body: any) =>
-    fetchJSON('/auth/me/gemini-auth', { method: 'PUT', body: JSON.stringify(body) }),
-  getMyCodexAuth: () => fetchJSON('/auth/me/codex-auth'),
+    fetchJSON('/auth/me/gemini-auth', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      deadSessionOnUnauthorized: false,
+    }),
+  getMyCodexAuth: () => fetchJSON('/auth/me/codex-auth', { deadSessionOnUnauthorized: false }),
   putMyCodexAuth: (body: any) =>
-    fetchJSON('/auth/me/codex-auth', { method: 'PUT', body: JSON.stringify(body) }),
-  getMyGrokAuth: () => fetchJSON('/auth/me/grok-auth'),
+    fetchJSON('/auth/me/codex-auth', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      deadSessionOnUnauthorized: false,
+    }),
+  getMyGrokAuth: () => fetchJSON('/auth/me/grok-auth', { deadSessionOnUnauthorized: false }),
   putMyGrokAuth: (body: any) =>
-    fetchJSON('/auth/me/grok-auth', { method: 'PUT', body: JSON.stringify(body) }),
+    fetchJSON('/auth/me/grok-auth', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      deadSessionOnUnauthorized: false,
+    }),
 
   getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
   putMyAgentEngineOverrides: (body: any) =>

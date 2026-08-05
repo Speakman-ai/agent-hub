@@ -22,9 +22,14 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
     expiresAt: null,
     user: { email: 'owner@example.com', role: 'Owner' },
   }),
+  login: vi.fn().mockResolvedValue({
+    token: 'test-jwt',
+    expiresAt: null,
+    user: { email: 'owner@example.com', role: 'Owner' },
+  }),
 }));
 
-import { setup as setupHubAuth } from '../utils/auth';
+import { setup as setupHubAuth, login as loginHubAuth } from '../utils/auth';
 
 // Stub only the methods the LAN-mode tests inspect; preserve everything
 // else via importActual.
@@ -79,6 +84,12 @@ beforeEach(() => {
     expiresAt: Date.now() + 3600000,
     user: {},
   });
+  (loginHubAuth as any).mockReset();
+  (loginHubAuth as any).mockResolvedValue({
+    token: 'jwt-test',
+    expiresAt: Date.now() + 3600000,
+    user: {},
+  });
   (api.getConfig as any).mockReset().mockResolvedValue({ lanMode: false });
   (api.updateConfig as any).mockReset().mockResolvedValue({ ok: true } as any);
   delete (window as any).electronAPI;
@@ -127,6 +138,30 @@ describe('SetupWizard — Hub account step', () => {
     });
     await waitFor(() => {
       expect(setupHubAuth!).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'admin@example.com', password: 'longpassword12' }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Welcome to Agent Hub/i)).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to login when Owner was already created (interrupted / double-submit)', async () => {
+    (setupHubAuth as any).mockRejectedValueOnce(new Error('Auth already configured'));
+    render(
+      <SetupWizard setupStatus={{ authConfigured: false, engines: {} }} onComplete={() => {}} />,
+    );
+    fireEvent.change(screen.getByTestId('hub-account-username' as any), {
+      target: { value: 'admin@example.com' },
+    });
+    fireEvent.change(screen.getByTestId('hub-account-password' as any), {
+      target: { value: 'longpassword12' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^continue$/i } as any) as any);
+    });
+    await waitFor(() => {
+      expect(loginHubAuth!).toHaveBeenCalledWith(
         expect.objectContaining({ username: 'admin@example.com', password: 'longpassword12' }),
       );
     });
@@ -209,6 +244,19 @@ describe('SetupWizard — welcome auto-creates org', () => {
     });
     expect(switchOrg!).toHaveBeenCalledWith('org-new');
     expect(screen.getByText(/Choose Your AI Engines/i)).toBeInTheDocument();
+  });
+
+  it('skips org mutation when an active org already exists (avoids Welcome-step 401)', async () => {
+    (getActiveOrg as any).mockReturnValue({ id: 'default', name: 'Default', mode: 'local' });
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /continue/i } as any) as any);
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Choose Your AI Engines/i)).toBeInTheDocument();
+    });
+    expect(updateOrg!).not.toHaveBeenCalled();
+    expect(createOrg!).not.toHaveBeenCalled();
   });
 });
 

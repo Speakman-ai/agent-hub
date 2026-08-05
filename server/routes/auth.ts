@@ -58,6 +58,7 @@ import {
   getUserCredentialVersion,
   countUsers,
   migrateAuthRecordIfNeeded,
+  ensureOwnerUserFromAuthRecord,
   getUserClaudeAuth,
   setUserClaudeAuth,
   getUserCursorAuth,
@@ -124,6 +125,7 @@ import {
 } from '../per-user-codex-device-login.js';
 import { createApiKey, listApiKeys, revokeApiKey, countApiKeysForUser } from '../api-keys-store.js';
 import { recoverActiveSessionsAfterSetup } from '../spawn-creds-setup-recovery.js';
+import { markOnboardingIncomplete } from '../onboarding-complete.js';
 import {
   listMaskedUserSkillCredentials,
   upsertUserSkillCredential,
@@ -2306,24 +2308,39 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       role: 'Owner',
     });
 
-    // Phase 3: also seed the users + memberships tables. The migration
-    // helper is a no-op after the first run, so it's safe to call every
-    // time setup is invoked. Swallow orgs-db-not-initialized — a few
-    // legacy test paths skip that setup and we still want auth.json to
-    // land.
+    // Owner creation is only step 1 of SetupWizard. Mark onboarding
+    // incomplete so a reload / password-manager interrupt after this
+    // response still resumes the wizard instead of treating auth.json
+    // as "setup finished".
+    try {
+      markOnboardingIncomplete(config.dataDir);
+    } catch (err) {
+      console.warn(
+        `[Auth] markOnboardingIncomplete after /setup failed: ${(err as Error).message}`,
+      );
+    }
+
+    // Phase 3: seed the Owner into users + memberships. Prefer
+    // `ensureOwnerUserFromAuthRecord` over the one-shot migration helper —
+    // synthetic `local-<orgId>` rows created before setup finishes must
+    // not block Owner seeding (that left JWTs with an empty `sub`).
     let user = null;
     try {
       migrateAuthRecordIfNeeded();
-      user = getUserByUsername(record.username);
+      user = ensureOwnerUserFromAuthRecord();
+      if (!user) user = getUserByUsername(record.username);
     } catch (err) {
-      console.error('[Auth] migrateAuthRecordIfNeeded after /setup failed:', err);
+      console.error('[Auth] Owner user seed after /setup failed:', err);
     }
 
-    const { token, expiresAt } = issueToken(
-      user ?? { id: '', username: record.username },
-      record.role,
-      record.jwtSecret,
-    );
+    if (!user?.id) {
+      res.status(500).json({
+        error: 'Failed to create owner user record. Retry setup or check server logs.',
+      });
+      return;
+    }
+
+    const { token, expiresAt } = issueToken(user, record.role, record.jwtSecret);
 
     // Spawn-env staleness recovery. Sessions spawned before auth.json
     // existed are running with an empty `AGENT_HUB_API_KEY` env; the
@@ -2358,7 +2375,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       ok: true,
       token,
       expiresAt,
-      user: tokenUserPayload(user ?? { id: '', username: record.username }, record.role),
+      user: tokenUserPayload(user, record.role),
     });
   });
 
@@ -2409,10 +2426,13 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     }
 
     if (!user) {
-      // Run the migration and re-resolve so we can issue a proper uid token.
+      // auth.json matched but no users row yet (or only synthetic
+      // `local-*` rows exist). Force-seed the Owner rather than relying
+      // on migrateAuthRecordIfNeeded, which no-ops when any user exists.
       try {
         migrateAuthRecordIfNeeded();
-        user = getUserByUsername(username);
+        user = ensureOwnerUserFromAuthRecord();
+        if (!user) user = getUserByUsername(username);
       } catch {
         user = null;
       }
