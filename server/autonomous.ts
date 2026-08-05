@@ -23,7 +23,9 @@ import { resolveEffectiveModel } from './effective-model.js';
 import {
   loadBoardBlockers,
   hasUnresolvedBlockers,
+  isColumnCancelled,
   isColumnDone,
+  isColumnNotStarted,
   type BoardBlockerIndex,
 } from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
@@ -954,15 +956,33 @@ async function runAutonomousLoopInner(
     // the cascade advances via `maybeAdvanceToNextPhase` once the card lands in
     // Done. Kicking the next armed phase here would run every phase at once
     // while their predecessors are still in flight (the "phases start all at
-    // once" bug). The deadlock signature is narrower: this phase HAS a To Do
-    // candidate that is held back solely by an unresolved blocker (typically a
-    // card in a later phase). Only then do we start the earliest ready phase to
-    // break the positional stall.
+    // once" bug).
+    //
+    // The deadlock signature needs BOTH halves:
+    //   1. Nothing in this phase is in flight. A started-but-not-Done card means
+    //      the phase is progressing on its own, so there is nothing to heal.
+    //      This is the half that was missing, and the common shape (dispatched
+    //      card sitting In Progress with its follow-up card blocked behind it)
+    //      kicked every armed sibling phase awake on the very next tick.
+    //   2. A To Do candidate is held back by a blocker OUTSIDE this phase. An
+    //      intra-phase blocker clears when this phase's own runner works through
+    //      its cards, so starting a sibling phase does nothing for it.
     if (phase) {
-      const hasBlockedCandidate = [...rawEligible, ...rawSpikeEligible].some((c) =>
-        hasUnresolvedBlockers(c.id, blockerIndex),
+      const phaseCardIds = new Set(allScopeCards.map((c) => c.id));
+      const hasInFlightCard = allScopeCards.some((c) => {
+        const columnName = colNameByIdForEpic[c.column_id];
+        return (
+          !isColumnDone(columnName) &&
+          !isColumnCancelled(columnName) &&
+          !isColumnNotStarted(columnName)
+        );
+      });
+      const hasCrossPhaseBlockedCandidate = [...rawEligible, ...rawSpikeEligible].some((c) =>
+        (blockerIndex.blockersByCard.get(c.id) ?? []).some(
+          (b) => !b.done && !phaseCardIds.has(b.id),
+        ),
       );
-      if (hasBlockedCandidate) {
+      if (!hasInFlightCard && hasCrossPhaseBlockedCandidate) {
         await maybeStartEarliestReadyPhase(projectId, epic, phase, blockerIndex);
       }
     }

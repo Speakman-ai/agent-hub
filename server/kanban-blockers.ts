@@ -53,6 +53,18 @@ export function isColumnCancelled(columnName: string | null | undefined): boolea
 }
 
 /**
+ * Backlog-style columns holding work that has not been picked up yet. Matches
+ * the default seed's "To Do" plus any column whose name contains "backlog".
+ * Combined with {@link isColumnDone} / {@link isColumnCancelled} this
+ * classifies a card as not-started vs. in-flight vs. finished.
+ */
+export function isColumnNotStarted(columnName: string | null | undefined): boolean {
+  if (!columnName) return false;
+  const normalized = columnName.trim().toLowerCase();
+  return normalized === 'to do' || normalized === 'todo' || normalized.includes('backlog');
+}
+
+/**
  * Shipped / release lanes count as closed for org headline metrics (`openCards`,
  * `openPRs`, priority breakdown). Uses a word-boundary match on `shipped` so
  * **"Unshipped"** is not misclassified (a naive `includes('shipped')` would).

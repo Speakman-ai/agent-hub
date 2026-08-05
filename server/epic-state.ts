@@ -1,15 +1,9 @@
-import { isColumnCancelled, isColumnDone } from './kanban-blockers.js';
+import { isColumnCancelled, isColumnDone, isColumnNotStarted } from './kanban-blockers.js';
 import type { KanbanCardRow, KanbanColumnRow, KanbanEpicRow, Stmts } from './types.js';
 
 export const EPIC_STATES = ['not_started', 'in_progress', 'done'] as const;
 export type EpicState = (typeof EPIC_STATES)[number];
 export type EpicLifecycleState = EpicState | null;
-
-function isNotStartedColumn(columnName: string | null | undefined): boolean {
-  if (!columnName) return false;
-  const normalized = columnName.trim().toLowerCase();
-  return normalized === 'to do' || normalized === 'todo' || normalized.includes('backlog');
-}
 
 export function computeEpicState(
   cards: Pick<KanbanCardRow, 'column_id'>[],
@@ -25,7 +19,7 @@ export function computeEpicState(
   if (allDone) return 'done';
   const anyStarted = liveCards.some((card) => {
     const columnName = columnNameById.get(card.column_id);
-    return isColumnDone(columnName) || !isNotStartedColumn(columnName);
+    return isColumnDone(columnName) || !isColumnNotStarted(columnName);
   });
   return anyStarted ? 'in_progress' : 'not_started';
 }

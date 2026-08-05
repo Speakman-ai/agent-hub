@@ -1171,6 +1171,165 @@ describe('runAutonomousLoop — dispatch', () => {
     );
   });
 
+  it('does NOT start a later ready phase when an in-flight card holds a blocked follow-up', async () => {
+    // Regression for "phases still don't run sequentially". The reported shape:
+    // the running phase dispatched card A (now In Progress) and its follow-up
+    // card B sits in To Do blocked by a card in a LATER phase. The eligible set
+    // is empty and a blocked candidate exists, which used to read as a
+    // cross-phase deadlock — so every armed sibling phase got kicked awake while
+    // the first phase was still working. An in-flight card means the phase is
+    // progressing; the heal must stay dormant until that card lands.
+    const front = makePhase({
+      id: 'phase-front',
+      name: 'Front',
+      position: 0,
+      autonomous: 1,
+      autonomous_running: 1,
+      autonomous_enabled_by: 'owner-1',
+    });
+    const next = makePhase({
+      id: 'phase-next',
+      name: 'Next',
+      position: 1,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: null,
+    });
+    const byId: Record<string, KanbanPhaseRow> = { [front.id]: front, [next.id]: next };
+    const inFlight = makeCard({
+      id: 'front-inflight',
+      phase_id: front.id,
+      column_id: 'col-progress',
+    });
+    const blockedFollowUp = makeCard({
+      id: 'front-blocked',
+      phase_id: front.id,
+      column_id: 'col-todo',
+    });
+    const nextCard = makeCard({ id: 'next-card', phase_id: next.id, column_id: 'col-todo' });
+    const blockerRow = {
+      card_id: 'front-blocked',
+      blocked_by_card_id: 'next-card',
+      blocker_id: 'next-card',
+      blocker_title: 'Next work',
+      blocker_column_id: 'col-todo',
+      blocker_column_name: 'To Do',
+      blocked_id: 'front-blocked',
+      blocked_title: 'Front follow-up',
+      blocked_column_id: 'col-todo',
+      blocked_column_name: 'To Do',
+    };
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, id: 'epic-1', autonomous: 1 })) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanPhase: { get: vi.fn((id: string) => byId[id]) },
+      getKanbanPhasesByEpic: { all: vi.fn(() => [front, next]) },
+      getKanbanCardsByPhase: {
+        all: vi.fn((id: string) => (id === front.id ? [inFlight, blockedFollowUp] : [nextCard])),
+      },
+      getEligibleAutonomousCardsByPhase: {
+        all: vi.fn((id: string) => (id === front.id ? [blockedFollowUp] : [nextCard])),
+      },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      getBlockersForBoard: { all: vi.fn(() => [blockerRow]) },
+      setPhaseAutonomousEnabledBy: { run: vi.fn() },
+      setPhaseAutonomousRunning: {
+        run: vi.fn((val: number, id: string) => {
+          if (byId[id]) byId[id] = { ...byId[id], autonomous_running: val };
+        }),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-front');
+
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, 'phase-next');
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'phase-next',
+    );
+  });
+
+  it('does NOT start a later ready phase when the only blocker is inside the same phase', async () => {
+    // An intra-phase blocker is self-resolvable: this phase's own runner works
+    // through its cards and clears it. Starting a sibling phase does nothing for
+    // it and just runs the epic out of order.
+    const front = makePhase({
+      id: 'phase-front',
+      name: 'Front',
+      position: 0,
+      autonomous: 1,
+      autonomous_running: 1,
+      autonomous_enabled_by: 'owner-1',
+    });
+    const next = makePhase({
+      id: 'phase-next',
+      name: 'Next',
+      position: 1,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: null,
+    });
+    const byId: Record<string, KanbanPhaseRow> = { [front.id]: front, [next.id]: next };
+    // Both front cards sit in To Do (nothing in flight), but the second is
+    // blocked by the first — which is assigned, so it is not itself eligible.
+    const frontLead = makeCard({
+      id: 'front-lead',
+      phase_id: front.id,
+      column_id: 'col-todo',
+      assignee: 'Someone',
+    });
+    const frontBlocked = makeCard({
+      id: 'front-blocked',
+      phase_id: front.id,
+      column_id: 'col-todo',
+    });
+    const nextCard = makeCard({ id: 'next-card', phase_id: next.id, column_id: 'col-todo' });
+    const blockerRow = {
+      card_id: 'front-blocked',
+      blocked_by_card_id: 'front-lead',
+      blocker_id: 'front-lead',
+      blocker_title: 'Front lead',
+      blocker_column_id: 'col-todo',
+      blocker_column_name: 'To Do',
+      blocked_id: 'front-blocked',
+      blocked_title: 'Front follow-up',
+      blocked_column_id: 'col-todo',
+      blocked_column_name: 'To Do',
+    };
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, id: 'epic-1', autonomous: 1 })) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanPhase: { get: vi.fn((id: string) => byId[id]) },
+      getKanbanPhasesByEpic: { all: vi.fn(() => [front, next]) },
+      getKanbanCardsByPhase: {
+        all: vi.fn((id: string) => (id === front.id ? [frontLead, frontBlocked] : [nextCard])),
+      },
+      getEligibleAutonomousCardsByPhase: {
+        all: vi.fn((id: string) => (id === front.id ? [frontBlocked] : [nextCard])),
+      },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      getBlockersForBoard: { all: vi.fn(() => [blockerRow]) },
+      setPhaseAutonomousEnabledBy: { run: vi.fn() },
+      setPhaseAutonomousRunning: {
+        run: vi.fn((val: number, id: string) => {
+          if (byId[id]) byId[id] = { ...byId[id], autonomous_running: val };
+        }),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-front');
+
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, 'phase-next');
+  });
+
   it('skips dispatch when no session owner can be resolved', async () => {
     const card = makeCard();
     const stmts = makeStmts({
