@@ -6710,8 +6710,10 @@ components:
           nullable: true
         firstSeen:
           type: integer
+          description: Epoch nanoseconds (record time_unix_nano), not millis.
         lastSeen:
           type: integer
+          description: Epoch nanoseconds (record time_unix_nano), not millis.
         eventCount:
           type: integer
       required:
@@ -6745,8 +6747,10 @@ components:
           nullable: true
         firstSeen:
           type: integer
+          description: Epoch nanoseconds (record time_unix_nano), not millis.
         lastSeen:
           type: integer
+          description: Epoch nanoseconds (record time_unix_nano), not millis.
         eventCount:
           type: integer
         status:

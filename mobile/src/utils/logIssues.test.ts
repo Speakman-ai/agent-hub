@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   STATUS_TABS,
   issueDisplayTitle,
+  issueMetaLine,
+  issueSeenLabel,
   mergeIssuePage,
   applyIssueUpdate,
   applyTransitionToList,
@@ -41,6 +43,68 @@ describe('issueDisplayTitle', () => {
     expect(issueDisplayTitle({ title: 'Boom', messageTemplate: 'x' })).toBe('Boom');
     expect(issueDisplayTitle({ title: null, messageTemplate: 'template' })).toBe('template');
     expect(issueDisplayTitle({ title: null, messageTemplate: null })).toBe('(no message)');
+  });
+});
+
+describe('issueMetaLine', () => {
+  const MS_PER_NS = 1e6;
+
+  it('renders the real age of a nanosecond lastSeen instead of "just now"', () => {
+    // Regression: lastSeen crosses the wire in epoch nanoseconds. Passing it
+    // straight to the ms-based formatter produced an Invalid Date, so every
+    // issue row read "just now" no matter how old it was.
+    const line = issueMetaLine({
+      service: 'checkout',
+      environment: 'prod',
+      eventCount: 1234,
+      lastSeen: (Date.now() - 30 * 60_000) * MS_PER_NS,
+    });
+    expect(line).toBe(`checkout · prod · ${(1234).toLocaleString()} events · last 30m ago`);
+    expect(line).not.toContain('just now');
+  });
+
+  it('still says "just now" for a genuinely fresh issue', () => {
+    const line = issueMetaLine({
+      service: null,
+      environment: null,
+      eventCount: 1,
+      lastSeen: Date.now() * MS_PER_NS,
+    });
+    expect(line).toBe(`${(1).toLocaleString()} events · last just now`);
+  });
+
+  it('drops empty segments and an unusable timestamp', () => {
+    expect(
+      issueMetaLine({ service: null, environment: null, eventCount: 3, lastSeen: 0 }),
+    ).toBe(`${(3).toLocaleString()} events`);
+  });
+
+  it('drops the label for an oversized timestamp rather than trailing a bare "last "', () => {
+    expect(
+      issueMetaLine({ service: null, environment: null, eventCount: 3, lastSeen: 1e22 }),
+    ).toBe(`${(3).toLocaleString()} events`);
+  });
+});
+
+describe('issueSeenLabel', () => {
+  it('formats a nanosecond timestamp as an absolute local string', () => {
+    const ms = Date.now() - 90 * 60_000;
+    expect(issueSeenLabel(ms * 1e6)).toBe(new Date(ms).toLocaleString());
+  });
+
+  it('returns null rather than a fabricated or broken date for unusable input', () => {
+    // Every input class that used to reach the formatter and render something
+    // meaningless in the detail view:
+    //   0 / negatives      — epoch-zero "1/1/1970"
+    //   1..999_999 ns      — positive but floors to 0 ms, same 1970 output
+    //   1e22 / MAX_VALUE   — past the Date range, renders "Invalid Date"
+    const bad = [0, -1, 1, 500_000, 999_999, 1e22, Number.MAX_VALUE, NaN, Infinity, null, undefined];
+    for (const value of bad) {
+      const label = issueSeenLabel(value as number);
+      expect(label).toBeNull();
+      expect(label ?? '').not.toContain('1970');
+      expect(label ?? '').not.toContain('Invalid');
+    }
   });
 });
 

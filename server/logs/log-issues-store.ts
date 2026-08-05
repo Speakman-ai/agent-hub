@@ -556,7 +556,14 @@ export function releaseIssueFixClaimsForSession(sessionId: string): void {
 
 // ── Serialization ───────────────────────────────────────────────────────────
 
-/** Wire (camelCase) representation of an issue for the REST API. */
+/**
+ * Wire (camelCase) representation of an issue for the REST API.
+ *
+ * `firstSeen` / `lastSeen` stay in the record's native epoch **nanoseconds** —
+ * the list cursor is `${last_seen}_${id}`, so rescaling them here would break
+ * pagination. Clients convert with `shared/utils/logIssueTime#logIssueSeenMs`
+ * before handing them to any Date formatter.
+ */
 export function serializeLogIssue(
   row: LogIssueRow,
   releases?: LogIssueReleaseRow[],

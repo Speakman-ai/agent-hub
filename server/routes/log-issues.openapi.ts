@@ -15,8 +15,8 @@ const LogIssueRelease = registerComponent(
   z.object({
     release: z.string().nullable(),
     commitSha: z.string().nullable(),
-    firstSeen: z.number().int(),
-    lastSeen: z.number().int(),
+    firstSeen: z.number().int().describe('Epoch nanoseconds (record time_unix_nano), not millis.'),
+    lastSeen: z.number().int().describe('Epoch nanoseconds (record time_unix_nano), not millis.'),
     eventCount: z.number().int(),
   }),
 );
@@ -32,8 +32,8 @@ const LogIssue = registerComponent(
     environment: z.string().nullable(),
     exceptionType: z.string().nullable(),
     messageTemplate: z.string().nullable(),
-    firstSeen: z.number().int(),
-    lastSeen: z.number().int(),
+    firstSeen: z.number().int().describe('Epoch nanoseconds (record time_unix_nano), not millis.'),
+    lastSeen: z.number().int().describe('Epoch nanoseconds (record time_unix_nano), not millis.'),
     eventCount: z.number().int(),
     status: z.enum(ISSUE_STATUSES as unknown as [string, ...string[]]),
     statusUpdatedAt: z.number().int().nullable(),

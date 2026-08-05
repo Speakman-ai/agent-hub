@@ -34,6 +34,7 @@ import {
   type LogIssueActionEvent,
   type LogIssueActionLinks,
 } from '@shared/utils/logIssueActions';
+import { logIssueSeenMs } from '@shared/utils/logIssueTime';
 
 interface IssueRelease {
   release: string | null;
@@ -52,7 +53,9 @@ interface LogIssue {
   environment: string | null;
   exceptionType: string | null;
   messageTemplate: string | null;
+  /** Epoch nanoseconds — convert with `logIssueSeenMs` before formatting. */
   firstSeen: number;
+  /** Epoch nanoseconds — convert with `logIssueSeenMs` before formatting. */
   lastSeen: number;
   eventCount: number;
   status: 'open' | 'resolved' | 'ignored';
@@ -443,6 +446,8 @@ export default function IssuesView({
           <ul className="space-y-1">
             {issues.map((issue) => {
               const isOpen = expandedId === issue.id;
+              const firstSeenMs = logIssueSeenMs(issue.firstSeen);
+              const lastSeenMs = logIssueSeenMs(issue.lastSeen);
               return (
                 <li key={issue.id} className="rounded border border-gray-800 bg-gray-900/40">
                   <button
@@ -469,9 +474,11 @@ export default function IssuesView({
                         {issue.service ? <span>{issue.service}</span> : null}
                         {issue.environment ? <span>{issue.environment}</span> : null}
                         <span>{issue.eventCount.toLocaleString()} events</span>
-                        <span title={formatDateTime(issue.lastSeen)}>
-                          last {relativeTime(issue.lastSeen) || 'just now'}
-                        </span>
+                        {lastSeenMs !== null ? (
+                          <span title={formatDateTime(lastSeenMs)}>
+                            last {relativeTime(lastSeenMs)}
+                          </span>
+                        ) : null}
                       </span>
                     </span>
                     {statusBadge(issue.status)}
@@ -612,14 +619,20 @@ export default function IssuesView({
                       </div>
 
                       <dl className="mb-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-gray-400 sm:grid-cols-4">
-                        <div>
-                          <dt className="text-gray-600">First seen</dt>
-                          <dd className="text-gray-200">{formatDateTime(issue.firstSeen)}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-gray-600">Last seen</dt>
-                          <dd className="text-gray-200">{formatDateTime(issue.lastSeen)}</dd>
-                        </div>
+                        {/* An unusable timestamp drops the whole term — a label
+                            with a blank value beside it reads as a rendering bug. */}
+                        {firstSeenMs !== null ? (
+                          <div>
+                            <dt className="text-gray-600">First seen</dt>
+                            <dd className="text-gray-200">{formatDateTime(firstSeenMs)}</dd>
+                          </div>
+                        ) : null}
+                        {lastSeenMs !== null ? (
+                          <div>
+                            <dt className="text-gray-600">Last seen</dt>
+                            <dd className="text-gray-200">{formatDateTime(lastSeenMs)}</dd>
+                          </div>
+                        ) : null}
                         <div>
                           <dt className="text-gray-600">Events</dt>
                           <dd className="text-gray-200">{issue.eventCount.toLocaleString()}</dd>

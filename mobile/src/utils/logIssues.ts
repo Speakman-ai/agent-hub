@@ -8,6 +8,8 @@
  * <Text> only.
  */
 import type { LogRecord } from './logStream';
+import { logIssueSeenMs } from '@shared/utils/logIssueTime';
+import { relativeTime } from './time';
 
 export interface IssueRelease {
   release: string | null;
@@ -28,7 +30,9 @@ export interface LogIssue {
   environment: string | null;
   exceptionType: string | null;
   messageTemplate: string | null;
+  /** Epoch nanoseconds — convert with `logIssueSeenMs` before formatting. */
   firstSeen: number;
+  /** Epoch nanoseconds — convert with `logIssueSeenMs` before formatting. */
   lastSeen: number;
   eventCount: number;
   status: IssueStatus;
@@ -54,6 +58,40 @@ export const STATUS_TABS: ReadonlyArray<{ key: string; label: string }> = [
 /** Display label for an issue row header — never empty. */
 export function issueDisplayTitle(issue: Pick<LogIssue, 'title' | 'messageTemplate'>): string {
   return issue.title || issue.messageTemplate || '(no message)';
+}
+
+/**
+ * Meta line under an issue title: `service · env · N events · last 30m ago`.
+ *
+ * `lastSeen` is epoch nanoseconds, so it must go through `logIssueSeenMs`
+ * before any Date-based formatting. Segments with nothing to say (including an
+ * unusable timestamp) are dropped rather than rendered as a placeholder.
+ */
+export function issueMetaLine(
+  issue: Pick<LogIssue, 'service' | 'environment' | 'eventCount' | 'lastSeen'>,
+): string {
+  const lastSeenMs = logIssueSeenMs(issue.lastSeen);
+  return [
+    issue.service || null,
+    issue.environment || null,
+    `${issue.eventCount.toLocaleString()} events`,
+    lastSeenMs !== null ? `last ${relativeTime(lastSeenMs)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
+ * Absolute local timestamp for an issue "seen" field (epoch nanoseconds).
+ *
+ * Returns `null` — not a placeholder date or an empty string — when the value
+ * is unusable, so the caller can drop the whole row instead of rendering a
+ * label with nothing (or worse, an epoch-zero `1970-01-01`) next to it.
+ */
+export function issueSeenLabel(timeUnixNano: number | null | undefined): string | null {
+  const ms = logIssueSeenMs(timeUnixNano);
+  if (ms === null) return null;
+  return new Date(ms).toLocaleString();
 }
 
 /**

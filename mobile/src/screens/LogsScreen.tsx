@@ -29,7 +29,6 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import { relativeTime } from '../utils/time';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import { useApp } from '../context/AppContext';
 import { LogSourcesPanel } from './LogSourcesScreen';
@@ -58,6 +57,8 @@ import {
 import {
   STATUS_TABS,
   issueDisplayTitle,
+  issueMetaLine,
+  issueSeenLabel,
   mergeIssuePage,
   applyIssueUpdate,
   applyTransitionToList,
@@ -934,14 +935,7 @@ export function IssuesView({
               {issueDisplayTitle(issue)}
             </Text>
             <Text style={styles.issueMeta} numberOfLines={1}>
-              {[
-                issue.service || null,
-                issue.environment || null,
-                `${issue.eventCount.toLocaleString()} events`,
-                `last ${relativeTime(issue.lastSeen) || 'just now'}`,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
+              {issueMetaLine(issue)}
             </Text>
           </View>
           <IssueStatusChip status={issue.status} />
@@ -1005,8 +999,8 @@ export function IssuesView({
             </View>
 
             <View style={styles.issueFacts}>
-              <Fact label="First seen" value={fmtAbs(issue.firstSeen)} />
-              <Fact label="Last seen" value={fmtAbs(issue.lastSeen)} />
+              <Fact label="First seen" value={issueSeenLabel(issue.firstSeen)} />
+              <Fact label="Last seen" value={issueSeenLabel(issue.lastSeen)} />
               <Fact label="Events" value={issue.eventCount.toLocaleString()} />
               <Fact label="Fingerprint" value={issue.fingerprint.slice(0, 12)} mono />
             </View>
@@ -1098,7 +1092,13 @@ export function IssuesView({
   );
 }
 
-function Fact({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+/**
+ * One label/value pair in the issue detail grid. A `null`/empty value drops the
+ * whole row — a label with nothing beside it reads as a rendering bug, and a
+ * fabricated stand-in value would be worse.
+ */
+function Fact({ label, value, mono }: { label: string; value: string | null; mono?: boolean }) {
+  if (!value) return null;
   return (
     <View style={styles.fact}>
       <Text style={styles.factLabel}>{label}</Text>

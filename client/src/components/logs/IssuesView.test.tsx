@@ -24,8 +24,9 @@ const openIssue = {
   environment: 'prod',
   exceptionType: 'TypeError',
   messageTemplate: 'cannot read property x',
-  firstSeen: 1_700_000_000_000,
-  lastSeen: 1_700_000_500_000,
+  // Epoch nanoseconds, matching what the server stores/serializes.
+  firstSeen: 1_700_000_000_000_000_000,
+  lastSeen: 1_700_000_500_000_000_000,
   eventCount: 42,
   status: 'open' as const,
   statusUpdatedAt: null,
@@ -90,6 +91,57 @@ describe('IssuesView', () => {
     expect(await screen.findByText('1.4.0')).toBeInTheDocument();
     expect(await screen.findByText('boom happened')).toBeInTheDocument();
     expect(api.getLogIssue).toHaveBeenCalledWith('p1', 'iss-1');
+  });
+
+  it('renders the real age of an issue instead of collapsing to "just now"', async () => {
+    // Regression: `lastSeen` is epoch nanoseconds. Feeding it straight to a
+    // Date formatter produced an Invalid Date, so every row read "just now"
+    // regardless of age.
+    const nowMs = Date.now();
+    const firstSeenMs = nowMs - 90 * 60_000;
+    const staleIssue = {
+      ...openIssue,
+      firstSeen: firstSeenMs * 1e6,
+      lastSeen: (nowMs - 30 * 60_000) * 1e6,
+    };
+    (api.listLogIssues as any).mockResolvedValue({ issues: [staleIssue], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...staleIssue, releases: [], samples: [] });
+
+    render(<IssuesView projectId="p1" />);
+    expect(await screen.findByText('last 30m ago')).toBeInTheDocument();
+    expect(screen.queryByText(/just now/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/cannot read property x of undefined/i));
+    expect(await screen.findByText(new Date(firstSeenMs).toLocaleString())).toBeInTheDocument();
+  });
+
+  it('omits the last-seen label when the timestamp is unusable', async () => {
+    (api.listLogIssues as any).mockResolvedValue({
+      issues: [{ ...openIssue, lastSeen: 0 }],
+      nextCursor: null,
+    });
+    render(<IssuesView projectId="p1" />);
+    await screen.findByText(/cannot read property x of undefined/i);
+    expect(screen.queryByText(/^last /)).not.toBeInTheDocument();
+  });
+
+  it('drops the First/Last seen detail terms when the timestamps are unusable', async () => {
+    // A label with a blank value beside it reads as a rendering bug, and an
+    // epoch-zero or "Invalid Date" stand-in would be worse — so the whole term
+    // goes. 500_000 ns underflows to 0 ms; 1e22 ns overflows the Date range.
+    const undated = { ...openIssue, firstSeen: 500_000, lastSeen: 1e22 };
+    (api.listLogIssues as any).mockResolvedValue({ issues: [undated], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...undated, releases: [], samples: [] });
+
+    render(<IssuesView projectId="p1" />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+
+    // Detail is open (a sibling term renders), but the undated ones are gone.
+    expect(await screen.findByText('Fingerprint')).toBeInTheDocument();
+    expect(screen.queryByText('First seen')).not.toBeInTheDocument();
+    expect(screen.queryByText('Last seen')).not.toBeInTheDocument();
+    expect(screen.queryByText(/1970/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
   });
 
   it('drives the resolve lifecycle transition and updates status', async () => {
