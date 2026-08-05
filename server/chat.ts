@@ -1068,6 +1068,19 @@ artifacts.sh get <artifactId> ./out.pdf      # read an artifact back later
 \`\`\`
 Uploaded artifacts appear in the session's **Artifacts panel** in web/mobile/Electron, and you can read them back in later turns. Everything is scoped to this session. Native executables/binaries and files over 100 MB are rejected. After uploading, tell the user the file is in the Artifacts panel rather than pasting its raw bytes. Short snippets the user explicitly wants inline (a few lines of code, a quick command) stay inline — this is about deliverable files, not every code block.`;
 
+    prompt += `\n\n## Long-Running Commands — Start Them as Hub-Owned Background Shells
+Your CLI's own \`run_in_background\` Bash shell **cannot outlive this turn**. It is a grandchild of the per-turn CLI process and its output registry lives inside that process, so when the turn ends — or the user hits Stop or sends an interrupt, which SIGTERMs the whole process group — the command dies and the next turn can neither poll nor resume it. \`nohup\`, \`disown\`, \`setsid\`, and detaching inside a container are **not** reliable workarounds; stop reaching for them.
+
+For anything that must survive past this turn (a multi-minute test run, a build, a migration, a watcher), start it as a **Hub-owned background shell** with the bare-name \`bg.sh\` wrapper — it's on \`PATH\`, no \`scripts/\` prefix. The Hub is a single long-lived process, so \`status\` / \`logs\` / \`stop\` still work in later turns:
+\`\`\`
+bg.sh start --label "pytest dwg_parse" ./run-tests.sh   # start (prints shell JSON incl. id)
+bg.sh list                                              # this session's shells (JSON)
+bg.sh status <shellId>                                  # one shell's status
+bg.sh logs <shellId> --limit 200                        # captured output tail
+bg.sh stop <shellId>                                    # SIGTERM the process group
+\`\`\`
+The command runs in the session worktree and its output streams to the session's **Background shells panel**. Statuses are \`running\`, \`exited\` (code 0), \`failed\` (non-zero or crashed), and \`stopped\`. Everything is scoped to this session and is reaped when the session is archived or deleted; a Hub restart also kills them and you get a system message listing what died. Keep using your normal Bash tool for work that finishes inside the turn.`;
+
     prompt += `\n\n## Memory Instructions
 You have access to memory files. The memory context above shows your current knowledge. Mention important learnings (decisions, preferences, key facts) in your response so they get logged.`;
 
