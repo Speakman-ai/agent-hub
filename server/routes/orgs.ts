@@ -7,6 +7,7 @@ import {
   updateOrg as updateOrgRecord,
   deleteOrg as deleteOrgRecord,
   orgDataDir,
+  getActiveOrgId,
   setActiveOrgId,
 } from '../orgs.js';
 import { createMembership, getMembershipRole, listMembersForOrg } from '../memberships-store.js';
@@ -44,6 +45,14 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
   const router = Router();
 
   function performOrgSwitch(orgId: string): void {
+    // The SPA posts /orgs/:id/switch on every App mount (and React Strict
+    // Mode doubles it). Re-running initDb + scheduleAll for the org we
+    // are already on floods the log, flaps WebSockets, and can wedge the
+    // event loop under a reload storm. No-op when already active.
+    if (getActiveOrgId() === orgId) {
+      return;
+    }
+
     const dataDir = orgDataDir(orgId);
     mkdirSync(dataDir, { recursive: true });
 

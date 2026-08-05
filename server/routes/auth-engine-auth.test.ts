@@ -185,6 +185,9 @@ for (const fx of engineFixtures) {
       const res = await supertest(app).get(fx.path).set('x-api-key', 'test-shared-secret');
       expect(res.status).toBe(401);
       expect(res.body.error).toMatch(/authentication/i);
+      // See auth-claude-auth.test.ts — `no_user_identity` is what tells the
+      // SPA this 401 is recoverable rather than a dead session.
+      expect(res.body.code).toBe('no_user_identity');
     });
 
     it('returns 404 when the resolved authUserId points at no user row', async () => {
@@ -245,6 +248,7 @@ for (const fx of engineFixtures) {
         .set('x-api-key', 'test-shared-secret')
         .send({ apiKey: fx.sampleKey });
       expect(res.status).toBe(401);
+      expect(res.body.code).toBe('no_user_identity');
     });
 
     it('returns 404 when the resolved authUserId points at no user row', async () => {

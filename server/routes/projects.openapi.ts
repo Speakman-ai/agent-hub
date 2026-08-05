@@ -481,11 +481,14 @@ export const SetupStatusComponent = registerComponent(
     .object({
       firstRun: z.boolean().openapi({
         description:
-          'True when no projects exist yet — the client pops the first-run setup wizard.',
+          'True when no projects exist yet — the client may open the first-project flow after onboarding.',
       }),
       authConfigured: z.boolean().openapi({
+        description: 'True once an Agent Hub Owner record exists (auth.json / users table).',
+      }),
+      onboardingComplete: z.boolean().openapi({
         description:
-          'True once an Agent Hub Owner record exists. Authoritative "setup wizard completed" signal.',
+          'True once the interactive SetupWizard has finished. Authoritative gate for resuming an interrupted first-run (e.g. password-manager kickout after Owner creation). Legacy installs without the flag treat authConfigured as complete.',
       }),
       hasAnyAiCredentials: z.boolean().openapi({
         description: 'True when the requesting user has at least one working engine credential.',
@@ -521,11 +524,42 @@ registerPath({
   tags: ['Projects'],
   summary: 'Boot-time setup + engine availability status',
   description:
-    'Reports first-run / auth-configured state, the requesting user’s per-engine credential status, and each engine binary’s availability and resolved path. Probes `<bin> --version` in parallel with a 5s timeout per engine. Drives the client’s setup-wizard gating on app load.',
+    'Reports first-run / auth-configured / onboarding-complete state, the requesting user’s per-engine credential status, and each engine binary’s availability and resolved path. Probes `<bin> --version` in parallel with a 5s timeout per engine. Drives the client’s setup-wizard gating on app load.',
   responses: {
     200: {
       description: 'Setup + engine status.',
       content: jsonContent(SetupStatusComponent),
+    },
+  },
+});
+
+// POST /api/setup/complete
+registerPath({
+  method: 'post',
+  path: '/api/setup/complete',
+  tags: ['Projects'],
+  summary: 'Mark interactive first-run SetupWizard complete',
+  description:
+    'Persists `onboardingComplete: true` in config.json so a later reload does not re-open the SetupWizard. Called when the client finishes the wizard (Open Project). Distinct from Owner creation via POST /api/auth/setup. Requires the Owner role — the flag is global instance state, so a non-Owner must not be able to mark another operator’s interrupted first-run as finished.',
+  responses: {
+    200: {
+      description: 'Onboarding marked complete.',
+      content: jsonContent(
+        z
+          .object({
+            ok: z.literal(true),
+            onboardingComplete: z.literal(true),
+          })
+          .openapi({ description: 'Confirmation that onboarding is complete.' }),
+      ),
+    },
+    403: {
+      description: 'Caller is authenticated but not an Owner.',
+      content: jsonContent(z.object({ error: z.string() })),
+    },
+    500: {
+      description: 'Failed to persist the flag.',
+      content: jsonContent(z.object({ error: z.string() })),
     },
   },
 });

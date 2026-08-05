@@ -368,6 +368,12 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   // per-user auth. Populate a synthetic `local` Owner identity so
   // downstream handlers still see `authUser`, `authRole`, and
   // `authOrgId`, then short-circuit the JWT/apiKey branches below.
+  //
+  // Prefer the real Owner `users` row when auth.json exists so
+  // `/api/auth/me/*` (Claude/Cursor/…) can resolve `authUserId`. Without
+  // that, those routes 401 and the SPA's fetchJSON dead-session handler
+  // clears the JWT + reloads into LoginScreen — the "kicked to login
+  // after first project" loop on local installs.
   if (isLocalBundledServer()) {
     const r = req as AuthenticatedRequest;
     r.authUser = 'local';
@@ -375,7 +381,21 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     r.authLocalOrgBypass = true;
     try {
       r.authOrgId = getActiveOrgId();
-    } catch {}
+    } catch {
+      /* orgs.db not ready */
+    }
+    try {
+      const record = getAuthRecord();
+      if (record?.username) {
+        const owner = getUserByUsername(record.username);
+        if (owner?.id) {
+          r.authUser = owner.username;
+          r.authUserId = owner.id;
+        }
+      }
+    } catch {
+      /* orgs.db / users table not ready — keep synthetic local identity */
+    }
     return next();
   }
 

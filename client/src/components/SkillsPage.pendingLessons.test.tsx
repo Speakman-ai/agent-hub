@@ -37,7 +37,7 @@ const authMock = vi.hoisted(() => ({ admin: true, local: false }));
 
 (vi as any).mock('../utils/auth', () => ({
   hasRole: () => authMock.admin,
-  isLocalMode: () => authMock.local,
+  isLocalBundledDeployment: () => authMock.local,
 }));
 
 import SkillsPage from './SkillsPage';

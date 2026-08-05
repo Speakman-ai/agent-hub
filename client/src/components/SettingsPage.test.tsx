@@ -84,7 +84,7 @@ import { api } from '../utils/api';
     hasRole: vi.fn(() => true),
     getUserRole: vi.fn(() => 'Admin'),
     // Default to false (cloud/JWT mode); local-mode tests override below.
-    isLocalMode: vi.fn(() => false),
+    isLocalBundledDeployment: vi.fn(() => false),
   };
 });
 
@@ -254,11 +254,11 @@ describe('SettingsPage — Gemini API Key tab role gating', () => {
       engineDefaultModels: {},
       engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
     });
-    const { hasRole, isLocalMode } = await import('../utils/auth.js');
+    const { hasRole, isLocalBundledDeployment } = await import('../utils/auth.js');
     // Reset to default (Admin sees everything, not local mode) before each
     // test — individual tests override below.
     vi.mocked(hasRole).mockImplementation(() => true);
-    vi.mocked(isLocalMode).mockImplementation(() => false);
+    vi.mocked(isLocalBundledDeployment).mockImplementation(() => false);
   });
 
   afterEach(() => {
@@ -338,9 +338,9 @@ describe('SettingsPage — Gemini API Key tab role gating', () => {
     // server returns activeOrgIsLocal=true it never issues a JWT, so
     // hasRole() returns false. The tab must still appear because local-mode
     // users own the host and need to configure claudeBin / cursorBin.
-    const { hasRole, isLocalMode } = await import('../utils/auth.js');
+    const { hasRole, isLocalBundledDeployment } = await import('../utils/auth.js');
     vi.mocked(hasRole).mockImplementation(() => false); // no JWT → no role
-    vi.mocked(isLocalMode).mockImplementation(() => true); // local-mode
+    vi.mocked(isLocalBundledDeployment).mockImplementation(() => true); // local-mode
 
     const { findByText } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,

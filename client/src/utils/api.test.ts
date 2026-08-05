@@ -6,9 +6,13 @@ vi.mock('./connection', () => ({
 }));
 
 const clearToken = vi.fn();
+// These cases exercise the hosted (non-local) dead-session path, so
+// `isLocalBundledDeployment` stays false. Local bundled mode is covered separately in
+// api.unauthorized.test.ts, which uses the real ./auth module.
 vi.mock('./auth', () => ({
   getToken: () => 'jwt-token',
   clearToken: () => clearToken(),
+  isLocalBundledDeployment: () => false,
 }));
 
 import { api, errorDetail } from './api';
@@ -67,6 +71,59 @@ describe('fetchJSON dead-session handling', () => {
     mockFetchOnce(401, { error: 'Token is no longer valid.' });
 
     await expect(api.getProjects()).rejects.toThrow(/401/);
+    expect(clearToken).toHaveBeenCalledTimes(1);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The `/auth/me/*` engine-credential routes emit two different 401s:
+ *
+ *   - `code: 'no_user_identity'` — the caller authenticated fine, but has
+ *     no per-user `users` row (legacy global apiKey, local-bundled or
+ *     no-auth-configured bypass). Recoverable; the panels render an empty
+ *     state. Reloading here clears a working token and kicks the user out
+ *     of SetupWizard.
+ *   - anything else — a genuinely dead session (expired / revoked JWT),
+ *     which must still bounce to LoginScreen.
+ *
+ * Regression: the opt-out used to be a per-callsite `deadSessionOnUnauthorized:
+ * false` flag applied to the mutating `putMy*Auth` helpers as well as the
+ * read probes. That swallowed expired-session 401s on writes, leaving the
+ * client authenticated-but-dead with a silently failed save. Scope it by
+ * the server's code instead, so the verb doesn't matter — only which 401.
+ */
+describe('fetchJSON — /auth/me/* 401 disambiguation', () => {
+  it('does not reload on a no_user_identity 401 read probe', async () => {
+    mockFetchOnce(401, { error: 'Authentication required', code: 'no_user_identity' });
+
+    await expect(api.getMyClaudeAuth()).rejects.toThrow(/401/);
+    expect(clearToken).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('does not reload on a no_user_identity 401 write either', async () => {
+    mockFetchOnce(401, { error: 'Authentication required', code: 'no_user_identity' });
+
+    await expect(api.putMyClaudeAuth({ anthropicApiKey: 'sk-test' })).rejects.toThrow(/401/);
+    expect(clearToken).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('treats an untagged 401 on a credential WRITE as a dead session', async () => {
+    // The reviewer's case: an expired hosted JWT hitting PUT. Previously
+    // swallowed, leaving the app in a dead authenticated state.
+    mockFetchOnce(401, { error: 'Token is no longer valid.' });
+
+    await expect(api.putMyCursorAuth({ apiKey: 'k' })).rejects.toThrow(/401/);
+    expect(clearToken).toHaveBeenCalledTimes(1);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats an untagged 401 on a credential READ as a dead session', async () => {
+    mockFetchOnce(401, { error: 'Token is no longer valid.' });
+
+    await expect(api.getMyGrokAuth()).rejects.toThrow(/401/);
     expect(clearToken).toHaveBeenCalledTimes(1);
     expect(reload).toHaveBeenCalledTimes(1);
   });

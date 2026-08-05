@@ -48,6 +48,13 @@ describe('POST /api/orgs/:id/switch', () => {
     expect(typeof res.body.agents).toBe('number');
   });
 
+  it('is a no-op when the org is already active (avoids scheduler storm)', async () => {
+    await request.post('/api/orgs/default/switch').expect(200);
+    const res = await request.post('/api/orgs/default/switch').expect(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.orgId).toBe('default');
+  });
+
   it('returns 404 for an unknown org', async () => {
     await request.post('/api/orgs/does-not-exist/switch').expect(404);
   });

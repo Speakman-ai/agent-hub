@@ -14,27 +14,52 @@
 const STORAGE_KEY = 'agent-hub-jwt';
 
 /**
- * Module-level cache for the `activeOrgIsLocal` flag returned by
- * `GET /api/auth/status`. Set by `AuthGate` when the status resolves.
- * In local-bundled mode (Electron / single-user self-host) the server
- * short-circuits auth, no JWT is ever written, and `hasRole()` returns
- * false for everyone — so consumers that need to show admin-equivalent UI
- * in local mode should check `isLocalMode()` in addition to `hasRole()`.
+ * Module-level cache for whether this server is a **local-bundled
+ * deployment** (Electron desktop, or a self-host launched with
+ * `AGENT_HUB_MODE=local`). Set by `AuthGate` once `GET /api/auth/status`
+ * resolves.
+ *
+ * IMPORTANT — this is a property of the DEPLOYMENT, not of any org.
+ * The wire field is still named `activeOrgIsLocal` for back-compat, but
+ * the server computes it as `isLocalBundledServer()` — i.e. strictly
+ * `process.env.AGENT_HUB_MODE === 'local'`. It deliberately does NOT
+ * read the orgs DB: `org.mode` is editable from the Settings UI, so
+ * sourcing an auth bypass from it would let one bad click disable auth
+ * for every visitor on a hosted deployment. See the JSDoc on
+ * `isLocalBundledServer()` in server/auth.ts, and PR #703 which moved
+ * this off `org.mode`.
+ *
+ * Consequence for hosted deployments: this is `false` no matter how many
+ * orgs have `mode: 'local'`, so auth-dependent behaviour (login gate,
+ * dead-session recovery in `fetchJSON`) stays fully active for them.
+ *
+ * In a genuinely local-bundled install the server short-circuits auth, no
+ * JWT is ever written, and `hasRole()` returns false for everyone — so
+ * consumers that need to show admin-equivalent UI there should check
+ * `isLocalBundledDeployment()` in addition to `hasRole()`.
  */
-let _activeOrgIsLocal = false;
+let _isLocalBundledDeployment = false;
 
-/** Called by AuthGate once the /auth/status response is available. */
+/**
+ * Called by AuthGate once the /auth/status response is available.
+ * `val` is the response's `activeOrgIsLocal` field — the legacy wire name
+ * for the local-bundled deployment signal described above. This is the one
+ * place that mapping happens; everything downstream uses the accurate name.
+ */
 export function setActiveOrgIsLocal(val: any) {
-  _activeOrgIsLocal = !!val;
+  _isLocalBundledDeployment = !!val;
 }
 
 /**
- * True when the active org is running in local mode (no JWT required).
- * Treat local-mode users as Admin-equivalent for UX visibility gates;
- * the server still enforces real permissions on every request.
+ * True when the server is a local-bundled deployment (`AGENT_HUB_MODE=local`
+ * — Electron / single-user self-host) and therefore runs without per-user
+ * auth. Treat such users as Admin-equivalent for UX visibility gates; the
+ * server still enforces real permissions on every request.
+ *
+ * NOT a check for "the active org has mode=local" — see the note above.
  */
-export function isLocalMode() {
-  return _activeOrgIsLocal;
+export function isLocalBundledDeployment() {
+  return _isLocalBundledDeployment;
 }
 
 function safeGet() {

@@ -6,7 +6,7 @@ import {
   ORCHESTRATION_FIELD_META,
 } from '../utils/orchestrationBudgets';
 import { relativeTime, relativeFuture, formatDateTime, formatTime } from '../utils/time';
-import { hasRole, isLocalMode } from '../utils/auth';
+import { hasRole, isLocalBundledDeployment } from '../utils/auth';
 import humanCron from '@shared/utils/humanCron';
 import { localTimeZone } from '@shared/utils/calendarEvents';
 import CronSchedulePicker from './CronSchedulePicker';
@@ -6656,7 +6656,7 @@ export default function SettingsPage({
   // short-circuits auth so no JWT is written and hasRole() returns false.
   // Treat local-mode sessions as Admin-equivalent so the host-wide Gemini
   // API key tab stays visible on every fresh install.
-  const isAdminPlus = hasRole('Admin') || isLocalMode();
+  const isAdminPlus = hasRole('Admin') || isLocalBundledDeployment();
   const visibleSettingsTabs = useMemo(() => {
     return SETTINGS_TABS.filter((t: any) => {
       if (t.id === 'orgs' && !electronShell) return false;

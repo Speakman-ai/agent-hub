@@ -8731,10 +8731,13 @@ components:
       properties:
         firstRun:
           type: boolean
-          description: True when no projects exist yet — the client pops the first-run setup wizard.
+          description: True when no projects exist yet — the client may open the first-project flow after onboarding.
         authConfigured:
           type: boolean
-          description: True once an Agent Hub Owner record exists. Authoritative "setup wizard completed" signal.
+          description: True once an Agent Hub Owner record exists (auth.json / users table).
+        onboardingComplete:
+          type: boolean
+          description: True once the interactive SetupWizard has finished. Authoritative gate for resuming an interrupted first-run (e.g. password-manager kickout after Owner creation). Legacy installs without the flag treat authConfigured as complete.
         hasAnyAiCredentials:
           type: boolean
           description: True when the requesting user has at least one working engine credential.
@@ -8838,6 +8841,7 @@ components:
       required:
         - firstRun
         - authConfigured
+        - onboardingComplete
         - hasAnyAiCredentials
         - engineAuth
         - engines
@@ -12913,7 +12917,7 @@ paths:
                 additionalProperties:
                   nullable: true
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -12949,7 +12953,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -12995,7 +12999,7 @@ paths:
                   - apiKey
                   - hostConfigFallback
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -13051,7 +13055,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -13097,7 +13101,7 @@ paths:
                   - apiKey
                   - hostConfigFallback
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -13153,7 +13157,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -13199,7 +13203,7 @@ paths:
                   - apiKey
                   - hostConfigFallback
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -13255,7 +13259,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -13336,7 +13340,7 @@ paths:
                   - hostConfigFallback
                   - deviceLogin
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -13392,7 +13396,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ZodErrorResponse"
         "401":
-          description: Not authenticated.
+          description: 'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.'
           content:
             application/json:
               schema:
@@ -31341,7 +31345,7 @@ paths:
       tags:
         - Projects
       summary: Boot-time setup + engine availability status
-      description: Reports first-run / auth-configured state, the requesting user’s per-engine credential status, and each engine binary’s availability and resolved path. Probes `<bin> --version` in parallel with a 5s timeout per engine. Drives the client’s setup-wizard gating on app load.
+      description: Reports first-run / auth-configured / onboarding-complete state, the requesting user’s per-engine credential status, and each engine binary’s availability and resolved path. Probes `<bin> --version` in parallel with a 5s timeout per engine. Drives the client’s setup-wizard gating on app load.
       responses:
         "200":
           description: Setup + engine status.
@@ -31349,6 +31353,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SetupStatusResponse"
+  /api/setup/complete:
+    post:
+      tags:
+        - Projects
+      summary: Mark interactive first-run SetupWizard complete
+      description: "Persists `onboardingComplete: true` in config.json so a later reload does not re-open the SetupWizard. Called when the client finishes the wizard (Open Project). Distinct from Owner creation via POST /api/auth/setup. Requires the Owner role — the flag is global instance state, so a non-Owner must not be able to mark another operator’s interrupted first-run as finished."
+      responses:
+        "200":
+          description: Onboarding marked complete.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  onboardingComplete:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - onboardingComplete
+                description: Confirmation that onboarding is complete.
+        "403":
+          description: Caller is authenticated but not an Owner.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Failed to persist the flag.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/members:
     get:
       tags:

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Bot, Rocket, Loader2, UserPlus, Lock } from 'lucide-react';
 import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connection';
-import { setup as setupHubAuth } from '../utils/auth';
+import { setup as setupHubAuth, login as loginHubAuth } from '../utils/auth';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs';
 import GithubConnectionSection from './GithubConnectionSection';
 import MyClaudeAuthSection from './MyClaudeAuthSection';
@@ -169,12 +169,11 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const ensureDefaultOrg = async () => {
     const existing = getActiveOrg();
     if (existing) {
-      await updateOrg(existing.id, {
-        name: existing.name?.trim() || DEFAULT_ORG_NAME,
-        mode: 'local',
-        remoteUrl: '',
-        apiKey: '',
-      });
+      // The server seeds a `default` org on first boot — that's enough to
+      // continue onboarding. Avoid a PUT here: after Owner creation the
+      // client must send a JWT, and an interrupted first-run (or a setup
+      // that failed to seed the users row) used to 401 on this call and
+      // abort the Welcome step.
       return;
     }
     const org = await createOrg({
@@ -189,8 +188,18 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
 
   const handleHubAccountContinue = async (e: any) => {
     e.preventDefault();
-    const username = hubUsername.trim();
-    const password = hubPassword;
+    // Read from the form DOM (FormData), not React state. Password managers
+    // (Bitwarden generate / autofill) write the <input> value without always
+    // firing React onChange — controlled-state submits then send a stale /
+    // empty password, create a half-baked Owner, and kick the user out of
+    // the wizard. FormData sees what the user actually sees in the fields.
+    const form = e.currentTarget as HTMLFormElement;
+    const fd = new FormData(form);
+    const username = String(fd.get('hub-email') || hubUsername).trim();
+    const password = String(fd.get('hub-password') || hubPassword);
+    // Keep React state in sync so validation UI stays honest after autofill.
+    if (username !== hubUsername) setHubUsername(username);
+    if (password !== hubPassword) setHubPassword(password);
     if (!isValidEmail(username) || password.length < 12) {
       setError('Email and a password of at least 12 characters are required.');
       return;
@@ -206,7 +215,21 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
       // attaches it when truthy.
       const { apiKey = '' } = getConnectionConfig();
       const sanitizedApiKey = apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '');
-      await setupHubAuth({ baseUrl: getApiBase(), username, password, apiKey: sanitizedApiKey });
+      try {
+        await setupHubAuth({
+          baseUrl: getApiBase(),
+          username,
+          password,
+          apiKey: sanitizedApiKey,
+        });
+      } catch (setupErr: any) {
+        // Interrupted / double-submit after Owner already exists (password
+        // manager autofill often fires submit twice). Fall through to login
+        // with the same credentials so the wizard can continue.
+        const msg = String(setupErr?.message || '');
+        if (!/already configured/i.test(msg)) throw setupErr;
+        await loginHubAuth({ baseUrl: getApiBase(), username, password });
+      }
       setHubPassword('');
       setStep(stepIndex('welcome'));
     } catch (err: any) {
@@ -224,6 +247,26 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
       setStep(stepIndex('credentials'));
     } catch (err: any) {
       setError((err && err.message) || 'Failed to initialize workspace');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Final step. `onComplete` persists the durable `onboardingComplete`
+  // flag server-side, so it can fail (403 for a non-Owner caller, 500 if
+  // the write fails). Failing that write while still tearing down the
+  // wizard would drop the user into the main chrome with onboarding
+  // recorded as unfinished — the exact stranded state this PR exists to
+  // fix. Keep the step mounted and let the button double as the retry.
+  const handleFinish = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onComplete();
+    } catch (err: any) {
+      setError(
+        `${(err && err.message) || 'Failed to finish setup'} — setup is not marked complete. Try again.`,
+      );
     } finally {
       setSaving(false);
     }
@@ -284,19 +327,31 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                 and org data. Pick something strong; you can add more users later in Settings.
               </p>
             </div>
-            <form onSubmit={handleHubAccountContinue} className="space-y-3">
+            <form
+              onSubmit={handleHubAccountContinue}
+              className="space-y-3"
+              autoComplete="off"
+              data-bwignore="true"
+              data-lpignore="true"
+              data-1p-ignore="true"
+              data-form-type="other"
+            >
               <div>
                 <label htmlFor="hub-account-username" className="block text-xs text-gray-400 mb-1">
                   Email
                 </label>
                 <input
                   id="hub-account-username"
+                  name="hub-email"
                   data-testid="hub-account-username"
                   type="email"
                   value={hubUsername}
                   onChange={(e: any) => setHubUsername(e.target.value)}
                   autoFocus
-                  autoComplete="email"
+                  autoComplete="off"
+                  data-bwignore="true"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
                   required
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
                 />
@@ -307,18 +362,23 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                 </label>
                 <input
                   id="hub-account-password"
+                  name="hub-password"
                   data-testid="hub-account-password"
                   type="password"
                   value={hubPassword}
                   onChange={(e: any) => setHubPassword(e.target.value)}
                   autoComplete="new-password"
+                  data-bwignore="true"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
                   required
                   minLength={12}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
                 />
                 <p className="text-[10px] text-gray-500 mt-1">
                   12–256 characters. This credential protects everything served from this
-                  environment.
+                  environment. Prefer typing or pasting — password-manager autofill can interrupt
+                  first-run setup.
                 </p>
               </div>
               {error && (
@@ -725,10 +785,19 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                 project wizard walks you through it next.
               </p>
             </div>
+            {/* Error — the wizard stays on this step so the button below
+                doubles as the retry. */}
+            {error && (
+              <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-300 text-left">
+                {error}
+              </div>
+            )}
+
             <div className="flex flex-col items-center gap-3">
               <button
-                onClick={onComplete}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-2.5 rounded-lg transition-colors flex items-center gap-2"
+                onClick={handleFinish}
+                disabled={saving}
+                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium px-6 py-2.5 rounded-lg transition-colors flex items-center gap-2"
               >
                 <svg
                   className="w-4 h-4"
@@ -743,7 +812,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                     d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
                   />
                 </svg>
-                Open Project
+                {saving ? 'Finishing…' : error ? 'Retry' : 'Open Project'}
               </button>
             </div>
           </div>

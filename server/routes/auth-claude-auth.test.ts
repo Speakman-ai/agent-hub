@@ -111,6 +111,11 @@ describe('GET /api/auth/me/claude-auth', () => {
       .set('x-api-key', 'test-shared-secret');
     expect(res.status).toBe(401);
     expect(res.body.error).toMatch(/authentication/i);
+    // Wire contract the SPA depends on: this 401 means "authenticated, no
+    // per-user row", NOT "your session died". `fetchJSON` keys its
+    // dead-session recovery off this code — without it the client clears a
+    // working token and reloads, kicking the user out of SetupWizard.
+    expect(res.body.code).toBe('no_user_identity');
   });
 
   it('returns 404 when the resolved authUserId points at no user row', async () => {
@@ -171,6 +176,10 @@ describe('PUT /api/auth/me/claude-auth', () => {
       .set('x-api-key', 'test-shared-secret')
       .send({ anthropicApiKey: 'sk-ant-api03-XXXX' });
     expect(res.status).toBe(401);
+    // Writes carry the same code as reads — the client distinguishes the
+    // two 401 causes, not the verb. An untagged 401 on this PUT is a real
+    // dead session and must still bounce to LoginScreen.
+    expect(res.body.code).toBe('no_user_identity');
   });
 
   it('returns 404 when the resolved authUserId points at no user row', async () => {

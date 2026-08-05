@@ -5,7 +5,7 @@ import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api';
 import { safeHttpHref } from '../utils/safeHttpUrl';
 import { formatDateTime } from '../utils/time';
-import { hasRole, isLocalMode } from '../utils/auth';
+import { hasRole, isLocalBundledDeployment } from '../utils/auth';
 import {
   BookOpen,
   Loader2,
@@ -307,7 +307,7 @@ export function SkillEditor({
  *     when promoting text into standing instructions.
  */
 export function PendingLessonsSection({ projectId, improvements, onReviewed, onOpenSession }: any) {
-  const canReview = hasRole('Admin') || isLocalMode();
+  const canReview = hasRole('Admin') || isLocalBundledDeployment();
   const [busyId, setBusyId] = useState<any>(null);
   const [error, setError] = useState<any>(null);
   const [rejectingId, setRejectingId] = useState<any>(null);

@@ -1,5 +1,5 @@
 import { getApiBase, getAuthHeaders } from './connection';
-import { getToken as getJwt, clearToken } from './auth';
+import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
 import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
 import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } from '@shared/types';
 import type { DeployTriggerEvent } from './deployTriggers';
@@ -273,10 +273,42 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
     // to LoginScreen. The 403 is scoped by `code` so ordinary permission
     // 403s (not-Owner, cross-org resource) are left untouched — those
     // should surface as errors, not log the user out.
+    //
+    // `no_user_identity` 401s are the one recoverable 401: the server
+    // authenticated the caller but has no per-user `users` row for them
+    // (legacy global apiKey, local-bundled / no-auth-configured bypass).
+    // Only the `/auth/me/*` engine-credential routes emit it, and they do
+    // so on reads AND writes — the distinction is about which 401 it is,
+    // not which verb asked. Reloading here would clear a working token
+    // and bounce the user out of SetupWizard; the panels render an empty
+    // state instead. Every other 401 — including one on a write — still
+    // means "your session died", so writes are not silently swallowed.
+    //
+    // Local bundled mode (Electron / `AGENT_HUB_MODE=local`): AuthGate
+    // already skips LoginScreen, so a reload cannot recover auth — it
+    // only remounts App, re-posts /orgs/:id/switch, and storms the
+    // server. Skip the reload; leave the error for the caller.
+    //
+    // `isLocalBundledDeployment()` is the DEPLOYMENT identity, not an org
+    // setting: the server computes the `activeOrgIsLocal` status field as
+    // `process.env.AGENT_HUB_MODE === 'local'` and never reads `org.mode`
+    // (which is user-editable — see PR #703 and the JSDoc in
+    // server/auth.ts). So on a hosted deployment this is false no matter
+    // how many orgs are in local mode, and an expired or revoked JWT there
+    // still clears the token and bounces to LoginScreen. Pinned by
+    // `GET /api/auth/status — activeOrgIsLocal field` in
+    // server/routes/auth.test.ts (server half) and the hosted-vs-local
+    // pair in utils/api.unauthorized.test.ts (client half).
+    const recoverableUnauthorized = errBody?.code === 'no_user_identity';
     const deadSession =
-      res.status === 401 || (res.status === 403 && errBody?.code === 'no_active_org_membership');
+      !recoverableUnauthorized &&
+      !isLocalBundledDeployment() &&
+      (res.status === 401 || (res.status === 403 && errBody?.code === 'no_active_org_membership'));
     if (deadSession && typeof window !== 'undefined' && !recentlyReloadedFor401()) {
       markReloadedFor401();
+      console.warn(
+        `[api] dead session on ${fetchOpts.method || 'GET'} ${url} (${res.status}) — clearing token and reloading`,
+      );
       if (getJwt()) clearToken();
       window.location.reload();
     }
@@ -1624,6 +1656,10 @@ export const api = {
   getSetupStatus: () => fetchJSON('/setup/status'),
   configureSetup: (data: any) =>
     fetchJSON('/setup/configure', { method: 'POST', body: JSON.stringify(data) }),
+  // Persists `onboardingComplete: true`. Rejects on a non-2xx (403 for a
+  // non-Owner caller, 500 if the flag can't be written) so the wizard can
+  // stay open and offer a retry instead of closing over a failed write.
+  completeSetup: () => fetchJSON('/setup/complete', { method: 'POST' }),
 
   // Project onboarding
   analyzeProject: (cwd: any, opts: any = {}) =>
@@ -1649,6 +1685,12 @@ export const api = {
   // Per-user Claude credentials (each Hub user can attach their own
   // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN — see PR #717). Distinct
   // from the host-wide `/config/claude-auth` surface above.
+  //
+  // A 401 from these routes is ambiguous, so the server disambiguates it:
+  // `code: 'no_user_identity'` means "authenticated, but no per-user row"
+  // (legacy apiKey / local-bypass gap) and fetchJSON leaves it to the
+  // caller — the panels render an empty state. An untagged 401 is a real
+  // dead session and still clears the token + reloads, on writes too.
   getMyClaudeAuth: () => fetchJSON('/auth/me/claude-auth'),
   putMyClaudeAuth: (body: any) =>
     fetchJSON('/auth/me/claude-auth', { method: 'PUT', body: JSON.stringify(body) }),

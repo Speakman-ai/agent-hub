@@ -22,9 +22,14 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
     expiresAt: null,
     user: { email: 'owner@example.com', role: 'Owner' },
   }),
+  login: vi.fn().mockResolvedValue({
+    token: 'test-jwt',
+    expiresAt: null,
+    user: { email: 'owner@example.com', role: 'Owner' },
+  }),
 }));
 
-import { setup as setupHubAuth } from '../utils/auth';
+import { setup as setupHubAuth, login as loginHubAuth } from '../utils/auth';
 
 // Stub only the methods the LAN-mode tests inspect; preserve everything
 // else via importActual.
@@ -79,6 +84,12 @@ beforeEach(() => {
     expiresAt: Date.now() + 3600000,
     user: {},
   });
+  (loginHubAuth as any).mockReset();
+  (loginHubAuth as any).mockResolvedValue({
+    token: 'jwt-test',
+    expiresAt: Date.now() + 3600000,
+    user: {},
+  });
   (api.getConfig as any).mockReset().mockResolvedValue({ lanMode: false });
   (api.updateConfig as any).mockReset().mockResolvedValue({ ok: true } as any);
   delete (window as any).electronAPI;
@@ -127,6 +138,30 @@ describe('SetupWizard — Hub account step', () => {
     });
     await waitFor(() => {
       expect(setupHubAuth!).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'admin@example.com', password: 'longpassword12' }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Welcome to Agent Hub/i)).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to login when Owner was already created (interrupted / double-submit)', async () => {
+    (setupHubAuth as any).mockRejectedValueOnce(new Error('Auth already configured'));
+    render(
+      <SetupWizard setupStatus={{ authConfigured: false, engines: {} }} onComplete={() => {}} />,
+    );
+    fireEvent.change(screen.getByTestId('hub-account-username' as any), {
+      target: { value: 'admin@example.com' },
+    });
+    fireEvent.change(screen.getByTestId('hub-account-password' as any), {
+      target: { value: 'longpassword12' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^continue$/i } as any) as any);
+    });
+    await waitFor(() => {
+      expect(loginHubAuth!).toHaveBeenCalledWith(
         expect.objectContaining({ username: 'admin@example.com', password: 'longpassword12' }),
       );
     });
@@ -210,6 +245,19 @@ describe('SetupWizard — welcome auto-creates org', () => {
     expect(switchOrg!).toHaveBeenCalledWith('org-new');
     expect(screen.getByText(/Choose Your AI Engines/i)).toBeInTheDocument();
   });
+
+  it('skips org mutation when an active org already exists (avoids Welcome-step 401)', async () => {
+    (getActiveOrg as any).mockReturnValue({ id: 'default', name: 'Default', mode: 'local' });
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /continue/i } as any) as any);
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Choose Your AI Engines/i)).toBeInTheDocument();
+    });
+    expect(updateOrg!).not.toHaveBeenCalled();
+    expect(createOrg!).not.toHaveBeenCalled();
+  });
 });
 
 // The wizard's "AI engines" step selects which CLI engines to enable (host
@@ -275,5 +323,93 @@ describe('SetupWizard — AI engines step inline login', () => {
       fireEvent.click(cursorToggle);
     });
     expect(screen.queryByTestId('cursor-auth-panel')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Final step ("Open Your First Project"). The button's `onComplete` is what
+ * persists the durable `onboardingComplete` flag server-side, so it can
+ * fail — 403 if the caller isn't an Owner, 500 if the write fails.
+ *
+ * Regression: the host used to fire-and-forget that request and tear the
+ * wizard down unconditionally. A failed write then left the user in the
+ * main chrome with `onboardingComplete` still false and no route back into
+ * setup — the exact stranded state this PR exists to fix. The wizard must
+ * keep the step mounted and offer a retry instead.
+ */
+describe('SetupWizard — finish step failure handling', () => {
+  const projectStepStatus = { engines: {} };
+  // ['welcome', 'credentials', 'github', 'project'] → project is step 4.
+  const PROJECT_STEP = 4;
+
+  it('keeps the wizard on the final step and surfaces a retry when onComplete rejects', async () => {
+    const onComplete = vi.fn().mockRejectedValue(new Error('403: Owner role required.'));
+    render(
+      <SetupWizard
+        setupStatus={projectStepStatus}
+        initialStep={PROJECT_STEP}
+        onComplete={onComplete}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /open project/i }));
+    });
+
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    // The failure is visible, names the cause, and says setup is unfinished.
+    const banner = await screen.findByText(/Owner role required/i);
+    expect(banner).toBeInTheDocument();
+    expect(banner.textContent).toMatch(/not marked complete/i);
+    // Still on the final step — the wizard did not tear itself down.
+    expect(screen.getByText(/Open Your First Project/i)).toBeInTheDocument();
+    // And the action is now an explicit retry.
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it('retries the completion request when the button is clicked again', async () => {
+    const onComplete = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('500: disk full'))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <SetupWizard
+        setupStatus={projectStepStatus}
+        initialStep={PROJECT_STEP}
+        onComplete={onComplete}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /open project/i }));
+    });
+    await screen.findByText(/disk full/i);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    });
+
+    expect(onComplete).toHaveBeenCalledTimes(2);
+    // Second attempt succeeded → the error clears (the host closes the
+    // wizard from here, which this unit test doesn't model).
+    await waitFor(() => expect(screen.queryByText(/disk full/i)).not.toBeInTheDocument());
+  });
+
+  it('shows no error when onComplete succeeds', async () => {
+    const onComplete = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SetupWizard
+        setupStatus={projectStepStatus}
+        initialStep={PROJECT_STEP}
+        onComplete={onComplete}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /open project/i }));
+    });
+
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/not marked complete/i)).not.toBeInTheDocument();
   });
 });

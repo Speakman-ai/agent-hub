@@ -3266,29 +3266,18 @@ export default function App({ initialView }: any = {}) {
 
       // Step 2: Check setup status
       //
-      // Three triggers for the SetupWizard, in priority order:
+      // SetupWizard triggers, in priority order:
       //
-      //   1. **Auth not configured.** No Agent Hub Owner record exists
-      //      (`/setup/status` -> `authConfigured: false`). This is the
-      //      authoritative "fresh install" signal. We force the full
-      //      wizard from step 1 because the user still needs to create an
-      //      Owner account regardless of host-CLI auth state or whether
-      //      the server auto-seeded a default org. Pre-existing servers
-      //      that don't return the field fall back to the legacy logic
-      //      below.
-      //   2. **No AI credentials.** If the current user has zero usable AI
-      //      engines (per-user Claude OR host-level Claude/Cursor/Codex), the
-      //      wizard is shown unconditionally — they can't spawn an agent
-      //      without picking one of the three. This catches the
-      //      sandbox-reset case where orgs and a default user already exist
-      //      but `auth.json`/host CLIs were wiped. Without it, init falls
-      //      through to the project picker and the user has no obvious
-      //      route to the credentials UI.
-      //   3. **First run.** Brand-new install with no projects yet. We
-      //      open the adaptive project wizard, since this is typically a
-      //      returning user adding their first project. (The greenfield
-      //      case is now handled by #1; this branch only fires after the
-      //      Owner has been created.)
+      //   1. **Onboarding incomplete.** `onboardingComplete: false` (or
+      //      `authConfigured: false` on legacy servers that omit the new
+      //      field). Owner creation alone is not enough — password managers
+      //      can interrupt after `/api/auth/setup` and leave the user in the
+      //      main chrome stuck on WebSocket "Reconnecting…". Resume the
+      //      wizard from the Hub-account step (or Welcome if Owner exists).
+      //   2. **No AI credentials.** Owner finished onboarding but the current
+      //      user has zero usable AI engines — land on the credentials step.
+      //   3. **First run.** Brand-new install with no projects yet after
+      //      onboarding — open the adaptive project wizard.
       try {
         const statusRes = await fetch(`${getApiBase()}/setup/status`, {
           headers: getAuthHeaders(),
@@ -3296,13 +3285,21 @@ export default function App({ initialView }: any = {}) {
         });
         const status = await statusRes.json();
         setSetupStatus(status);
-        if (status.authConfigured === false) {
-          // Truly fresh install — Owner record does not exist. Always
-          // walk the user through the full wizard (Hub account → welcome →
-          // creds → github → first project) regardless of host CLI auth or
-          // the auto-seeded default org.
-          setSetupInitialStep(1);
+        const onboardingComplete =
+          typeof status.onboardingComplete === 'boolean'
+            ? status.onboardingComplete
+            : status.authConfigured !== false;
+        if (status.authConfigured === false || onboardingComplete === false) {
+          // Fresh install or interrupted first-run — always walk the wizard.
+          // If Owner already exists, skip the account step and land on Welcome.
+          setSetupInitialStep(
+            status.authConfigured === false ? 1 : stepIndexForKey(status, 'welcome'),
+          );
           setShowSetup(true);
+          // A leftover `#/new-project-adaptive` hash (common after an
+          // interrupted first-run that briefly opened the project picker)
+          // must not render on top of the SetupWizard.
+          setCurrentView('chat');
         } else if (status.hasAnyAiCredentials === false) {
           // If an org already exists, skip Welcome and land on AI credentials.
           // With no orgs (true greenfield) we still want the full wizard.
@@ -6681,7 +6678,13 @@ export default function App({ initialView }: any = {}) {
           <SetupWizard
             setupStatus={setupStatus}
             initialStep={setupInitialStep}
-            onComplete={() => {
+            onComplete={async () => {
+              // Deliberately un-caught: if the flag doesn't persist,
+              // `onboardingComplete` stays false and closing the wizard
+              // would strand the user outside a setup they haven't
+              // finished. Let it reject so SetupWizard keeps the final
+              // step mounted and offers a retry.
+              await api.completeSetup();
               setShowSetup(false);
               setSetupInitialStep(1);
               openAdaptiveProjectWizard();

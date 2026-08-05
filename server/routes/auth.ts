@@ -58,6 +58,7 @@ import {
   getUserCredentialVersion,
   countUsers,
   migrateAuthRecordIfNeeded,
+  ensureOwnerUserFromAuthRecord,
   getUserClaudeAuth,
   setUserClaudeAuth,
   getUserCursorAuth,
@@ -124,6 +125,7 @@ import {
 } from '../per-user-codex-device-login.js';
 import { createApiKey, listApiKeys, revokeApiKey, countApiKeysForUser } from '../api-keys-store.js';
 import { recoverActiveSessionsAfterSetup } from '../spawn-creds-setup-recovery.js';
+import { markOnboardingIncomplete } from '../onboarding-complete.js';
 import {
   listMaskedUserSkillCredentials,
   upsertUserSkillCredential,
@@ -548,6 +550,22 @@ registerPath({
   },
 });
 
+/**
+ * Shared 401 for the per-user engine-credential routes.
+ *
+ * These handlers run only after `authMiddleware` accepted the request, so
+ * their 401 never means "your token expired" — it means the caller has no
+ * per-user `users` row (legacy global apiKey, local-bundled bypass). The
+ * body is tagged `code: 'no_user_identity'` so a client can tell this
+ * recoverable state apart from a dead session; the SPA's `fetchJSON`
+ * skips its clear-token-and-reload recovery for exactly this code.
+ */
+const NoUserIdentity401 = {
+  description:
+    'Authenticated, but the caller has no per-user account row (legacy global apiKey / local-bundled bypass). Body carries `code: "no_user_identity"`; clients should render an empty state rather than treating it as an expired session. Any OTHER 401 from these routes is a genuinely dead session.',
+  content: { 'application/json': { schema: ErrorResponse } },
+};
+
 registerPath({
   method: 'get',
   path: '/api/auth/me/claude-auth',
@@ -558,10 +576,7 @@ registerPath({
       description: 'Stored credentials with masking.',
       content: { 'application/json': { schema: z.record(z.string(), z.unknown()) } },
     },
-    401: {
-      description: 'Not authenticated.',
-      content: { 'application/json': { schema: ErrorResponse } },
-    },
+    401: NoUserIdentity401,
     404: {
       description: 'User not found.',
       content: { 'application/json': { schema: ErrorResponse } },
@@ -584,10 +599,7 @@ registerPath({
       description: 'Invalid body.',
       content: { 'application/json': { schema: ZodErrorResponse } },
     },
-    401: {
-      description: 'Not authenticated.',
-      content: { 'application/json': { schema: ErrorResponse } },
-    },
+    401: NoUserIdentity401,
     404: {
       description: 'User not found.',
       content: { 'application/json': { schema: ErrorResponse } },
@@ -631,10 +643,7 @@ for (const engine of ['cursor', 'gemini', 'grok'] as const) {
         description: 'Stored credentials with masking.',
         content: { 'application/json': { schema: SingleKeyAuthGetResponse } },
       },
-      401: {
-        description: 'Not authenticated.',
-        content: { 'application/json': { schema: ErrorResponse } },
-      },
+      401: NoUserIdentity401,
       404: {
         description: 'User not found.',
         content: { 'application/json': { schema: ErrorResponse } },
@@ -656,10 +665,7 @@ for (const engine of ['cursor', 'gemini', 'grok'] as const) {
         description: 'Invalid body.',
         content: { 'application/json': { schema: ZodErrorResponse } },
       },
-      401: {
-        description: 'Not authenticated.',
-        content: { 'application/json': { schema: ErrorResponse } },
-      },
+      401: NoUserIdentity401,
       404: {
         description: 'User not found.',
         content: { 'application/json': { schema: ErrorResponse } },
@@ -679,10 +685,7 @@ registerPath({
       description: 'Stored API key + per-user CODEX_HOME inspection.',
       content: { 'application/json': { schema: CodexAuthGetResponse } },
     },
-    401: {
-      description: 'Not authenticated.',
-      content: { 'application/json': { schema: ErrorResponse } },
-    },
+    401: NoUserIdentity401,
     404: {
       description: 'User not found.',
       content: { 'application/json': { schema: ErrorResponse } },
@@ -704,10 +707,7 @@ registerPath({
       description: 'Invalid body.',
       content: { 'application/json': { schema: ZodErrorResponse } },
     },
-    401: {
-      description: 'Not authenticated.',
-      content: { 'application/json': { schema: ErrorResponse } },
-    },
+    401: NoUserIdentity401,
     404: {
       description: 'User not found.',
       content: { 'application/json': { schema: ErrorResponse } },
@@ -2306,24 +2306,39 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       role: 'Owner',
     });
 
-    // Phase 3: also seed the users + memberships tables. The migration
-    // helper is a no-op after the first run, so it's safe to call every
-    // time setup is invoked. Swallow orgs-db-not-initialized — a few
-    // legacy test paths skip that setup and we still want auth.json to
-    // land.
+    // Owner creation is only step 1 of SetupWizard. Mark onboarding
+    // incomplete so a reload / password-manager interrupt after this
+    // response still resumes the wizard instead of treating auth.json
+    // as "setup finished".
+    try {
+      markOnboardingIncomplete(config.dataDir);
+    } catch (err) {
+      console.warn(
+        `[Auth] markOnboardingIncomplete after /setup failed: ${(err as Error).message}`,
+      );
+    }
+
+    // Phase 3: seed the Owner into users + memberships. Prefer
+    // `ensureOwnerUserFromAuthRecord` over the one-shot migration helper —
+    // synthetic `local-<orgId>` rows created before setup finishes must
+    // not block Owner seeding (that left JWTs with an empty `sub`).
     let user = null;
     try {
       migrateAuthRecordIfNeeded();
-      user = getUserByUsername(record.username);
+      user = ensureOwnerUserFromAuthRecord();
+      if (!user) user = getUserByUsername(record.username);
     } catch (err) {
-      console.error('[Auth] migrateAuthRecordIfNeeded after /setup failed:', err);
+      console.error('[Auth] Owner user seed after /setup failed:', err);
     }
 
-    const { token, expiresAt } = issueToken(
-      user ?? { id: '', username: record.username },
-      record.role,
-      record.jwtSecret,
-    );
+    if (!user?.id) {
+      res.status(500).json({
+        error: 'Failed to create owner user record. Retry setup or check server logs.',
+      });
+      return;
+    }
+
+    const { token, expiresAt } = issueToken(user, record.role, record.jwtSecret);
 
     // Spawn-env staleness recovery. Sessions spawned before auth.json
     // existed are running with an empty `AGENT_HUB_API_KEY` env; the
@@ -2358,7 +2373,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       ok: true,
       token,
       expiresAt,
-      user: tokenUserPayload(user ?? { id: '', username: record.username }, record.role),
+      user: tokenUserPayload(user, record.role),
     });
   });
 
@@ -2409,10 +2424,13 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     }
 
     if (!user) {
-      // Run the migration and re-resolve so we can issue a proper uid token.
+      // auth.json matched but no users row yet (or only synthetic
+      // `local-*` rows exist). Force-seed the Owner rather than relying
+      // on migrateAuthRecordIfNeeded, which no-ops when any user exists.
       try {
         migrateAuthRecordIfNeeded();
-        user = getUserByUsername(username);
+        user = ensureOwnerUserFromAuthRecord();
+        if (!user) user = getUserByUsername(username);
       } catch {
         user = null;
       }
@@ -2819,6 +2837,28 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     res.json({ ok: true, mfaEnabled: false });
   });
 
+  // ── Per-user engine credentials — the "authenticated, but no user row"
+  // 401 ───────────────────────────────────────────────────────────────
+  //
+  // These handlers are only reached AFTER `authMiddleware` accepted the
+  // request, so a missing `authUserId` never means "your token expired".
+  // It means the caller authenticated through an identity that carries no
+  // per-user `users` row: the legacy global apiKey, or a local-bundled /
+  // no-auth-configured bypass. That is a recoverable, expected state — the
+  // UI renders an "no per-user credentials" empty state for it.
+  //
+  // The client cannot tell that apart from a genuinely dead session
+  // without help, and guessing wrong is expensive in both directions: treat
+  // it as dead and we clear a perfectly good token and reload mid-wizard;
+  // ignore it and an expired hosted JWT leaves the app authenticated-but-
+  // broken. So we tag it with a machine-readable `code` and let
+  // `fetchJSON` scope its dead-session recovery precisely — the same
+  // pattern `no_active_org_membership` already uses for 403s.
+  const NO_USER_IDENTITY = {
+    error: 'Authentication required',
+    code: 'no_user_identity',
+  } as const;
+
   // ── Per-user Claude credentials ────────────────────────────────
   //
   // Each authenticated user may attach their own ANTHROPIC_API_KEY and
@@ -2830,7 +2870,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   router.get('/api/auth/me/claude-auth', (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
     if (!authedReq.authUserId) {
-      res.status(401).json({ error: 'Authentication required' });
+      res.status(401).json(NO_USER_IDENTITY);
       return;
     }
     const stored = getUserClaudeAuth(authedReq.authUserId);
@@ -2863,7 +2903,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   router.put('/api/auth/me/claude-auth', (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
     if (!authedReq.authUserId) {
-      res.status(401).json({ error: 'Authentication required' });
+      res.status(401).json(NO_USER_IDENTITY);
       return;
     }
     const parsedClaudeBody = UpdateClaudeAuthBody.safeParse(req.body ?? {});
@@ -2967,7 +3007,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     router.get(route.path, (req: Request, res: Response) => {
       const authedReq = req as AuthenticatedRequest;
       if (!authedReq.authUserId) {
-        res.status(401).json({ error: 'Authentication required' });
+        res.status(401).json(NO_USER_IDENTITY);
         return;
       }
       const stored = route.get(authedReq.authUserId);
@@ -3035,7 +3075,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     router.put(route.path, (req: Request, res: Response) => {
       const authedReq = req as AuthenticatedRequest;
       if (!authedReq.authUserId) {
-        res.status(401).json({ error: 'Authentication required' });
+        res.status(401).json(NO_USER_IDENTITY);
         return;
       }
       const parsedEngineBody = UpdateSingleKeyAuthBody.safeParse(req.body ?? {});

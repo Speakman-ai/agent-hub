@@ -29,6 +29,7 @@ import {
 import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { getUserById } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
+import { isOnboardingComplete, markOnboardingComplete } from '../onboarding-complete.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { normalizeReplayConfig } from '../replays/replay-config.js';
 import { getOrCreateBoard } from './board.js';
@@ -1356,11 +1357,10 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     }
 
     // `authConfigured` reflects whether the Agent Hub Owner record exists.
-    // It is the authoritative signal for "needs first-run setup wizard" —
-    // host-level Claude/Cursor/Codex auth (hasAnyAiCredentials) and the
-    // auto-seeded default org (getOrgs() on the client) are both routinely
-    // true on a fresh install, so neither tells us whether the wizard has
-    // actually been completed. See server/auth-store.ts:isAuthConfigured.
+    // `onboardingComplete` is the authoritative "SetupWizard finished"
+    // signal — Owner creation alone is not enough (password managers can
+    // interrupt mid-wizard after auth.json lands). See
+    // server/onboarding-complete.ts.
     let authConfigured = false;
     try {
       authConfigured = isAuthConfigured();
@@ -1369,10 +1369,17 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       // not-configured so the wizard runs in tests by default.
       authConfigured = false;
     }
+    let onboardingComplete = false;
+    try {
+      onboardingComplete = isOnboardingComplete(config.dataDir);
+    } catch {
+      onboardingComplete = authConfigured;
+    }
 
     res.json({
       firstRun: projects.length === 0,
       authConfigured,
+      onboardingComplete,
       hasAnyAiCredentials: engineAuth.any,
       engineAuth: {
         'claude-code': engineAuth.claude,
@@ -1451,6 +1458,34 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     }
 
     res.json({ ok: true, message: 'Configuration updated.' });
+  });
+
+  // Mark interactive SetupWizard finished. Called from the client when the
+  // user reaches the final "Open Project" step — distinct from Owner
+  // creation so interrupted first-runs can resume.
+  //
+  // Owner-gated: the flag is global instance state, and flipping it to
+  // `true` is what stops `GET /api/setup/status` from re-opening the
+  // wizard. An authenticated Admin/User must not be able to strand the
+  // Owner's interrupted first-run by marking it done on their behalf.
+  // Same gate shape as `GET /api/admin/projects` above — `localBypass`
+  // covers the local-bundled, global-apiKey, and no-auth-configured
+  // identities, all of which legitimately drive the wizard.
+  router.post('/api/setup/complete', (req: Request, res: Response) => {
+    const areq = req as AuthenticatedRequest;
+    const caller = resolveVisibilityCaller(req);
+    if (areq.authRole !== 'Owner' && !caller.localBypass) {
+      return res.status(403).json({ error: 'Owner role required.' });
+    }
+    try {
+      markOnboardingComplete(config.dataDir);
+    } catch (err) {
+      res.status(500).json({
+        error: `Failed to mark onboarding complete: ${(err as Error).message}`,
+      });
+      return;
+    }
+    res.json({ ok: true, onboardingComplete: true });
   });
 
   router.get('/api/projects/:projectId', (req: Request, res: Response) => {
