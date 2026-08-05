@@ -260,6 +260,34 @@ describe('native PR review lifecycle', () => {
     expect(refused.body.error).toMatch(/merged/);
   });
 
+  it('revert: merged → revert commit on base, recorded on the PR, refused twice', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    const bare = gitHostRepoPath(id);
+    await postPulls(id).send({ headBranch: branch, title: 'Adds b' }).expect(201);
+
+    // Not merged yet → refused.
+    await authedPost(`/api/projects/${id}/pulls/1/revert`).expect(409);
+
+    await authedPost('/api/pr/merge')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(200);
+    expect(git(bare, 'ls-tree --name-only refs/heads/main').split('\n')).toContain('b.txt');
+
+    const res = await authedPost(`/api/projects/${id}/pulls/1/revert`).expect(200);
+    expect(res.body.revertSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.body.pr).toMatchObject({ status: 'merged', revert_sha: res.body.revertSha });
+    // The merged file is gone from the base branch, on a new commit.
+    expect(git(bare, 'rev-parse refs/heads/main')).toBe(res.body.revertSha);
+    expect(git(bare, 'ls-tree --name-only refs/heads/main').split('\n')).not.toContain('b.txt');
+
+    // Detail surfaces the reverted state for the PR page badge.
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr).toMatchObject({ reverted: true, revert_sha: res.body.revertSha });
+
+    const again = await authedPost(`/api/projects/${id}/pulls/1/revert`).expect(409);
+    expect(again.body.error).toMatch(/already reverted/i);
+  });
+
   it('request-review flags the PR; a verdict clears it; reviews render in detail', async () => {
     const { id, branch } = await hostedProjectWithBranch();
     await postPulls(id).send({ headBranch: branch, title: 'Needs review' }).expect(201);

@@ -41,6 +41,7 @@ import { api } from '../utils/api';
     generatePrDescription: vi.fn(),
     rerunCiRun: vi.fn(),
     createNativePr: vi.fn(),
+    revertNativePr: vi.fn(),
   },
 }));
 
@@ -941,5 +942,103 @@ describe('<PullRequestsPage /> — commits in activity log', () => {
     expect(screen.queryByTestId('pr-commits-toggle')).toBeNull();
     // Short SHA is rendered.
     expect(screen.getByText('abc1234d')).toBeInTheDocument();
+  });
+});
+
+describe('<PullRequestsPage /> — Revert on a merged native PR', () => {
+  const mergedNativePr = {
+    ...prSummary,
+    state: 'closed',
+    merged: true,
+    merged_at: '2026-04-20T10:00:00Z',
+    html_url: '/projects/proj-1/pulls/123',
+  };
+
+  async function openMergedDetail(pr: any = mergedNativePr, props: any = {}) {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [pr] });
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      source: 'agenthub',
+      pr,
+      checks: [],
+      reviews: [],
+      comments: [],
+    });
+    render(<PullRequestsPage projectId="proj-1" project={project} {...props} />);
+    fireEvent.click(await screen.findByText('Fix the flaky test' as any));
+    return await screen.findByTestId('pr-revert-button').catch(() => null);
+  }
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('needs a confirming second click before it calls the API', async () => {
+    const onToast = vi.fn();
+    (api.revertNativePr as any).mockResolvedValue({ revertSha: 'abc1234def5678' });
+    const btn = await openMergedDetail(mergedNativePr, { onToast });
+
+    fireEvent.click(btn as any);
+    expect(api.revertNativePr).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Revert on main\?/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('pr-revert-button') as any);
+    await waitFor(() => expect(api.revertNativePr).toHaveBeenCalledWith('proj-1', 123));
+    await waitFor(() =>
+      expect(onToast).toHaveBeenCalledWith(
+        expect.stringMatching(/reverted on main/i),
+        'success',
+        expect.any(Number),
+      ),
+    );
+  });
+
+  it('surfaces a failed revert as an error toast', async () => {
+    const onToast = vi.fn();
+    (api.revertNativePr as any).mockRejectedValue(
+      new Error('the revert conflicts with changes made after the merge landed'),
+    );
+    const btn = await openMergedDetail(mergedNativePr, { onToast });
+
+    fireEvent.click(btn as any);
+    fireEvent.click(screen.getByTestId('pr-revert-button') as any);
+
+    await waitFor(() =>
+      expect(onToast).toHaveBeenCalledWith(
+        expect.stringMatching(/conflicts/i),
+        'error',
+        expect.any(Number),
+      ),
+    );
+  });
+
+  it('replaces the button with a Reverted marker once the PR carries a revert', async () => {
+    await openMergedDetail({
+      ...mergedNativePr,
+      reverted: true,
+      revert_sha: 'f'.repeat(40),
+      reverted_by: 'alice',
+    });
+
+    expect(await screen.findByTestId('pr-reverted-note')).toBeInTheDocument();
+    expect(screen.queryByTestId('pr-revert-button')).toBeNull();
+  });
+
+  it('is not offered on an open PR or a GitHub-hosted one', async () => {
+    // Open native PR — nothing merged to revert.
+    const { unmount } = render(<PullRequestsPage projectId="proj-1" project={project} />);
+    unmount();
+
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [mergedNativePr] });
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      // No `source: 'agenthub'` → GitHub-hosted, where the Hub can't revert.
+      pr: mergedNativePr,
+      checks: [],
+      reviews: [],
+      comments: [],
+    });
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByText('Fix the flaky test' as any));
+    expect(await screen.findByText('Activity')).toBeInTheDocument();
+    expect(screen.queryByTestId('pr-revert-button')).toBeNull();
   });
 });

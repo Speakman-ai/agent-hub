@@ -76,26 +76,30 @@ export function buildInlineCommentPayload({ filePath, line, side, body }: any = 
  * What actions the detail payload supports — mirrors the web gating in
  * `client/src/components/PullRequestsPage.jsx`: review/comment/edit are
  * native-only (Agent Hub-hosted PRs, `source === 'agenthub'`) and require
- * an open PR; reopen needs a closed-but-not-merged native PR. The diff
- * view works for both native and GitHub PRs via the `/api/pr/files`
- * proxy, keyed on the PR's html URL.
+ * an open PR; reopen needs a closed-but-not-merged native PR; revert needs a
+ * merged native PR that hasn't been reverted already. The diff view works for
+ * both native and GitHub PRs via the `/api/pr/files` proxy, keyed on the PR's
+ * html URL.
  */
 export function prDetailCapabilities(detail: any) {
     const pr = detail && typeof detail === 'object' ? detail.pr : null;
     const isNative = detail?.source === 'agenthub';
     const isOpen = String(pr?.state || '').toLowerCase() === 'open';
     const isMerged = Boolean(pr?.merged_at);
+    const isReverted = Boolean(pr?.reverted);
     const prUrl = typeof pr?.html_url === 'string' && pr.html_url ? pr.html_url : null;
     return {
         isNative,
         isOpen,
         isMerged,
+        isReverted,
         prUrl,
         canViewFiles: Boolean(prUrl),
         canReview: isNative && isOpen,
         canComment: isNative && isOpen,
         canEdit: isNative && isOpen,
         canReopen: isNative && !isOpen && !isMerged,
+        canRevert: isNative && isMerged && !isReverted,
         // Native html_urls are in-app client routes — only real GitHub URLs
         // get an external "open" affordance (web parity).
         externalUrl: prUrl && /^https?:\/\//i.test(prUrl) ? prUrl : null,

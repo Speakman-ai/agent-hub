@@ -88,6 +88,10 @@ export function diffSummary(pr: any) {
 export function prStateBadge(pr: any) {
     if (!pr)
         return { label: 'unknown', color: colors.gray500, bg: colors.gray700_40 };
+    // `reverted` outranks `merged`: the merge happened, but what matters at a
+    // glance is that the change is no longer on the base branch.
+    if (pr.reverted)
+        return { label: 'reverted', color: colors.amber400, bg: colors.amber900_40 };
     if (pr.merged_at)
         return { label: 'merged', color: colors.purple400, bg: colors.purple900_40 };
     if (pr.draft)

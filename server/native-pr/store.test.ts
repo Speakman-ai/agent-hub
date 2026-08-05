@@ -8,6 +8,7 @@ import {
   listPullRequestsForBranch,
   markClosed,
   markMerged,
+  markReverted,
 } from './store.js';
 import { buildNativePrUrl, isNativePrUrl, parseNativePrUrl } from './url.js';
 import type { Stmts } from '../types.js';
@@ -91,6 +92,33 @@ describe('native-pr store', () => {
     expect(
       markMerged(stmts, row, { mergedSha: 'd'.repeat(40), mergedBy: 'u1', mergeMethod: 'merge' }),
     ).toBeNull();
+  });
+
+  it('markReverted only fires once, and only on a merged row', () => {
+    const projectId = `np-${uuidv4().slice(0, 8)}`;
+    const row = createOrGetOpenPullRequest(stmts, freshArgs(projectId)).row;
+
+    // Open PR — nothing to revert.
+    expect(markReverted(stmts, row, { revertSha: 'a'.repeat(40), revertedBy: 'u1' })).toBeNull();
+
+    const merged = markMerged(stmts, row, {
+      mergedSha: 'b'.repeat(40),
+      mergedBy: 'u1',
+      mergeMethod: 'squash',
+    });
+    expect(merged).toBeTruthy();
+
+    const reverted = markReverted(stmts, row, { revertSha: 'c'.repeat(40), revertedBy: 'u2' });
+    expect(reverted).toMatchObject({
+      status: 'merged',
+      revert_sha: 'c'.repeat(40),
+      reverted_by: 'u2',
+    });
+    expect(reverted?.reverted_at).toBeTruthy();
+
+    // Second revert refused in SQL — the recorded sha is not overwritten.
+    expect(markReverted(stmts, row, { revertSha: 'd'.repeat(40), revertedBy: 'u3' })).toBeNull();
+    expect(getPullRequest(stmts, projectId, row.number)?.revert_sha).toBe('c'.repeat(40));
   });
 
   it('list filters by state', () => {

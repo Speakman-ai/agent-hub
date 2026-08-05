@@ -676,30 +676,29 @@ app.use(createHealthRoute({ allAgents, getProjects, config }));
 // nice-to-have for local dev and self-hosted instances.
 app.use(createApiDocsRoutes());
 
-// Native PR service for Agent Hub-hosted projects. The afterMerge hook is
-// the ONLY mirror trigger for merges — `git update-ref` in the bare repo
-// does not fire the post-receive hook (only receive-pack does), so the
-// merge path pushes the moved base branch to the GitHub mirror itself.
+// Native PR service for Agent Hub-hosted projects. The afterBaseBranchMoved
+// hook is the ONLY mirror trigger for merges and reverts — `git update-ref`
+// in the bare repo does not fire the post-receive hook (only receive-pack
+// does), so those paths push the moved base branch to GitHub themselves.
 // Constructed before initAutoGit so the session "Create PR" flow can
 // create native PRs too.
 const nativePr = createNativePrService({
   stmts: stmts!,
   broadcast,
-  afterMerge: async ({ project, baseBranch }) => {
-    // Native merges move the base branch via `update-ref` — no
-    // post-receive hook fires — so BOTH downstream reactions to "default
-    // branch moved" hang off this hook: the GitHub mirror push and CI on
-    // push.
+  afterBaseBranchMoved: async ({ project, baseBranch }) => {
+    // Native merges and reverts move the base branch via `update-ref` — no
+    // post-receive hook fires — so EVERY downstream reaction to "default
+    // branch moved" hangs off this hook: CI on push, the security re-scan,
+    // deploy triggers, and the GitHub mirror push.
     void maybeRunPushCi(project, [`refs/heads/${baseBranch}`], { stmts: stmts!, broadcast });
-    // Native merges move the base branch via update-ref (no post-receive hook),
-    // so the on-push security re-scan hangs off this hook too.
     void maybeRunPushSecurityScan(project, [`refs/heads/${baseBranch}`], {
       stmts: stmts!,
       broadcast,
       autofix: securityAutofixDeps(),
     });
-    // A native merge is the `merge` deploy-trigger event: enqueue a deployment
-    // for any environment whose merge trigger matches the moved base branch.
+    // Both a merge and a revert are the `merge` deploy-trigger event: enqueue
+    // a deployment for any environment whose merge trigger matches the moved
+    // base branch. A revert that isn't deployed hasn't really been undone.
     void maybeRunDeployTriggers(project, 'merge', [`refs/heads/${baseBranch}`], {
       broadcast,
       config,

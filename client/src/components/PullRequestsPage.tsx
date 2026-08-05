@@ -16,6 +16,7 @@ import {
   Eye,
   Zap,
   ZapOff,
+  Undo2,
 } from 'lucide-react';
 import { Pencil, Check, X, Sparkles, SquareKanban, Layers } from 'lucide-react';
 import { api } from '../utils/api';
@@ -532,6 +533,8 @@ function PrDetail({
   const [saving, setSaving] = useState(false);
   const [closing, setClosing] = useState(false);
   const [reopening, setReopening] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [confirmingRevert, setConfirmingRevert] = useState(false);
   const [togglingReview, setTogglingReview] = useState(false);
   const [togglingAutoMerge, setTogglingAutoMerge] = useState(false);
   const [reviewVerdict, setReviewVerdict] = useState('approved');
@@ -566,6 +569,32 @@ function PrDetail({
       toastErr(err);
     } finally {
       setReopening(false);
+    }
+  };
+
+  // Two-step on purpose: reverting writes a commit to the base branch and
+  // pushes it to the GitHub mirror, so it should not be one stray click away.
+  const handleRevert = async () => {
+    if (!confirmingRevert) {
+      setConfirmingRevert(true);
+      return;
+    }
+    setConfirmingRevert(false);
+    setReverting(true);
+    try {
+      const res = await api.revertNativePr(projectId, pr.number);
+      if (onToast) {
+        onToast(
+          `PR #${pr.number} reverted on ${pr.base} — commit ${String(res?.revertSha || '').slice(0, 7)}. The GitHub mirror is being updated.`,
+          'success',
+          6000,
+        );
+      }
+      onRefresh();
+    } catch (err: any) {
+      toastErr(err);
+    } finally {
+      setReverting(false);
     }
   };
 
@@ -791,6 +820,34 @@ function PrDetail({
               {reopening ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
               Reopen
             </button>
+          )}
+          {isNative && isMerged && !pr.reverted && (
+            <button
+              type="button"
+              onClick={handleRevert}
+              onBlur={() => setConfirmingRevert(false)}
+              disabled={reverting}
+              title={`Commit the inverse of this merge on ${pr.base} and push it to the GitHub mirror. History is not rewritten — a revert commit is added.`}
+              data-testid="pr-revert-button"
+              className="flex items-center gap-1.5 text-sm text-amber-300 hover:text-amber-100 transition-colors disabled:opacity-50"
+            >
+              {reverting ? <Loader2 size={14} className="animate-spin" /> : <Undo2 size={14} />}
+              {confirmingRevert ? `Revert on ${pr.base}?` : 'Revert'}
+            </button>
+          )}
+          {pr.reverted && (
+            <span
+              data-testid="pr-reverted-note"
+              title={
+                pr.revert_sha
+                  ? `Reverted by commit ${pr.revert_sha}${pr.reverted_by ? ` (${pr.reverted_by})` : ''}`
+                  : undefined
+              }
+              className="flex items-center gap-1.5 text-sm text-amber-300/90"
+            >
+              <Undo2 size={14} />
+              Reverted
+            </span>
           )}
           {autoMergeState.available && (
             <button

@@ -1,8 +1,8 @@
 /**
  * NativePrService tests — live test DB (test/setup) + real git against a
  * hosted bare repo in the per-process test data dir. Covers the PR
- * lifecycle end-to-end including the kanban Done-move and the afterMerge
- * mirror hook.
+ * lifecycle end-to-end including the kanban Done-move, the revert path, and
+ * the base-branch-moved mirror hook.
  */
 import '../test/setup.js';
 import { describe, it, expect, beforeAll, vi } from 'vitest';
@@ -80,7 +80,7 @@ async function seedHostedRepoWithBranch(
 const TEST_PR_AUTHOR = '00000000-0000-4000-8000-000000000010';
 
 describe('NativePrService', () => {
-  it('full lifecycle: create → list/detail shapes → merge → card Done + events + afterMerge', async () => {
+  it('full lifecycle: create → list/detail shapes → merge → card Done + events + base-branch-moved hook', async () => {
     const projectId = `npr-${uuidv4().slice(0, 8)}`;
     const project = makeProject(projectId);
     const branch = 'agent-hub/dev/session-abcd1234';
@@ -88,10 +88,15 @@ describe('NativePrService', () => {
 
     const broadcasts: Array<Record<string, unknown>> = [];
     const broadcast: BroadcastFn = (data) => broadcasts.push(data);
-    const afterMerge = vi.fn<
-      (args: { project: Project; baseBranch: string; mergedSha: string }) => Promise<void>
+    const afterBaseBranchMoved = vi.fn<
+      (args: {
+        project: Project;
+        baseBranch: string;
+        sha: string;
+        reason: 'merge' | 'revert';
+      }) => Promise<void>
     >(async () => {});
-    const service = createNativePrService({ stmts, broadcast, afterMerge });
+    const service = createNativePrService({ stmts, broadcast, afterBaseBranchMoved });
 
     // Kanban card matched by title (the webhook-era discovery path).
     const board = getOrCreateBoard(stmts, projectId);
@@ -176,10 +181,11 @@ describe('NativePrService', () => {
 
     expect(broadcasts.some((b) => b.type === 'webhook_pr_merged')).toBe(true);
     expect(broadcasts.some((b) => b.type === 'card_moved' && b.columnName === 'Done')).toBe(true);
-    await vi.waitFor(() => expect(afterMerge).toHaveBeenCalledOnce());
-    expect(afterMerge.mock.calls[0][0]).toMatchObject({
+    await vi.waitFor(() => expect(afterBaseBranchMoved).toHaveBeenCalledOnce());
+    expect(afterBaseBranchMoved.mock.calls[0][0]).toMatchObject({
       baseBranch: 'main',
-      mergedSha: result.mergedSha,
+      sha: result.mergedSha,
+      reason: 'merge',
     });
   });
 
@@ -213,6 +219,108 @@ describe('NativePrService', () => {
     });
     expect(result).toMatchObject({ ok: false, status: 409, mergeable: false });
     expect(service.listPulls({ project, state: 'open', limit: 10 })).toHaveLength(1);
+  });
+
+  it('revert: undoes the merge on the base branch, records it, and re-fires the branch-moved hook', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'agent-hub/dev/session-revert01';
+    const { bare, headSha } = await seedHostedRepoWithBranch(projectId, branch);
+
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const afterBaseBranchMoved = vi.fn<
+      (args: {
+        project: Project;
+        baseBranch: string;
+        sha: string;
+        reason: 'merge' | 'revert';
+      }) => Promise<void>
+    >(async () => {});
+    const service = createNativePrService({
+      stmts,
+      broadcast: (data) => broadcasts.push(data),
+      afterBaseBranchMoved,
+    });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Add feature',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+    const merged = await service.merge({
+      project,
+      number: 1,
+      mergeMethod: 'squash',
+      actor: 'u-tester',
+    });
+    expect(merged.ok).toBe(true);
+    expect(git(bare, 'ls-tree --name-only refs/heads/main').split('\n')).toContain('feature.txt');
+
+    const result = await service.revert({ project, number: 1, actor: 'u-reverter' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // The file the PR added is gone from the base branch, without a rewrite.
+    expect(git(bare, 'rev-parse refs/heads/main')).toBe(result.revertSha);
+    expect(git(bare, 'ls-tree --name-only refs/heads/main').split('\n')).not.toContain(
+      'feature.txt',
+    );
+
+    // The PR stays merged; the revert is recorded alongside it.
+    const [summary] = service.listPulls({ project, state: 'closed', limit: 10 });
+    expect(summary).toMatchObject({
+      number: 1,
+      merged: true,
+      reverted: true,
+      revert_sha: result.revertSha,
+      reverted_by: 'u-reverter',
+    });
+    expect(summary.reverted_at).toBeTruthy();
+
+    expect(broadcasts.some((b) => b.type === 'native_pr_update' && b.action === 'reverted')).toBe(
+      true,
+    );
+    // The mirror/CI hook must fire again — otherwise the revert stays local
+    // to the Hub and GitHub keeps serving the reverted code.
+    await vi.waitFor(() => expect(afterBaseBranchMoved).toHaveBeenCalledTimes(2));
+    expect(afterBaseBranchMoved.mock.calls[1][0]).toMatchObject({
+      baseBranch: 'main',
+      sha: result.revertSha,
+      reason: 'revert',
+    });
+  });
+
+  it('revert is refused for an unmerged PR and for an already-reverted one', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'agent-hub/dev/session-revert02';
+    const { bare, headSha } = await seedHostedRepoWithBranch(projectId, branch);
+    const service = createNativePrService({ stmts, broadcast: () => {} });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Add feature',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+
+    const whileOpen = await service.revert({ project, number: 1, actor: 'u' });
+    expect(whileOpen).toMatchObject({ ok: false, status: 409 });
+
+    await service.merge({ project, number: 1, mergeMethod: 'squash', actor: 'u-tester' });
+    expect((await service.revert({ project, number: 1, actor: 'u' })).ok).toBe(true);
+    const tipAfterFirst = git(bare, 'rev-parse refs/heads/main');
+
+    // Second revert is refused by the DB guard, before git runs — no second
+    // revert commit stacks onto the branch.
+    const second = await service.revert({ project, number: 1, actor: 'u' });
+    expect(second).toMatchObject({ ok: false, status: 409 });
+    expect(git(bare, 'rev-parse refs/heads/main')).toBe(tipAfterFirst);
   });
 
   it('marks PR head-change callbacks as created vs reused-head update', async () => {

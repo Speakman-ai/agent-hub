@@ -138,6 +138,26 @@ describe('prDetailCapabilities', () => {
         });
         expect(caps.isMerged).toBe(true);
         expect(caps.canReopen).toBe(false);
+        // Merged is where revert becomes available instead.
+        expect(caps.canRevert).toBe(true);
+    });
+    it('revert is offered only for a merged, not-yet-reverted native PR', () => {
+        expect(prDetailCapabilities(nativeOpen).canRevert).toBe(false);
+        expect(prDetailCapabilities({
+            source: 'user-oauth',
+            pr: { state: 'closed', merged_at: '2026-06-01T00:00:00Z', html_url: 'x' },
+        }).canRevert).toBe(false);
+        const alreadyReverted = prDetailCapabilities({
+            source: 'agenthub',
+            pr: {
+                state: 'closed',
+                merged_at: '2026-06-01T00:00:00Z',
+                reverted: true,
+                html_url: 'x',
+            },
+        });
+        expect(alreadyReverted.isReverted).toBe(true);
+        expect(alreadyReverted.canRevert).toBe(false);
     });
     it('GitHub PR: write actions disabled, files viewable, external link kept', () => {
         const caps = prDetailCapabilities({

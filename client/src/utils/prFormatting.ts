@@ -126,10 +126,13 @@ export function diffSummary(pr: any) {
 
 /**
  * Pick a status label + Tailwind color classes for a PR given its state + draft flag.
- * @param {{state?: string, draft?: boolean, merged_at?: string|null}} pr
+ * `reverted` outranks `merged`: the merge still happened, but what matters at a
+ * glance is that the change is no longer on the base branch.
+ * @param {{state?: string, draft?: boolean, merged_at?: string|null, reverted?: boolean}} pr
  */
 export function prStateBadge(pr: any) {
   if (!pr) return { label: 'unknown', color: TOKEN.gray.text, bg: TOKEN.gray.bg };
+  if (pr.reverted) return { label: 'reverted', color: TOKEN.yellow.text, bg: TOKEN.yellow.bg };
   if (pr.merged_at) return { label: 'merged', color: TOKEN.purple.text, bg: TOKEN.purple.bg };
   if (pr.draft) return { label: 'draft', color: TOKEN.gray.text, bg: TOKEN.gray.bg };
   const s = (pr.state || '').toLowerCase();

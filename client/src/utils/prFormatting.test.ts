@@ -174,6 +174,12 @@ describe('prStateBadge', () => {
     expect(prStateBadge({ state: 'open', draft: true }).label).toBe('draft');
   });
 
+  it('prefers reverted over merged so the list shows the change is undone', () => {
+    expect(
+      prStateBadge({ state: 'closed', merged_at: '2026-04-17T00:00:00Z', reverted: true }).label,
+    ).toBe('reverted');
+  });
+
   it('returns open with emerald text class', () => {
     const b = prStateBadge({ state: 'open' });
     expect(b.label).toBe('open');

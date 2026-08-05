@@ -21,6 +21,7 @@ import {
   listPullRequestsForBranch,
   markClosed,
   markMerged,
+  markReverted,
   type PrListState,
 } from './store.js';
 import {
@@ -73,6 +74,7 @@ async function ciEmptyStateNote(repoPath: string, sha: string): Promise<string |
   return 'Checks have not started yet for the head commit.';
 }
 import { mergePullRequest, type MergeMethod } from './merge.js';
+import { revertPullRequest } from './revert.js';
 import { handleCardOnMerge } from './card-on-merge.js';
 
 export { NativePrError } from './errors.js';
@@ -81,10 +83,18 @@ export interface NativePrServiceDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
   /**
-   * Post-merge hook — the hosting layer's GitHub mirror push. Fired and
-   * forgotten; a mirror failure never rolls back the merge.
+   * Fired after this service moves a base branch with `update-ref` — merging
+   * a PR or reverting a merged one. `update-ref` bypasses `post-receive`, so
+   * this hook is the only thing that tells the hosting layer the branch moved
+   * (GitHub mirror push, push CI, deploy triggers). Fired and forgotten; a
+   * mirror failure never rolls back the git write that already landed.
    */
-  afterMerge?: (args: { project: Project; baseBranch: string; mergedSha: string }) => Promise<void>;
+  afterBaseBranchMoved?: (args: {
+    project: Project;
+    baseBranch: string;
+    sha: string;
+    reason: 'merge' | 'revert';
+  }) => Promise<void>;
   /**
    * Fired when a PR is created or an open PR is reused with a fresh head sha.
    * Fire-and-forget. The reason lets consumers distinguish PR creation from a
@@ -188,6 +198,16 @@ export interface NativePrService {
     | { ok: true; mergedSha: string }
     | { ok: false; status: number; error: string; mergeable?: false }
   >;
+  /**
+   * Undo a merged PR by committing its inverse on the base branch. Adds a
+   * commit rather than rewriting history — see revert.ts for why. Once only:
+   * a PR that already carries a `revert_sha` is refused.
+   */
+  revert(args: {
+    project: Project;
+    number: number;
+    actor: string;
+  }): Promise<{ ok: true; revertSha: string } | { ok: false; status: number; error: string }>;
   close(args: { project: Project; number: number }): { row: PullRequestRow };
 }
 
@@ -227,6 +247,10 @@ function summarize(
     check_rollup: null,
     review_requested: row.review_requested_at !== null && row.review_requested_at !== undefined,
     review_requested_by: row.review_requested_by ?? null,
+    reverted: row.revert_sha !== null && row.revert_sha !== undefined,
+    revert_sha: row.revert_sha ?? null,
+    reverted_at: toIso(row.reverted_at ?? null),
+    reverted_by: row.reverted_by ?? null,
     ...extra,
   };
 }
@@ -597,6 +621,23 @@ function requirePr(stmts: Stmts, project: Project, number: number): PullRequestR
 export function createNativePrService(deps: NativePrServiceDeps): NativePrService {
   const { stmts, broadcast } = deps;
 
+  const fireBaseBranchMoved = (
+    project: Project,
+    number: number,
+    baseBranch: string,
+    sha: string,
+    reason: 'merge' | 'revert',
+  ): void => {
+    if (!deps.afterBaseBranchMoved) return;
+    void deps.afterBaseBranchMoved({ project, baseBranch, sha, reason }).catch((err: unknown) => {
+      console.warn(
+        `[native-pr] afterBaseBranchMoved (${reason}) hook failed for ${project.id}#${number}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+  };
+
   return {
     createOrGetOpenPr({ project, headBranch, baseBranch, headSha, title, body, author }) {
       requireHostedRepo(project);
@@ -817,19 +858,72 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
 
       handleCardOnMerge({ stmts, broadcast }, project.id, updated ?? row, actor);
 
-      if (deps.afterMerge) {
-        void deps
-          .afterMerge({ project, baseBranch: row.base_branch, mergedSha: result.mergedSha })
-          .catch((err: unknown) => {
-            console.warn(
-              `[native-pr] afterMerge hook failed for ${project.id}#${number}: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          });
-      }
+      fireBaseBranchMoved(project, number, row.base_branch, result.mergedSha, 'merge');
 
       return { ok: true as const, mergedSha: result.mergedSha };
+    },
+
+    async revert({ project, number, actor }) {
+      const repoPath = requireHostedRepo(project);
+      const row = requirePr(stmts, project, number);
+      if (row.status !== 'merged' || !row.merged_sha) {
+        return {
+          ok: false as const,
+          status: 409,
+          error: `PR #${number} is ${row.status} — only a merged PR can be reverted`,
+        };
+      }
+      if (row.revert_sha) {
+        return {
+          ok: false as const,
+          status: 409,
+          error: `PR #${number} was already reverted by ${row.revert_sha.slice(0, 12)}`,
+        };
+      }
+
+      const result = await revertPullRequest({
+        repoPath,
+        baseBranch: row.base_branch,
+        mergedSha: row.merged_sha,
+        prNumber: row.number,
+        actor,
+      });
+
+      if (!result.ok) {
+        if (result.reason === 'missing_ref') {
+          return { ok: false as const, status: 404, error: result.detail };
+        }
+        if (result.reason === 'conflict' || result.reason === 'not_on_base') {
+          return { ok: false as const, status: 409, error: result.detail };
+        }
+        if (result.reason === 'empty') {
+          return { ok: false as const, status: 409, error: result.detail };
+        }
+        return { ok: false as const, status: 503, error: result.detail };
+      }
+
+      const updated = markReverted(stmts, row, {
+        revertSha: result.revertSha,
+        revertedBy: actor,
+      });
+      if (!updated) {
+        // The revert commit is already on the branch; a lost row update
+        // only costs the badge, so report success and log loudly.
+        console.warn(
+          `[native-pr] revert landed in git but row ${row.id} could not be marked (project ${project.id} #${number})`,
+        );
+      }
+
+      broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: 'reverted',
+      });
+
+      fireBaseBranchMoved(project, number, row.base_branch, result.revertSha, 'revert');
+
+      return { ok: true as const, revertSha: result.revertSha };
     },
 
     close({ project, number }) {

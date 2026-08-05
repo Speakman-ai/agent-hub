@@ -31901,6 +31901,84 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/revert:
+    post:
+      tags:
+        - Projects
+      summary: Revert a merged native pull request
+      description: Commits the inverse of the PR's merge commit on its base branch and pushes the moved branch to the GitHub mirror, so the change is undone on both. History is not rewritten — a revert commit is added, matching `git revert` and GitHub's Revert button. Merged PRs only, once per PR.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: The revert commit sha and the updated PR summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revertSha:
+                    type: string
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - revertSha
+                  - pr
+        "400":
+          description: Not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR, or the merge commit is gone from the repo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not merged, was already reverted, is no longer on the base branch, or the revert conflicts with later commits.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "503":
+          description: The base branch kept moving; retry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/pulls/{number}/request-review:
     post:
       tags:

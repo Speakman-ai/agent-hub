@@ -183,6 +183,7 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
     const [commentOpen, setCommentOpen] = useState(false);
     const [editOpen, setEditOpen] = useState(false);
     const [reopening, setReopening] = useState(false);
+    const [reverting, setReverting] = useState(false);
     const prNumber = pr?.number;
     // Sheets throw on failure so they can render the error inline and stay
     // open; success closes the sheet and refreshes the detail payload.
@@ -213,6 +214,29 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
             setReopening(false);
         }
     }, [projectId, prNumber, reopening, onRefresh]);
+    // Confirmed before it runs: this writes a commit to the base branch and
+    // pushes it on to the GitHub mirror (web parity, which asks twice).
+    const runRevert = useCallback(async () => {
+        setReverting(true);
+        try {
+            await api.revertPull(projectId, prNumber);
+            onRefresh();
+        }
+        catch (err: any) {
+            Alert.alert('Revert failed', err?.message || 'Failed to revert PR');
+        }
+        finally {
+            setReverting(false);
+        }
+    }, [projectId, prNumber, onRefresh]);
+    const handleRevert = useCallback(() => {
+        if (reverting || !prNumber)
+            return;
+        Alert.alert(`Revert PR #${prNumber}?`, `This commits the inverse of the merge on ${pr?.base || 'the base branch'} and pushes it to the GitHub mirror. History is not rewritten.`, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Revert', style: 'destructive', onPress: () => void runRevert() },
+        ]);
+    }, [prNumber, pr?.base, reverting, runRevert]);
     if (!pr)
         return null;
     const state = prStateBadge(pr);
@@ -288,6 +312,9 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
           </TouchableOpacity>) : null}
         {caps.canReopen ? (<TouchableOpacity style={[styles.prActionButton, reopening && styles.resolveButtonDisabled]} onPress={handleReopen} disabled={reopening} accessibilityState={{ disabled: reopening, busy: reopening }}>
             {reopening ? (<ActivityIndicator size="small" color={colors.emerald400}/>) : (<Text style={[styles.prActionButtonText, { color: colors.emerald400 }]}>Reopen</Text>)}
+          </TouchableOpacity>) : null}
+        {caps.canRevert ? (<TouchableOpacity style={[styles.prActionButton, reverting && styles.resolveButtonDisabled]} onPress={handleRevert} disabled={reverting} accessibilityLabel="Revert PR" accessibilityState={{ disabled: reverting, busy: reverting }}>
+            {reverting ? (<ActivityIndicator size="small" color={colors.amber400}/>) : (<Text style={[styles.prActionButtonText, { color: colors.amber400 }]}>Revert</Text>)}
           </TouchableOpacity>) : null}
       </View>
 

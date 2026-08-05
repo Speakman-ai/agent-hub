@@ -1235,6 +1235,9 @@ function initDb(dataDir: string): void {
       closed_at INTEGER,
       review_requested_at INTEGER,
       review_requested_by TEXT,
+      revert_sha TEXT,
+      reverted_at INTEGER,
+      reverted_by TEXT,
       UNIQUE(project_id, number)
     );
     CREATE INDEX IF NOT EXISTS pull_requests_project
@@ -1278,9 +1281,15 @@ function initDb(dataDir: string): void {
       ON pull_request_comments(project_id, pr_number, file_path, line);
   `);
 
-  // The pull_requests table shipped without the review-request columns in
-  // the same dev cycle — heal existing local DBs (no-op once present).
-  for (const col of ['review_requested_at INTEGER', 'review_requested_by TEXT']) {
+  // Columns added to pull_requests after the table shipped — heal existing
+  // DBs (each ALTER is a no-op once the column is present).
+  for (const col of [
+    'review_requested_at INTEGER',
+    'review_requested_by TEXT',
+    'revert_sha TEXT',
+    'reverted_at INTEGER',
+    'reverted_by TEXT',
+  ]) {
     try {
       db.exec(`ALTER TABLE pull_requests ADD COLUMN ${col}`);
     } catch {
@@ -6846,6 +6855,14 @@ function initDb(dataDir: string): void {
       `UPDATE pull_requests
           SET status = 'open', closed_at = NULL, updated_at = ?
         WHERE id = ? AND status = 'closed'`,
+    ),
+    // Guarded merged → reverted-once transition. `revert_sha IS NULL` makes
+    // it idempotent: a double-click can't stack two revert commits.
+    // Params: (revert_sha, reverted_by, reverted_at, updated_at, id).
+    markPullRequestReverted: db.prepare(
+      `UPDATE pull_requests
+          SET revert_sha = ?, reverted_by = ?, reverted_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'merged' AND revert_sha IS NULL`,
     ),
     // Review-request flag. Params: (requested_at|null, requested_by|null, updated_at, id).
     setPullRequestReviewRequested: db.prepare(

@@ -1259,6 +1259,10 @@ export const api = {
     fetchJSON(`/projects/${projectId}/git-host/recent-pushes`),
   reopenNativePr: (projectId: any, number: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/reopen`, { method: 'POST' }),
+  // Undo a merged PR: commits the inverse on the base branch and pushes the
+  // moved branch to the GitHub mirror. Adds a commit; never rewrites history.
+  revertNativePr: (projectId: any, number: any) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/revert`, { method: 'POST' }),
   requestNativePrReview: (projectId: any, number: any, requested: any = true) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/request-review`, {
       method: 'POST',

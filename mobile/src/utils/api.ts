@@ -1147,6 +1147,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({}),
     }),
+    // Undo a merged PR: commits the inverse on the base branch and pushes the
+    // moved branch to the GitHub mirror. Adds a commit; no history rewrite.
+    revertPull: (projectId: any, number: any) => fetchJSON(`/projects/${projectId}/pulls/${number}/revert`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    }),
     // `data`: { event: 'APPROVE'|'REQUEST_CHANGES'|'COMMENT', body? }
     submitPullReview: (projectId: any, number: any, data: any) => fetchJSON(`/projects/${projectId}/pulls/${number}/reviews`, {
         method: 'POST',

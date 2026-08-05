@@ -288,6 +288,38 @@ registerPath({
 
 registerPath({
   method: 'post',
+  path: '/api/projects/{projectId}/pulls/{number}/revert',
+  tags: ['Projects'],
+  summary: 'Revert a merged native pull request',
+  description:
+    "Commits the inverse of the PR's merge commit on its base branch and pushes the moved branch to the GitHub mirror, so the change is undone on both. History is not rewritten — a revert commit is added, matching `git revert` and GitHub's Revert button. Merged PRs only, once per PR.",
+  request: { params: z.object({ projectId: z.string(), number: z.string() }) },
+  responses: {
+    200: {
+      description: 'The revert commit sha and the updated PR summary.',
+      content: jsonContent(
+        z.object({ revertSha: z.string(), pr: z.record(z.string(), z.unknown()) }),
+      ),
+    },
+    400: { description: 'Not Hub-hosted.', content: jsonContent(PrErrorSchema) },
+    404: {
+      description: 'Unknown project/PR, or the merge commit is gone from the repo.',
+      content: jsonContent(PrErrorSchema),
+    },
+    409: {
+      description:
+        'PR is not merged, was already reverted, is no longer on the base branch, or the revert conflicts with later commits.',
+      content: jsonContent(PrErrorSchema),
+    },
+    503: {
+      description: 'The base branch kept moving; retry.',
+      content: jsonContent(PrErrorSchema),
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
   path: '/api/projects/{projectId}/pulls/{number}/request-review',
   tags: ['Projects'],
   summary: 'Flag (or unflag) a native pull request for human review',
@@ -648,6 +680,28 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       sendNativeError(res, err);
     }
   });
+
+  router.post(
+    '/api/projects/:projectId/pulls/:number/revert',
+    async (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const areq = req as AuthenticatedRequest;
+      try {
+        const result = await deps.nativePr!.revert({
+          project: ctx.project,
+          number: ctx.number,
+          actor: areq.authUser ?? areq.authUserId ?? 'user',
+        });
+        if (!result.ok) return res.status(result.status).json({ error: result.error });
+        const pr = deps.stmts.getPullRequestByNumber.get(ctx.project.id, ctx.number);
+        return res.json({ revertSha: result.revertSha, pr });
+      } catch (err: unknown) {
+        sendNativeError(res, err);
+        return;
+      }
+    },
+  );
 
   router.post(
     '/api/projects/:projectId/pulls/:number/request-review',

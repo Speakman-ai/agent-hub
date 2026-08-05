@@ -878,6 +878,14 @@ export interface PullRequestRow {
   /** Set when a human flagged the PR for review (cleared by approve/changes-requested). */
   review_requested_at: number | null;
   review_requested_by: string | null;
+  /**
+   * Revert commit that undid {@link merged_sha} on the base branch. Set once;
+   * the PR stays `merged` (the merge happened) with the revert recorded
+   * alongside it.
+   */
+  revert_sha: string | null;
+  reverted_at: number | null;
+  reverted_by: string | null;
 }
 
 /** Inline (per-line) review comment on a native PR diff. */
@@ -2804,6 +2812,11 @@ export interface Stmts {
   markPullRequestClosed: Stmt;
   /** Guarded `status='closed'` → 'open' transition (merged stays closed). */
   markPullRequestReopened: Stmt;
+  /**
+   * Records the revert commit on a merged PR — once only.
+   * Params: (revert_sha, reverted_by, reverted_at, updated_at, id).
+   */
+  markPullRequestReverted: Stmt;
   /** Review-request flag. Params: (requested_at|null, requested_by|null, updated_at, id). */
   setPullRequestReviewRequested: Stmt;
   /** Insert a human review row. Params: (id, project_id, pr_number, reviewer, state, body, created_at). */

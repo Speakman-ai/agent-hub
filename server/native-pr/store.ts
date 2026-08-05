@@ -135,6 +135,28 @@ export function markMerged(
   return getPullRequest(stmts, row.project_id, row.number);
 }
 
+/**
+ * Records the revert commit on a merged PR. Returns null when the row wasn't
+ * merged or was already reverted — the guard lives in SQL, so two concurrent
+ * reverts can't both claim the row.
+ */
+export function markReverted(
+  stmts: Stmts,
+  row: PullRequestRow,
+  args: { revertSha: string; revertedBy: string },
+): PullRequestRow | null {
+  const now = Date.now();
+  const result = stmts.markPullRequestReverted.run(
+    args.revertSha,
+    args.revertedBy,
+    now,
+    now,
+    row.id,
+  );
+  if (result.changes === 0) return null;
+  return getPullRequest(stmts, row.project_id, row.number);
+}
+
 /** Guarded open → closed transition; null when the row wasn't open. */
 export function markClosed(stmts: Stmts, row: PullRequestRow): PullRequestRow | null {
   const now = Date.now();
