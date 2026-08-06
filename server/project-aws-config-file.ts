@@ -4,6 +4,7 @@ import config from './config.js';
 import {
   renderProjectAwsCredentialsIni,
   renderProjectAwsConfigIni,
+  resolveAmbientCredentialSource,
   type ProjectAwsSsoProfilesMap,
 } from './project-aws-profiles.js';
 
@@ -24,10 +25,16 @@ export function writeProjectAwsFiles(
   mkdirSync(dir, { recursive: true });
   const configPath = path.join(dir, 'config');
   const credentialsPath = path.join(dir, 'credentials');
-  writeFileSync(configPath, renderProjectAwsConfigIni(profiles), {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
+  // Resolved per write, not cached: the Hub's ambient credential shape can
+  // change across a restart (moved to ECS, gained an instance profile) and the
+  // files are rewritten on every spawn anyway.
+  writeFileSync(
+    configPath,
+    renderProjectAwsConfigIni(profiles, {
+      defaultCredentialSource: resolveAmbientCredentialSource(process.env),
+    }),
+    { encoding: 'utf-8', mode: 0o600 },
+  );
   writeFileSync(credentialsPath, renderProjectAwsCredentialsIni(profiles), {
     encoding: 'utf-8',
     mode: 0o600,

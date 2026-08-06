@@ -93,6 +93,44 @@ describe('writeProjectAwsConfigFile', () => {
     expect(actual).not.toContain('secret-test-key');
   });
 
+  // The writer is the only production caller that knows the Hub's runtime, so
+  // it — not the renderer's fallback — is what must reflect the deployment.
+  it('renders role profiles with the credential source the Hub runtime provides', () => {
+    const saved = {
+      relative: process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI,
+      override: process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE,
+    };
+    const profiles = {
+      mon: {
+        type: 'role' as const,
+        role_arn: 'arn:aws:iam::120569607241:role/AgentHubMonitoring',
+        region: 'us-east-2',
+      },
+    };
+    try {
+      delete process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE;
+      process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI = '/v2/credentials/abc';
+      const onEcs = readFileSync(
+        writeProjectAwsFiles(freshProjectId(), profiles).configPath,
+        'utf-8',
+      );
+      expect(onEcs).toContain('credential_source = EcsContainer');
+
+      delete process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+      process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE = 'Ec2InstanceMetadata';
+      const pinned = readFileSync(
+        writeProjectAwsFiles(freshProjectId(), profiles).configPath,
+        'utf-8',
+      );
+      expect(pinned).toContain('credential_source = Ec2InstanceMetadata');
+    } finally {
+      if (saved.relative === undefined) delete process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+      else process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI = saved.relative;
+      if (saved.override === undefined) delete process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE;
+      else process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE = saved.override;
+    }
+  });
+
   it('writes a project-scoped credentials file for static profiles', () => {
     const projectId = freshProjectId();
     const files = writeProjectAwsFiles(projectId, SAMPLE);

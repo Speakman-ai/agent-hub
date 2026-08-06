@@ -16,7 +16,11 @@ import {
   validateProjectAwsDefaultProfile,
   resolveProjectAwsDefaultProfile,
   ProjectAwsProfileValidationError,
-  isProjectAwsStaticProfile,
+  isProjectAwsSsoProfile,
+  isProjectAwsRoleProfile,
+  resolveAmbientCredentialSource,
+  effectiveRoleCredentialSource,
+  AWS_CREDENTIAL_SOURCE_ENV,
   type ProjectAwsSsoProfilesMap,
 } from '../project-aws-profiles.js';
 import { writeProjectAwsFiles } from '../project-aws-config-file.js';
@@ -52,6 +56,10 @@ function profilesEnvelope(project: ProjectWithAws) {
     profiles,
     defaultProfile: configured,
     effectiveDefaultProfile: resolveProjectAwsDefaultProfile(profiles, configured),
+    // What a role profile that names no origin will be rendered with, so the
+    // editor can label its "Automatic" option with the Hub's real runtime
+    // instead of implying every deployment is EC2.
+    ambientCredentialSource: resolveAmbientCredentialSource(process.env),
   };
 }
 
@@ -159,13 +167,40 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         const userId = resolveAwsProbeUserId(req, { stmts, findAgent, projectId: project.id });
         const files = writeProjectAwsFiles(project.id, profiles);
         const configuredProfile = profiles[profile];
-        if (isProjectAwsStaticProfile(configuredProfile)) {
+        // Static and role profiles both authenticate without a human: one from
+        // the project credentials file, the other by assuming a role from the
+        // Hub's ambient identity. Neither has an SSO token cache to probe.
+        if (!isProjectAwsSsoProfile(configuredProfile)) {
+          const credentialType = isProjectAwsRoleProfile(configuredProfile) ? 'role' : 'static';
+          // A role profile sourcing `Environment` is rendered correctly for the
+          // in-process SDK path, but the CLI probe below runs with a scrubbed
+          // env (`AWS_AMBIENT_CREDENTIAL_KEYS`) and cannot see those vars. Say
+          // so instead of spawning a probe that fails as "unable to locate
+          // credentials" with no hint about which layer dropped them.
+          if (
+            isProjectAwsRoleProfile(configuredProfile) &&
+            effectiveRoleCredentialSource(
+              configuredProfile,
+              resolveAmbientCredentialSource(process.env),
+            ) === 'Environment'
+          ) {
+            res.json({
+              profile,
+              loggedIn: false,
+              credentialType,
+              error:
+                'This role sources credentials from the Hub process environment, which spawned AWS CLI processes never inherit. Chain the role off a static profile with source_profile, give the Hub an instance or container role, or pin ' +
+                `${AWS_CREDENTIAL_SOURCE_ENV}.`,
+              needsLogin: false,
+            });
+            return;
+          }
           const out = await runAwsStsIdentity(awsSpawnEnv(userId, files), profile);
           if (out.ok) {
             res.json({
               profile,
               loggedIn: true,
-              credentialType: 'static',
+              credentialType,
               account: out.account,
               arn: out.arn,
               userId: out.userId,
@@ -175,7 +210,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
           res.json({
             profile,
             loggedIn: false,
-            credentialType: 'static',
+            credentialType,
             error: out.error,
             needsLogin: false,
           });
@@ -235,9 +270,12 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       let profile: string;
       try {
         profile = resolveProfileName(project, (req.body as Record<string, unknown>)?.profile);
-        if (isProjectAwsStaticProfile(profiles[profile])) {
+        if (!isProjectAwsSsoProfile(profiles[profile])) {
+          const kind = isProjectAwsRoleProfile(profiles[profile])
+            ? 'an assumed role'
+            : 'static credentials';
           res.status(400).json({
-            error: `profile "${profile}" uses static credentials; SSO login is not supported`,
+            error: `profile "${profile}" uses ${kind}; SSO login is not supported`,
           });
           return;
         }

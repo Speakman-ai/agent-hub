@@ -13,6 +13,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
     const [statusByProfile, setStatusByProfile] = useState<any>({});
     const [loginByProfile, setLoginByProfile] = useState<any>({});
     const [defaultProfile, setDefaultProfile] = useState('');
+    const [ambientCredentialSource, setAmbientCredentialSource] = useState('');
     const load = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -23,11 +24,13 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
                 .map(([name, p]: any) => ({ name, ...p }));
             setProfiles(rows);
             setDefaultProfile(body?.effectiveDefaultProfile || '');
+            setAmbientCredentialSource(body?.ambientCredentialSource || '');
         }
         catch (err: any) {
             setError(err?.message || 'Failed to load AWS profiles');
             setProfiles([]);
             setDefaultProfile('');
+            setAmbientCredentialSource('');
         }
         finally {
             setLoading(false);
@@ -91,26 +94,32 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
             const lg = loginByProfile[row.name];
             const loggedIn = st?.data?.loggedIn;
             const isStatic = row.type === 'static';
+            const isRole = row.type === 'role';
+            const isSso = !isStatic && !isRole;
             return (<View key={row.name} style={styles.card}>
               <Text style={styles.profileName}>
                 {row.name}
                 {row.name === defaultProfile ? '  ·  default' : ''}
               </Text>
-              <Text style={styles.meta}>Type: {isStatic ? 'static' : 'SSO'}</Text>
-              {!isStatic && <Text style={styles.meta}>Account: {row.sso_account_id || '-'}</Text>}
-              {!isStatic && <Text style={styles.meta}>Role: {row.sso_role_name || '-'}</Text>}
+              <Text style={styles.meta}>Type: {isStatic ? 'static' : isRole ? 'assume role' : 'SSO'}</Text>
+              {isSso && <Text style={styles.meta}>Account: {row.sso_account_id || '-'}</Text>}
+              {isSso && <Text style={styles.meta}>Role: {row.sso_role_name || '-'}</Text>}
               {isStatic && <Text style={styles.meta}>Access key: {row.aws_access_key_id || '-'}</Text>}
+              {isRole && <Text style={styles.meta}>Role ARN: {row.role_arn || '-'}</Text>}
+              {isRole && (<Text style={styles.meta}>
+                  Source: {row.source_profile || row.credential_source || ambientCredentialSource || 'auto'}
+                </Text>)}
               <Text style={styles.meta}>Region: {row.region || '-'}</Text>
               <View style={styles.actions}>
                 <TouchableOpacity style={styles.btn} onPress={() => checkStatus(row.name)} disabled={st?.loading}>
-                  <Text style={styles.btnText}>{st?.loading ? 'Checking…' : isStatic ? 'Check credentials' : 'Check SSO'}</Text>
+                  <Text style={styles.btnText}>{st?.loading ? 'Checking…' : isSso ? 'Check SSO' : 'Check credentials'}</Text>
                 </TouchableOpacity>
-                {!isStatic && (<TouchableOpacity style={styles.btn} onPress={() => startLogin(row.name)} disabled={lg?.loading}>
+                {isSso && (<TouchableOpacity style={styles.btn} onPress={() => startLogin(row.name)} disabled={lg?.loading}>
                   <Text style={styles.btnText}>{lg?.loading ? 'Starting…' : 'Login'}</Text>
                 </TouchableOpacity>)}
               </View>
               {loggedIn != null && (<Text style={[styles.status, loggedIn ? styles.ok : styles.warn]}>
-                  {loggedIn ? (isStatic ? 'Credentials valid' : 'SSO session active') : (isStatic ? 'Credentials invalid' : 'Not logged in')}
+                  {loggedIn ? (isSso ? 'SSO session active' : 'Credentials valid') : (isSso ? 'Not logged in' : 'Credentials invalid')}
                 </Text>)}
               {st?.error && <Text style={styles.error}>{st.error}</Text>}
               {lg?.error && <Text style={styles.error}>{lg.error}</Text>}

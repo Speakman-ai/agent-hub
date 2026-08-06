@@ -11,20 +11,63 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 
+/** Shared tail of every field set — the server stores these on all three kinds. */
+const COMMON_FIELDS = [
+  { key: 'region', label: 'Default region', placeholder: 'us-east-2' },
+  { key: 'output', label: 'Output format', placeholder: 'json' },
+];
+
 const SSO_FIELDS = [
   { key: 'sso_account_id', label: 'Account ID', placeholder: '123456789012' },
   { key: 'sso_start_url', label: 'SSO start URL', placeholder: 'https://….awsapps.com/start' },
   { key: 'sso_region', label: 'SSO region', placeholder: 'us-east-2' },
   { key: 'sso_role_name', label: 'Role name', placeholder: 'AdministratorAccess' },
-  { key: 'region', label: 'Default region', placeholder: 'us-east-2' },
+  ...COMMON_FIELDS,
 ];
 
 const STATIC_FIELDS = [
   { key: 'aws_access_key_id', label: 'Access key ID', placeholder: 'AKIA…' },
   { key: 'aws_secret_access_key', label: 'Secret access key', placeholder: 'secret' },
   { key: 'aws_session_token', label: 'Session token', placeholder: 'optional' },
-  { key: 'region', label: 'Default region', placeholder: 'us-east-2' },
+  ...COMMON_FIELDS,
 ];
+
+const ROLE_FIELDS = [
+  {
+    key: 'role_arn',
+    label: 'Role ARN',
+    placeholder: 'arn:aws:iam::123456789012:role/AgentHubMonitoring',
+  },
+  { key: 'external_id', label: 'External ID', placeholder: 'optional' },
+  {
+    key: 'source_profile',
+    label: 'Source profile',
+    placeholder: 'optional — chain from a profile',
+  },
+  { key: 'role_session_name', label: 'Session name', placeholder: 'optional' },
+  ...COMMON_FIELDS,
+];
+
+const CREDENTIAL_SOURCES = ['Ec2InstanceMetadata', 'EcsContainer', 'Environment'];
+
+/**
+ * Label for the "leave it to the Hub" credential-source option. Naming the
+ * detected value matters: the same blank field renders differently on an EC2
+ * host, an ECS task, and a box holding ambient key env vars.
+ */
+export function ambientCredentialSourceLabel(resolved: any) {
+  return resolved ? `Automatic — ${resolved}` : 'Automatic (Hub runtime)';
+}
+
+/**
+ * Whether a role row's credentials are unreachable from a spawned CLI. Spawns
+ * get a scrubbed env, so a role sourcing `Environment` resolves only inside the
+ * Hub process — worth warning about at edit time rather than at probe time.
+ */
+export function roleNeedsUnreachableEnvCredentials(row: any, resolved: any) {
+  if (row?.type !== 'role' || trimmed(row.source_profile)) return false;
+  return (trimmed(row.credential_source) || resolved) === 'Environment';
+}
 
 export function emptyProfile() {
   return {
@@ -37,7 +80,13 @@ export function emptyProfile() {
     aws_access_key_id: '',
     aws_secret_access_key: '',
     aws_session_token: '',
+    role_arn: '',
+    external_id: '',
+    source_profile: '',
+    credential_source: '',
+    role_session_name: '',
     region: 'us-east-2',
+    output: '',
   };
 }
 
@@ -45,12 +94,12 @@ function trimmed(value: any) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function profilesToRows(profiles: any) {
+export function profilesToRows(profiles: any) {
   return Object.entries(profiles || {})
     .sort(([a]: any, [b]: any) => a.localeCompare(b))
     .map(([name, p]: any) => ({
       name,
-      type: p.type === 'static' ? 'static' : 'sso',
+      type: p.type === 'static' || p.type === 'role' ? p.type : 'sso',
       sso_account_id: p.sso_account_id || '',
       sso_start_url: p.sso_start_url || '',
       sso_region: p.sso_region || '',
@@ -58,7 +107,16 @@ function profilesToRows(profiles: any) {
       aws_access_key_id: p.aws_access_key_id || '',
       aws_secret_access_key: p.aws_secret_access_key || '',
       aws_session_token: p.aws_session_token || '',
+      role_arn: p.role_arn || '',
+      external_id: p.external_id || '',
+      source_profile: p.source_profile || '',
+      // Empty means "follow the Hub runtime" — never materialize a concrete
+      // source here, or loading and re-saving a role profile would silently
+      // pin whatever default the editor happened to show.
+      credential_source: p.credential_source || '',
+      role_session_name: p.role_session_name || '',
       region: p.region || '',
+      output: p.output || '',
     }));
 }
 
@@ -78,6 +136,24 @@ export function rowsToProfiles(rows: any) {
       if (sessionToken) {
         out[name].aws_session_token = sessionToken;
       }
+    } else if (row.type === 'role') {
+      const sourceProfile = trimmed(row.source_profile);
+      out[name] = {
+        type: 'role',
+        role_arn: trimmed(row.role_arn),
+        region: trimmed(row.region),
+      };
+      const externalId = trimmed(row.external_id);
+      if (externalId) out[name].external_id = externalId;
+      const sessionName = trimmed(row.role_session_name);
+      if (sessionName) out[name].role_session_name = sessionName;
+      // The CLI rejects a stanza carrying both origins, so a chained profile
+      // drops credential_source rather than sending the editor's default.
+      if (sourceProfile) {
+        out[name].source_profile = sourceProfile;
+      } else if (trimmed(row.credential_source)) {
+        out[name].credential_source = trimmed(row.credential_source);
+      }
     } else {
       out[name] = {
         type: 'sso',
@@ -88,6 +164,11 @@ export function rowsToProfiles(rows: any) {
         region: trimmed(row.region),
       };
     }
+    // Stored on all three kinds, so it round-trips here rather than in each
+    // branch. Blank is omitted: the renderer defaults it to `json`, and
+    // sending an empty string would persist a meaningless value.
+    const output = trimmed(row.output);
+    if (output) out[name].output = output;
   }
   return out;
 }
@@ -116,6 +197,7 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
   const [saved, setSaved] = useState(false);
   const [loginState, setLoginState] = useState<Record<string, any>>({});
   const [statusState, setStatusState] = useState<Record<string, any>>({});
+  const [ambientCredentialSource, setAmbientCredentialSource] = useState('');
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
@@ -128,10 +210,12 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
       const body = await api.getProjectAwsProfiles(projectId);
       setRows(profilesToRows(body?.profiles));
       setDefaultProfile(body?.defaultProfile || '');
+      setAmbientCredentialSource(body?.ambientCredentialSource || '');
     } catch (err: any) {
       setError(err?.message || String(err));
       setRows([]);
       setDefaultProfile('');
+      setAmbientCredentialSource('');
     } finally {
       setLoading(false);
     }
@@ -242,7 +326,9 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
           const st = statusState[profileName];
           const lg = loginState[profileName];
           const isStatic = row.type === 'static';
-          const fields = isStatic ? STATIC_FIELDS : SSO_FIELDS;
+          const isRole = row.type === 'role';
+          const isSso = !isStatic && !isRole;
+          const fields = isStatic ? STATIC_FIELDS : isRole ? ROLE_FIELDS : SSO_FIELDS;
           return (
             <div
               key={idx}
@@ -279,6 +365,7 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
                   >
                     <option value="sso">SSO</option>
                     <option value="static">Static</option>
+                    <option value="role">Assume role</option>
                   </select>
                 </div>
                 <button
@@ -287,9 +374,9 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
                   onClick={() => checkStatus(profileName)}
                   className="text-xs px-2 py-1.5 rounded border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-40"
                 >
-                  {isStatic ? 'Check credentials' : 'Check login'}
+                  {isSso ? 'Check login' : 'Check credentials'}
                 </button>
-                {!isStatic && (
+                {isSso && (
                   <button
                     type="button"
                     disabled={!profileName || lg?.loading}
@@ -327,14 +414,54 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
                     />
                   </div>
                 ))}
+                {isRole && !trimmed(row.source_profile) && (
+                  <div>
+                    <label className={labelClass}>Credential source</label>
+                    <select
+                      value={row.credential_source || ''}
+                      onChange={(e: any) =>
+                        setRows((prev: any) =>
+                          prev.map((r: any, i: any) =>
+                            i === idx ? { ...r, credential_source: e.target.value } : r,
+                          ),
+                        )
+                      }
+                      className={inputClass}
+                      data-testid={`aws-credential-source-${idx}`}
+                    >
+                      <option value="">
+                        {ambientCredentialSourceLabel(ambientCredentialSource)}
+                      </option>
+                      {CREDENTIAL_SOURCES.map((src) => (
+                        <option key={src} value={src}>
+                          {src}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
+              {isRole && (
+                <p className="text-xs text-gray-500">
+                  Assumed from the Hub&apos;s own credentials, so no interactive login expires — the
+                  profile kind unattended collection can use.
+                </p>
+              )}
+              {roleNeedsUnreachableEnvCredentials(row, ambientCredentialSource) && (
+                <p className="text-xs text-amber-400 flex items-center gap-1">
+                  <AlertCircle size={12} className="shrink-0" />
+                  Spawned <code>aws</code> commands never inherit the Hub&apos;s credential
+                  environment variables, so this role resolves only for server-side collection.
+                  Chain it off a static profile to use it from sessions or the Terminal.
+                </p>
+              )}
               {st?.data && (
                 <p
                   className={`text-xs ${st.data.loggedIn ? 'text-emerald-400' : 'text-amber-400'}`}
                 >
                   {st.data.loggedIn
-                    ? `${isStatic ? 'Credentials valid' : 'Logged in'}: account ${st.data.account}`
-                    : `${isStatic ? 'Credentials invalid' : 'Not logged in'}${st.data.error ? `: ${st.data.error}` : ''}`}
+                    ? `${isSso ? 'Logged in' : 'Credentials valid'}: account ${st.data.account}`
+                    : `${isSso ? 'Not logged in' : 'Credentials invalid'}${st.data.error ? `: ${st.data.error}` : ''}`}
                 </p>
               )}
               {lg?.loginUrl && (

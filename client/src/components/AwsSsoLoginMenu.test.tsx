@@ -26,10 +26,11 @@ function renderMenu(project: any = enabledProject, extra: any = {}) {
 }
 
 describe('extractSsoProfileNames', () => {
-  it('returns only non-static profiles, sorted', () => {
+  it('returns only profiles that log in interactively, sorted', () => {
     const names = extractSsoProfileNames({
       prod: { type: 'sso' },
       keys: { type: 'static' },
+      monitoring: { type: 'role', role_arn: 'arn:aws:iam::123456789012:role/Mon' },
       dev: { type: 'sso' },
       legacy: { sso_account_id: '123' }, // no type → treated as SSO
     });
@@ -41,6 +42,7 @@ describe('extractSsoProfileNames', () => {
     expect(extractSsoProfileNames(undefined)).toEqual([]);
     expect(extractSsoProfileNames({})).toEqual([]);
     expect(extractSsoProfileNames({ only: { type: 'static' } })).toEqual([]);
+    expect(extractSsoProfileNames({ only: { type: 'role' } })).toEqual([]);
   });
 });
 

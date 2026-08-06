@@ -5,14 +5,15 @@ import { api } from '../utils/api';
 /**
  * Pure helper: given the `{ name: stanza }` map returned by GET
  * /projects/:id/aws-profiles, return the sorted names of the SSO profiles.
- * A profile counts as SSO when its `type` is anything other than the
- * explicit `'static'` (mirrors the backend `isProjectAwsStaticProfile` and
- * the AWS editor, where legacy profiles with no type default to SSO).
+ * Only profiles that authenticate through `aws sso login` belong here:
+ * `static` and `role` profiles have no device flow to start. Mirrors the
+ * backend `isProjectAwsSsoProfile`, where a legacy stanza with no `type`
+ * defaults to SSO.
  */
 export function extractSsoProfileNames(profiles: any): string[] {
   if (!profiles || typeof profiles !== 'object') return [];
   return Object.entries(profiles)
-    .filter(([, p]: any) => p && p.type !== 'static')
+    .filter(([, p]: any) => p && p.type !== 'static' && p.type !== 'role')
     .map(([name]) => name)
     .sort((a, b) => a.localeCompare(b));
 }

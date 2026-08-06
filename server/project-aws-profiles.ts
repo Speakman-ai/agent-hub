@@ -27,12 +27,45 @@ export interface ProjectAwsStaticProfile {
   output?: string;
 }
 
-export type ProjectAwsProfile = ProjectAwsSsoProfile | ProjectAwsStaticProfile;
+/**
+ * A role this Hub assumes on its own, with no human in the loop: the
+ * credentials come from the Hub's ambient identity (`credential_source`) or
+ * from another project profile (`source_profile`), never from an interactive
+ * SSO token that expires with nobody around to refresh it.
+ */
+export interface ProjectAwsRoleProfile {
+  type: 'role';
+  role_arn: string;
+  external_id?: string;
+  /** Chain from another profile in this project. Mutually exclusive with `credential_source`. */
+  source_profile?: string;
+  /** Where the base credentials come from. Defaults to `Ec2InstanceMetadata` on render. */
+  credential_source?: AwsCredentialSource;
+  role_session_name?: string;
+  region: string;
+  /** Defaults to `json` when omitted in storage. */
+  output?: string;
+}
+
+export type ProjectAwsProfile =
+  | ProjectAwsSsoProfile
+  | ProjectAwsStaticProfile
+  | ProjectAwsRoleProfile;
 export type ProjectAwsSsoProfilesMap = Record<string, ProjectAwsProfile>;
+
+/** `credential_source` values the AWS CLI accepts (CLI user guide, "Using an IAM role"). */
+export const AWS_CREDENTIAL_SOURCES = [
+  'Environment',
+  'Ec2InstanceMetadata',
+  'EcsContainer',
+] as const;
+export type AwsCredentialSource = (typeof AWS_CREDENTIAL_SOURCES)[number];
 
 const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 const ACCOUNT_ID_RE = /^\d{12}$/;
 const REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d$/;
+// Partition varies (aws, aws-us-gov, aws-cn); role names may carry a path.
+const ROLE_ARN_RE = /^arn:aws[a-z0-9-]*:iam::\d{12}:role\/[^\s/][^\s]*$/;
 
 export class ProjectAwsProfileValidationError extends Error {
   readonly statusCode = 400;
@@ -141,14 +174,62 @@ function validateStaticProfile(name: string, o: Record<string, unknown>): Projec
   return out;
 }
 
+function validateRoleProfile(name: string, o: Record<string, unknown>): ProjectAwsRoleProfile {
+  const region = reqString(o, name, 'region');
+  validateRegion(name, 'region', region);
+  const role_arn = reqString(o, name, 'role_arn');
+  if (!ROLE_ARN_RE.test(role_arn)) {
+    throw new ProjectAwsProfileValidationError(
+      `profile "${name}".role_arn must be an IAM role ARN (arn:aws:iam::123456789012:role/RoleName)`,
+    );
+  }
+  const source_profile = optionalString(o, name, 'source_profile');
+  if (source_profile !== undefined) {
+    validateProfileName(source_profile);
+    if (source_profile === name) {
+      throw new ProjectAwsProfileValidationError(
+        `profile "${name}".source_profile cannot reference itself`,
+      );
+    }
+  }
+  const credential_source = optionalString(o, name, 'credential_source');
+  if (credential_source !== undefined) {
+    if (source_profile !== undefined) {
+      throw new ProjectAwsProfileValidationError(
+        `profile "${name}" must set either source_profile or credential_source, not both`,
+      );
+    }
+    if (!(AWS_CREDENTIAL_SOURCES as readonly string[]).includes(credential_source)) {
+      throw new ProjectAwsProfileValidationError(
+        `profile "${name}".credential_source must be one of ${AWS_CREDENTIAL_SOURCES.join(', ')}`,
+      );
+    }
+  }
+  const out: ProjectAwsRoleProfile = { type: 'role', role_arn, region };
+  const external_id = optionalString(o, name, 'external_id');
+  if (external_id) out.external_id = external_id;
+  if (source_profile) out.source_profile = source_profile;
+  if (credential_source) out.credential_source = credential_source as AwsCredentialSource;
+  const sessionName = optionalString(o, name, 'role_session_name');
+  if (sessionName) out.role_session_name = sessionName;
+  const output = optionalString(o, name, 'output');
+  if (output) out.output = output;
+  return out;
+}
+
 function validateOneProfile(name: string, raw: unknown): ProjectAwsProfile {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new ProjectAwsProfileValidationError(`profile "${name}" must be an object`);
   }
   const o = raw as Record<string, unknown>;
   const rawType = optionalString(o, name, 'type');
-  if (rawType !== undefined && rawType !== 'sso' && rawType !== 'static') {
-    throw new ProjectAwsProfileValidationError(`profile "${name}".type must be "sso" or "static"`);
+  if (rawType !== undefined && rawType !== 'sso' && rawType !== 'static' && rawType !== 'role') {
+    throw new ProjectAwsProfileValidationError(
+      `profile "${name}".type must be "sso", "static" or "role"`,
+    );
+  }
+  if (rawType === 'role' || (!rawType && 'role_arn' in o)) {
+    return validateRoleProfile(name, o);
   }
   if (
     rawType === 'static' ||
@@ -157,6 +238,33 @@ function validateOneProfile(name: string, raw: unknown): ProjectAwsProfile {
     return validateStaticProfile(name, o);
   }
   return validateSsoProfile(name, o);
+}
+
+/**
+ * `source_profile` chains resolve at CLI time, so a dangling or circular
+ * reference only shows up as a cryptic botocore error on the first call. Catch
+ * both at save time, once the whole map is known.
+ */
+function validateRoleChains(profiles: ProjectAwsSsoProfilesMap): void {
+  for (const name of Object.keys(profiles)) {
+    const seen = new Set<string>([name]);
+    let cursor = profiles[name];
+    while (isProjectAwsRoleProfile(cursor) && cursor.source_profile) {
+      const next = cursor.source_profile;
+      if (!profiles[next]) {
+        throw new ProjectAwsProfileValidationError(
+          `profile "${name}".source_profile "${next}" is not a configured profile`,
+        );
+      }
+      if (seen.has(next)) {
+        throw new ProjectAwsProfileValidationError(
+          `profile "${name}".source_profile chain is circular via "${next}"`,
+        );
+      }
+      seen.add(next);
+      cursor = profiles[next];
+    }
+  }
 }
 
 /**
@@ -185,6 +293,7 @@ export function validateProjectAwsSsoProfiles(raw: unknown): ProjectAwsSsoProfil
       }
       out[profileName] = validateOneProfile(profileName, entry);
     }
+    validateRoleChains(out);
     return out;
   }
   if (typeof raw !== 'object') {
@@ -197,6 +306,7 @@ export function validateProjectAwsSsoProfiles(raw: unknown): ProjectAwsSsoProfil
     }
     out[name] = validateOneProfile(name, value);
   }
+  validateRoleChains(out);
   return out;
 }
 
@@ -204,6 +314,19 @@ export function isProjectAwsStaticProfile(
   profile: ProjectAwsProfile | undefined,
 ): profile is ProjectAwsStaticProfile {
   return profile?.type === 'static';
+}
+
+export function isProjectAwsRoleProfile(
+  profile: ProjectAwsProfile | undefined,
+): profile is ProjectAwsRoleProfile {
+  return profile?.type === 'role';
+}
+
+/** Legacy stanzas stored before `type` existed are SSO profiles. */
+export function isProjectAwsSsoProfile(
+  profile: ProjectAwsProfile | undefined,
+): profile is ProjectAwsSsoProfile {
+  return profile !== undefined && profile.type !== 'static' && profile.type !== 'role';
 }
 
 /**
@@ -256,18 +379,114 @@ export function resolveProjectAwsDefaultProfile(
   return names.length === 1 ? names[0] : null;
 }
 
+/**
+ * Env var an operator sets to pin the `credential_source` rendered for role
+ * profiles that do not name one, when detection would get it wrong (EKS IRSA,
+ * an IMDS hop limit that blocks the container, a proxied metadata endpoint).
+ */
+export const AWS_CREDENTIAL_SOURCE_ENV = 'AGENT_HUB_AWS_CREDENTIAL_SOURCE';
+
+/**
+ * Which `credential_source` a role profile gets when it names neither a
+ * `source_profile` nor an explicit source: the one the Hub's own runtime
+ * actually provides. Hardcoding `Ec2InstanceMetadata` only works on an EC2
+ * instance-profile deployment and fails everywhere else.
+ *
+ * Precedence, first match wins:
+ *   1. `AGENT_HUB_AWS_CREDENTIAL_SOURCE` — operator override, always honoured.
+ *   2. `AWS_CONTAINER_CREDENTIALS_{RELATIVE,FULL}_URI` → `EcsContainer`. ECS,
+ *      Fargate and EKS Pod Identity all set one of these.
+ *   3. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` → `Environment`. See the
+ *      caveat below — this is the deployment where role profiles need help.
+ *   4. `Ec2InstanceMetadata` — the reference EC2 + instance-profile topology,
+ *      and the only source that needs no env signal to detect.
+ *
+ * Caveat for `Environment`: spawns are handed a *scrubbed* env
+ * (`AWS_AMBIENT_CREDENTIAL_KEYS` in `project-aws-spawn.ts`) so host credentials
+ * cannot shadow the selected project profile, which means a spawned `aws` CLI
+ * cannot see the vars this stanza points at. The rendered value is still
+ * correct for the in-process SDK path, which resolves inside the Hub process
+ * where those vars exist. For CLI use on such a deployment, chain the role off
+ * a static project profile with `source_profile` instead.
+ *
+ * Web-identity federation (EKS IRSA, `AWS_WEB_IDENTITY_TOKEN_FILE`) has no
+ * `credential_source` spelling at all; those deployments must chain or pin.
+ */
+export function resolveAmbientCredentialSource(
+  env: NodeJS.ProcessEnv = process.env,
+): AwsCredentialSource {
+  const override = env[AWS_CREDENTIAL_SOURCE_ENV]?.trim();
+  if (override) {
+    const match = AWS_CREDENTIAL_SOURCES.find(
+      (src) => src.toLowerCase() === override.toLowerCase(),
+    );
+    if (match) return match;
+    console.warn(
+      `[project-aws] ignoring ${AWS_CREDENTIAL_SOURCE_ENV}="${override}" — expected one of ${AWS_CREDENTIAL_SOURCES.join(', ')}`,
+    );
+  }
+  if (
+    env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI?.trim() ||
+    env.AWS_CONTAINER_CREDENTIALS_FULL_URI?.trim()
+  ) {
+    return 'EcsContainer';
+  }
+  if (env.AWS_ACCESS_KEY_ID?.trim() && env.AWS_SECRET_ACCESS_KEY?.trim()) {
+    return 'Environment';
+  }
+  return 'Ec2InstanceMetadata';
+}
+
+/**
+ * The `credential_source` a role profile will actually be rendered with, or
+ * null when it chains from another profile and uses none. `ambient` is the
+ * Hub-runtime default from `resolveAmbientCredentialSource`.
+ */
+export function effectiveRoleCredentialSource(
+  profile: ProjectAwsRoleProfile,
+  ambient: AwsCredentialSource,
+): AwsCredentialSource | null {
+  if (profile.source_profile) return null;
+  return profile.credential_source ?? ambient;
+}
+
+export interface RenderProjectAwsConfigOpts {
+  /**
+   * `credential_source` for role profiles that name no origin. Callers should
+   * pass `resolveAmbientCredentialSource(process.env)`; the lazy fallback keeps
+   * direct callers honest rather than silently assuming EC2.
+   */
+  defaultCredentialSource?: AwsCredentialSource;
+}
+
 /** Render `~/.aws/config`-style ini for the given profiles. */
-export function renderProjectAwsConfigIni(profiles: ProjectAwsSsoProfilesMap): string {
+export function renderProjectAwsConfigIni(
+  profiles: ProjectAwsSsoProfilesMap,
+  opts: RenderProjectAwsConfigOpts = {},
+): string {
+  const defaultCredentialSource =
+    opts.defaultCredentialSource ?? resolveAmbientCredentialSource(process.env);
   const lines: string[] = [];
   const names = Object.keys(profiles).sort((a, b) => a.localeCompare(b));
   for (const name of names) {
     const p = profiles[name];
     lines.push(`[profile ${name}]`);
-    if (!isProjectAwsStaticProfile(p)) {
+    if (isProjectAwsSsoProfile(p)) {
       lines.push(`sso_account_id = ${p.sso_account_id}`);
       lines.push(`sso_start_url = ${p.sso_start_url}`);
       lines.push(`sso_region = ${p.sso_region}`);
       lines.push(`sso_role_name = ${p.sso_role_name}`);
+    } else if (isProjectAwsRoleProfile(p)) {
+      lines.push(`role_arn = ${p.role_arn}`);
+      if (p.external_id) lines.push(`external_id = ${p.external_id}`);
+      if (p.role_session_name) lines.push(`role_session_name = ${p.role_session_name}`);
+      // Exactly one credential origin: chained profile, or the Hub's own
+      // ambient identity. The CLI rejects a stanza carrying both.
+      if (p.source_profile) {
+        lines.push(`source_profile = ${p.source_profile}`);
+      } else {
+        lines.push(`credential_source = ${p.credential_source ?? defaultCredentialSource}`);
+      }
     }
     lines.push(`region = ${p.region}`);
     lines.push(`output = ${p.output ?? 'json'}`);

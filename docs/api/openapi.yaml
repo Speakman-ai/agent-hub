@@ -8467,11 +8467,51 @@ components:
         - aws_secret_access_key
         - region
       description: One static-credential profile. Rendered into the project-scoped `AWS_SHARED_CREDENTIALS_FILE` as a `[name]` section and paired with a `[profile name]` config section for region/output.
+    ProjectAwsRoleProfile:
+      type: object
+      properties:
+        type:
+          type: string
+          enum:
+            - role
+        role_arn:
+          type: string
+          description: IAM role to assume.
+          example: arn:aws:iam::123456789012:role/AgentHubMonitoring
+        external_id:
+          type: string
+          description: External ID required by the role trust policy (cross-account).
+        source_profile:
+          type: string
+          description: Another profile in this project to chain from. Mutually exclusive with `credential_source`.
+        credential_source:
+          type: string
+          enum:
+            - Environment
+            - Ec2InstanceMetadata
+            - EcsContainer
+          description: Where the base credentials come from when not chained. Omit to follow the Hub's detected runtime — see `ambientCredentialSource` on the profiles response.
+        role_session_name:
+          type: string
+          description: Session name recorded in CloudTrail for the assumed role.
+        region:
+          type: string
+          description: AWS region code, e.g. `us-east-2`.
+          example: us-east-2
+        output:
+          type: string
+          description: AWS CLI default output format; defaults to `json` on render.
+      required:
+        - type
+        - role_arn
+        - region
+      description: One assume-role profile. Rendered into the project-scoped `AWS_CONFIG_FILE` as a `[profile <name>]` section with `role_arn` plus either `source_profile` or `credential_source`. Holds no secret material and needs no interactive login, so it is the profile kind unattended collection can use.
     ProjectAwsProfile:
       anyOf:
         - $ref: "#/components/schemas/ProjectAwsSsoProfile"
         - $ref: "#/components/schemas/ProjectAwsStaticProfile"
-      description: An AWS profile stanza, either IAM Identity Center (SSO) or static credentials.
+        - $ref: "#/components/schemas/ProjectAwsRoleProfile"
+      description: "An AWS profile stanza: IAM Identity Center (SSO), static credentials, or an assumed role."
     ProjectAwsProfilesMap:
       type: object
       additionalProperties:
@@ -8490,10 +8530,18 @@ components:
           type: string
           nullable: true
           description: "Profile exported as `AWS_PROFILE` to spawns and the session Terminal: the designation when set, else the sole configured profile, else null. Without it, un-flagged `aws` commands fall back to a `[default]` section the project-scoped config file never has."
+        ambientCredentialSource:
+          type: string
+          enum:
+            - Environment
+            - Ec2InstanceMetadata
+            - EcsContainer
+          description: The `credential_source` this Hub renders for role profiles that name no origin, detected from the server runtime (container credential endpoint → `EcsContainer`, ambient key env vars → `Environment`, else `Ec2InstanceMetadata`) and overridable with `AGENT_HUB_AWS_CREDENTIAL_SOURCE`.
       required:
         - profiles
         - defaultProfile
         - effectiveDefaultProfile
+        - ambientCredentialSource
       description: Current AWS profiles configured on the project.
     ProjectAwsProfilesRequest:
       type: object
@@ -8590,6 +8638,7 @@ components:
               type: string
               enum:
                 - static
+                - role
             account:
               type: string
             arn:
@@ -8612,6 +8661,7 @@ components:
               type: string
               enum:
                 - static
+                - role
             error:
               type: string
             needsLogin:
@@ -8622,7 +8672,7 @@ components:
             - profile
             - loggedIn
             - credentialType
-      description: "`aws sts get-caller-identity` result for the named profile. SSO profiles probe the caller HOME first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). Static profiles use the project-scoped credentials file and do not require SSO login."
+      description: "`aws sts get-caller-identity` result for the named profile. SSO profiles probe the caller HOME first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). Static profiles use the project-scoped credentials file and role profiles assume `role_arn` from the Hub’s ambient credentials; neither requires SSO login."
     ProjectAwsSsoLoginRequest:
       type: object
       properties:
@@ -31164,7 +31214,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProjectAwsSsoLoginResponse"
         "400":
-          description: Project has no AWS profiles configured, the profile name is unknown, or the profile uses static credentials.
+          description: Project has no AWS profiles configured, the profile name is unknown, or the profile is not an SSO profile (static credentials or an assumed role).
           content:
             application/json:
               schema:

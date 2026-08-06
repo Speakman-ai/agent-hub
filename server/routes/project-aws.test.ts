@@ -156,6 +156,116 @@ describe('PUT/GET /api/projects/:id/aws-profiles', () => {
     expect(res.body.error).toMatch(/defaultProfile/);
   });
 
+  it('round-trips a role profile without loss and keeps it out of the credentials file', async () => {
+    const projectId = await freshProject();
+    const role = {
+      type: 'role',
+      role_arn: 'arn:aws:iam::120569607241:role/AgentHubMonitoring',
+      external_id: 'ext-123',
+      role_session_name: 'agent-hub',
+      credential_source: 'Ec2InstanceMetadata',
+      region: 'us-east-2',
+      output: 'yaml',
+    };
+    await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: { monitoring: role } })
+      .expect(200);
+
+    const res = await request.get(`/api/projects/${projectId}/aws-profiles`).expect(200);
+    expect(res.body.profiles.monitoring).toEqual(role);
+
+    const dir = path.join(config.dataDir, 'project-aws-config', projectId);
+    expect(readFileSync(path.join(dir, 'config'), 'utf-8')).toContain(
+      'role_arn = arn:aws:iam::120569607241:role/AgentHubMonitoring',
+    );
+    expect(readFileSync(path.join(dir, 'credentials'), 'utf-8')).toBe('');
+  });
+
+  it('reports the credential source role profiles will be rendered with', async () => {
+    const projectId = await freshProject();
+    const saved = process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE;
+    try {
+      process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE = 'EcsContainer';
+      const res = await request.get(`/api/projects/${projectId}/aws-profiles`).expect(200);
+      expect(res.body.ambientCredentialSource).toBe('EcsContainer');
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE;
+      else process.env.AGENT_HUB_AWS_CREDENTIAL_SOURCE = saved;
+    }
+  });
+
+  // Spawns get a scrubbed env, so an `Environment`-sourced role cannot work
+  // from the CLI. Say which layer dropped the credentials instead of letting
+  // the probe fail as a generic "unable to locate credentials".
+  it('explains why an Environment-sourced role cannot be probed by the CLI', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({
+        profiles: {
+          monitoring: {
+            type: 'role',
+            role_arn: 'arn:aws:iam::120569607241:role/AgentHubMonitoring',
+            credential_source: 'Environment',
+            region: 'us-east-2',
+          },
+        },
+      })
+      .expect(200);
+
+    const res = await request
+      .get(`/api/projects/${projectId}/aws-sso/status?profile=monitoring`)
+      .expect(200);
+    expect(res.body).toMatchObject({
+      profile: 'monitoring',
+      loggedIn: false,
+      credentialType: 'role',
+      needsLogin: false,
+    });
+    expect(res.body.error).toMatch(/source_profile/);
+  });
+
+  it('rejects a role profile whose role_arn is not an IAM role ARN', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({
+        profiles: {
+          monitoring: {
+            type: 'role',
+            role_arn: 'arn:aws:iam::120569607241:user/Someone',
+            region: 'us-east-2',
+          },
+        },
+      })
+      .expect(400);
+    expect(res.body.error).toMatch(/role_arn/);
+  });
+
+  // A role profile has no device flow to start; the login route must say so
+  // instead of spawning `aws sso login` against a profile with no SSO keys.
+  it('refuses SSO login for a role profile', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({
+        profiles: {
+          monitoring: {
+            type: 'role',
+            role_arn: 'arn:aws:iam::120569607241:role/AgentHubMonitoring',
+            region: 'us-east-2',
+          },
+        },
+      })
+      .expect(200);
+    const res = await request
+      .post(`/api/projects/${projectId}/aws-sso/login`)
+      .send({ profile: 'monitoring' })
+      .expect(400);
+    expect(res.body.error).toMatch(/assumed role/);
+  });
+
   it('rejects invalid account id', async () => {
     const projectId = await freshProject();
     const res = await request

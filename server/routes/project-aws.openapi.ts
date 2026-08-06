@@ -77,10 +77,50 @@ const ProjectAwsStaticProfile = registerComponent(
     }),
 );
 
+const ProjectAwsRoleProfile = registerComponent(
+  'ProjectAwsRoleProfile',
+  z
+    .object({
+      type: z.literal('role'),
+      role_arn: z.string().openapi({
+        description: 'IAM role to assume.',
+        example: 'arn:aws:iam::123456789012:role/AgentHubMonitoring',
+      }),
+      external_id: z.string().optional().openapi({
+        description: 'External ID required by the role trust policy (cross-account).',
+      }),
+      source_profile: z.string().optional().openapi({
+        description:
+          'Another profile in this project to chain from. Mutually exclusive with `credential_source`.',
+      }),
+      credential_source: z
+        .enum(['Environment', 'Ec2InstanceMetadata', 'EcsContainer'])
+        .optional()
+        .openapi({
+          description:
+            "Where the base credentials come from when not chained. Omit to follow the Hub's detected runtime — see `ambientCredentialSource` on the profiles response.",
+        }),
+      role_session_name: z
+        .string()
+        .optional()
+        .openapi({ description: 'Session name recorded in CloudTrail for the assumed role.' }),
+      region: AwsRegion,
+      output: z
+        .string()
+        .optional()
+        .openapi({ description: 'AWS CLI default output format; defaults to `json` on render.' }),
+    })
+    .openapi({
+      description:
+        'One assume-role profile. Rendered into the project-scoped `AWS_CONFIG_FILE` as a `[profile <name>]` section with `role_arn` plus either `source_profile` or `credential_source`. Holds no secret material and needs no interactive login, so it is the profile kind unattended collection can use.',
+    }),
+);
+
 const ProjectAwsProfile = registerComponent(
   'ProjectAwsProfile',
-  z.union([ProjectAwsSsoProfile, ProjectAwsStaticProfile]).openapi({
-    description: 'An AWS profile stanza, either IAM Identity Center (SSO) or static credentials.',
+  z.union([ProjectAwsSsoProfile, ProjectAwsStaticProfile, ProjectAwsRoleProfile]).openapi({
+    description:
+      'An AWS profile stanza: IAM Identity Center (SSO), static credentials, or an assumed role.',
   }),
 );
 
@@ -104,6 +144,12 @@ const ProfilesEnvelope = registerComponent(
         description:
           'Profile exported as `AWS_PROFILE` to spawns and the session Terminal: the designation when set, else the sole configured profile, else null. Without it, un-flagged `aws` commands fall back to a `[default]` section the project-scoped config file never has.',
       }),
+      ambientCredentialSource: z
+        .enum(['Environment', 'Ec2InstanceMetadata', 'EcsContainer'])
+        .openapi({
+          description:
+            'The `credential_source` this Hub renders for role profiles that name no origin, detected from the server runtime (container credential endpoint → `EcsContainer`, ambient key env vars → `Environment`, else `Ec2InstanceMetadata`) and overridable with `AGENT_HUB_AWS_CREDENTIAL_SOURCE`.',
+        }),
     })
     .openapi({
       description: 'Current AWS profiles configured on the project.',
@@ -165,7 +211,7 @@ const SsoStatusResponse = registerComponent(
       z.object({
         profile: z.string(),
         loggedIn: z.literal(true),
-        credentialType: z.literal('static'),
+        credentialType: z.enum(['static', 'role']),
         account: z.string().optional(),
         arn: z.string().optional(),
         userId: z.string().optional(),
@@ -173,14 +219,14 @@ const SsoStatusResponse = registerComponent(
       z.object({
         profile: z.string(),
         loggedIn: z.literal(false),
-        credentialType: z.literal('static'),
+        credentialType: z.enum(['static', 'role']),
         error: z.string().optional(),
         needsLogin: z.literal(false).optional(),
       }),
     ])
     .openapi({
       description:
-        '`aws sts get-caller-identity` result for the named profile. SSO profiles probe the caller HOME first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). Static profiles use the project-scoped credentials file and do not require SSO login.',
+        '`aws sts get-caller-identity` result for the named profile. SSO profiles probe the caller HOME first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). Static profiles use the project-scoped credentials file and role profiles assume `role_arn` from the Hub’s ambient credentials; neither requires SSO login.',
     }),
 );
 
@@ -336,7 +382,7 @@ registerPath({
     },
     400: {
       description:
-        'Project has no AWS profiles configured, the profile name is unknown, or the profile uses static credentials.',
+        'Project has no AWS profiles configured, the profile name is unknown, or the profile is not an SSO profile (static credentials or an assumed role).',
       content: jsonContent(ErrorEnvelope),
     },
     404: {

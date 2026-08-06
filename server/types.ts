@@ -3269,7 +3269,8 @@ export interface Project {
    * AWS profiles for this project. Rendered to project-scoped
    * `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` files at spawn time.
    * SSO tokens cache under the user's HOME; static credentials stay scoped
-   * to this project's generated credentials file.
+   * to this project's generated credentials file; role profiles assume a role
+   * from the Hub's ambient credentials and hold no secret material.
    * See `project-aws-profiles.ts`.
    */
   awsSsoProfiles?: Record<
@@ -3288,6 +3289,16 @@ export interface Project {
         aws_access_key_id: string;
         aws_secret_access_key: string;
         aws_session_token?: string;
+        region: string;
+        output?: string;
+      }
+    | {
+        type: 'role';
+        role_arn: string;
+        external_id?: string;
+        source_profile?: string;
+        credential_source?: 'Environment' | 'Ec2InstanceMetadata' | 'EcsContainer';
+        role_session_name?: string;
         region: string;
         output?: string;
       }
