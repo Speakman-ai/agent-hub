@@ -232,6 +232,10 @@ const AlertListResponse = registerComponent(
     nextCursor: z.string().nullable().openapi({
       description: 'Pass back as `cursor` for the next page. Null on the last page.',
     }),
+    total: z.number().int().openapi({
+      description:
+        'Every alert matching the filters, ignoring the page bound. Use this for counts — `alerts.length` is a page size, so a badge derived from it silently reports the limit once a project exceeds it.',
+    }),
   }),
 );
 

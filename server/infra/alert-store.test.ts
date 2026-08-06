@@ -636,6 +636,35 @@ describe('alert listing', () => {
     expect(last.nextCursor).toBeNull();
   });
 
+  it('reports the whole filtered population, not the page size', () => {
+    // Regression: a caller rendering "open alerts" off `alerts.length` reports
+    // the page limit once a project exceeds it, which reads as a quieter system
+    // than the operator actually has.
+    seedAlerts(5);
+    const page = listInfraAlerts({ projectId: PROJECT, limit: 2 });
+    expect(page.alerts).toHaveLength(2);
+    expect(page.total).toBe(5);
+  });
+
+  it('keeps the total stable while paging through with a cursor', () => {
+    // Counted before the cursor clause is applied, so the total does not shrink
+    // under a caller walking the pages.
+    seedAlerts(5);
+    const first = listInfraAlerts({ projectId: PROJECT, limit: 2 });
+    const second = listInfraAlerts({ projectId: PROJECT, limit: 2, cursor: first.nextCursor! });
+    expect(second.total).toBe(5);
+  });
+
+  it('counts only the rows matching the filters', () => {
+    const ruleId = seedAlerts(3);
+    const alerts = listInfraAlerts({ projectId: PROJECT }).alerts;
+    setInfraAlertStatus(PROJECT, alerts[0].id, 'ignored', 'user-1', NOW + 10 * MINUTE);
+    expect(listInfraAlerts({ projectId: PROJECT, status: 'open' }).total).toBe(2);
+    expect(listInfraAlerts({ projectId: PROJECT, status: 'ignored' }).total).toBe(1);
+    expect(listInfraAlerts({ projectId: PROJECT, ruleId }).total).toBe(3);
+    expect(listInfraAlerts({ projectId: 'other-project' }).total).toBe(0);
+  });
+
   it('reads a malformed cursor as the first page rather than throwing', () => {
     seedAlerts(3);
     expect(listInfraAlerts({ projectId: PROJECT, cursor: 'not-a-cursor' }).alerts).toHaveLength(3);

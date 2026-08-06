@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, ArrowUpRight, BookOpen, Bot, CalendarDays, ChartColumn, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Clock, Cloud, FileSpreadsheet, GitBranch, GitPullRequest, HardDrive, KeyRound, LayoutGrid, LifeBuoy, Link2, Mail, MonitorPlay, List, ListOrdered, ListTodo, Palette, Pencil, Play, Plus, ScanEye, ScrollText, Settings, ShieldAlert, Sparkles, StickyNote, Target, Terminal, Trash2, X, } from 'lucide-react-native';
+import { Activity, ArrowUpRight, BookOpen, Bot, CalendarDays, ChartColumn, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Clock, Cloud, FileSpreadsheet, GitBranch, GitPullRequest, HardDrive, KeyRound, LayoutGrid, LifeBuoy, Link2, Mail, MonitorPlay, List, ListOrdered, ListTodo, Palette, Pencil, Play, Plus, ScanEye, ScrollText, Server, Settings, ShieldAlert, Sparkles, StickyNote, Target, Terminal, Trash2, X, } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { HUB_ICON_NAMES } from '../utils/hubIconNames';
 import { resolveLucideIconName } from '../utils/hubIconNative';
@@ -38,6 +38,7 @@ const HUB_LUCIDE_ICONS: Record<string, any> = {
     Plus,
     ScanEye,
     ScrollText,
+    Server,
     Settings,
     ShieldAlert,
     Sparkles,

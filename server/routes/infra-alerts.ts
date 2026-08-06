@@ -206,7 +206,7 @@ export default function createInfraAlertRoutes(deps: RouteDeps): Router {
       const parsed = validate(AlertListParamsSchema, req.query ?? {}, res);
       if (!parsed.ok) return;
       if (!isInfraDbInitialized()) {
-        res.json({ alerts: [], nextCursor: null });
+        res.json({ alerts: [], nextCursor: null, total: 0 });
         return;
       }
       const page = listInfraAlerts({
@@ -216,6 +216,7 @@ export default function createInfraAlertRoutes(deps: RouteDeps): Router {
       res.json({
         alerts: page.alerts.map((alert) => serializeInfraAlert(alert)),
         nextCursor: page.nextCursor,
+        total: page.total,
       });
     },
   );

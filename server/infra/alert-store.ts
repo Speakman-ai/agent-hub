@@ -918,6 +918,15 @@ export interface InfraAlertListQuery {
 export interface InfraAlertListPage {
   alerts: InfraAlertRow[];
   nextCursor: string | null;
+  /**
+   * Every alert matching the filters, ignoring the page bound.
+   *
+   * Needed because `alerts.length` is a page size, not a population. A caller
+   * rendering "how many alerts are open right now" off the array length reports
+   * the page limit once a project exceeds it — an undercount that reads as a
+   * quieter system than the operator actually has.
+   */
+  total: number;
 }
 
 function clampAlertLimit(limit: number | undefined): number {
@@ -969,6 +978,16 @@ export function listInfraAlerts(query: InfraAlertListQuery): InfraAlertListPage 
     clauses.push('resource_key = ?');
     params.push(query.resourceKey);
   }
+  // Counted before the cursor clause is added, so `total` describes the whole
+  // filtered population rather than "the rest of it from here" — a caller
+  // paging through must not watch the total shrink under it.
+  const total =
+    (
+      getInfraDb()
+        .prepare(`SELECT COUNT(*) AS n FROM infra_alerts WHERE ${clauses.join(' AND ')}`)
+        .get(...params) as { n: number } | undefined
+    )?.n ?? 0;
+
   const cursor = decodeAlertCursor(query.cursor);
   if (cursor) {
     clauses.push('(last_seen < ? OR (last_seen = ? AND id < ?))');
@@ -991,7 +1010,7 @@ export function listInfraAlerts(query: InfraAlertListQuery): InfraAlertListPage 
     rows.length = limit;
     nextCursor = encodeAlertCursor(rows[rows.length - 1]);
   }
-  return { alerts: rows, nextCursor };
+  return { alerts: rows, nextCursor, total };
 }
 
 /** One alert, or null when it does not exist or belongs to another project. */

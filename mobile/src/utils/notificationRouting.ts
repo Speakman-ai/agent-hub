@@ -1,14 +1,15 @@
 /**
  * Pure routing decisions for notification-tap handling.
  *
- * @typedef {'awaiting_feedback'|'ready_to_push'|'pushed'|'support_ticket_created'|'thread_message'|'review_assigned_to_you'|'pr_merged'} EventKey
+ * @typedef {'awaiting_feedback'|'ready_to_push'|'pushed'|'support_ticket_created'|'thread_message'|'review_assigned_to_you'|'pr_merged'|'infra_alert'} EventKey
  *
  * @typedef {{ kind: 'chat', agentId: string | null, sessionId: string }} ChatRoute
  * @typedef {{ kind: 'kanban', projectId: string | null, cardId: string | null }} KanbanRoute
  * @typedef {{ kind: 'threads', projectId: string, threadId: string | null }} ThreadsRoute
  * @typedef {{ kind: 'support', projectId: string, ticketId: string | null }} SupportRoute
  * @typedef {{ kind: 'pulls', projectId: string | null, prNumber: number | null }} PullsRoute
- * @typedef {ChatRoute | KanbanRoute | ThreadsRoute | SupportRoute | PullsRoute} Route
+ * @typedef {{ kind: 'infra', projectId: string, alertId: string | null }} InfraRoute
+ * @typedef {ChatRoute | KanbanRoute | ThreadsRoute | SupportRoute | PullsRoute | InfraRoute} Route
  */
 /**
  * @param {Record<string, unknown> | null | undefined} data
@@ -111,6 +112,21 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
                 cardId: typeof data.cardId === 'string' ? data.cardId : null,
             };
         }
+        case 'infra_alert': {
+            // Infrastructure is a per-project screen, so without a project id
+            // there is nothing to open — drop the tap rather than landing the
+            // user on an arbitrary project's monitoring.
+            const projectId = typeof data.projectId === 'string' ? data.projectId : null;
+            if (!projectId)
+                return null;
+            return {
+                kind: 'infra',
+                projectId,
+                // Absent when the alert row could not be recorded; the screen then
+                // opens the Alerts tab without preselecting one.
+                alertId: typeof data.alertId === 'string' ? data.alertId : null,
+            };
+        }
         default:
             return null;
     }
@@ -165,6 +181,18 @@ export function notificationRouteToNavigation(route: any) {
                     // Carry the resolved PR number so the screen opens that PR's detail
                     // directly instead of dropping the user on the list.
                     prNumber: route.prNumber ?? undefined,
+                },
+            };
+        case 'infra':
+            return {
+                screen: 'Infrastructure',
+                params: {
+                    projectId: route.projectId,
+                    // Opens straight onto the Alerts tab with this alert focused,
+                    // rather than the default Overview — the banner was about one
+                    // alert, so the tap should land on it.
+                    alertId: route.alertId || undefined,
+                    initialTab: 'alerts',
                 },
             };
         default:

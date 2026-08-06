@@ -126,6 +126,13 @@ export function AppProvider({ children }: any) {
     // Last release_notification_update WS event. DeploymentsScreen consumes this
     // to keep notification delivery state (queued/sent/failed) live.
     const [lastReleaseNotificationEvent, setLastReleaseNotificationEvent] = useState<any>(null);
+    // Last `infra_alert_transition` WS event. InfrastructureScreen consumes this
+    // to refetch its alert list on a state change (decision INFRA-UI: WebSocket
+    // for state CHANGES only, REST polling for everything else). The payload is
+    // deliberately thin server-side — it carries `resourceId` and never
+    // `resourceKey`, because it fans out to every client of the project while
+    // the alert routes themselves are Admin-gated.
+    const [lastInfraAlertEvent, setLastInfraAlertEvent] = useState<any>(null);
     // Last `user_todo_update` WS event — drives live TodosScreen refetches
     // without a poll. RN has no DOM event bus, so (mirroring the web
     // window CustomEvent) we surface the last event through context state and
@@ -889,6 +896,23 @@ export function AppProvider({ children }: any) {
                     setProjectImportEvents((previous) => appendImportEvent(previous, event));
                 }
                 break;
+            case 'infra_alert_transition':
+                setLastInfraAlertEvent({
+                    type: data.type,
+                    projectId: data.projectId,
+                    alertId: data.alertId,
+                    ruleId: data.ruleId,
+                    severity: data.severity,
+                    resourceId: data.resourceId,
+                    fromState: data.fromState,
+                    toState: data.toState,
+                    status: data.status,
+                    // Repeat transitions can carry an identical payload; bump so an
+                    // effect keyed on this object still re-runs (same reason
+                    // `lastDeploymentEvent` carries one).
+                    bump: Date.now(),
+                });
+                break;
             case 'deployment_update':
                 setLastDeploymentEvent({
                     type: data.type,
@@ -1005,9 +1029,11 @@ export function AppProvider({ children }: any) {
             case 'kanban':
             case 'threads':
             case 'support':
-            case 'pulls': {
+            case 'pulls':
+            case 'infra': {
                 // Navigator-driven kinds share one pure param mapper so the screen +
-                // params (including the `pulls` PR number) stay unit-testable.
+                // params (including the `pulls` PR number and the `infra` alert id)
+                // stay unit-testable.
                 const nav = notificationRouteToNavigation(route);
                 if (nav)
                     navigatorRef.current?.(nav.screen, nav.params);
@@ -2145,6 +2171,8 @@ export function AppProvider({ children }: any) {
         // Deployments
         lastDeploymentEvent,
         lastReleaseNotificationEvent,
+        // Infrastructure (alert state transitions)
+        lastInfraAlertEvent,
         // Cross-project personal todos (live refetch signal)
         lastUserTodoEvent,
         // Threads

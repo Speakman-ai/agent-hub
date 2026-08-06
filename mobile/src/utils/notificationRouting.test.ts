@@ -126,6 +126,36 @@ describe('routeNotificationTap — thread events', () => {
         expect(routeNotificationTap({ event: 'thread_message', threadId: 't1' })).toBeNull();
     });
 });
+describe('routeNotificationTap — infra alerts', () => {
+    it('routes an infra_alert tap to the alert it was about', () => {
+        // Regression: the mobile push formatter emitted `infra_alert` banners
+        // before any route handled them, so tapping one did nothing.
+        const data = { event: 'infra_alert', projectId: 'p1', alertId: 'al1', severity: 'critical' };
+        expect(routeNotificationTap(data)).toEqual({
+            kind: 'infra',
+            projectId: 'p1',
+            alertId: 'al1',
+        });
+    });
+    it('still opens the module when the payload carries no alert id', () => {
+        expect(routeNotificationTap({ event: 'infra_alert', projectId: 'p1' })).toEqual({
+            kind: 'infra',
+            projectId: 'p1',
+            alertId: null,
+        });
+    });
+    it('returns null without a projectId — Infrastructure is per-project', () => {
+        expect(routeNotificationTap({ event: 'infra_alert', alertId: 'al1' })).toBeNull();
+    });
+    it('resolves the event key from `type` as well as `event`', () => {
+        // The push payload the server builds carries `type: 'infra_alert'`.
+        expect(routeNotificationTap({ type: 'infra_alert', projectId: 'p1', alertId: 'al1' })).toEqual({
+            kind: 'infra',
+            projectId: 'p1',
+            alertId: 'al1',
+        });
+    });
+});
 describe('routeNotificationTap — unknown / malformed', () => {
     it('returns null for unknown event keys', () => {
         expect(routeNotificationTap({ event: 'something_new', sessionId: 's1' })).toBeNull();
@@ -177,6 +207,25 @@ describe('notificationRouteToNavigation', () => {
     });
     it('omits ticketId when the support route has none', () => {
         expect(notificationRouteToNavigation({ kind: 'support', projectId: 'p1', ticketId: null })).toEqual({ screen: 'CustomerSupport', params: { projectId: 'p1', ticketId: undefined } });
+    });
+    it('carries the alert id and lands on the Alerts tab, end to end', () => {
+        // The banner was about one alert, so the tap must open that alert rather
+        // than dropping the operator on the Overview tab.
+        const route = routeNotificationTap({
+            event: 'infra_alert',
+            projectId: 'p1',
+            alertId: 'al1',
+        });
+        expect(notificationRouteToNavigation(route)).toEqual({
+            screen: 'Infrastructure',
+            params: { projectId: 'p1', alertId: 'al1', initialTab: 'alerts' },
+        });
+    });
+    it('omits alertId when the infra route has none', () => {
+        expect(notificationRouteToNavigation({ kind: 'infra', projectId: 'p1', alertId: null })).toEqual({
+            screen: 'Infrastructure',
+            params: { projectId: 'p1', alertId: undefined, initialTab: 'alerts' },
+        });
     });
     it('returns null for the chat kind and for null/garbage', () => {
         expect(notificationRouteToNavigation({ kind: 'chat', agentId: 'a1', sessionId: 's1' })).toBeNull();

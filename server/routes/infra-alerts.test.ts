@@ -191,7 +191,7 @@ describe('infra alerts', () => {
   it('lists an empty page for a project that has never breached', async () => {
     const projectId = await freshProject();
     const res = await request.get(`/api/projects/${projectId}/infra/alerts`).expect(200);
-    expect(res.body).toEqual({ alerts: [], nextCursor: null });
+    expect(res.body).toEqual({ alerts: [], nextCursor: null, total: 0 });
   });
 
   it('rejects a malformed list query', async () => {

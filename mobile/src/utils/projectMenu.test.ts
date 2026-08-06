@@ -89,6 +89,29 @@ describe('projectNavGroups', () => {
         expect(group({ awsEnabled: true }, 'support').entries.map((e) => e.key)).toContain('aws');
     });
 
+    it('adds Infrastructure to the Support group when infraEnabled', () => {
+        const entries = group({ infraEnabled: true }, 'support').entries;
+        expect(entries.map((e: any) => e.key)).toContain('infra');
+        expect(entries.find((e: any) => e.key === 'infra')).toMatchObject({
+            label: 'Infrastructure',
+            screen: 'Infrastructure',
+        });
+    });
+
+    it('hides Infrastructure when the project flag is off', () => {
+        // Mirrors the web sidebar gate (`project.infraEnabled`); an ungated entry
+        // would navigate to a module the project has not turned on.
+        expect(keys({})).not.toContain('infra');
+        expect(keys({ infraEnabled: false })).not.toContain('infra');
+    });
+
+    it('places Infrastructure directly after AWS, as the web sidebar does', () => {
+        const keysInGroup = group({ awsEnabled: true, infraEnabled: true }, 'support').entries.map(
+            (e: any) => e.key,
+        );
+        expect(keysInGroup.indexOf('infra')).toBe(keysInGroup.indexOf('aws') + 1);
+    });
+
     it('drops the Git group entirely for a workflow project without Agent Hub hosting', () => {
         expect(groupKeys({ mode: 'workflow' })).not.toContain('git');
     });

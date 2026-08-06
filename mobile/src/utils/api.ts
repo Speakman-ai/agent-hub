@@ -53,6 +53,25 @@ async function fetchJSON(url: any, options: any = {}) {
     }
     return res.json();
 }
+/**
+ * Query string for the infra read routes. Mirrors `infraQuery` in
+ * client/src/utils/api.ts.
+ *
+ * Empty and nullish values are dropped rather than sent blank: the server treats
+ * `?service=` as a filter for a service literally named the empty string, so a
+ * cleared chip would return nothing instead of everything. `0` is kept — it is a
+ * meaningful `seenSince` ("everything ever described"), not an absent filter.
+ */
+export function infraQuery(params: Record<string, any>): string {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+        if (value === undefined || value === null || value === '')
+            continue;
+        search.set(key, String(value));
+    }
+    const qs = search.toString();
+    return qs ? `?${qs}` : '';
+}
 export const api = {
     // Agents & Sessions
     getAgents: () => fetchJSON('/agents'),
@@ -311,6 +330,27 @@ export const api = {
     startLogsWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/setup-wizard`, {
         method: 'POST',
         body: JSON.stringify({}),
+    }),
+    // ── Infrastructure (AWS monitoring) — mirrors client/src/utils/api.ts ──
+    // Read surface for the Resources, Metrics and Alerts tabs, plus the alert
+    // status write. Polled on an interval; there is no metric WebSocket
+    // (decision INFRA-UI). All Admin-gated server-side.
+    getInfraScopes: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/scopes`),
+    // Live reachability probe for the designated monitoring profile. Issues one
+    // `DescribeAlarms` against AWS, so call it when the view opens — never on a
+    // poll timer (the constraint documented on `probeProjectMonitoringAccess`).
+    getInfraMonitoringStatus: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/monitoring-status`),
+    listInfraResources: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/resources${infraQuery(params)}`),
+    listInfraMetricSeries: (projectId: any, resourceKey: any) => fetchJSON(`/projects/${projectId}/infra/metric-series${infraQuery({ resource: resourceKey })}`),
+    getInfraMetricRange: (projectId: any, params: Record<string, any>) => fetchJSON(`/projects/${projectId}/infra/metrics${infraQuery(params)}`),
+    listInfraAlertRules: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/alert-rules${infraQuery(params)}`),
+    listInfraAlerts: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/alerts${infraQuery(params)}`),
+    getInfraAlert: (projectId: any, alertId: any) => fetchJSON(`/projects/${projectId}/infra/alerts/${encodeURIComponent(alertId)}`),
+    // `resolved` closes it out, `ignored` mutes it through recurrence, `open`
+    // reopens it. There is no separate reopen verb.
+    setInfraAlertStatus: (projectId: any, alertId: any, status: any) => fetchJSON(`/projects/${projectId}/infra/alerts/${encodeURIComponent(alertId)}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status }),
     }),
     // ── Application log sources (write-only `ahlog_` ingest creds) ──
     // Mirrors client/src/utils/api.ts. List/create/rotate/revoke/delete sources;

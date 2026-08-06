@@ -44,7 +44,7 @@ const WORKFLOW_EXCLUDED_KEYS = new Set([
  * The five labeled nav groups for a project, with per-item visibility applied
  * and empty groups removed.
  *
- * @param {{ githubRepo?: string, gitHost?: string, mode?: string, awsEnabled?: boolean }|null|undefined} project
+ * @param {{ githubRepo?: string, gitHost?: string, mode?: string, awsEnabled?: boolean, infraEnabled?: boolean }|null|undefined} project
  * @returns {MenuGroup[]}
  */
 export function projectNavGroups(project: any) {
@@ -89,6 +89,12 @@ export function projectNavGroups(project: any) {
                 { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
                 { key: 'replays', label: 'Replays', icon: 'MonitorPlay', screen: 'Replays' },
                 project?.awsEnabled && { key: 'aws', label: 'AWS', icon: 'Cloud', screen: 'AwsProfiles' },
+                project?.infraEnabled && {
+                    key: 'infra',
+                    label: 'Infrastructure',
+                    icon: 'Server',
+                    screen: 'Infrastructure',
+                },
                 { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' },
             ],
         },
