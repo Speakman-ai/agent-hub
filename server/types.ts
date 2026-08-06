@@ -3304,6 +3304,18 @@ export interface Project {
       }
   >;
   /**
+   * Profile exported as `AWS_PROFILE` to spawns and the session Terminal, so
+   * un-flagged `aws` commands resolve. Names a key of `awsSsoProfiles`.
+   */
+  awsDefaultProfile?: string;
+  /**
+   * Profile unattended background work (metric collection, alert evaluation)
+   * runs as. Names a key of `awsSsoProfiles` and is never an SSO profile: an
+   * SSO token cache is HOME-keyed and expires with nobody around to refresh
+   * it. Distinct from `awsDefaultProfile`, which is the interactive default.
+   */
+  awsMonitoringProfile?: string;
+  /**
    * When true, AWS IAM Identity Center (SSO) support is surfaced for this
    * project: an "AWS" entry appears under the project in the sidebar where
    * SSO profiles are managed. Defaults to `false` (omitted) — AWS stays

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ambientCredentialSourceLabel,
   effectiveDefaultProfile,
+  effectiveMonitoringProfile,
   emptyProfile,
+  monitoringProfileCandidates,
   profilesToRows,
   roleNeedsUnreachableEnvCredentials,
   rowsToProfiles,
@@ -243,5 +245,46 @@ describe('effectiveDefaultProfile', () => {
 
   it('ignores unnamed rows', () => {
     expect(effectiveDefaultProfile([row('dev'), row('  ')], '')).toBe('dev');
+  });
+});
+
+describe('monitoring profile designation', () => {
+  const row = (name: string, type = 'sso') => ({ ...emptyProfile(), name, type });
+
+  // The server rejects an SSO designation outright, so the option must never
+  // reach the picker: an SSO token caches under a user's home and expires with
+  // nobody around to re-run `aws sso login`.
+  it('offers only static and assume-role rows', () => {
+    expect(
+      monitoringProfileCandidates([row('dev'), row('keys', 'static'), row('monitoring', 'role')]),
+    ).toEqual(['keys', 'monitoring']);
+  });
+
+  it('ignores unnamed rows', () => {
+    expect(monitoringProfileCandidates([row('  ', 'role'), row('monitoring', 'role')])).toEqual([
+      'monitoring',
+    ]);
+  });
+
+  it('honours an eligible designation and trims it', () => {
+    expect(effectiveMonitoringProfile([row('monitoring', 'role')], ' monitoring ')).toBe(
+      'monitoring',
+    );
+  });
+
+  // Unlike the interactive default, spending AWS API budget unattended stays
+  // an explicit choice — no sole-profile fallback.
+  it('does not fall back to the sole eligible row', () => {
+    expect(effectiveMonitoringProfile([row('monitoring', 'role')], '')).toBe('');
+  });
+
+  it('drops a designation left over from a renamed row', () => {
+    expect(effectiveMonitoringProfile([row('collector', 'role')], 'monitoring')).toBe('');
+  });
+
+  // Flipping the designated row to SSO must drop the designation client-side,
+  // or the save 400s on an edit the operator already made.
+  it('drops a designation whose row switched to SSO', () => {
+    expect(effectiveMonitoringProfile([row('monitoring', 'sso')], 'monitoring')).toBe('');
   });
 });

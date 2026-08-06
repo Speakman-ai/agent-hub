@@ -355,6 +355,65 @@ export function validateProjectAwsDefaultProfile(
 }
 
 /**
+ * Normalize the profile unattended background work runs as.
+ *
+ * Same shape as {@link validateProjectAwsDefaultProfile}, plus one hard
+ * restriction: never an SSO profile. The AWS CLI keys its SSO token cache off
+ * `$HOME/.aws/sso/cache`, and `AWS_CONFIG_FILE` relocates only the profile
+ * config, never the cache. A background poller has no HOME to attribute a
+ * token to and no human to re-run `aws sso login` when it expires, so an SSO
+ * designation goes dark within hours with nothing to show for it.
+ */
+export function validateProjectAwsMonitoringProfile(
+  raw: unknown,
+  profiles: ProjectAwsSsoProfilesMap,
+): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') {
+    throw new ProjectAwsProfileValidationError('monitoringProfile must be a string');
+  }
+  const name = raw.trim();
+  if (!name) return null;
+  const profile = profiles[name];
+  if (!profile) {
+    throw new ProjectAwsProfileValidationError(
+      `monitoringProfile "${name}" is not a configured profile — configured: ${
+        Object.keys(profiles).join(', ') || '(none)'
+      }`,
+    );
+  }
+  if (isProjectAwsSsoProfile(profile)) {
+    throw new ProjectAwsProfileValidationError(
+      `monitoringProfile "${name}" is an IAM Identity Center (SSO) profile. Its token cache is keyed to a user's HOME and expires unattended, with no one to re-run "aws sso login", so background collection would stop within hours. Designate a static or assume-role profile instead.`,
+    );
+  }
+  return name;
+}
+
+/**
+ * Which profile background collection actually runs as, or null when the
+ * project cannot be monitored yet.
+ *
+ * Unlike {@link resolveProjectAwsDefaultProfile} there is no sole-profile
+ * fallback: designating a monitoring profile is an explicit operator act that
+ * says "spend AWS API budget on this account unattended", and a project whose
+ * only profile is SSO must be told to create a role profile rather than have
+ * one silently assumed. A designation that no longer names a live non-SSO
+ * profile (hand-edited `projects.json`, a profile flipped to SSO) resolves to
+ * null so the caller shows the empty state instead of failing at call time.
+ */
+export function resolveProjectAwsMonitoringProfile(
+  profiles: ProjectAwsSsoProfilesMap,
+  configured?: string | null,
+): string | null {
+  const designated = typeof configured === 'string' ? configured.trim() : '';
+  if (!designated) return null;
+  const profile = profiles[designated];
+  if (!profile || isProjectAwsSsoProfile(profile)) return null;
+  return designated;
+}
+
+/**
  * Which profile bare `aws …` commands (no `--profile`) should resolve to.
  *
  * The AWS CLI falls back to a profile literally named `default`, which a

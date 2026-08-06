@@ -144,6 +144,14 @@ const ProfilesEnvelope = registerComponent(
         description:
           'Profile exported as `AWS_PROFILE` to spawns and the session Terminal: the designation when set, else the sole configured profile, else null. Without it, un-flagged `aws` commands fall back to a `[default]` section the project-scoped config file never has.',
       }),
+      monitoringProfile: z.string().nullable().openapi({
+        description:
+          'Profile the operator designated for unattended background work (metric collection, alert evaluation), or null when none is designated. Never an SSO profile.',
+      }),
+      effectiveMonitoringProfile: z.string().nullable().openapi({
+        description:
+          'Profile background collection actually runs as: the designation when it still names a live non-SSO profile, else null. There is no sole-profile fallback — null means the Infrastructure module shows its "designate a monitoring profile" empty state.',
+      }),
       ambientCredentialSource: z
         .enum(['Environment', 'Ec2InstanceMetadata', 'EcsContainer'])
         .openapi({
@@ -167,6 +175,10 @@ const PutProfilesBody = registerComponent(
       defaultProfile: z.string().nullable().optional().openapi({
         description:
           'Profile to export as `AWS_PROFILE` for spawns and the session Terminal, so un-flagged `aws` commands resolve. Must name one of the profiles in this same request; pass null or omit to clear the designation.',
+      }),
+      monitoringProfile: z.string().nullable().optional().openapi({
+        description:
+          'Profile unattended background work runs as. Must name a `static` or `role` profile in this same request — an SSO profile is rejected with 400 because its token cache is HOME-keyed and expires with nobody around to re-run `aws sso login`. Pass null or omit to clear the designation.',
       }),
     })
     .openapi({ description: 'Body for PUT /aws-profiles.' }),
@@ -321,7 +333,7 @@ registerPath({
     },
     400: {
       description:
-        'Validation failed — bad profile name, invalid account id / region / URL, or duplicate keys.',
+        'Validation failed — bad profile name, invalid account id / region / URL, duplicate keys, or a `monitoringProfile` naming an SSO profile.',
       content: jsonContent(ErrorEnvelope),
     },
     404: {

@@ -32,6 +32,12 @@ const SAMPLE = {
   },
 };
 
+const ROLE = {
+  type: 'role',
+  role_arn: 'arn:aws:iam::120569607241:role/AgentHubMonitoring',
+  region: 'us-east-2',
+};
+
 describe('PUT/GET /api/projects/:id/aws-profiles', () => {
   it('round-trips profile config', async () => {
     const projectId = await freshProject();
@@ -145,6 +151,109 @@ describe('PUT/GET /api/projects/:id/aws-profiles', () => {
       .expect(200);
     expect(res.body.defaultProfile).toBeNull();
     expect(res.body.effectiveDefaultProfile).toBeNull();
+  });
+
+  it('round-trips the designated monitoring profile', async () => {
+    const projectId = await freshProject();
+    const profiles = { ...SAMPLE, monitoring: { ...ROLE } };
+
+    const put = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles, monitoringProfile: 'monitoring' })
+      .expect(200);
+    expect(put.body.monitoringProfile).toBe('monitoring');
+    expect(put.body.effectiveMonitoringProfile).toBe('monitoring');
+
+    const res = await request.get(`/api/projects/${projectId}/aws-profiles`).expect(200);
+    expect(res.body.monitoringProfile).toBe('monitoring');
+    expect(res.body.effectiveMonitoringProfile).toBe('monitoring');
+    // The interactive default is a separate knob and stays undesignated.
+    expect(res.body.defaultProfile).toBeNull();
+  });
+
+  it('accepts a static profile as the monitoring profile', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({
+        profiles: {
+          keys: {
+            type: 'static',
+            aws_access_key_id: 'AKIATESTKEY',
+            aws_secret_access_key: 'secret-test-key',
+            region: 'us-east-2',
+          },
+        },
+        monitoringProfile: 'keys',
+      })
+      .expect(200);
+    expect(res.body.effectiveMonitoringProfile).toBe('keys');
+  });
+
+  // An SSO token caches under a HOME the collector does not have and expires
+  // with nobody to re-run `aws sso login`, so collection would go dark.
+  it('rejects designating an SSO profile for monitoring and names the reason', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: SAMPLE, monitoringProfile: 'dev' })
+      .expect(400);
+    expect(res.body.error).toMatch(/IAM Identity Center/);
+    expect(res.body.error).toMatch(/expires unattended/);
+  });
+
+  it('does not resolve a monitoring profile without a designation', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: { monitoring: { ...ROLE } } })
+      .expect(200);
+    expect(res.body.monitoringProfile).toBeNull();
+    expect(res.body.effectiveMonitoringProfile).toBeNull();
+  });
+
+  it('rejects a save that deletes the designated monitoring profile', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: { monitoring: { ...ROLE } }, monitoringProfile: 'monitoring' })
+      .expect(200);
+
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: SAMPLE, monitoringProfile: 'monitoring' })
+      .expect(400);
+    expect(res.body.error).toMatch(/not a configured profile/);
+  });
+
+  it('rejects a save that renames the designated monitoring profile', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: { monitoring: { ...ROLE } }, monitoringProfile: 'monitoring' })
+      .expect(200);
+
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles: { collector: { ...ROLE } }, monitoringProfile: 'monitoring' })
+      .expect(400);
+    expect(res.body.error).toMatch(/monitoringProfile "monitoring"/);
+  });
+
+  it('clears the monitoring designation when sent null', async () => {
+    const projectId = await freshProject();
+    const profiles = { monitoring: { ...ROLE } };
+    await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles, monitoringProfile: 'monitoring' })
+      .expect(200);
+
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({ profiles, monitoringProfile: null })
+      .expect(200);
+    expect(res.body.monitoringProfile).toBeNull();
+    expect(res.body.effectiveMonitoringProfile).toBeNull();
   });
 
   it('rejects a default profile that is not in the same request', async () => {

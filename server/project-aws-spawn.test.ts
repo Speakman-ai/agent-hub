@@ -10,6 +10,7 @@ vi.mock('./config.js', () => ({
 
 const {
   getProjectAwsDefaultProfile,
+  getProjectAwsMonitoringProfile,
   linkAwsSsoHostCacheIntoSpawnHome,
   mergeProjectAwsSpawnEnv,
   projectHasAwsSsoProfiles,
@@ -235,5 +236,33 @@ describe('project-aws default profile export', () => {
       getProjectAwsDefaultProfile({ id: 'p', awsDefaultProfile: '  ' } as unknown as Project),
     ).toBeNull();
     expect(getProjectAwsDefaultProfile({ id: 'p' } as unknown as Project)).toBeNull();
+  });
+
+  it('getProjectAwsMonitoringProfile trims and normalizes blanks to null', () => {
+    expect(
+      getProjectAwsMonitoringProfile({
+        id: 'p',
+        awsMonitoringProfile: ' monitoring ',
+      } as unknown as Project),
+    ).toBe('monitoring');
+    expect(
+      getProjectAwsMonitoringProfile({ id: 'p', awsMonitoringProfile: '  ' } as unknown as Project),
+    ).toBeNull();
+    expect(getProjectAwsMonitoringProfile({ id: 'p' } as unknown as Project)).toBeNull();
+  });
+
+  // Background collection is a separate designation: it must never leak into
+  // the AWS_PROFILE a human's un-flagged `aws` command resolves to.
+  it('does not export the monitoring profile as AWS_PROFILE', () => {
+    const project = {
+      id: 'agent-hub',
+      awsSsoProfiles: { dev: SSO, prod: SSO },
+      awsMonitoringProfile: 'prod',
+    } as unknown as Project;
+    const env: NodeJS.ProcessEnv = {};
+
+    mergeProjectAwsSpawnEnv(env, project);
+
+    expect(env.AWS_PROFILE).toBeUndefined();
   });
 });

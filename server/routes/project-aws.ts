@@ -14,7 +14,9 @@ import { trackChild, killProcessGroup } from '../process-groups.js';
 import {
   validateProjectAwsSsoProfiles,
   validateProjectAwsDefaultProfile,
+  validateProjectAwsMonitoringProfile,
   resolveProjectAwsDefaultProfile,
+  resolveProjectAwsMonitoringProfile,
   ProjectAwsProfileValidationError,
   isProjectAwsSsoProfile,
   isProjectAwsRoleProfile,
@@ -26,6 +28,7 @@ import {
 import { writeProjectAwsFiles } from '../project-aws-config-file.js';
 import {
   getProjectAwsDefaultProfile,
+  getProjectAwsMonitoringProfile,
   getProjectAwsSsoProfiles,
   scrubAwsCredentialEnv,
 } from '../project-aws-spawn.js';
@@ -46,16 +49,23 @@ import {
 type ProjectWithAws = Project & {
   awsSsoProfiles?: ProjectAwsSsoProfilesMap;
   awsDefaultProfile?: string;
+  awsMonitoringProfile?: string;
 };
 
 /** GET/PUT envelope: what the operator designated plus what spawns will use. */
 function profilesEnvelope(project: ProjectWithAws) {
   const profiles = getProjectAwsSsoProfiles(project);
   const configured = getProjectAwsDefaultProfile(project);
+  const monitoring = getProjectAwsMonitoringProfile(project);
   return {
     profiles,
     defaultProfile: configured,
     effectiveDefaultProfile: resolveProjectAwsDefaultProfile(profiles, configured),
+    monitoringProfile: monitoring,
+    // Null here is the Infrastructure module's "designate a monitoring
+    // profile" empty state, not an error: it also covers a designation that
+    // stopped naming a live non-SSO profile.
+    effectiveMonitoringProfile: resolveProjectAwsMonitoringProfile(profiles, monitoring),
     // What a role profile that names no origin will be rendered with, so the
     // editor can label its "Automatic" option with the Hub's real runtime
     // instead of implying every deployment is EC2.
@@ -125,6 +135,10 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         // deletes the designated profile is rejected instead of silently
         // leaving spawns pointed at a profile that no longer exists.
         const defaultProfile = validateProjectAwsDefaultProfile(body.defaultProfile, profiles);
+        const monitoringProfile = validateProjectAwsMonitoringProfile(
+          body.monitoringProfile,
+          profiles,
+        );
         if (Object.keys(profiles).length === 0) {
           delete project.awsSsoProfiles;
         } else {
@@ -134,6 +148,11 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
           project.awsDefaultProfile = defaultProfile;
         } else {
           delete project.awsDefaultProfile;
+        }
+        if (monitoringProfile) {
+          project.awsMonitoringProfile = monitoringProfile;
+        } else {
+          delete project.awsMonitoringProfile;
         }
         saveProjects();
         writeProjectAwsFiles(project.id, profiles);

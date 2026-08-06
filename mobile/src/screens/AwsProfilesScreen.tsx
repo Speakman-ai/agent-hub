@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Linking, Alert, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
+import { awsProfileBadges } from '../utils/awsProfileBadges';
 import { colors } from '../theme/colors';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 export default function AwsProfilesScreen({ route, navigation }: any) {
@@ -13,6 +14,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
     const [statusByProfile, setStatusByProfile] = useState<any>({});
     const [loginByProfile, setLoginByProfile] = useState<any>({});
     const [defaultProfile, setDefaultProfile] = useState('');
+    const [monitoringProfile, setMonitoringProfile] = useState('');
     const [ambientCredentialSource, setAmbientCredentialSource] = useState('');
     const load = useCallback(async () => {
         setLoading(true);
@@ -24,12 +26,14 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
                 .map(([name, p]: any) => ({ name, ...p }));
             setProfiles(rows);
             setDefaultProfile(body?.effectiveDefaultProfile || '');
+            setMonitoringProfile(body?.effectiveMonitoringProfile || '');
             setAmbientCredentialSource(body?.ambientCredentialSource || '');
         }
         catch (err: any) {
             setError(err?.message || 'Failed to load AWS profiles');
             setProfiles([]);
             setDefaultProfile('');
+            setMonitoringProfile('');
             setAmbientCredentialSource('');
         }
         finally {
@@ -85,6 +89,11 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
           {defaultProfile
             ? ` "${defaultProfile}" is exported as AWS_PROFILE, so aws commands without --profile resolve to it.`
             : ''}
+          {monitoringProfile
+            ? ` "${monitoringProfile}" runs unattended background collection.`
+            : profiles.length > 0
+                ? ' No monitoring profile is designated, so background collection is off. Designate a static or assume-role profile in the web settings — an SSO token expires with nobody around to refresh it.'
+                : ''}
         </Text>
         {loading && <ActivityIndicator color={colors.gray400}/>}
         {error && <Text style={styles.error}>{error}</Text>}
@@ -99,7 +108,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
             return (<View key={row.name} style={styles.card}>
               <Text style={styles.profileName}>
                 {row.name}
-                {row.name === defaultProfile ? '  ·  default' : ''}
+                {awsProfileBadges(row.name, { defaultProfile, monitoringProfile })}
               </Text>
               <Text style={styles.meta}>Type: {isStatic ? 'static' : isRole ? 'assume role' : 'SSO'}</Text>
               {isSso && <Text style={styles.meta}>Account: {row.sso_account_id || '-'}</Text>}

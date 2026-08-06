@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   validateProjectAwsSsoProfiles,
   validateProjectAwsDefaultProfile,
+  validateProjectAwsMonitoringProfile,
   resolveProjectAwsDefaultProfile,
+  resolveProjectAwsMonitoringProfile,
   renderProjectAwsConfigIni,
   renderProjectAwsCredentialsIni,
   resolveAmbientCredentialSource,
@@ -480,6 +482,83 @@ describe('validateProjectAwsDefaultProfile', () => {
     expect(() => validateProjectAwsDefaultProfile(42, { dev: VALID })).toThrow(
       ProjectAwsProfileValidationError,
     );
+  });
+});
+
+describe('validateProjectAwsMonitoringProfile', () => {
+  const ROLE = { type: 'role' as const, role_arn: ROLE_ARN, region: 'us-east-2' };
+  const STATIC = {
+    type: 'static' as const,
+    aws_access_key_id: 'AKIATESTKEY',
+    aws_secret_access_key: 'secret',
+    region: 'us-east-2',
+  };
+
+  it('normalizes absent / empty designations to null', () => {
+    for (const raw of [undefined, null, '', '   ']) {
+      expect(validateProjectAwsMonitoringProfile(raw, { monitoring: ROLE })).toBeNull();
+    }
+  });
+
+  it('accepts a role profile', () => {
+    expect(validateProjectAwsMonitoringProfile(' monitoring ', { monitoring: ROLE })).toBe(
+      'monitoring',
+    );
+  });
+
+  it('accepts a static profile', () => {
+    expect(validateProjectAwsMonitoringProfile('keys', { keys: STATIC })).toBe('keys');
+  });
+
+  // An SSO token caches under a HOME the poller does not have and expires with
+  // nobody to re-run `aws sso login`, so collection would silently go dark.
+  it('rejects an SSO profile and says why', () => {
+    expect(() => validateProjectAwsMonitoringProfile('dev', { dev: VALID })).toThrow(
+      /IAM Identity Center .*token cache is keyed to a user's HOME and expires unattended/s,
+    );
+  });
+
+  it('rejects a legacy typeless stanza, which is SSO', () => {
+    const { type: _type, ...typeless } = { type: 'sso', ...VALID };
+    expect(() => validateProjectAwsMonitoringProfile('dev', { dev: typeless as never })).toThrow(
+      ProjectAwsProfileValidationError,
+    );
+  });
+
+  it('rejects a name that is not a configured profile', () => {
+    expect(() => validateProjectAwsMonitoringProfile('gone', { monitoring: ROLE })).toThrow(
+      /not a configured profile/,
+    );
+  });
+
+  it('rejects a non-string designation', () => {
+    expect(() => validateProjectAwsMonitoringProfile(42, { monitoring: ROLE })).toThrow(
+      ProjectAwsProfileValidationError,
+    );
+  });
+});
+
+describe('resolveProjectAwsMonitoringProfile', () => {
+  const ROLE = { type: 'role' as const, role_arn: ROLE_ARN, region: 'us-east-2' };
+
+  it('returns the designation when it names a live non-SSO profile', () => {
+    expect(resolveProjectAwsMonitoringProfile({ monitoring: ROLE }, ' monitoring ')).toBe(
+      'monitoring',
+    );
+  });
+
+  // Spending AWS API budget unattended stays an explicit operator act, so
+  // unlike the interactive default there is no sole-profile fallback.
+  it('does not fall back to the sole profile', () => {
+    expect(resolveProjectAwsMonitoringProfile({ monitoring: ROLE }, null)).toBeNull();
+  });
+
+  it('drops a designation naming a deleted profile', () => {
+    expect(resolveProjectAwsMonitoringProfile({ monitoring: ROLE }, 'gone')).toBeNull();
+  });
+
+  it('drops a designation whose profile became SSO', () => {
+    expect(resolveProjectAwsMonitoringProfile({ monitoring: VALID }, 'monitoring')).toBeNull();
   });
 });
 

@@ -248,9 +248,11 @@ import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import {
   mergeProjectAwsSpawnEnv,
   getProjectAwsSsoProfiles,
+  getProjectAwsMonitoringProfile,
   projectHasAwsSsoProfiles,
   linkAwsSsoHostCacheIntoSpawnHome,
 } from './project-aws-spawn.js';
+import { resolveProjectAwsMonitoringProfile } from './project-aws-profiles.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 import { resolveDefaultBranch } from './git-default-branch.js';
 
@@ -690,10 +692,21 @@ export function compressSkillDescription(
  * must NOT initiate their own `aws sso login` device-code flow; they should
  * point the user at the AWS settings module instead.
  */
-export function buildProjectAwsPromptSection(projectId: string, profileNames: string[]): string {
+export function buildProjectAwsPromptSection(
+  projectId: string,
+  profileNames: string[],
+  monitoringProfile?: string | null,
+): string {
   if (profileNames.length === 0) return '';
+  // A scheduled / autonomous spawn has no human to click "SSO login", so step 3
+  // below (point the user at the settings module) is a dead end for it. Naming
+  // the monitoring profile gives that session the one profile that authenticates
+  // with nobody watching. Interactive sessions keep asking the user.
+  const monitoringLine = monitoringProfile
+    ? `\n\n**Unattended runs (heartbeat, cron, autonomous dispatch):** use \`--profile ${monitoringProfile}\`. It is this project's designated monitoring profile and authenticates without an interactive login, so it is the only profile that still works when no human is present to re-authenticate. Do not use it to stand in for a profile the user named.`
+    : '';
   return `\n\n## Project AWS
-Configured AWS profiles for this project: ${profileNames.join(', ')}.
+Configured AWS profiles for this project: ${profileNames.join(', ')}.${monitoringLine}
 This session sets \`AWS_CONFIG_FILE\` and \`AWS_SHARED_CREDENTIALS_FILE\` to project-specific files. Static profiles use the project credentials file directly. SSO tokens cache under the HOME of whoever logged in. The Hub status endpoint resolves this session's owner and checks the same per-user HOME used by the web **AWS** settings module.
 
 **Before any AWS CLI work:**
@@ -766,7 +779,12 @@ You have access to a real Chromium browser in this session. When a user asks you
     const awsProject = findProject(projectId);
     const awsProfiles = awsProject ? getProjectAwsSsoProfiles(awsProject) : {};
     const awsNames = Object.keys(awsProfiles).sort((a, b) => a.localeCompare(b));
-    prompt += buildProjectAwsPromptSection(projectId, awsNames);
+    // Resolved, not raw: a designation that stopped naming a live non-SSO
+    // profile must not be advertised as the unattended fallback.
+    const awsMonitoring = awsProject
+      ? resolveProjectAwsMonitoringProfile(awsProfiles, getProjectAwsMonitoringProfile(awsProject))
+      : null;
+    prompt += buildProjectAwsPromptSection(projectId, awsNames, awsMonitoring);
   }
 
   if (!project.ahw) return prompt;

@@ -186,11 +186,34 @@ export function effectiveDefaultProfile(rows: any, designated: any) {
 }
 
 /**
+ * Rows that may run unattended collection. SSO is excluded because its token
+ * cache is keyed to a user's HOME and expires with nobody to refresh it — the
+ * server rejects the designation outright, so the option never appears.
+ */
+export function monitoringProfileCandidates(rows: any) {
+  return rows
+    .filter((r: any) => r.type === 'static' || r.type === 'role')
+    .map((r: any) => trimmed(r.name))
+    .filter(Boolean);
+}
+
+/**
+ * Mirrors the server's `resolveProjectAwsMonitoringProfile`: the designation
+ * only while it still names an eligible row, and no sole-profile fallback —
+ * spending AWS API budget unattended stays an explicit choice.
+ */
+export function effectiveMonitoringProfile(rows: any, designated: any) {
+  const picked = trimmed(designated);
+  return picked && monitoringProfileCandidates(rows).includes(picked) ? picked : '';
+}
+
+/**
  * Per-project AWS profile editor.
  */
 export default function ProjectAwsProfilesEditor({ projectId }: any) {
   const [rows, setRows] = useState<any[]>([]);
   const [defaultProfile, setDefaultProfile] = useState('');
+  const [monitoringProfile, setMonitoringProfile] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
   const [saving, setSaving] = useState(false);
@@ -210,11 +233,13 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
       const body = await api.getProjectAwsProfiles(projectId);
       setRows(profilesToRows(body?.profiles));
       setDefaultProfile(body?.defaultProfile || '');
+      setMonitoringProfile(body?.monitoringProfile || '');
       setAmbientCredentialSource(body?.ambientCredentialSource || '');
     } catch (err: any) {
       setError(err?.message || String(err));
       setRows([]);
       setDefaultProfile('');
+      setMonitoringProfile('');
       setAmbientCredentialSource('');
     } finally {
       setLoading(false);
@@ -237,6 +262,10 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
         projectId,
         rowsToProfiles(rows),
         stillValid ? trimmed(defaultProfile) : null,
+        // Same guard, plus the kind check: switching the designated row to SSO
+        // would otherwise 400 the whole save instead of dropping a designation
+        // the operator already invalidated.
+        effectiveMonitoringProfile(rows, monitoringProfile) || null,
       );
       await load();
       setSaved(true);
@@ -515,6 +544,41 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
               ? `Currently: ${effectiveDefaultProfile(rows, defaultProfile)}.`
               : 'With none selected, un-flagged commands error until you pass --profile.'}
           </p>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="border border-gray-800 rounded-lg p-3 bg-gray-950/40 space-y-1">
+          <label className={labelClass} htmlFor={`aws-monitoring-profile-${projectId}`}>
+            Monitoring profile
+          </label>
+          <select
+            id={`aws-monitoring-profile-${projectId}`}
+            value={monitoringProfile}
+            onChange={(e: any) => setMonitoringProfile(e.target.value)}
+            className={`${inputClass} md:w-1/2`}
+            data-testid="project-aws-monitoring-profile"
+          >
+            <option value="">None</option>
+            {monitoringProfileCandidates(rows).map((name: string) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500">
+            Credentials unattended background work (metric collection, alert evaluation) runs as.
+            Only static and assume-role profiles are listed: an IAM Identity Center token caches
+            under a user&apos;s home directory and expires with nobody around to run{' '}
+            <code className="text-gray-400">aws sso login</code> again, so collection would stop
+            within hours.
+          </p>
+          {monitoringProfileCandidates(rows).length === 0 && (
+            <p className="text-xs text-amber-400 flex items-center gap-1">
+              <AlertCircle size={12} className="shrink-0" />
+              Every profile here is SSO. Add an assume-role profile for the Hub to use unattended.
+            </p>
+          )}
         </div>
       )}
 

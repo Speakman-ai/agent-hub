@@ -23,6 +23,19 @@ export function getProjectAwsDefaultProfile(project: Project): string | null {
   return name ? name : null;
 }
 
+/**
+ * Operator-designated profile background collection runs as, if any. Separate
+ * from the interactive default: that one is about which account a human means
+ * when they omit `--profile`, this one about which credentials survive with
+ * nobody watching.
+ */
+export function getProjectAwsMonitoringProfile(project: Project): string | null {
+  const raw = (project as Project & { awsMonitoringProfile?: string }).awsMonitoringProfile;
+  if (typeof raw !== 'string') return null;
+  const name = raw.trim();
+  return name ? name : null;
+}
+
 function awsSsoCacheHasTokens(cacheDir: string): boolean {
   try {
     if (!existsSync(cacheDir)) return false;
