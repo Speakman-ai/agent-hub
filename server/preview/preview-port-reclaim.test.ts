@@ -52,6 +52,42 @@ describe('preview-port-reclaim', () => {
     expect(reclaimFailedPortHolder(db, 4101)).toBeNull();
   });
 
+  it('kills the recorded pid before releasing its port', () => {
+    // Freeing the port without killing the process is how an orphan ends
+    // up answering for the next session allocated that number.
+    db.prepare(
+      `INSERT INTO worktree_preview_groups (id, session_id, project_id, status)
+       VALUES ('g3', 's3', 'p1', 'failed')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, pid, port, url, log_path, status)
+       VALUES ('p3', 'g3', 'entry', 4242, 4102, 'http://localhost:4102', NULL, 'failed')`,
+    ).run();
+    const killed: number[] = [];
+
+    const result = reclaimFailedPortHolder(db, 4102, (pid) => killed.push(pid));
+
+    expect(killed).toEqual([4242]);
+    expect(result).toEqual({ groupId: 'g3', groupDeleted: true });
+  });
+
+  it('still reclaims when the row has no recorded pid', () => {
+    db.prepare(
+      `INSERT INTO worktree_preview_groups (id, session_id, project_id, status)
+       VALUES ('g4', 's4', 'p1', 'failed')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, pid, port, url, log_path, status)
+       VALUES ('p4', 'g4', 'entry', NULL, 4103, 'http://localhost:4103', NULL, 'failed')`,
+    ).run();
+    const killed: number[] = [];
+
+    expect(reclaimFailedPortHolder(db, 4103, (pid) => killed.push(pid))).not.toBeNull();
+    expect(killed).toEqual([]);
+  });
+
   it('reclaimFailedPortsInRange bulk-deletes failed holders', () => {
     for (const port of [4800, 4801]) {
       const gid = `g-${port}`;

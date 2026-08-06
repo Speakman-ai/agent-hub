@@ -19,6 +19,7 @@ import { parsePreviewSubdomainHost } from './preview-subdomain-host.js';
 import {
   devServerPortProxyPath,
   previewProxyMountPath,
+  previewSubdomainRewrittenUrl,
   previewUpstreamPathForMount,
   resolvePreviewUpstreamHost,
 } from './preview-public-url.js';
@@ -381,11 +382,9 @@ export function attachPreviewProxyUpgrade(
     // and HTTP code paths can't drift.
     const base = opts?.subdomainBase ?? null;
     if (base) {
-      const subSid = parsePreviewSubdomainHost(req.headers.host, base);
-      if (subSid && !parsePreviewProxySessionId(req.url)) {
-        const original = req.url || '/';
-        const suffix = original.startsWith('/') ? original : `/${original}`;
-        req.url = `/api/sessions/${encodeURIComponent(subSid)}/preview/proxy${suffix}`;
+      const target = parsePreviewSubdomainHost(req.headers.host, base);
+      if (target && !parsePreviewProxySessionId(req.url)) {
+        req.url = previewSubdomainRewrittenUrl(target, req.url);
       }
     }
     if (!parsePreviewProxySessionId(req.url)) return;

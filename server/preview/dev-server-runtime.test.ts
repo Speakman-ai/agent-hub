@@ -247,6 +247,8 @@ function makeHarness(
       internalPort: number;
       primary: boolean;
     }) => string;
+    isPortFree?: (port: number) => Promise<boolean>;
+    kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
   } = {},
 ): Harness {
   const db = new Database(':memory:');
@@ -271,6 +273,10 @@ function makeHarness(
     createEnv,
     fetch,
     clock,
+    // Hermetic by default: the real probe binds sockets, which would make
+    // allocation depend on whatever else is running on the dev machine.
+    isPortFree: opts.isPortFree ?? (async () => true),
+    ...(opts.kill ? { kill: opts.kill } : {}),
     loadProjectEnv,
     getProject: opts.getProject,
     notifyLog: opts.notifyLog,
@@ -431,6 +437,91 @@ describe('DevServerRuntime lifecycle', () => {
     await h.runtime.stop(first.devServerId);
     const third = await h.runtime.start('session-c', project, '/worktree/c');
     expect(third.port).toBe(4500);
+  });
+
+  it('skips a pool port an untracked process still holds', async () => {
+    // Regression: a dev server orphaned by a prior session kept listening
+    // on 4500 after its DB row was deleted. The pool saw the port as free
+    // and handed it to the next session, so the preview proxy tunnelled to
+    // the orphan — the pane rendered a different project's app while the
+    // session's own boot log showed a healthy start.
+    const squatted = new Set([4500]);
+    const h = makeHarness({
+      portRange: { min: 4500, max: 4502 },
+      isPortFree: async (port) => !squatted.has(port),
+    });
+
+    const started = await h.runtime.start('session-a', makeProject(), '/worktree/a');
+
+    expect(started.port).toBe(4501);
+  });
+
+  it('fails the start when every pool port is held by an untracked process', async () => {
+    const h = makeHarness({
+      portRange: { min: 4500, max: 4501 },
+      isPortFree: async () => false,
+    });
+
+    await expect(h.runtime.start('session-a', makeProject(), '/worktree/a')).rejects.toThrow(
+      /held by untracked processes/i,
+    );
+  });
+
+  it('refuses to reserve an extra portMap port that something else is listening on', async () => {
+    // A non-primary port cannot be steered via PORT, so the process will
+    // bind this exact number. Proxying to whoever already owns it would be
+    // the same wrong-app failure as the pooled case.
+    const h = makeHarness({
+      portRange: { min: 4500, max: 4502 },
+      isPortFree: async (port) => port !== 8787,
+    });
+    const project = makeProject({
+      portMap: [
+        { internalPort: 5173, label: 'web', primary: true },
+        { internalPort: 8787, label: 'api' },
+      ],
+    });
+
+    await expect(h.runtime.start('session-a', project, '/worktree/a')).rejects.toThrow(
+      /8787 \("api"\) is already in use by a process the Hub does not manage/i,
+    );
+    // The rolled-back start must not strand the group row.
+    expect(h.runtime.getActive('session-a')).toBeNull();
+  });
+
+  it('escalates to SIGKILL before releasing the port of a restart-orphaned row', async () => {
+    // No live SessionEnv (Hub restarted), so the row's pid is signalled
+    // directly. Deleting the row while the process survives is exactly how
+    // the pool ends up handing out an occupied port.
+    const alive = new Set([4242]);
+    const signals: Array<[number, NodeJS.Signals | 0]> = [];
+    const h = makeHarness({
+      kill: (pid, signal) => {
+        signals.push([pid, signal]);
+        const bare = Math.abs(pid);
+        // Only the bare pid is a known process here, so the group form
+        // throws first and the runtime falls back — same as a child that
+        // was not a group leader.
+        if (pid < 0) throw new Error('ESRCH');
+        if (!alive.has(bare)) throw new Error('ESRCH');
+        // Ignores SIGTERM; only SIGKILL removes it.
+        if (signal === 'SIGKILL') alive.delete(bare);
+      },
+    });
+    const started = await h.runtime.start('session-orphan', makeProject(), '/worktree');
+    h.db
+      .prepare(`UPDATE worktree_preview_processes SET pid = 4242 WHERE group_id = ?`)
+      .run(started.devServerId);
+    // Drop the in-memory record so stop() takes the restart-orphan path.
+    h.runtime.getSessionEnvBySessionId('session-orphan');
+    (h.runtime as unknown as { active: Map<string, unknown> }).active.clear();
+
+    await h.runtime.stop(started.devServerId);
+
+    expect(signals.map(([, sig]) => sig)).toContain('SIGTERM');
+    expect(signals.map(([, sig]) => sig)).toContain('SIGKILL');
+    expect(alive.has(4242)).toBe(false);
+    expect(h.runtime.getById(started.devServerId)).toBeNull();
   });
 
   it('exposes the live session env for the terminal and drops it after stop', async () => {

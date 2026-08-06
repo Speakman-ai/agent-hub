@@ -225,17 +225,25 @@ export function buildSubdomainPreviewUrl(pathPrefixUrl: any, sessionId: any, sub
       if (h) hash = `#${h}`;
     }
   }
-  // Strip the path-prefix mount (`/api/sessions/<sid>/preview/proxy`)
-  // from the start of the pathname; what remains is what the dev
-  // server should see.
-  const mountRe = new RegExp(`^/api/sessions/[^/]+/preview/proxy(?=/|$)`);
+  // Strip the path-prefix mount (`/api/sessions/<sid>/preview/proxy`,
+  // plus the `/p/<internalPort>` sub-mount for an extra portMap entry)
+  // from the start of the pathname; what remains is what the dev server
+  // should see. The captured port becomes a `<port>--` hostname prefix,
+  // so an extra port gets its own origin rendering at `/` rather than
+  // being flattened onto the primary's subdomain under a bogus path.
+  const mountRe = new RegExp(`^/api/sessions/[^/]+/preview/proxy(?:/p/([0-9]+))?(?=/|$)`);
+  const mountMatch = pathname.match(mountRe);
   const innerPath = pathname.replace(mountRe, '') || '/';
   const normalisedInner = innerPath.startsWith('/') ? innerPath : `/${innerPath}`;
+  const internalPort = mountMatch?.[1] ? Number(mountMatch[1]) : null;
+  if (internalPort !== null && !(internalPort >= 1 && internalPort <= 65535)) return null;
+  const hostLabel =
+    internalPort === null ? sessionId.toLowerCase() : `${internalPort}--${sessionId.toLowerCase()}`;
   // Browser scheme: protocols other than https usually mean the
   // operator is testing locally without a wildcard cert; if HTTPS
   // isn't already in use on the parent, subdomain mode won't work
   // anyway (cookie Secure flag, ALB listener), so we hardcode https.
-  return `https://${sessionId.toLowerCase()}.${cleanBase}${normalisedInner}${search}${hash}`;
+  return `https://${hostLabel}.${cleanBase}${normalisedInner}${search}${hash}`;
 }
 
 /**
