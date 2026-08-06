@@ -6,13 +6,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import {
+  buildEphemeralBackgroundBashHaltNotice,
   buildEphemeralBackgroundBashNotice,
+  buildEphemeralBackgroundBashRecoveryPrompt,
   clearEphemeralBackgroundBash,
   isBackgroundBashToolUse,
   noteBashOutputToolUse,
   noteEphemeralBackgroundBashToolResult,
   noteKillShellToolUse,
   peekEphemeralBackgroundBash,
+  planEphemeralBackgroundBashRecovery,
   recordEphemeralBackgroundBash,
 } from './ephemeral-background-bash.js';
 import { createStreamParser } from './stream-parser.js';
@@ -383,6 +386,12 @@ interface InternalChatMessage extends ChatMessage {
    * chain so a provider-wide outage can't ping-pong the session forever.
    */
   _engineFailoverTried?: string[];
+  /**
+   * Recovery continuations already spent because a turn closed with native
+   * `run_in_background` Bash shells outstanding. Capped at
+   * MAX_EPHEMERAL_BASH_RECOVERY_TURNS — see `ephemeral-background-bash.ts`.
+   */
+  _ephemeralBashRecovery?: number;
 }
 
 interface ProjectWithCommands extends Project {
@@ -5488,6 +5497,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               _continuationDepth: continuationDepth + 1,
               _chainStartedAtMs: chainStartedAtMs,
               _spawnCwd: effectiveCwd,
+              // Carry the background-shell recovery count so a ReAct hop
+              // cannot launder it and re-arm the recovery continuation.
+              _ephemeralBashRecovery: msg._ephemeralBashRecovery,
             } as InternalChatMessage).catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
               console.error('[auto-continuation] Failed:', message);
@@ -5536,6 +5548,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 // Carry the failover history across same-engine retries so a
                 // later switch doesn't revisit an engine already exhausted.
                 _engineFailoverTried: msg._engineFailoverTried,
+                _ephemeralBashRecovery: msg._ephemeralBashRecovery,
               } as InternalChatMessage).catch((err: unknown) => {
                 const message = err instanceof Error ? err.message : String(err);
                 console.error('[turn-error-retry] Continuation dispatch failed:', message);
@@ -5572,6 +5585,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 _spawnCwd: effectiveCwd,
                 _transientErrorRetry: 0,
                 _engineFailoverTried: failover.tried,
+                _ephemeralBashRecovery: msg._ephemeralBashRecovery,
               } as InternalChatMessage).catch((err: unknown) => {
                 const message = err instanceof Error ? err.message : String(err);
                 console.error('[engine-failover] Continuation dispatch failed:', message);
@@ -5586,6 +5600,63 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             buildTurnErrorHaltNotice(turnEndError.errorText, transientRetries),
             { kind: 'turn_error_halt', retries: transientRetries },
           );
+          return;
+        }
+
+        // Turn closed cleanly, but with native `run_in_background` Bash shells
+        // still outstanding: the agent parked work in a shell that dies with
+        // this CLI process and (typically) said it would wait for a completion
+        // notification that is never coming. Left alone the session parks on
+        // `waiting_for_user_input` and reads, from the outside, as a dead
+        // session. Continue it ourselves so the "those shells are gone" notice
+        // — prepended to the next turn's content further up — lands now rather
+        // than whenever a human next types something.
+        const outstandingEphemeralShells = peekEphemeralBackgroundBash(sessionId);
+        const priorBashRecoveries = msg._ephemeralBashRecovery ?? 0;
+        const bashRecovery = planEphemeralBackgroundBashRecovery({
+          outstandingShells: outstandingEphemeralShells.length,
+          autoContinuing: false, // the `shouldAutoContinue` branch already returned
+          turnErrored: false, // the `turnEndError` branch already returned
+          chainCancelled: isReactChainCancelRequested(sessionId),
+          priorRecoveryTurns: priorBashRecoveries,
+        });
+
+        if (bashRecovery.notifyHuman) {
+          persistCloseCardGateSystemMessage(
+            sessionId,
+            buildEphemeralBackgroundBashHaltNotice(outstandingEphemeralShells),
+            {
+              kind: 'ephemeral_background_bash_halt',
+              shells: outstandingEphemeralShells.length,
+              recoveries: priorBashRecoveries,
+            },
+          );
+        }
+
+        if (bashRecovery.recover) {
+          const attempt = priorBashRecoveries + 1;
+          console.warn(
+            `[chat] session ${sessionId}: turn ended with ${outstandingEphemeralShells.length} ` +
+              `outstanding background Bash shell(s); dispatching recovery continuation ${attempt}`,
+          );
+          await runWorktreeAutoCommitAndDrainTail(false);
+          setImmediate(() => {
+            void handleChat(null, {
+              type: 'chat',
+              agentId,
+              sessionId,
+              content: buildEphemeralBackgroundBashRecoveryPrompt(),
+              _autoContinuation: true,
+              _continuationDepth: continuationDepth + 1,
+              _chainStartedAtMs: chainStartedAtMs,
+              _spawnCwd: effectiveCwd,
+              _ephemeralBashRecovery: attempt,
+            } as InternalChatMessage).catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error('[ephemeral-bash-recovery] Continuation dispatch failed:', message);
+              drainQueue(sessionId);
+            });
+          });
           return;
         }
 

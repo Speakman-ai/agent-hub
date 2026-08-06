@@ -97,37 +97,81 @@ async function waitFor(cond: () => boolean, timeoutMs = 10_000): Promise<void> {
   }
 }
 
+/** Delimiter between recorded prompts — no prompt can contain a NUL byte. */
+const PROMPT_SEPARATOR = '\u0000';
+
 /**
- * A fake claude-code CLI: records the last argv element (the prompt) and
- * optionally replays canned stream-json lines on stdout.
+ * A fake claude-code CLI: appends the last argv element (the prompt) to a
+ * shared record file and optionally replays canned stream-json lines on stdout.
+ *
+ * Appends rather than overwrites because a single `handleChat` call can spawn
+ * the CLI more than once — a ReAct hop, an error retry, or the background-shell
+ * recovery continuation. Tests need the whole sequence, not just the last one.
  */
 function makeFakeCli(streamJsonLines: string[] = []): { bin: string; argFile: string } {
   const argFile = path.join(tmpRoot, `${randomUUID()}.args`);
+  const onceFile = path.join(tmpRoot, `${randomUUID()}.once`);
   const bin = path.join(tmpRoot, `${randomUUID()}-fake-cli.sh`);
   const emit = streamJsonLines.map((line) => `printf '%s\\n' ${JSON.stringify(line)}`).join('\n');
+  // Stream events replay on the FIRST spawn only. A continuation re-runs this
+  // same script, and an agent that re-launched the same background shell every
+  // time it was warned about it would model nothing real.
   writeFileSync(
     bin,
-    `#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf '%s' "$last" > "${argFile}"\n${emit}\ncat >/dev/null 2>&1\nexit 0\n`,
+    `#!/bin/sh\n` +
+      `for a in "$@"; do last="$a"; done\n` +
+      `printf '%s\\000' "$last" >> "${argFile}"\n` +
+      `if [ ! -f "${onceFile}" ]; then\n` +
+      `  : > "${onceFile}"\n` +
+      `${emit}\n` +
+      `fi\n` +
+      `cat >/dev/null 2>&1\nexit 0\n`,
   );
   chmodSync(bin, 0o755);
   return { bin, argFile };
 }
 
-/** Runs one turn against a fake CLI and returns the prompt argv element. */
+function recordedPrompts(argFile: string): string[] {
+  if (!existsSync(argFile)) return [];
+  return readFileSync(argFile, 'utf8').split(PROMPT_SEPARATOR).slice(0, -1);
+}
+
+/**
+ * Runs one turn against a fake CLI and returns every prompt the CLI was
+ * spawned with, in order. `expectedSpawns` is the number of spawns the turn is
+ * expected to produce; the helper waits for that many and then for the session
+ * to go quiet, so a continuation dispatched via `setImmediate` is never missed.
+ */
 async function runTurn(
   sessionId: string,
   content: string,
   streamJsonLines: string[] = [],
-): Promise<string> {
+  expectedSpawns = 1,
+): Promise<string[]> {
   const { bin, argFile } = makeFakeCli(streamJsonLines);
   const activeProcesses = new Map<string, ChildProcess>();
   const { handleChat } = createChatHandler(makeDeps(activeProcesses, bin));
 
   await handleChat(null, { type: 'chat', agentId, sessionId, content });
-  await waitFor(() => existsSync(argFile));
+  await waitFor(() => recordedPrompts(argFile).length >= expectedSpawns);
+  await waitFor(() => activeProcesses.size === 0);
+  // A continuation is dispatched from `setImmediate` after the process map
+  // empties, so "empty once" is not "done". Require it to stay empty.
+  await new Promise((resolve) => setTimeout(resolve, 250));
   await waitFor(() => activeProcesses.size === 0);
 
-  return readFileSync(argFile, 'utf8');
+  return recordedPrompts(argFile);
+}
+
+/** The prompt of the last CLI spawn in a turn. */
+async function lastPromptOf(
+  sessionId: string,
+  content: string,
+  streamJsonLines: string[] = [],
+  expectedSpawns = 1,
+): Promise<string> {
+  const prompts = await runTurn(sessionId, content, streamJsonLines, expectedSpawns);
+  return prompts[prompts.length - 1] ?? '';
 }
 
 /**
@@ -140,6 +184,30 @@ async function runTurnWithFailedSpawn(sessionId: string, content: string): Promi
   const { handleChat } = createChatHandler(makeDeps(activeProcesses, missingBin));
   await handleChat(null, { type: 'chat', agentId, sessionId, content });
   await waitFor(() => activeProcesses.size === 0);
+}
+
+/**
+ * Runs a turn whose first spawn works and whose recovery continuation resolves
+ * to a missing binary, so the continuation dies on `error` before `spawn`.
+ */
+async function runTurnWithFailedContinuation(
+  sessionId: string,
+  content: string,
+  streamJsonLines: string[],
+): Promise<void> {
+  const { bin } = makeFakeCli(streamJsonLines);
+  const missingBin = path.join(tmpRoot, `${randomUUID()}-does-not-exist`);
+  const activeProcesses = new Map<string, ChildProcess>();
+  const deps = makeDeps(activeProcesses, bin);
+  let spawns = 0;
+  const { handleChat } = createChatHandler({
+    ...deps,
+    getClaudeBin: () => (spawns++ === 0 ? bin : missingBin),
+  });
+  await handleChat(null, { type: 'chat', agentId, sessionId, content });
+  await waitFor(() => spawns >= 2);
+  await waitFor(() => activeProcesses.size === 0);
+  await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
 /** Claude stream-json for one `Bash` tool call. */
@@ -175,38 +243,46 @@ describe('native background Bash shells across turns', () => {
   it('tells the next turn which background shells the previous CLI took down', async () => {
     const sessionId = seedSession();
 
-    await runTurn(sessionId, 'Run the regression suite.', [
-      bashToolUseLine('docker exec dwgskip-app pytest dwg_parse', true, 'Run regression test'),
-    ]);
+    const prompts = await runTurn(
+      sessionId,
+      'Run the regression suite.',
+      [bashToolUseLine('docker exec dwgskip-app pytest dwg_parse', true, 'Run regression test')],
+      2,
+    );
 
-    const nextPrompt = await runTurn(sessionId, 'so?');
-
+    // Spawn 1 is the user turn; spawn 2 is the recovery continuation, which is
+    // where the notice lands.
+    const nextPrompt = prompts[1];
     expect(nextPrompt).toContain('A background Bash shell you started in a previous turn is');
     expect(nextPrompt).toContain('docker exec dwgskip-app pytest dwg_parse');
     expect(nextPrompt).toContain('bg.sh start');
-    // The user's actual message must still be there, after the notice.
-    expect(nextPrompt).toContain('so?');
-    expect(nextPrompt.indexOf('bg.sh start')).toBeLessThan(nextPrompt.lastIndexOf('so?'));
+    // The continuation instruction must still be there, after the notice.
+    expect(nextPrompt).toContain('No completion notification is coming');
+    expect(nextPrompt.indexOf('no longer reachable')).toBeLessThan(
+      nextPrompt.indexOf('No completion notification is coming'),
+    );
   });
 
   it('warns only once — the turn after that is clean', async () => {
     const sessionId = seedSession();
-    await runTurn(sessionId, 'Start the build.', [bashToolUseLine('npm run build', true)]);
-    await runTurn(sessionId, 'status?');
+    await runTurn(sessionId, 'Start the build.', [bashToolUseLine('npm run build', true)], 2);
 
-    const third = await runTurn(sessionId, 'and now?');
-    expect(third).not.toContain('bg.sh start');
+    const next = await lastPromptOf(sessionId, 'and now?');
+    expect(next).not.toContain('bg.sh start');
   });
 
   // Reviewer finding: consuming the records before the CLI is up loses the
   // warning when the spawn fails, so the retry that works gets no explanation.
   it('survives a failed spawn and warns on the next attempt', async () => {
     const sessionId = seedSession();
-    await runTurn(sessionId, 'Start the build.', [bashToolUseLine('npm run build', true)]);
-
+    await runTurnWithFailedContinuation(sessionId, 'Start the build.', [
+      bashToolUseLine('npm run build', true),
+    ]);
+    // And again on the human's next message, so the records have to survive two
+    // spawns that never produced a CLI.
     await runTurnWithFailedSpawn(sessionId, 'status?');
 
-    const retry = await runTurn(sessionId, 'status?');
+    const retry = await lastPromptOf(sessionId, 'status?');
     expect(retry).toContain('npm run build');
     expect(retry).toContain('bg.sh start');
   });
@@ -258,7 +334,7 @@ describe('native background Bash shells across turns', () => {
       }),
     ]);
 
-    const nextPrompt = await runTurn(sessionId, 'so?');
+    const nextPrompt = await lastPromptOf(sessionId, 'so?');
     expect(nextPrompt).not.toContain('no longer reachable');
     expect(nextPrompt).not.toContain('bg.sh start');
   });
@@ -287,7 +363,7 @@ describe('native background Bash shells across turns', () => {
       }),
     ]);
 
-    const nextPrompt = await runTurn(sessionId, 'so?');
+    const nextPrompt = await lastPromptOf(sessionId, 'so?');
     expect(nextPrompt).not.toContain('no longer reachable');
     expect(nextPrompt).not.toContain('rm -rf /');
     expect(nextPrompt).not.toContain('bg.sh start');
@@ -297,8 +373,79 @@ describe('native background Bash shells across turns', () => {
     const sessionId = seedSession();
     await runTurn(sessionId, 'List the files.', [bashToolUseLine('ls -la', false)]);
 
-    const nextPrompt = await runTurn(sessionId, 'anything interesting?');
+    const nextPrompt = await lastPromptOf(sessionId, 'anything interesting?');
     expect(nextPrompt).not.toContain('background Bash shell');
     expect(nextPrompt).not.toContain('bg.sh start');
+  });
+});
+
+/**
+ * Support ticket d6e1f89f: "Sessions keep dying after spawning and waiting
+ * background process". The reporting session's last assistant message reads
+ * "I'll wait for the background task notification rather than poll" — and then
+ * the turn ended. The shell died with the CLI, no notification was ever coming,
+ * and the session parked on `waiting_for_user_input` for five hours until a
+ * human typed "continue". From the outside that is indistinguishable from a
+ * crashed session.
+ */
+describe('a turn that parks work in a background shell keeps going', () => {
+  it('continues the session instead of parking on a notification that never comes', async () => {
+    const sessionId = seedSession();
+
+    const prompts = await runTurn(
+      sessionId,
+      'Run the migration suite.',
+      [bashToolUseLine('pytest --reuse-db', true, 'Run suite')],
+      2,
+    );
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('No completion notification is coming');
+    expect(prompts[1]).toContain('pytest --reuse-db');
+    expect(prompts[1]).toContain('bg.sh start');
+  });
+
+  it('does not continue a turn that left no background shells', async () => {
+    const sessionId = seedSession();
+    const prompts = await runTurn(sessionId, 'Just read the file.', [
+      bashToolUseLine('cat README.md', false),
+    ]);
+    expect(prompts).toHaveLength(1);
+  });
+
+  it('stops after one recovery and tells the human the work is gone', async () => {
+    const sessionId = seedSession();
+    // A CLI that re-launches a background shell on EVERY spawn — the agent that
+    // does not take the hint. Recovery must not ping-pong with it forever.
+    const argFile = path.join(tmpRoot, `${randomUUID()}.args`);
+    const bin = path.join(tmpRoot, `${randomUUID()}-stubborn-cli.sh`);
+    const line = bashToolUseLine('npm run build', true, 'Build');
+    writeFileSync(
+      bin,
+      `#!/bin/sh\nfor a in "$@"; do last="$a"; done\n` +
+        `printf '%s\\000' "$last" >> "${argFile}"\n` +
+        `printf '%s\\n' ${JSON.stringify(line)}\ncat >/dev/null 2>&1\nexit 0\n`,
+    );
+    chmodSync(bin, 0o755);
+
+    const activeProcesses = new Map<string, ChildProcess>();
+    const { handleChat } = createChatHandler(makeDeps(activeProcesses, bin));
+    await handleChat(null, { type: 'chat', agentId, sessionId, content: 'Build it.' });
+    await waitFor(() => recordedPrompts(argFile).length >= 2);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Exactly one recovery continuation, then a system message for the human.
+    expect(recordedPrompts(argFile)).toHaveLength(2);
+    const messages = getStmts().getMessages.all(sessionId) as {
+      role: string;
+      content: string;
+      metadata: string | null;
+    }[];
+    const halt = messages.find(
+      (m) => m.role === 'system' && m.metadata?.includes('ephemeral_background_bash_halt'),
+    );
+    expect(halt).toBeTruthy();
+    expect(halt?.content).toContain('npm run build');
+    expect(halt?.content).toContain('no completion notification is coming');
   });
 });

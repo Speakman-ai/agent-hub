@@ -16,9 +16,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   EPHEMERAL_BASH_TTL_MS,
+  MAX_EPHEMERAL_BASH_RECOVERY_TURNS,
   MAX_TRACKED_EPHEMERAL_SESSIONS,
   MAX_TRACKED_EPHEMERAL_SHELLS,
+  buildEphemeralBackgroundBashHaltNotice,
   buildEphemeralBackgroundBashNotice,
+  buildEphemeralBackgroundBashRecoveryPrompt,
+  planEphemeralBackgroundBashRecovery,
   clearEphemeralBackgroundBash,
   isBackgroundBashToolUse,
   isTerminalBashOutputStatus,
@@ -380,6 +384,103 @@ describe('buildEphemeralBackgroundBashNotice', () => {
   it('summarises the overflow instead of listing every shell', () => {
     const shells = Array.from({ length: 12 }, (_, i) => ({ command: `job-${i}` }));
     const notice = buildEphemeralBackgroundBashNotice(shells);
+    expect(notice).toContain('…and 4 more');
+    expect(notice).not.toContain('job-11');
+  });
+});
+
+/**
+ * Support ticket d6e1f89f: an agent ended its turn with "I'll wait for the
+ * background task notification rather than poll". No notification was coming,
+ * so the session sat idle for five hours and read as dead. The turn that leaves
+ * shells outstanding is the one that has to be continued.
+ */
+describe('planEphemeralBackgroundBashRecovery', () => {
+  const base = {
+    outstandingShells: 1,
+    autoContinuing: false,
+    turnErrored: false,
+    chainCancelled: false,
+    priorRecoveryTurns: 0,
+  };
+
+  it('recovers a clean turn that left a shell outstanding', () => {
+    expect(planEphemeralBackgroundBashRecovery(base)).toEqual({
+      recover: true,
+      notifyHuman: false,
+      reason: 'recover',
+    });
+  });
+
+  it('leaves a turn with no outstanding shells alone', () => {
+    const decision = planEphemeralBackgroundBashRecovery({ ...base, outstandingShells: 0 });
+    expect(decision.recover).toBe(false);
+    expect(decision.notifyHuman).toBe(false);
+    expect(decision.reason).toBe('no_outstanding_shells');
+  });
+
+  // A Stop is the user asking for silence. Continuing anyway would restart the
+  // very run they just killed.
+  it('never continues after a Stop, even with shells outstanding', () => {
+    const decision = planEphemeralBackgroundBashRecovery({ ...base, chainCancelled: true });
+    expect(decision.recover).toBe(false);
+    expect(decision.notifyHuman).toBe(false);
+    expect(decision.reason).toBe('chain_cancelled');
+  });
+
+  it('defers to a turn that is already scheduling its own continuation', () => {
+    expect(planEphemeralBackgroundBashRecovery({ ...base, autoContinuing: true }).reason).toBe(
+      'already_continuing',
+    );
+    expect(planEphemeralBackgroundBashRecovery({ ...base, turnErrored: true }).reason).toBe(
+      'turn_errored',
+    );
+  });
+
+  // Otherwise an agent that re-launches a background shell every time it is
+  // warned about one keeps the session spinning for its whole life.
+  it('gives up after the cap and hands the problem to the human', () => {
+    const decision = planEphemeralBackgroundBashRecovery({
+      ...base,
+      priorRecoveryTurns: MAX_EPHEMERAL_BASH_RECOVERY_TURNS,
+    });
+    expect(decision.recover).toBe(false);
+    expect(decision.notifyHuman).toBe(true);
+    expect(decision.reason).toBe('cap_reached');
+  });
+
+  // Cancel outranks the cap: a Stop must never produce a system message about
+  // work the user deliberately killed.
+  it('prefers the cancel verdict over the cap', () => {
+    const decision = planEphemeralBackgroundBashRecovery({
+      ...base,
+      chainCancelled: true,
+      priorRecoveryTurns: 99,
+    });
+    expect(decision.notifyHuman).toBe(false);
+    expect(decision.reason).toBe('chain_cancelled');
+  });
+});
+
+describe('recovery + halt copy', () => {
+  it('tells the agent no notification is coming and names the durable surface', () => {
+    const prompt = buildEphemeralBackgroundBashRecoveryPrompt();
+    expect(prompt).toContain('No completion notification is coming');
+    expect(prompt).toContain('bg.sh start');
+  });
+
+  it('names the lost commands for the human', () => {
+    const notice = buildEphemeralBackgroundBashHaltNotice([
+      { command: 'docker exec app pytest   dwg_parse' },
+    ]);
+    expect(notice).toContain('docker exec app pytest dwg_parse');
+    expect(notice).toContain('no completion notification is coming');
+  });
+
+  it('summarises the overflow rather than listing every shell', () => {
+    const notice = buildEphemeralBackgroundBashHaltNotice(
+      Array.from({ length: 12 }, (_, i) => ({ command: `job-${i}` })),
+    );
     expect(notice).toContain('…and 4 more');
     expect(notice).not.toContain('job-11');
   });

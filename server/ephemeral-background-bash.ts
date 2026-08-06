@@ -351,6 +351,110 @@ export function buildEphemeralBackgroundBashNotice(
   ].join('\n\n');
 }
 
+/**
+ * How many recovery continuations a single user turn may trigger. One is
+ * enough: the recovery turn carries the notice, so an agent that parks work in
+ * another ephemeral shell right after reading it is not going to be talked out
+ * of it by a second identical nudge, and an unbounded count would let two
+ * turns ping-pong for the life of the session.
+ */
+export const MAX_EPHEMERAL_BASH_RECOVERY_TURNS = 1;
+
+export type EphemeralBashRecoveryReason =
+  | 'recover'
+  | 'no_outstanding_shells'
+  | 'already_continuing'
+  | 'turn_errored'
+  | 'chain_cancelled'
+  | 'cap_reached';
+
+export interface EphemeralBashRecoveryDecision {
+  /** Dispatch a recovery continuation for this session. */
+  recover: boolean;
+  /**
+   * Tell the human the parked work is gone. True only when we are giving up
+   * (`cap_reached`) — every other non-recovering reason either continues the
+   * turn anyway or is the user's own Stop.
+   */
+  notifyHuman: boolean;
+  reason: EphemeralBashRecoveryReason;
+}
+
+/**
+ * Decide what to do when a turn closes with native background shells still
+ * outstanding.
+ *
+ * The failure this exists for: an agent starts a long build with
+ * `run_in_background: true`, writes "I'll wait for the completion
+ * notification", and ends the turn. No notification is ever coming — the shell
+ * died with the CLI process — so the session parks on `waiting_for_user_input`
+ * and looks, to the human, exactly like it crashed. The existing notice only
+ * lands on the *next* turn, which may be hours away.
+ *
+ * Continuing the turn ourselves delivers that notice immediately, so the agent
+ * relaunches under `bg.sh` (or verifies the work landed) instead of the session
+ * going silent.
+ */
+export function planEphemeralBackgroundBashRecovery(input: {
+  outstandingShells: number;
+  /** The turn is already scheduling another turn (ReAct chain / error retry). */
+  autoContinuing: boolean;
+  /** The turn ended on an engine error — that path owns its own retry. */
+  turnErrored: boolean;
+  /** A Stop landed. The user asked for silence; give them silence. */
+  chainCancelled: boolean;
+  /** Recovery continuations already spent on this user turn. */
+  priorRecoveryTurns: number;
+}): EphemeralBashRecoveryDecision {
+  const deny = (reason: EphemeralBashRecoveryReason): EphemeralBashRecoveryDecision => ({
+    recover: false,
+    notifyHuman: false,
+    reason,
+  });
+  if (input.outstandingShells <= 0) return deny('no_outstanding_shells');
+  if (input.chainCancelled) return deny('chain_cancelled');
+  if (input.autoContinuing) return deny('already_continuing');
+  if (input.turnErrored) return deny('turn_errored');
+  if (input.priorRecoveryTurns >= MAX_EPHEMERAL_BASH_RECOVERY_TURNS) {
+    return { recover: false, notifyHuman: true, reason: 'cap_reached' };
+  }
+  return { recover: true, notifyHuman: false, reason: 'recover' };
+}
+
+/**
+ * Content for the recovery continuation. Deliberately short: the turn content
+ * is already led by {@link buildEphemeralBackgroundBashNotice}, which names the
+ * commands. This half only has to kill the "I'll wait for the notification"
+ * plan, which is the actual bug.
+ */
+export function buildEphemeralBackgroundBashRecoveryPrompt(): string {
+  return [
+    'Your turn ended while background Bash shells were still running, so they were reaped with the turn. **No completion notification is coming** — nothing is watching them, and waiting for one would leave this session idle indefinitely.',
+    'Continue now: verify directly whether the work landed (files, git, containers, the database), then relaunch anything still missing with `bg.sh start --label "<label>" <command>` and report what you found. Do not end this turn waiting on a `run_in_background` shell.',
+  ].join('\n\n');
+}
+
+/**
+ * Transcript notice for the human once recovery is exhausted. Without it the
+ * session simply stops mid-thought, which is what "sessions keep dying" looked
+ * like from the outside.
+ */
+export function buildEphemeralBackgroundBashHaltNotice(
+  shells: readonly EphemeralBackgroundBash[],
+): string {
+  const shown = shells
+    .slice(0, MAX_LISTED_SHELLS)
+    .map((s) => `- \`${truncateCommand(s.command)}\``);
+  const remaining = shells.length - shown.length;
+  if (remaining > 0) shown.push(`- …and ${remaining} more`);
+  const noun = shells.length === 1 ? 'shell' : 'shells';
+  return [
+    `⚠️ This turn ended with ${shells.length} background Bash ${noun} still running. They were reaped with the turn's CLI process and their output is gone:`,
+    shown.join('\n'),
+    'The agent was already asked once to relaunch them as Hub-owned background shells and did not. Send a message to continue, or re-run the work yourself — no completion notification is coming.',
+  ].join('\n\n');
+}
+
 /** Test-only: drop all tracked state. */
 export function _resetEphemeralBackgroundBashForTesting(): void {
   registry.clear();
