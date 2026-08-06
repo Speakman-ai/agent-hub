@@ -6592,6 +6592,44 @@ components:
       required:
         - error
       description: Error envelope for hook routes.
+    InfraMonitoringStatus:
+      type: object
+      properties:
+        profile:
+          type: string
+          nullable: true
+          description: Profile the probe used. On a failure this is the profile the operator designated, so the UI can name it; null only when nothing was designated at all.
+          example: monitoring
+        region:
+          type: string
+          nullable: true
+          description: Region the probe used, taken from the profile's own stanza. Null when resolution failed before a region was determined.
+          example: us-east-2
+        reachable:
+          type: boolean
+          description: True when credentials resolved in-process and CloudWatch answered a `DescribeAlarms` call in that region.
+        code:
+          type: string
+          description: Machine-readable failure cause. `monitoring_profile_required` when no usable profile is designated; otherwise the AWS SDK error name (e.g. `AccessDeniedException`).
+          example: monitoring_profile_required
+        reason:
+          type: string
+          enum:
+            - not_designated
+            - interactive_sso
+          description: "Present only with `code: monitoring_profile_required`. `not_designated` means no monitoring profile is set, or the designation names a profile that no longer exists. `interactive_sso` means the designated profile is an IAM Identity Center profile, whose token cache is keyed to a user HOME and expires unattended."
+        error:
+          type: string
+          description: Operator-facing failure detail. Absent when `reachable` is true.
+        checkedAt:
+          type: number
+          description: Epoch ms the probe ran. Nothing is cached server-side.
+      required:
+        - profile
+        - region
+        - reachable
+        - checkedAt
+      description: Whether this project can be monitored right now. Never carries credential material — profile name, region and failure text only.
     LogIngestBatch:
       type: object
       properties:
@@ -27351,6 +27389,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HooksErrorResponse"
+  /api/projects/{projectId}/infra/monitoring-status:
+    get:
+      tags:
+        - Projects
+      summary: Check whether a project can be monitored unattended
+      description: |-
+        Resolves the project's designated AWS monitoring profile in-process (no `aws` CLI spawn) and probes CloudWatch with `DescribeAlarms` limited to one record.
+
+        A project that cannot be monitored still returns 200 with `reachable: false` — the Infrastructure module renders its empty state from this body, so callers branch on `code` / `reason` rather than on the status code.
+
+        **Cost:** each call issues exactly one CloudWatch `DescribeAlarms` request against the target account, and nothing is cached server-side. `DescribeAlarms` is a `Requests`-usage-type operation, so it counts against the AWS Free Tier allowance of 1 million CloudWatch API requests per month and is billed per 1,000 requests beyond that allowance — it is not unconditionally free, it is only outside the three operations (`GetMetricData`, `GetInsightRuleReport`, `GetMetricWidgetImage`) that AWS charges from the first call. Call this when a view opens or on operator action; do not poll it on a tight timer.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Probe ran. Inspect `reachable`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraMonitoringStatus"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
   /api/jobs:
     get:
       tags:

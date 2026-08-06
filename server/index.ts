@@ -139,6 +139,7 @@ import { createProjectVisibilityGate } from './project-visibility-middleware.js'
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
+import createInfraRoutes from './routes/infra.js';
 import createDevServerWizardRoutes from './routes/dev-server-wizard.js';
 import createRumWizardRoutes from './routes/rum-wizard.js';
 import createLogsWizardRoutes from './routes/logs-wizard.js';
@@ -1391,6 +1392,7 @@ app.use(createProjectStatsRoutes(routeDeps));
 app.use(createPullsNativeRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
+app.use(createInfraRoutes(routeDeps));
 app.use(createDevServerWizardRoutes(routeDeps));
 app.use(createRumWizardRoutes(routeDeps));
 app.use(createLogsWizardRoutes(routeDeps));

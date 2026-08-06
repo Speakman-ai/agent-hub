@@ -30,6 +30,7 @@ import {
   stampProjectAwsExternalId,
 } from '../project-aws-external-id.js';
 import { writeProjectAwsFiles } from '../project-aws-config-file.js';
+import { invalidateProjectAwsAccess } from '../infra/aws-clients.js';
 import {
   getProjectAwsDefaultProfile,
   getProjectAwsMonitoringProfile,
@@ -176,6 +177,11 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         }
         saveProjects();
         writeProjectAwsFiles(project.id, profiles);
+        // In-process SDK providers hold resolved credentials for the profiles
+        // these files just described, and the CloudWatch clients built from
+        // them are pinned to the region a profile named. Drop both so the next
+        // collector or interactive read rebuilds from what the operator saved.
+        invalidateProjectAwsAccess(project.id);
         res.json(profilesEnvelope(project, externalId));
       } catch (err) {
         if (err instanceof ProjectAwsProfileValidationError) {
