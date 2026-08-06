@@ -25,6 +25,7 @@
  */
 
 import { CloudWatchClient, DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
+import { EC2Client } from '@aws-sdk/client-ec2';
 import { findProject } from '../project-model.js';
 import { getProjectAwsMonitoringProfile, getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
 import {
@@ -87,7 +88,22 @@ export function requireProjectMonitoringProfile(projectId: string): string {
 }
 
 const KEY_SEPARATOR = '\u0000';
+
+/** Anything with the one method {@link destroyProjectAwsClients} needs. */
+interface DestroyableClient {
+  destroy(): void;
+}
+
 const cloudWatchClients = new Map<string, CloudWatchClient>();
+const ec2Clients = new Map<string, EC2Client>();
+
+/**
+ * Every client cache, so adding a service means adding one map here rather than
+ * remembering to extend the teardown loop. A cache missed by
+ * `destroyProjectAwsClients` leaks sockets and, worse, survives a profile edit
+ * still pinned to the region it was built for.
+ */
+const clientCaches: Array<Map<string, DestroyableClient>> = [cloudWatchClients, ec2Clients];
 
 /**
  * `use` is part of the key, not just a construction detail.
@@ -149,17 +165,42 @@ export function getProjectCloudWatchClient(
   return client;
 }
 
+/**
+ * An EC2 client bound to one project profile and region.
+ *
+ * Inventory sync (decision INFRA-SCOPE) is the caller: `DescribeInstances` is
+ * the authoritative list of *existing* resources, where `ListMetrics` only ever
+ * reports the ones that emitted a datapoint in the past two weeks. Same
+ * refusal semantics as the CloudWatch client — an unusable monitoring profile
+ * throws {@link MonitoringProfileRequiredError} at construction.
+ */
+export function getProjectEc2Client(projectId: string, opts: ProjectAwsClientOpts = {}): EC2Client {
+  const { profileName, region, use } = resolveTarget(projectId, opts);
+  const key = clientKey(projectId, profileName, region, use);
+  const existing = ec2Clients.get(key);
+  if (existing) return existing;
+
+  const client = new EC2Client({
+    region,
+    credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
+  });
+  ec2Clients.set(key, client);
+  return client;
+}
+
 /** Destroy and drop cached clients. Omit `projectId` to drop all of them. */
 export function destroyProjectAwsClients(projectId?: string): void {
   const prefix = projectId === undefined ? null : `${projectId}${KEY_SEPARATOR}`;
-  for (const [key, client] of cloudWatchClients) {
-    if (prefix !== null && !key.startsWith(prefix)) continue;
-    try {
-      client.destroy();
-    } catch {
-      /* a client that cannot be destroyed is still one we are done with */
+  for (const cache of clientCaches) {
+    for (const [key, client] of cache) {
+      if (prefix !== null && !key.startsWith(prefix)) continue;
+      try {
+        client.destroy();
+      } catch {
+        /* a client that cannot be destroyed is still one we are done with */
+      }
+      cache.delete(key);
     }
-    cloudWatchClients.delete(key);
   }
 }
 

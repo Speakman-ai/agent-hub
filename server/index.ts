@@ -270,6 +270,8 @@ import { initLogsDb } from './logs/logs-db.js';
 import { startLogWriteQueue, flushLogWriteQueue } from './logs/log-write-queue.js';
 import { runLogRetentionReaper, LOG_RETENTION_REAPER_CRON } from './logs/log-retention-reaper.js';
 import { initInfraDb } from './infra/infra-db.js';
+import { runInfraInventorySync, INFRA_INVENTORY_SYNC_CRON } from './infra/inventory-sync.js';
+import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
 
@@ -1224,6 +1226,20 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       }
     },
     { name: 'log-retention-reaper' },
+  );
+
+  // AWS resource inventory sync (decision INFRA-SCOPE) — hourly describe-API
+  // sweep that seeds `infra_resources` for every enabled scope row. Deliberately
+  // slower than metric collection: inventory changes at the pace of launches and
+  // terminations. It issues AWS calls, so it is wrapped rather than run inline,
+  // and it is a no-op on a Hub with no scope rows.
+  cron.schedule(
+    INFRA_INVENTORY_SYNC_CRON,
+    wrapCronTick(() => runInfraInventorySync(), 'infra-inventory-sync'),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(INFRA_INVENTORY_SYNC_CRON),
+      name: 'infra-inventory-sync',
+    }),
   );
 
   void runReleaseNotificationOutboxWorker({ broadcast });
