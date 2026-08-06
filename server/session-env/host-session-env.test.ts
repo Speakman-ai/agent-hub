@@ -364,6 +364,7 @@ describe('HostSessionEnv.mapPort', () => {
     const m = await env.mapPort(5173);
     expect(m).toEqual({
       internalPort: 5173,
+      host: '127.0.0.1',
       hostPort: 5173,
       envPort: 5173,
       hostUrl: 'http://127.0.0.1:5173',
@@ -416,6 +417,7 @@ describe('HostSessionEnv.mapPortsOut', () => {
     const [a, b] = await env.mapPortsOut([5173, 8080]);
     expect(a).toEqual({
       internalPort: 5173,
+      host: '127.0.0.1',
       hostPort: 4173,
       envPort: 4173,
       hostUrl: 'http://127.0.0.1:4173',

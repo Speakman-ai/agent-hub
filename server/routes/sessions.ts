@@ -501,6 +501,20 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         }),
       );
     }
+    // The session's environment outlives its preview by design, so nothing
+    // above releases it. Ending the session is the point at which it must go
+    // — otherwise a container, its inner image cache, and its graph volume
+    // survive every archive and accumulate until the disk fills.
+    if (deps.disposeSessionEnv) {
+      tasks.push(
+        deps.disposeSessionEnv(sessionId).catch((err: unknown) => {
+          console.warn(
+            `[sessions] session env dispose failed (${sessionId}):`,
+            (err as Error).message,
+          );
+        }),
+      );
+    }
     await Promise.all(tasks);
   }
 
@@ -2257,6 +2271,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         },
         internalPort,
       ),
+    getSessionPreviewHost: (sessionId) => {
+      const runtime = deps.getDevServerRuntime?.() as
+        | { getSessionUpstreamHost?: (id: string) => string | null }
+        | null
+        | undefined;
+      return runtime?.getSessionUpstreamHost?.(sessionId) ?? null;
+    },
     userOwnsSession,
     // CSP frame-ancestors source for cross-origin iframe loads in
     // subdomain mode. `config.publicUrl` is normally

@@ -12,6 +12,7 @@ import type {
   SessionEnv,
   SessionEnvDisposeOpts,
   SessionEnvExit,
+  SessionEnvDialTarget,
   SessionEnvKind,
   SessionEnvPortMapping,
   SessionEnvProcess,
@@ -28,6 +29,7 @@ import {
   resolveDevServerPortEntries,
   uniquePortEntryNames,
   type CreateDevServerEnvFn,
+  type ResolveSharedSessionEnvFn,
   type DevServerNotifyLogFn,
   type DevServerNotifyStatusFn,
 } from './dev-server-runtime.js';
@@ -103,6 +105,8 @@ class FakeProcess implements SessionEnvProcess {
 
 class FakeSessionEnv implements SessionEnv {
   kind: SessionEnvKind = 'host';
+  /** Overridden by container-env tests to assert per-session upstream hosts. */
+  dialHost = '127.0.0.1';
   readonly sessionId: string;
   readonly createdAtMs = 0;
   lastActivityAtMs = 0;
@@ -147,6 +151,11 @@ class FakeSessionEnv implements SessionEnv {
     throw new Error('not used by DevServerRuntime');
   }
 
+  async resolveDialTarget(internalPort: number): Promise<SessionEnvDialTarget> {
+    const mapping = await this.mapPort(internalPort);
+    return { host: mapping.host, port: mapping.hostPort, url: mapping.hostUrl };
+  }
+
   async mapPort(internalPort: number): Promise<SessionEnvPortMapping> {
     this.mapCalls.push(internalPort);
     const existing = this.mappings.get(internalPort);
@@ -154,9 +163,10 @@ class FakeSessionEnv implements SessionEnv {
     const hostPort = this.allocateHostPort(internalPort);
     const mapping = {
       internalPort,
+      host: this.dialHost,
       hostPort,
       envPort: this.resolveEnvPort(internalPort, hostPort),
-      hostUrl: `http://127.0.0.1:${hostPort}`,
+      hostUrl: `http://${this.dialHost}:${hostPort}`,
     };
     this.mappings.set(internalPort, mapping);
     return mapping;
@@ -249,6 +259,7 @@ function makeHarness(
     }) => string;
     isPortFree?: (port: number) => Promise<boolean>;
     kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
+    resolveSharedEnv?: ResolveSharedSessionEnvFn;
   } = {},
 ): Harness {
   const db = new Database(':memory:');
@@ -277,6 +288,7 @@ function makeHarness(
     // allocation depend on whatever else is running on the dev machine.
     isPortFree: opts.isPortFree ?? (async () => true),
     ...(opts.kill ? { kill: opts.kill } : {}),
+    ...(opts.resolveSharedEnv ? { resolveSharedEnv: opts.resolveSharedEnv } : {}),
     loadProjectEnv,
     getProject: opts.getProject,
     notifyLog: opts.notifyLog,
@@ -533,6 +545,73 @@ describe('DevServerRuntime lifecycle', () => {
 
     await h.runtime.stop(started.devServerId);
     expect(h.runtime.getSessionEnvBySessionId('session-terminal')).toBeNull();
+  });
+
+  describe('session-owned environments', () => {
+    /** A manager-style env the runtime did not create. */
+    function sharedHarness() {
+      const shared = new FakeSessionEnv('session-shared', (internalPort) => internalPort);
+      const h = makeHarness({ resolveSharedEnv: async () => shared });
+      return { h, shared };
+    }
+
+    it('runs the preview inside the session env instead of starting a second one', async () => {
+      // The preview, the terminal, and anything the agent runs have to share
+      // one boundary — otherwise a shell cannot curl the dev server it is
+      // looking at, and tests hit a different database than the preview.
+      const { h, shared } = sharedHarness();
+
+      await h.runtime.start('session-shared', makeProject(), '/worktree');
+
+      expect(h.envs).toHaveLength(0);
+      expect(shared.spawnCalls).toHaveLength(1);
+      expect(h.runtime.getSessionEnvBySessionId('session-shared')).toBe(shared);
+    });
+
+    it('leaves the session env alive when the preview stops', async () => {
+      // Disposing here would take the session's terminal and its Postgres
+      // down with the dev server, which is what made stopping a preview feel
+      // like ending the session.
+      const { h, shared } = sharedHarness();
+      const started = await h.runtime.start('session-shared', makeProject(), '/worktree');
+
+      await h.runtime.stop(started.devServerId);
+
+      expect(shared.disposed).toBe(false);
+      expect(shared.disposeCalls).toEqual([]);
+      // Only the dev server's own process is signalled.
+      expect(shared.proc?.killCalls).toEqual(['SIGTERM']);
+    });
+
+    it('reports the container address as the proxy upstream host', async () => {
+      // Loopback is only right when the env publishes ports onto the host.
+      // A container env answers on its own bridge address, and dialing
+      // loopback there reaches nothing — or an unrelated process holding
+      // that port, which is how a preview ends up serving another app.
+      const shared = new FakeSessionEnv('session-shared', (p) => p);
+      shared.kind = 'container';
+      shared.dialHost = '172.17.0.9';
+      const h = makeHarness({ resolveSharedEnv: async () => shared });
+
+      await h.runtime.start('session-shared', makeProject(), '/worktree');
+      await flushMicrotasks();
+
+      expect(h.runtime.getSessionUpstreamHost('session-shared')).toBe('172.17.0.9');
+    });
+
+    it('reports no override for a session with no live env', () => {
+      const h = makeHarness();
+      expect(h.runtime.getSessionUpstreamHost('never-started')).toBeNull();
+    });
+
+    it('still disposes an env it created itself', async () => {
+      const h = makeHarness();
+      const started = await h.runtime.start('session-owned', makeProject(), '/worktree');
+
+      await h.runtime.stop(started.devServerId);
+
+      expect(h.envs[0].disposed).toBe(true);
+    });
   });
 
   it('injects the adapter-facing env port while persisting the host proxy port', async () => {

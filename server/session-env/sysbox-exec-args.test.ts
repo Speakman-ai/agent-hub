@@ -12,6 +12,7 @@ import {
   buildStartSysboxContainerArgv,
   buildStopSysboxContainerArgv,
   buildSysboxKillArgv,
+  parseContainerIp,
   resolveSysboxSessionImage,
   sysboxGraphVolumeName,
   sysboxSessionContainerName,
@@ -91,7 +92,7 @@ describe('buildStartSysboxContainerArgv', () => {
     expect(argv).toContain('--runtime=sysbox-runc');
   });
 
-  it('never uses --privileged, host cgroups, or the host docker socket', () => {
+  it('never weakens the sysbox boundary or mounts the host docker socket', () => {
     expect(argv).not.toContain('--privileged');
     expect(argv).not.toContain('--cgroupns=host');
     expect(argv.join(' ')).not.toMatch(/docker\.sock/);
@@ -131,6 +132,51 @@ describe('buildStartSysboxContainerArgv', () => {
       command: ['sleep', 'infinity'],
     });
     expect(custom.slice(-3)).toEqual(['img', 'sleep', 'infinity']);
+  });
+});
+
+describe('buildStartSysboxContainerArgv — privileged isolation', () => {
+  const argv = buildStartSysboxContainerArgv({
+    sessionId: 'sess-2',
+    containerName: 'agenthub-session-sess-2',
+    image: 'org/session:1',
+    worktreePath: '/wt/session-2',
+    ports: [],
+    isolation: 'privileged',
+  });
+
+  it('substitutes privileged DinD for the sysbox runtime', () => {
+    // The two are alternatives, never combined: sysbox virtualizes what DinD
+    // needs, and asking for both would be a contradictory request.
+    expect(argv).toContain('--privileged');
+    expect(argv).toContain('--cgroupns=host');
+    expect(argv).not.toContain('--runtime=sysbox-runc');
+  });
+
+  it('still refuses to mount the host docker socket', () => {
+    // This is the invariant that survives the weaker isolation runtime: the
+    // project's compose services must run on the container's own dockerd, not
+    // reach out and control the Hub's daemon.
+    expect(argv.join(' ')).not.toMatch(/docker\.sock/);
+  });
+
+  it('publishes nothing when the caller supplies no ports', () => {
+    // Container-IP routing's whole point: no host port is consumed, so a port
+    // needs no advance declaration.
+    expect(argv).not.toContain('-p');
+  });
+});
+
+describe('parseContainerIp', () => {
+  it('takes the first address when several networks are attached', () => {
+    expect(parseContainerIp('172.17.0.4 172.20.0.9 ')).toBe('172.17.0.4');
+  });
+
+  it('returns null when the container has no address', () => {
+    // A container inspected before it attached, or one on `--network none`.
+    // Callers must fail the start rather than dial an empty host.
+    expect(parseContainerIp('  ')).toBeNull();
+    expect(parseContainerIp('')).toBeNull();
   });
 });
 

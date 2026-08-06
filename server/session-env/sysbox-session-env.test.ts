@@ -100,6 +100,10 @@ function makeEnv(
     sessionId: 'sess-1',
     worktreePath: '/wt/session-1',
     publishPorts: [5173],
+    // Pinned, not platform-derived: the default routing differs between a Mac
+    // dev box and Linux CI, which would make these assertions pass locally and
+    // fail (or silently exercise a different code path) in CI.
+    portRouting: 'published-ports',
     spawn: (command, args) => {
       const child = new FakeChild(nextPid++);
       spawnRecords.push({ command, args, child });
@@ -191,6 +195,7 @@ describe('SysboxSessionEnv container start', () => {
     const mapped = await env.mapPort(5173);
     expect(mapped).toEqual({
       internalPort: 5173,
+      host: '127.0.0.1',
       hostPort: 4173,
       envPort: 5173,
       hostUrl: 'http://127.0.0.1:4173',
@@ -410,5 +415,93 @@ describe('SysboxSessionEnv.dispose', () => {
     await fixture.env.dispose({ graceMs: 1 });
     expect(fixture.env.disposed).toBe(true);
     expect(warnings.some((w) => /removal failed/.test(w))).toBe(true);
+  });
+});
+
+// ── Container-IP routing ──────────────────────────────────────────
+
+const isInspectArgv = (argv: string[]) => argv[1] === 'inspect';
+
+/** Fixture whose docker fake answers `inspect` with a bridge address. */
+function containerIpEnv(overrides: Partial<SysboxSessionEnvDeps> = {}, ip = '172.17.0.5') {
+  return makeEnv(
+    { portRouting: 'container-ip', isolation: 'privileged', publishPorts: [], ...overrides },
+    (argv) => (isInspectArgv(argv) ? { ok: true, stdout: `${ip} `, stderr: '' } : undefined),
+  );
+}
+
+describe('SysboxSessionEnv — container-IP routing', () => {
+  it('publishes no ports and reports the container kind', async () => {
+    const { env, runCalls } = containerIpEnv();
+    await env.mountWorktree();
+
+    expect(env.kind).toBe('container');
+    const run = runCalls.find(isRunArgv)!;
+    expect(run).not.toContain('-p');
+    expect(run).toContain('--privileged');
+  });
+
+  it('maps a port that was never declared, after the container is running', async () => {
+    // The defect this removes: under published-ports routing, a port not
+    // named before `docker run` can never be reached, because publishes are
+    // fixed at container start. A session that adds a service mid-flight had
+    // to restart its whole environment.
+    const { env } = containerIpEnv();
+    await env.mountWorktree();
+
+    const mapping = await env.mapPort(8080);
+    expect(mapping).toEqual({
+      internalPort: 8080,
+      host: '172.17.0.5',
+      hostPort: 8080,
+      envPort: 8080,
+      hostUrl: 'http://172.17.0.5:8080',
+    });
+  });
+
+  it('dials the container address rather than loopback', async () => {
+    const { env } = containerIpEnv();
+    await env.mountWorktree();
+
+    await expect(env.resolveDialTarget(5173)).resolves.toEqual({
+      host: '172.17.0.5',
+      port: 5173,
+      url: 'http://172.17.0.5:5173',
+    });
+  });
+
+  it('consumes no host ports even when an allocator is supplied', async () => {
+    // Nothing is published, so the shared 4100–4999 pool must stay untouched
+    // — that pool's exhaustion and cross-session collisions are the reason
+    // this routing exists.
+    let allocations = 0;
+    const { env } = containerIpEnv({
+      allocateHostPort: (p) => {
+        allocations++;
+        return p + 1000;
+      },
+    });
+    await env.mountWorktree();
+    await env.mapPortsOut([5173, 8080, 5432]);
+
+    expect(allocations).toBe(0);
+    expect(env.listPortMappings().map((m) => m.hostUrl)).toEqual([
+      'http://172.17.0.5:5173',
+      'http://172.17.0.5:8080',
+      'http://172.17.0.5:5432',
+    ]);
+  });
+
+  it('fails the start when the container has no reachable address', async () => {
+    // Better to fail loudly here than to hand back an env whose every
+    // preview connection hangs against an empty host.
+    const { env, runCalls } = makeEnv(
+      { portRouting: 'container-ip', isolation: 'privileged', publishPorts: [] },
+      (argv) => (isInspectArgv(argv) ? { ok: true, stdout: '   ', stderr: '' } : undefined),
+    );
+
+    await expect(env.mountWorktree()).rejects.toThrow(/could not resolve a container ip/i);
+    // The unusable container must not be left behind to collide with a retry.
+    expect(runCalls.some((a) => a[1] === 'rm')).toBe(true);
   });
 });

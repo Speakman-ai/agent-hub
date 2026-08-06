@@ -34,6 +34,7 @@ import {
   SessionEnvDisposedError,
   SessionEnvDisposeOpts,
   SessionEnvExit,
+  SessionEnvDialTarget,
   SessionEnvPortMapping,
   SessionEnvProcess,
   SessionEnvPty,
@@ -49,14 +50,18 @@ import {
   buildCreateSysboxGraphVolumeArgv,
   buildExecSysboxPtyArgs,
   buildExecSysboxSpawnArgv,
+  buildInspectContainerIpArgv,
   buildRemoveSysboxGraphVolumeArgv,
   buildStartSysboxContainerArgv,
   buildStopSysboxContainerArgv,
   buildSysboxKillArgv,
+  parseContainerIp,
   resolveSysboxSessionImage,
   sysboxSessionContainerName,
   sysboxSpawnPidFile,
+  type ContainerIsolation,
 } from './sysbox-exec-args.js';
+import { resolveSessionEnvPortRouting, type SessionEnvPortRouting } from './container-routing.js';
 
 export interface SysboxRunResult {
   ok: boolean;
@@ -122,8 +127,20 @@ export interface SysboxSessionEnvDeps {
    * container start (docker cannot add publishes to a running container).
    * Comes from the dev-server config's `portMap`; `mapPort()` calls made
    * before the container starts extend this set.
+   *
+   * Ignored under `container-ip` routing, which publishes nothing.
    */
   publishPorts?: number[];
+  /**
+   * Isolation runtime. Defaults to `sysbox-runc`, matching the historical
+   * behavior of this adapter; the `container` backend passes `privileged`.
+   */
+  isolation?: ContainerIsolation;
+  /**
+   * How the Hub reaches ports inside the container. Defaults to the
+   * platform-derived routing — see `container-routing.ts`.
+   */
+  portRouting?: SessionEnvPortRouting;
   /** Session container image. Default {@link resolveSysboxSessionImage}. */
   image?: string;
   /** Extra container env at `docker run` (image env is the base). */
@@ -165,10 +182,12 @@ interface LivePty {
 }
 
 export class SysboxSessionEnv implements SessionEnv {
-  readonly kind = 'sysbox' as const;
+  readonly kind: 'sysbox' | 'container';
   readonly sessionId: string;
   readonly createdAtMs: number;
   readonly containerName: string;
+  readonly isolation: ContainerIsolation;
+  readonly portRouting: SessionEnvPortRouting;
 
   #disposed = false;
   #disposePromise: Promise<void> | null = null;
@@ -201,10 +220,15 @@ export class SysboxSessionEnv implements SessionEnv {
   private readonly livePtys = new Set<LivePty>();
   private readonly disposeHooks = new Set<() => void>();
   private spawnSeq = 0;
+  /** Cached container address under container-IP routing. */
+  #containerIp: string | null = null;
 
   constructor(deps: SysboxSessionEnvDeps) {
     this.sessionId = deps.sessionId;
     this.worktreePath = deps.worktreePath;
+    this.isolation = deps.isolation ?? 'sysbox-runc';
+    this.kind = this.isolation === 'sysbox-runc' ? 'sysbox' : 'container';
+    this.portRouting = deps.portRouting ?? resolveSessionEnvPortRouting();
     this.containerName = sysboxSessionContainerName(deps.sessionId);
     this.image = deps.image ?? resolveSysboxSessionImage();
     this.containerEnv = deps.containerEnv ?? {};
@@ -277,16 +301,21 @@ export class SysboxSessionEnv implements SessionEnv {
       );
     }
 
-    // Settle every declared port's host allocation before `docker run` —
-    // publishes are fixed at container start.
-    const ports = await Promise.all(
-      [...this.declaredPorts]
-        .sort((a, b) => a - b)
-        .map(async (internalPort) => {
-          const mapping = await this.mapPortPreStart(internalPort);
-          return { internalPort, hostPort: mapping.hostPort };
-        }),
-    );
+    // Under container-IP routing nothing is published: the Hub dials the
+    // container directly, so ports need no host-side allocation and need not
+    // be known before start. Otherwise settle every declared port's host
+    // allocation first, because publishes are fixed at `docker run` time.
+    const ports =
+      this.portRouting === 'container-ip'
+        ? []
+        : await Promise.all(
+            [...this.declaredPorts]
+              .sort((a, b) => a - b)
+              .map(async (internalPort) => {
+                const mapping = await this.mapPortPreStart(internalPort);
+                return { internalPort, hostPort: mapping.hostPort };
+              }),
+          );
 
     const volume = await this.runDocker(
       buildCreateSysboxGraphVolumeArgv({
@@ -307,6 +336,7 @@ export class SysboxSessionEnv implements SessionEnv {
         image: this.image,
         worktreePath: this.worktreePath,
         ports,
+        isolation: this.isolation,
         env: this.containerEnv,
       }),
     );
@@ -321,6 +351,9 @@ export class SysboxSessionEnv implements SessionEnv {
 
     try {
       await this.#waitForInnerDocker();
+      if (this.portRouting === 'container-ip') {
+        this.#containerIp = await this.#readContainerIp();
+      }
     } catch (err) {
       // A started-but-unready container is not usable and would make the
       // retry hit a name collision. Remove both resources before surfacing
@@ -331,6 +364,24 @@ export class SysboxSessionEnv implements SessionEnv {
     }
     this.#started = true;
     this.touch();
+  }
+
+  /**
+   * Read the container's bridge address — the Hub's only route in under
+   * container-IP routing. Failing here fails the start: a container with no
+   * reachable address would accept processes and then silently refuse every
+   * preview connection.
+   */
+  async #readContainerIp(): Promise<string> {
+    const res = await this.runDocker(buildInspectContainerIpArgv(this.containerName));
+    const ip = res.ok ? parseContainerIp(res.stdout) : null;
+    if (!ip) {
+      throw new Error(
+        `Could not resolve a container IP for ${this.containerName}: ` +
+          `${res.stderr.trim() || res.stdout.trim() || 'no address on any attached network'}`,
+      );
+    }
+    return ip;
   }
 
   /**
@@ -541,6 +592,12 @@ export class SysboxSessionEnv implements SessionEnv {
     this.#assertLive('mapPort');
     const existing = this.portMappings.get(internalPort);
     if (existing) return existing;
+    if (this.portRouting === 'container-ip') {
+      // Nothing is published, so a port needs no host allocation and no
+      // advance declaration — it becomes reachable the instant something
+      // binds it inside the container.
+      return this.mapPortViaContainerIp(internalPort);
+    }
     if (this.#started || this.#startPromise) {
       // Publishes are fixed at `docker run` — an undeclared port cannot be
       // added to a running container.
@@ -554,6 +611,53 @@ export class SysboxSessionEnv implements SessionEnv {
     return this.mapPortPreStart(internalPort);
   }
 
+  /**
+   * Mapping under container-IP routing: the process binds the port it was
+   * configured with, and the Hub dials that same port on the container's own
+   * address. There is no translation and no host-side reservation.
+   */
+  private mapPortViaContainerIp(internalPort: number): Promise<SessionEnvPortMapping> {
+    const mapping = Promise.resolve()
+      .then(() => this.ensureStarted())
+      .then(() => {
+        const host = this.#containerIp;
+        if (!host) {
+          throw new Error(
+            `Session container ${this.containerName} has no resolved IP for port ${internalPort}`,
+          );
+        }
+        const resolved: SessionEnvPortMapping = {
+          internalPort,
+          host,
+          // No host port is consumed; report the internal number so callers
+          // that log or display a "port" see the one the app actually binds.
+          hostPort: internalPort,
+          envPort: internalPort,
+          hostUrl: `http://${host}:${internalPort}`,
+        };
+        this.settledMappings.set(internalPort, resolved);
+        return resolved;
+      });
+    this.portMappings.set(internalPort, mapping);
+    mapping.catch(() => {
+      this.portMappings.delete(internalPort);
+    });
+    return mapping;
+  }
+
+  async resolveDialTarget(internalPort: number): Promise<SessionEnvDialTarget> {
+    this.#assertLive('resolveDialTarget');
+    const mapping = await this.mapPort(internalPort);
+    const host = this.portRouting === 'container-ip' ? this.#containerIp : '127.0.0.1';
+    if (!host) {
+      throw new Error(
+        `Session container ${this.containerName} has no resolved IP for port ${internalPort}`,
+      );
+    }
+    const port = this.portRouting === 'container-ip' ? mapping.internalPort : mapping.hostPort;
+    return { host, port, url: `http://${host}:${port}` };
+  }
+
   private mapPortPreStart(internalPort: number): Promise<SessionEnvPortMapping> {
     const existing = this.portMappings.get(internalPort);
     if (existing) return existing;
@@ -563,6 +667,7 @@ export class SysboxSessionEnv implements SessionEnv {
       .then((hostPort) => {
         const resolved: SessionEnvPortMapping = {
           internalPort,
+          host: '127.0.0.1',
           hostPort,
           // Container translation publishes hostPort → internalPort, so the
           // in-container process must bind the internal side of the mapping.
@@ -584,9 +689,10 @@ export class SysboxSessionEnv implements SessionEnv {
 
   async mapPortsOut(internalPorts?: number[]): Promise<SessionEnvPortMapping[]> {
     if (internalPorts === undefined) return this.listPortMappings();
-    // Idempotent per internal port: repeated ports collapse to one publish
-    // while the result keeps input order. All ports must be declared before
-    // the container starts — `mapPort` rejects an undeclared port post-start.
+    // Idempotent per internal port: repeated ports collapse to one mapping
+    // while the result keeps input order. Under published-ports routing every
+    // port must be declared before the container starts; `mapPort` rejects an
+    // undeclared port post-start.
     return Promise.all(internalPorts.map((p) => this.mapPort(p)));
   }
 

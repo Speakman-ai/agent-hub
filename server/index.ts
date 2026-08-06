@@ -87,8 +87,12 @@ import {
   initSessionEnvSelection,
   logSessionEnvSelection,
 } from './session-env/sysbox-capability.js';
-import { createSessionEnv } from './session-env/select-session-env.js';
 import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
+import { SessionEnvManager } from './session-env/session-env-manager.js';
+import {
+  describeSessionEnvPortRouting,
+  resolveSessionEnvPortRouting,
+} from './session-env/container-routing.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
@@ -975,6 +979,13 @@ const previewUrlBase = createPreviewUrlBase(config.publicUrl);
 const { devServerRuntime } = createPreviewRuntimes({
   db: getDb(),
   getProject: (id) => findProject(id) ?? null,
+  // Containerized sessions must run their preview in the boundary the
+  // session already owns; on the host adapter there is no boundary, so the
+  // runtime keeps its own env and its reserved-port allocator.
+  resolveSharedEnv: async (sessionId) => {
+    if (getSessionEnvSelection().adapter === 'host') return null;
+    return sessionEnvManager.ensure(sessionId);
+  },
   devServerConfig: {
     urlBase: previewUrlBase,
     // Per-entry proxy URL: primary keeps the root mount, extra ports
@@ -1129,16 +1140,25 @@ const backgroundShellWatcher = new BackgroundShellWatcher({
       .all() as BackgroundShellRow[],
 });
 
-// One persistent terminal shell per Agent Hub session. When a managed dev
-// server is active, its SessionEnv is the terminal's isolation boundary too —
-// crucially, both enter the same Sysbox container and see the same backing
-// services. The universally-available host adapter can also open a standalone
-// terminal before a dev server exists. Sysbox cannot add published ports after
-// its container starts, so a terminal-first standalone Sysbox env would make a
-// later dev-server start impossible; require the managed env in that mode and
-// return an actionable attach error instead of creating a conflicting second
-// container.
-const terminalOwnedEnvs = new Map<string, ReturnType<typeof createSessionEnv>>();
+// The session's environment, owned by the session rather than by whichever
+// feature happened to start first. Preview, terminal, and session commands
+// all resolve the same env from here, so they share one filesystem, one set
+// of backing services, and one network.
+const sessionEnvManager = new SessionEnvManager({
+  resolveWorktree: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session || session.deleted_at) return null;
+    if (session.worktree_path) return session.worktree_path;
+    // A session opted out of worktrees works directly in the project checkout.
+    if (Number(session.use_worktree) === 1) return null;
+    return findAgent(session.agent_id)?.project.cwd ?? null;
+  },
+});
+
+// One persistent terminal shell per Agent Hub session, in the session's own
+// environment. It no longer depends on a dev server having been started:
+// under container-IP routing a port can be published at any time, so there is
+// nothing to declare up front and no reason to make a shell wait on a preview.
 export const ptyHost = new PtyHost({
   createSession: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
@@ -1146,46 +1166,15 @@ export const ptyHost = new PtyHost({
     const found = findAgent(session.agent_id);
     if (!found) throw new Error('Session agent not found');
 
-    let env = devServerRuntime.getSessionEnvBySessionId(sessionId);
-    let ownsEnv = false;
-    if (!env) {
-      const worktreePath =
-        session.worktree_path ?? (Number(session.use_worktree) === 1 ? null : found.project.cwd);
-      if (!worktreePath) {
-        throw new Error(
-          'Session workspace is not ready; start the session before opening terminal',
-        );
-      }
-      const adapter = getSessionEnvSelection().adapter;
-      if (adapter === 'sysbox') {
-        throw new Error('Start the session dev server before opening its terminal in Sysbox mode');
-      }
-      env = createSessionEnv(adapter, { sessionId, worktreePath });
-      terminalOwnedEnvs.set(sessionId, env);
-      ownsEnv = true;
-    }
-
-    const ptySession = new PtySession({
+    return new PtySession({
       sessionId,
-      env,
+      // Resolved on first attach: starting a container takes seconds, and
+      // the env may already exist because the preview started it.
+      env: () => sessionEnvManager.ensure(sessionId),
       // Same project AWS profiles the agent's spawns get, so `aws --profile
       // <name>` in the Terminal tab resolves instead of erroring out.
-      shellEnv: buildTerminalShellEnv(found.project, { envKind: env.kind }),
+      shellEnv: (env) => buildTerminalShellEnv(found.project, { envKind: env.kind }),
     });
-    if (ownsEnv) {
-      ptySession.onExit(() => {
-        if (terminalOwnedEnvs.get(sessionId) !== env) return;
-        terminalOwnedEnvs.delete(sessionId);
-        void env.dispose().catch((err: unknown) => {
-          console.warn(
-            `[terminal] failed to dispose standalone env for ${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        });
-      });
-    }
-    return ptySession;
   },
 });
 
@@ -1211,6 +1200,12 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     () => {
       void devServerRuntime.reap(Date.now()).catch((err: unknown) => {
         console.warn('[dev-server-reaper] tick failed:', (err as Error).message);
+      });
+      // Session environments outlive their previews, so the dev-server reaper
+      // above never releases them. A container holding a database and an
+      // image cache is not free; reclaim the ones nobody has touched.
+      void sessionEnvManager.reap(Date.now()).catch((err: unknown) => {
+        console.warn('[session-env-reaper] tick failed:', (err as Error).message);
       });
     },
     { name: 'preview-reaper' },
@@ -1421,6 +1416,7 @@ export const routeDeps: RouteDeps = {
   getDevServerRuntime: () => devServerRuntime,
   getBackgroundShellRuntime: () => backgroundShellRuntime,
   getBackgroundShellWatcher: () => backgroundShellWatcher,
+  disposeSessionEnv: (sessionId: string) => sessionEnvManager.dispose(sessionId),
   provisionSessionWorkspace: async (sessionId: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {
@@ -1652,6 +1648,7 @@ attachDefaultPreviewProxyUpgrade(
         },
         internalPort,
       ),
+    getSessionPreviewHost: (sessionId) => devServerRuntime.getSessionUpstreamHost(sessionId),
   },
   { subdomainBase: config.previewSubdomainBase },
 );
@@ -2076,16 +2073,13 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       terminalShutdownStarted = true;
       terminalWebSocket.close();
       ptyHost.disposeAll();
-      for (const [sessionId, env] of terminalOwnedEnvs) {
-        terminalOwnedEnvs.delete(sessionId);
-        void env.dispose().catch((err: unknown) => {
-          console.warn(
-            `[terminal] shutdown dispose failed for ${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        });
-      }
+      void sessionEnvManager.disposeAll().catch((err: unknown) => {
+        console.warn(
+          `[session-env] shutdown dispose failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
     }
     // Best-effort: flush any records still pending in the log write queue so a
     // graceful restart doesn't lose the tail of a burst.
@@ -2123,17 +2117,23 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     console.log(`Agent Hub server running on http://localhost:${actualPort}`);
     console.log(`Loaded ${getProjects().length} projects, ${allAgents().length} agents`);
 
-    // SessionEnv adapter selection: probe sysbox availability once at boot
-    // and cache the host/sysbox choice for the per-session env runtime.
-    // Best-effort — a probe failure must not block boot.
-    void initSessionEnvSelection(config.sessionEnvAdapter)
+    // SessionEnv adapter selection: probe sysbox and docker once at boot and
+    // cache the choice for the per-session env runtime. Best-effort — a probe
+    // failure must not block boot.
+    const previewRouting = resolveSessionEnvPortRouting();
+    const sessionDocker = resolveDockerAvailability();
+    console.log(`[session-env] port routing: ${describeSessionEnvPortRouting()}`);
+    void initSessionEnvSelection(config.sessionEnvAdapter, undefined, {
+      dockerAvailable: sessionDocker.enabled,
+      routing: previewRouting,
+      detail: sessionDocker.enabled ? describeSessionEnvPortRouting() : sessionDocker.reason,
+    })
       .then((selection) => {
         logSessionEnvSelection(selection);
         // Boot GC sweep: session envs live only in Hub memory, so every
         // labeled session container/volume from a previous run is a leak.
-        // Only meaningful where sysbox is in play — the probe passing means
-        // docker is reachable.
-        if (selection.adapter === 'sysbox') {
+        // Both container backends label identically, so one sweep covers them.
+        if (selection.adapter === 'sysbox' || selection.adapter === 'container') {
           return reconcileSysboxSessionEnvs().then(() => undefined);
         }
         return undefined;

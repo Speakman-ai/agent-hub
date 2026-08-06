@@ -3557,15 +3557,16 @@ export interface AppConfig {
   /**
    * Which SessionEnv backend runs per-session dev environments (dev server,
    * PTY host, port mapping). `auto` (the default) probes the host at boot and
-   * picks the sysbox adapter when sysbox-runc is installed and registered
-   * with Docker, else the host adapter. `host` / `sysbox` force a backend;
-   * a forced `sysbox` that fails the capability probe falls back to host
-   * with a logged warning. Configure via `sessionEnvAdapter` in config.json
-   * or env `AGENT_HUB_SESSION_ENV_ADAPTER`. Probe + selection logic:
-   * server/session-env/sysbox-capability.ts; host install:
-   * docs/deployment/SYSBOX-HOST-SETUP.md.
+   * takes the strongest boundary available: `sysbox` when sysbox-runc is
+   * installed and registered with Docker, else `container` (privileged DinD)
+   * when docker is usable and container IPs are routable, else `host`.
+   * `host` / `sysbox` / `container` force a backend; a forced backend that
+   * fails its probe falls back with a logged warning. Configure via
+   * `sessionEnvAdapter` in config.json or env `AGENT_HUB_SESSION_ENV_ADAPTER`.
+   * Probe + selection logic: server/session-env/sysbox-capability.ts; host
+   * install: docs/deployment/SYSBOX-HOST-SETUP.md.
    */
-  sessionEnvAdapter: 'auto' | 'host' | 'sysbox';
+  sessionEnvAdapter: 'auto' | 'host' | 'sysbox' | 'container';
   /**
    * When false (the default), a successful push to GitHub parks the linked
    * kanban card in **Review**; only the PR-merge moves it to **Done**. This is
@@ -4090,6 +4091,12 @@ export interface RouteDeps {
    * extends this with the same getter for the cancel-watch endpoint.
    */
   getBackgroundShellWatcher?: () => { forgetSession: (sessionId: string) => void } | null;
+  /**
+   * Tear down the session's environment (container, ports, processes). Called
+   * when a session ends — the env deliberately survives an individual preview
+   * or terminal exiting, so this is the only place it gets released.
+   */
+  disposeSessionEnv?: (sessionId: string) => Promise<void>;
   /**
    * Clone or attach the session git worktree before the first chat turn.
    * Wired from `index.ts` (`ensureWorktree`). Used by

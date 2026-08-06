@@ -229,6 +229,85 @@ describe('selectSessionEnvAdapter', () => {
   });
 });
 
+const usableContainer = { dockerAvailable: true, routing: 'container-ip' } as const;
+
+describe('selectSessionEnvAdapter — container backend', () => {
+  it('auto prefers the container backend over host when sysbox is missing', () => {
+    // The behavior this replaces: any host without sysbox ran every session
+    // directly on the Hub, sharing its filesystem, ports, and process table.
+    // A weaker boundary beats no boundary.
+    const sel = selectSessionEnvAdapter(
+      'auto',
+      probeResult(false, ['binary: sysbox-runc not found']),
+      usableContainer,
+    );
+    expect(sel.adapter).toBe('container');
+    expect(sel.fellBack).toBe(false);
+  });
+
+  it('auto still prefers sysbox when it is available', () => {
+    const sel = selectSessionEnvAdapter('auto', probeResult(true), usableContainer);
+    expect(sel.adapter).toBe('sysbox');
+  });
+
+  it('auto declines a container that would have to publish ports', () => {
+    // Without container-IP routing the backend reintroduces the shared host
+    // port pool and the declare-before-start rule it exists to remove, so it
+    // is not an automatic upgrade over host.
+    const sel = selectSessionEnvAdapter('auto', probeResult(false, ['x']), {
+      dockerAvailable: true,
+      routing: 'published-ports',
+    });
+    expect(sel.adapter).toBe('host');
+    expect(sel.reason).toContain('container backend unusable');
+  });
+
+  it('auto falls to host when docker is unusable', () => {
+    const sel = selectSessionEnvAdapter('auto', probeResult(false, ['x']), {
+      dockerAvailable: false,
+      routing: 'container-ip',
+      detail: 'docker socket missing',
+    });
+    expect(sel.adapter).toBe('host');
+    expect(sel.reason).toContain('docker socket missing');
+  });
+
+  it('a forced sysbox that fails its probe degrades to container, not host', () => {
+    // The operator asked for isolation. Container is closer to that intent
+    // than dropping the boundary altogether.
+    const sel = selectSessionEnvAdapter(
+      'sysbox',
+      probeResult(false, ['kernel: too old']),
+      usableContainer,
+    );
+    expect(sel.adapter).toBe('container');
+    expect(sel.fellBack).toBe(true);
+  });
+
+  it('forced container is honored even when it must publish ports', () => {
+    const sel = selectSessionEnvAdapter('container', probeResult(false), {
+      dockerAvailable: true,
+      routing: 'published-ports',
+    });
+    expect(sel.adapter).toBe('container');
+    expect(sel.forced).toBe(true);
+  });
+
+  it('forced container without docker falls back to host loudly', () => {
+    const sel = selectSessionEnvAdapter('container', probeResult(false), {
+      dockerAvailable: false,
+      routing: 'container-ip',
+      detail: 'no usable docker daemon',
+    });
+    expect(sel.adapter).toBe('host');
+    expect(sel.fellBack).toBe(true);
+  });
+
+  it('accepts "container" as a configured mode', () => {
+    expect(coerceSessionEnvAdapterMode('container')).toBe('container');
+  });
+});
+
 describe('logSessionEnvSelection', () => {
   it('warns when a forced sysbox fell back to host', () => {
     const logger = { log: vi.fn(), warn: vi.fn() };

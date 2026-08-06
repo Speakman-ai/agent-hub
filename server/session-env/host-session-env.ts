@@ -19,6 +19,7 @@ import {
   SessionEnvDisposedError,
   SessionEnvDisposeOpts,
   SessionEnvExit,
+  SessionEnvDialTarget,
   SessionEnvPortMapping,
   SessionEnvProcess,
   SessionEnvPty,
@@ -372,6 +373,7 @@ export class HostSessionEnv implements SessionEnv {
       .then((hostPort) => {
         const resolved: SessionEnvPortMapping = {
           internalPort,
+          host: '127.0.0.1',
           hostPort,
           // No translation on the host adapter — the process binds the
           // allocated host port directly (steered via the injected PORT).
@@ -397,6 +399,20 @@ export class HostSessionEnv implements SessionEnv {
 
   listPortMappings(): SessionEnvPortMapping[] {
     return [...this.settledMappings.values()];
+  }
+
+  /**
+   * Loopback, always: host processes bind directly on the host, so there is
+   * no boundary between the Hub and the port.
+   */
+  async resolveDialTarget(internalPort: number): Promise<SessionEnvDialTarget> {
+    this.#assertLive('resolveDialTarget');
+    const mapping = await this.mapPort(internalPort);
+    return {
+      host: '127.0.0.1',
+      port: mapping.hostPort,
+      url: `http://127.0.0.1:${mapping.hostPort}`,
+    };
   }
 
   async mountWorktree(): Promise<SessionEnvWorktreeMount> {

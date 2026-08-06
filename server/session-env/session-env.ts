@@ -5,16 +5,24 @@
  * this interface instead of host `child_process`, so the run location is a
  * pluggable backend rather than a rewrite:
  *
- *   - `host`   — direct host processes + node-pty + loopback host ports.
- *                The local-dev/Mac path and the fast fallback everywhere.
- *   - `sysbox` — per-session rootless container via sysbox-runc. The
- *                default boundary on a self-hosted Linux server.
+ *   - `host`      — direct host processes + node-pty + loopback host ports.
+ *                   The local-dev/Mac path and the fast fallback everywhere.
+ *   - `sysbox`    — per-session container via the sysbox-runc runtime. A real
+ *                   user-namespace boundary, but needs sysbox installed on
+ *                   the host.
+ *   - `container` — per-session container via privileged DinD. Same shape as
+ *                   `sysbox` with a weaker boundary, and it runs anywhere
+ *                   Docker does — which is what makes per-session isolation
+ *                   the default rather than an opt-in for specially prepared
+ *                   hosts. Finalize CI already runs privileged DinD on these
+ *                   same machines.
  *
  * Backend selection lives in `select-session-env.ts`; adapters live in
- * `host-session-env.ts` and `sysbox-session-env.ts`.
+ * `host-session-env.ts` and `sysbox-session-env.ts` (which serves both
+ * container kinds — they differ only in the isolation runtime).
  */
 
-export type SessionEnvKind = 'host' | 'sysbox';
+export type SessionEnvKind = 'host' | 'sysbox' | 'container';
 
 /** `sessionEnvAdapter` config values. `auto` = sysbox when available, else host. */
 export type SessionEnvBackendChoice = 'auto' | SessionEnvKind;
@@ -90,7 +98,14 @@ export interface SessionEnvPty {
 export interface SessionEnvPortMapping {
   /** Port the process listens on inside the env. */
   internalPort: number;
-  /** Loopback host port the Hub (preview proxy) dials. */
+  /**
+   * Host the Hub dials to reach this port: loopback when the env publishes
+   * ports, the container's own address under container-IP routing. Carried
+   * on the mapping so a synchronous caller (the preview proxy) can resolve a
+   * full upstream without awaiting {@link SessionEnv.resolveDialTarget}.
+   */
+  host: string;
+  /** Port the Hub (preview proxy) dials on {@link host}. */
   hostPort: number;
   /**
    * Port the process must actually bind inside the env — what the
@@ -102,6 +117,31 @@ export interface SessionEnvPortMapping {
   envPort: number;
   /** Always loopback — upstream ports are never exposed off-host. */
   hostUrl: string;
+}
+
+/**
+ * Where the Hub connects to reach a port inside the env.
+ *
+ * This is the seam that decouples "the app listens on port N" from "the Hub
+ * publishes port N somewhere on the host." The two containerized routings
+ * differ sharply:
+ *
+ *   - **Published ports** — the container maps `hostPort → internalPort` at
+ *     `docker run` time, so every port must be known *before* the container
+ *     starts and each one consumes a slot in a shared host-wide pool.
+ *   - **Container IP** — the Hub dials the container's own address directly.
+ *     Nothing is published, no pool exists to exhaust or collide on, and a
+ *     port that appears minutes after boot is reachable immediately. This is
+ *     what lets a session add a service without restarting its environment.
+ *
+ * The host adapter always reports loopback, since there is no boundary to
+ * cross.
+ */
+export interface SessionEnvDialTarget {
+  host: string;
+  port: number;
+  /** `http://<host>:<port>` — the preview proxy's upstream base. */
+  url: string;
 }
 
 export interface SessionEnvWorktreeMount {
@@ -155,6 +195,13 @@ export interface SessionEnv {
   mapPortsOut(internalPorts?: number[]): Promise<SessionEnvPortMapping[]>;
   /** All mappings established so far. */
   listPortMappings(): SessionEnvPortMapping[];
+  /**
+   * Resolve where the Hub should connect to reach `internalPort` inside the
+   * env. See {@link SessionEnvDialTarget}. Adapters that route by container
+   * IP accept any port at any time; adapters that publish ports resolve
+   * through {@link mapPort} and inherit its pre-declaration rules.
+   */
+  resolveDialTarget(internalPort: number): Promise<SessionEnvDialTarget>;
   /** Ensure the session worktree is visible inside the env. Idempotent. */
   mountWorktree(): Promise<SessionEnvWorktreeMount>;
 

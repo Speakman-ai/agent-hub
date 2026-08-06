@@ -524,9 +524,10 @@ const config: AppConfig = {
   })(),
 
   // SessionEnv backend for per-session dev environments. 'auto' probes the
-  // host at boot (sysbox when available, else host); 'host' / 'sysbox' force
-  // a backend. Unknown values fall back to 'auto' so a typo never forces a
-  // backend silently. See server/session-env/sysbox-capability.ts.
+  // host at boot and takes the strongest available boundary (sysbox, then
+  // container, then host); 'host' / 'sysbox' / 'container' force a backend.
+  // Unknown values fall back to 'auto' so a typo never forces a backend
+  // silently. See server/session-env/sysbox-capability.ts.
   sessionEnvAdapter: coerceSessionEnvAdapterMode(
     resolve('AGENT_HUB_SESSION_ENV_ADAPTER', 'sessionEnvAdapter', 'auto'),
   ),
