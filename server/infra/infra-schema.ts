@@ -26,9 +26,9 @@
  *     record into a brake.
  *   - `infra_retention_config` — the per-project overrides the retention reaper
  *     resolves its age window and byte quota from.
- *
- * The alert tables are appended by their own ticket; the DDL is a single
- * idempotent block so those additions are edits to this constant.
+ *   - `infra_alert_rules` / `infra_alerts` / `infra_alert_transitions` — the
+ *     threshold rules we evaluate ourselves (decision INFRA-ALERT) and the
+ *     open/resolved/ignored lifecycle of what they fired.
  */
 
 /** Filename of the store under the data dir. */
@@ -154,6 +154,57 @@ export const INFRA_METRIC_POINT_BYTES_SQL = `(
   + length(CAST(stat AS BLOB))
   + length(CAST(COALESCE(dimensions_json, '') AS BLOB))
 )`;
+
+// ── Alert lifecycle bounds (decision INFRA-ALERT) ──────────────────────────
+/**
+ * Severity levels a rule can fire at, ordered most to least urgent.
+ *
+ * Deliberately not CloudWatch vocabulary — CloudWatch has no severity concept
+ * at all, only alarm state. Severity is ours, and it exists because
+ * INFRA-NOTIFY routes on `(severity, channel)` rows: without it every alert
+ * would have to page every channel.
+ */
+export const INFRA_ALERT_SEVERITIES = ['critical', 'warning', 'info'] as const;
+export type InfraAlertSeverity = (typeof INFRA_ALERT_SEVERITIES)[number];
+
+/** Severity a rule gets when the operator does not choose one. */
+export const DEFAULT_INFRA_ALERT_SEVERITY: InfraAlertSeverity = 'warning';
+
+/**
+ * Operator-facing lifecycle of a fired alert, identical to a log issue's
+ * (`log-issues-store.ts`). Decision INFRA-ALERT: "it should look the same to
+ * the user as a log issue does."
+ */
+export const INFRA_ALERT_STATUSES = ['open', 'resolved', 'ignored'] as const;
+export type InfraAlertStatus = (typeof INFRA_ALERT_STATUSES)[number];
+
+/**
+ * Transition rows retained per alert before the oldest are trimmed.
+ *
+ * The history table is the one alert table with unbounded growth: a flapping
+ * resource writes two rows per collector tick indefinitely, and the retention
+ * reaper deliberately owns `infra_metric_points` and nothing else. Trimming on
+ * insert bounds it at the only moment the row count is already known, so the
+ * table can never need a second reaper pass.
+ *
+ * 200 is sized to hold a full weekend of flapping (two transitions per 5-minute
+ * tick is ~576/day, so 200 is roughly the last 8 hours of the worst case) while
+ * a healthy alert's entire lifetime is a handful of rows. Past that the useful
+ * artifact is the aggregate on the alert row — occurrence count, true first and
+ * last seen — not the individual flap.
+ */
+export const INFRA_ALERT_TRANSITION_HISTORY_LIMIT = 200;
+
+/** Actor recorded when recurrence reopens a resolved alert. */
+export const INFRA_ALERT_RECURRENCE_ACTOR = 'system:recurrence';
+/** Actor recorded when the evaluator moves an alert out of ALARM. */
+export const INFRA_ALERT_RECOVERY_ACTOR = 'system:recovery';
+/** Actor recorded for a state change that did not change the operator status. */
+export const INFRA_ALERT_EVALUATOR_ACTOR = 'system:evaluator';
+
+/** Paging bounds for the alert list, mirroring `log-issues-store.ts`. */
+export const MAX_INFRA_ALERT_LIST_LIMIT = 200;
+export const DEFAULT_INFRA_ALERT_LIST_LIMIT = 50;
 
 /**
  * Table DDL for `infra.db`, kept separate from the index DDL below.
@@ -360,6 +411,153 @@ export const INFRA_TABLES_SCHEMA = `
     quota_bytes    INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL
   );
+
+  -- Threshold rules we evaluate in our own poller (decision INFRA-ALERT: do
+  -- NOT provision real CloudWatch alarms + SNS in the monitored account).
+  --
+  -- The threshold columns are spelled in PutMetricAlarm's own parameter names
+  -- so a row round-trips to the console vocabulary without a mapping table.
+  -- Operators will diff our state against the console; a rule they cannot read
+  -- back in AWS's words is a rule they cannot check our work on.
+  --
+  -- The scope selector is a *predicate* over infra_resources, not a resource
+  -- list: one rule covering "every EC2 instance in us-east-2" must automatically
+  -- cover an instance the inventory sync discovers tomorrow. service is required
+  -- because it decides which metric namespace the rule can even apply to;
+  -- account_id / region / resource_key are each NULL for "any", so a rule
+  -- narrows from a whole service down to one resource without a schema change.
+  CREATE TABLE IF NOT EXISTS infra_alert_rules (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    name                TEXT NOT NULL,
+    description         TEXT,
+
+    -- ── Scope selector ──
+    service             TEXT NOT NULL,
+    account_id          TEXT,
+    region              TEXT,
+    -- Pin to exactly one resource. NULL = every resource matching the rest of
+    -- the selector.
+    resource_key        TEXT,
+    -- Optional tag predicate as JSON ({ "Key": ["v1","v2"] }), same shape and
+    -- same parser as infra_scopes.tag_filter_json. NULL = no filter.
+    tag_filter_json     TEXT,
+
+    -- ── Series ──
+    namespace           TEXT NOT NULL,
+    metric_name         TEXT NOT NULL,
+    stat                TEXT NOT NULL,
+    period_s            INTEGER NOT NULL,
+
+    -- ── Threshold (PutMetricAlarm parameter names) ──
+    threshold           REAL NOT NULL,
+    -- No anomaly-detection operators: we fit no model, so there is no threshold
+    -- *pair* for them to compare against. See INFRA_COMPARISON_OPERATORS.
+    comparison_operator TEXT NOT NULL CHECK (comparison_operator IN (
+      'GreaterThanOrEqualToThreshold', 'GreaterThanThreshold',
+      'LessThanThreshold', 'LessThanOrEqualToThreshold'
+    )),
+    -- N: periods compared over.
+    evaluation_periods  INTEGER NOT NULL,
+    -- M of N. NULL = N (consecutive alarm), which is AWS's own default.
+    datapoints_to_alarm INTEGER,
+    treat_missing_data  TEXT NOT NULL DEFAULT 'missing' CHECK (treat_missing_data IN (
+      'missing', 'notBreaching', 'breaching', 'ignore'
+    )),
+
+    severity            TEXT NOT NULL DEFAULT 'warning'
+      CHECK (severity IN ('critical', 'warning', 'info')),
+    -- A disabled rule is retained, not deleted: deleting it would cascade away
+    -- the alert rows that carry the incident history the operator muted it over.
+    enabled             INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+  );
+
+  -- One row per (rule, resource) — the fired-alert lifecycle. Same shape as
+  -- log_issues (decision INFRA-ALERT: "it should look the same to the user as a
+  -- log issue does"), which is why status and state are two separate columns:
+  --
+  --   state  — what the metric says right now (CloudWatch's OK / ALARM /
+  --            INSUFFICIENT_DATA). Owned by the evaluator.
+  --   status — what the operator has decided about it (open / resolved /
+  --            ignored). Owned by the human, except for the two automatic
+  --            moves recurrence and recovery make.
+  --
+  -- Collapsing them would make "I already know, stop paging me" indistinguishable
+  -- from "the metric came back", and an ignored alert would un-mute itself on the
+  -- next breach — the exact behaviour ignoring exists to prevent.
+  --
+  -- ON DELETE CASCADE is right here where infra_metric_points deliberately
+  -- refuses a foreign key: an alert without its rule has no threshold to be read
+  -- against and no way to be re-evaluated, so it is not data being lost to an
+  -- ordering race, it is data with no remaining meaning.
+  CREATE TABLE IF NOT EXISTS infra_alerts (
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT NOT NULL,
+    rule_id           TEXT NOT NULL REFERENCES infra_alert_rules(id) ON DELETE CASCADE,
+    -- Joins to infra_resources.resource_key. No foreign key, for the same
+    -- reason infra_metric_points has none: an alert must survive its resource
+    -- aging out of the inventory, or a terminated instance would take the
+    -- record of why it was terminated with it.
+    resource_key      TEXT NOT NULL,
+
+    state             TEXT NOT NULL DEFAULT 'OK'
+      CHECK (state IN ('OK', 'ALARM', 'INSUFFICIENT_DATA')),
+    -- Why the evaluator landed there (INFRA_ALARM_REASONS). "ALARM" without
+    -- "and it was the premature rule, on one breaching datapoint" is exactly
+    -- the ambiguity that sends an operator to the console to check our work.
+    reason            TEXT,
+    -- Observation timestamp the current state was decided from. The staleness
+    -- guard reads this: an out-of-order evaluation older than it updates the
+    -- aggregates but must not rewrite the state a newer observation set.
+    state_updated_at  INTEGER NOT NULL,
+
+    status            TEXT NOT NULL DEFAULT 'open'
+      CHECK (status IN ('open', 'resolved', 'ignored')),
+    status_updated_at INTEGER,
+    -- User id, or one of the system:* actors. NULL until status first moves.
+    status_updated_by TEXT,
+
+    -- True min/max over every ALARM observation, held with MIN()/MAX() so a
+    -- late-arriving datapoint cannot narrow the window it actually covered.
+    first_seen        INTEGER NOT NULL,
+    last_seen         INTEGER NOT NULL,
+    -- ALARM observations recorded, including out-of-order ones.
+    occurrence_count  INTEGER NOT NULL DEFAULT 1,
+    -- Breaching datapoints and metric value behind the most recent non-stale
+    -- evaluation, for rendering the alert without re-querying the series.
+    last_value        REAL,
+    breaching_datapoints INTEGER,
+
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    -- One alert per (rule, resource): a second breach is a recurrence on the
+    -- existing row, never a second row, or the list would be a firehose.
+    UNIQUE (rule_id, resource_key)
+  );
+
+  -- Append-only transition history behind one alert. Written on a state change
+  -- and on a status change, each capturing both, so the timeline reads as
+  -- complete snapshots rather than half-updates that have to be replayed to
+  -- interpret.
+  --
+  -- Trimmed to INFRA_ALERT_TRANSITION_HISTORY_LIMIT rows per alert on insert —
+  -- see that constant for why this table bounds itself instead of joining the
+  -- retention reaper's pass.
+  CREATE TABLE IF NOT EXISTS infra_alert_transitions (
+    id          INTEGER PRIMARY KEY,
+    alert_id    TEXT NOT NULL REFERENCES infra_alerts(id) ON DELETE CASCADE,
+    project_id  TEXT NOT NULL,
+    from_state  TEXT NOT NULL,
+    to_state    TEXT NOT NULL,
+    from_status TEXT NOT NULL,
+    to_status   TEXT NOT NULL,
+    reason      TEXT,
+    -- User id, or one of the system:* actors.
+    actor       TEXT NOT NULL,
+    at_ms       INTEGER NOT NULL
+  );
 `;
 
 /**
@@ -422,6 +620,34 @@ export const INFRA_INDEXES_SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_infra_collect_runs_project
     ON infra_collect_runs(project_id, started_at DESC);
+
+  -- The rule editor lists a project's rules; the evaluator loads only the
+  -- enabled ones. enabled trails project_id so one composite serves both.
+  CREATE INDEX IF NOT EXISTS idx_infra_alert_rules_project
+    ON infra_alert_rules(project_id, enabled);
+  -- The evaluator's inner loop: "which rules apply to this service?" Without
+  -- it, every tick scans every rule in the project once per resource.
+  CREATE INDEX IF NOT EXISTS idx_infra_alert_rules_project_service
+    ON infra_alert_rules(project_id, service);
+
+  -- Alerts list: most-recently-seen first, optionally filtered by status. The
+  -- keyset cursor is (last_seen DESC, id DESC), so last_seen must be the
+  -- ordering column here or every page pays a temp-b-tree sort.
+  CREATE INDEX IF NOT EXISTS idx_infra_alerts_project_last_seen
+    ON infra_alerts(project_id, last_seen DESC);
+  CREATE INDEX IF NOT EXISTS idx_infra_alerts_project_status
+    ON infra_alerts(project_id, status, last_seen DESC);
+  -- Cascade target and the evaluator's per-tick lookup. The UNIQUE (rule_id,
+  -- resource_key) constraint already indexes rule_id, but only as its leading
+  -- column — this serves "every alert for this resource", which the resource
+  -- detail view asks across rules.
+  CREATE INDEX IF NOT EXISTS idx_infra_alerts_resource
+    ON infra_alerts(project_id, resource_key);
+
+  -- History read (newest first) and the trim's oldest-first delete, from one
+  -- index read in either direction.
+  CREATE INDEX IF NOT EXISTS idx_infra_alert_transitions_alert
+    ON infra_alert_transitions(alert_id, at_ms DESC, id DESC);
 `;
 
 /**

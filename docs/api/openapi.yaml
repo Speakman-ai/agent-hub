@@ -6600,6 +6600,543 @@ components:
       required:
         - error
       description: Error envelope for hook routes.
+    InfraAlertRuleCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Operator-facing rule name, shown on the alert.
+          example: ALB unhealthy hosts
+        description:
+          type: string
+          nullable: true
+          maxLength: 2000
+        service:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: "Service token the rule applies to (`ec2`, `rds`, `elbv2`, …), matching `infra_resources.service`. Required: it decides which namespace the rule can apply to."
+          example: elbv2
+        accountId:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: Narrow to one account. Null/absent matches every account in scope.
+        region:
+          type: string
+          nullable: true
+          maxLength: 32
+          description: Narrow to one region. Null/absent matches every region in scope.
+        resourceKey:
+          type: string
+          nullable: true
+          maxLength: 512
+          description: Pin to exactly one resource (`infra_resources.resource_key`). Null/absent matches every resource satisfying the rest of the selector, including ones discovered after the rule was written.
+        tagFilter:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: array
+            items:
+              type: string
+              maxLength: 256
+            minItems: 1
+            maxItems: 50
+          description: Tag predicate, e.g. `{"Environment":["prod"]}`. An empty object is stored as no filter.
+        namespace:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: AWS/ApplicationELB
+        metricName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: UnHealthyHostCount
+        stat:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: CloudWatch statistic (`Average`, `Maximum`, `Sum`, `p99`, …).
+          example: Minimum
+        periodS:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          description: Period in seconds. CloudWatch only serves 60s within 15 days, 300s within 63 days and 3600s beyond, so a period finer than the data available returns nothing.
+          example: 60
+        threshold:
+          type: number
+        comparisonOperator:
+          type: string
+          enum:
+            - GreaterThanOrEqualToThreshold
+            - GreaterThanThreshold
+            - LessThanThreshold
+            - LessThanOrEqualToThreshold
+          description: "Static-threshold operators only. The anomaly-detection operators `PutMetricAlarm` also accepts are rejected: we fit no model, so there is no threshold band for them to compare against."
+        evaluationPeriods:
+          type: integer
+          minimum: 1
+          maximum: 1440
+          description: N — periods the metric is compared over.
+        datapointsToAlarm:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 1440
+          description: M of N. Null/absent means N (consecutive alarm), which is AWS’s own default. Must not exceed `evaluationPeriods` — such a rule could never reach ALARM.
+        treatMissingData:
+          type: string
+          nullable: true
+          enum:
+            - missing
+            - notBreaching
+            - breaching
+            - ignore
+            - null
+          description: Defaults to `missing`, matching CloudWatch.
+        severity:
+          type: string
+          nullable: true
+          enum:
+            - critical
+            - warning
+            - info
+            - null
+          description: Routing severity. Defaults to `warning`. Not a CloudWatch concept — ours.
+        enabled:
+          type: boolean
+          description: Defaults to true. Disabling stops evaluation while retaining the alert history a delete would cascade away.
+      required:
+        - name
+        - service
+        - namespace
+        - metricName
+        - stat
+        - periodS
+        - threshold
+        - comparisonOperator
+        - evaluationPeriods
+    InfraAlertRuleUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Operator-facing rule name, shown on the alert.
+          example: ALB unhealthy hosts
+        description:
+          type: string
+          nullable: true
+          maxLength: 2000
+        service:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: "Service token the rule applies to (`ec2`, `rds`, `elbv2`, …), matching `infra_resources.service`. Required: it decides which namespace the rule can apply to."
+          example: elbv2
+        accountId:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: Narrow to one account. Null/absent matches every account in scope.
+        region:
+          type: string
+          nullable: true
+          maxLength: 32
+          description: Narrow to one region. Null/absent matches every region in scope.
+        resourceKey:
+          type: string
+          nullable: true
+          maxLength: 512
+          description: Pin to exactly one resource (`infra_resources.resource_key`). Null/absent matches every resource satisfying the rest of the selector, including ones discovered after the rule was written.
+        tagFilter:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: array
+            items:
+              type: string
+              maxLength: 256
+            minItems: 1
+            maxItems: 50
+          description: Tag predicate, e.g. `{"Environment":["prod"]}`. An empty object is stored as no filter.
+        namespace:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: AWS/ApplicationELB
+        metricName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: UnHealthyHostCount
+        stat:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: CloudWatch statistic (`Average`, `Maximum`, `Sum`, `p99`, …).
+          example: Minimum
+        periodS:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          description: Period in seconds. CloudWatch only serves 60s within 15 days, 300s within 63 days and 3600s beyond, so a period finer than the data available returns nothing.
+          example: 60
+        threshold:
+          type: number
+        comparisonOperator:
+          type: string
+          enum:
+            - GreaterThanOrEqualToThreshold
+            - GreaterThanThreshold
+            - LessThanThreshold
+            - LessThanOrEqualToThreshold
+          description: "Static-threshold operators only. The anomaly-detection operators `PutMetricAlarm` also accepts are rejected: we fit no model, so there is no threshold band for them to compare against."
+        evaluationPeriods:
+          type: integer
+          minimum: 1
+          maximum: 1440
+          description: N — periods the metric is compared over.
+        datapointsToAlarm:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 1440
+          description: M of N. Null/absent means N (consecutive alarm), which is AWS’s own default. Must not exceed `evaluationPeriods` — such a rule could never reach ALARM.
+        treatMissingData:
+          type: string
+          nullable: true
+          enum:
+            - missing
+            - notBreaching
+            - breaching
+            - ignore
+            - null
+          description: Defaults to `missing`, matching CloudWatch.
+        severity:
+          type: string
+          nullable: true
+          enum:
+            - critical
+            - warning
+            - info
+            - null
+          description: Routing severity. Defaults to `warning`. Not a CloudWatch concept — ours.
+        enabled:
+          type: boolean
+          description: Defaults to true. Disabling stops evaluation while retaining the alert history a delete would cascade away.
+    InfraAlertRule:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Operator-facing rule name, shown on the alert.
+          example: ALB unhealthy hosts
+        description:
+          type: string
+          nullable: true
+          maxLength: 2000
+        service:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: "Service token the rule applies to (`ec2`, `rds`, `elbv2`, …), matching `infra_resources.service`. Required: it decides which namespace the rule can apply to."
+          example: elbv2
+        accountId:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: Narrow to one account. Null/absent matches every account in scope.
+        region:
+          type: string
+          nullable: true
+          maxLength: 32
+          description: Narrow to one region. Null/absent matches every region in scope.
+        resourceKey:
+          type: string
+          nullable: true
+          maxLength: 512
+          description: Pin to exactly one resource (`infra_resources.resource_key`). Null/absent matches every resource satisfying the rest of the selector, including ones discovered after the rule was written.
+        tagFilter:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: array
+            items:
+              type: string
+              maxLength: 256
+            minItems: 1
+            maxItems: 50
+          description: Tag predicate, e.g. `{"Environment":["prod"]}`. An empty object is stored as no filter.
+        namespace:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: AWS/ApplicationELB
+        metricName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: UnHealthyHostCount
+        stat:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: CloudWatch statistic (`Average`, `Maximum`, `Sum`, `p99`, …).
+          example: Minimum
+        periodS:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          description: Period in seconds. CloudWatch only serves 60s within 15 days, 300s within 63 days and 3600s beyond, so a period finer than the data available returns nothing.
+          example: 60
+        threshold:
+          type: number
+        comparisonOperator:
+          type: string
+          enum:
+            - GreaterThanOrEqualToThreshold
+            - GreaterThanThreshold
+            - LessThanThreshold
+            - LessThanOrEqualToThreshold
+          description: "Static-threshold operators only. The anomaly-detection operators `PutMetricAlarm` also accepts are rejected: we fit no model, so there is no threshold band for them to compare against."
+        evaluationPeriods:
+          type: integer
+          minimum: 1
+          maximum: 1440
+          description: N — periods the metric is compared over.
+        datapointsToAlarm:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 1440
+          description: M of N. Null/absent means N (consecutive alarm), which is AWS’s own default. Must not exceed `evaluationPeriods` — such a rule could never reach ALARM.
+        treatMissingData:
+          type: string
+          nullable: true
+          enum:
+            - missing
+            - notBreaching
+            - breaching
+            - ignore
+            - null
+          description: Defaults to `missing`, matching CloudWatch.
+        severity:
+          type: string
+          nullable: true
+          enum:
+            - critical
+            - warning
+            - info
+            - null
+          description: Routing severity. Defaults to `warning`. Not a CloudWatch concept — ours.
+        enabled:
+          type: boolean
+        id:
+          type: string
+        projectId:
+          type: string
+        createdAt:
+          type: integer
+          description: Epoch ms.
+        updatedAt:
+          type: integer
+          description: Epoch ms.
+      required:
+        - name
+        - service
+        - namespace
+        - metricName
+        - stat
+        - periodS
+        - threshold
+        - comparisonOperator
+        - evaluationPeriods
+        - enabled
+        - id
+        - projectId
+        - createdAt
+        - updatedAt
+      description: A threshold rule Agent Hub evaluates in its own poller. We never call `PutMetricAlarm`, so this rule does not exist in the monitored AWS account.
+    InfraAlertRuleList:
+      type: object
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/InfraAlertRule"
+      required:
+        - rules
+    InfraAlertTransition:
+      type: object
+      properties:
+        fromState:
+          type: string
+          enum:
+            - OK
+            - ALARM
+            - INSUFFICIENT_DATA
+        toState:
+          type: string
+          enum:
+            - OK
+            - ALARM
+            - INSUFFICIENT_DATA
+        fromStatus:
+          type: string
+          enum:
+            - open
+            - resolved
+            - ignored
+        toStatus:
+          type: string
+          enum:
+            - open
+            - resolved
+            - ignored
+        reason:
+          type: string
+          nullable: true
+          enum:
+            - datapoints_breached
+            - premature_alarm
+            - within_threshold
+            - all_datapoints_missing
+            - missing_data_ignored
+            - null
+        actor:
+          type: string
+          description: Acting user id, or one of `system:evaluator`, `system:recurrence`, `system:recovery`.
+        atMs:
+          type: integer
+      required:
+        - fromState
+        - toState
+        - fromStatus
+        - toStatus
+        - reason
+        - actor
+        - atMs
+      description: One recorded move. Both state and status are captured on every row, so the timeline reads as complete snapshots rather than half-updates.
+    InfraAlert:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        ruleId:
+          type: string
+        resourceKey:
+          type: string
+        state:
+          type: string
+          enum:
+            - OK
+            - ALARM
+            - INSUFFICIENT_DATA
+          description: What the metric says. Owned by the evaluator.
+        reason:
+          type: string
+          nullable: true
+          enum:
+            - datapoints_breached
+            - premature_alarm
+            - within_threshold
+            - all_datapoints_missing
+            - missing_data_ignored
+            - null
+        stateUpdatedAt:
+          type: integer
+          description: Observation timestamp the current state was decided from — the data’s clock, not the tick’s. An evaluation older than this updates the aggregates but cannot rewrite the state.
+        status:
+          type: string
+          enum:
+            - open
+            - resolved
+            - ignored
+          description: What the operator decided. Recurrence reopens `resolved`; `ignored` stays muted through a full breach/recover round trip.
+        statusUpdatedAt:
+          type: integer
+          nullable: true
+        statusUpdatedBy:
+          type: string
+          nullable: true
+        firstSeen:
+          type: integer
+          description: True minimum over every ALARM observation, including out-of-order ones.
+        lastSeen:
+          type: integer
+          description: True maximum, same guarantee.
+        occurrenceCount:
+          type: integer
+        lastValue:
+          type: number
+          nullable: true
+        breachingDatapoints:
+          type: integer
+          nullable: true
+        createdAt:
+          type: integer
+        updatedAt:
+          type: integer
+        transitions:
+          type: array
+          items:
+            $ref: "#/components/schemas/InfraAlertTransition"
+          description: Present on the detail route only.
+      required:
+        - id
+        - projectId
+        - ruleId
+        - resourceKey
+        - state
+        - reason
+        - stateUpdatedAt
+        - status
+        - statusUpdatedAt
+        - statusUpdatedBy
+        - firstSeen
+        - lastSeen
+        - occurrenceCount
+        - lastValue
+        - breachingDatapoints
+        - createdAt
+        - updatedAt
+      description: One fired alert, keyed (rule, resource). Carries resource identifiers only — never credentials or account-identifying secrets.
+    InfraAlertList:
+      type: object
+      properties:
+        alerts:
+          type: array
+          items:
+            $ref: "#/components/schemas/InfraAlert"
+        nextCursor:
+          type: string
+          nullable: true
+          description: Pass back as `cursor` for the next page. Null on the last page.
+      required:
+        - alerts
+        - nextCursor
+    InfraAlertStatusRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - open
+            - resolved
+            - ignored
+          description: "`resolved` closes it out, `ignored` mutes it through recurrence, `open` reopens it."
+      required:
+        - status
     InfraMonitoringStatus:
       type: object
       properties:
@@ -27767,6 +28304,712 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HooksErrorResponse"
+  /api/projects/{projectId}/infra/alert-rules:
+    get:
+      tags:
+        - Projects
+      summary: List infra alert rules
+      description: |-
+        Every threshold rule on the project, newest first. Unpaginated: rules are hand-authored plus a per-service default pack, so the population is tens per project.
+
+        **Cost:** local SQLite only. No AWS call.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            maxLength: 64
+          required: false
+          name: service
+          in: query
+        - schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+          required: false
+          name: enabled
+          in: query
+      responses:
+        "200":
+          description: Rule list. Empty array on a Hub whose infra store never opened.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRuleList"
+        "400":
+          description: Malformed body or query.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+    post:
+      tags:
+        - Projects
+      summary: Create an infra alert rule
+      description: |-
+        Persists a rule evaluated by Agent Hub’s own poller (decision INFRA-ALERT). Nothing is written to the monitored AWS account: no `PutMetricAlarm`, no SNS topic, no IAM role, and nothing to clean up if the rule is later deleted.
+
+        A rule that could never reach ALARM (`datapointsToAlarm` above `evaluationPeriods`) is rejected rather than repaired, so an operator is never handed an alarm that looks armed and is not.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: Operator-facing rule name, shown on the alert.
+                  example: ALB unhealthy hosts
+                description:
+                  type: string
+                  nullable: true
+                  maxLength: 2000
+                service:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: "Service token the rule applies to (`ec2`, `rds`, `elbv2`, …), matching `infra_resources.service`. Required: it decides which namespace the rule can apply to."
+                  example: elbv2
+                accountId:
+                  type: string
+                  nullable: true
+                  maxLength: 64
+                  description: Narrow to one account. Null/absent matches every account in scope.
+                region:
+                  type: string
+                  nullable: true
+                  maxLength: 32
+                  description: Narrow to one region. Null/absent matches every region in scope.
+                resourceKey:
+                  type: string
+                  nullable: true
+                  maxLength: 512
+                  description: Pin to exactly one resource (`infra_resources.resource_key`). Null/absent matches every resource satisfying the rest of the selector, including ones discovered after the rule was written.
+                tagFilter:
+                  type: object
+                  nullable: true
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+                      maxLength: 256
+                    minItems: 1
+                    maxItems: 50
+                  description: Tag predicate, e.g. `{"Environment":["prod"]}`. An empty object is stored as no filter.
+                namespace:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  example: AWS/ApplicationELB
+                metricName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  example: UnHealthyHostCount
+                stat:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: CloudWatch statistic (`Average`, `Maximum`, `Sum`, `p99`, …).
+                  example: Minimum
+                periodS:
+                  type: integer
+                  minimum: 1
+                  maximum: 86400
+                  description: Period in seconds. CloudWatch only serves 60s within 15 days, 300s within 63 days and 3600s beyond, so a period finer than the data available returns nothing.
+                  example: 60
+                threshold:
+                  type: number
+                comparisonOperator:
+                  type: string
+                  enum:
+                    - GreaterThanOrEqualToThreshold
+                    - GreaterThanThreshold
+                    - LessThanThreshold
+                    - LessThanOrEqualToThreshold
+                  description: "Static-threshold operators only. The anomaly-detection operators `PutMetricAlarm` also accepts are rejected: we fit no model, so there is no threshold band for them to compare against."
+                evaluationPeriods:
+                  type: integer
+                  minimum: 1
+                  maximum: 1440
+                  description: N — periods the metric is compared over.
+                datapointsToAlarm:
+                  type: integer
+                  nullable: true
+                  minimum: 1
+                  maximum: 1440
+                  description: M of N. Null/absent means N (consecutive alarm), which is AWS’s own default. Must not exceed `evaluationPeriods` — such a rule could never reach ALARM.
+                treatMissingData:
+                  type: string
+                  nullable: true
+                  enum:
+                    - missing
+                    - notBreaching
+                    - breaching
+                    - ignore
+                    - null
+                  description: Defaults to `missing`, matching CloudWatch.
+                severity:
+                  type: string
+                  nullable: true
+                  enum:
+                    - critical
+                    - warning
+                    - info
+                    - null
+                  description: Routing severity. Defaults to `warning`. Not a CloudWatch concept — ours.
+                enabled:
+                  type: boolean
+                  description: Defaults to true. Disabling stops evaluation while retaining the alert history a delete would cascade away.
+              required:
+                - name
+                - service
+                - namespace
+                - metricName
+                - stat
+                - periodS
+                - threshold
+                - comparisonOperator
+                - evaluationPeriods
+      responses:
+        "201":
+          description: Rule created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRule"
+        "400":
+          description: Malformed body or query.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is not open on this Hub.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/alert-rules/{ruleId}:
+    put:
+      tags:
+        - Projects
+      summary: Update an infra alert rule
+      description: |-
+        Partial update — absent keys are left alone. The `datapointsToAlarm <= evaluationPeriods` invariant is checked against the merged rule, not the patch, so lowering `evaluationPeriods` alone cannot strand an earlier `datapointsToAlarm`.
+
+        Existing alerts keep their state; the next evaluation applies the new threshold.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Alert rule id.
+          required: true
+          description: Alert rule id.
+          name: ruleId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: Operator-facing rule name, shown on the alert.
+                  example: ALB unhealthy hosts
+                description:
+                  type: string
+                  nullable: true
+                  maxLength: 2000
+                service:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: "Service token the rule applies to (`ec2`, `rds`, `elbv2`, …), matching `infra_resources.service`. Required: it decides which namespace the rule can apply to."
+                  example: elbv2
+                accountId:
+                  type: string
+                  nullable: true
+                  maxLength: 64
+                  description: Narrow to one account. Null/absent matches every account in scope.
+                region:
+                  type: string
+                  nullable: true
+                  maxLength: 32
+                  description: Narrow to one region. Null/absent matches every region in scope.
+                resourceKey:
+                  type: string
+                  nullable: true
+                  maxLength: 512
+                  description: Pin to exactly one resource (`infra_resources.resource_key`). Null/absent matches every resource satisfying the rest of the selector, including ones discovered after the rule was written.
+                tagFilter:
+                  type: object
+                  nullable: true
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+                      maxLength: 256
+                    minItems: 1
+                    maxItems: 50
+                  description: Tag predicate, e.g. `{"Environment":["prod"]}`. An empty object is stored as no filter.
+                namespace:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  example: AWS/ApplicationELB
+                metricName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  example: UnHealthyHostCount
+                stat:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: CloudWatch statistic (`Average`, `Maximum`, `Sum`, `p99`, …).
+                  example: Minimum
+                periodS:
+                  type: integer
+                  minimum: 1
+                  maximum: 86400
+                  description: Period in seconds. CloudWatch only serves 60s within 15 days, 300s within 63 days and 3600s beyond, so a period finer than the data available returns nothing.
+                  example: 60
+                threshold:
+                  type: number
+                comparisonOperator:
+                  type: string
+                  enum:
+                    - GreaterThanOrEqualToThreshold
+                    - GreaterThanThreshold
+                    - LessThanThreshold
+                    - LessThanOrEqualToThreshold
+                  description: "Static-threshold operators only. The anomaly-detection operators `PutMetricAlarm` also accepts are rejected: we fit no model, so there is no threshold band for them to compare against."
+                evaluationPeriods:
+                  type: integer
+                  minimum: 1
+                  maximum: 1440
+                  description: N — periods the metric is compared over.
+                datapointsToAlarm:
+                  type: integer
+                  nullable: true
+                  minimum: 1
+                  maximum: 1440
+                  description: M of N. Null/absent means N (consecutive alarm), which is AWS’s own default. Must not exceed `evaluationPeriods` — such a rule could never reach ALARM.
+                treatMissingData:
+                  type: string
+                  nullable: true
+                  enum:
+                    - missing
+                    - notBreaching
+                    - breaching
+                    - ignore
+                    - null
+                  description: Defaults to `missing`, matching CloudWatch.
+                severity:
+                  type: string
+                  nullable: true
+                  enum:
+                    - critical
+                    - warning
+                    - info
+                    - null
+                  description: Routing severity. Defaults to `warning`. Not a CloudWatch concept — ours.
+                enabled:
+                  type: boolean
+                  description: Defaults to true. Disabling stops evaluation while retaining the alert history a delete would cascade away.
+      responses:
+        "200":
+          description: Updated rule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRule"
+        "400":
+          description: Malformed body or query.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project or rule not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is not open on this Hub.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+    delete:
+      tags:
+        - Projects
+      summary: Delete an infra alert rule
+      description: |-
+        Cascades to every alert the rule fired and their transition history — an alert without its rule has no threshold to be read against.
+
+        To stop paging while keeping the incident record, `PUT` the rule with `enabled: false` instead.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Alert rule id.
+          required: true
+          description: Alert rule id.
+          name: ruleId
+          in: path
+      responses:
+        "204":
+          description: Rule deleted.
+        "404":
+          description: Project or rule not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is not open on this Hub.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/alerts:
+    get:
+      tags:
+        - Projects
+      summary: List fired infra alerts
+      description: |-
+        Most-recently-seen first, keyset-paginated. Filter by lifecycle `status`, alarm `state`, rule or resource.
+
+        A resource that has never breached has no row at all — the list is what needs attention, not an inventory with a health column.
+
+        **Cost:** local SQLite only. No AWS call.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - open
+              - resolved
+              - ignored
+          required: false
+          name: status
+          in: query
+        - schema:
+            type: string
+            enum:
+              - OK
+              - ALARM
+              - INSUFFICIENT_DATA
+          required: false
+          name: state
+          in: query
+        - schema:
+            type: string
+            maxLength: 64
+          required: false
+          name: ruleId
+          in: query
+        - schema:
+            type: string
+            maxLength: 512
+          required: false
+          name: resourceKey
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 600
+          required: false
+          name: cursor
+          in: query
+      responses:
+        "200":
+          description: Alert page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertList"
+        "400":
+          description: Malformed body or query.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/alerts/{alertId}:
+    get:
+      tags:
+        - Projects
+      summary: Get one infra alert with its transition history
+      description: The alert plus its recorded transitions, newest first. History is trimmed to a bounded window per alert, so a flapping resource cannot grow it without limit; the aggregate on the alert row (occurrence count, true first and last seen) is the durable record.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Alert id.
+          required: true
+          description: Alert id.
+          name: alertId
+          in: path
+      responses:
+        "200":
+          description: The alert.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlert"
+        "404":
+          description: Project or alert not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is not open on this Hub.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/alerts/{alertId}/status:
+    put:
+      tags:
+        - Projects
+      summary: Resolve, ignore or reopen an infra alert
+      description: |-
+        One endpoint for all three moves, because they are one column.
+
+        - `resolved` — closed out. A later breach **reopens** it automatically, attributed to `system:recurrence`.
+        - `ignored` — muted, and it stays muted through recurrence *and* through recovery. This is the only way to stop a known-bad resource paging on every tick.
+        - `open` — reopen a resolved or ignored alert.
+
+        The move is recorded in the alert’s transition history with the acting user as actor, so human and evaluator moves read as one timeline.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Alert id.
+          required: true
+          description: Alert id.
+          name: alertId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - open
+                    - resolved
+                    - ignored
+                  description: "`resolved` closes it out, `ignored` mutes it through recurrence, `open` reopens it."
+              required:
+                - status
+      responses:
+        "200":
+          description: Updated alert.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlert"
+        "400":
+          description: Malformed body or query.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project or alert not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is not open on this Hub.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
   /api/projects/{projectId}/infra/monitoring-status:
     get:
       tags:
