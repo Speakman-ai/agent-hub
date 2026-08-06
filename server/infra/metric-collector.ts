@@ -1,0 +1,927 @@
+/**
+ * metric-collector.ts — the batched `GetMetricData` poller (decision
+ * INFRA-COLLECT).
+ *
+ * Every tick reads its query list from `infra_resources` (never from
+ * `ListMetrics`, which is 25 TPS and omits anything that has not reported in
+ * two weeks), turns it into `MetricDataQuery` structures via the service pack,
+ * and issues as few `GetMetricData` calls as the API's ceilings allow. The
+ * results go to the batched write queue, and what the tick cost is recorded on
+ * an `infra_collect_runs` row before the tick is over.
+ *
+ * Four AWS constraints shape this module, all verified against the
+ * `GetMetricData` API reference (August 2026):
+ *
+ *   - **500 metric queries and 100,800 datapoints per request.** Both are
+ *     enforced by {@link batchMetricQueries}, not just the first one — a wide
+ *     backfill window blows the datapoint ceiling long before the query
+ *     ceiling.
+ *   - **Period must track data age or the call returns nothing.** 60s data is
+ *     retained 15 days, 300s for 63 days, 3600s for 455. Ask for a 60s period
+ *     over a 30-day window and CloudWatch has nothing to give you for the far
+ *     end of it. {@link resolvePeriod} is the whole of that rule.
+ *   - **`StartTime`/`EndTime` should align to the period and to the hour.**
+ *     AWS states this outright: *"For better performance, specify StartTime and
+ *     EndTime values that align with the value of the metric's Period and sync
+ *     up with the beginning and end of an hour."* {@link alignWindow} does it.
+ *   - **Results paginate.** A response carries a `NextToken` whenever the
+ *     datapoint ceiling is hit; the same query set has to be re-sent with it.
+ *
+ * Everything above the AWS call is pure and exported so it is unit-tested
+ * directly rather than through a mock client. The IO layer below it holds one
+ * invariant worth stating: **one failing target never aborts the tick**, same
+ * as inventory sync. An expired role in one region must not cost every other
+ * region its metrics.
+ */
+
+import { randomUUID } from 'crypto';
+import {
+  GetMetricDataCommand,
+  type GetMetricDataCommandOutput,
+  type MetricDataQuery,
+  type MetricDataResult,
+} from '@aws-sdk/client-cloudwatch';
+import { getInfraDb, isInfraDbInitialized } from './infra-db.js';
+import { getProjectCloudWatchClient } from './aws-clients.js';
+import {
+  getServiceMetricPack,
+  collectableServices,
+  type InfraMetricSpec,
+} from './service-metric-packs.js';
+import { enqueueInfraMetricPoints } from './infra-write-queue.js';
+import {
+  compileInfraTagFilter,
+  isEmptyInfraTagFilter,
+  matchesInfraTagFilter,
+} from './tag-filter.js';
+import {
+  startInfraCollectRun,
+  finishInfraCollectRun,
+  isValidCloudWatchPeriod,
+  type InfraMetricPointInput,
+} from './infra-metric-store.js';
+import type { InfraScopeRow } from './inventory-sync.js';
+
+/**
+ * Every 5 minutes (decision INFRA-COLLECT), on the 5-minute boundary rather
+ * than at an offset like inventory sync uses. The alignment is the point: a
+ * tick that fires at :00/:05/:10 produces a window that is already flush with
+ * the 60s and 300s period boundaries AWS asks callers to align to, so the
+ * rounding in {@link alignWindow} is a no-op instead of throwing away the most
+ * recent partial period.
+ */
+export const INFRA_COLLECT_CRON = '*/5 * * * *';
+
+/** Hard API ceiling: `MetricDataQuery` structures per `GetMetricData` request. */
+export const MAX_QUERIES_PER_REQUEST = 500;
+
+/** Hard API ceiling: datapoints per `GetMetricData` request (also `MaxDatapoints`' default). */
+export const MAX_DATAPOINTS_PER_REQUEST = 100_800;
+
+/**
+ * Pagination cap for one query batch. At the datapoint ceiling this is over 5
+ * million datapoints from a single batch, far past anything a collector window
+ * can produce. It exists so a looping `NextToken` cannot spin a tick forever.
+ */
+export const MAX_PAGES_PER_BATCH = 50;
+
+/** Retention tier boundaries, in ms. Straight from the CloudWatch retention table. */
+const FIFTEEN_DAYS_MS = 15 * 24 * 60 * 60 * 1000;
+const SIXTY_THREE_DAYS_MS = 63 * 24 * 60 * 60 * 1000;
+
+/**
+ * How far back each tick asks for. Wider than the 5-minute tick interval on
+ * purpose: CloudWatch datapoints land late, and a window that only covered the
+ * last tick would leave a permanent hole wherever a metric was a minute or two
+ * behind. Re-collecting an overlapping window is free of consequence because
+ * the store upserts on the series key.
+ */
+export const DEFAULT_COLLECT_LOOKBACK_MS = 15 * 60 * 1000;
+
+/**
+ * How stale an inventory row may be and still be polled. Inventory sync runs
+ * hourly, so a day of silence means the resource has been gone for ~24 sweeps.
+ * Rows are never deleted (decision INFRA-SCOPE), so without this the collector
+ * would keep paying `GetMetricData` for terminated instances forever.
+ */
+export const MAX_RESOURCE_STALENESS_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * `GetMetricData` list price per 1,000 metrics requested, us-east-1
+ * (`$0.01 per 1,000 metrics requested`). Regional prices differ, so the run
+ * row's `estimated_cost_usd` is exactly what its name says — an estimate whose
+ * job is to make the trend visible, not to reconcile against a bill.
+ *
+ * This operation is billed from the first call: the CloudWatch free tier's
+ * 1 million API requests explicitly exclude `GetMetricData`,
+ * `GetInsightRuleReport` and `GetMetricWidgetImage`.
+ */
+export const GET_METRIC_DATA_USD_PER_1000_METRICS = 0.01;
+
+/** Throttle backoff bounds. Full jitter over an exponentially growing cap. */
+export const THROTTLE_BACKOFF_BASE_MS = 500;
+export const THROTTLE_BACKOFF_MAX_MS = 20_000;
+/** Retries per request after a throttle. Beyond this the batch is an error. */
+export const DEFAULT_MAX_THROTTLE_RETRIES = 5;
+
+// ─── Pure helpers ───────────────────────────────────────────────────────────
+
+/**
+ * The shortest period CloudWatch still holds data at for a window reaching back
+ * to `windowStartMs`.
+ *
+ * CloudWatch retains 60s data for 15 days, 300s for 63 days, and 3600s for 455
+ * days, aggregating each tier into the next as it ages. Requesting a finer
+ * period than the tier the data has aged into does not return coarser data — it
+ * returns nothing, silently, which is the failure this function exists to
+ * prevent.
+ *
+ * Keyed on the window's **start**, not its end: a query spanning the 15-day
+ * boundary can only be answered at the coarser tier, because the old end of it
+ * no longer exists at 60s.
+ *
+ * There is no fourth tier for windows past 455 days. 3600s stays the answer;
+ * the data is simply gone, and CloudWatch returning an empty result for it is
+ * correct rather than something to work around.
+ */
+export function resolvePeriod(windowStartMs: number, nowMs: number): number {
+  const age = nowMs - windowStartMs;
+  if (age <= FIFTEEN_DAYS_MS) return 60;
+  if (age <= SIXTY_THREE_DAYS_MS) return 300;
+  return 3600;
+}
+
+/**
+ * The period this metric is actually collectable at: the retention tier, raised
+ * to the metric's own emission floor.
+ *
+ * The **floor** is validated, not just the result. A floor of 45 is currently
+ * masked by the 60s tier always winning the `Math.max`, so checking only the
+ * output would let a malformed pack entry sit undetected until the day a
+ * coarser tier or a finer floor made it the answer. The pack is a hand-written
+ * table; catching its typos where they are written is the point.
+ */
+export function effectivePeriod(
+  spec: InfraMetricSpec,
+  windowStartMs: number,
+  nowMs: number,
+): number {
+  if (!isValidCloudWatchPeriod(spec.minPeriodSeconds)) {
+    throw new Error(
+      `metric pack entry ${spec.namespace}/${spec.metricName} has an invalid minPeriodSeconds (${spec.minPeriodSeconds})`,
+    );
+  }
+  // Both inputs are valid periods and the result is the larger of the two, so
+  // the store will accept it.
+  return Math.max(resolvePeriod(windowStartMs, nowMs), spec.minPeriodSeconds);
+}
+
+export interface AlignedWindow {
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * Snap a window to period boundaries, per AWS's own performance guidance.
+ *
+ * Flooring an epoch timestamp to a multiple of the period is also what syncs it
+ * to the hour, because 60, 300 and 3600 all divide 3600 evenly and the epoch
+ * itself is an hour boundary. That coincidence is why one rounding satisfies
+ * both halves of AWS's advice — it would stop holding for a period like 420s,
+ * which {@link resolvePeriod} never returns.
+ *
+ * `EndTime` is exclusive and `StartTime` inclusive, so a window that rounds to
+ * zero width would ask for nothing at all. It is widened back to one period
+ * instead, which is the smallest question worth asking.
+ */
+export function alignWindow(startMs: number, endMs: number, periodSeconds: number): AlignedWindow {
+  const step = periodSeconds * 1000;
+  const alignedEnd = Math.floor(endMs / step) * step;
+  let alignedStart = Math.floor(startMs / step) * step;
+  if (alignedStart >= alignedEnd) alignedStart = alignedEnd - step;
+  return { startMs: alignedStart, endMs: alignedEnd };
+}
+
+/**
+ * Datapoints one query can return over a window. Used to bound a batch against
+ * the per-request datapoint ceiling before the request is sent, rather than
+ * discovering the ceiling as an extra pagination round trip.
+ */
+export function estimateDatapointsPerQuery(
+  startMs: number,
+  endMs: number,
+  periodSeconds: number,
+): number {
+  const step = periodSeconds * 1000;
+  return Math.max(1, Math.ceil((endMs - startMs) / step));
+}
+
+/**
+ * Split queries into request-sized batches against **both** API ceilings.
+ *
+ * The 500-query limit is the one everybody remembers; the 100,800-datapoint
+ * limit is the one that actually binds on a wide window. 500 queries over a
+ * 15-day 60s window would be 500 × 21,600 = 10.8 million datapoints, so the
+ * request would paginate 107 times instead of once. Bounding by datapoints up
+ * front turns that into batches that each fit in a single response.
+ */
+export function batchMetricQueries<T>(
+  queries: readonly T[],
+  datapointsPerQuery: number,
+  maxQueriesPerRequest: number = MAX_QUERIES_PER_REQUEST,
+  maxDatapointsPerRequest: number = MAX_DATAPOINTS_PER_REQUEST,
+): T[][] {
+  if (queries.length === 0) return [];
+  const byDatapoints = Math.floor(maxDatapointsPerRequest / Math.max(1, datapointsPerQuery));
+  // At least one query per batch even when a single query's window exceeds the
+  // datapoint ceiling on its own: that request paginates, which is correct and
+  // is what NextToken is for. Refusing to issue it would drop the series.
+  const perBatch = Math.max(1, Math.min(maxQueriesPerRequest, byDatapoints));
+  const batches: T[][] = [];
+  for (let i = 0; i < queries.length; i += perBatch) {
+    batches.push(queries.slice(i, i + perBatch));
+  }
+  return batches;
+}
+
+/** CloudWatch error names that mean "you are going too fast", not "you are wrong". */
+const THROTTLE_ERROR_NAMES = new Set([
+  'ThrottlingException',
+  'Throttling',
+  'ThrottledException',
+  'RequestThrottled',
+  'RequestThrottledException',
+  'RequestLimitExceeded',
+  'TooManyRequestsException',
+  'SlowDown',
+]);
+
+/**
+ * Whether an error is a rate limit worth retrying.
+ *
+ * Three signals, in order of trustworthiness: the SDK's own `$retryable`
+ * classification, HTTP 429, then the error name. The name list is last because
+ * `ThrottlingException` arrives as an HTTP **400** from CloudWatch, so status
+ * alone cannot carry the decision.
+ */
+export function isThrottlingError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as {
+    name?: string;
+    Code?: string;
+    $retryable?: { throttling?: boolean };
+    $metadata?: { httpStatusCode?: number };
+  };
+  if (e.$retryable?.throttling === true) return true;
+  if (e.$metadata?.httpStatusCode === 429) return true;
+  const name = e.name ?? e.Code;
+  return typeof name === 'string' && THROTTLE_ERROR_NAMES.has(name);
+}
+
+export interface BackoffOptions {
+  baseMs?: number;
+  maxMs?: number;
+  /** Injectable for deterministic tests. */
+  random?: () => number;
+}
+
+/**
+ * Full-jitter exponential backoff, floored at one base interval.
+ *
+ * Jitter is not decoration: every batch in a tick throttles at roughly the same
+ * moment, and an unjittered backoff would march them all into the next retry
+ * simultaneously — a thundering herd that re-throttles as reliably as the first
+ * attempt did. AWS's own guidance is to randomise across the whole window.
+ *
+ * The floor is the one deviation from textbook full jitter, which allows a
+ * zero-length sleep. Retrying a rate limit immediately is not a backoff.
+ */
+export function backoffDelayMs(attempt: number, opts: BackoffOptions = {}): number {
+  const base = opts.baseMs ?? THROTTLE_BACKOFF_BASE_MS;
+  const max = opts.maxMs ?? THROTTLE_BACKOFF_MAX_MS;
+  const cap = Math.min(max, base * 2 ** Math.max(0, attempt));
+  const rand = opts.random ? opts.random() : Math.random();
+  return Math.max(base, Math.round(rand * cap));
+}
+
+/**
+ * Metrics *requested*, which is the quantity AWS bills, and its dollar
+ * estimate.
+ *
+ * Counted per request issued, pagination pages included: each page re-sends the
+ * full query set, so each page is charged. AWS also bundles up to five
+ * statistics on one metric into a single billable metric request; we do not
+ * model that, which over-estimates a pack that polls the same metric on several
+ * stats. Over-estimating is the correct direction for a spend guardrail — a
+ * cost ceiling that under-reports is a ceiling that does not hold.
+ */
+export function estimateGetMetricDataCostUsd(metricsRequested: number): number {
+  return (metricsRequested / 1000) * GET_METRIC_DATA_USD_PER_1000_METRICS;
+}
+
+// ─── Query planning ─────────────────────────────────────────────────────────
+
+/** One resource-metric series the collector intends to fetch. */
+export interface PlannedQuery {
+  resourceKey: string;
+  namespace: string;
+  metricName: string;
+  dimensions: Record<string, string>;
+  stat: string;
+  periodSeconds: number;
+}
+
+/** The subset of an `infra_resources` row the collector queries on. */
+export interface CollectableResource {
+  resource_key: string;
+  account_id: string;
+  resource_id: string;
+  service: string;
+  /** Raw AWS tag array as stored; read only to re-apply the scope's tag filter. */
+  tags_json?: string | null;
+}
+
+/**
+ * The cross product of in-scope resources and their service pack.
+ *
+ * Ordering is deterministic (resources in the order the caller supplied, then
+ * pack order) so batch boundaries are reproducible and a test can assert on
+ * them without guessing at a hash order.
+ */
+export function planQueries(
+  resources: readonly CollectableResource[],
+  windowStartMs: number,
+  nowMs: number,
+): PlannedQuery[] {
+  const planned: PlannedQuery[] = [];
+  for (const resource of resources) {
+    for (const spec of getServiceMetricPack(resource.service)) {
+      planned.push({
+        resourceKey: resource.resource_key,
+        namespace: spec.namespace,
+        metricName: spec.metricName,
+        dimensions: { [spec.dimension]: resource.resource_id },
+        stat: spec.stat,
+        periodSeconds: effectivePeriod(spec, windowStartMs, nowMs),
+      });
+    }
+  }
+  return planned;
+}
+
+/**
+ * Group planned queries by period.
+ *
+ * One request carries a single `StartTime`/`EndTime` pair but a per-query
+ * `Period`, so mixing periods in one request means the window can only be
+ * aligned to one of them. Grouping keeps every request aligned to the period it
+ * carries, and costs at most three requests' worth of extra batching because
+ * {@link resolvePeriod} only ever yields 60, 300 or 3600 (raised to a pack
+ * entry's floor).
+ */
+export function groupQueriesByPeriod(
+  queries: readonly PlannedQuery[],
+): Map<number, PlannedQuery[]> {
+  const groups = new Map<number, PlannedQuery[]>();
+  for (const q of queries) {
+    const bucket = groups.get(q.periodSeconds);
+    if (bucket) bucket.push(q);
+    else groups.set(q.periodSeconds, [q]);
+  }
+  return groups;
+}
+
+/**
+ * Build the wire structures for one batch, plus the id → plan map to decode the
+ * response with.
+ *
+ * Ids are positional (`m0`, `m1`, …) rather than derived from the series:
+ * CloudWatch requires an id matching `^[a-z][a-zA-Z0-9_]*$` and unique within
+ * the request, and a resource id or metric name sanitised into that alphabet
+ * can collide. A positional id cannot.
+ */
+export function buildMetricDataQueries(batch: readonly PlannedQuery[]): {
+  queries: MetricDataQuery[];
+  byId: Map<string, PlannedQuery>;
+} {
+  const queries: MetricDataQuery[] = [];
+  const byId = new Map<string, PlannedQuery>();
+  batch.forEach((plan, index) => {
+    const id = `m${index}`;
+    byId.set(id, plan);
+    queries.push({
+      Id: id,
+      MetricStat: {
+        Metric: {
+          Namespace: plan.namespace,
+          MetricName: plan.metricName,
+          Dimensions: Object.entries(plan.dimensions).map(([Name, Value]) => ({ Name, Value })),
+        },
+        Period: plan.periodSeconds,
+        Stat: plan.stat,
+      },
+    });
+  });
+  return { queries, byId };
+}
+
+/**
+ * Decode one `MetricDataResult` into storable points.
+ *
+ * `Timestamps` and `Values` are parallel arrays; the shorter one wins so a
+ * truncated response cannot pair a timestamp with the wrong value.
+ */
+export function pointsFromResult(
+  result: MetricDataResult,
+  plan: PlannedQuery,
+  projectId: string,
+): InfraMetricPointInput[] {
+  const timestamps = result.Timestamps ?? [];
+  const values = result.Values ?? [];
+  const n = Math.min(timestamps.length, values.length);
+  const points: InfraMetricPointInput[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const raw = timestamps[i];
+    const tsMs = raw instanceof Date ? raw.getTime() : Number(raw);
+    points.push({
+      projectId,
+      resourceKey: plan.resourceKey,
+      namespace: plan.namespace,
+      metricName: plan.metricName,
+      dimensions: plan.dimensions,
+      stat: plan.stat,
+      periodSeconds: plan.periodSeconds,
+      tsMs,
+      value: values[i],
+    });
+  }
+  return points;
+}
+
+// ─── Collection ─────────────────────────────────────────────────────────────
+
+/** Just enough of a `CloudWatchClient` to fetch metric data; keeps tests SDK-free. */
+export interface CloudWatchMetricDataClient {
+  send(command: GetMetricDataCommand): Promise<GetMetricDataCommandOutput>;
+}
+
+/** One (project, profile, region) the tick collects for, and its scope rows. */
+export interface CollectTarget {
+  projectId: string;
+  profileName: string;
+  region: string;
+  scopes: InfraScopeRow[];
+}
+
+export interface InfraMetricCollectionOptions {
+  /** Injected clock so tests can pin the window. */
+  nowMs?: number;
+  /** Window depth; defaults to {@link DEFAULT_COLLECT_LOOKBACK_MS}. */
+  lookbackMs?: number;
+  /** Test seam: build the CloudWatch client for a target. */
+  cloudWatchClientFactory?: (target: CollectTarget) => CloudWatchMetricDataClient;
+  /** Test seam: where committed points go. Defaults to the shared write queue. */
+  enqueue?: (points: InfraMetricPointInput[]) => { enqueued: number; dropped: number };
+  /** Test seam: backoff sleep. Defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Test seam: jitter source. */
+  random?: () => number;
+  maxThrottleRetries?: number;
+}
+
+export interface InfraMetricCollectionResult {
+  /** (project, profile, region) groups this tick considered. */
+  targets: number;
+  /** Targets that completed without throwing. */
+  collected: number;
+  /** Targets that failed; their errors were logged and swallowed. */
+  failed: number;
+  /** `GetMetricData` requests issued, pagination pages included. */
+  queriesIssued: number;
+  /** Metrics requested — the billed quantity, summed across requests. */
+  metricsRequested: number;
+  datapointsReturned: number;
+  pointsEnqueued: number;
+  /** Points refused by the write queue's depth cap. */
+  pointsDropped: number;
+  throttles: number;
+  /** Per-metric failures reported in a response, plus batches that gave up. */
+  errors: number;
+  estimatedCostUsd: number;
+}
+
+/** Per-target counters, folded into the run row and the tick result. */
+interface TargetCounters {
+  queriesIssued: number;
+  metricsRequested: number;
+  datapointsReturned: number;
+  pointsEnqueued: number;
+  pointsDropped: number;
+  throttles: number;
+  errors: number;
+}
+
+function freshCounters(): TargetCounters {
+  return {
+    queriesIssued: 0,
+    metricsRequested: 0,
+    datapointsReturned: 0,
+    pointsEnqueued: 0,
+    pointsDropped: 0,
+    throttles: 0,
+    errors: 0,
+  };
+}
+
+function describeTarget(target: CollectTarget): string {
+  return `${target.projectId}/${target.profileName}/${target.region}`;
+}
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    // A backoff sleep must never be the reason the process stays alive.
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+
+/** Enabled scope rows on a service the collector has a metric pack for. */
+function listCollectableScopes(): InfraScopeRow[] {
+  const services = collectableServices();
+  if (services.length === 0) return [];
+  const placeholders = services.map(() => '?').join(', ');
+  return getInfraDb()
+    .prepare(
+      `SELECT id, project_id, profile_name, account_id, region, service, tag_filter_json
+         FROM infra_scopes
+        WHERE enabled = 1 AND service IN (${placeholders})
+        ORDER BY project_id, profile_name, region, service`,
+    )
+    .all(...services) as InfraScopeRow[];
+}
+
+/**
+ * Group scopes into (project, profile, region) targets.
+ *
+ * The grouping is what makes batching work: two scopes on the same account and
+ * region but different services share a CloudWatch client, a run row, and — the
+ * point — the same 500-query requests, instead of each paying its own round
+ * trips for a handful of queries.
+ */
+export function groupScopesIntoTargets(scopes: readonly InfraScopeRow[]): CollectTarget[] {
+  const targets = new Map<string, CollectTarget>();
+  for (const scope of scopes) {
+    // JSON, not a delimiter join: a profile name is free text, and two
+    // distinct targets collapsing into one would poll one profile's scopes
+    // with the other's credentials, reading and billing the wrong AWS account.
+    const key = JSON.stringify([scope.project_id, scope.profile_name, scope.region]);
+    const existing = targets.get(key);
+    if (existing) existing.scopes.push(scope);
+    else
+      targets.set(key, {
+        projectId: scope.project_id,
+        profileName: scope.profile_name,
+        region: scope.region,
+        scopes: [scope],
+      });
+  }
+  return [...targets.values()];
+}
+
+/**
+ * Resources one scope should be polled for.
+ *
+ * Terminated and long-unseen rows are excluded rather than deleted: inventory
+ * keeps them so a chart retains its subject (decision INFRA-SCOPE), but
+ * `GetMetricData` bills per metric requested whether or not the resource still
+ * exists, so continuing to ask about them is pure spend.
+ *
+ * **The scope's tag filter is re-applied here**, even though inventory sync
+ * already pushed it into the describe call. Inventory rows are never deleted,
+ * so a *narrowed* filter leaves rows behind that AWS would no longer return —
+ * and the collector would keep billing for them until they aged out a day
+ * later. Two scopes on the same region and service under different profiles
+ * have the inverse problem: each would otherwise collect the union of both
+ * filters, mixing telemetry the operator separated on purpose.
+ *
+ * Filtering is in JS rather than SQL because the predicate is EC2 glob matching
+ * over a JSON tag array, which SQLite cannot express. A scope's tag set is
+ * tiny and the patterns are compiled once per scope, not once per row.
+ *
+ * Throws on a malformed filter — the caller counts the scope as failed. The
+ * fail-closed direction is the whole point: falling back to "no filter" would
+ * turn an operator typo into a billed sweep of every resource in the region.
+ */
+function listScopeResources(scope: InfraScopeRow, nowMs: number): CollectableResource[] {
+  const tagFilter = compileInfraTagFilter(scope.tag_filter_json);
+  const clauses = [
+    'project_id = ?',
+    'region = ?',
+    'service = ?',
+    'last_seen >= ?',
+    "(state IS NULL OR state != 'terminated')",
+  ];
+  const params: (string | number)[] = [
+    scope.project_id,
+    scope.region,
+    scope.service,
+    nowMs - MAX_RESOURCE_STALENESS_MS,
+  ];
+  // A scope's account_id stays NULL until sts:GetCallerIdentity has run for its
+  // profile; until then the (project, region, service) triple is the whole
+  // filter, which is what inventory sync wrote the rows under anyway.
+  if (scope.account_id) {
+    clauses.push('account_id = ?');
+    params.push(scope.account_id);
+  }
+  const rows = getInfraDb()
+    .prepare(
+      `SELECT resource_key, account_id, resource_id, service, tags_json
+         FROM infra_resources
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY resource_id`,
+    )
+    .all(...params) as CollectableResource[];
+
+  if (isEmptyInfraTagFilter(tagFilter)) return rows;
+  return rows.filter((row) => matchesInfraTagFilter(row.tags_json ?? null, tagFilter));
+}
+
+/**
+ * Send one request, retrying only throttles.
+ *
+ * A non-throttle error propagates immediately: retrying an `AccessDenied` or a
+ * malformed query just spends the backoff budget on an outcome that cannot
+ * change, and hides the real error behind a timeout.
+ */
+async function sendWithThrottleRetry(
+  client: CloudWatchMetricDataClient,
+  command: GetMetricDataCommand,
+  counters: TargetCounters,
+  opts: InfraMetricCollectionOptions,
+): Promise<GetMetricDataCommandOutput> {
+  const maxRetries = opts.maxThrottleRetries ?? DEFAULT_MAX_THROTTLE_RETRIES;
+  const sleep = opts.sleep ?? defaultSleep;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.send(command);
+    } catch (err) {
+      if (!isThrottlingError(err) || attempt >= maxRetries) throw err;
+      counters.throttles += 1;
+      await sleep(backoffDelayMs(attempt, { random: opts.random }));
+    }
+  }
+}
+
+/** Issue one batch, following `NextToken`, and hand the points to the queue. */
+async function collectBatch(
+  client: CloudWatchMetricDataClient,
+  projectId: string,
+  batch: readonly PlannedQuery[],
+  window: AlignedWindow,
+  counters: TargetCounters,
+  opts: InfraMetricCollectionOptions,
+): Promise<void> {
+  const { queries, byId } = buildMetricDataQueries(batch);
+  let nextToken: string | undefined;
+  let pages = 0;
+  /**
+   * Series that came back `PartialData` on the page we just read.
+   *
+   * Reset every page, because `PartialData` mid-pagination is the *normal*
+   * case, not a fault: AWS defines it as "an incomplete set of data points were
+   * returned. You can use the NextToken value that was returned and repeat your
+   * request to get more data points." Counting it as an error on sight would
+   * flag every multi-page tick. Only what is still partial once pagination has
+   * run out is genuinely an incomplete window.
+   */
+  let partialSeries: string[] = [];
+
+  do {
+    const command = new GetMetricDataCommand({
+      MetricDataQueries: queries,
+      StartTime: new Date(window.startMs),
+      EndTime: new Date(window.endMs),
+      // Oldest-first so a paginated batch stores the far end of the window
+      // first; if the page cap is ever hit, what is missing is the newest
+      // slice, which the next tick re-collects anyway.
+      ScanBy: 'TimestampAscending',
+      ...(nextToken ? { NextToken: nextToken } : {}),
+    });
+
+    const out = await sendWithThrottleRetry(client, command, counters, opts);
+    // Counted per request, not per batch: every page re-sends the full query
+    // set and is billed for it.
+    counters.queriesIssued += 1;
+    counters.metricsRequested += queries.length;
+
+    for (const message of out.Messages ?? []) {
+      console.warn(`[infra-metric-collector] ${projectId}: ${message.Code} ${message.Value}`);
+    }
+
+    const points: InfraMetricPointInput[] = [];
+    partialSeries = [];
+    for (const result of out.MetricDataResults ?? []) {
+      const plan = result.Id ? byId.get(result.Id) : undefined;
+      if (!plan) continue;
+      if (result.StatusCode === 'InternalError' || result.StatusCode === 'Forbidden') {
+        counters.errors += 1;
+        console.warn(
+          `[infra-metric-collector] ${projectId}: ${plan.namespace}/${plan.metricName} returned ${result.StatusCode}`,
+        );
+        continue;
+      }
+      // Recorded, not skipped: the datapoints in a PartialData result are real,
+      // there are just fewer of them than the window asked for. Whether that
+      // gap gets closed is decided after the pagination loop.
+      if (result.StatusCode === 'PartialData') {
+        partialSeries.push(`${plan.namespace}/${plan.metricName}`);
+      }
+      points.push(...pointsFromResult(result, plan, projectId));
+    }
+
+    counters.datapointsReturned += points.length;
+    if (points.length > 0) {
+      const enqueue = opts.enqueue ?? enqueueInfraMetricPoints;
+      const { enqueued, dropped } = enqueue(points);
+      counters.pointsEnqueued += enqueued;
+      counters.pointsDropped += dropped;
+    }
+
+    nextToken = out.NextToken ?? undefined;
+    pages += 1;
+  } while (nextToken && pages < MAX_PAGES_PER_BATCH);
+
+  if (nextToken) {
+    // The page cap already explains any outstanding PartialData, so it is not
+    // counted twice.
+    counters.errors += 1;
+    console.warn(
+      `[infra-metric-collector] ${projectId}: stopped at the ${MAX_PAGES_PER_BATCH}-page cap; this window is incomplete`,
+    );
+  } else if (partialSeries.length > 0) {
+    // Pagination is exhausted and CloudWatch still calls these incomplete.
+    // There is no further token to follow, so the stored window really does
+    // have holes in it — the run must not report `ok`.
+    counters.errors += partialSeries.length;
+    console.warn(
+      `[infra-metric-collector] ${projectId}: ${partialSeries.length} series returned PartialData with no further NextToken; ` +
+        `these windows are incomplete: ${[...new Set(partialSeries)].join(', ')}`,
+    );
+  }
+}
+
+/** Collect one (project, profile, region), recording a run row for the attempt. */
+async function collectTarget(
+  target: CollectTarget,
+  opts: InfraMetricCollectionOptions,
+  nowMs: number,
+): Promise<TargetCounters> {
+  const counters = freshCounters();
+  const lookbackMs = opts.lookbackMs ?? DEFAULT_COLLECT_LOOKBACK_MS;
+  const windowStartMs = nowMs - lookbackMs;
+
+  const resources: CollectableResource[] = [];
+  for (const scope of target.scopes) {
+    try {
+      resources.push(...listScopeResources(scope, nowMs));
+    } catch (err) {
+      // A scope with an unreadable tag filter is skipped, not widened. Counting
+      // it keeps the failure visible even on a target where every other scope
+      // collected fine — and even when it was the only scope, because these
+      // counters are folded into the tick result whether or not a run row opens.
+      counters.errors += 1;
+      console.warn(
+        `[infra-metric-collector] ${describeTarget(target)}/${scope.service}: skipping scope —`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  const planned = planQueries(resources, windowStartMs, nowMs);
+  // No run row for a target with nothing to ask about. An audit table whose
+  // rows are mostly empty ticks makes the ticks that cost money harder to find.
+  if (planned.length === 0) return counters;
+
+  const accountId =
+    resources.find((r) => r.account_id)?.account_id ??
+    target.scopes.find((s) => s.account_id)?.account_id ??
+    null;
+
+  const runId = randomUUID();
+  startInfraCollectRun({
+    id: runId,
+    projectId: target.projectId,
+    accountId,
+    region: target.region,
+    startedAt: nowMs,
+  });
+
+  let status: 'ok' | 'partial' | 'failed' = 'ok';
+  let errorMessage: string | null = null;
+  try {
+    const client = opts.cloudWatchClientFactory
+      ? opts.cloudWatchClientFactory(target)
+      : getProjectCloudWatchClient(target.projectId, {
+          profileName: target.profileName,
+          region: target.region,
+        });
+
+    for (const [periodSeconds, queries] of groupQueriesByPeriod(planned)) {
+      const window = alignWindow(windowStartMs, nowMs, periodSeconds);
+      const perQuery = estimateDatapointsPerQuery(window.startMs, window.endMs, periodSeconds);
+      for (const batch of batchMetricQueries(queries, perQuery)) {
+        await collectBatch(client, target.projectId, batch, window, counters, opts);
+      }
+    }
+    if (counters.errors > 0 || counters.pointsDropped > 0) status = 'partial';
+  } catch (err) {
+    status = 'failed';
+    counters.errors += 1;
+    errorMessage = err instanceof Error ? err.message : String(err);
+    throw Object.assign(new Error(errorMessage), { counters });
+  } finally {
+    finishInfraCollectRun(runId, {
+      // Real wall clock, so `duration_ms` measures the tick rather than the
+      // difference between two points on an injected clock. A test that pins
+      // `nowMs` pins this too, or every run row it writes claims to have taken
+      // however long ago the fixture epoch is.
+      finishedAt: opts.nowMs === undefined ? Date.now() : opts.nowMs,
+      queriesIssued: counters.queriesIssued,
+      metricsRequested: counters.metricsRequested,
+      datapointsReturned: counters.datapointsReturned,
+      pointsWritten: counters.pointsEnqueued,
+      throttles: counters.throttles,
+      errors: counters.errors,
+      estimatedCostUsd: estimateGetMetricDataCostUsd(counters.metricsRequested),
+      status,
+      errorMessage,
+    });
+  }
+
+  return counters;
+}
+
+function fold(result: InfraMetricCollectionResult, counters: TargetCounters): void {
+  result.queriesIssued += counters.queriesIssued;
+  result.metricsRequested += counters.metricsRequested;
+  result.datapointsReturned += counters.datapointsReturned;
+  result.pointsEnqueued += counters.pointsEnqueued;
+  result.pointsDropped += counters.pointsDropped;
+  result.throttles += counters.throttles;
+  result.errors += counters.errors;
+}
+
+/**
+ * Run one metric-collection tick across every enabled scope.
+ *
+ * Never throws. A target that fails is counted, logged, and stepped over — same
+ * contract as inventory sync, and for the same reason: one region with an
+ * expired role must not cost every other region its telemetry. Targets run
+ * sequentially, which also keeps a large deployment from fanning enough
+ * concurrent `GetMetricData` calls at one account to throttle itself.
+ */
+export async function runInfraMetricCollection(
+  opts: InfraMetricCollectionOptions = {},
+): Promise<InfraMetricCollectionResult> {
+  const result: InfraMetricCollectionResult = {
+    targets: 0,
+    collected: 0,
+    failed: 0,
+    queriesIssued: 0,
+    metricsRequested: 0,
+    datapointsReturned: 0,
+    pointsEnqueued: 0,
+    pointsDropped: 0,
+    throttles: 0,
+    errors: 0,
+    estimatedCostUsd: 0,
+  };
+  // Scheduled unconditionally at boot, but infra.db only exists once
+  // initInfraDb() has run. A no-op beats a thrown tick.
+  if (!isInfraDbInitialized()) return result;
+
+  const targets = groupScopesIntoTargets(listCollectableScopes());
+  result.targets = targets.length;
+  const nowMs = opts.nowMs ?? Date.now();
+
+  for (const target of targets) {
+    try {
+      fold(result, await collectTarget(target, opts, nowMs));
+      result.collected += 1;
+    } catch (err) {
+      result.failed += 1;
+      // The partial counters survive the failure: a target that throttled and
+      // then failed still spent money, and a cost audit that forgets the spend
+      // of failed ticks under-reports exactly when it matters most.
+      const partial = (err as { counters?: TargetCounters }).counters;
+      if (partial) fold(result, partial);
+      else result.errors += 1;
+      console.warn(
+        `[infra-metric-collector] ${describeTarget(target)} failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  result.estimatedCostUsd = estimateGetMetricDataCostUsd(result.metricsRequested);
+  return result;
+}

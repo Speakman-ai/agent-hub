@@ -272,6 +272,7 @@ import { runLogRetentionReaper, LOG_RETENTION_REAPER_CRON } from './logs/log-ret
 import { initInfraDb } from './infra/infra-db.js';
 import { startInfraWriteQueue, flushInfraWriteQueue } from './infra/infra-write-queue.js';
 import { runInfraInventorySync, INFRA_INVENTORY_SYNC_CRON } from './infra/inventory-sync.js';
+import { runInfraMetricCollection, INFRA_COLLECT_CRON } from './infra/metric-collector.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
@@ -1244,6 +1245,20 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     defaultTickOptions({
       intervalSeconds: estimateIntervalSeconds(INFRA_INVENTORY_SYNC_CRON),
       name: 'infra-inventory-sync',
+    }),
+  );
+
+  // AWS metric collection (decision INFRA-COLLECT) — batched GetMetricData
+  // against the inventory the sweep above maintains. `noOverlap` comes from
+  // defaultTickOptions and is load-bearing here rather than hygienic: a tick
+  // that overran into the next one would re-issue the same billed queries
+  // against the same window for no new data.
+  cron.schedule(
+    INFRA_COLLECT_CRON,
+    wrapCronTick(() => runInfraMetricCollection(), 'infra-metric-collector'),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(INFRA_COLLECT_CRON),
+      name: 'infra-metric-collector',
     }),
   );
 

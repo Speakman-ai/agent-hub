@@ -39,6 +39,7 @@ import {
 } from '@aws-sdk/client-ec2';
 import { getInfraDb, isInfraDbInitialized, infraResourceKey } from './infra-db.js';
 import { getProjectEc2Client } from './aws-clients.js';
+import { parseInfraTagFilter } from './tag-filter.js';
 
 /**
  * Hourly, at a fixed off-the-hour minute.
@@ -118,44 +119,16 @@ function describeScope(scope: InfraScopeRow): string {
  * `DescribeInstances` means AWS returns only in-scope instances instead of us
  * paginating the whole region and discarding most of it.
  *
- * Stored format is `{"Key": ["v1","v2"]}` — a map of tag key to accepted
- * values, ANDed across keys and ORed within one, which is exactly EC2's own
- * filter semantics. A bare string is accepted as a single value.
- *
- * Throws on anything it cannot parse, and that direction is deliberate: the
- * caller turns the throw into a skipped scope. Degrading a broken filter to
- * "no filter" would silently widen the sweep to every instance in the region,
- * turning an operator typo into unbounded describe traffic and an inventory
- * they never opted into.
+ * The format and its failure behaviour live in `tag-filter.ts`, because the
+ * metric collector has to re-apply the *same* filter to the stored rows — this
+ * sweep's server-side filter is not the last word, since inventory rows outlive
+ * a narrowed filter. One parser means the two cannot drift.
  */
 export function buildEc2TagFilters(tagFilterJson: string | null): Filter[] {
-  if (tagFilterJson === null || tagFilterJson.trim() === '') return [];
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(tagFilterJson);
-  } catch (err) {
-    throw new Error(`tag_filter_json is not valid JSON: ${(err as Error).message}`);
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('tag_filter_json must be a JSON object of tag key -> value(s)');
-  }
-
-  const filters: Filter[] = [];
-  for (const [key, raw] of Object.entries(parsed as Record<string, unknown>)) {
-    if (key === '') throw new Error('tag_filter_json contains an empty tag key');
-    const values = Array.isArray(raw) ? raw : [raw];
-    if (values.length === 0) {
-      throw new Error(`tag_filter_json key "${key}" has no values`);
-    }
-    for (const value of values) {
-      if (typeof value !== 'string') {
-        throw new Error(`tag_filter_json key "${key}" has a non-string value`);
-      }
-    }
-    filters.push({ Name: `tag:${key}`, Values: values as string[] });
-  }
-  return filters;
+  return parseInfraTagFilter(tagFilterJson).map((clause) => ({
+    Name: `tag:${clause.key}`,
+    Values: clause.values,
+  }));
 }
 
 /** Look up a tag case-insensitively; AWS tag keys are case-sensitive, operators are not. */
