@@ -268,6 +268,7 @@ import {
 import { initLogsDb } from './logs/logs-db.js';
 import { startLogWriteQueue, flushLogWriteQueue } from './logs/log-write-queue.js';
 import { runLogRetentionReaper, LOG_RETENTION_REAPER_CRON } from './logs/log-retention-reaper.js';
+import { initInfraDb } from './infra/infra-db.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
 
@@ -394,6 +395,15 @@ try {
   startLogWriteQueue();
 } catch (err) {
   console.error('[logs] Failed to initialize logs.db:', (err as Error).message);
+}
+
+// Dedicated AWS infrastructure-monitoring store (decision INFRA-STORE).
+// Anchored at the base data dir like logs.db so collector writes never contend
+// with operational state. Best-effort: a failure here must not block boot.
+try {
+  initInfraDb(config.dataDir);
+} catch (err) {
+  console.error('[infra] Failed to initialize infra.db:', (err as Error).message);
 }
 
 const _startupOrgId: string = getActiveOrgId();
