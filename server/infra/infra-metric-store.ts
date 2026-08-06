@@ -411,8 +411,14 @@ export interface InfraCollectRunStart {
   startedAt: number;
 }
 
-export interface InfraCollectRunFinish {
-  finishedAt: number;
+/**
+ * Counter deltas for one increment of an open run row.
+ *
+ * Every field is an amount to **add**, not a total to set, so a caller can
+ * flush after each billed request without having to know what it flushed
+ * before.
+ */
+export interface InfraCollectRunProgress {
   queriesIssued?: number;
   metricsRequested?: number;
   datapointsReturned?: number;
@@ -420,6 +426,10 @@ export interface InfraCollectRunFinish {
   throttles?: number;
   errors?: number;
   estimatedCostUsd?: number;
+}
+
+export interface InfraCollectRunFinish {
+  finishedAt: number;
   status: 'ok' | 'partial' | 'failed';
   errorMessage?: string | null;
 }
@@ -439,36 +449,69 @@ export function startInfraCollectRun(run: InfraCollectRunStart): void {
     .run(run.id, run.projectId, run.accountId ?? null, run.region ?? null, run.startedAt);
 }
 
-/** Close an audit row with the tick's counters and estimated AWS API cost. */
+/**
+ * Add a tick's latest counters onto an open run row.
+ *
+ * **Spend is accounted incrementally, as it is incurred, rather than once at
+ * the end.** A `GetMetricData` request is billed the moment AWS answers it, so
+ * an audit trail that only learns the cost when the tick finishes has a window
+ * where money has been spent and nothing durably records it. An in-process
+ * error still closes the row through the collector's `finally`, but a hard kill
+ * — SIGKILL, an OOM, the host rebooting — does not run `finally` at all, and
+ * the row would be left claiming zero cost for requests AWS has already
+ * charged for.
+ *
+ * That gap is worst exactly where it matters most. In a crash loop each restart
+ * issues a fresh round of billed requests, none of them are ever counted, and
+ * the ceiling that exists to stop runaway spend never trips because
+ * month-to-date spend reads as zero. Paying one indexed `UPDATE` by primary key
+ * per AWS round trip is a rounding error against the network call it follows.
+ *
+ * `+=` rather than `=` so the caller flushes deltas and never has to reconcile
+ * against what it wrote last.
+ */
+export function recordInfraCollectRunProgress(id: string, delta: InfraCollectRunProgress): void {
+  getInfraDb()
+    .prepare(
+      `UPDATE infra_collect_runs
+          SET queries_issued      = queries_issued + ?,
+              metrics_requested   = metrics_requested + ?,
+              datapoints_returned = datapoints_returned + ?,
+              points_written      = points_written + ?,
+              throttles           = throttles + ?,
+              errors              = errors + ?,
+              estimated_cost_usd  = estimated_cost_usd + ?
+        WHERE id = ?`,
+    )
+    .run(
+      delta.queriesIssued ?? 0,
+      delta.metricsRequested ?? 0,
+      delta.datapointsReturned ?? 0,
+      delta.pointsWritten ?? 0,
+      delta.throttles ?? 0,
+      delta.errors ?? 0,
+      delta.estimatedCostUsd ?? 0,
+      id,
+    );
+}
+
+/**
+ * Close an audit row.
+ *
+ * Terminal fields only. The counters belong to
+ * {@link recordInfraCollectRunProgress}, which has already persisted them as
+ * the spend was incurred — writing absolute totals here as well would make two
+ * writers for one column, and they could only ever disagree.
+ */
 export function finishInfraCollectRun(id: string, result: InfraCollectRunFinish): void {
   getInfraDb()
     .prepare(
       `UPDATE infra_collect_runs
           SET finished_at = ?,
               duration_ms = ? - started_at,
-              queries_issued = ?,
-              metrics_requested = ?,
-              datapoints_returned = ?,
-              points_written = ?,
-              throttles = ?,
-              errors = ?,
-              estimated_cost_usd = ?,
               status = ?,
               error_message = ?
         WHERE id = ?`,
     )
-    .run(
-      result.finishedAt,
-      result.finishedAt,
-      result.queriesIssued ?? 0,
-      result.metricsRequested ?? 0,
-      result.datapointsReturned ?? 0,
-      result.pointsWritten ?? 0,
-      result.throttles ?? 0,
-      result.errors ?? 0,
-      result.estimatedCostUsd ?? 0,
-      result.status,
-      result.errorMessage ?? null,
-      id,
-    );
+    .run(result.finishedAt, result.finishedAt, result.status, result.errorMessage ?? null, id);
 }

@@ -94,3 +94,126 @@ describe('GET /api/projects/:projectId/infra/monitoring-status', () => {
     expect(probeMock).not.toHaveBeenCalled();
   });
 });
+
+describe('infra cost routes', () => {
+  it('reports an empty, uncapped cost body for a project that has never collected', async () => {
+    const projectId = await freshProject();
+    const res = await request.get(`/api/projects/${projectId}/infra/cost`).expect(200);
+
+    expect(res.body).toMatchObject({
+      monthToDateUsd: 0,
+      runs: 0,
+      monthlyCeilingUsd: null,
+      degradation: 'normal',
+      configured: false,
+    });
+    expect(res.body.projection).toEqual({
+      metricsRequestedPerMonth: 0,
+      estimatedMonthlyCostUsd: 0,
+      perScope: [],
+    });
+    expect(res.body.recentRuns).toEqual([]);
+    expect(typeof res.body.monthStartMs).toBe('number');
+  });
+
+  it('404s the cost endpoint for an unknown project', async () => {
+    await request.get('/api/projects/does-not-exist/infra/cost').expect(404);
+  });
+
+  it('prices a proposed scope list without persisting it', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .post(`/api/projects/${projectId}/infra/cost/projection`)
+      .send({ scopes: [{ service: 'ec2', resourceCount: 50, region: 'us-east-1' }] })
+      .expect(200);
+
+    expect(res.body.perScope).toHaveLength(1);
+    expect(res.body.perScope[0].resourceCount).toBe(50);
+    expect(res.body.metricsRequestedPerMonth).toBeGreaterThan(0);
+    expect(res.body.estimatedMonthlyCostUsd).toBeGreaterThan(0);
+    // Every metric reports the floor it was clamped to, so the editor can say
+    // *why* a cadence is what it is rather than just quoting a number.
+    expect(res.body.perScope[0].intervals.length).toBeGreaterThan(0);
+    expect(res.body.perScope[0].intervals[0]).toHaveProperty('minPeriodSeconds');
+
+    // Pricing is a pure read — nothing was saved.
+    const after = await request.get(`/api/projects/${projectId}/infra/cost`).expect(200);
+    expect(after.body.projection.perScope).toEqual([]);
+    expect(after.body.configured).toBe(false);
+  });
+
+  it('prices each scope in its own region', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .post(`/api/projects/${projectId}/infra/cost/projection`)
+      .send({
+        scopes: [
+          { service: 'ec2', resourceCount: 10, region: 'us-east-1' },
+          { service: 'ec2', resourceCount: 10, region: 'sa-east-1' },
+        ],
+      })
+      .expect(200);
+
+    const [virginia, saopaulo] = res.body.perScope;
+    expect(saopaulo.metricsRequestedPerMonth).toBe(virginia.metricsRequestedPerMonth);
+    expect(saopaulo.estimatedMonthlyCostUsd).toBeGreaterThan(virginia.estimatedMonthlyCostUsd);
+  });
+
+  it('rejects a malformed projection body', async () => {
+    const projectId = await freshProject();
+    await request
+      .post(`/api/projects/${projectId}/infra/cost/projection`)
+      .send({ scopes: [{ service: 'ec2', resourceCount: -1 }] })
+      .expect(400);
+    await request
+      .post(`/api/projects/${projectId}/infra/cost/projection`)
+      .send({ scopes: [{ resourceCount: 5 }] })
+      .expect(400);
+  });
+
+  it('saves and clears the monthly ceiling', async () => {
+    const projectId = await freshProject();
+    const saved = await request
+      .put(`/api/projects/${projectId}/infra/cost/config`)
+      .send({ monthlyCeilingUsd: 25 })
+      .expect(200);
+    expect(saved.body).toMatchObject({ monthlyCeilingUsd: 25, configured: true });
+
+    const read = await request.get(`/api/projects/${projectId}/infra/cost`).expect(200);
+    expect(read.body.monthlyCeilingUsd).toBe(25);
+
+    const cleared = await request
+      .put(`/api/projects/${projectId}/infra/cost/config`)
+      .send({ monthlyCeilingUsd: null })
+      .expect(200);
+    // Cleared, but still `configured` — the operator deliberately removed it,
+    // which is not the same as never having opened the panel.
+    expect(cleared.body.monthlyCeilingUsd).toBeNull();
+    expect(cleared.body.configured).toBe(true);
+  });
+
+  it('accepts a zero ceiling, which means "collect nothing"', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/cost/config`)
+      .send({ monthlyCeilingUsd: 0 })
+      .expect(200);
+    expect(res.body.monthlyCeilingUsd).toBe(0);
+  });
+
+  it('rejects a negative or absent ceiling', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/infra/cost/config`)
+      .send({ monthlyCeilingUsd: -1 })
+      .expect(400);
+    await request.put(`/api/projects/${projectId}/infra/cost/config`).send({}).expect(400);
+  });
+
+  it('404s the config endpoint for an unknown project before validating the body', async () => {
+    await request
+      .put('/api/projects/does-not-exist/infra/cost/config')
+      .send({ monthlyCeilingUsd: 10 })
+      .expect(404);
+  });
+});

@@ -1255,7 +1255,10 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
   // against the same window for no new data.
   cron.schedule(
     INFRA_COLLECT_CRON,
-    wrapCronTick(() => runInfraMetricCollection(), 'infra-metric-collector'),
+    // `broadcast` is passed so a cost-ceiling transition raises an in-app notice
+    // rather than only a log line (decision INFRA-COST: the collector "never
+    // silently keeps spending"). It fires on the transition, not per tick.
+    wrapCronTick(() => runInfraMetricCollection({ broadcast }), 'infra-metric-collector'),
     defaultTickOptions({
       intervalSeconds: estimateIntervalSeconds(INFRA_COLLECT_CRON),
       name: 'infra-metric-collector',

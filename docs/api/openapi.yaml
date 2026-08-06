@@ -6630,6 +6630,264 @@ components:
         - reachable
         - checkedAt
       description: Whether this project can be monitored right now. Never carries credential material — profile name, region and failure text only.
+    InfraCostProjection:
+      type: object
+      properties:
+        metricsRequestedPerMonth:
+          type: number
+        estimatedMonthlyCostUsd:
+          type: number
+        perScope:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              service:
+                type: string
+                example: ec2
+              profileName:
+                type: string
+              region:
+                type: string
+                example: us-east-2
+              resourceCount:
+                type: number
+              metricsPerResource:
+                type: number
+                description: Metrics in this service’s pack. Zero means the service is not collected at all.
+              metricsRequestedPerMonth:
+                type: number
+              estimatedMonthlyCostUsd:
+                type: number
+                description: Priced at the scope’s own region. Most regions are $0.01 per 1,000 metrics requested; GovCloud is $0.013 and São Paulo $0.014.
+              usdPer1000Metrics:
+                type: number
+                description: The `GetMetricData` rate this scope was priced at.
+                example: 0.01
+              regionPriceKnown:
+                type: boolean
+                description: False when the region is absent from the published price table and the **dearest** known rate was assumed instead — a guardrail must never knowingly under-report, so an unrecognised region is priced high, not at the list rate. Surfaced so an operator can see why an estimate is inflated (by up to 40%) rather than merely distrusting it.
+              intervals:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    metricName:
+                      type: string
+                      example: CPUUtilization
+                    namespace:
+                      type: string
+                      example: AWS/EC2
+                    stat:
+                      type: string
+                      example: Average
+                    minPeriodSeconds:
+                      type: number
+                      description: The rate AWS actually publishes this metric at. The poll interval can never go below it — requests for data that has not been published yet are billed and return nothing.
+                      example: 300
+                    pollIntervalSeconds:
+                      type: number
+                      description: "What the collector will request it at: the service tier, raised to `minPeriodSeconds`, raised to the collector tick, then multiplied if the project is `widened`."
+                      example: 300
+                    requestsPerMonth:
+                      type: number
+                  required:
+                    - metricName
+                    - namespace
+                    - stat
+                    - minPeriodSeconds
+                    - pollIntervalSeconds
+                    - requestsPerMonth
+                  description: Resolved cadence for one metric in a service pack.
+            required:
+              - service
+              - resourceCount
+              - metricsPerResource
+              - metricsRequestedPerMonth
+              - estimatedMonthlyCostUsd
+              - usdPer1000Metrics
+              - regionPriceKnown
+              - intervals
+            description: What one scope contributes to the projected monthly bill.
+      required:
+        - metricsRequestedPerMonth
+        - estimatedMonthlyCostUsd
+        - perScope
+      description: "Projected monthly `GetMetricData` spend for a set of scopes: resources × metrics × ticks per month. Estimates round *against* the wallet — a 31-day month, and no modelling of AWS’s ≤5-statistics-per-metric bundling — because a projection that under-reports produces the surprise bill this guardrail exists to prevent."
+    InfraCostStatus:
+      type: object
+      properties:
+        monthStartMs:
+          type: number
+          description: First epoch ms of the **UTC** calendar month the spend figures cover. UTC because AWS bills on UTC months; using the Hub’s local timezone would put the ceiling out of phase with the bill it guards.
+        monthToDateUsd:
+          type: number
+          description: Summed `estimated_cost_usd` over this month’s collector ticks, including ticks that crashed — a spend audit that only counted completed ticks would under-report the expensive ones.
+        extrapolatedMonthUsd:
+          type: number
+          description: Straight-line extrapolation of `monthToDateUsd` to month end. Answers “what is the current configuration on track for”, where `projection` answers “what will this configuration cost”; a scope added mid-month makes the two disagree, which is the signal.
+        metricsRequested:
+          type: number
+        queriesIssued:
+          type: number
+        datapointsReturned:
+          type: number
+        throttles:
+          type: number
+        errors:
+          type: number
+        runs:
+          type: number
+          description: Collector ticks recorded this month.
+        futureDatedRuns:
+          type: number
+          description: Runs stamped beyond the end of this month, excluded from the totals above. Only reachable through host clock skew, since a run row is written with the wall clock at tick start. Reported rather than silently dropped — their spend is real but cannot be attributed to this month without double-counting it when that month arrives. Non-zero means the host clock needs looking at.
+        monthlyCeilingUsd:
+          type: number
+          nullable: true
+          description: Spend ceiling, or null for uncapped (the default). A ceiling of `0` is a real setting distinct from null and means “collect nothing”.
+        degradation:
+          type: string
+          enum:
+            - normal
+            - widened
+            - paused
+          description: What the collector is doing about this project’s spend. `normal` polls at the configured tiers; `widened` multiplies every poll interval by 4 once month-to-date spend reaches the ceiling; `paused` stops issuing billed requests entirely once it reaches twice the ceiling.
+        degradedAt:
+          type: number
+          nullable: true
+          description: Epoch ms the level last changed; null while it has never left `normal`.
+        configured:
+          type: boolean
+          description: False when the project has no cost-config row and every setting above is a default — the UI needs this to distinguish “never opened” from “deliberately uncapped”.
+        projection:
+          $ref: "#/components/schemas/InfraCostProjection"
+        recentRuns:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              accountId:
+                type: string
+                nullable: true
+              region:
+                type: string
+                nullable: true
+              startedAt:
+                type: number
+              finishedAt:
+                type: number
+                nullable: true
+              durationMs:
+                type: number
+                nullable: true
+              queriesIssued:
+                type: number
+              metricsRequested:
+                type: number
+              datapointsReturned:
+                type: number
+              pointsWritten:
+                type: number
+              throttles:
+                type: number
+              errors:
+                type: number
+              estimatedCostUsd:
+                type: number
+              status:
+                type: string
+                example: ok
+              errorMessage:
+                type: string
+                nullable: true
+            required:
+              - id
+              - accountId
+              - region
+              - startedAt
+              - finishedAt
+              - durationMs
+              - queriesIssued
+              - metricsRequested
+              - datapointsReturned
+              - pointsWritten
+              - throttles
+              - errors
+              - estimatedCostUsd
+              - status
+              - errorMessage
+      required:
+        - monthStartMs
+        - monthToDateUsd
+        - extrapolatedMonthUsd
+        - metricsRequested
+        - queriesIssued
+        - datapointsReturned
+        - throttles
+        - errors
+        - runs
+        - futureDatedRuns
+        - monthlyCeilingUsd
+        - degradation
+        - degradedAt
+        - configured
+        - projection
+        - recentRuns
+      description: Spend to date and projection for a project’s AWS API usage. Resource identifiers and dollar figures only — never credentials or anything else Admin-gated beyond the route’s own gate.
+    InfraCostProjectionRequest:
+      type: object
+      properties:
+        scopes:
+          type: array
+          items:
+            type: object
+            properties:
+              service:
+                type: string
+                minLength: 1
+                example: ec2
+              resourceCount:
+                type: integer
+                minimum: 0
+                maximum: 1000000
+              id:
+                type: string
+              profileName:
+                type: string
+              region:
+                type: string
+                example: us-east-2
+            required:
+              - service
+              - resourceCount
+          maxItems: 500
+        degradation:
+          type: string
+          enum:
+            - normal
+            - widened
+          description: Price the projection as if the project were already degraded. Omit for the normal cadence.
+      required:
+        - scopes
+      description: A proposed scope allowlist to price. `resourceCount` is what the operator expects the scope to match; the editor fills it from the inventory browser.
+    InfraCostCeilingRequest:
+      type: object
+      properties:
+        monthlyCeilingUsd:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1000000
+          description: Ceiling in USD, or null to remove it. `0` means “collect nothing” and pauses the collector immediately.
+          example: 25
+      required:
+        - monthlyCeilingUsd
+      description: Set or clear a project’s monthly AWS API spend ceiling.
     LogIngestBatch:
       type: object
       properties:
@@ -27415,6 +27673,193 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InfraMonitoringStatus"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/cost:
+    get:
+      tags:
+        - Projects
+      summary: AWS API spend to date and projected monthly cost
+      description: |-
+        Reports what this project has spent on `GetMetricData` so far this UTC month (summed from the `infra_collect_runs` audit trail), the projected monthly cost of its current enabled scopes, the configured ceiling, and the collector’s current degradation level.
+
+        **Cost:** free. Every figure is read from local SQLite — this endpoint issues no AWS calls at all.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Spend and projection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraCostStatus"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/cost/projection:
+    post:
+      tags:
+        - Projects
+      summary: Price a proposed scope allowlist before saving it
+      description: |-
+        Prices a **hypothetical** set of scopes without persisting anything. This is what backs decision INFRA-COST’s requirement that the scope editor show a projected monthly API cost *before* the operator saves — the number that changes behaviour is the one shown at decision time, not the one on next month’s bill.
+
+        Pure arithmetic over the service metric packs. Issues no AWS calls, writes nothing, and is safe to call on every keystroke.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scopes:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      service:
+                        type: string
+                        minLength: 1
+                        example: ec2
+                      resourceCount:
+                        type: integer
+                        minimum: 0
+                        maximum: 1000000
+                      id:
+                        type: string
+                      profileName:
+                        type: string
+                      region:
+                        type: string
+                        example: us-east-2
+                    required:
+                      - service
+                      - resourceCount
+                  maxItems: 500
+                degradation:
+                  type: string
+                  enum:
+                    - normal
+                    - widened
+                  description: Price the projection as if the project were already degraded. Omit for the normal cadence.
+              required:
+                - scopes
+              description: A proposed scope allowlist to price. `resourceCount` is what the operator expects the scope to match; the editor fills it from the inventory browser.
+      responses:
+        "200":
+          description: Projected cost for the submitted scopes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraCostProjection"
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/cost/config:
+    put:
+      tags:
+        - Projects
+      summary: Set the project’s monthly AWS API spend ceiling
+      description: |-
+        Sets (or clears, with `null`) the ceiling the collector degrades against.
+
+        Saving a ceiling deliberately does **not** reset the stored degradation level: that level is a fact about spend which has already happened, and the next collector tick recomputes it. Clearing it here would let an operator un-pause a project by re-saving the same ceiling, and the following tick would pause it again after issuing one more round of billed requests.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                monthlyCeilingUsd:
+                  type: number
+                  nullable: true
+                  minimum: 0
+                  maximum: 1000000
+                  description: Ceiling in USD, or null to remove it. `0` means “collect nothing” and pauses the collector immediately.
+                  example: 25
+              required:
+                - monthlyCeilingUsd
+              description: Set or clear a project’s monthly AWS API spend ceiling.
+      responses:
+        "200":
+          description: Ceiling saved; the full cost status is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraCostStatus"
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
         "404":
           description: Project not found, or the caller cannot see it.
           content:

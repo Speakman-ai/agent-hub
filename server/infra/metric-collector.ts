@@ -48,6 +48,15 @@ import {
   collectableServices,
   type InfraMetricSpec,
 } from './service-metric-packs.js';
+import {
+  estimateGetMetricDataCostUsd,
+  effectivePollIntervalSeconds,
+  isMetricDue,
+  COLLECTOR_TICK_INTERVAL_S,
+  type InfraCostDegradation,
+} from './infra-cost.js';
+import { resolveProjectDegradation, recordCostDegradation } from './infra-cost-store.js';
+import type { BroadcastFn } from '../types.js';
 import { enqueueInfraMetricPoints } from './infra-write-queue.js';
 import {
   compileInfraTagFilter,
@@ -57,6 +66,7 @@ import {
 import {
   startInfraCollectRun,
   finishInfraCollectRun,
+  recordInfraCollectRunProgress,
   isValidCloudWatchPeriod,
   type InfraMetricPointInput,
 } from './infra-metric-store.js';
@@ -107,16 +117,16 @@ export const DEFAULT_COLLECT_LOOKBACK_MS = 15 * 60 * 1000;
 export const MAX_RESOURCE_STALENESS_MS = 24 * 60 * 60 * 1000;
 
 /**
- * `GetMetricData` list price per 1,000 metrics requested, us-east-1
- * (`$0.01 per 1,000 metrics requested`). Regional prices differ, so the run
- * row's `estimated_cost_usd` is exactly what its name says — an estimate whose
- * job is to make the trend visible, not to reconcile against a bill.
- *
- * This operation is billed from the first call: the CloudWatch free tier's
- * 1 million API requests explicitly exclude `GetMetricData`,
- * `GetInsightRuleReport` and `GetMetricWidgetImage`.
+ * Pricing and projection arithmetic live in `infra-cost.ts` (decision
+ * INFRA-COST), which is IO-free so the scope editor and the cost endpoint price
+ * a tick the same way the collector does. Re-exported here because this is where
+ * callers already look for them.
  */
-export const GET_METRIC_DATA_USD_PER_1000_METRICS = 0.01;
+export {
+  estimateGetMetricDataCostUsd,
+  GET_METRIC_DATA_USD_PER_1000_METRICS,
+  getMetricDataPricePer1000,
+} from './infra-cost.js';
 
 /** Throttle backoff bounds. Full jitter over an exponentially growing cap. */
 export const THROTTLE_BACKOFF_BASE_MS = 500;
@@ -304,21 +314,6 @@ export function backoffDelayMs(attempt: number, opts: BackoffOptions = {}): numb
   return Math.max(base, Math.round(rand * cap));
 }
 
-/**
- * Metrics *requested*, which is the quantity AWS bills, and its dollar
- * estimate.
- *
- * Counted per request issued, pagination pages included: each page re-sends the
- * full query set, so each page is charged. AWS also bundles up to five
- * statistics on one metric into a single billable metric request; we do not
- * model that, which over-estimates a pack that polls the same metric on several
- * stats. Over-estimating is the correct direction for a spend guardrail — a
- * cost ceiling that under-reports is a ceiling that does not hold.
- */
-export function estimateGetMetricDataCostUsd(metricsRequested: number): number {
-  return (metricsRequested / 1000) * GET_METRIC_DATA_USD_PER_1000_METRICS;
-}
-
 // ─── Query planning ─────────────────────────────────────────────────────────
 
 /** One resource-metric series the collector intends to fetch. */
@@ -341,8 +336,28 @@ export interface CollectableResource {
   tags_json?: string | null;
 }
 
+export interface PlanQueriesOptions {
+  /** Collector cadence in ms; a metric cannot be due more often than this. */
+  tickIntervalMs?: number;
+  /**
+   * Cost-degradation level for the project (decision INFRA-COST). `widened`
+   * stretches every metric's poll interval; `paused` never reaches here,
+   * because a paused project is skipped before a client is even built.
+   */
+  degradation?: InfraCostDegradation;
+}
+
 /**
- * The cross product of in-scope resources and their service pack.
+ * The cross product of in-scope resources and their service pack, minus the
+ * metrics that are not due on this tick.
+ *
+ * The due filter is the query-side half of INFRA-COST's "poll intervals are
+ * tiered per service, not global". `GetMetricData` bills per metric
+ * *requested*, so re-asking for a 5-minute metric every minute — or an S3 daily
+ * storage metric every 5 minutes — is money spent on datapoints CloudWatch has
+ * not published yet. `effectivePollIntervalSeconds` resolves what each metric is
+ * actually worth asking for, and {@link isMetricDue} answers whether this tick
+ * is the one, statelessly, by bucketing the wall clock.
  *
  * Ordering is deterministic (resources in the order the caller supplied, then
  * pack order) so batch boundaries are reproducible and a test can assert on
@@ -352,10 +367,17 @@ export function planQueries(
   resources: readonly CollectableResource[],
   windowStartMs: number,
   nowMs: number,
+  opts: PlanQueriesOptions = {},
 ): PlannedQuery[] {
+  const tickIntervalMs = opts.tickIntervalMs ?? COLLECTOR_TICK_INTERVAL_S * 1000;
   const planned: PlannedQuery[] = [];
   for (const resource of resources) {
     for (const spec of getServiceMetricPack(resource.service)) {
+      const intervalS = effectivePollIntervalSeconds(resource.service, spec, {
+        tickIntervalSeconds: tickIntervalMs / 1000,
+        degradation: opts.degradation,
+      });
+      if (!isMetricDue(intervalS * 1000, nowMs, tickIntervalMs)) continue;
       planned.push({
         resourceKey: resource.resource_key,
         namespace: spec.namespace,
@@ -487,6 +509,22 @@ export interface InfraMetricCollectionOptions {
   /** Test seam: jitter source. */
   random?: () => number;
   maxThrottleRetries?: number;
+  /**
+   * Collector cadence in ms, used to decide which metrics are due this tick.
+   * Defaults to {@link INFRA_COLLECT_CRON}'s interval.
+   */
+  tickIntervalMs?: number;
+  /**
+   * In-app notice sink for a cost-ceiling transition (decision INFRA-COST /
+   * INFRA-NOTIFY). Optional so a test — or a Hub with no WebSocket server yet —
+   * degrades silently rather than throwing inside the guardrail.
+   */
+  broadcast?: BroadcastFn;
+  /**
+   * Test seam: resolve a project's degradation level without the store. Also
+   * the escape hatch for a caller that has already priced the tick.
+   */
+  resolveDegradation?: (projectId: string) => InfraCostDegradation;
 }
 
 export interface InfraMetricCollectionResult {
@@ -508,6 +546,10 @@ export interface InfraMetricCollectionResult {
   /** Per-metric failures reported in a response, plus batches that gave up. */
   errors: number;
   estimatedCostUsd: number;
+  /** Targets skipped because their project is paused on its cost ceiling. */
+  skipped: number;
+  /** Projects the tick found past their ceiling, by level (decision INFRA-COST). */
+  degraded: { widened: number; paused: number };
 }
 
 /** Per-target counters, folded into the run row and the tick result. */
@@ -672,7 +714,14 @@ async function sendWithThrottleRetry(
   }
 }
 
-/** Issue one batch, following `NextToken`, and hand the points to the queue. */
+/**
+ * Issue one batch, following `NextToken`, and hand the points to the queue.
+ *
+ * `onProgress` is invoked after every page — that is, after every billed
+ * request — so the run row's spend is durable before the next request is sent.
+ * See {@link recordInfraCollectRunProgress} for why finishing-time accounting
+ * alone is not enough.
+ */
 async function collectBatch(
   client: CloudWatchMetricDataClient,
   projectId: string,
@@ -680,6 +729,7 @@ async function collectBatch(
   window: AlignedWindow,
   counters: TargetCounters,
   opts: InfraMetricCollectionOptions,
+  onProgress: () => void = () => {},
 ): Promise<void> {
   const { queries, byId } = buildMetricDataQueries(batch);
   let nextToken: string | undefined;
@@ -747,6 +797,11 @@ async function collectBatch(
       counters.pointsDropped += dropped;
     }
 
+    // Before the next request goes out: this page is already billed, so its
+    // cost must be durable even if the process does not survive to send the
+    // one after it.
+    onProgress();
+
     nextToken = out.NextToken ?? undefined;
     pages += 1;
   } while (nextToken && pages < MAX_PAGES_PER_BATCH);
@@ -775,6 +830,7 @@ async function collectTarget(
   target: CollectTarget,
   opts: InfraMetricCollectionOptions,
   nowMs: number,
+  degradation: InfraCostDegradation = 'normal',
 ): Promise<TargetCounters> {
   const counters = freshCounters();
   const lookbackMs = opts.lookbackMs ?? DEFAULT_COLLECT_LOOKBACK_MS;
@@ -796,7 +852,10 @@ async function collectTarget(
       );
     }
   }
-  const planned = planQueries(resources, windowStartMs, nowMs);
+  const planned = planQueries(resources, windowStartMs, nowMs, {
+    tickIntervalMs: opts.tickIntervalMs ?? COLLECTOR_TICK_INTERVAL_S * 1000,
+    degradation,
+  });
   // No run row for a target with nothing to ask about. An audit table whose
   // rows are mostly empty ticks makes the ticks that cost money harder to find.
   if (planned.length === 0) return counters;
@@ -817,6 +876,34 @@ async function collectTarget(
 
   let status: 'ok' | 'partial' | 'failed' = 'ok';
   let errorMessage: string | null = null;
+
+  /**
+   * Counters already written to the run row, so each flush persists only what
+   * is new. Cost is priced on the *delta* and added; because the price is
+   * linear in metrics requested, summing per-flush costs is identical to
+   * pricing the total once, with no drift to reconcile.
+   */
+  const persisted = freshCounters();
+  const flushProgress = (): void => {
+    const delta = {
+      queriesIssued: counters.queriesIssued - persisted.queriesIssued,
+      metricsRequested: counters.metricsRequested - persisted.metricsRequested,
+      datapointsReturned: counters.datapointsReturned - persisted.datapointsReturned,
+      pointsWritten: counters.pointsEnqueued - persisted.pointsEnqueued,
+      throttles: counters.throttles - persisted.throttles,
+      errors: counters.errors - persisted.errors,
+    };
+    if (Object.values(delta).every((n) => n === 0)) return;
+    recordInfraCollectRunProgress(runId, {
+      ...delta,
+      // Priced at the target's own region: GovCloud and São Paulo are above the
+      // $0.01 list rate, and a ceiling fed by a us-east-1 estimate would under-
+      // report a São Paulo scope by 40%.
+      estimatedCostUsd: estimateGetMetricDataCostUsd(delta.metricsRequested, target.region),
+    });
+    Object.assign(persisted, counters);
+  };
+
   try {
     const client = opts.cloudWatchClientFactory
       ? opts.cloudWatchClientFactory(target)
@@ -826,10 +913,18 @@ async function collectTarget(
         });
 
     for (const [periodSeconds, queries] of groupQueriesByPeriod(planned)) {
-      const window = alignWindow(windowStartMs, nowMs, periodSeconds);
+      // The window scales with the period rather than being the same 15 minutes
+      // for every tier. A metric published daily and polled daily would find
+      // nothing in a 15-minute window — the poll would be billed and return an
+      // empty series forever. Three periods of headroom absorbs CloudWatch's
+      // publication latency at every tier, and costs nothing extra: billing is
+      // per metric requested, and a wider window adds datapoints to the same
+      // request, not requests.
+      const groupStartMs = Math.min(windowStartMs, nowMs - 3 * periodSeconds * 1000);
+      const window = alignWindow(groupStartMs, nowMs, periodSeconds);
       const perQuery = estimateDatapointsPerQuery(window.startMs, window.endMs, periodSeconds);
       for (const batch of batchMetricQueries(queries, perQuery)) {
-        await collectBatch(client, target.projectId, batch, window, counters, opts);
+        await collectBatch(client, target.projectId, batch, window, counters, opts, flushProgress);
       }
     }
     if (counters.errors > 0 || counters.pointsDropped > 0) status = 'partial';
@@ -839,19 +934,16 @@ async function collectTarget(
     errorMessage = err instanceof Error ? err.message : String(err);
     throw Object.assign(new Error(errorMessage), { counters });
   } finally {
+    // Catches whatever the last page did not: throttles counted during a retry
+    // that then failed, the page-cap / PartialData errors tallied after the
+    // pagination loop, and the `errors += 1` from the catch above.
+    flushProgress();
     finishInfraCollectRun(runId, {
       // Real wall clock, so `duration_ms` measures the tick rather than the
       // difference between two points on an injected clock. A test that pins
       // `nowMs` pins this too, or every run row it writes claims to have taken
       // however long ago the fixture epoch is.
       finishedAt: opts.nowMs === undefined ? Date.now() : opts.nowMs,
-      queriesIssued: counters.queriesIssued,
-      metricsRequested: counters.metricsRequested,
-      datapointsReturned: counters.datapointsReturned,
-      pointsWritten: counters.pointsEnqueued,
-      throttles: counters.throttles,
-      errors: counters.errors,
-      estimatedCostUsd: estimateGetMetricDataCostUsd(counters.metricsRequested),
       status,
       errorMessage,
     });
@@ -860,7 +952,11 @@ async function collectTarget(
   return counters;
 }
 
-function fold(result: InfraMetricCollectionResult, counters: TargetCounters): void {
+function fold(
+  result: InfraMetricCollectionResult,
+  counters: TargetCounters,
+  region?: string | null,
+): void {
   result.queriesIssued += counters.queriesIssued;
   result.metricsRequested += counters.metricsRequested;
   result.datapointsReturned += counters.datapointsReturned;
@@ -868,6 +964,65 @@ function fold(result: InfraMetricCollectionResult, counters: TargetCounters): vo
   result.pointsDropped += counters.pointsDropped;
   result.throttles += counters.throttles;
   result.errors += counters.errors;
+  // Accumulated per target rather than priced once from the tick's metric total,
+  // because the rate is regional. A tick spanning us-east-1 and sa-east-1 has no
+  // single price to multiply by.
+  result.estimatedCostUsd += estimateGetMetricDataCostUsd(counters.metricsRequested, region);
+}
+
+/**
+ * The level to run a project at, persisted, with an in-app notice on a change.
+ *
+ * The notice fires on the **transition**, never on the level — a "you are over
+ * budget" toast every five minutes for the rest of the month teaches the
+ * operator to dismiss the one that mattered. `recordCostDegradation` decides
+ * whether the level is new inside its own write, so two ticks cannot both
+ * announce the same transition.
+ *
+ * Fails open to `normal`. A guardrail whose bookkeeping throws must not be able
+ * to take metric collection down with it — the ceiling exists to bound spend,
+ * not to become a new way for the collector to stop working.
+ */
+function resolveDegradationFor(
+  projectId: string,
+  opts: InfraMetricCollectionOptions,
+  nowMs: number,
+): InfraCostDegradation {
+  try {
+    // Inside the guard, not ahead of it: `runInfraMetricCollection` is
+    // documented as never throwing, and an injected resolver is no more
+    // trustworthy than the store path it stands in for.
+    if (opts.resolveDegradation) return opts.resolveDegradation(projectId);
+    const { level, spend, config } = resolveProjectDegradation(projectId, nowMs);
+    const { changed, previous } = recordCostDegradation(projectId, level, nowMs);
+    if (changed) {
+      const spent = spend.monthToDateUsd.toFixed(2);
+      const ceiling = config.monthlyCeilingUsd?.toFixed(2) ?? 'none';
+      console.warn(
+        `[infra-metric-collector] ${projectId}: AWS API spend degradation ${previous} → ${level} ` +
+          `($${spent} month-to-date against a $${ceiling} ceiling)`,
+      );
+      // Resource identifiers and dollar figures only — never the profile, the
+      // account id, or anything else Admin-gated. A broadcast fans out to every
+      // connected client of the project (decision INFRA-NOTIFY).
+      opts.broadcast?.({
+        type: 'infra_cost_degradation',
+        projectId,
+        level,
+        previousLevel: previous,
+        monthToDateUsd: spend.monthToDateUsd,
+        monthlyCeilingUsd: config.monthlyCeilingUsd,
+        changedAt: nowMs,
+      });
+    }
+    return level;
+  } catch (err) {
+    console.warn(
+      `[infra-metric-collector] ${projectId}: cost-ceiling check failed, collecting normally —`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return 'normal';
+  }
 }
 
 /**
@@ -894,6 +1049,8 @@ export async function runInfraMetricCollection(
     throttles: 0,
     errors: 0,
     estimatedCostUsd: 0,
+    skipped: 0,
+    degraded: { widened: 0, paused: 0 },
   };
   // Scheduled unconditionally at boot, but infra.db only exists once
   // initInfraDb() has run. A no-op beats a thrown tick.
@@ -903,9 +1060,31 @@ export async function runInfraMetricCollection(
   result.targets = targets.length;
   const nowMs = opts.nowMs ?? Date.now();
 
+  // Resolved once per project, not once per target: month-to-date spend is a
+  // project-wide sum, so re-reading it for each of a project's regions would
+  // issue the same aggregate query several times and — worse — let two targets
+  // of one project act on different levels within a single tick.
+  const levels = new Map<string, InfraCostDegradation>();
   for (const target of targets) {
+    if (levels.has(target.projectId)) continue;
+    levels.set(target.projectId, resolveDegradationFor(target.projectId, opts, nowMs));
+  }
+  for (const level of levels.values()) {
+    if (level === 'widened') result.degraded.widened += 1;
+    else if (level === 'paused') result.degraded.paused += 1;
+  }
+
+  for (const target of targets) {
+    const degradation = levels.get(target.projectId) ?? 'normal';
+    // A paused project is stepped over before a CloudWatch client exists, so
+    // the pause costs nothing. No run row either: an audit row recording zero
+    // spend every five minutes would bury the ticks that did spend.
+    if (degradation === 'paused') {
+      result.skipped += 1;
+      continue;
+    }
     try {
-      fold(result, await collectTarget(target, opts, nowMs));
+      fold(result, await collectTarget(target, opts, nowMs, degradation), target.region);
       result.collected += 1;
     } catch (err) {
       result.failed += 1;
@@ -913,7 +1092,7 @@ export async function runInfraMetricCollection(
       // then failed still spent money, and a cost audit that forgets the spend
       // of failed ticks under-reports exactly when it matters most.
       const partial = (err as { counters?: TargetCounters }).counters;
-      if (partial) fold(result, partial);
+      if (partial) fold(result, partial, target.region);
       else result.errors += 1;
       console.warn(
         `[infra-metric-collector] ${describeTarget(target)} failed:`,
@@ -922,6 +1101,5 @@ export async function runInfraMetricCollection(
     }
   }
 
-  result.estimatedCostUsd = estimateGetMetricDataCostUsd(result.metricsRequested);
   return result;
 }

@@ -21,6 +21,9 @@
  *     own 60s/300s/3600s rollup tiers rather than recomputing them.
  *   - `infra_collect_runs` — the per-tick audit trail INFRA-COST reads to keep
  *     AWS API spend a visible, capped quantity.
+ *   - `infra_cost_config` — the per-project spend ceiling and the collector's
+ *     current degradation level, which is what turns that audit trail from a
+ *     record into a brake.
  *
  * `infra_retention_config` and the alert tables are appended by their own
  * tickets; the DDL is a single idempotent block so those additions are edits to
@@ -214,6 +217,40 @@ export const INFRA_TABLES_SCHEMA = `
     status              TEXT NOT NULL DEFAULT 'running'
       CHECK (status IN ('running', 'ok', 'partial', 'failed')),
     error_message       TEXT
+  );
+
+  -- Per-project AWS API spend ceiling and the collector's current response to it
+  -- (decision INFRA-COST: "A per-project monthly cost ceiling. On breach the
+  -- collector degrades - widens the interval, then pauses - and raises an in-app
+  -- notice. It never silently keeps spending.").
+  --
+  -- Keyed by project, not by scope, even though the ticket text says "in
+  -- infra_scopes". A ceiling is a property of the budget, and infra_scopes is
+  -- UNIQUE (project_id, profile_name, region, service) — storing a per-project
+  -- number there would give it one copy per scope row with no defined winner,
+  -- and adding a scope would silently resurrect whichever stale value that row
+  -- was created with. One row per project is the same shape the retention
+  -- override table uses and the same shape the deployment_env_* config tables
+  -- use for per-environment settings.
+  --
+  -- The absence of a row means "no ceiling", not "ceiling of zero". Scoping is
+  -- already an explicit opt-in whose projected monthly cost is shown before
+  -- save, so an implicit ceiling nobody chose would pause monitoring the
+  -- operator deliberately turned on — a silent outage traded for a bill they had
+  -- already been quoted.
+  CREATE TABLE IF NOT EXISTS infra_cost_config (
+    project_id          TEXT PRIMARY KEY,
+    -- NULL = uncapped. A ceiling of 0 is a real setting meaning "collect
+    -- nothing", and is distinct from NULL.
+    monthly_ceiling_usd REAL,
+    -- Last degradation level the collector acted on. Persisted so the in-app
+    -- notice fires on a state TRANSITION rather than on every tick — the same
+    -- rule the alert evaluator holds to (decision INFRA-ALERT).
+    degradation_level   TEXT NOT NULL DEFAULT 'normal'
+      CHECK (degradation_level IN ('normal', 'widened', 'paused')),
+    -- Epoch ms the level last changed. NULL while it has never left 'normal'.
+    degraded_at         INTEGER,
+    updated_at          INTEGER NOT NULL
   );
 `;
 

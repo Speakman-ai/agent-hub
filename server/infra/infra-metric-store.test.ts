@@ -17,6 +17,7 @@ import {
   isValidCloudWatchPeriod,
   startInfraCollectRun,
   finishInfraCollectRun,
+  recordInfraCollectRunProgress,
   MAX_METRIC_POINTS_PER_QUERY,
   type InfraMetricPointInput,
 } from './infra-metric-store.js';
@@ -424,23 +425,32 @@ describe('infra_collect_runs audit', () => {
     expect(open.status).toBe('running');
     expect(open.finished_at).toBeNull();
 
-    finishInfraCollectRun('run-1', {
-      finishedAt: 3_500,
-      queriesIssued: 4,
-      metricsRequested: 1_200,
-      datapointsReturned: 900,
-      pointsWritten: 900,
+    // Counters accrue as the spend is incurred, so they land through progress
+    // writes rather than in one shot at the close.
+    recordInfraCollectRunProgress('run-1', {
+      queriesIssued: 3,
+      metricsRequested: 900,
+      datapointsReturned: 700,
+      pointsWritten: 700,
       throttles: 1,
-      errors: 0,
-      estimatedCostUsd: 0.0012,
-      status: 'ok',
+      estimatedCostUsd: 0.0009,
     });
+    recordInfraCollectRunProgress('run-1', {
+      queriesIssued: 1,
+      metricsRequested: 300,
+      datapointsReturned: 200,
+      pointsWritten: 200,
+      estimatedCostUsd: 0.0003,
+    });
+    finishInfraCollectRun('run-1', { finishedAt: 3_500, status: 'ok' });
 
     const closed = getInfraDb()
       .prepare('SELECT * FROM infra_collect_runs WHERE id = ?')
       .get('run-1') as Record<string, unknown>;
     expect(closed.status).toBe('ok');
     expect(closed.duration_ms).toBe(2_500);
+    // Both increments are present, summed — not the last one overwriting.
+    expect(closed.queries_issued).toBe(4);
     expect(closed.metrics_requested).toBe(1_200);
     expect(closed.estimated_cost_usd).toBeCloseTo(0.0012);
     expect(closed.throttles).toBe(1);
@@ -458,6 +468,42 @@ describe('infra_collect_runs audit', () => {
       .get('run-2') as { status: string; error_message: string };
     expect(row.status).toBe('failed');
     expect(row.error_message).toBe('Throttling: Rate exceeded');
+  });
+
+  it('adds progress deltas rather than overwriting them', () => {
+    // The collector flushes after every billed request, so these have to
+    // accumulate — a `=` here would mean each request erased the one before it
+    // and the run row would only ever show the last page's spend.
+    startInfraCollectRun({ id: 'run-4', projectId: 'proj-a', startedAt: 1_000 });
+    for (let i = 0; i < 3; i += 1) {
+      recordInfraCollectRunProgress('run-4', {
+        queriesIssued: 1,
+        metricsRequested: 500,
+        estimatedCostUsd: 0.005,
+      });
+    }
+    const row = getInfraDb()
+      .prepare('SELECT * FROM infra_collect_runs WHERE id = ?')
+      .get('run-4') as Record<string, number>;
+    expect(row.queries_issued).toBe(3);
+    expect(row.metrics_requested).toBe(1_500);
+    expect(row.estimated_cost_usd).toBeCloseTo(0.015, 10);
+  });
+
+  it('leaves the row open so an unfinished tick still reports its spend', () => {
+    // This is the crash case: a hard kill never runs the collector's `finally`,
+    // so the row keeps `running` — but the spend it already incurred must be
+    // visible to the ceiling regardless.
+    startInfraCollectRun({ id: 'run-5', projectId: 'proj-a', startedAt: 1_000 });
+    recordInfraCollectRunProgress('run-5', { metricsRequested: 200, estimatedCostUsd: 0.002 });
+    const row = getInfraDb()
+      .prepare(
+        'SELECT status, finished_at, estimated_cost_usd AS cost FROM infra_collect_runs WHERE id = ?',
+      )
+      .get('run-5') as { status: string; finished_at: number | null; cost: number };
+    expect(row.status).toBe('running');
+    expect(row.finished_at).toBeNull();
+    expect(row.cost).toBeCloseTo(0.002, 10);
   });
 
   it('rejects an unknown status via the CHECK constraint', () => {

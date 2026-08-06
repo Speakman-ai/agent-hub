@@ -20,7 +20,18 @@ import { initInfraDb, getInfraDb, closeInfraDb, infraResourceKey } from './infra
 import { estimateIntervalSeconds } from '../cron-tick.js';
 import type { InfraScopeRow } from './inventory-sync.js';
 import type { InfraMetricPointInput } from './infra-metric-store.js';
-import { isValidCloudWatchPeriod } from './infra-metric-store.js';
+import {
+  isValidCloudWatchPeriod,
+  startInfraCollectRun,
+  finishInfraCollectRun,
+  recordInfraCollectRunProgress,
+} from './infra-metric-store.js';
+import {
+  setInfraCostCeiling,
+  getInfraSpendToDate,
+  resolveProjectDegradation,
+} from './infra-cost-store.js';
+import { COLLECTOR_TICK_INTERVAL_S } from './infra-cost.js';
 import { getServiceMetricPack } from './service-metric-packs.js';
 import {
   runInfraMetricCollection,
@@ -396,10 +407,18 @@ describe('backoffDelayMs', () => {
 });
 
 describe('estimateGetMetricDataCostUsd', () => {
-  it('bills per 1,000 metrics requested', () => {
-    expect(estimateGetMetricDataCostUsd(1000)).toBeCloseTo(0.01, 10);
-    expect(estimateGetMetricDataCostUsd(500)).toBeCloseTo(0.005, 10);
-    expect(estimateGetMetricDataCostUsd(0)).toBe(0);
+  it('bills per 1,000 metrics requested at the region rate', () => {
+    expect(estimateGetMetricDataCostUsd(1000, 'us-east-1')).toBeCloseTo(0.01, 10);
+    expect(estimateGetMetricDataCostUsd(500, 'us-east-1')).toBeCloseTo(0.005, 10);
+    expect(estimateGetMetricDataCostUsd(0, 'us-east-1')).toBe(0);
+  });
+
+  it('prices a region it does not recognise conservatively', () => {
+    // A guardrail must not knowingly under-report: an unknown region is priced
+    // at the dearest rate AWS charges, not the $0.01 list rate.
+    expect(estimateGetMetricDataCostUsd(1000, 'mars-north-1')).toBeGreaterThan(
+      estimateGetMetricDataCostUsd(1000, 'us-east-1'),
+    );
   });
 });
 
@@ -1096,5 +1115,477 @@ describe('runInfraMetricCollection', () => {
     expect(r.pointsEnqueued).toBe(0);
     expect(r.pointsDropped).toBe(EC2_PACK_SIZE);
     expect(runRows()[0].status).toBe('partial');
+  });
+});
+
+// ─── Cost guardrails (decision INFRA-COST) ──────────────────────────────────
+
+describe('cost ceiling degradation', () => {
+  function echoClient(): CloudWatchMetricDataClient & { calls: GetMetricDataCommand[] } {
+    const calls: GetMetricDataCommand[] = [];
+    return {
+      calls,
+      async send(command) {
+        calls.push(command);
+        return echoAll(command) as GetMetricDataCommandOutput;
+      },
+    };
+  }
+
+  function setCeiling(projectId: string, ceiling: number | null): void {
+    setInfraCostCeiling(projectId, ceiling, NOW);
+  }
+
+  /** A finished run row that spends `costUsd` this month. */
+  function spend(projectId: string, costUsd: number, id = `r-${costUsd}`): void {
+    startInfraCollectRun({ id, projectId, region: 'us-east-1', startedAt: NOW - 60_000 });
+    recordInfraCollectRunProgress(id, { metricsRequested: 1000, estimatedCostUsd: costUsd });
+    finishInfraCollectRun(id, { finishedAt: NOW - 59_000, status: 'ok' });
+  }
+
+  it('collects normally below the ceiling', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    setCeiling('proj', 10);
+    spend('proj', 1);
+
+    const client = echoClient();
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    expect(r.skipped).toBe(0);
+    expect(r.degraded).toEqual({ widened: 0, paused: 0 });
+    expect(client.calls.length).toBeGreaterThan(0);
+  });
+
+  it('pauses without issuing a single billed request once spend hits twice the ceiling', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    setCeiling('proj', 10);
+    spend('proj', 25);
+
+    const runsBefore = runRows().length;
+    const client = echoClient();
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    // The whole point of the pause: no request, therefore no spend.
+    expect(client.calls).toHaveLength(0);
+    expect(r.skipped).toBe(1);
+    expect(r.collected).toBe(0);
+    expect(r.metricsRequested).toBe(0);
+    expect(r.estimatedCostUsd).toBe(0);
+    expect(r.degraded.paused).toBe(1);
+    // And no audit row either — a zero-spend row every five minutes would bury
+    // the ticks that did spend.
+    expect(runRows()).toHaveLength(runsBefore);
+  });
+
+  it('keeps collecting but on stretched intervals when merely over the ceiling', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    setCeiling('proj', 10);
+    spend('proj', 12);
+
+    const client = echoClient();
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    expect(r.degraded).toEqual({ widened: 1, paused: 0 });
+    expect(r.skipped).toBe(0);
+    // Widened multiplies every interval to 20 minutes, so this off-boundary
+    // tick is not one of the ticks the metrics are due on.
+    expect(client.calls).toHaveLength(0);
+    expect(r.metricsRequested).toBe(0);
+  });
+
+  it('still collects on a widened tick that lands on the stretched boundary', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    setCeiling('proj', 10);
+    spend('proj', 12);
+
+    // 20-minute boundary: 300s tick x the 4x widening multiplier.
+    const boundary = Math.ceil(NOW / 1_200_000) * 1_200_000;
+    const client = echoClient();
+    const r = await runInfraMetricCollection({
+      nowMs: boundary,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    expect(r.degraded.widened).toBe(1);
+    expect(client.calls.length).toBeGreaterThan(0);
+    expect(r.metricsRequested).toBe(EC2_PACK_SIZE);
+  });
+
+  it('is uncapped by default, however much has already been spent', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    spend('proj', 5_000);
+
+    const client = echoClient();
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    expect(r.degraded).toEqual({ widened: 0, paused: 0 });
+    expect(client.calls.length).toBeGreaterThan(0);
+  });
+
+  it('pauses immediately on a zero ceiling', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    setCeiling('proj', 0);
+
+    const client = echoClient();
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    expect(client.calls).toHaveLength(0);
+    expect(r.degraded.paused).toBe(1);
+  });
+
+  it('raises the in-app notice on the transition and not on every tick', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    setCeiling('proj', 10);
+    spend('proj', 25);
+
+    const broadcast = vi.fn();
+    const opts = {
+      nowMs: NOW,
+      cloudWatchClientFactory: () => echoClient(),
+      enqueue: (p: InfraMetricPointInput[]) => ({ enqueued: p.length, dropped: 0 }),
+      broadcast,
+    };
+
+    await runInfraMetricCollection(opts);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast.mock.calls[0][0]).toMatchObject({
+      type: 'infra_cost_degradation',
+      projectId: 'proj',
+      level: 'paused',
+      previousLevel: 'normal',
+      monthlyCeilingUsd: 10,
+    });
+    // Never carries a profile name, account id or anything else Admin-gated
+    // — a broadcast fans out to every connected client of the project.
+    expect(Object.keys(broadcast.mock.calls[0][0])).not.toContain('profileName');
+
+    // The level has not changed, so the second and third ticks stay quiet.
+    await runInfraMetricCollection(opts);
+    await runInfraMetricCollection(opts);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('announces the escalation from widened to paused', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    setCeiling('proj', 10);
+    spend('proj', 12, 'r-first');
+
+    const broadcast = vi.fn();
+    const base = {
+      cloudWatchClientFactory: () => echoClient(),
+      enqueue: (p: InfraMetricPointInput[]) => ({ enqueued: p.length, dropped: 0 }),
+      broadcast,
+    };
+    await runInfraMetricCollection({ ...base, nowMs: NOW });
+    expect(broadcast.mock.calls[0][0]).toMatchObject({ level: 'widened' });
+
+    spend('proj', 20, 'r-second');
+    await runInfraMetricCollection({ ...base, nowMs: NOW + 300_000 });
+    expect(broadcast).toHaveBeenCalledTimes(2);
+    expect(broadcast.mock.calls[1][0]).toMatchObject({
+      level: 'paused',
+      previousLevel: 'widened',
+    });
+  });
+
+  it('collects normally when the ceiling bookkeeping itself throws', async () => {
+    // A guardrail must not become a new way for the collector to stop working.
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    const client = echoClient();
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+      resolveDegradation: () => {
+        throw new Error('boom');
+      },
+    });
+    expect(r.failed).toBe(0);
+  });
+
+  it('resolves one level per project, not one per region', async () => {
+    insertScope({ id: 's1', region: 'us-east-1' });
+    insertScope({ id: 's2', region: 'eu-west-1' });
+    insertResource('i-1', { region: 'us-east-1' });
+    insertResource('i-2', { region: 'eu-west-1' });
+    setCeiling('proj', 10);
+    spend('proj', 25);
+
+    const resolveDegradation = vi.fn(() => 'paused' as const);
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => echoClient(),
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+      resolveDegradation,
+    });
+
+    expect(r.targets).toBe(2);
+    expect(r.skipped).toBe(2);
+    // Two targets, one project, one spend lookup.
+    expect(resolveDegradation).toHaveBeenCalledTimes(1);
+    // And the *project* is counted once, not once per region it happens to span.
+    expect(r.degraded.paused).toBe(1);
+  });
+
+  it('prices the run row at the target region', async () => {
+    insertScope({ id: 's1', region: 'sa-east-1' });
+    insertResource('i-1', { region: 'sa-east-1' });
+
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => echoClient(),
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    // São Paulo is $0.014 per 1,000, not the $0.01 list rate. A ceiling fed by
+    // a us-east-1 estimate would under-report this by 40%.
+    const expected = (EC2_PACK_SIZE / 1000) * 0.014;
+    expect(r.estimatedCostUsd).toBeCloseTo(expected, 12);
+    expect(runRows()[0].estimated_cost_usd).toBeCloseTo(expected, 12);
+  });
+});
+
+describe('per-service poll interval flooring', () => {
+  it('never asks for a metric more often than the collector ticks', () => {
+    // EC2's service tier is 60s, but a 300s tick is the real floor.
+    const planned = planQueries(
+      [{ resource_key: 'k', account_id: 'a', resource_id: 'i-1', service: 'ec2' }],
+      NOW - 900_000,
+      NOW,
+      { tickIntervalMs: 300_000 },
+    );
+    expect(planned).toHaveLength(EC2_PACK_SIZE);
+  });
+
+  it('drops metrics that are not due when the tick is finer than their emission rate', () => {
+    // A 60-second tick: the three status-check metrics publish every minute and
+    // are due, while CPU / NetworkIn / NetworkOut publish every 5 minutes and
+    // are only due on the 5-minute boundary.
+    const offBoundary = Math.floor(NOW / 60_000) * 60_000 + 60_000;
+    const planned = planQueries(
+      [{ resource_key: 'k', account_id: 'a', resource_id: 'i-1', service: 'ec2' }],
+      offBoundary - 900_000,
+      offBoundary,
+      { tickIntervalMs: 60_000 },
+    );
+    const names = planned.map((p) => p.metricName).sort();
+    expect(names).toEqual([
+      'StatusCheckFailed',
+      'StatusCheckFailed_Instance',
+      'StatusCheckFailed_System',
+    ]);
+  });
+
+  it('includes the 5-minute metrics again on a 5-minute boundary', () => {
+    const boundary = Math.ceil(NOW / 300_000) * 300_000;
+    const planned = planQueries(
+      [{ resource_key: 'k', account_id: 'a', resource_id: 'i-1', service: 'ec2' }],
+      boundary - 900_000,
+      boundary,
+      { tickIntervalMs: 60_000 },
+    );
+    expect(planned).toHaveLength(EC2_PACK_SIZE);
+  });
+
+  it('agrees with the tick cadence the cost projection assumes', () => {
+    // The projection declares its own copy of this number so the REST layer
+    // need not import the collector. They must not drift.
+    expect(COLLECTOR_TICK_INTERVAL_S).toBe(estimateIntervalSeconds(INFRA_COLLECT_CRON));
+  });
+});
+
+describe('incremental spend accounting', () => {
+  /**
+   * Metrics per request for one in-scope EC2 instance.
+   *
+   * The pack does not go out as one request: `groupQueriesByPeriod` splits it
+   * by effective period, so the 300s metrics (CPU + the two Network sums) and
+   * the 60s status checks are separate requests. Billing is per metric
+   * requested *per request*, so the group size — not the pack size — is what a
+   * single request costs.
+   */
+  const PERIOD_GROUPS = (() => {
+    const sizes = new Map<number, number>();
+    for (const s of getServiceMetricPack('ec2')) {
+      const period = Math.max(60, s.minPeriodSeconds);
+      sizes.set(period, (sizes.get(period) ?? 0) + 1);
+    }
+    return [...sizes.values()];
+  })();
+  const FIRST_GROUP = PERIOD_GROUPS[0];
+  const USD_PER_METRIC = 0.01 / 1000;
+
+  /** The open run row's cost as it stands right now, mid-tick. */
+  function liveCost(): number {
+    const row = getInfraDb()
+      .prepare('SELECT estimated_cost_usd AS c FROM infra_collect_runs ORDER BY rowid DESC LIMIT 1')
+      .get() as { c: number } | undefined;
+    return row?.c ?? 0;
+  }
+
+  it('persists each billed request before issuing the next one', async () => {
+    // Regression: spend used to be written only by finishInfraCollectRun, so a
+    // hard kill mid-tick (SIGKILL / OOM / host reboot) skipped the `finally`
+    // entirely and left the row claiming zero cost for requests AWS had already
+    // charged for. Month-to-date spend then read as zero, the ceiling never
+    // tripped, and every restart of a crash loop issued another billed round.
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+
+    const costAtRequest: number[] = [];
+    let page = 0;
+    const client: CloudWatchMetricDataClient = {
+      async send(command) {
+        // What the audit trail durably knows at the instant this request is
+        // about to be billed.
+        costAtRequest.push(liveCost());
+        page += 1;
+        return {
+          ...echoAll(command),
+          // One NextToken, so the first group spans two billed requests.
+          ...(page === 1 ? { NextToken: 'page-2' } : {}),
+        } as GetMetricDataCommandOutput;
+      },
+    };
+
+    await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    // Nothing billed yet when the first request goes out.
+    expect(costAtRequest[0]).toBe(0);
+    // Every later request already sees the cost of everything before it — this
+    // is the assertion that fails against finishing-time-only accounting.
+    expect(costAtRequest.length).toBeGreaterThan(1);
+    for (let i = 1; i < costAtRequest.length; i += 1) {
+      expect(costAtRequest[i]).toBeGreaterThan(costAtRequest[i - 1]);
+    }
+    // Two pages of the first period group are billed before the second group.
+    expect(costAtRequest[1]).toBeCloseTo(FIRST_GROUP * USD_PER_METRIC, 12);
+    expect(costAtRequest[2]).toBeCloseTo(2 * FIRST_GROUP * USD_PER_METRIC, 12);
+  });
+
+  it('has the ceiling already seeing an unfinished tick mid-flight', async () => {
+    // The kill cannot be simulated by editing the row afterwards — that would
+    // just assert on whatever the finish wrote. The honest question is what a
+    // concurrent reader sees while the tick is still open, because that is
+    // precisely the state a SIGKILL freezes forever.
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+    setInfraCostCeiling('proj', 0.00001, NOW);
+
+    let midFlight: { spendUsd: number; metrics: number; level: string } | undefined;
+    let page = 0;
+    const client: CloudWatchMetricDataClient = {
+      async send(command) {
+        page += 1;
+        if (page === 2) {
+          const spend = getInfraSpendToDate('proj', NOW);
+          midFlight = {
+            spendUsd: spend.monthToDateUsd,
+            metrics: spend.metricsRequested,
+            level: resolveProjectDegradation('proj', NOW).level,
+          };
+        }
+        return echoAll(command) as GetMetricDataCommandOutput;
+      },
+    };
+
+    await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    expect(midFlight).toBeDefined();
+    // The row is still open (no finished_at) and its spend is already durable.
+    expect(midFlight?.spendUsd).toBeCloseTo(FIRST_GROUP * USD_PER_METRIC, 12);
+    expect(midFlight?.metrics).toBe(FIRST_GROUP);
+    // So the ceiling can act on money spent by a tick still in progress —
+    // which is what stops a crash loop from re-billing forever.
+    expect(midFlight?.level).toBe('paused');
+  });
+
+  it('does not double-count when the tick also closes normally', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => ({
+        async send(command) {
+          return echoAll(command) as GetMetricDataCommandOutput;
+        },
+      }),
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    const row = runRows()[0];
+    // One request per period group, and the pack billed exactly once overall.
+    expect(row.queries_issued).toBe(PERIOD_GROUPS.length);
+    expect(row.metrics_requested).toBe(EC2_PACK_SIZE);
+    expect(row.estimated_cost_usd).toBeCloseTo(r.estimatedCostUsd, 12);
+    expect(row.estimated_cost_usd).toBeCloseTo(EC2_PACK_SIZE * USD_PER_METRIC, 12);
+    expect(row.status).toBe('ok');
+  });
+
+  it('keeps the spend of a target that threw partway through', async () => {
+    insertScope({ id: 's1' });
+    insertResource('i-1');
+
+    let call = 0;
+    const client: CloudWatchMetricDataClient = {
+      async send(command) {
+        call += 1;
+        if (call === 2) throw new Error('AccessDenied');
+        return { ...echoAll(command), NextToken: 'page-2' } as GetMetricDataCommandOutput;
+      },
+    };
+
+    await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => client,
+      enqueue: (p) => ({ enqueued: p.length, dropped: 0 }),
+    });
+
+    const row = runRows()[0];
+    // The first page was billed and must still be accounted for, even though
+    // the target ultimately failed.
+    expect(row.metrics_requested).toBe(FIRST_GROUP);
+    expect(row.estimated_cost_usd).toBeCloseTo(FIRST_GROUP * USD_PER_METRIC, 12);
+    expect(row.status).toBe('failed');
+    expect(row.errors).toBe(1);
   });
 });
