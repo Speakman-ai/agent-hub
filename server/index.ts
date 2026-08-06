@@ -270,6 +270,7 @@ import { initLogsDb } from './logs/logs-db.js';
 import { startLogWriteQueue, flushLogWriteQueue } from './logs/log-write-queue.js';
 import { runLogRetentionReaper, LOG_RETENTION_REAPER_CRON } from './logs/log-retention-reaper.js';
 import { initInfraDb } from './infra/infra-db.js';
+import { startInfraWriteQueue, flushInfraWriteQueue } from './infra/infra-write-queue.js';
 import { runInfraInventorySync, INFRA_INVENTORY_SYNC_CRON } from './infra/inventory-sync.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { resolveDockerAvailability } from './docker-availability.js';
@@ -405,6 +406,10 @@ try {
 // with operational state. Best-effort: a failure here must not block boot.
 try {
   initInfraDb(config.dataDir);
+  // Start the bounded batch-writer queue's background flusher once the store is
+  // open. The timer is unref'd, so it never keeps the process alive; collector
+  // ticks enqueue into the same singleton.
+  startInfraWriteQueue();
 } catch (err) {
   console.error('[infra] Failed to initialize infra.db:', (err as Error).message);
 }
@@ -1973,6 +1978,15 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         console.info(`[shutdown] flushed ${flushed} pending log record(s) (${signal})`);
     } catch (err) {
       console.warn('[shutdown] log write queue flush failed:', (err as Error).message);
+    }
+    // Same for the metric-point queue: a restart mid-tick would otherwise lose
+    // the window the collector already paid AWS to fetch.
+    try {
+      const flushed = flushInfraWriteQueue();
+      if (flushed > 0)
+        console.info(`[shutdown] flushed ${flushed} pending metric point(s) (${signal})`);
+    } catch (err) {
+      console.warn('[shutdown] infra write queue flush failed:', (err as Error).message);
     }
     for (const sessionId of activeProcesses.keys()) {
       markSessionTermination(sessionId, 'server_shutdown');

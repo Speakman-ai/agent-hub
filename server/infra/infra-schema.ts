@@ -17,10 +17,14 @@
  *     INFRA-SCOPE). Nothing is polled until a scope row exists.
  *   - `infra_resources` — the describe-API-derived inventory the collector
  *     builds its query list from, so the hot path never paginates ListMetrics.
+ *   - `infra_metric_points` — the time series itself, mirroring CloudWatch's
+ *     own 60s/300s/3600s rollup tiers rather than recomputing them.
+ *   - `infra_collect_runs` — the per-tick audit trail INFRA-COST reads to keep
+ *     AWS API spend a visible, capped quantity.
  *
- * `infra_metric_points`, `infra_collect_runs`, `infra_retention_config` and the
- * alert tables are appended by their own tickets; the DDL is a single
- * idempotent block so those additions are edits to this constant.
+ * `infra_retention_config` and the alert tables are appended by their own
+ * tickets; the DDL is a single idempotent block so those additions are edits to
+ * this constant.
  */
 
 /** Filename of the store under the data dir. */
@@ -32,6 +36,31 @@ export const INFRA_DB_FILENAME = 'infra.db';
  * injective even for resource ids that are full ARNs (`:` / `/` heavy).
  */
 export const INFRA_RESOURCE_KEY_SEPARATOR = '|';
+
+/**
+ * `dimensions_hash` value for a metric point carrying no dimensions. A literal
+ * sentinel rather than the hash of an empty object so the overwhelmingly common
+ * case stays readable in the table and costs no digest.
+ */
+export const INFRA_EMPTY_DIMENSIONS_HASH = '-';
+
+/**
+ * Bounds for the batched metric-point writer (`infra-write-queue.ts`), each
+ * overridable at runtime:
+ *
+ *   - `INFRA_WRITE_QUEUE_MAX_POINTS`      — queue depth cap (backpressure)
+ *   - `INFRA_WRITE_QUEUE_FLUSH_POINTS`    — points per write transaction
+ *   - `INFRA_WRITE_QUEUE_FLUSH_INTERVAL_MS` — background flush cadence
+ *
+ * The depth default is sized to hold several full collector ticks: one tick may
+ * issue up to 500 GetMetricData queries (decision INFRA-COLLECT), each
+ * returning a window's worth of datapoints, so a single tick can be tens of
+ * thousands of points. The flush default is larger than the logs queue's
+ * because a metric point is a handful of small columns rather than a log body.
+ */
+export const DEFAULT_INFRA_WRITE_QUEUE_MAX_POINTS = 200_000;
+export const DEFAULT_INFRA_WRITE_QUEUE_FLUSH_POINTS = 2_000;
+export const DEFAULT_INFRA_WRITE_QUEUE_FLUSH_INTERVAL_MS = 250;
 
 /**
  * Table DDL for `infra.db`, kept separate from the index DDL below.
@@ -113,6 +142,79 @@ export const INFRA_TABLES_SCHEMA = `
     last_seen    INTEGER NOT NULL,
     UNIQUE (project_id, account_id, region, service, resource_id)
   );
+
+  -- The time series (decision INFRA-STORE). One row per datapoint CloudWatch
+  -- returned, stored at the tier it was requested at rather than downsampled
+  -- locally: CloudWatch already rolls up server-side on 60s/300s/3600s, and a
+  -- rollup pipeline here would be a second source of truth for data we do not
+  -- own.
+  --
+  -- The natural key is (resource, series, period, timestamp). Re-collecting an
+  -- overlapping window is routine — a tick retries, or the operator widens a
+  -- range — so the writer upserts on that key. Without it, every retry would
+  -- double the points behind a chart.
+  --
+  -- \`id\` exists so the retention reaper can select-then-delete by rowid in
+  -- bounded batches (the same shape as log_records) instead of issuing an
+  -- unbounded range delete that would hold the write lock for a whole pass.
+  CREATE TABLE IF NOT EXISTS infra_metric_points (
+    id              INTEGER PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    -- Joins to infra_resources.resource_key. Deliberately NOT a foreign key:
+    -- an in-flight tick may land points for a resource whose inventory row the
+    -- sync has not written yet, and losing telemetry to an ordering race is
+    -- worse than briefly holding points for an unlisted resource.
+    resource_key    TEXT NOT NULL,
+    namespace       TEXT NOT NULL,
+    metric_name     TEXT NOT NULL,
+    -- Stable digest of the dimension set, so the natural key stays a fixed
+    -- width no matter how many dimensions a series carries. '-' when there are
+    -- none (INFRA_EMPTY_DIMENSIONS_HASH).
+    dimensions_hash TEXT NOT NULL,
+    -- The dimensions themselves, for display. Untrusted, operator- or
+    -- third-party-controlled text (decision INFRA-WIZARD).
+    dimensions_json TEXT,
+    -- CloudWatch statistic the value was requested with ('Average', 'Maximum',
+    -- 'Sum', 'p99', …). Part of the key: the same metric polled on two stats is
+    -- two series, not one series that overwrites itself.
+    stat            TEXT NOT NULL,
+    -- Requested period in seconds. Part of the key because the collector picks
+    -- the period from the window's age (60s within 15 days, 300s within 63,
+    -- 3600s beyond), so one metric legitimately has points at several tiers.
+    period_s        INTEGER NOT NULL,
+    ts_ms           INTEGER NOT NULL,
+    value           REAL NOT NULL
+  );
+
+  -- Per-tick collector audit (decision INFRA-COST). GetMetricData is billed per
+  -- 1,000 metrics requested and is never in the free tier, so what a tick cost
+  -- has to be recorded at the moment it is spent rather than reconstructed from
+  -- a bill weeks later.
+  CREATE TABLE IF NOT EXISTS infra_collect_runs (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    -- NULL until sts:GetCallerIdentity has resolved the profile, mirroring
+    -- infra_scopes.account_id.
+    account_id          TEXT,
+    region              TEXT,
+    started_at          INTEGER NOT NULL,
+    -- NULL while the tick is still running; a row that never gets one is a
+    -- crashed tick, which is itself the signal.
+    finished_at         INTEGER,
+    duration_ms         INTEGER,
+    queries_issued      INTEGER NOT NULL DEFAULT 0,
+    -- Billing quantity: metrics *requested*, which is what AWS charges for,
+    -- not datapoints returned.
+    metrics_requested   INTEGER NOT NULL DEFAULT 0,
+    datapoints_returned INTEGER NOT NULL DEFAULT 0,
+    points_written      INTEGER NOT NULL DEFAULT 0,
+    throttles           INTEGER NOT NULL DEFAULT 0,
+    errors              INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd  REAL NOT NULL DEFAULT 0,
+    status              TEXT NOT NULL DEFAULT 'running'
+      CHECK (status IN ('running', 'ok', 'partial', 'failed')),
+    error_message       TEXT
+  );
 `;
 
 /**
@@ -142,6 +244,27 @@ export const INFRA_INDEXES_SCHEMA = `
   -- projects rather than within one.
   CREATE INDEX IF NOT EXISTS idx_infra_resources_last_seen
     ON infra_resources(last_seen);
+
+  -- Upsert target and the guarantee behind overlap idempotence: re-collecting a
+  -- window that was already stored updates the existing point instead of
+  -- appending a second one. resource_key already embeds project_id, so this is
+  -- unique with or without the leading column; project_id leads anyway to match
+  -- the store-wide convention and to serve per-project delete scans.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_infra_metric_points_series
+    ON infra_metric_points(
+      project_id, resource_key, namespace, metric_name,
+      dimensions_hash, stat, period_s, ts_ms
+    );
+  -- Chart reads: one metric on one resource over a bounded range, newest first.
+  CREATE INDEX IF NOT EXISTS idx_infra_metric_points_chart
+    ON infra_metric_points(project_id, resource_key, metric_name, ts_ms DESC);
+  -- Global oldest-first scan for the retention reaper, which walks across
+  -- projects rather than within one.
+  CREATE INDEX IF NOT EXISTS idx_infra_metric_points_ts
+    ON infra_metric_points(ts_ms);
+
+  CREATE INDEX IF NOT EXISTS idx_infra_collect_runs_project
+    ON infra_collect_runs(project_id, started_at DESC);
 `;
 
 /**

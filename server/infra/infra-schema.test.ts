@@ -72,6 +72,27 @@ function insertResource(over: Partial<Record<string, string | number | null>> = 
   ).run(row);
 }
 
+function insertPoint(over: Partial<Record<string, string | number | null>> = {}): void {
+  const row = {
+    project_id: 'proj-a',
+    resource_key: 'proj-a|111122223333|us-east-1|ec2|i-abc',
+    namespace: 'AWS/EC2',
+    metric_name: 'CPUUtilization',
+    dimensions_hash: '-',
+    dimensions_json: null,
+    stat: 'Average',
+    period_s: 60,
+    ts_ms: 1_800_000_000_000,
+    value: 12.5,
+    ...over,
+  };
+  db.prepare(
+    `INSERT INTO infra_metric_points
+       (project_id, resource_key, namespace, metric_name, dimensions_hash, dimensions_json, stat, period_s, ts_ms, value)
+     VALUES (@project_id, @resource_key, @namespace, @metric_name, @dimensions_hash, @dimensions_json, @stat, @period_s, @ts_ms, @value)`,
+  ).run(row);
+}
+
 beforeEach(() => {
   db = freshDb();
 });
@@ -212,14 +233,147 @@ describe('infra_resources', () => {
   });
 });
 
+describe('infra_metric_points', () => {
+  it('has the time-series columns from INFRA-STORE with value as REAL', () => {
+    expect(colNames('infra_metric_points')).toEqual([
+      'dimensions_hash',
+      'dimensions_json',
+      'id',
+      'metric_name',
+      'namespace',
+      'period_s',
+      'project_id',
+      'resource_key',
+      'stat',
+      'ts_ms',
+      'value',
+    ]);
+    const value = (
+      db.pragma('table_info(infra_metric_points)') as { name: string; type: string }[]
+    ).find((c) => c.name === 'value');
+    expect(value?.type).toBe('REAL');
+  });
+
+  it('enforces the natural series key so an overlapping re-collection cannot duplicate', () => {
+    insertPoint();
+    expect(() => insertPoint()).toThrow(/UNIQUE/i);
+  });
+
+  it('treats stat, period and dimensions as part of the series identity', () => {
+    insertPoint();
+    expect(() => insertPoint({ stat: 'Maximum' })).not.toThrow();
+    expect(() => insertPoint({ period_s: 300 })).not.toThrow();
+    expect(() => insertPoint({ dimensions_hash: 'abc123' })).not.toThrow();
+    expect(() => insertPoint({ ts_ms: 1_800_000_060_000 })).not.toThrow();
+    expect(db.prepare('SELECT COUNT(*) c FROM infra_metric_points').get()).toMatchObject({ c: 5 });
+  });
+
+  it('indexes chart reads project-first and keeps a global ts_ms scan for the reaper', () => {
+    const idx = indexNames('infra_metric_points');
+    expect(idx).toEqual(
+      expect.arrayContaining([
+        'idx_infra_metric_points_series',
+        'idx_infra_metric_points_chart',
+        'idx_infra_metric_points_ts',
+      ]),
+    );
+
+    const chartCols = (
+      db.prepare('PRAGMA index_info(idx_infra_metric_points_chart)').all() as NamedRow[]
+    ).map((c) => c.name);
+    expect(chartCols).toEqual(['project_id', 'resource_key', 'metric_name', 'ts_ms']);
+
+    // The chart read is newest-first; a plain ASC index would force a sort.
+    const chartDdl = db
+      .prepare("SELECT sql FROM sqlite_master WHERE name = 'idx_infra_metric_points_chart'")
+      .get() as { sql: string };
+    expect(chartDdl.sql).toMatch(/ts_ms DESC/i);
+
+    // The reaper's aging pass walks oldest-first across every project.
+    const reaperCols = (
+      db.prepare('PRAGMA index_info(idx_infra_metric_points_ts)').all() as NamedRow[]
+    ).map((c) => c.name);
+    expect(reaperCols).toEqual(['ts_ms']);
+  });
+
+  it('uses the chart index for a bounded range read', () => {
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT value FROM infra_metric_points
+          WHERE project_id = ? AND resource_key = ? AND metric_name = ?
+            AND ts_ms >= ? AND ts_ms <= ?
+          ORDER BY ts_ms DESC LIMIT 100`,
+      )
+      .all('proj-a', 'rk', 'CPUUtilization', 0, 1) as { detail: string }[];
+    expect(plan.map((r) => r.detail).join(' ')).toMatch(/idx_infra_metric_points_(chart|series)/);
+  });
+
+  it('leaves dimensions_json optional for an undimensioned metric', () => {
+    expect(() => insertPoint({ dimensions_json: null })).not.toThrow();
+  });
+});
+
+describe('infra_collect_runs', () => {
+  it('has the per-tick audit columns INFRA-COST reads', () => {
+    expect(colNames('infra_collect_runs')).toEqual([
+      'account_id',
+      'datapoints_returned',
+      'duration_ms',
+      'error_message',
+      'errors',
+      'estimated_cost_usd',
+      'finished_at',
+      'id',
+      'metrics_requested',
+      'points_written',
+      'project_id',
+      'queries_issued',
+      'region',
+      'started_at',
+      'status',
+      'throttles',
+    ]);
+  });
+
+  it('opens as running with zeroed counters and constrains status', () => {
+    db.prepare(
+      `INSERT INTO infra_collect_runs (id, project_id, started_at)
+       VALUES ('run-1', 'proj-a', 1)`,
+    ).run();
+    expect(
+      db.prepare('SELECT status, queries_issued, estimated_cost_usd FROM infra_collect_runs').get(),
+    ).toMatchObject({ status: 'running', queries_issued: 0, estimated_cost_usd: 0 });
+
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO infra_collect_runs (id, project_id, started_at, status)
+           VALUES ('run-2', 'proj-a', 1, 'done')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/i);
+  });
+
+  it('indexes the per-project run history newest-first', () => {
+    expect(indexNames('infra_collect_runs')).toContain('idx_infra_collect_runs_project');
+    const cols = (
+      db.prepare('PRAGMA index_info(idx_infra_collect_runs_project)').all() as NamedRow[]
+    ).map((c) => c.name);
+    expect(cols).toEqual(['project_id', 'started_at']);
+  });
+});
+
 describe('migration idempotency', () => {
   it('re-executing the DDL preserves existing rows and throws nothing', () => {
     insertScope();
     insertResource();
+    insertPoint();
     expect(() => db.exec(INFRA_SCHEMA)).not.toThrow();
     expect(() => db.exec(INFRA_SCHEMA)).not.toThrow();
     expect(db.prepare('SELECT COUNT(*) c FROM infra_scopes').get()).toMatchObject({ c: 1 });
     expect(db.prepare('SELECT COUNT(*) c FROM infra_resources').get()).toMatchObject({ c: 1 });
+    expect(db.prepare('SELECT COUNT(*) c FROM infra_metric_points').get()).toMatchObject({ c: 1 });
   });
 
   it('is entirely IF NOT EXISTS — no unguarded CREATE in the DDL', () => {
