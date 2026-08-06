@@ -16,6 +16,7 @@ import {
   Terminal,
   Play,
   Cloud,
+  Server,
   Activity,
   ScrollText,
   AlertTriangle,
@@ -937,6 +938,7 @@ export default function Sidebar({
                       const showReplays = !workflowProject;
                       const showSecurity = !workflowProject;
                       const showAws = !!project.awsEnabled;
+                      const showInfra = !!project.infraEnabled;
                       const showReviewer = project.agents?.some((a: any) => a.role === 'reviewer');
                       const showRunners = !workflowProject;
                       const showDevserver = !workflowProject;
@@ -1157,6 +1159,18 @@ export default function Sidebar({
                                 >
                                   <Cloud size={14} className="flex-shrink-0" />
                                   <span className="truncate">AWS</span>
+                                </button>
+                              )}
+                              {showInfra && (
+                                <button
+                                  type="button"
+                                  onClick={() => onNavigate(`infra:${project.id}`)}
+                                  className={projectMenuLinkClass(
+                                    currentView === `infra:${project.id}`,
+                                  )}
+                                >
+                                  <Server size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Infrastructure</span>
                                 </button>
                               )}
                               {showSecurity &&

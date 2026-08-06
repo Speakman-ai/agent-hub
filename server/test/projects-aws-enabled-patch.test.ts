@@ -48,3 +48,38 @@ describe('PATCH /api/projects/:projectId — awsEnabled', () => {
     expect((res.body as { error: string }).error).toMatch(/awsEnabled must be a boolean/);
   });
 });
+
+describe('PATCH /api/projects/:projectId — infraEnabled', () => {
+  it('persists infraEnabled=true', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ infraEnabled: true })
+      .expect(200);
+    expect((res.body as { infraEnabled?: boolean }).infraEnabled).toBe(true);
+  });
+
+  it('clears the flag when toggled back to false', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    await request.patch(`/api/projects/${projectId}`).send({ infraEnabled: true }).expect(200);
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ infraEnabled: false })
+      .expect(200);
+    expect((res.body as { infraEnabled?: boolean }).infraEnabled).toBeUndefined();
+  });
+
+  it('rejects a non-boolean value without mutating the project', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ infraEnabled: 'yes' })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/infraEnabled must be a boolean/);
+    const read = await request.get(`/api/projects/${projectId}`).expect(200);
+    expect((read.body as { infraEnabled?: boolean }).infraEnabled).toBeUndefined();
+  });
+});

@@ -3330,6 +3330,11 @@ export interface Project {
    * hidden until a user opts in via Settings → Projects.
    */
   awsEnabled?: boolean;
+  /**
+   * When true, the per-project Infrastructure monitoring module is visible
+   * in the sidebar. Defaults to `false` (omitted) until an operator opts in.
+   */
+  infraEnabled?: boolean;
   agents: Agent[];
   [key: string]: unknown;
 }

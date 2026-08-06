@@ -7,5 +7,7 @@ export interface ProjectWire {
   ownerUserId?: string | null;
   visibility?: string;
   gitHost?: string;
+  /** Whether the per-project Infrastructure monitoring module is visible. */
+  infraEnabled?: boolean;
   [key: string]: unknown;
 }

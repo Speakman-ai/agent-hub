@@ -1049,6 +1049,8 @@ export function ProjectsSection({
 
   // Per-project AWS-enabled toggle (in-flight guard while persisting).
   const [awsSaving, setAwsSaving] = useState<Record<string, any>>({});
+  // Per-project Infrastructure-enabled toggle (in-flight guard while persisting).
+  const [infraSaving, setInfraSaving] = useState<Record<string, any>>({});
 
   // Project delete confirmation (inline toggle pattern)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState<any>(null);
@@ -1082,6 +1084,21 @@ export function ProjectsSection({
       else alert(msg);
     } finally {
       setAwsSaving((prev: any) => ({ ...prev, [project.id]: false }));
+    }
+  };
+
+  const toggleInfraEnabled = async (project: any) => {
+    const next = !project.infraEnabled;
+    setInfraSaving((prev: any) => ({ ...prev, [project.id]: true }));
+    try {
+      await api.updateProject(project.id, { infraEnabled: next });
+      if (onProjectsChange) onProjectsChange();
+    } catch (err: any) {
+      const msg = String(err?.message || err || 'Failed to update');
+      if (showToast) showToast(msg, 'error');
+      else alert(msg);
+    } finally {
+      setInfraSaving((prev: any) => ({ ...prev, [project.id]: false }));
     }
   };
 
@@ -1180,6 +1197,32 @@ export function ProjectsSection({
           <span
             className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
               p.awsEnabled ? 'translate-x-4' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+
+      {/* Infrastructure toggle — enables the per-project AWS monitoring module. */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-200">Infrastructure</span>
+          <p className="text-xs text-gray-500">
+            Enable the Infrastructure module for this project. It stays idle until an explicit AWS
+            monitoring profile and collection scope are configured.
+          </p>
+        </div>
+        <button
+          onClick={() => toggleInfraEnabled(p)}
+          disabled={infraSaving[p.id]}
+          data-testid={`project-infra-enabled-${p.id}`}
+          aria-pressed={!!p.infraEnabled}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+            p.infraEnabled ? 'bg-emerald-600' : 'bg-gray-600'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              p.infraEnabled ? 'translate-x-4' : 'translate-x-0.5'
             }`}
           />
         </button>

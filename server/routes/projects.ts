@@ -2354,6 +2354,20 @@ This workspace has no git repo and no PR automation — your job is planning, or
         delete (project as Record<string, unknown>).awsEnabled;
       }
     }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'infraEnabled')) {
+      // Boolean toggle that gates the per-project Infrastructure sidebar
+      // entry. Store `true`; delete `false` so projects retain the default-off
+      // shape used by the other module visibility flags.
+      const rawInfraEnabled = (req.body as Record<string, unknown>).infraEnabled;
+      if (typeof rawInfraEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'infraEnabled must be a boolean' });
+      }
+      if (rawInfraEnabled) {
+        (project as Record<string, unknown>).infraEnabled = true;
+      } else {
+        delete (project as Record<string, unknown>).infraEnabled;
+      }
+    }
     // ─── Visibility (shared ↔ private) ──────────────────────────────
     // Mirrors the create-time validation but additionally enforces the
     // role-gated transition policy (see `canChangeVisibility`). Two

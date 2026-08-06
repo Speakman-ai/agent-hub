@@ -1594,6 +1594,23 @@ describe('Sidebar — per-project nav groups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'AWS' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`aws:${PROJECT_ID}`);
   });
+
+  it('renders Infrastructure and navigates to the project infra view when infraEnabled', () => {
+    const onNavigate = vi.fn();
+    const projects = [
+      {
+        id: PROJECT_ID,
+        name: 'Test Project',
+        color: '#22d3ee',
+        infraEnabled: true,
+        agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+      },
+    ];
+    render(<Sidebar {...buildProps({ projects, onNavigate })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Infrastructure' } as any) as any);
+    expect(onNavigate).toHaveBeenCalledWith(`infra:${PROJECT_ID}`);
+  });
 });
 
 describe('Sidebar kanban board mode', () => {

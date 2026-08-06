@@ -90,6 +90,7 @@ import ProjectStatsView from './components/ProjectStatsView';
 import DevServerSection from './components/DevServerSection';
 import RumSettingsSection from './components/RumSettingsSection';
 import LogsPage from './components/logs/LogsPage';
+import InfrastructurePage from './components/infra/InfrastructurePage';
 import ProjectAwsProfilesEditor from './components/ProjectAwsProfilesEditor';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal';
 import UpdateAvailableModal from './components/UpdateAvailableModal';
@@ -5109,6 +5110,7 @@ export default function App({ initialView }: any = {}) {
     if (currentView.startsWith('stats:')) return currentView.slice('stats:'.length);
     if (currentView.startsWith('devserver:')) return currentView.slice('devserver:'.length);
     if (currentView.startsWith('aws:')) return currentView.slice('aws:'.length);
+    if (currentView.startsWith('infra:')) return currentView.slice('infra:'.length);
     if (workflowEditRoute) return workflowEditRoute.projectId;
     if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
     if (currentView === 'notes' && notesProjectId) return notesProjectId;
@@ -5799,6 +5801,22 @@ export default function App({ initialView }: any = {}) {
                           onOpenSession={({ sessionId, agentId }: any) =>
                             focusAgentSession(agentId, sessionId)
                           }
+                        />
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : currentView.startsWith('infra:') ? (
+                (() => {
+                  const infraProjectId = currentView.slice('infra:'.length);
+                  const infraProject = projects.find((p: any) => p.id === infraProjectId);
+                  return (
+                    <div className="flex-1 overflow-hidden p-4 md:p-6">
+                      <div className="mx-auto flex h-full max-w-6xl flex-col">
+                        <InfrastructurePage
+                          projectId={infraProjectId}
+                          projectName={infraProject?.name}
+                          project={infraProject}
                         />
                       </div>
                     </div>
