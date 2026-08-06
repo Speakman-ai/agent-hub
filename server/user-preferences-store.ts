@@ -20,6 +20,11 @@
  *                              per-engine default.
  *   - `todoAutoCompleteOnPromote` — when true, promoting a personal todo to a
  *                                   project card also marks that todo done.
+ *   - `sidebarCollapsedProjects`  — project ids the caller has collapsed in the
+ *                                   sidebar project list. Purely a UI
+ *                                   preference, but per-account rather than
+ *                                   per-device so the sidebar looks the same on
+ *                                   web, mobile, and Electron.
  *
  * The map is stored on the `preferences_json` column so we don't have to
  * migrate the table every time a new preference is added. The column is
@@ -43,6 +48,34 @@ export interface UserPreferencesStored {
   /** Per-agent per-user model pick (`{ [agentId]: modelId }`). */
   agentModelOverrides?: Record<string, string>;
   todoAutoCompleteOnPromote?: boolean;
+  /** Project ids collapsed in the sidebar, de-duplicated and order-preserved. */
+  sidebarCollapsedProjects?: string[];
+}
+
+/**
+ * Hard cap on how many collapsed project ids we persist. Guards the JSON blob
+ * against an unbounded client PUT; well above any realistic project count.
+ */
+export const MAX_SIDEBAR_COLLAPSED_PROJECTS = 500;
+
+/**
+ * Normalize a collapsed-projects list: strings only, trimmed, empties dropped,
+ * de-duplicated (first occurrence wins), capped. Returns `undefined` when
+ * nothing survives so the key is omitted from the stored JSON.
+ */
+export function normalizeSidebarCollapsedProjects(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const id = entry.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    if (out.length >= MAX_SIDEBAR_COLLAPSED_PROJECTS) break;
+  }
+  return out.length ? out : undefined;
 }
 
 function normalizeAgentEngineOverrides(
@@ -90,6 +123,8 @@ function parsePrefsJson(raw: string | null): UserPreferencesStored {
     if (typeof obj.todoAutoCompleteOnPromote === 'boolean') {
       result.todoAutoCompleteOnPromote = obj.todoAutoCompleteOnPromote;
     }
+    const collapsed = normalizeSidebarCollapsedProjects(obj.sidebarCollapsedProjects);
+    if (collapsed) result.sidebarCollapsedProjects = collapsed;
     return result;
   } catch {
     return {};
@@ -110,9 +145,22 @@ export function getUserPreferencesRow(userId: string): UserPreferencesStored {
  * sub-map left empty / undefined is omitted from the stored JSON so we
  * don't grow dead keys over time.
  *
- * **This is a full replacement.** Callers that only want to update a
- * single sub-map should use `mergeUserPreferencesJson` instead so they
- * don't wipe the untouched maps.
+ * **This is a full replacement, field by field.** `stored` is built from an
+ * empty object and written with a single whole-column `UPDATE` — it never
+ * reads the existing row. So a field the caller omits (or passes as
+ * `undefined` / an empty collection) is *absent from the write*, not
+ * inherited from what was there before. That is precisely what makes
+ * clearing work: expanding the last collapsed project passes
+ * `sidebarCollapsedProjects: undefined` and the key disappears from the
+ * persisted JSON.
+ *
+ * Do not "optimize" this into a merge over the current row. Every clear in
+ * the system would silently become a no-op, and the damage would only
+ * surface on a later GET still serving the stale value. Pinned by the
+ * raw-column tests at the end of `user-preferences-store.test.ts`.
+ *
+ * Callers that only want to update a single sub-map should use
+ * `mergeUserPreferencesJson` instead so they don't wipe the untouched maps.
  */
 export function replaceUserPreferencesJson(userId: string, prefs: UserPreferencesStored): void {
   const stored: Record<string, unknown> = {};
@@ -125,8 +173,44 @@ export function replaceUserPreferencesJson(userId: string, prefs: UserPreference
   if (typeof prefs.todoAutoCompleteOnPromote === 'boolean') {
     stored.todoAutoCompleteOnPromote = prefs.todoAutoCompleteOnPromote;
   }
+  if (prefs.sidebarCollapsedProjects && prefs.sidebarCollapsedProjects.length > 0) {
+    stored.sidebarCollapsedProjects = prefs.sidebarCollapsedProjects;
+  }
   const json = Object.keys(stored).length > 0 ? JSON.stringify(stored) : null;
   getOrgsDb().prepare('UPDATE users SET preferences_json = ? WHERE id = ?').run(json, userId);
+}
+
+/**
+ * Read-modify-write `preferences_json` **atomically**.
+ *
+ * `mutate` receives the currently stored preferences and returns the full
+ * replacement. The read and the write run inside a single IMMEDIATE
+ * transaction, so the row is write-locked before the read: two concurrent
+ * mutations serialize instead of both reading the same base and the later
+ * write silently discarding the earlier one.
+ *
+ * Within one process better-sqlite3's synchronous API already prevents
+ * interleaving (there is no `await` between read and write), but that is an
+ * accident of the driver, not a guarantee of the endpoint contract — and it
+ * says nothing about a second Hub process or an external writer sharing
+ * `orgs.db`. Any route advertising "merges server-side" must go through here.
+ *
+ * A throwing `mutate` aborts the transaction, leaving the row untouched — use
+ * that to reject a mutation (e.g. an over-cap list) without a partial write.
+ */
+export function mutateUserPreferencesJson(
+  userId: string,
+  mutate: (current: UserPreferencesStored) => UserPreferencesStored,
+): UserPreferencesStored {
+  const run = getOrgsDb().transaction((id: string) => {
+    const next = mutate(getUserPreferencesRow(id));
+    replaceUserPreferencesJson(id, next);
+    return next;
+  });
+  // `.immediate()` takes the write lock up front (BEGIN IMMEDIATE) rather than
+  // upgrading a read lock mid-transaction, which under WAL would surface as a
+  // SQLITE_BUSY snapshot conflict on the write instead of just waiting.
+  return run.immediate(userId) as UserPreferencesStored;
 }
 
 /**
@@ -135,12 +219,24 @@ export function replaceUserPreferencesJson(userId: string, prefs: UserPreference
  * untouched; a key set to an empty object clears it. Use this from the
  * per-feature PUT routes so two unrelated preferences don't stomp each
  * other.
+ *
+ * Atomic — see {@link mutateUserPreferencesJson}. Note this only protects the
+ * sub-maps `partial` does NOT mention; a caller that computes a new value from
+ * a value it read earlier still has its own read-modify-write to close, and
+ * should call `mutateUserPreferencesJson` directly instead.
  */
 export function mergeUserPreferencesJson(
   userId: string,
   partial: UserPreferencesStored,
 ): UserPreferencesStored {
-  const current = getUserPreferencesRow(userId);
+  return mutateUserPreferencesJson(userId, (current) => mergePreferences(current, partial));
+}
+
+/** Pure sub-map merge shared by {@link mergeUserPreferencesJson}. */
+function mergePreferences(
+  current: UserPreferencesStored,
+  partial: UserPreferencesStored,
+): UserPreferencesStored {
   const next: UserPreferencesStored = { ...current };
   if (partial.agentEngineOverrides !== undefined) {
     next.agentEngineOverrides = Object.keys(partial.agentEngineOverrides).length
@@ -155,6 +251,10 @@ export function mergeUserPreferencesJson(
   if (partial.todoAutoCompleteOnPromote !== undefined) {
     next.todoAutoCompleteOnPromote = partial.todoAutoCompleteOnPromote;
   }
-  replaceUserPreferencesJson(userId, next);
+  if (partial.sidebarCollapsedProjects !== undefined) {
+    next.sidebarCollapsedProjects = partial.sidebarCollapsedProjects.length
+      ? partial.sidebarCollapsedProjects
+      : undefined;
+  }
   return next;
 }

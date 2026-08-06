@@ -73,6 +73,8 @@ import {
 import {
   getUserPreferencesRow,
   mergeUserPreferencesJson,
+  mutateUserPreferencesJson,
+  MAX_SIDEBAR_COLLAPSED_PROJECTS,
   type AgentEngineOverride,
 } from '../user-preferences-store.js';
 import {
@@ -160,6 +162,8 @@ import {
   PutAgentEngineOverridesBody,
   PutAgentModelOverridesBody,
   PutAgentModelOverrideEntryBody,
+  PutSidebarCollapsedProjectBody,
+  SidebarCollapsedProjectsResponse,
   AgentEngineOverrideEntry,
   UserSummary,
   ZodErrorResponse,
@@ -972,6 +976,58 @@ registerPath({
     400: {
       description: 'Invalid payload.',
       content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/sidebar-collapsed-projects',
+  tags: ['Auth'],
+  summary: 'Projects the caller has collapsed in the sidebar.',
+  responses: {
+    200: {
+      description: 'Caller-scoped list of collapsed project ids.',
+      content: { 'application/json': { schema: SidebarCollapsedProjectsResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User row missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/sidebar-collapsed-projects/{projectId}',
+  tags: ['Auth'],
+  summary: 'Collapse or expand one project in the caller’s sidebar (merge).',
+  description:
+    "Merges server-side: flips only this project's entry, so a toggle in one tab never clobbers another tab's concurrent edit. Unknown project ids are accepted and stored verbatim; they are simply never rendered.",
+  request: {
+    params: z.object({ projectId: z.string().openapi({ description: 'Project id.' }) }),
+    body: { content: { 'application/json': { schema: PutSidebarCollapsedProjectBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated list.',
+      content: { 'application/json': { schema: SidebarCollapsedProjectsResponse } },
+    },
+    400: {
+      description: 'Invalid payload.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
     },
     401: {
       description: 'Not authenticated.',
@@ -3324,6 +3380,81 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     mergeUserPreferencesJson(authedReq.authUserId, { agentEngineOverrides: next });
     res.json({ agentEngineOverrides: filterStoredAgentEngineOverrides(next) });
   });
+
+  // ── Sidebar collapsed projects (per-user UI state) ──────────────────────
+  // Stored on the account rather than in localStorage so the sidebar looks the
+  // same on web, mobile, and Electron. The toggle endpoint merges server-side
+  // for the same reason the per-agent override endpoints do: two tabs toggling
+  // different projects must not clobber each other.
+
+  router.get('/api/auth/me/sidebar-collapsed-projects', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    if (!getUserById(authedReq.authUserId)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const stored = getUserPreferencesRow(authedReq.authUserId).sidebarCollapsedProjects ?? [];
+    res.json({ sidebarCollapsedProjects: stored });
+  });
+
+  router.put(
+    '/api/auth/me/sidebar-collapsed-projects/:projectId',
+    (req: Request, res: Response) => {
+      const authedReq = req as AuthenticatedRequest;
+      if (!authedReq.authUserId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      if (!getUserById(authedReq.authUserId)) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+      const projectId = String(req.params.projectId ?? '').trim();
+      if (!projectId) {
+        res.status(400).json({ error: 'projectId is required' });
+        return;
+      }
+      const parsed = PutSidebarCollapsedProjectBody.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json(formatZodError(parsed.error));
+        return;
+      }
+      // Read-modify-write INSIDE the transaction. Reading the list out here
+      // first would reintroduce exactly the clobber this endpoint shape exists
+      // to prevent: two concurrent toggles would both read the same base list
+      // and the later write would drop the other project's change.
+      const { collapsed } = parsed.data;
+      let overCap = false;
+      const updated = mutateUserPreferencesJson(authedReq.authUserId, (current) => {
+        const list = current.sidebarCollapsedProjects ?? [];
+        let next: string[];
+        if (collapsed) {
+          if (list.includes(projectId)) {
+            next = list;
+          } else if (list.length >= MAX_SIDEBAR_COLLAPSED_PROJECTS) {
+            overCap = true;
+            next = list;
+          } else {
+            next = [...list, projectId];
+          }
+        } else {
+          next = list.filter((id) => id !== projectId);
+        }
+        return { ...current, sidebarCollapsedProjects: next.length ? next : undefined };
+      });
+      if (overCap) {
+        res.status(400).json({
+          error: `Too many collapsed projects (max ${MAX_SIDEBAR_COLLAPSED_PROJECTS})`,
+        });
+        return;
+      }
+      res.json({ sidebarCollapsedProjects: updated.sidebarCollapsedProjects ?? [] });
+    },
+  );
 
   // ── Per-user skill credentials (encrypted; keys merged into spawn env) ──
   router.get('/api/auth/me/skill-credentials', (req: Request, res: Response) => {

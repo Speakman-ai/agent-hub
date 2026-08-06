@@ -314,6 +314,30 @@ export const PutAgentModelOverrideEntryBody = registerComponent(
     }),
 );
 
+export const SidebarCollapsedProjectsResponse = registerComponent(
+  'SidebarCollapsedProjectsResponse',
+  z
+    .object({
+      sidebarCollapsedProjects: z.array(z.string()),
+    })
+    .openapi({
+      description:
+        'Project ids the caller has collapsed in the sidebar project list. Caller-scoped, so the same account sees the same collapsed projects on web, mobile, and Electron.',
+    }),
+);
+
+export const PutSidebarCollapsedProjectBody = registerComponent(
+  'PutSidebarCollapsedProjectBody',
+  z
+    .object({
+      collapsed: z.boolean(),
+    })
+    .openapi({
+      description:
+        "Collapse (`true`) or expand (`false`) a single project in the caller's sidebar. Merges server-side so a toggle never clobbers another tab's concurrent edit.",
+    }),
+);
+
 // ── CLI auth route bodies ──────────────────────────────────────────────
 
 export const ClaudeLoginBody = registerComponent(

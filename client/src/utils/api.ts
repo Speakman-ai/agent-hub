@@ -1780,6 +1780,16 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // Sidebar project collapse state — persisted per user so the sidebar looks
+  // the same on web, mobile, and Electron. The PUT merges one project
+  // server-side, so toggling in one tab can't clobber another tab's edit.
+  getMySidebarCollapsedProjects: () => fetchJSON('/auth/me/sidebar-collapsed-projects'),
+  putMySidebarCollapsedProject: (projectId: any, collapsed: boolean) =>
+    fetchJSON(`/auth/me/sidebar-collapsed-projects/${encodeURIComponent(projectId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ collapsed }),
+    }),
+
   getSkillCredentials: (skillId: any) =>
     fetchJSON(
       `/auth/me/skill-credentials${skillId ? `?skillId=${encodeURIComponent(skillId)}` : ''}`,

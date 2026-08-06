@@ -649,6 +649,12 @@ export const api = {
     getSkillCredentials: (skillId?: any) => fetchJSON(`/auth/me/skill-credentials${skillId ? `?skillId=${encodeURIComponent(skillId)}` : ''}`),
     putSkillCredential: (body: any) => fetchJSON('/auth/me/skill-credentials', { method: 'PUT', body: JSON.stringify(body) }),
     deleteSkillCredential: (id: any) => fetchJSON(`/auth/me/skill-credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    // Sidebar/drawer project collapse state — persisted per user so the same
+    // account sees the same collapsed projects on web, mobile, and Electron.
+    // The PUT merges one project server-side so concurrent surfaces can't
+    // clobber each other.
+    getMySidebarCollapsedProjects: () => fetchJSON('/auth/me/sidebar-collapsed-projects'),
+    putMySidebarCollapsedProject: (projectId: any, collapsed: boolean) => fetchJSON(`/auth/me/sidebar-collapsed-projects/${encodeURIComponent(projectId)}`, { method: 'PUT', body: JSON.stringify({ collapsed }) }),
     // Upload
     uploadImage: (dataUrl: any, filename: any) => fetchJSON('/upload', {
         method: 'POST',

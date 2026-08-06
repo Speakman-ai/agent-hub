@@ -57,6 +57,27 @@ import BugReportButton from './BugReportButton';
 import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
 import { isWorkflowProject } from '../utils/projectMode';
 import { readNavGroupCollapsed, writeNavGroupCollapsed } from '../utils/sidebarNavGroupCollapse';
+import {
+  currentCollapsedProjectsKey,
+  readCollapsedProjects,
+  writeCollapsedProjects,
+} from '../utils/sidebarProjectCollapse';
+import {
+  createCollapsedProjectSaver,
+  fromCollapsedMap,
+  mergeHydratedCollapsedProjects,
+  normalizeCollapsedProjects,
+  toCollapsedMap,
+} from '@shared/utils/sidebarProjectCollapse';
+import { api } from '../utils/api';
+
+/**
+ * The one API call the collapsed-project saver makes. Module scope so every
+ * per-account saver shares the same function identity — the account binding
+ * lives in the saver's lifetime, not in this closure.
+ */
+const putCollapsedProject = (projectId: string, collapsed: boolean) =>
+  api.putMySidebarCollapsedProject(projectId, collapsed);
 
 export default function Sidebar({
   /** When true, shows a loading overlay on the nav body (org switcher stays usable). */
@@ -190,7 +211,54 @@ export default function Sidebar({
   kanbanRefreshKey = 0,
 }: any) {
   const [hoveredSession, setHoveredSession] = useState<any>(null);
-  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, any>>({});
+  /**
+   * Which projects are collapsed in the project list. The authoritative store
+   * is per-USER on the server (`/api/auth/me/sidebar-collapsed-projects`), so
+   * the same account sees the same collapsed projects on every device and
+   * surface. localStorage is seeded synchronously here purely so the first
+   * paint after a reload matches what the user last saw rather than flashing
+   * every project open while the hydration fetch is in flight — and it is
+   * keyed per account, so a second user signing in on this browser never
+   * inherits the first user's view (see utils/sidebarProjectCollapse).
+   */
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, any>>(() =>
+    toCollapsedMap(readCollapsedProjects()),
+  );
+  /**
+   * Toggles made before the hydration fetch resolved. They win over the server
+   * list when it lands — otherwise a click a few hundred ms too early would
+   * visibly snap back, and the reverted value is what the cache would persist.
+   */
+  const pendingCollapseEditsRef = useRef<Record<string, boolean>>({});
+  const collapseHydratedRef = useRef(false);
+  /**
+   * Serializes + coalesces the save PUTs per project. Rapid clicks would
+   * otherwise race and could leave the account holding the opposite of what
+   * the UI shows — a divergence that only surfaces on the next reload.
+   *
+   * The saver belongs to ONE account: its queue holds values, and the auth
+   * token is only read when a value is finally dispatched. The hydration
+   * effect below retires it and installs a replacement whenever the account
+   * changes, so a toggle queued by the previous user can never be written to
+   * the new user's preferences. Seeded eagerly so a click landing between
+   * first render and the first effect flush still has somewhere to go.
+   */
+  /**
+   * Which account the current collapse state belongs to. Re-running hydration
+   * when this changes covers a sign-out/sign-in that doesn't remount Sidebar.
+   */
+  const collapseAccountKey = currentCollapsedProjectsKey();
+  const collapseSaverRef = useRef(createCollapsedProjectSaver(putCollapsedProject));
+  const collapseSaverAccountKeyRef = useRef(collapseAccountKey);
+  // The first render needs an eager saver so a click cannot land before the
+  // hydration effect. Retire and replace it synchronously on an account
+  // change; otherwise a pre-effect queue would be orphaned when the effect
+  // installs the account-bound saver.
+  if (collapseSaverAccountKeyRef.current !== collapseAccountKey) {
+    collapseSaverRef.current.cancel();
+    collapseSaverRef.current = createCollapsedProjectSaver(putCollapsedProject);
+    collapseSaverAccountKeyRef.current = collapseAccountKey;
+  }
   const [collapsedAgents, setCollapsedAgents] = useState<Record<string, any>>({});
   /** Agent rows whose session list is expanded in the sidebar (independent of the open chat). */
   const [expandedAgents, setExpandedAgents] = useState<Record<string, any>>({});
@@ -229,6 +297,46 @@ export default function Sidebar({
     writeNavGroupCollapsed(collapsedNavGroups);
   }, [collapsedNavGroups]);
 
+  // Hydrate the collapsed-project list from the caller's account. A failure
+  // (offline, or a caller with no per-user row) leaves the cached view in
+  // place rather than expanding everything. Re-runs when the signed-in account
+  // changes so the new user never keeps looking at the previous one's state.
+  useEffect(() => {
+    let cancelled = false;
+    const accountSaver = collapseSaverRef.current;
+    // Repaint from the incoming account's own cache before its fetch lands —
+    // otherwise the previous account's collapsed projects stay on screen for
+    // the duration of the request, and indefinitely if it fails.
+    collapseHydratedRef.current = false;
+    pendingCollapseEditsRef.current = {};
+    setCollapsedProjects(toCollapsedMap(readCollapsedProjects()));
+    api
+      .getMySidebarCollapsedProjects()
+      .then((data: any) => {
+        if (cancelled) return;
+        const merged = mergeHydratedCollapsedProjects(
+          normalizeCollapsedProjects(data?.sidebarCollapsedProjects),
+          pendingCollapseEditsRef.current,
+        );
+        collapseHydratedRef.current = true;
+        pendingCollapseEditsRef.current = {};
+        setCollapsedProjects(toCollapsedMap(merged));
+        writeCollapsedProjects(merged);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        collapseHydratedRef.current = true;
+        pendingCollapseEditsRef.current = {};
+      });
+    return () => {
+      cancelled = true;
+      // Runs before the next effect body (account change) and on unmount
+      // (sign-out). Either way the queued toggles belong to an account that is
+      // no longer the one we'd authenticate as.
+      accountSaver.cancel();
+    };
+  }, [collapseAccountKey]);
+
   const focusSession = (agentId: any, sessionId: any) => {
     if (onFocusSession) {
       onFocusSession(agentId, sessionId);
@@ -265,7 +373,16 @@ export default function Sidebar({
 
   const toggleProjectCollapse = (projectId: any, e: any) => {
     e.stopPropagation();
-    setCollapsedProjects((prev: any) => ({ ...prev, [projectId]: !prev[projectId] }));
+    const collapsed = !collapsedProjects[projectId];
+    const next = { ...collapsedProjects, [projectId]: collapsed };
+    setCollapsedProjects(next);
+    if (!collapseHydratedRef.current) pendingCollapseEditsRef.current[projectId] = collapsed;
+    writeCollapsedProjects(fromCollapsedMap(next));
+    // Serialized + coalesced per project, so double-clicking can't land the
+    // PUTs out of order and leave the account inverted relative to the UI.
+    // Still fire-and-forget: the optimistic local state is already correct and
+    // the saver swallows failures.
+    void collapseSaverRef.current.save(projectId, collapsed);
   };
 
   const toggleAgentCollapse = (agentId: any, e: any) => {

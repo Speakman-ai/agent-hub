@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert, Platform, Pressable, } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert, Platform, Pressable, ActivityIndicator, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
@@ -15,17 +15,147 @@ import {
   saveNavGroupCollapsed,
   mergeHydratedNavGroups,
 } from '../utils/navGroupCollapse';
+import {
+  createCollapsedProjectsCacheSaver,
+  currentCollapsedProjectsKey,
+  loadCollapsedProjects,
+} from '../utils/sidebarProjectCollapse';
+import {
+  createCollapsedProjectSaver,
+  fromCollapsedMap,
+  mergeHydratedCollapsedProjects,
+  normalizeCollapsedProjects,
+  toCollapsedMap,
+} from '@shared/utils/sidebarProjectCollapse';
 import { shouldShowCalendarNav, shouldShowGmailNav } from '../utils/googleSurface';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
 import HubIcon from './HubIcon';
 import BugReportButton from './BugReportButton';
+
+/**
+ * The one API call the collapsed-project saver makes. Module scope so every
+ * per-account saver shares the same function identity — the account binding
+ * lives in the saver's lifetime, not in this closure.
+ */
+const putCollapsedProject = (projectId: string, collapsed: boolean) => api.putMySidebarCollapsedProject(projectId, collapsed);
+
 export default function DrawerContent({ navigation }: any) {
     const { agents, projects, activeAgentId, setActiveAgentId, sessions, activeSessionId, setActiveSessionId, handleNewSession, handleDeleteSession, archivedSessions, handleRestoreSession, restoringSessionIds, handleSwitchOrg, refreshProjects, refreshAgents, cronSessions, activeTasks, finalizeStatusBySession, unreadThreadCounts, unreadTicketCounts, openPullCounts, securityOpenCounts, reloadMessages, connected, reconnecting, } = useApp();
     const activeAgent = agents.find((a: any) => a.id === activeAgentId) || null;
     const bugReportProjectId = activeAgent?.projectId || '';
     const [collapsedAgents, setCollapsedAgents] = useState<any>({});
+    // Which projects are collapsed in the drawer. The authoritative store is
+    // per-USER on the server (`/api/auth/me/sidebar-collapsed-projects`), so the
+    // same account sees the same collapsed projects on web, mobile, and
+    // Electron. AsyncStorage is only a cold-start cache that keeps the drawer
+    // from flashing every project open while the hydration GET is in flight —
+    // and it is keyed per account, so a second user signing in on this device
+    // never inherits the first user's view.
     const [collapsedProjects, setCollapsedProjects] = useState<any>({});
+    // AsyncStorage is asynchronous, so do not paint project rows until this
+    // account's cold-start cache has been read. Without the gate the first
+    // render shows every project expanded and then visibly snaps to the cache.
+    const [projectCollapseCacheHydrated, setProjectCollapseCacheHydrated] = useState(false);
+    // Taps made before hydration resolved; they win over the server list so an
+    // early interaction is neither discarded nor written back to the cache.
+    const pendingProjectCollapseRef = useRef<Record<string, boolean>>({});
+    const projectCollapseHydratedRef = useRef(false);
+    // Serializes + coalesces the save PUTs per project. Rapid taps would
+    // otherwise race and could leave the account holding the opposite of what
+    // the drawer shows — a divergence that only surfaces on the next launch.
+    //
+    // The saver belongs to ONE account: its queue holds values, and the auth
+    // token is only read when a value is finally dispatched. The effect below
+    // retires it and installs a replacement whenever the account changes, so a
+    // tap queued by the previous user can never be written to the new user's
+    // preferences. Seeded eagerly so a tap landing between first render and the
+    // first effect flush still has somewhere to go.
+    // Re-hydrate when the signed-in account changes (sign-out/sign-in keeps the
+    // drawer mounted), so the new user never keeps looking at the old state.
+    const collapseAccountKey = currentCollapsedProjectsKey();
+    const projectCollapseSaverRef = useRef<ReturnType<typeof createCollapsedProjectSaver> | null>(null);
+    if (!projectCollapseSaverRef.current)
+        projectCollapseSaverRef.current = createCollapsedProjectSaver(putCollapsedProject);
+    const projectCollapseSaverAccountKeyRef = useRef(collapseAccountKey);
+    const projectCollapseCacheSaverRef = useRef<ReturnType<typeof createCollapsedProjectsCacheSaver> | null>(null);
+    if (!projectCollapseCacheSaverRef.current)
+        projectCollapseCacheSaverRef.current = createCollapsedProjectsCacheSaver();
+    const projectCollapseCacheSaverAccountKeyRef = useRef(collapseAccountKey);
+    // Retire and replace both eager savers synchronously on an account change.
+    // This closes the gap before the hydration effect runs: a pre-effect queue
+    // can never become orphaned and dispatch under the next account's token.
+    if (projectCollapseSaverAccountKeyRef.current !== collapseAccountKey) {
+        projectCollapseSaverRef.current!.cancel();
+        projectCollapseSaverRef.current = createCollapsedProjectSaver(putCollapsedProject);
+        projectCollapseSaverAccountKeyRef.current = collapseAccountKey;
+    }
+    if (projectCollapseCacheSaverAccountKeyRef.current !== collapseAccountKey) {
+        projectCollapseCacheSaverRef.current!.cancel();
+        projectCollapseCacheSaverRef.current = createCollapsedProjectsCacheSaver();
+        projectCollapseCacheSaverAccountKeyRef.current = collapseAccountKey;
+    }
+    useEffect(() => {
+        let cancelled = false;
+        const accountSaver = projectCollapseSaverRef.current!;
+        const accountCacheSaver = projectCollapseCacheSaverRef.current!;
+        projectCollapseHydratedRef.current = false;
+        pendingProjectCollapseRef.current = {};
+        setProjectCollapseCacheHydrated(false);
+        setCollapsedProjects({});
+        (async () => {
+            const cachedIds = await loadCollapsedProjects();
+            if (cancelled)
+                return;
+            if (cachedIds.length) {
+                // Cache paints UNDER any taps already made (`prev` wins).
+                setCollapsedProjects((prev: any) => ({ ...toCollapsedMap(cachedIds), ...prev }));
+            }
+            // The cache is the first-paint source of truth while the server
+            // request is still in flight. An empty cache is also a completed
+            // read and must release the loading gate.
+            setProjectCollapseCacheHydrated(true);
+            let serverIds: string[] | null = null;
+            try {
+                const data: any = await api.getMySidebarCollapsedProjects();
+                serverIds = normalizeCollapsedProjects(data?.sidebarCollapsedProjects);
+            }
+            catch {
+                // Offline / no per-user row — keep the cached view rather than
+                // expanding everything.
+                serverIds = null;
+            }
+            if (cancelled)
+                return;
+            if (serverIds) {
+                const merged = mergeHydratedCollapsedProjects(serverIds, pendingProjectCollapseRef.current);
+                setCollapsedProjects(toCollapsedMap(merged));
+                void accountCacheSaver.save(merged);
+            }
+            projectCollapseHydratedRef.current = true;
+            pendingProjectCollapseRef.current = {};
+        })();
+        return () => {
+            cancelled = true;
+            // Runs before the next effect body (account change) and on unmount
+            // (sign-out). Either way the queued taps belong to an account that
+            // is no longer the one we'd authenticate as.
+            accountSaver.cancel();
+            accountCacheSaver.cancel();
+        };
+    }, [collapseAccountKey]);
+    const toggleProjectCollapse = (projectId: string) => {
+        const collapsed = !collapsedProjects[projectId];
+        const next = { ...collapsedProjects, [projectId]: collapsed };
+        setCollapsedProjects(next);
+        if (!projectCollapseHydratedRef.current)
+            pendingProjectCollapseRef.current[projectId] = collapsed;
+        void projectCollapseCacheSaverRef.current!.save(fromCollapsedMap(next));
+        // Serialized + coalesced per project, so double-tapping can't land the
+        // PUTs out of order. Still fire-and-forget: the optimistic local state is
+        // already correct and the saver swallows failures.
+        void projectCollapseSaverRef.current!.save(projectId, collapsed);
+    };
     // Per-project nav-group collapse state, keyed by `${projectId}:${groupKey}`.
     // Default COLLAPSED (mirrors the web sidebar). Hydrated from AsyncStorage on
     // mount and persisted on change so the user's choices survive app restarts.
@@ -483,7 +613,11 @@ export default function DrawerContent({ navigation }: any) {
               </TouchableOpacity>))}
           </View>)}
 
-        {projects.length > 0 && (<>
+        {!projectCollapseCacheHydrated && (<View style={styles.projectCollapseLoading} testID="drawer-projects-loading">
+          <ActivityIndicator color={colors.gray500}/>
+        </View>)}
+
+        {projectCollapseCacheHydrated && projects.length > 0 && (<>
             <Text style={styles.sectionLabel}>PROJECTS</Text>
             {projects.map((project: any, index: any) => {
                 const projectAgents = agents.filter((a: any) => a.projectId === project.id && a.active !== false);
@@ -493,10 +627,7 @@ export default function DrawerContent({ navigation }: any) {
                 return (<View key={project.id}>
                   {index > 0 && <View style={styles.projectDivider}/>}
                   <View style={styles.projectHeaderRow}>
-                    <TouchableOpacity style={[styles.projectHeader, { flex: 1 }]} onPress={() => setCollapsedProjects((prev: any) => ({
-                        ...prev,
-                        [project.id]: !prev[project.id],
-                    }))} onLongPress={() => {
+                    <TouchableOpacity testID={`drawer-project-${project.id}`} style={[styles.projectHeader, { flex: 1 }]} onPress={() => toggleProjectCollapse(project.id)} onLongPress={() => {
                         Alert.alert('Delete Project', `Delete "${project.name}" and all its agents, sessions, board, and wiki data? This cannot be undone.`, [
                             { text: 'Cancel', style: 'cancel' },
                             {
@@ -750,6 +881,11 @@ const styles = StyleSheet.create({
         color: colors.gray200,
         fontSize: 14,
         fontWeight: '500',
+    },
+    projectCollapseLoading: {
+        minHeight: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     projectHeader: {
         flexDirection: 'row',
