@@ -279,6 +279,7 @@ import { initInfraDb } from './infra/infra-db.js';
 import { startInfraWriteQueue, flushInfraWriteQueue } from './infra/infra-write-queue.js';
 import { runInfraInventorySync, INFRA_INVENTORY_SYNC_CRON } from './infra/inventory-sync.js';
 import { runInfraMetricCollection, INFRA_COLLECT_CRON } from './infra/metric-collector.js';
+import { runInfraAlertEvaluation } from './infra/alert-runner.js';
 import {
   runInfraRetentionReaper,
   INFRA_RETENTION_REAPER_CRON,
@@ -1330,7 +1331,17 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     // `broadcast` is passed so a cost-ceiling transition raises an in-app notice
     // rather than only a log line (decision INFRA-COST: the collector "never
     // silently keeps spending"). It fires on the transition, not per tick.
-    wrapCronTick(() => runInfraMetricCollection({ broadcast }), 'infra-metric-collector'),
+    //
+    // Alert evaluation is chained to this tick rather than given its own cron,
+    // and the flush between them is what makes the chain correct: points reach
+    // the store through a batched write queue, so a sweep on an independent
+    // schedule would routinely read the window before the tick that filled it.
+    wrapCronTick(async () => {
+      const collected = await runInfraMetricCollection({ broadcast });
+      flushInfraWriteQueue();
+      runInfraAlertEvaluation({ broadcast });
+      return collected;
+    }, 'infra-metric-collector'),
     defaultTickOptions({
       intervalSeconds: estimateIntervalSeconds(INFRA_COLLECT_CRON),
       name: 'infra-metric-collector',

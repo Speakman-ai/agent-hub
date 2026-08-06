@@ -987,6 +987,48 @@ export function getInfraAlert(projectId: string, alertId: string): InfraAlertRow
   return row ?? null;
 }
 
+/**
+ * Every enabled rule on the Hub, ordered so a sweep is reproducible.
+ *
+ * Cross-project by design: the evaluation sweep runs once per tick over all of
+ * them, the way the collector groups every project's scopes into one pass.
+ * Filtering per project would mean the runner first enumerating projects from
+ * `projects.json` — a second source of truth for which projects have rules,
+ * and one that would silently skip a rule whose project row was renamed.
+ */
+export function listEnabledInfraAlertRules(projectId?: string): InfraAlertRuleRow[] {
+  const clauses = ['enabled = 1'];
+  const params: unknown[] = [];
+  if (projectId) {
+    clauses.push('project_id = ?');
+    params.push(projectId);
+  }
+  return getInfraDb()
+    .prepare(
+      `SELECT * FROM infra_alert_rules
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY project_id, created_at, id`,
+    )
+    .all(...params) as InfraAlertRuleRow[];
+}
+
+/**
+ * The alert row for one (rule, resource), or null before the first breach.
+ *
+ * The evaluation sweep reads this for `previousState`. Null means `OK`: a pair
+ * with no row has never breached, which is exactly what
+ * {@link recordInfraAlertEvaluation}'s first branch encodes.
+ */
+export function getInfraAlertForResource(
+  ruleId: string,
+  resourceKey: string,
+): InfraAlertRow | null {
+  const row = getInfraDb()
+    .prepare('SELECT * FROM infra_alerts WHERE rule_id = ? AND resource_key = ?')
+    .get(ruleId, resourceKey) as InfraAlertRow | undefined;
+  return row ?? null;
+}
+
 /** An alert's transition history, newest first, bounded by the retained window. */
 export function listInfraAlertTransitions(
   alertId: string,

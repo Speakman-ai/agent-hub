@@ -169,3 +169,32 @@ export function infraResourceKey(identity: InfraResourceIdentity): string {
     .map((part) => encodeURIComponent(part))
     .join(INFRA_RESOURCE_KEY_SEPARATOR);
 }
+
+/**
+ * Inverse of {@link infraResourceKey}. Null when the key is not one we minted.
+ *
+ * Exact because the encoding is: `encodeURIComponent` escapes the separator
+ * itself (`|` → `%7C`), so a five-way split can never be fooled by a component
+ * containing one.
+ *
+ * The caller that needs this is the alert sweep, which must recover a
+ * resource's *bare* id from a key when no `infra_resources` row backs it — both
+ * to build the CloudWatch dimension set the rule reads on, and because the
+ * broadcast may carry the resource id but never the key, which embeds the AWS
+ * account id (decision INFRA-NOTIFY).
+ */
+export function parseInfraResourceKey(key: string): InfraResourceIdentity | null {
+  const parts = key.split(INFRA_RESOURCE_KEY_SEPARATOR);
+  if (parts.length !== 5) return null;
+  try {
+    const [projectId, accountId, region, service, resourceId] = parts.map(decodeURIComponent);
+    // A key with an empty component was never minted by infraResourceKey from a
+    // real identity, and returning one would hand the caller a dimension value
+    // of "" that silently matches nothing.
+    if (!projectId || !accountId || !region || !service || !resourceId) return null;
+    return { projectId, accountId, region, service, resourceId };
+  } catch {
+    // decodeURIComponent throws on a malformed escape ('%zz').
+    return null;
+  }
+}

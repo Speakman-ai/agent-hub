@@ -14,6 +14,7 @@ import {
   closeInfraDb,
   isInfraDbInitialized,
   infraResourceKey,
+  parseInfraResourceKey,
 } from './infra-db.js';
 import { INFRA_DB_FILENAME, INFRA_SCHEMA } from './infra-schema.js';
 
@@ -183,6 +184,29 @@ describe('infraResourceKey', () => {
     const a = infraResourceKey({ ...base, service: 'ec2|x', resourceId: 'i-abc' });
     const b = infraResourceKey({ ...base, service: 'ec2', resourceId: 'x|i-abc' });
     expect(a).not.toBe(b);
+  });
+
+  it('round-trips through parseInfraResourceKey, separators and ARNs included', () => {
+    for (const identity of [
+      base,
+      { ...base, service: 'ec2|x', resourceId: 'x|i-abc' },
+      {
+        ...base,
+        service: 'elbv2',
+        resourceId: 'arn:aws:elasticloadbalancing:us-east-1:1:loadbalancer/app/web/abc',
+      },
+    ]) {
+      expect(parseInfraResourceKey(infraResourceKey(identity))).toEqual(identity);
+    }
+  });
+
+  it('parses back to null for a key it did not mint', () => {
+    // Wrong arity, a malformed percent-escape, and an empty component. Each
+    // would otherwise hand a caller a resource id that matches no series.
+    expect(parseInfraResourceKey('not-a-key')).toBeNull();
+    expect(parseInfraResourceKey('a|b|c|d|e|f')).toBeNull();
+    expect(parseInfraResourceKey('a|b|c|d|%zz')).toBeNull();
+    expect(parseInfraResourceKey('a|b|c|d|')).toBeNull();
   });
 
   it('produces a key the schema accepts as the primary key', () => {
