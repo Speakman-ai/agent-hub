@@ -19,6 +19,9 @@ const MODEL_KNOWN_LABELS: Record<string, string> = {
   // historical sessions.
   'gpt-5.3-codex': 'GPT-5.3 Codex',
   'gpt-5.6': 'GPT-5.6',
+  'gpt-5.6-sol': 'GPT-5.6 Sol',
+  'gpt-5.6-terra': 'GPT-5.6 Terra',
+  'gpt-5.6-luna': 'GPT-5.6 Luna',
   'gpt-5.5': 'GPT-5.5',
   'gpt-5.4': 'GPT-5.4',
   'gpt-5.4-mini': 'GPT-5.4 Mini',

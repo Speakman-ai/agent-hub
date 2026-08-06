@@ -11,6 +11,12 @@ describe('systemBannerModel', () => {
     expect(modelPrimaryLabel('gpt-5.6')).toBe('GPT-5.6');
   });
 
+  it('labels the tiered gpt-5.6 family instead of title-casing the id', () => {
+    expect(modelPrimaryLabel('gpt-5.6-sol')).toBe('GPT-5.6 Sol');
+    expect(modelPrimaryLabel('gpt-5.6-terra')).toBe('GPT-5.6 Terra');
+    expect(modelPrimaryLabel('gpt-5.6-luna')).toBe('GPT-5.6 Luna');
+  });
+
   it('maps claude-opus-5 to Opus 5', () => {
     expect(modelPrimaryLabel('claude-opus-5')).toBe('Opus 5');
   });

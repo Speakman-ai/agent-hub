@@ -27,10 +27,10 @@ export const ENGINE_MODELS: Record<string, any> = {
     // Codex — only models accepted under ChatGPT OAuth. Older IDs (gpt-5,
     // gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) plus gpt-5.3-codex
     // and the bare gpt-5.6 id are rejected with HTTP 400 by the ChatGPT backend.
-    // Luna is capability-gated by the server. This is only the offline fallback;
-    // the live list comes from GET /api/config/models.
+    // The gpt-5.6 family is capability-gated by the server. This is only the
+    // offline fallback; the live list comes from GET /api/config/models.
     'codex-cli': [
-        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', short: '5.6 Luna' },
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', short: '5.6 Sol' },
         { id: 'gpt-5.5', label: 'GPT-5.5', short: '5.5' },
         { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
         { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
@@ -47,7 +47,7 @@ export const ENGINE_MODELS: Record<string, any> = {
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
     'claude-code': 'claude-opus-5',
     'cursor-agent': 'composer-2.5',
-    'codex-cli': 'gpt-5.6-luna',
+    'codex-cli': 'gpt-5.6-sol',
     'grok-cli': 'grok-4.5',
 };
 // Display labels for models that are no longer selectable but may still appear
@@ -61,6 +61,10 @@ export const HISTORICAL_MODEL_LABELS: Record<string, { label: string; short: str
     // Retired from selection (rejected under ChatGPT OAuth).
     'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
     'gpt-5.6': { label: 'GPT-5.6', short: '5.6' },
+    // Capability-gated siblings of the default: absent from the offline
+    // fallback list, but the server can advertise them, so keep labels.
+    'gpt-5.6-terra': { label: 'GPT-5.6 Terra', short: '5.6 Terra' },
+    'gpt-5.6-luna': { label: 'GPT-5.6 Luna', short: '5.6 Luna' },
 };
 export function modelDisplay(id: any) {
     const known = Object.values(ENGINE_MODELS)

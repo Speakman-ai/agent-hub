@@ -269,9 +269,9 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   'claude-code': 'claude-opus-5',
   'cursor-agent': 'composer-2.5',
   // No `gemini-cli` default — Gemini is RAG-only, not a selectable engine.
-  // Codex: Luna is the preferred model when the installed CLI advertises the
+  // Codex: Sol is the preferred model when the installed CLI advertises the
   // capability-gated gpt-5.6 family. Older CLIs keep the baseline list and
-  // runtime forwarding drops Luna when its metadata is unavailable.
+  // runtime forwarding drops Sol when its metadata is unavailable.
   'codex-cli': CODEX_DEFAULT_MODEL,
   // grok-4.5 now powers Grok Build upstream — make it the Hub default too.
   'grok-cli': 'grok-4.5',

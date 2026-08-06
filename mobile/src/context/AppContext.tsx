@@ -207,7 +207,7 @@ export function AppProvider({ children }: any) {
         if (engine === 'cursor-agent')
             return 'composer-2.5';
         if (engine === 'codex-cli')
-            return 'gpt-5.6-luna';
+            return 'gpt-5.6-sol';
         if (engine === 'grok-cli')
             return 'grok-4.5';
         return 'claude-opus-5';

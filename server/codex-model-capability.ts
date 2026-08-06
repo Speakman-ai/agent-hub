@@ -49,7 +49,13 @@ export const CODEX_CAPABILITY_MODELS: readonly string[] = [
   'gpt-5.6-luna',
 ];
 
-export const CODEX_DEFAULT_MODEL = 'gpt-5.6-luna';
+/**
+ * Preferred Codex model. Always the newest capability-gated id, so the default
+ * matches the top of the picker. It is still gated: `buildAuthenticatedModelConfig`
+ * drops it from `engineDefaultModels` when the installed CLI doesn't advertise
+ * it, and `shouldPassModelFlag` drops `--model` at spawn time.
+ */
+export const CODEX_DEFAULT_MODEL = CODEX_CAPABILITY_MODELS[0];
 
 export interface CodexModelsCache {
   /** `client_version` stamp the cache was written by, or null if absent. */

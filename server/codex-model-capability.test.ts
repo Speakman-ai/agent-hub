@@ -4,6 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   CODEX_CAPABILITY_MODELS,
+  CODEX_DEFAULT_MODEL,
   readCodexModelsCache,
   advertisedCapabilityModels,
   resolveSelectableCodexModels,
@@ -145,5 +146,19 @@ describe('codex-model-capability', () => {
   it('CODEX_CAPABILITY_MODELS are the real tiered gpt-5.6 ids (not a bare gpt-5.6)', () => {
     expect(CODEX_CAPABILITY_MODELS).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
     expect(CODEX_CAPABILITY_MODELS).not.toContain('gpt-5.6');
+  });
+
+  it('CODEX_DEFAULT_MODEL is Sol — the newest capability-gated model', () => {
+    expect(CODEX_DEFAULT_MODEL).toBe('gpt-5.6-sol');
+    // The default must stay the head of the picker list: capability resolution
+    // prepends advertised gated models newest-first, so a default further down
+    // would leave the picker's top entry disagreeing with the default.
+    expect(CODEX_DEFAULT_MODEL).toBe(CODEX_CAPABILITY_MODELS[0]);
+    const allAdvertised = {
+      clientVersion: '0.144.0',
+      modelSlugs: new Set(CODEX_CAPABILITY_MODELS),
+      path: '/tmp/models_cache.json',
+    };
+    expect(resolveSelectableCodexModels(BASELINE, allAdvertised)[0]).toBe(CODEX_DEFAULT_MODEL);
   });
 });
