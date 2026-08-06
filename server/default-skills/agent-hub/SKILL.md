@@ -171,12 +171,10 @@ same script.
 ## Background shells — run work that outlives the turn
 
 A normal `run_in_background: true` Bash shell is a grandchild of **this turn's**
-CLI process, which the Hub reaps when the turn ends — so you can't `BashOutput`
-it next turn. To run something you'll monitor across turns (a build, a watcher,
-a long test run), start it as a **Hub-owned background shell** with
-`scripts/bg.sh`. It runs in the session worktree, its output streams to the
-session's **Background shells panel**, and `status` / `logs` / `stop` keep
-working in later turns.
+CLI process, which the Hub reaps at turn end — so you can't `BashOutput` it next
+turn. For work you'll monitor across turns (a build, a watcher, a long test
+run), start a **Hub-owned background shell** with `scripts/bg.sh`: it runs in
+the session worktree and streams to the **Background shells panel**.
 
 ```bash
 scripts/bg.sh start --label "prod build" npm run build  # start (prints shell JSON incl. id)
@@ -184,7 +182,12 @@ scripts/bg.sh list                                       # this session's shells
 scripts/bg.sh status <shellId>                           # one shell's status
 scripts/bg.sh logs <shellId> --limit 100                 # captured output tail
 scripts/bg.sh stop <shellId>                             # SIGTERM the process group
+scripts/bg.sh unwatch                                    # cancel the watch loop + stop them
 ```
+
+**Watched by default — start the work, then end your turn.** The Hub wakes this
+session with the exit status and output tail when it finishes, so polling or
+sleep-looping only burns wall-clock. `--no-watch` opts out.
 
 Everything is scoped to `$AGENT_HUB_SESSION_ID`. Statuses are `running`,
 `exited` (clean, code 0), `failed` (non-zero / crashed), or `stopped` (you

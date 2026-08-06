@@ -6,15 +6,23 @@
 # Hub instead, which is long-lived — so `status`, `logs`, and `stop` all work
 # in later turns. Output also shows up in the session's Background shells panel.
 #
+# WATCHED BY DEFAULT: when the command finishes, the Hub wakes this session and
+# hands you the result. So the right move is to start the work and END YOUR
+# TURN — do not poll, sleep-loop, or wait. Pass --no-watch for fire-and-forget
+# work you will never need to hear about.
+#
 # Usage:
-#   bg.sh start [--label <text>] [--] <command...>  Start a background shell.
+#   bg.sh start [--label <text>] [--no-watch] [--] <command...>
+#                                                   Start a background shell.
 #   bg.sh list                                      List this session's shells (JSON).
 #   bg.sh status <shellId>                          Show one shell's status (JSON).
 #   bg.sh logs <shellId> [--limit <n>]              Print a shell's captured output.
 #   bg.sh stop <shellId>                            SIGTERM the shell's process group.
+#   bg.sh unwatch                                   Cancel the watch loop AND stop
+#                                                   every watched shell.
 #
-# `--label` is only recognized BEFORE the command. Use `--` to end wrapper
-# options when your command itself begins with a flag, e.g. `bg.sh start -- ./x --label`.
+# `--label` / `--no-watch` are only recognized BEFORE the command. Use `--` to end
+# wrapper options when your command itself begins with a flag, e.g. `bg.sh start -- ./x --label`.
 #
 # Everything is scoped to $AGENT_HUB_SESSION_ID (injected by the server at
 # spawn). The command runs in the session worktree. Auth is resolved through
@@ -25,10 +33,12 @@
 #   AGENT_HUB_SESSION_ID  required — the current session
 #
 # Examples:
-#   bg.sh start --label "prod build" npm run build
+#   bg.sh start --label "prod build" npm run build   # then end your turn
+#   bg.sh start --no-watch --label "cache warm" ./warm.sh
 #   bg.sh list
 #   bg.sh logs 6f1c… --limit 100
 #   bg.sh stop 6f1c…
+#   bg.sh unwatch
 
 set -euo pipefail
 
@@ -37,7 +47,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/ah-api.sh"
 
 usage() {
-  sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -58,7 +68,7 @@ json_escape() {
 
 cmd_start() {
   require_session
-  local label=""
+  local label="" watch="true"
   # Parse wrapper options ONLY in leading position, so they can't be confused
   # with the command's own argv. Stop at the first non-option token or at an
   # explicit `--` separator; everything after is the command, taken verbatim
@@ -75,6 +85,14 @@ cmd_start() {
         ;;
       --label=*)
         label="${1#--label=}"
+        shift
+        ;;
+      --no-watch)
+        watch="false"
+        shift
+        ;;
+      --watch)
+        watch="true"
         shift
         ;;
       --)
@@ -110,8 +128,13 @@ cmd_start() {
     command+="${command:+ }$quoted"
   done
   local body
-  body="{\"command\":$(json_escape "$command"),\"label\":$(json_escape "$label")}"
+  body="{\"command\":$(json_escape "$command"),\"label\":$(json_escape "$label"),\"watch\":${watch}}"
   ah_api POST "/api/sessions/${AGENT_HUB_SESSION_ID}/background-shells" -d "$body"
+}
+
+cmd_unwatch() {
+  require_session
+  ah_api POST "/api/sessions/${AGENT_HUB_SESSION_ID}/background-shells/watch/cancel"
 }
 
 cmd_list() {
@@ -177,6 +200,10 @@ case "${1:-}" in
   stop)
     shift
     cmd_stop "$@"
+    ;;
+  unwatch)
+    shift
+    cmd_unwatch "$@"
     ;;
   '')
     usage >&2

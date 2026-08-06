@@ -5,6 +5,7 @@ import { authenticateWsDetailed } from './auth.js';
 import { stmts } from './db.js';
 import {
   userOwnsSession,
+  getSessionOwner,
   setWsAuthUserId,
   getWsAuthUserId,
   setWsAuthVisibility,
@@ -15,6 +16,7 @@ import {
 import { handleBroadcastForPush } from './push.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { shouldDeliverBroadcast } from './broadcast-filter.js';
+import { buildBackgroundShellSnapshot } from './background-shells/background-shell-snapshot.js';
 import type { WebSocketDeps, BroadcastFn, MessageQueueRow } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
 import { buildAwaitingInputSnapshotLenient } from './awaiting-input.js';
@@ -141,6 +143,7 @@ export default function createWebSocket(
     handleDesignChat,
     handleDesignCancel,
     getPreviewSnapshotRuntime,
+    getBackgroundShellSnapshotRuntime,
     subscribeLogTail: subscribeCommittedLogs = subscribeLogTail,
   } = deps;
 
@@ -427,6 +430,7 @@ export default function createWebSocket(
         !shouldDeliverBroadcast(data, stamp, {
           resolveProjectId: resolveProjectIdFromEvent,
           findProject: findProjectLocal,
+          getSessionOwner,
         })
       ) {
         return;
@@ -548,6 +552,7 @@ export default function createWebSocket(
             !shouldDeliverBroadcast(event as unknown as Record<string, unknown>, stamp, {
               resolveProjectId: resolveProjectIdFromEvent,
               findProject: findProjectLocal,
+              getSessionOwner,
             })
           ) {
             continue;
@@ -560,6 +565,33 @@ export default function createWebSocket(
       // method must never break the rest of the connect handshake.
       console.error(
         '[ws] preview snapshot failed (lenient skip):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    // Background-shell snapshot: the current running shells, grouped by
+    // session, so a reconnecting client rebuilds its watch-loop indicator from
+    // the server's truth. The live `background_shell_update` events that would
+    // have told it fired while the socket was down, and a shell can run for
+    // hours — long enough for a laptop suspend to lose every one of them.
+    // Sent as a single replace-the-world payload rather than per-shell events
+    // so a client also *clears* sessions whose shells finished while it was
+    // away. Filtering (project visibility AND session ownership) lives in
+    // `buildBackgroundShellSnapshot`.
+    try {
+      const shellRuntime = getBackgroundShellSnapshotRuntime?.();
+      if (shellRuntime) {
+        const snapshot = buildBackgroundShellSnapshot(shellRuntime, stamp, {
+          resolveProjectId: resolveProjectIdFromEvent,
+          findProject: findProjectLocal,
+          getSessionOwner,
+        });
+        ws.send(JSON.stringify(snapshot));
+      }
+    } catch (err) {
+      // Best-effort — never break the connect handshake over an indicator.
+      console.error(
+        '[ws] background-shell snapshot failed (lenient skip):',
         err instanceof Error ? err.message : err,
       );
     }
@@ -583,6 +615,7 @@ export default function createWebSocket(
           !shouldDeliverBroadcast(event as unknown as Record<string, unknown>, stamp, {
             resolveProjectId: resolveProjectIdFromEvent,
             findProject: findProjectLocal,
+            getSessionOwner,
           })
         ) {
           continue;

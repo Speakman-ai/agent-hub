@@ -3988,6 +3988,15 @@ export interface WebSocketDeps {
     | import('./preview/preview-snapshot.js').PreviewSnapshotRuntime
     | Array<import('./preview/preview-snapshot.js').PreviewSnapshotRuntime | null | undefined>
     | null;
+  /**
+   * Optional background-shell runtime accessor used by the WS connect handler
+   * to replay the watch-loop state. Without it a client that reloaded (or slept
+   * a tab) never learns a session is still watching background work, since the
+   * `background_shell_update` events that said so fired while it was gone.
+   */
+  getBackgroundShellSnapshotRuntime?: () => {
+    listRunning: () => import('./background-shells/background-shell-runtime.js').BackgroundShellRow[];
+  } | null;
   /** Optional seam for committed customer-log records feeding live-tail subscribers. */
   subscribeLogTail?: (
     listener: (records: readonly import('./logs/logs-db.js').LogRecordRow[]) => void,
@@ -4075,6 +4084,12 @@ export interface RouteDeps {
   getBackgroundShellRuntime?: () => {
     stopBySessionId: (sessionId: string) => Promise<number>;
   } | null;
+  /**
+   * The background-shell watch loop. Session teardown drops the session's
+   * in-memory pending wakes so nothing survives the archive; the routes file
+   * extends this with the same getter for the cancel-watch endpoint.
+   */
+  getBackgroundShellWatcher?: () => { forgetSession: (sessionId: string) => void } | null;
   /**
    * Clone or attach the session git worktree before the first chat turn.
    * Wired from `index.ts` (`ensureWorktree`). Used by

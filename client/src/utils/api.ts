@@ -864,6 +864,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ startAnother: options.startAnother === true }),
     }),
+  /** Log tail for one Hub-owned background shell. */
+  getBackgroundShellLogs: (sessionId: string, shellId: string, limit = 200) =>
+    fetchJSON<{ shell: unknown; logs: string[] }>(
+      `/sessions/${sessionId}/background-shells/${shellId}/logs?limit=${limit}`,
+    ),
+  /** SIGTERM one background shell. Its session is still woken with the result. */
+  stopBackgroundShell: (sessionId: string, shellId: string) =>
+    fetchJSON(`/sessions/${sessionId}/background-shells/${shellId}/stop`, { method: 'POST' }),
+  /** Tear down the whole watch loop: disarm the wakes and kill the processes. */
+  cancelBackgroundShellWatch: (sessionId: string) =>
+    fetchJSON<{ stopped: number; shells: unknown[] }>(
+      `/sessions/${sessionId}/background-shells/watch/cancel`,
+      { method: 'POST' },
+    ),
   /** Boot worktree preview for a chat session (user toolbar only). */
   startSessionPreview: (sessionId: any, body: any = {}) =>
     fetchJSON(`/sessions/${sessionId}/preview/start`, {

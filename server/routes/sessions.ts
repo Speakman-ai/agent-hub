@@ -480,6 +480,18 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     const backgroundShellRuntime = deps.getBackgroundShellRuntime?.();
     if (backgroundShellRuntime) {
+      // Drop the watcher's in-memory pending wakes before the kill. The
+      // runtime disarms the DB rows itself, which the watcher would notice on
+      // its next tick anyway, but this session is going away now — nothing
+      // should be able to dispatch a wake turn into it in the meantime.
+      try {
+        deps.getBackgroundShellWatcher?.()?.forgetSession(sessionId);
+      } catch (err) {
+        console.warn(
+          `[sessions] background-shell watcher forgetSession failed (${sessionId}):`,
+          (err as Error).message,
+        );
+      }
       tasks.push(
         backgroundShellRuntime.stopBySessionId(sessionId).catch((err) => {
           console.warn(

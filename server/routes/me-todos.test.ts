@@ -962,6 +962,7 @@ describe('user_todo_update broadcast delivery (broadcast-filter)', () => {
   const deps = {
     resolveProjectId: () => null,
     findProject: () => null,
+    getSessionOwner: () => null,
   };
 
   it('delivers only to the owner, not to other users or org Owners', () => {

@@ -26,6 +26,7 @@ import DesignView from './components/DesignView';
 import DelegationPanel from './components/DelegationPanel';
 import SessionSummarySidebar from './components/SessionSummarySidebar';
 import SessionPreviewPane from './components/SessionPreviewPane';
+import BackgroundShellsPanel from './components/BackgroundShellsPanel';
 import SessionDesignPane from './components/SessionDesignPane';
 import SessionDesignModePane from './components/SessionDesignModePane';
 import SessionScopingModePane from './components/SessionScopingModePane';
@@ -128,6 +129,12 @@ import {
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver';
 import { parseWorkflowEditView } from './utils/workflowEditView';
 import { pruneSessionScopedMap } from './utils/pruneSessionScopedMap';
+import {
+  applyBackgroundShellSnapshot,
+  applyBackgroundShellUpdate,
+  deriveWatchIndicator,
+  type BackgroundShellsBySession,
+} from './utils/backgroundShells';
 import {
   awaitingInputNotification,
   cardStartedNotification,
@@ -363,6 +370,13 @@ export default function App({ initialView }: any = {}) {
   const [previewEventBySession, setPreviewEventBySession] = useState<Record<string, any>>({});
   /** Per-session preview pane open/closed flag (auto-opens on first event). */
   const [previewPaneOpenBySession, setPreviewPaneOpenBySession] = useState<Record<string, any>>({});
+  /**
+   * Running Hub-owned background shells per session. Drives the watch-loop
+   * indicator and the Background shells panel. Seeded by the connect snapshot
+   * and folded forward by `background_shell_update`.
+   */
+  const [backgroundShellsBySession, setBackgroundShellsBySession] =
+    useState<BackgroundShellsBySession>({});
   /** Per-session Changes (code diff) pane open flag. When true the diff pane
    * replaces the preview pane on the right (the two are mutually exclusive). */
   const [diffPaneOpenBySession, setDiffPaneOpenBySession] = useState<Record<string, any>>({});
@@ -2062,6 +2076,20 @@ export default function App({ initialView }: any = {}) {
             setSessionAgents(data.session.agents);
           }
           break;
+        case 'background-shells-snapshot': {
+          // Replace-the-world seed sent on connect. A background shell can run
+          // for hours, so every live update during a tab sleep is gone; only a
+          // full replacement can also clear sessions whose shells finished
+          // while this client was away.
+          setBackgroundShellsBySession(applyBackgroundShellSnapshot(data.sessions));
+          break;
+        }
+        case 'background_shell_update': {
+          setBackgroundShellsBySession((prev: BackgroundShellsBySession) =>
+            applyBackgroundShellUpdate(prev, data.shell),
+          );
+          break;
+        }
         case 'session_state': {
           // Server-side lifecycle cache push. Keep the session row seed current
           // so late terminal states (pushed / merged) update immediately even
@@ -5420,6 +5448,7 @@ export default function App({ initialView }: any = {}) {
             activeTaskSessionIds={activeTasks}
             awaitingInputBySession={awaitingInputBySession}
             subagentsBySession={subagents}
+            backgroundShellsBySession={backgroundShellsBySession}
             changesReadyBySession={changesReady}
             finalizeStatusBySession={finalizeStatusBySession}
             onOpenProject={openAdaptiveProjectWizard}
@@ -5500,6 +5529,11 @@ export default function App({ initialView }: any = {}) {
                     messages={messages}
                     activeSessionId={activeSessionId}
                     activeSessionState={activeSessionState}
+                    backgroundShellWatch={
+                      activeSessionId
+                        ? deriveWatchIndicator(backgroundShellsBySession[activeSessionId])
+                        : null
+                    }
                     projectId={
                       workflowEditRoute?.projectId ||
                       projects.find((p: any) => p.agents?.some((a: any) => a.id === activeAgentId))
@@ -6206,6 +6240,16 @@ export default function App({ initialView }: any = {}) {
                                       </div>
                                     </div>
                                   )}
+                                  {activeSessionId &&
+                                    (backgroundShellsBySession[activeSessionId]?.length ?? 0) >
+                                      0 && (
+                                      <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
+                                        <BackgroundShellsPanel
+                                          sessionId={activeSessionId}
+                                          shells={backgroundShellsBySession[activeSessionId]}
+                                        />
+                                      </div>
+                                    )}
                                   {thinking && !streamingMsgId && (
                                     <ThinkingIndicator
                                       agentColor={streamingAgent?.agentColor || activeAgent?.color}

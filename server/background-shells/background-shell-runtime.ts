@@ -125,6 +125,14 @@ export interface BackgroundShellRow {
   status: BackgroundShellStatus;
   exit_code: number | null;
   log_path: string | null;
+  /**
+   * 1 while the watch loop should wake the session when this shell finishes.
+   * Cleared once the wake has been planned (or the watch cancelled), so a
+   * shell is never the reason for two wakes.
+   */
+  watch: number;
+  /** When the watch was consumed or cancelled. Null while still armed. */
+  watch_resolved_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -138,7 +146,19 @@ export interface StartBackgroundShellInput {
   cwd: string;
   /** Optional human label surfaced in the UI / wrapper output. */
   label?: string | null;
+  /**
+   * Arm the watch loop: when this shell reaches a terminal status the Hub
+   * wakes its session with the result instead of leaving it idle forever.
+   */
+  watch?: boolean;
 }
+
+/**
+ * Notified whenever a shell reaches a terminal status. The watch coordinator
+ * subscribes to this rather than polling, since the runtime already knows the
+ * exact moment a process group is gone.
+ */
+export type BackgroundShellFinalizeListener = (row: BackgroundShellRow) => void;
 
 /**
  * Minimal `child_process.spawn`-shaped surface. Keeps the runtime
@@ -276,6 +296,9 @@ export class BackgroundShellRuntime {
   /** Live handles keyed by shell id. Populated on start, pruned on terminal status. */
   private readonly handles = new Map<string, ShellHandle>();
 
+  /** Terminal-status subscribers (the watch coordinator). */
+  private readonly finalizeListeners = new Set<BackgroundShellFinalizeListener>();
+
   /**
    * Rows left `running` by a prior Hub process, captured synchronously at
    * construction. `reconcileOrphansOnBoot` flips them terminal asynchronously,
@@ -305,6 +328,7 @@ export class BackgroundShellRuntime {
     // separate init step — same convention as other managed runtimes.
     this.db.exec(BACKGROUND_SHELLS_SCHEMA);
     this.ensurePidStartTimeColumn();
+    this.ensureWatchColumns();
     this.bootOrphans = this.readBootOrphans();
     // A prior Hub process may have left rows marked `running` whose detached
     // children can still be alive. Reap them (escalating SIGTERM→SIGKILL) and
@@ -314,6 +338,18 @@ export class BackgroundShellRuntime {
   }
 
   // ─── Public API ───────────────────────────────────────────────────────
+
+  /**
+   * Register a terminal-status listener. Returns an unsubscribe function.
+   * Listeners are invoked after the row has been written, so a subscriber
+   * always reads the final status.
+   */
+  subscribeFinalize(listener: BackgroundShellFinalizeListener): () => void {
+    this.finalizeListeners.add(listener);
+    return () => {
+      this.finalizeListeners.delete(listener);
+    };
+  }
 
   /**
    * Spawn a detached background shell, persist its row as `running`, and
@@ -329,8 +365,8 @@ export class BackgroundShellRuntime {
     this.db
       .prepare(
         `INSERT INTO background_shells
-           (id, session_id, project_id, command, label, cwd, pid, status, exit_code, log_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, 'running', NULL, ?, ?, ?)`,
+           (id, session_id, project_id, command, label, cwd, pid, status, exit_code, log_path, watch, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, 'running', NULL, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -340,6 +376,7 @@ export class BackgroundShellRuntime {
         label,
         input.cwd,
         sink.path,
+        input.watch ? 1 : 0,
         now,
         now,
       );
@@ -379,6 +416,10 @@ export class BackgroundShellRuntime {
       const reason = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[bg-shell ${id}] spawn failed: ${reason}`);
       append(`[agent-hub] spawn failed: ${reason}\n`);
+      // The caller learns about a spawn failure from this call's own return
+      // value, in the turn that is still running. Waking that same session
+      // later to re-announce it would be pure noise, so disarm first.
+      this.clearWatch(id);
       this.finalize(handle, 'failed', null);
       return this.getById(id)!;
     }
@@ -438,6 +479,97 @@ export class BackgroundShellRuntime {
     return this.bootOrphans.filter((row) => row.session_id === sessionId);
   }
 
+  /**
+   * Shells for a session whose watch is still armed and whose process is still
+   * running — i.e. the reason the session's watch-loop indicator is lit.
+   */
+  listWatched(sessionId: string): BackgroundShellRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM background_shells
+          WHERE session_id = ? AND watch = 1 AND status = 'running'
+          ORDER BY created_at ASC, rowid ASC`,
+      )
+      .all(sessionId) as BackgroundShellRow[];
+  }
+
+  /**
+   * Every running shell across all sessions. Feeds the WS connect snapshot, so
+   * a reconnecting client can rebuild its per-session view from scratch instead
+   * of trusting whatever partial state it had before the socket dropped.
+   */
+  listRunning(): BackgroundShellRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM background_shells WHERE status = 'running' ORDER BY created_at ASC, rowid ASC`,
+      )
+      .all() as BackgroundShellRow[];
+  }
+
+  /**
+   * Disarm a single shell's watch. Idempotent; safe on unknown ids. Called
+   * once a wake has been planned for it, so the same completion can never
+   * produce a second wake.
+   */
+  clearWatch(shellId: string): void {
+    this.db
+      .prepare(
+        `UPDATE background_shells
+            SET watch = 0, watch_resolved_at = ?
+          WHERE id = ? AND watch = 1`,
+      )
+      .run(this.clock.nowIso(), shellId);
+  }
+
+  /**
+   * Disarm every armed shell in a session in one statement, whatever its
+   * status. Used before any teardown that kills a session's shells: the kill
+   * finalizes them, and a still-armed row would make that finalize look like a
+   * completion worth waking the session for.
+   *
+   * Returns the rows as they were *before* the disarm so callers can still see
+   * which ones were running.
+   */
+  disarmSessionWatch(sessionId: string): BackgroundShellRow[] {
+    const armed = this.db
+      .prepare(`SELECT * FROM background_shells WHERE session_id = ? AND watch = 1`)
+      .all(sessionId) as BackgroundShellRow[];
+    if (armed.length === 0) return armed;
+    this.db
+      .prepare(
+        `UPDATE background_shells
+            SET watch = 0, watch_resolved_at = ?
+          WHERE session_id = ? AND watch = 1`,
+      )
+      .run(this.clock.nowIso(), sessionId);
+    return armed;
+  }
+
+  /**
+   * Cancel a session's whole watch loop: disarm every armed shell and stop the
+   * ones still running. Returns the rows that were stopped so the caller can
+   * report what it tore down.
+   */
+  async cancelWatch(sessionId: string): Promise<BackgroundShellRow[]> {
+    const armed = this.disarmSessionWatch(sessionId);
+    const stopped: BackgroundShellRow[] = [];
+    for (const row of armed) {
+      if (row.status === 'running') {
+        const result = await this.stop(row.id);
+        if (result) stopped.push(result);
+      }
+    }
+    // Emit disarmed-but-already-terminal rows too, so the UI clears its pill
+    // even when nothing needed killing.
+    for (const row of armed) {
+      if (row.status !== 'running') {
+        const updated = this.getById(row.id);
+        if (updated) this.emit(updated);
+      }
+    }
+    return stopped;
+  }
+
   /** Single shell by id, or null. */
   getById(shellId: string): BackgroundShellRow | null {
     const row = this.db.prepare(`SELECT * FROM background_shells WHERE id = ?`).get(shellId) as
@@ -493,7 +625,10 @@ export class BackgroundShellRuntime {
           )
           .run(this.clock.nowIso(), shellId);
         const updated = this.getById(shellId);
-        if (updated) this.emit(updated);
+        if (updated) {
+          this.emit(updated);
+          this.notifyFinalize(updated);
+        }
         return updated;
       }
       return row;
@@ -518,8 +653,16 @@ export class BackgroundShellRuntime {
   /**
    * Stop every `running` shell for a session. Used by the session-delete /
    * archive hook. Returns the number of shells stopped.
+   *
+   * Disarms the session's watch loop first, for the same reason `cancelWatch`
+   * does: killing a shell finalizes it, and finalizing an armed shell notifies
+   * the watcher. The delete path awaits this *before* it soft-deletes the row,
+   * so a still-armed shell would queue a wake against a session that still
+   * looks alive and the watcher would start a fresh chat turn into a session
+   * about to be archived.
    */
   async stopBySessionId(sessionId: string): Promise<number> {
+    this.disarmSessionWatch(sessionId);
     const rows = this.db
       .prepare(`SELECT id FROM background_shells WHERE session_id = ? AND status = 'running'`)
       .all(sessionId) as Array<{ id: string }>;
@@ -558,8 +701,27 @@ export class BackgroundShellRuntime {
     }
     handle.child = null;
     const row = this.getById(handle.id);
-    if (row) this.emit(row);
+    if (row) {
+      this.emit(row);
+      this.notifyFinalize(row);
+    }
     this.handles.delete(handle.id);
+  }
+
+  /**
+   * Fan a terminal row out to subscribers. Each listener is isolated: the
+   * watch coordinator throwing must never leave a shell half-finalized.
+   */
+  private notifyFinalize(row: BackgroundShellRow): void {
+    for (const listener of this.finalizeListeners) {
+      try {
+        listener(row);
+      } catch (err) {
+        this.logger.warn(
+          `[bg-shell ${row.id}] finalize listener threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   private emit(row: BackgroundShellRow): void {
@@ -608,6 +770,25 @@ export class BackgroundShellRuntime {
   }
 
   /**
+   * Watch-loop columns, added after the table shipped. Rows written by an
+   * older build default to `watch = 0` (unwatched), which is the safe
+   * direction — an upgrade never starts waking sessions about shells the agent
+   * launched before the feature existed.
+   */
+  private ensureWatchColumns(): void {
+    const columns = this.db.prepare(`PRAGMA table_info(background_shells)`).all() as Array<{
+      name: string;
+    }>;
+    const has = (name: string): boolean => columns.some((column) => column.name === name);
+    if (!has('watch')) {
+      this.db.exec(`ALTER TABLE background_shells ADD COLUMN watch INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!has('watch_resolved_at')) {
+      this.db.exec(`ALTER TABLE background_shells ADD COLUMN watch_resolved_at TEXT`);
+    }
+  }
+
+  /**
    * On construction, any row still marked `running` belongs to a prior Hub
    * process whose in-memory handle is gone. Those children were spawned
    * `detached`, so they may still be alive (reparented to init) after the
@@ -652,6 +833,10 @@ export class BackgroundShellRuntime {
       if (reapResult === 'unverified') continue;
       // Flip terminal only after the reap has escalated + settled.
       markFailed.run(this.clock.nowIso(), row.id);
+      // Disarm without notifying: `restart-resume-notice.ts` already tells the
+      // resumed agent that every process it started is gone, so a wake here
+      // would double-notify for the same restart.
+      this.clearWatch(row.id);
       const updated = this.getById(row.id);
       if (updated) this.emit(updated);
     }

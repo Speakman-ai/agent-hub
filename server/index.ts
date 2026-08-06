@@ -211,7 +211,7 @@ import createGoogleDriveRoutes from './routes/google-drive.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
 
-import { drainIdleQueuedSessions } from './session-chat-busy.js';
+import { drainIdleQueuedSessions, isSessionChatBusy } from './session-chat-busy.js';
 
 import { handleMultiAgentCancel } from './session-multi-agent.js';
 
@@ -244,6 +244,11 @@ import createChatHandler, { type ChatHandlerDeps, type WebSocketLike } from './c
 
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
 import { createBackgroundShellRuntime } from './background-shells/background-shell-runtime-setup.js';
+import {
+  BackgroundShellWatcher,
+  WATCH_SWEEP_INTERVAL_MS,
+} from './background-shells/background-shell-watcher.js';
+import type { BackgroundShellRow } from './background-shells/background-shell-runtime.js';
 import {
   createPreviewUrlBase,
   resolveDevServerPortClientUrl,
@@ -299,6 +304,7 @@ import type {
   DesignChatMessage,
   SessionRow,
   ActiveTaskRow,
+  MessageRow,
   KanbanCardRow,
   KanbanColumnRow,
   Project,
@@ -1062,6 +1068,67 @@ const backgroundShellRuntime = createBackgroundShellRuntime({
   },
 });
 
+/**
+ * Write a `role: 'system'` transcript line for the watch loop and push it to
+ * connected clients. Function declaration so it is hoisted above the watcher
+ * construction below.
+ */
+function persistWatchSystemMessage(
+  sessionId: string,
+  content: string,
+  meta: Record<string, unknown>,
+): void {
+  const msgId = uuidv4();
+  const metadata = JSON.stringify(meta);
+  stmts!.addMessage.run(
+    msgId,
+    sessionId,
+    'system',
+    content,
+    null,
+    null,
+    null,
+    metadata,
+    null,
+    null,
+    null,
+  );
+  stmts!.touchSession.run(sessionId);
+  const message = (stmts!.getMessageById.get(msgId) as MessageRow | undefined) ?? {
+    id: msgId,
+    session_id: sessionId,
+    role: 'system' as const,
+    content,
+    engine: null,
+    model: null,
+    attachments: null,
+    metadata,
+    created_at: new Date().toISOString(),
+  };
+  broadcast({ type: 'message_added', sessionId, message });
+}
+
+// The watch loop: when a watched background shell finishes, wake its session
+// with the result instead of leaving it idle forever. Dispatches through the
+// same `handleChat(null, …)` seam as the queue drain and ReAct continuations.
+const backgroundShellWatcher = new BackgroundShellWatcher({
+  runtime: backgroundShellRuntime,
+  getSession: (sessionId) => stmts!.getSession.get(sessionId) as SessionRow | undefined,
+  isSessionBusy: (sessionId) =>
+    isSessionChatBusy(
+      sessionId,
+      activeProcesses,
+      stmts!.getActiveTask.get(sessionId) as ActiveTaskRow | undefined,
+    ),
+  dispatchChat: (msg) => handleChat!(null, msg as unknown as ChatMessage),
+  persistSystemMessage: (sessionId, content, meta) =>
+    persistWatchSystemMessage(sessionId, content, meta),
+  listUnreportedCompletions: () =>
+    getDb()
+      .prepare(`SELECT * FROM background_shells WHERE watch = 1 AND status != 'running'`)
+      .all() as BackgroundShellRow[],
+});
+
 // One persistent terminal shell per Agent Hub session. When a managed dev
 // server is active, its SessionEnv is the terminal's isolation boundary too —
 // crucially, both enter the same Sysbox container and see the same backing
@@ -1353,6 +1420,7 @@ export const routeDeps: RouteDeps = {
   scheduleAll,
   getDevServerRuntime: () => devServerRuntime,
   getBackgroundShellRuntime: () => backgroundShellRuntime,
+  getBackgroundShellWatcher: () => backgroundShellWatcher,
   provisionSessionWorkspace: async (sessionId: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {
@@ -1535,6 +1603,9 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
   // clients. Without this, a client that reconnects after the chat-handler
   // broadcast loop has exited never learns that the preview became ready.
   getPreviewSnapshotRuntime: () => [devServerRuntime],
+  // Same rationale as the preview snapshot: a reconnecting client must be able
+  // to rebuild the background-shell watch indicator from server state.
+  getBackgroundShellSnapshotRuntime: () => backgroundShellRuntime,
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
@@ -1603,6 +1674,14 @@ const chatHandler = createChatHandler({
   rescheduleCron,
   getDevServerRuntime: () => devServerRuntime,
   getPtyHost: () => ptyHost,
+  listWatchedBackgroundShells: (sessionId: string) =>
+    backgroundShellRuntime.listWatched(sessionId).map((shell) => ({
+      id: shell.id,
+      label: shell.label,
+      command: shell.command,
+      status: shell.status,
+      exit_code: shell.exit_code,
+    })),
   autoCommitAndPR,
   tryAutonomousDispatch,
 } as ChatHandlerDeps);
@@ -2090,6 +2169,22 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       }
     } catch (err) {
       console.error('[QueueDrain] Boot drain failed:', (err as Error).message);
+    }
+
+    // Background shells that finished while the Hub was down are still armed;
+    // deliver those wakes now, then sweep for ones deferred behind a busy
+    // session. Unref'd so the timer never holds the process open.
+    try {
+      backgroundShellWatcher.resumePendingOnBoot();
+      setInterval(() => {
+        try {
+          backgroundShellWatcher.tickAll();
+        } catch (err) {
+          console.error('[bg-watch] sweep failed:', (err as Error).message);
+        }
+      }, WATCH_SWEEP_INTERVAL_MS).unref?.();
+    } catch (err) {
+      console.error('[bg-watch] Boot resume failed:', (err as Error).message);
     }
 
     scheduleAll(allAgents());

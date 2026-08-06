@@ -5,9 +5,10 @@ import {
   buildNoteTitle,
   saveConversationAsNote,
 } from '../utils/export';
-import { Palette } from 'lucide-react';
+import { Palette, Radio } from 'lucide-react';
 import { api } from '../utils/api';
 import SessionStateIcon from './SessionStateIcon';
+import { watchIndicatorLabel, watchIndicatorTitle } from '../utils/backgroundShells';
 
 function truncateSessionId(id: any, tailLen: any = 8) {
   if (!id || id.length <= tailLen) return id;
@@ -90,6 +91,12 @@ export default function TopBar({
   messages,
   activeSessionId,
   activeSessionState,
+  /**
+   * Watch-loop indicator for the active session, or null when nothing is
+   * running. Signals that an idle session is waiting on background work and
+   * will resume by itself — otherwise it just looks stalled.
+   */
+  backgroundShellWatch,
   projectId,
   showToast,
   onOpenForward,
@@ -198,6 +205,23 @@ export default function TopBar({
                 size={14}
                 testId="topbar-session-state-icon"
               />
+            )}
+            {backgroundShellWatch && (
+              <span
+                className={`flex flex-shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] ${
+                  backgroundShellWatch.watching > 0
+                    ? 'border-amber-800/60 bg-amber-950/30 text-amber-300'
+                    : 'border-gray-700 bg-gray-800 text-gray-400'
+                }`}
+                title={watchIndicatorTitle(backgroundShellWatch)}
+                data-testid="topbar-background-shell-watch"
+              >
+                <Radio
+                  size={10}
+                  className={backgroundShellWatch.watching > 0 ? 'animate-pulse' : ''}
+                />
+                {watchIndicatorLabel(backgroundShellWatch)}
+              </span>
             )}
             <div className="min-w-0">
               <div className="flex items-center gap-2 min-w-0">

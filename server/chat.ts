@@ -18,6 +18,10 @@ import {
   planEphemeralBackgroundBashRecovery,
   recordEphemeralBackgroundBash,
 } from './ephemeral-background-bash.js';
+import {
+  buildWatchTurnEndNotice,
+  type WatchedShellSummary,
+} from './background-shells/background-shell-watch.js';
 import { createStreamParser } from './stream-parser.js';
 import { shouldPersistStreamEvent } from './benign-stream-events.js';
 import { clampPayload } from './session-events-store.js';
@@ -394,6 +398,12 @@ interface InternalChatMessage extends ChatMessage {
    * MAX_EPHEMERAL_BASH_RECOVERY_TURNS — see `ephemeral-background-bash.ts`.
    */
   _ephemeralBashRecovery?: number;
+  /**
+   * This turn was dispatched by the background-shell watch loop because work
+   * the session parked with `bg.sh` finished. See
+   * `background-shells/background-shell-watcher.ts`.
+   */
+  _backgroundShellWake?: boolean;
 }
 
 interface ProjectWithCommands extends Project {
@@ -455,6 +465,12 @@ export interface ChatHandlerDeps {
    * matching the sibling runtime accessors.
    */
   getPtyHost?: () => { get(sessionId: string): AgentTerminalView | undefined } | null;
+  /**
+   * Armed, still-running Hub-owned background shells for a session. Read at
+   * turn end so a turn that parks long work says so in the transcript instead
+   * of going silent. Null-when-unwired, matching the sibling accessors.
+   */
+  listWatchedBackgroundShells?: (sessionId: string) => WatchedShellSummary[];
   autoCommitAndPR: (
     sessionId: string,
     agentId: string,
@@ -1115,8 +1131,11 @@ bg.sh list                                              # this session's shells 
 bg.sh status <shellId>                                  # one shell's status
 bg.sh logs <shellId> --limit 200                        # captured output tail
 bg.sh stop <shellId>                                    # SIGTERM the process group
+bg.sh unwatch                                           # cancel the watch loop + stop them
 \`\`\`
-The command runs in the session worktree and its output streams to the session's **Background shells panel**. Statuses are \`running\`, \`exited\` (code 0), \`failed\` (non-zero or crashed), and \`stopped\`. Everything is scoped to this session and is reaped when the session is archived or deleted; a Hub restart also kills them and you get a system message listing what died. Keep using your normal Bash tool for work that finishes inside the turn.`;
+**These shells are watched by default, so end your turn after starting one.** When the command finishes the Hub wakes this session and hands you its exit status and output tail as a new turn. Polling it, sleeping in a loop, or padding out the turn to "wait for the build" only burns wall-clock for a result that is coming to you anyway. Pass \`--no-watch\` for fire-and-forget work whose result you will never need.
+
+The command runs in the session worktree and its output streams to the session's **Background shells panel**, where the human can see what you are waiting on and cancel it. Statuses are \`running\`, \`exited\` (code 0), \`failed\` (non-zero or crashed), and \`stopped\`. Everything is scoped to this session and is reaped when the session is archived or deleted; a Hub restart also kills them and you get a system message listing what died. Keep using your normal Bash tool for work that finishes inside the turn.`;
 
     prompt += `\n\n## Memory Instructions
 You have access to memory files. The memory context above shows your current knowledge. Mention important learnings (decisions, preferences, key facts) in your response so they get logged.`;
@@ -1828,6 +1847,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     drainQueue,
     getDevServerRuntime,
     getPtyHost,
+    listWatchedBackgroundShells,
     autoCommitAndPR,
     tryAutonomousDispatch,
   } = deps;
@@ -5676,6 +5696,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             });
           });
           return;
+        }
+
+        // The turn is genuinely over. If it parked work in Hub-owned background
+        // shells, say so in the transcript: the watch loop will wake this
+        // session when they finish, and without a line here the silence in
+        // between is indistinguishable from the crash this feature exists to
+        // fix. Unlike the ephemeral-Bash case above, ending the turn is the
+        // correct thing to do — so this informs rather than recovers.
+        if (!msg._backgroundShellWake) {
+          try {
+            const watched = listWatchedBackgroundShells?.(sessionId) ?? [];
+            if (watched.length > 0) {
+              persistCloseCardGateSystemMessage(sessionId, buildWatchTurnEndNotice(watched), {
+                kind: 'background_shell_watch_armed',
+                shellIds: watched.map((shell) => shell.id),
+              });
+            }
+          } catch (err: unknown) {
+            console.warn(
+              '[bg-watch] turn-end notice failed:',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
         }
 
         // Isolated (git worktree) + Claude: give the filesystem a moment to settle

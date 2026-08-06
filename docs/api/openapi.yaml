@@ -738,6 +738,12 @@ components:
         log_path:
           type: string
           nullable: true
+        watch:
+          type: integer
+          description: 1 while the watch loop should wake this shell’s session when it finishes.
+        watch_resolved_at:
+          type: string
+          nullable: true
         created_at:
           type: string
         updated_at:
@@ -754,6 +760,8 @@ components:
         - status
         - exit_code
         - log_path
+        - watch
+        - watch_resolved_at
         - created_at
         - updated_at
       description: A Hub-owned background shell — a long-running command that survives across chat turns.
@@ -15506,6 +15514,9 @@ paths:
                 label:
                   type: string
                   description: Optional human label surfaced in the UI.
+                watch:
+                  type: boolean
+                  description: Wake the session automatically when this shell finishes. Defaults to true; pass false to start an unwatched shell.
               required:
                 - command
       responses:
@@ -15522,6 +15533,41 @@ paths:
                   - shell
         "400":
           description: Missing command or no directory to run in
+        "404":
+          description: Session not found
+        "503":
+          description: Background shells unavailable on this server
+  /api/sessions/{sessionId}/background-shells/watch/cancel:
+    post:
+      summary: Cancel the session watch loop and stop its watched shells
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Watch disarmed; any still-running watched shells were stopped.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stopped:
+                    type: integer
+                    description: How many shells were stopped.
+                  shells:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BackgroundShell"
+                required:
+                  - stopped
+                  - shells
         "404":
           description: Session not found
         "503":

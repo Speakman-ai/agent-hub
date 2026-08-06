@@ -34,6 +34,8 @@ function row(over: Partial<BackgroundShellRow> = {}): BackgroundShellRow {
     status: 'running',
     exit_code: null,
     log_path: '/data/background-shells/shell-1.log',
+    watch: 1,
+    watch_resolved_at: null,
     created_at: '2026-01-01',
     updated_at: '2026-01-01',
     ...over,
@@ -46,7 +48,10 @@ interface FakeRuntime {
   getById: ReturnType<typeof vi.fn>;
   getLogTail: ReturnType<typeof vi.fn>;
   stop: ReturnType<typeof vi.fn>;
+  cancelWatch: ReturnType<typeof vi.fn>;
 }
+
+let watcher: { forgetSession: ReturnType<typeof vi.fn> };
 
 function buildApp(
   opts: {
@@ -64,6 +69,7 @@ function buildApp(
     findAgent: () =>
       opts.project === null ? null : { project: opts.project ?? { id: 'proj-1', cwd: TEST_CWD } },
     getBackgroundShellRuntime: () => (opts.runtime === undefined ? runtime : opts.runtime),
+    getBackgroundShellWatcher: () => watcher,
   } as unknown as Parameters<typeof createBackgroundShellRoutes>[0];
 
   const app = express();
@@ -81,7 +87,9 @@ beforeEach(() => {
     getById: vi.fn(() => row()),
     getLogTail: vi.fn(() => ['line-1', 'line-2']),
     stop: vi.fn(async () => row({ status: 'stopped' })),
+    cancelWatch: vi.fn(async () => [row({ status: 'stopped', watch: 0 })]),
   };
+  watcher = { forgetSession: vi.fn() };
 });
 
 describe('GET /api/sessions/:sessionId/background-shells', () => {
@@ -154,6 +162,67 @@ describe('POST /api/sessions/:sessionId/background-shells', () => {
     expect(runtime.start).toHaveBeenCalledWith(
       expect.objectContaining({ command: '  printf "%s" " x " ' }),
     );
+  });
+
+  it('arms the watch by default — an unwatched shell is the thing that strands a session', async () => {
+    await supertest(buildApp())
+      .post('/api/sessions/sess-1/background-shells')
+      .send({ command: 'sleep 100' });
+    expect(runtime.start).toHaveBeenCalledWith(expect.objectContaining({ watch: true }));
+  });
+
+  it('honours an explicit watch:false opt-out', async () => {
+    await supertest(buildApp())
+      .post('/api/sessions/sess-1/background-shells')
+      .send({ command: 'sleep 100', watch: false });
+    expect(runtime.start).toHaveBeenCalledWith(expect.objectContaining({ watch: false }));
+  });
+
+  it('treats any non-false watch value as opting in', async () => {
+    await supertest(buildApp())
+      .post('/api/sessions/sess-1/background-shells')
+      .send({ command: 'sleep 100', watch: 'yes' });
+    expect(runtime.start).toHaveBeenCalledWith(expect.objectContaining({ watch: true }));
+  });
+});
+
+describe('POST /api/sessions/:sessionId/background-shells/watch/cancel', () => {
+  it('disarms the watch, kills the shells, and clears the pending wakes', async () => {
+    const res = await supertest(buildApp()).post(
+      '/api/sessions/sess-1/background-shells/watch/cancel',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.stopped).toBe(1);
+    expect(runtime.cancelWatch).toHaveBeenCalledWith('sess-1');
+    expect(watcher.forgetSession).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('returns the session shells so the client can refresh without a second call', async () => {
+    const res = await supertest(buildApp()).post(
+      '/api/sessions/sess-1/background-shells/watch/cancel',
+    );
+    expect(res.body.shells).toHaveLength(1);
+  });
+
+  it('404s when the caller does not own the session', async () => {
+    ownsSession = false;
+    const res = await supertest(buildApp()).post(
+      '/api/sessions/sess-1/background-shells/watch/cancel',
+    );
+    expect(res.status).toBe(404);
+    expect(runtime.cancelWatch).not.toHaveBeenCalled();
+  });
+
+  it('503s when the runtime is unavailable', async () => {
+    const res = await supertest(buildApp({ runtime: null })).post(
+      '/api/sessions/sess-1/background-shells/watch/cancel',
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('does not collide with the /:shellId/stop route', async () => {
+    await supertest(buildApp()).post('/api/sessions/sess-1/background-shells/watch/cancel');
+    expect(runtime.stop).not.toHaveBeenCalled();
   });
 
   it('400s when there is no worktree or project directory', async () => {

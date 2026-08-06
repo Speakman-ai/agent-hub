@@ -349,6 +349,46 @@ describe('BackgroundShellRuntime.stopBySessionId', () => {
     expect(h.runtime.getById(other.id)!.status).toBe('running');
     expect(h.runtime.list('sess-1').every((s) => s.status === 'stopped')).toBe(true);
   });
+
+  it('disarms before killing, so session teardown cannot wake the session', async () => {
+    const h = makeHarness();
+    const watchAtFinalize: number[] = [];
+    h.runtime.subscribeFinalize((row) => watchAtFinalize.push(row.watch));
+
+    const row = h.runtime.start({ ...START, watch: true });
+    // Session delete awaits this before the row is soft-deleted, so an armed
+    // shell here would queue a wake against a session that still looks alive.
+    await h.runtime.stopBySessionId('sess-1');
+
+    expect(watchAtFinalize).toEqual([0]);
+    expect(h.runtime.getById(row.id)!.watch).toBe(0);
+    expect(h.runtime.getById(row.id)!.watch_resolved_at).not.toBeNull();
+  });
+
+  it('disarms armed shells that already finished, so no pending wake survives', async () => {
+    const h = makeHarness();
+    const done = h.runtime.start({ ...START, watch: true });
+    h.children[0].emitExit(0);
+    // Still armed: the watcher consumes the flag only once it dispatches.
+    expect(h.runtime.getById(done.id)!.watch).toBe(1);
+    const running = h.runtime.start({ ...START, label: 'still going', watch: true });
+
+    await h.runtime.stopBySessionId('sess-1');
+
+    expect(h.runtime.getById(done.id)!.watch).toBe(0);
+    expect(h.runtime.getById(running.id)!.watch).toBe(0);
+  });
+
+  it('leaves other sessions armed', async () => {
+    const h = makeHarness();
+    const other = h.runtime.start({ ...START, sessionId: 'sess-2', watch: true });
+    h.runtime.start({ ...START, watch: true });
+
+    await h.runtime.stopBySessionId('sess-1');
+
+    expect(h.runtime.getById(other.id)!.watch).toBe(1);
+    expect(h.runtime.getById(other.id)!.status).toBe('running');
+  });
 });
 
 describe('BackgroundShellRuntime.list / boot reconcile', () => {
@@ -592,5 +632,161 @@ describe('BackgroundShellRuntime boot-orphan process reaping', () => {
     await runtime.bootReconcile;
     expect(killCalls).toHaveLength(0);
     expect(runtime.getById('orphan')!.status).toBe('failed');
+  });
+});
+
+describe('BackgroundShellRuntime — watch surface', () => {
+  it('starts unwatched by default so an explicit opt-in is required', () => {
+    const h = makeHarness();
+    expect(h.runtime.start(START).watch).toBe(0);
+  });
+
+  it('arms the watch when asked, and lists it while the shell runs', () => {
+    const h = makeHarness();
+    const row = h.runtime.start({ ...START, watch: true });
+
+    expect(row.watch).toBe(1);
+    expect(h.runtime.listWatched('sess-1').map((r) => r.id)).toEqual([row.id]);
+  });
+
+  it('drops a finished shell from listWatched — the indicator tracks live work', () => {
+    const h = makeHarness();
+    h.runtime.start({ ...START, watch: true });
+    h.children[0].emitExit(0);
+
+    expect(h.runtime.listWatched('sess-1')).toEqual([]);
+  });
+
+  it('scopes listWatched to one session', () => {
+    const h = makeHarness();
+    h.runtime.start({ ...START, watch: true });
+    h.runtime.start({ ...START, sessionId: 'sess-2', watch: true });
+
+    expect(h.runtime.listWatched('sess-1')).toHaveLength(1);
+  });
+
+  it('clearWatch stamps a resolution time and is idempotent', () => {
+    const h = makeHarness();
+    const row = h.runtime.start({ ...START, watch: true });
+
+    h.runtime.clearWatch(row.id);
+    const after = h.runtime.getById(row.id)!;
+    expect(after.watch).toBe(0);
+    expect(after.watch_resolved_at).toBeTruthy();
+
+    h.runtime.clearWatch(row.id);
+    expect(h.runtime.getById(row.id)!.watch_resolved_at).toBe(after.watch_resolved_at);
+  });
+
+  it('notifies subscribers on a clean exit', () => {
+    const h = makeHarness();
+    const seen: string[] = [];
+    h.runtime.subscribeFinalize((row) => seen.push(`${row.id}:${row.status}`));
+
+    const row = h.runtime.start({ ...START, watch: true });
+    h.children[0].emitExit(0);
+
+    expect(seen).toEqual([`${row.id}:exited`]);
+  });
+
+  it('notifies subscribers on a non-zero exit', () => {
+    const h = makeHarness();
+    const seen: string[] = [];
+    h.runtime.subscribeFinalize((row) => seen.push(row.status));
+
+    h.runtime.start({ ...START, watch: true });
+    h.children[0].emitExit(3);
+
+    expect(seen).toEqual(['failed']);
+  });
+
+  it('notifies subscribers when a shell is stopped, so the agent still hears about it', async () => {
+    const h = makeHarness();
+    const seen: string[] = [];
+    h.runtime.subscribeFinalize((row) => seen.push(row.status));
+
+    const row = h.runtime.start({ ...START, watch: true });
+    await h.runtime.stop(row.id);
+
+    expect(seen).toEqual(['stopped']);
+  });
+
+  it('disarms a spawn failure before notifying — the caller already has that result', () => {
+    const h = makeHarness({ failSpawn: true });
+    const watchAtFinalize: number[] = [];
+    h.runtime.subscribeFinalize((row) => watchAtFinalize.push(row.watch));
+
+    const row = h.runtime.start({ ...START, watch: true });
+
+    // The subscriber still sees the row (every terminal path notifies), but
+    // with `watch` already cleared, so the watch loop skips it and the session
+    // isn't woken to be told something it learned synchronously.
+    expect(watchAtFinalize).toEqual([0]);
+    expect(row.status).toBe('failed');
+    expect(h.runtime.getById(row.id)!.watch).toBe(0);
+  });
+
+  it('a throwing subscriber cannot wedge finalization', () => {
+    const h = makeHarness();
+    h.runtime.subscribeFinalize(() => {
+      throw new Error('subscriber blew up');
+    });
+    const second: string[] = [];
+    h.runtime.subscribeFinalize((row) => second.push(row.status));
+
+    const row = h.runtime.start({ ...START, watch: true });
+    expect(() => h.children[0].emitExit(0)).not.toThrow();
+
+    expect(h.runtime.getById(row.id)!.status).toBe('exited');
+    expect(second).toEqual(['exited']);
+  });
+
+  it('unsubscribing stops delivery', () => {
+    const h = makeHarness();
+    const seen: string[] = [];
+    const off = h.runtime.subscribeFinalize((row) => seen.push(row.status));
+    off();
+
+    h.runtime.start({ ...START, watch: true });
+    h.children[0].emitExit(0);
+
+    expect(seen).toEqual([]);
+  });
+
+  it('cancelWatch disarms and kills every watched shell in the session', async () => {
+    const h = makeHarness();
+    const a = h.runtime.start({ ...START, watch: true });
+    const b = h.runtime.start({ ...START, label: 'second', watch: true });
+    const unwatched = h.runtime.start({ ...START, label: 'third' });
+
+    const stopped = await h.runtime.cancelWatch('sess-1');
+
+    expect(stopped.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+    expect(h.runtime.getById(a.id)!.watch).toBe(0);
+    expect(h.runtime.getById(a.id)!.status).toBe('stopped');
+    expect(h.runtime.getById(unwatched.id)!.status).toBe('running');
+  });
+
+  it('cancelWatch disarms before killing, so the teardown does not wake the session', async () => {
+    const h = makeHarness();
+    const watchedAtFinalize: number[] = [];
+    h.runtime.subscribeFinalize((row) => watchedAtFinalize.push(row.watch));
+
+    h.runtime.start({ ...START, watch: true });
+    await h.runtime.cancelWatch('sess-1');
+
+    expect(watchedAtFinalize).toEqual([0]);
+  });
+
+  it('listRunning spans sessions and excludes finished shells', () => {
+    const h = makeHarness();
+    h.runtime.start({ ...START, watch: true });
+    h.runtime.start({ ...START, sessionId: 'sess-2' });
+    const done = h.runtime.start({ ...START, label: 'done' });
+    h.children[2].emitExit(0);
+
+    const running = h.runtime.listRunning();
+    expect(running.map((r) => r.session_id).sort()).toEqual(['sess-1', 'sess-2']);
+    expect(running.some((r) => r.id === done.id)).toBe(false);
   });
 });

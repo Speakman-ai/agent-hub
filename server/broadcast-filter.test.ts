@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { shouldDeliverBroadcast, type BroadcastFilterDeps } from './broadcast-filter.js';
+import {
+  shouldDeliverBroadcast,
+  shouldDeliverSessionScopedBroadcast,
+  type BroadcastFilterDeps,
+} from './broadcast-filter.js';
 import type { WsVisibilityStamp } from './session-ownership.js';
 import type { Project } from './types.js';
 
@@ -18,6 +22,7 @@ function makeDeps(overrides: Partial<BroadcastFilterDeps> = {}): BroadcastFilter
   return {
     resolveProjectId: () => null,
     findProject: () => null,
+    getSessionOwner: () => null,
     ...overrides,
   };
 }
@@ -156,5 +161,146 @@ describe('shouldDeliverBroadcast', () => {
     // localBypass=true whenever userId is null, but the filter still
     // honours the stamp as-is for predictability.
     expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
+  });
+  it('SKIPS background-shell events for a non-owner who can view the project', () => {
+    // The shared-project default means "can view the project" is nearly the
+    // whole org. The shell payload carries another user's command line, cwd,
+    // pid, and log path, and the REST surface gates all of it on
+    // `userOwnsSession` — the WebSocket must not be the way around that.
+    const stamp: WsVisibilityStamp = { userId: 'u2', role: 'User' };
+    const data = { type: 'background_shell_update', sessionId: 's1', shell: { id: 'sh1' } };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
+  });
+
+  it('SKIPS background-shell events for an org Owner who does not own the session', () => {
+    // No admin override: `userOwnsSession` does not grant one either.
+    const stamp: WsVisibilityStamp = { userId: 'u-admin', role: 'Owner' };
+    const data = { type: 'background_shell_update', sessionId: 's1', shell: { id: 'sh1' } };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
+  });
+
+  it('delivers background-shell events to the session owner', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u1', role: 'User' };
+    const data = { type: 'background_shell_update', sessionId: 's1', shell: { id: 'sh1' } };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(true);
+  });
+
+  it('still applies project visibility to the session owner', () => {
+    // Ownership is an extra gate, not a bypass of the project check.
+    const stamp: WsVisibilityStamp = { userId: 'u1', role: 'User' };
+    const data = { type: 'background_shell_update', sessionId: 's1', shell: { id: 'sh1' } };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-priv',
+      findProject: () =>
+        makeProject({ id: 'proj-priv', visibility: 'private', ownerUserId: 'u-other' }),
+      getSessionOwner: () => 'u1',
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
+  });
+
+  it('SKIPS background-shell events for unowned sessions (cron / heartbeat spawns)', () => {
+    // NULL-owner rows belong to nobody, and `userOwnsSession` grants them to
+    // no one — `GET /api/sessions/:id/background-shells` already 404s here for
+    // every human. Fanning the rows out anyway would leak the command line,
+    // cwd, pid, and log path org-wide and light a pill for a panel that
+    // cannot load.
+    const stamp: WsVisibilityStamp = { userId: 'u2', role: 'User' };
+    const data = { type: 'background_shell_update', sessionId: 's1', shell: { id: 'sh1' } };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => null,
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
+  });
+
+  it('SKIPS a session-private event that carries no session id', () => {
+    // Cannot attribute it, so cannot safely broadcast it. The runtime always
+    // stamps `sessionId`; this is the malformed-event guard.
+    const stamp: WsVisibilityStamp = { userId: 'u1', role: 'User' };
+    const data = { type: 'background_shell_update', shell: { id: 'sh1' } };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
+  });
+
+  it('leaves other session-scoped event types on project visibility alone', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u2', role: 'User' };
+    const data = { type: 'done', sessionId: 's1' };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: vi.fn(() => 'u1'),
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(true);
+    expect(deps.getSessionOwner).not.toHaveBeenCalled();
+  });
+});
+
+describe('shouldDeliverSessionScopedBroadcast', () => {
+  const owned = { getSessionOwner: () => 'u1' };
+
+  it('delivers to the owner and skips everyone else', () => {
+    expect(shouldDeliverSessionScopedBroadcast('s1', { userId: 'u1', role: 'User' }, owned)).toBe(
+      true,
+    );
+    expect(shouldDeliverSessionScopedBroadcast('s1', { userId: 'u2', role: 'User' }, owned)).toBe(
+      false,
+    );
+  });
+
+  it('delivers to the callers `userOwnsSession` itself waves through', () => {
+    // No stamp (test harness / pre-visibility connection) and localBypass
+    // (no auth configured, x-api-key break-glass, bundled-local) are exactly
+    // the branches where `userOwnsSession` returns true unconditionally.
+    expect(shouldDeliverSessionScopedBroadcast('s1', undefined, owned)).toBe(true);
+    expect(
+      shouldDeliverSessionScopedBroadcast(
+        's1',
+        { userId: null, role: 'Owner', localBypass: true },
+        owned,
+      ),
+    ).toBe(true);
+  });
+
+  it('fails closed when ownership cannot be established', () => {
+    // Unowned session — no user may read it over REST, so none may over WS.
+    expect(
+      shouldDeliverSessionScopedBroadcast(
+        's1',
+        { userId: 'u2', role: 'User' },
+        { getSessionOwner: () => null },
+      ),
+    ).toBe(false);
+    // Unattributable payload.
+    expect(shouldDeliverSessionScopedBroadcast(null, { userId: 'u2', role: 'User' }, owned)).toBe(
+      false,
+    );
+    // A stamped recipient with no user id cannot match any owner.
+    expect(
+      shouldDeliverSessionScopedBroadcast(
+        's1',
+        { userId: null, role: 'User', localBypass: false },
+        owned,
+      ),
+    ).toBe(false);
   });
 });

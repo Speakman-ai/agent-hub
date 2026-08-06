@@ -347,7 +347,7 @@ export function buildEphemeralBackgroundBashNotice(
     `⚠️ ${subject} no longer reachable. The CLI process that owned ${shells.length === 1 ? 'it' : 'them'} has exited:`,
     lines.join('\n'),
     'This turn is a new process: `BashOutput` cannot poll them and any output you had not already read is gone. Do not wait on, tail, or poll them. Check the underlying state directly (files, git, containers, the database) before assuming the work did or did not finish, and relaunch only what is actually still missing.',
-    'Do not retry with `nohup`, `disown`, `setsid`, or by detaching inside a container — none of those survive either. Use a Hub-owned background shell: `bg.sh start --label "<label>" <command>`, then `bg.sh status <id>` / `bg.sh logs <id>` in any later turn.',
+    'Do not retry with `nohup`, `disown`, `setsid`, or by detaching inside a container — none of those survive either. Use a Hub-owned background shell: `bg.sh start --label "<label>" <command>`. Those are **watched by default**: the Hub wakes this session and hands you the output when the command finishes, so start the work and end your turn rather than polling. `bg.sh status <id>` / `bg.sh logs <id>` still work in any later turn.',
   ].join('\n\n');
 }
 
@@ -431,6 +431,7 @@ export function buildEphemeralBackgroundBashRecoveryPrompt(): string {
   return [
     'Your turn ended while background Bash shells were still running, so they were reaped with the turn. **No completion notification is coming** — nothing is watching them, and waiting for one would leave this session idle indefinitely.',
     'Continue now: verify directly whether the work landed (files, git, containers, the database), then relaunch anything still missing with `bg.sh start --label "<label>" <command>` and report what you found. Do not end this turn waiting on a `run_in_background` shell.',
+    'A `bg.sh` shell **is** watched: the Hub owns the process, so it survives the turn and wakes this session with the output when it finishes. Relaunching there is what turns "I will wait for the result" into something that actually happens.',
   ].join('\n\n');
 }
 

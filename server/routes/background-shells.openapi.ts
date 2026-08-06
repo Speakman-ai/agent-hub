@@ -23,6 +23,11 @@ const BackgroundShell = registerComponent(
       status: z.enum(['running', 'exited', 'failed', 'stopped']),
       exit_code: z.number().int().nullable(),
       log_path: z.string().nullable(),
+      watch: z.number().int().openapi({
+        description:
+          '1 while the watch loop should wake this shell\u2019s session when it finishes.',
+      }),
+      watch_resolved_at: z.string().nullable(),
       created_at: z.string(),
       updated_at: z.string(),
     })
@@ -68,6 +73,10 @@ registerPath({
               .string()
               .optional()
               .openapi({ description: 'Optional human label surfaced in the UI.' }),
+            watch: z.boolean().optional().openapi({
+              description:
+                'Wake the session automatically when this shell finishes. Defaults to true; pass false to start an unwatched shell.',
+            }),
           }),
         },
       },
@@ -81,6 +90,29 @@ registerPath({
       },
     },
     400: { description: 'Missing command or no directory to run in' },
+    404: { description: 'Session not found' },
+    503: { description: 'Background shells unavailable on this server' },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/background-shells/watch/cancel',
+  summary: 'Cancel the session watch loop and stop its watched shells',
+  tags: ['Sessions'],
+  request: { params: SessionIdParam },
+  responses: {
+    200: {
+      description: 'Watch disarmed; any still-running watched shells were stopped.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            stopped: z.number().int().openapi({ description: 'How many shells were stopped.' }),
+            shells: z.array(BackgroundShell),
+          }),
+        },
+      },
+    },
     404: { description: 'Session not found' },
     503: { description: 'Background shells unavailable on this server' },
   },

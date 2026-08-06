@@ -6,6 +6,7 @@ import {
   LayoutGrid,
   Trash2,
   GitFork,
+  Radio,
   ExternalLink,
   CalendarDays,
   Mail,
@@ -51,6 +52,7 @@ import { daysUntilPurge } from '../utils/time';
 import SidebarSessionOrchestration from './SidebarSessionOrchestration';
 import SessionStateIcon from './SessionStateIcon';
 import { deriveSessionState } from '../utils/deriveSessionState';
+import { deriveWatchIndicator, watchIndicatorTitle } from '../utils/backgroundShells';
 import BugReportButton from './BugReportButton';
 import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
 import { isWorkflowProject } from '../utils/projectMode';
@@ -134,6 +136,12 @@ export default function Sidebar({
   activeDesignId,
   onSelectDesign,
   subagentsBySession = {},
+  /**
+   * Map of sessionId → running Hub-owned background shells. Sessions with a
+   * watched shell get a pulsing pill: they are idle on purpose and will resume
+   * on their own when the work finishes.
+   */
+  backgroundShellsBySession = {},
   changesReadyBySession = {},
   /**
    * Map of sessionId → latest Finalize Code Changes status string. When a
@@ -1401,6 +1409,33 @@ export default function Sidebar({
                                                     {subagentsBySession[session.id].running}
                                                   </span>
                                                 )}
+                                                {(() => {
+                                                  const watch = deriveWatchIndicator(
+                                                    backgroundShellsBySession[session.id],
+                                                  );
+                                                  if (!watch) return null;
+                                                  return (
+                                                    <span
+                                                      className={`flex items-center gap-0.5 text-[9px] flex-shrink-0 ${
+                                                        watch.watching > 0
+                                                          ? 'text-amber-400'
+                                                          : 'text-gray-500'
+                                                      }`}
+                                                      title={watchIndicatorTitle(watch)}
+                                                      data-testid={`session-watch-pill-${session.id}`}
+                                                    >
+                                                      <Radio
+                                                        size={10}
+                                                        className={
+                                                          watch.watching > 0 ? 'animate-pulse' : ''
+                                                        }
+                                                      />
+                                                      {watch.watching > 0
+                                                        ? watch.watching
+                                                        : watch.running}
+                                                    </span>
+                                                  );
+                                                })()}
                                                 <span className="truncate">{session.name}</span>
                                                 {session.advisor_count > 0 && (
                                                   <span

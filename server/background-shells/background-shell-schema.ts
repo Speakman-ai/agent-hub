@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS background_shells (
   status TEXT NOT NULL DEFAULT 'running',
   exit_code INTEGER,
   log_path TEXT,
+  watch INTEGER NOT NULL DEFAULT 0,
+  watch_resolved_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

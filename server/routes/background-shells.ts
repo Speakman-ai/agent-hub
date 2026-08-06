@@ -38,7 +38,7 @@ function isAccessibleDirectory(candidate: string): boolean {
 }
 
 export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDeps): Router {
-  const { stmts, findAgent, getBackgroundShellRuntime } = deps;
+  const { stmts, findAgent, getBackgroundShellRuntime, getBackgroundShellWatcher } = deps;
   const router = Router();
 
   /** Resolve the runtime or send a 503 — it's optional in some boot modes. */
@@ -82,7 +82,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     const runtime = runtimeOr503(res);
     if (!runtime) return;
 
-    const body = (req.body ?? {}) as { command?: unknown; label?: unknown };
+    const body = (req.body ?? {}) as { command?: unknown; label?: unknown; watch?: unknown };
     // Validate on the trimmed form (reject blank/whitespace-only), but run the
     // ORIGINAL string — the bg.sh wrapper shell-quotes argv, so leading/trailing
     // whitespace can be a meaningful part of a quoted first/last argument.
@@ -94,6 +94,10 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
       return res.status(400).json({ error: `command exceeds ${MAX_COMMAND_LEN} characters` });
     }
     const label = typeof body.label === 'string' ? body.label.slice(0, MAX_LABEL_LEN) : null;
+    // Watch defaults ON. The whole point of a Hub-owned shell is that the agent
+    // can end its turn; without a watch it would have to poll, which is the
+    // behaviour this replaces. Only an explicit `false` opts out.
+    const watch = body.watch !== false;
 
     // A background shell runs in the session worktree so it sees the same
     // checkout the agent edits. Fall back to the project cwd for
@@ -112,9 +116,27 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
       command,
       cwd,
       label,
+      watch,
     });
     res.status(201).json({ shell });
   });
+
+  // ─── Cancel the session's watch loop ───────────────────────────────────
+  // Disarms every watched shell and stops the ones still running, so the
+  // human's "stop watching" is a full teardown rather than a silenced timer
+  // leaving orphan processes behind.
+  router.post(
+    '/api/sessions/:sessionId/background-shells/watch/cancel',
+    async (req: Request, res: Response) => {
+      const session = requireOwnedSession(req, res);
+      if (!session) return;
+      const runtime = runtimeOr503(res);
+      if (!runtime) return;
+      const stopped = await runtime.cancelWatch(session.id);
+      getBackgroundShellWatcher?.()?.forgetSession(session.id);
+      res.json({ stopped: stopped.length, shells: runtime.list(session.id) });
+    },
+  );
 
   // ─── Get one ───────────────────────────────────────────────────────────
   router.get(
