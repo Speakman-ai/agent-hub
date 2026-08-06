@@ -1,5 +1,6 @@
 /**
- * `GET /api/projects/:projectId/infra/monitoring-status`.
+ * HTTP contract for the infrastructure-monitoring routes: monitoring status,
+ * the cost surface, and the retention overrides.
  *
  * The probe layer is mocked: this file is about the HTTP contract the
  * Infrastructure module branches on, not about AWS.
@@ -10,6 +11,14 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { getRequest } from '../test/helpers.js';
 import { probeProjectMonitoringAccess } from '../infra/aws-clients.js';
+import {
+  DEFAULT_INFRA_RETENTION_DAYS,
+  MIN_INFRA_RETENTION_DAYS,
+  MAX_INFRA_RETENTION_DAYS,
+  DEFAULT_INFRA_PROJECT_QUOTA_BYTES,
+  MIN_INFRA_PROJECT_QUOTA_BYTES,
+  MAX_INFRA_PROJECT_QUOTA_BYTES,
+} from '../infra/infra-schema.js';
 
 vi.mock('../infra/aws-clients.js', () => ({
   probeProjectMonitoringAccess: vi.fn(),
@@ -214,6 +223,88 @@ describe('infra cost routes', () => {
     await request
       .put('/api/projects/does-not-exist/infra/cost/config')
       .send({ monthlyCeilingUsd: 10 })
+      .expect(404);
+  });
+});
+
+describe('infra retention routes', () => {
+  it('resolves defaults, bounds and store size for an unconfigured project', async () => {
+    const projectId = await freshProject();
+    const res = await request.get(`/api/projects/${projectId}/infra/retention`).expect(200);
+
+    expect(res.body).toMatchObject({
+      retentionDays: DEFAULT_INFRA_RETENTION_DAYS,
+      quotaBytes: DEFAULT_INFRA_PROJECT_QUOTA_BYTES,
+      configured: false,
+      updatedAt: null,
+      defaults: {
+        retentionDays: DEFAULT_INFRA_RETENTION_DAYS,
+        quotaBytes: DEFAULT_INFRA_PROJECT_QUOTA_BYTES,
+      },
+      bounds: {
+        minRetentionDays: MIN_INFRA_RETENTION_DAYS,
+        maxRetentionDays: MAX_INFRA_RETENTION_DAYS,
+        minQuotaBytes: MIN_INFRA_PROJECT_QUOTA_BYTES,
+        maxQuotaBytes: MAX_INFRA_PROJECT_QUOTA_BYTES,
+      },
+    });
+    expect(typeof res.body.dbBytes).toBe('number');
+  });
+
+  it('saves an override and reads it back', async () => {
+    const projectId = await freshProject();
+    const saved = await request
+      .put(`/api/projects/${projectId}/infra/retention`)
+      .send({ retentionDays: 60, quotaBytes: 2 * 1024 * 1024 * 1024 })
+      .expect(200);
+    expect(saved.body).toMatchObject({
+      retentionDays: 60,
+      quotaBytes: 2 * 1024 * 1024 * 1024,
+      configured: true,
+    });
+
+    const read = await request.get(`/api/projects/${projectId}/infra/retention`).expect(200);
+    expect(read.body.retentionDays).toBe(60);
+    expect(typeof read.body.updatedAt).toBe('number');
+  });
+
+  it('leaves the omitted half of a partial update alone', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/infra/retention`)
+      .send({ retentionDays: 60, quotaBytes: 2 * 1024 * 1024 * 1024 })
+      .expect(200);
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/retention`)
+      .send({ quotaBytes: 3 * 1024 * 1024 * 1024 })
+      .expect(200);
+    expect(res.body).toMatchObject({ retentionDays: 60, quotaBytes: 3 * 1024 * 1024 * 1024 });
+  });
+
+  it('clamps out-of-range values rather than rejecting them, and says what it stored', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/retention`)
+      .send({ retentionDays: 100_000, quotaBytes: 1 })
+      .expect(200);
+    expect(res.body.retentionDays).toBe(MAX_INFRA_RETENTION_DAYS);
+    expect(res.body.quotaBytes).toBe(MIN_INFRA_PROJECT_QUOTA_BYTES);
+  });
+
+  it('rejects a body that sets nothing at all', async () => {
+    const projectId = await freshProject();
+    await request.put(`/api/projects/${projectId}/infra/retention`).send({}).expect(400);
+    await request
+      .put(`/api/projects/${projectId}/infra/retention`)
+      .send({ retentionDays: 'thirty' })
+      .expect(400);
+  });
+
+  it('404s both retention endpoints for an unknown project', async () => {
+    await request.get('/api/projects/does-not-exist/infra/retention').expect(404);
+    await request
+      .put('/api/projects/does-not-exist/infra/retention')
+      .send({ retentionDays: 10 })
       .expect(404);
   });
 });

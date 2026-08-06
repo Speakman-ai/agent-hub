@@ -24,10 +24,11 @@
  *   - `infra_cost_config` — the per-project spend ceiling and the collector's
  *     current degradation level, which is what turns that audit trail from a
  *     record into a brake.
+ *   - `infra_retention_config` — the per-project overrides the retention reaper
+ *     resolves its age window and byte quota from.
  *
- * `infra_retention_config` and the alert tables are appended by their own
- * tickets; the DDL is a single idempotent block so those additions are edits to
- * this constant.
+ * The alert tables are appended by their own ticket; the DDL is a single
+ * idempotent block so those additions are edits to this constant.
  */
 
 /** Filename of the store under the data dir. */
@@ -64,6 +65,95 @@ export const INFRA_EMPTY_DIMENSIONS_HASH = '-';
 export const DEFAULT_INFRA_WRITE_QUEUE_MAX_POINTS = 200_000;
 export const DEFAULT_INFRA_WRITE_QUEUE_FLUSH_POINTS = 2_000;
 export const DEFAULT_INFRA_WRITE_QUEUE_FLUSH_INTERVAL_MS = 250;
+
+// ── Retention bounds (decision INFRA-STORE) ────────────────────────────────
+/**
+ * Default age window before the reaper deletes a metric point, in days.
+ *
+ * Longer than `logs.db`'s 7 because infra trends are the point: a capacity
+ * question ("is this instance busier than it was last month?") is unanswerable
+ * inside a one-week window, where a log question rarely reaches back that far.
+ */
+export const DEFAULT_INFRA_RETENTION_DAYS = 30;
+/**
+ * Operator-configurable retention bounds, inclusive.
+ *
+ * The floor is 1 rather than 0 because a 0-day window would delete points as
+ * fast as the collector wrote them — paying AWS for data that never survives to
+ * be charted. An operator who wants that should disable the scope instead.
+ *
+ * The ceiling is a year: past that the store is a time-series archive rather
+ * than a monitoring window, and the right answer is an export, not a bigger
+ * SQLite file. It is deliberately higher than logs' 90-day cap so a
+ * year-over-year capacity comparison stays expressible.
+ */
+export const MIN_INFRA_RETENTION_DAYS = 1;
+export const MAX_INFRA_RETENTION_DAYS = 365;
+
+/**
+ * Default per-project accounted footprint before the oldest points are evicted.
+ *
+ * Sized so a typical scoped deployment reaches the age window before it reaches
+ * the quota, rather than being silently truncated by it: ~600 series polled at
+ * a 60s period is ~864k points/day, and at the ~230-byte accounted size of a
+ * point (see {@link INFRA_METRIC_POINT_BYTES_SQL}) 30 days of that is ~6 GiB.
+ *
+ * For a busier project the quota, not the age window, is what actually bounds
+ * the store — that is intended. The window expresses how far back an operator
+ * wants to look; the quota expresses how much disk they are willing to spend on
+ * it, and the smaller of the two has to win.
+ */
+export const DEFAULT_INFRA_PROJECT_QUOTA_BYTES = 8 * 1024 * 1024 * 1024; // 8 GiB
+/**
+ * Operator-configurable quota bounds, inclusive.
+ *
+ * The floor is 1 MiB rather than the 64 MiB `logs.db` uses, because the two
+ * stores hold rows of wildly different size: a single log record may be 256
+ * KiB, so a 64 MiB floor there is a few hundred records, while a metric point
+ * is ~230 bytes and 64 MiB of them is ~290k points. Carrying the logs floor
+ * over would deny an operator on a constrained box any meaningful cap at all.
+ * 1 MiB is still ~4,500 points — enough to chart — and its only real job is to
+ * stop a quota of 0 from evicting data as fast as the collector writes it.
+ */
+export const MIN_INFRA_PROJECT_QUOTA_BYTES = 1024 * 1024; // 1 MiB
+export const MAX_INFRA_PROJECT_QUOTA_BYTES = 256 * 1024 * 1024 * 1024; // 256 GiB
+
+/**
+ * Fixed per-row cost folded into the accounted size of a metric point: the
+ * row header plus the five fixed-width columns (`id`, `period_s`, `ts_ms`,
+ * `value`, and the record overhead SQLite adds per row).
+ */
+export const INFRA_METRIC_POINT_OVERHEAD_BYTES = 64;
+
+/**
+ * SQL expression for the accounted size of one `infra_metric_points` row.
+ *
+ * Deliberately computed rather than stored in a `byte_size` column the way
+ * `log_records` does. A stored column would have to be maintained by the write
+ * queue and could drift from the row it describes; this expression is derived
+ * from the row itself, so it cannot. Both approaches cost the same to aggregate
+ * (SQLite scans the rows either way), so the drift-free one wins.
+ *
+ * `length()` over TEXT counts characters, which would under-count a non-ASCII
+ * dimension value or resource name — exactly the operator-controlled strings
+ * most likely to be non-ASCII. Casting to BLOB first makes `length()` return
+ * UTF-8 bytes.
+ *
+ * This measures the row's payload, matching what `log_records.byte_size`
+ * accounts for. It excludes index overhead, so the real on-disk footprint of a
+ * project is a small multiple of this — which is the safe direction for a
+ * quota that must never over-report and evict data a project was entitled to.
+ */
+export const INFRA_METRIC_POINT_BYTES_SQL = `(
+  ${INFRA_METRIC_POINT_OVERHEAD_BYTES}
+  + length(CAST(project_id AS BLOB))
+  + length(CAST(resource_key AS BLOB))
+  + length(CAST(namespace AS BLOB))
+  + length(CAST(metric_name AS BLOB))
+  + length(CAST(dimensions_hash AS BLOB))
+  + length(CAST(stat AS BLOB))
+  + length(CAST(COALESCE(dimensions_json, '') AS BLOB))
+)`;
 
 /**
  * Table DDL for `infra.db`, kept separate from the index DDL below.
@@ -252,6 +342,24 @@ export const INFRA_TABLES_SCHEMA = `
     degraded_at         INTEGER,
     updated_at          INTEGER NOT NULL
   );
+
+  -- Per-project retention / quota overrides for the reaper (decision
+  -- INFRA-STORE). Absent row → the code defaults
+  -- (DEFAULT_INFRA_RETENTION_DAYS / DEFAULT_INFRA_PROJECT_QUOTA_BYTES), which
+  -- are not stored, matching log_retention_config and the deployment_env_*
+  -- config tables.
+  --
+  -- Both columns are clamped in TypeScript before they land here rather than by
+  -- a CHECK constraint: the documented bounds move as the store is tuned, and a
+  -- CHECK cannot be widened without rebuilding the table. The reaper re-clamps
+  -- on read, so a row written before a bound narrowed is still interpreted
+  -- inside the current range.
+  CREATE TABLE IF NOT EXISTS infra_retention_config (
+    project_id     TEXT PRIMARY KEY,
+    retention_days INTEGER NOT NULL,
+    quota_bytes    INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+  );
 `;
 
 /**
@@ -299,6 +407,18 @@ export const INFRA_INDEXES_SCHEMA = `
   -- projects rather than within one.
   CREATE INDEX IF NOT EXISTS idx_infra_metric_points_ts
     ON infra_metric_points(ts_ms);
+  -- Oldest-first *within* one project, for the reaper's two per-project paths:
+  -- the age pass over a project that overrode its window, and the quota pass
+  -- evicting a single project down to its byte ceiling.
+  --
+  -- Not redundant with either index above. The chart index leads with
+  -- (project_id, resource_key), so it cannot order a whole project by time, and
+  -- the global ts index cannot seek within one project. Without this, SQLite
+  -- answers both queries by scanning the chart index and then sorting the
+  -- project's entire history in a temp b-tree — on every tick, for a table that
+  -- is expected to hold tens of millions of rows.
+  CREATE INDEX IF NOT EXISTS idx_infra_metric_points_project_ts
+    ON infra_metric_points(project_id, ts_ms);
 
   CREATE INDEX IF NOT EXISTS idx_infra_collect_runs_project
     ON infra_collect_runs(project_id, started_at DESC);

@@ -6888,6 +6888,80 @@ components:
       required:
         - monthlyCeilingUsd
       description: Set or clear a project’s monthly AWS API spend ceiling.
+    InfraRetentionConfig:
+      type: object
+      properties:
+        retentionDays:
+          type: integer
+          description: Age window before a metric point is reaped, in days.
+          example: 30
+        quotaBytes:
+          type: integer
+          description: Accounted footprint this project may hold before its oldest points are evicted.
+          example: 8589934592
+        configured:
+          type: boolean
+          description: False when this project has no override row and both values above are the code defaults.
+        updatedAt:
+          type: number
+          nullable: true
+          description: Epoch ms the override was last saved. Null when unconfigured.
+        defaults:
+          type: object
+          properties:
+            retentionDays:
+              type: integer
+            quotaBytes:
+              type: integer
+          required:
+            - retentionDays
+            - quotaBytes
+          description: What an unconfigured project falls back to.
+        bounds:
+          type: object
+          properties:
+            minRetentionDays:
+              type: integer
+            maxRetentionDays:
+              type: integer
+            minQuotaBytes:
+              type: integer
+            maxQuotaBytes:
+              type: integer
+          required:
+            - minRetentionDays
+            - maxRetentionDays
+            - minQuotaBytes
+            - maxQuotaBytes
+          description: Inclusive range each value is clamped to. Out-of-range input is clamped, not rejected.
+        dbBytes:
+          type: integer
+          description: "On-disk size of the whole `infra.db` file, across every project. Deliberately not a per-project figure: that would need a full-table aggregate, which on a store of tens of millions of points would stall the server for a page load."
+      required:
+        - retentionDays
+        - quotaBytes
+        - configured
+        - updatedAt
+        - defaults
+        - bounds
+        - dbBytes
+      description: A project’s resolved retention window and byte quota, with the bounds and defaults behind them.
+    InfraRetentionConfigRequest:
+      type: object
+      properties:
+        retentionDays:
+          type: integer
+          minimum: 0
+          maximum: 100000
+          description: New age window in days. Clamped to the documented bounds. Omit to leave as-is.
+          example: 60
+        quotaBytes:
+          type: integer
+          minimum: 0
+          maximum: 1099511627776
+          description: New byte quota. Clamped to the documented bounds. Omit to leave as-is.
+          example: 8589934592
+      description: Set a project’s metric retention overrides.
     LogIngestBatch:
       type: object
       properties:
@@ -27862,6 +27936,122 @@ paths:
                   - error
         "404":
           description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/retention:
+    get:
+      tags:
+        - Projects
+      summary: Resolved metric retention window and byte quota
+      description: |-
+        Reports the age window and per-project byte quota the retention reaper enforces against `infra_metric_points`, resolved with defaults for a project that has never configured them.
+
+        **Cost:** free. Local SQLite metadata only — no AWS calls and no table scan.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Resolved retention configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraRetentionConfig"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+    put:
+      tags:
+        - Projects
+      summary: Override the project’s metric retention window and byte quota
+      description: |-
+        Writes this project’s `infra_retention_config` row. Either field may be sent alone; the other keeps its current resolved value.
+
+        Values outside the documented bounds are **clamped rather than rejected**, and the clamp is re-applied on read, so narrowing a bound later reinterprets an old row instead of stranding it. The response echoes what was actually stored.
+
+        Shrinking the window or the quota takes effect on the next reaper tick and deletes points, which is not reversible — the data is not re-fetched from CloudWatch.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                retentionDays:
+                  type: integer
+                  minimum: 0
+                  maximum: 100000
+                  description: New age window in days. Clamped to the documented bounds. Omit to leave as-is.
+                  example: 60
+                quotaBytes:
+                  type: integer
+                  minimum: 0
+                  maximum: 1099511627776
+                  description: New byte quota. Clamped to the documented bounds. Omit to leave as-is.
+                  example: 8589934592
+              description: Set a project’s metric retention overrides.
+      responses:
+        "200":
+          description: Overrides saved; the resolved configuration is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraRetentionConfig"
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is unavailable on this Hub.
           content:
             application/json:
               schema:

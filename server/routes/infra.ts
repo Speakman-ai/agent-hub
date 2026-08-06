@@ -5,6 +5,8 @@
  *   GET  /api/projects/:projectId/infra/cost
  *   POST /api/projects/:projectId/infra/cost/projection
  *   PUT  /api/projects/:projectId/infra/cost/config
+ *   GET  /api/projects/:projectId/infra/retention
+ *   PUT  /api/projects/:projectId/infra/retention
  *
  * The Infrastructure module is gated on a project having a designated
  * monitoring profile whose credentials actually resolve (decision INFRA-CRED),
@@ -18,6 +20,10 @@
  * degrades against. None of them call AWS — every figure is local SQLite or
  * pure arithmetic over the service metric packs, so the scope editor can price
  * a keystroke without spending anything to do it.
+ *
+ * The `retention` routes expose the window and byte quota the reaper enforces
+ * against `infra.db`. They read and write config only — the deletes happen on
+ * the reaper's own schedule, never on a request.
  *
  * Admin-gated, matching the AWS profile routes: the probe result names the
  * profile and region, a failure message can carry an AWS principal ARN, and the
@@ -39,7 +45,24 @@ import {
   setInfraCostCeiling,
 } from '../infra/infra-cost-store.js';
 import { MAX_RESOURCE_STALENESS_MS } from '../infra/metric-collector.js';
-import { CostProjectionRequestSchema, CostCeilingRequestSchema } from './infra.openapi.js';
+import {
+  getInfraRetentionConfig,
+  setInfraRetentionConfig,
+  getInfraDbFileBytes,
+} from '../infra/infra-retention-store.js';
+import {
+  DEFAULT_INFRA_RETENTION_DAYS,
+  MIN_INFRA_RETENTION_DAYS,
+  MAX_INFRA_RETENTION_DAYS,
+  DEFAULT_INFRA_PROJECT_QUOTA_BYTES,
+  MIN_INFRA_PROJECT_QUOTA_BYTES,
+  MAX_INFRA_PROJECT_QUOTA_BYTES,
+} from '../infra/infra-schema.js';
+import {
+  CostProjectionRequestSchema,
+  CostCeilingRequestSchema,
+  RetentionConfigRequestSchema,
+} from './infra.openapi.js';
 
 function validate<T extends z.ZodTypeAny>(
   schema: T,
@@ -108,6 +131,53 @@ function buildCostBody(projectId: string, nowMs: number): Record<string, unknown
     configured: config.configured,
     projection,
     recentRuns: listInfraCollectRuns(projectId, 20).map(({ projectId: _pid, ...run }) => run),
+  };
+}
+
+/** Documented bounds and defaults, echoed alongside every retention response. */
+const RETENTION_LIMITS = {
+  defaults: {
+    retentionDays: DEFAULT_INFRA_RETENTION_DAYS,
+    quotaBytes: DEFAULT_INFRA_PROJECT_QUOTA_BYTES,
+  },
+  bounds: {
+    minRetentionDays: MIN_INFRA_RETENTION_DAYS,
+    maxRetentionDays: MAX_INFRA_RETENTION_DAYS,
+    minQuotaBytes: MIN_INFRA_PROJECT_QUOTA_BYTES,
+    maxQuotaBytes: MAX_INFRA_PROJECT_QUOTA_BYTES,
+  },
+} as const;
+
+/**
+ * Resolved retention config for one project.
+ *
+ * `dbBytes` is the whole file rather than the project's share on purpose: a
+ * per-project figure needs a full-table aggregate over `infra_metric_points`,
+ * and on a store holding tens of millions of points that would block the event
+ * loop for a page load. The reaper pays that cost on its own schedule, off the
+ * request path.
+ */
+function buildRetentionBody(projectId: string): Record<string, unknown> {
+  const config = getInfraRetentionConfig(projectId);
+  return {
+    retentionDays: config.retentionDays,
+    quotaBytes: config.quotaBytes,
+    configured: config.configured,
+    updatedAt: config.updatedAt,
+    ...RETENTION_LIMITS,
+    dbBytes: getInfraDbFileBytes(),
+  };
+}
+
+/** Retention body for a Hub whose `infra.db` never opened — defaults, nothing stored. */
+function emptyRetentionBody(): Record<string, unknown> {
+  return {
+    retentionDays: DEFAULT_INFRA_RETENTION_DAYS,
+    quotaBytes: DEFAULT_INFRA_PROJECT_QUOTA_BYTES,
+    configured: false,
+    updatedAt: null,
+    ...RETENTION_LIMITS,
+    dbBytes: 0,
   };
 }
 
@@ -189,6 +259,41 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
       const nowMs = Date.now();
       setInfraCostCeiling(projectId, parsed.data.monthlyCeilingUsd, nowMs);
       res.json(buildCostBody(projectId, nowMs));
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/infra/retention',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      res.json(isInfraDbInitialized() ? buildRetentionBody(projectId) : emptyRetentionBody());
+    },
+  );
+
+  router.put(
+    '/api/projects/:projectId/infra/retention',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(RetentionConfigRequestSchema, req.body ?? {}, res);
+      if (!parsed.ok) return;
+      if (!isInfraDbInitialized()) {
+        res.status(503).json({ error: 'Infrastructure store is unavailable' });
+        return;
+      }
+      // Out-of-range values are clamped by the store rather than rejected here,
+      // so the response is the authoritative statement of what was stored.
+      setInfraRetentionConfig(projectId, parsed.data);
+      res.json(buildRetentionBody(projectId));
     },
   );
 

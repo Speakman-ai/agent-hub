@@ -273,6 +273,10 @@ import { initInfraDb } from './infra/infra-db.js';
 import { startInfraWriteQueue, flushInfraWriteQueue } from './infra/infra-write-queue.js';
 import { runInfraInventorySync, INFRA_INVENTORY_SYNC_CRON } from './infra/inventory-sync.js';
 import { runInfraMetricCollection, INFRA_COLLECT_CRON } from './infra/metric-collector.js';
+import {
+  runInfraRetentionReaper,
+  INFRA_RETENTION_REAPER_CRON,
+} from './infra/infra-retention-reaper.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
@@ -1263,6 +1267,21 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       intervalSeconds: estimateIntervalSeconds(INFRA_COLLECT_CRON),
       name: 'infra-metric-collector',
     }),
+  );
+
+  // Infra metric retention + quota reaper (decision INFRA-STORE) — bound
+  // infra.db by age window and per-project byte quota. Pure SQLite, no AWS
+  // calls, and a no-op on a Hub whose infra.db never opened.
+  cron.schedule(
+    INFRA_RETENTION_REAPER_CRON,
+    () => {
+      try {
+        runInfraRetentionReaper();
+      } catch (err) {
+        console.warn('[infra-retention-reaper] tick failed:', (err as Error).message);
+      }
+    },
+    { name: 'infra-retention-reaper' },
   );
 
   void runReleaseNotificationOutboxWorker({ broadcast });

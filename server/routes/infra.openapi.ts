@@ -324,3 +324,120 @@ registerPath({
     },
   },
 });
+
+const RetentionResponse = registerComponent(
+  'InfraRetentionConfig',
+  z
+    .object({
+      retentionDays: z.number().int().openapi({
+        description: 'Age window before a metric point is reaped, in days.',
+        example: 30,
+      }),
+      quotaBytes: z.number().int().openapi({
+        description:
+          'Accounted footprint this project may hold before its oldest points are evicted.',
+        example: 8589934592,
+      }),
+      configured: z.boolean().openapi({
+        description:
+          'False when this project has no override row and both values above are the code defaults.',
+      }),
+      updatedAt: z
+        .number()
+        .nullable()
+        .openapi({ description: 'Epoch ms the override was last saved. Null when unconfigured.' }),
+      defaults: z
+        .object({ retentionDays: z.number().int(), quotaBytes: z.number().int() })
+        .openapi({ description: 'What an unconfigured project falls back to.' }),
+      bounds: z
+        .object({
+          minRetentionDays: z.number().int(),
+          maxRetentionDays: z.number().int(),
+          minQuotaBytes: z.number().int(),
+          maxQuotaBytes: z.number().int(),
+        })
+        .openapi({
+          description:
+            'Inclusive range each value is clamped to. Out-of-range input is clamped, not rejected.',
+        }),
+      dbBytes: z.number().int().openapi({
+        description:
+          'On-disk size of the whole `infra.db` file, across every project. Deliberately not a per-project figure: that would need a full-table aggregate, which on a store of tens of millions of points would stall the server for a page load.',
+      }),
+    })
+    .openapi({
+      description:
+        'A project’s resolved retention window and byte quota, with the bounds and defaults behind them.',
+    }),
+);
+
+// GET /api/projects/{projectId}/infra/retention
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/infra/retention',
+  tags: ['Projects'],
+  summary: 'Resolved metric retention window and byte quota',
+  description:
+    'Reports the age window and per-project byte quota the retention reaper enforces against `infra_metric_points`, resolved with defaults for a project that has never configured them.\n\n**Cost:** free. Local SQLite metadata only — no AWS calls and no table scan.',
+  request: { params: ProjectIdParam },
+  responses: {
+    200: {
+      description: 'Resolved retention configuration.',
+      content: { 'application/json': { schema: RetentionResponse } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});
+
+export const RetentionConfigRequestSchema = z
+  .object({
+    retentionDays: z.number().int().min(0).max(100_000).optional().openapi({
+      description: 'New age window in days. Clamped to the documented bounds. Omit to leave as-is.',
+      example: 60,
+    }),
+    quotaBytes: z.number().int().min(0).max(1_099_511_627_776).optional().openapi({
+      description: 'New byte quota. Clamped to the documented bounds. Omit to leave as-is.',
+      example: 8589934592,
+    }),
+  })
+  .refine((v) => v.retentionDays !== undefined || v.quotaBytes !== undefined, {
+    message: 'Provide retentionDays, quotaBytes, or both',
+  })
+  .openapi({ description: 'Set a project’s metric retention overrides.' });
+
+registerComponent('InfraRetentionConfigRequest', RetentionConfigRequestSchema);
+
+// PUT /api/projects/{projectId}/infra/retention
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/infra/retention',
+  tags: ['Projects'],
+  summary: 'Override the project’s metric retention window and byte quota',
+  description:
+    'Writes this project’s `infra_retention_config` row. Either field may be sent alone; the other keeps its current resolved value.\n\nValues outside the documented bounds are **clamped rather than rejected**, and the clamp is re-applied on read, so narrowing a bound later reinterprets an old row instead of stranding it. The response echoes what was actually stored.\n\nShrinking the window or the quota takes effect on the next reaper tick and deletes points, which is not reversible — the data is not re-fetched from CloudWatch.',
+  request: {
+    params: ProjectIdParam,
+    body: { content: { 'application/json': { schema: RetentionConfigRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Overrides saved; the resolved configuration is returned.',
+      content: { 'application/json': { schema: RetentionResponse } },
+    },
+    400: {
+      description: 'Malformed body.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    503: {
+      description: 'The infrastructure store is unavailable on this Hub.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});
