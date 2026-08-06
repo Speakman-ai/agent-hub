@@ -16,6 +16,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
     const [defaultProfile, setDefaultProfile] = useState('');
     const [monitoringProfile, setMonitoringProfile] = useState('');
     const [ambientCredentialSource, setAmbientCredentialSource] = useState('');
+    const [externalId, setExternalId] = useState('');
     const load = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -28,6 +29,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
             setDefaultProfile(body?.effectiveDefaultProfile || '');
             setMonitoringProfile(body?.effectiveMonitoringProfile || '');
             setAmbientCredentialSource(body?.ambientCredentialSource || '');
+            setExternalId(body?.externalId || '');
         }
         catch (err: any) {
             setError(err?.message || 'Failed to load AWS profiles');
@@ -35,6 +37,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
             setDefaultProfile('');
             setMonitoringProfile('');
             setAmbientCredentialSource('');
+            setExternalId('');
         }
         finally {
             setLoading(false);
@@ -118,6 +121,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
               {isRole && (<Text style={styles.meta}>
                   Source: {row.source_profile || row.credential_source || ambientCredentialSource || 'auto'}
                 </Text>)}
+              {isRole && <Text style={styles.meta}>External ID: {externalId || '-'}</Text>}
               <Text style={styles.meta}>Region: {row.region || '-'}</Text>
               <View style={styles.actions}>
                 <TouchableOpacity style={styles.btn} onPress={() => checkStatus(row.name)} disabled={st?.loading}>

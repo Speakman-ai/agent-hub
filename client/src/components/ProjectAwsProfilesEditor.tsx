@@ -38,7 +38,6 @@ const ROLE_FIELDS = [
     label: 'Role ARN',
     placeholder: 'arn:aws:iam::123456789012:role/AgentHubMonitoring',
   },
-  { key: 'external_id', label: 'External ID', placeholder: 'optional' },
   {
     key: 'source_profile',
     label: 'Source profile',
@@ -81,7 +80,6 @@ export function emptyProfile() {
     aws_secret_access_key: '',
     aws_session_token: '',
     role_arn: '',
-    external_id: '',
     source_profile: '',
     credential_source: '',
     role_session_name: '',
@@ -108,7 +106,6 @@ export function profilesToRows(profiles: any) {
       aws_secret_access_key: p.aws_secret_access_key || '',
       aws_session_token: p.aws_session_token || '',
       role_arn: p.role_arn || '',
-      external_id: p.external_id || '',
       source_profile: p.source_profile || '',
       // Empty means "follow the Hub runtime" — never materialize a concrete
       // source here, or loading and re-saving a role profile would silently
@@ -143,8 +140,8 @@ export function rowsToProfiles(rows: any) {
         role_arn: trimmed(row.role_arn),
         region: trimmed(row.region),
       };
-      const externalId = trimmed(row.external_id);
-      if (externalId) out[name].external_id = externalId;
+      // `external_id` is deliberately not sent: the server stamps its own
+      // per-project value onto every role profile and discards client input.
       const sessionName = trimmed(row.role_session_name);
       if (sessionName) out[name].role_session_name = sessionName;
       // The CLI rejects a stanza carrying both origins, so a chained profile
@@ -221,6 +218,7 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
   const [loginState, setLoginState] = useState<Record<string, any>>({});
   const [statusState, setStatusState] = useState<Record<string, any>>({});
   const [ambientCredentialSource, setAmbientCredentialSource] = useState('');
+  const [externalId, setExternalId] = useState('');
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
@@ -235,12 +233,14 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
       setDefaultProfile(body?.defaultProfile || '');
       setMonitoringProfile(body?.monitoringProfile || '');
       setAmbientCredentialSource(body?.ambientCredentialSource || '');
+      setExternalId(body?.externalId || '');
     } catch (err: any) {
       setError(err?.message || String(err));
       setRows([]);
       setDefaultProfile('');
       setMonitoringProfile('');
       setAmbientCredentialSource('');
+      setExternalId('');
     } finally {
       setLoading(false);
     }
@@ -471,10 +471,27 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
                 )}
               </div>
               {isRole && (
-                <p className="text-xs text-gray-500">
-                  Assumed from the Hub&apos;s own credentials, so no interactive login expires — the
-                  profile kind unattended collection can use.
-                </p>
+                <>
+                  <div>
+                    <label className={labelClass}>External ID (generated)</label>
+                    <input
+                      value={externalId}
+                      readOnly
+                      className={`${inputClass} md:w-1/2 opacity-70 cursor-default`}
+                      data-testid={`aws-external-id-${idx}`}
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Put this in the role&apos;s trust policy as an{' '}
+                      <code className="text-gray-400">sts:ExternalId</code> condition. Agent Hub
+                      generates it per project and it cannot be edited — an external ID the caller
+                      gets to choose defends against nothing.
+                    </p>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Assumed from the Hub&apos;s own credentials, so no interactive login expires —
+                    the profile kind unattended collection can use.
+                  </p>
+                </>
               )}
               {roleNeedsUnreachableEnvCredentials(row, ambientCredentialSource) && (
                 <p className="text-xs text-amber-400 flex items-center gap-1">

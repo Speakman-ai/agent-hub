@@ -63,21 +63,33 @@ describe('ProjectAwsProfilesEditor profile serialization', () => {
     expect(rowsToProfiles([row]).monitoring).toMatchObject({ credential_source: 'EcsContainer' });
   });
 
-  it('keeps external id and session name when set', () => {
+  it('keeps the session name when set', () => {
     const row = {
       ...emptyProfile(),
       type: 'role',
       name: 'monitoring',
       role_arn: ROLE_ARN,
-      external_id: ' ext-123 ',
       role_session_name: ' agent-hub ',
       region: 'us-east-2',
     };
 
-    expect(rowsToProfiles([row]).monitoring).toMatchObject({
-      external_id: 'ext-123',
-      role_session_name: 'agent-hub',
-    });
+    expect(rowsToProfiles([row]).monitoring).toMatchObject({ role_session_name: 'agent-hub' });
+  });
+
+  // The Hub generates the external ID per project and stamps it server-side.
+  // An editor that could send one would hand the operator the exact knob AWS's
+  // confused-deputy guidance says the assuming party must keep.
+  it('never sends an external_id, even when the loaded profile carries one', () => {
+    const stored = {
+      monitoring: {
+        type: 'role',
+        role_arn: ROLE_ARN,
+        external_id: 'agent-hub-11111111-2222-3333-4444-555555555555',
+        region: 'us-east-2',
+      },
+    };
+
+    expect(rowsToProfiles(profilesToRows(stored)).monitoring).not.toHaveProperty('external_id');
   });
 
   // The AWS CLI rejects a stanza carrying both origins, so a chained row must
@@ -146,7 +158,6 @@ describe('load → save round trip', () => {
     monitoring: {
       type: 'role',
       role_arn: ROLE_ARN,
-      external_id: 'ext-123',
       role_session_name: 'agent-hub',
       credential_source: 'EcsContainer',
       region: 'us-east-2',

@@ -270,25 +270,86 @@ describe('PUT/GET /api/projects/:id/aws-profiles', () => {
     const role = {
       type: 'role',
       role_arn: 'arn:aws:iam::120569607241:role/AgentHubMonitoring',
-      external_id: 'ext-123',
       role_session_name: 'agent-hub',
       credential_source: 'Ec2InstanceMetadata',
       region: 'us-east-2',
       output: 'yaml',
     };
-    await request
+    const put = await request
       .put(`/api/projects/${projectId}/aws-profiles`)
       .send({ profiles: { monitoring: role } })
       .expect(200);
 
     const res = await request.get(`/api/projects/${projectId}/aws-profiles`).expect(200);
-    expect(res.body.profiles.monitoring).toEqual(role);
+    // `external_id` is the one role field the Hub owns, so it appears on the
+    // saved profile even though the request never sent it.
+    expect(res.body.profiles.monitoring).toEqual({
+      ...role,
+      external_id: put.body.externalId,
+    });
 
     const dir = path.join(config.dataDir, 'project-aws-config', projectId);
     expect(readFileSync(path.join(dir, 'config'), 'utf-8')).toContain(
       'role_arn = arn:aws:iam::120569607241:role/AgentHubMonitoring',
     );
     expect(readFileSync(path.join(dir, 'credentials'), 'utf-8')).toBe('');
+  });
+
+  it('mints a stable, per-project external ID on first read', async () => {
+    const a = await freshProject();
+    const b = await freshProject();
+    const first = await request.get(`/api/projects/${a}/aws-profiles`).expect(200);
+    const again = await request.get(`/api/projects/${a}/aws-profiles`).expect(200);
+    const other = await request.get(`/api/projects/${b}/aws-profiles`).expect(200);
+
+    expect(first.body.externalId).toMatch(/^agent-hub-[0-9a-f-]{36}$/);
+    expect(again.body.externalId).toBe(first.body.externalId);
+    expect(other.body.externalId).not.toBe(first.body.externalId);
+  });
+
+  it('discards an operator-supplied external_id and stamps the project value', async () => {
+    const projectId = await freshProject();
+    const mine = await request.get(`/api/projects/${projectId}/aws-profiles`).expect(200);
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({
+        profiles: {
+          monitoring: {
+            type: 'role',
+            role_arn: 'arn:aws:iam::120569607241:role/AgentHubMonitoring',
+            // A tenant that could set this could point a role profile at
+            // another tenant's role and satisfy its trust policy.
+            external_id: 'agent-hub-someone-elses-project',
+            region: 'us-east-2',
+          },
+        },
+      })
+      .expect(200);
+
+    expect(res.body.profiles.monitoring.external_id).toBe(mine.body.externalId);
+    const dir = path.join(config.dataDir, 'project-aws-config', projectId);
+    const rendered = readFileSync(path.join(dir, 'config'), 'utf-8');
+    expect(rendered).toContain(`external_id = ${mine.body.externalId as string}`);
+    expect(rendered).not.toContain('agent-hub-someone-elses-project');
+  });
+
+  it('stamps every role profile, including one saved before any read minted an id', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/aws-profiles`)
+      .send({
+        profiles: {
+          one: { ...ROLE, role_session_name: 'one' },
+          two: { ...ROLE, role_session_name: 'two' },
+          sso: SAMPLE.dev,
+        },
+      })
+      .expect(200);
+
+    expect(res.body.externalId).toMatch(/^agent-hub-/);
+    expect(res.body.profiles.one.external_id).toBe(res.body.externalId);
+    expect(res.body.profiles.two.external_id).toBe(res.body.externalId);
+    expect(res.body.profiles.sso).not.toHaveProperty('external_id');
   });
 
   it('reports the credential source role profiles will be rendered with', async () => {

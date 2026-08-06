@@ -1,0 +1,82 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AgentHubCallerIdentity",
+      "Effect": "Allow",
+      "Action": ["sts:GetCallerIdentity"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AgentHubResourceInventory",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeRegions",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeNatGateways",
+        "ec2:DescribeTags",
+        "ecs:ListClusters",
+        "ecs:DescribeClusters",
+        "ecs:ListServices",
+        "ecs:DescribeServices",
+        "rds:DescribeDBInstances",
+        "rds:DescribeDBClusters",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTargetHealth",
+        "lambda:ListFunctions",
+        "lambda:GetFunctionConfiguration",
+        "s3:ListAllMyBuckets",
+        "s3:GetBucketLocation",
+        "s3:GetBucketTagging"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AgentHubMetricRead",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:GetMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AgentHubAlarmRead",
+      "Effect": "Allow",
+      "Action": ["cloudwatch:DescribeAlarms"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AgentHubTagRead",
+      "Effect": "Allow",
+      "Action": ["tag:GetResources"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AgentHubQuotaRead",
+      "Effect": "Allow",
+      "Action": ["servicequotas:ListServiceQuotas", "servicequotas:GetServiceQuota"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AgentHubCostExplorerRead",
+      "Effect": "Allow",
+      "Action": ["ce:GetCostAndUsage"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AgentHubHealthRead",
+      "Effect": "Allow",
+      "Action": [
+        "health:DescribeEvents",
+        "health:DescribeEventDetails",
+        "health:DescribeAffectedEntities"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

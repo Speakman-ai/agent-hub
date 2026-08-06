@@ -25,6 +25,10 @@ import {
   AWS_CREDENTIAL_SOURCE_ENV,
   type ProjectAwsSsoProfilesMap,
 } from '../project-aws-profiles.js';
+import {
+  ensureProjectAwsExternalId,
+  stampProjectAwsExternalId,
+} from '../project-aws-external-id.js';
 import { writeProjectAwsFiles } from '../project-aws-config-file.js';
 import {
   getProjectAwsDefaultProfile,
@@ -50,15 +54,20 @@ type ProjectWithAws = Project & {
   awsSsoProfiles?: ProjectAwsSsoProfilesMap;
   awsDefaultProfile?: string;
   awsMonitoringProfile?: string;
+  awsExternalId?: string;
 };
 
 /** GET/PUT envelope: what the operator designated plus what spawns will use. */
-function profilesEnvelope(project: ProjectWithAws) {
+function profilesEnvelope(project: ProjectWithAws, externalId: string) {
   const profiles = getProjectAwsSsoProfiles(project);
   const configured = getProjectAwsDefaultProfile(project);
   const monitoring = getProjectAwsMonitoringProfile(project);
   return {
     profiles,
+    // Read-only: the trust-policy value a customer pastes into their role, and
+    // the one thing about a role profile the operator must not be able to
+    // author. See `project-aws-external-id.ts`.
+    externalId,
     defaultProfile: configured,
     effectiveDefaultProfile: resolveProjectAwsDefaultProfile(profiles, configured),
     monitoringProfile: monitoring,
@@ -115,7 +124,11 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         res.status(404).json({ error: 'Project not found' });
         return;
       }
-      res.json(profilesEnvelope(project));
+      // Minted on first read so existing projects acquire one without a
+      // migration, and persisted only when it actually changed.
+      const { externalId, created } = ensureProjectAwsExternalId(project);
+      if (created) saveProjects();
+      res.json(profilesEnvelope(project, externalId));
     },
   );
 
@@ -130,7 +143,14 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       }
       try {
         const body = (req.body ?? {}) as Record<string, unknown>;
-        const profiles = validateProjectAwsSsoProfiles(body.profiles);
+        const { externalId } = ensureProjectAwsExternalId(project);
+        // Whatever the client sent for `external_id` is discarded here rather
+        // than rejected: an editor round-tripping a stale value should save,
+        // not 400. The Hub owns the value on every role profile.
+        const profiles = stampProjectAwsExternalId(
+          validateProjectAwsSsoProfiles(body.profiles),
+          externalId,
+        );
         // Validate against the *incoming* profiles so a save that renames or
         // deletes the designated profile is rejected instead of silently
         // leaving spawns pointed at a profile that no longer exists.
@@ -156,7 +176,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         }
         saveProjects();
         writeProjectAwsFiles(project.id, profiles);
-        res.json(profilesEnvelope(project));
+        res.json(profilesEnvelope(project, externalId));
       } catch (err) {
         if (err instanceof ProjectAwsProfileValidationError) {
           res.status(err.statusCode).json({ error: err.message });
