@@ -31,6 +31,7 @@ import {
   type InfraMetricPoint,
   type InfraSeriesWire,
 } from '@shared/utils/infraMetrics';
+import { findPackMetric, metricCaveats, type InfraServicePackWire } from '@shared/utils/infraPacks';
 import { api } from '../../utils/api';
 
 // Re-exported so this module stays the import site for everything the chart
@@ -132,12 +133,19 @@ export interface InfraMetricChartProps {
   projectId: string;
   resourceKey: string;
   resourceLabel?: string;
+  /**
+   * The service's declarations, when the page has them. Supplies the selected
+   * metric's one-line description and its caveats; the chart draws the same
+   * without it.
+   */
+  pack?: InfraServicePackWire | null;
 }
 
 export default function InfraMetricChart({
   projectId,
   resourceKey,
   resourceLabel,
+  pack = null,
 }: InfraMetricChartProps): React.ReactElement {
   const [series, setSeries] = useState<InfraSeriesWire[]>([]);
   const [selectedKey, setSelectedKey] = useState<string>('');
@@ -245,6 +253,10 @@ export default function InfraMetricChart({
     [range],
   );
 
+  const selectedSeries = series.find((s) => seriesKey(s) === selectedKey) ?? null;
+  const packMetric = findPackMetric(pack, selectedSeries);
+  const caveats = metricCaveats(packMetric);
+
   const selectClass =
     'rounded border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-200 focus:border-sky-600 focus:outline-none';
 
@@ -294,6 +306,13 @@ export default function InfraMetricChart({
           </span>
         )}
       </div>
+
+      {packMetric && (
+        <p className="text-[11px] leading-5 text-gray-500" data-testid="infra-metric-description">
+          {packMetric.description}
+          {caveats.length > 0 && <span className="text-amber-400"> {caveats.join(' ')}</span>}
+        </p>
+      )}
 
       {error && (
         <div

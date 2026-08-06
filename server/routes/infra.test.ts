@@ -23,6 +23,7 @@ import { getInfraDb, infraResourceKey } from '../infra/infra-db.js';
 import { insertInfraMetricPoints } from '../infra/infra-metric-store.js';
 import { recordInfraAlertEvaluation } from '../infra/alert-store.js';
 import { MAX_METRIC_WINDOW_MS } from '../infra/infra-metric-read.js';
+import { EC2_PACK, infraPackedServices } from '../infra/packs/index.js';
 
 vi.mock('../infra/aws-clients.js', () => ({
   probeProjectMonitoringAccess: vi.fn(),
@@ -105,6 +106,68 @@ describe('GET /api/projects/:projectId/infra/monitoring-status', () => {
   it('404s for an unknown project without probing AWS', async () => {
     await request.get('/api/projects/does-not-exist/infra/monitoring-status').expect(404);
     expect(probeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/projects/:projectId/infra/metric-packs', () => {
+  it('serves every declared pack with its caveats and recommended rules', async () => {
+    const projectId = await freshProject();
+    const res = await request.get(`/api/projects/${projectId}/infra/metric-packs`).expect(200);
+
+    expect(res.body.packs.map((p: { service: string }) => p.service)).toEqual(
+      infraPackedServices(),
+    );
+    const ec2 = res.body.packs.find((p: { service: string }) => p.service === 'ec2');
+    expect(ec2.label).toBe('EC2');
+    expect(ec2.metrics.length).toBe(EC2_PACK.metrics.length);
+
+    // The response is what the Metrics tab reads its caveats from, so the
+    // fields that carry the explanation must survive serialization.
+    const statusCheck = ec2.metrics.find(
+      (m: { metricName: string }) => m.metricName === 'StatusCheckFailed',
+    );
+    expect(statusCheck).toMatchObject({
+      namespace: 'AWS/EC2',
+      dimension: 'InstanceId',
+      metricType: 'flag',
+      stat: 'Maximum',
+      minPeriodSeconds: 60,
+      availability: 'either',
+      appliesTo: { universal: true, condition: '' },
+    });
+    expect(statusCheck.validStatistics).not.toContain('Sum');
+
+    const balance = ec2.metrics.find(
+      (m: { metricName: string }) => m.metricName === 'EBSIOBalance%',
+    );
+    expect(balance.validStatistics).toEqual(['Minimum', 'Maximum']);
+    expect(balance.availability).toBe('basic-only');
+    expect(balance.appliesTo.universal).toBe(false);
+
+    expect(ec2.dimensions).toContainEqual(
+      expect.objectContaining({ name: 'ImageId', detailedMonitoringOnly: true }),
+    );
+    expect(ec2.dimensions).toContainEqual(
+      expect.objectContaining({ name: 'InstanceType', detailedMonitoringOnly: true }),
+    );
+
+    const absentLabels = ec2.absentMetrics.map((a: { label: string }) => a.label).join(' | ');
+    expect(absentLabels).toMatch(/Memory/i);
+    expect(absentLabels).toMatch(/Disk-space/i);
+    expect(ec2.defaultAlertRules.length).toBe(EC2_PACK.defaultAlertRules.length);
+  });
+
+  it('carries no credential or account-identifying material', async () => {
+    // The catalog is static declarations. If a project id, account id or
+    // profile name ever appears here, something project-scoped has leaked into
+    // what is supposed to be a constant.
+    const projectId = await freshProject();
+    const res = await request.get(`/api/projects/${projectId}/infra/metric-packs`).expect(200);
+    expect(JSON.stringify(res.body)).not.toContain(projectId);
+  });
+
+  it('404s for an unknown project', async () => {
+    await request.get('/api/projects/does-not-exist/infra/metric-packs').expect(404);
   });
 });
 

@@ -7302,6 +7302,196 @@ components:
         - reachable
         - checkedAt
       description: Whether this project can be monitored right now. Never carries credential material — profile name, region and failure text only.
+    InfraServicePacks:
+      type: object
+      properties:
+        packs:
+          type: array
+          items:
+            type: object
+            properties:
+              service:
+                type: string
+                example: ec2
+              label:
+                type: string
+                example: EC2
+              metrics:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    namespace:
+                      type: string
+                      example: AWS/EC2
+                    metricName:
+                      type: string
+                      example: StatusCheckFailed
+                    dimension:
+                      type: string
+                      description: The dimension the resource’s own id binds to.
+                      example: InstanceId
+                    metricType:
+                      type: string
+                      enum:
+                        - gauge
+                        - counter
+                        - flag
+                        - balance
+                      description: What the value is, which is what decides the statistic. A `flag` is a per-minute 0/1 check result and must be stored on `Maximum`; a `counter` accrues over the period and is stored on `Sum`.
+                    stat:
+                      type: string
+                      description: The statistic this series is collected and stored on.
+                      example: Maximum
+                    validStatistics:
+                      type: array
+                      items:
+                        type: string
+                      description: Every statistic AWS documents as meaningful for this metric. `Sum` is absent from the EBS burst-balance metrics because AWS states it is not applicable to them.
+                    minPeriodSeconds:
+                      type: integer
+                      description: The metric’s publication floor. Requesting a shorter period does not produce finer data, it produces a mostly-empty series that is billed in full.
+                      example: 60
+                    availability:
+                      type: string
+                      enum:
+                        - either
+                        - basic-only
+                        - detailed-only
+                      description: Which EC2 monitoring mode publishes the metric at all. `basic-only` metrics disappear when detailed monitoring is enabled, which is the opposite of what an operator paying for it expects.
+                    appliesTo:
+                      type: object
+                      properties:
+                        universal:
+                          type: boolean
+                        condition:
+                          type: string
+                          description: Which resources publish it, when not all of them do. Empty when `universal` is true.
+                          example: Burstable performance (T-family) instances only.
+                      required:
+                        - universal
+                        - condition
+                      description: The inventory records a resource id, not an instance type, so this is rendered to the operator rather than applied as a collection filter.
+                    description:
+                      type: string
+                      description: One operator-facing line about the metric.
+                  required:
+                    - namespace
+                    - metricName
+                    - dimension
+                    - metricType
+                    - stat
+                    - validStatistics
+                    - minPeriodSeconds
+                    - availability
+                    - appliesTo
+                    - description
+              dimensions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      example: ImageId
+                    detailedMonitoringOnly:
+                      type: boolean
+                      description: True when the dimension is populated only for instances with detailed monitoring enabled. Slicing by it on a default fleet returns nothing.
+                    description:
+                      type: string
+                  required:
+                    - name
+                    - detailedMonitoringOnly
+                    - description
+              absentMetrics:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    label:
+                      type: string
+                      example: Memory utilization
+                    reason:
+                      type: string
+                      description: Why the metric does not exist. A structural absence, not a failure.
+                    remedy:
+                      type: string
+                      nullable: true
+                      description: How to obtain it, when there is a way. Null when there is none.
+                  required:
+                    - label
+                    - reason
+                    - remedy
+              defaultAlertRules:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    description:
+                      type: string
+                    namespace:
+                      type: string
+                    metricName:
+                      type: string
+                    stat:
+                      type: string
+                    periodS:
+                      type: integer
+                    threshold:
+                      type: number
+                    comparisonOperator:
+                      type: string
+                      enum:
+                        - GreaterThanOrEqualToThreshold
+                        - GreaterThanThreshold
+                        - LessThanThreshold
+                        - LessThanOrEqualToThreshold
+                    evaluationPeriods:
+                      type: integer
+                    datapointsToAlarm:
+                      type: integer
+                    treatMissingData:
+                      type: string
+                      enum:
+                        - missing
+                        - notBreaching
+                        - breaching
+                        - ignore
+                    severity:
+                      type: string
+                      enum:
+                        - critical
+                        - warning
+                        - info
+                    rationale:
+                      type: string
+                      description: Where the numbers come from, cited so a reviewer can check them against AWS’s published guidance.
+                  required:
+                    - name
+                    - description
+                    - namespace
+                    - metricName
+                    - stat
+                    - periodS
+                    - threshold
+                    - comparisonOperator
+                    - evaluationPeriods
+                    - datapointsToAlarm
+                    - treatMissingData
+                    - severity
+                    - rationale
+            required:
+              - service
+              - label
+              - metrics
+              - dimensions
+              - absentMetrics
+              - defaultAlertRules
+      required:
+        - packs
+      description: The declared service packs. Static data — identical for every project, and carrying no account, credential or resource identifiers.
     InfraCostProjection:
       type: object
       properties:
@@ -29751,6 +29941,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InfraMonitoringStatus"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/metric-packs:
+    get:
+      tags:
+        - Projects
+      summary: The declared metric packs, with their caveats and recommended alert rules
+      description: |-
+        What the collector asks CloudWatch for per service, plus everything an operator needs to read an empty chart correctly: which statistic each metric is legal on, which monitoring mode publishes it, which resources publish it at all, and what is structurally absent (EC2 has no memory or disk-usage metric because the hypervisor cannot see inside the guest).
+
+        `defaultAlertRules` are templates encoding AWS’s own published alarm recommendations. Nothing here is written to `infra_alert_rules` — they exist so the rule editor opens on a recommendation rather than a blank form.
+
+        **Cost:** free. Static declarations; no database read and no AWS call.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: The pack catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraServicePacks"
         "404":
           description: Project not found, or the caller cannot see it.
           content:

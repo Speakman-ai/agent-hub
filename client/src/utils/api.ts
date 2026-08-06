@@ -4,6 +4,7 @@ import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
 import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } from '@shared/types';
 import type { DeployTriggerEvent } from './deployTriggers';
+import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 
 interface CreateDeployTriggerBody {
   event: DeployTriggerEvent;
@@ -396,6 +397,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  getInfraMetricPacks: (projectId: string) =>
+    fetchJSON<{ packs: InfraServicePackWire[] }>(`/projects/${projectId}/infra/metric-packs`),
   getInfraScopes: (projectId: string) => fetchJSON(`/projects/${projectId}/infra/scopes`),
   updateInfraScopes: (projectId: string, data: Record<string, unknown>) =>
     fetchJSON(`/projects/${projectId}/infra/scopes`, {

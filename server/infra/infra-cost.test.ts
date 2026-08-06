@@ -29,7 +29,7 @@ import {
   monthStartMs,
   extrapolateMonthlySpendUsd,
 } from './infra-cost.js';
-import type { InfraMetricSpec } from './service-metric-packs.js';
+import { getServiceMetricPack, type InfraMetricSpec } from './service-metric-packs.js';
 
 const spec = (over: Partial<InfraMetricSpec> = {}): InfraMetricSpec => ({
   namespace: 'AWS/EC2',
@@ -254,15 +254,16 @@ describe('ticksPerMonth', () => {
 
 describe('projectMonthlyApiCost', () => {
   it('is resources x metrics x ticks per month', () => {
-    // ec2 pack: 6 metrics. Under a 300s tick, StatusCheckFailed{,_Instance,
-    // _System} floor at 60 -> 300, and CPU/NetworkIn/NetworkOut at 300 -> 300.
-    // So all six run at 300s.
+    // Under the default 300s tick every ec2 metric runs at 300s: the 60s
+    // status-check class is raised to the tick, and the 300s class is already
+    // there. So the projection is the whole pack at one interval.
+    const metrics = getServiceMetricPack('ec2').length;
     const ticks = ticksPerMonth(300);
     const p = projectMonthlyApiCost([{ service: 'ec2', resourceCount: 10, region: 'us-east-1' }]);
     expect(p.perScope).toHaveLength(1);
-    expect(p.perScope[0].metricsPerResource).toBe(6);
-    expect(p.metricsRequestedPerMonth).toBe(10 * 6 * ticks);
-    expect(p.estimatedMonthlyCostUsd).toBeCloseTo((10 * 6 * ticks * 0.01) / 1000, 8);
+    expect(p.perScope[0].metricsPerResource).toBe(metrics);
+    expect(p.metricsRequestedPerMonth).toBe(10 * metrics * ticks);
+    expect(p.estimatedMonthlyCostUsd).toBeCloseTo((10 * metrics * ticks * 0.01) / 1000, 8);
   });
 
   it('prices each scope in its own region and sums the dollars, not the metrics', () => {

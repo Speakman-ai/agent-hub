@@ -13,11 +13,75 @@ import { api } from '../../utils/api';
     listInfraResources: vi.fn(),
     listInfraMetricSeries: vi.fn(),
     getInfraMetricRange: vi.fn(),
+    getInfraMetricPacks: vi.fn(),
   },
 }));
 
 const getInfraScopes = vi.mocked(api.getInfraScopes);
 const listInfraResources = vi.mocked(api.listInfraResources);
+const getInfraMetricPacks = vi.mocked(api.getInfraMetricPacks);
+
+const ec2Pack = {
+  service: 'ec2',
+  label: 'EC2',
+  metrics: [
+    {
+      namespace: 'AWS/EC2',
+      metricName: 'CPUUtilization',
+      dimension: 'InstanceId',
+      metricType: 'gauge' as const,
+      stat: 'Average',
+      validStatistics: ['Average', 'Minimum', 'Maximum'],
+      minPeriodSeconds: 300,
+      availability: 'either' as const,
+      appliesTo: { universal: true, condition: '' },
+      description: 'Percentage of physical CPU time the instance used.',
+    },
+    {
+      namespace: 'AWS/EC2',
+      metricName: 'CPUCreditBalance',
+      dimension: 'InstanceId',
+      metricType: 'balance' as const,
+      stat: 'Minimum',
+      validStatistics: ['Sum', 'Average', 'Minimum', 'Maximum'],
+      minPeriodSeconds: 300,
+      availability: 'either' as const,
+      appliesTo: {
+        universal: false,
+        condition: 'Burstable performance (T-family) instances only.',
+      },
+      description: 'CPU credits accrued and unspent.',
+    },
+  ],
+  dimensions: [
+    { name: 'InstanceId', detailedMonitoringOnly: false, description: 'One instance.' },
+    { name: 'ImageId', detailedMonitoringOnly: true, description: 'Every instance on one AMI.' },
+  ],
+  absentMetrics: [
+    {
+      label: 'Memory utilization',
+      reason: 'EC2 has no memory metric. The hypervisor cannot see inside the guest.',
+      remedy: 'Install the CloudWatch agent; it publishes memory to the CWAgent namespace.',
+    },
+  ],
+  defaultAlertRules: [
+    {
+      name: 'EC2 status check failed',
+      description: 'The instance failed a status check in two consecutive minutes.',
+      namespace: 'AWS/EC2',
+      metricName: 'StatusCheckFailed',
+      stat: 'Maximum',
+      periodS: 60,
+      threshold: 1,
+      comparisonOperator: 'GreaterThanOrEqualToThreshold' as const,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      treatMissingData: 'missing' as const,
+      severity: 'critical' as const,
+      rationale: 'AWS best-practice alarm.',
+    },
+  ],
+};
 
 const emptyResources = {
   resources: [],
@@ -52,6 +116,7 @@ describe('InfrastructurePage', () => {
     vi.resetAllMocks();
     getInfraScopes.mockResolvedValue(emptyScopes as any);
     listInfraResources.mockResolvedValue(emptyResources as any);
+    getInfraMetricPacks.mockResolvedValue({ packs: [ec2Pack] } as any);
   });
   const readyStatus = { profile: 'monitoring', region: 'us-east-1', reachable: true };
 
@@ -151,5 +216,86 @@ describe('InfrastructurePage', () => {
     expect(screen.getByTestId('infra-empty-paid-feature')).toHaveTextContent(
       'this AWS paid feature is off',
     );
+  });
+
+  /**
+   * The scope editor is authoritative once its load settles, so a test that
+   * awaits anything must hand it a configured scope or the tab falls back to
+   * the no-scope empty state mid-assertion.
+   */
+  const scopedScopes = {
+    ...emptyScopes,
+    scopes: [{ id: 's1', enabled: true, profileName: 'm', region: 'us-east-2', service: 'ec2' }],
+    configured: true,
+  };
+
+  it('states on the Alerts tab why memory and disk usage are absent, and what to do about it', async () => {
+    getInfraScopes.mockResolvedValue(scopedScopes as any);
+    render(
+      <InfrastructurePage projectId="project-1" monitoringStatus={readyStatus} scopeConfigured />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Alerts' }));
+
+    const notes = await screen.findByTestId('infra-service-notes');
+    expect(notes).toHaveTextContent('Memory utilization');
+    expect(notes).toHaveTextContent('hypervisor cannot see inside the guest');
+    // The remedy is the paid custom-metric path, and naming it is the point.
+    expect(notes).toHaveTextContent('CloudWatch agent');
+    expect(notes).toHaveTextContent('CWAgent');
+  });
+
+  it('lists metrics only some resources publish, with the condition', async () => {
+    getInfraScopes.mockResolvedValue(scopedScopes as any);
+    render(
+      <InfrastructurePage projectId="project-1" monitoringStatus={readyStatus} scopeConfigured />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Alerts' }));
+
+    const conditional = await screen.findByTestId('infra-service-notes-conditional');
+    expect(conditional).toHaveTextContent('CPUCreditBalance');
+    expect(conditional).toHaveTextContent('T-family');
+    // A universally published metric earns no caveat — otherwise every metric
+    // carries a warning and none of them mean anything.
+    expect(conditional).not.toHaveTextContent('CPUUtilization');
+  });
+
+  it('offers the recommended alert rules on the Alerts tab, marked as not yet active', async () => {
+    getInfraScopes.mockResolvedValue(scopedScopes as any);
+    render(
+      <InfrastructurePage projectId="project-1" monitoringStatus={readyStatus} scopeConfigured />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Alerts' }));
+
+    const rules = await screen.findByTestId('infra-service-default-rules');
+    expect(rules).toHaveTextContent('EC2 status check failed');
+    expect(rules).toHaveTextContent('StatusCheckFailed Maximum >= 1 for 2 × 60s');
+    expect(rules).toHaveTextContent('critical');
+    expect(rules).toHaveTextContent('Nothing here is active until you create it as a rule.');
+  });
+
+  it('does not show the recommended rules on the Metrics tab', async () => {
+    getInfraScopes.mockResolvedValue(scopedScopes as any);
+    render(
+      <InfrastructurePage projectId="project-1" monitoringStatus={readyStatus} scopeConfigured />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Alerts' }));
+    await screen.findByTestId('infra-service-default-rules');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Metrics' }));
+    expect(screen.queryByTestId('infra-service-default-rules')).toBeNull();
+  });
+
+  it('renders the module normally when the pack catalog cannot be loaded', async () => {
+    // A missing caveat is a worse chart, not a broken one.
+    getInfraMetricPacks.mockRejectedValue(new Error('nope'));
+    getInfraScopes.mockResolvedValue(scopedScopes as any);
+    render(
+      <InfrastructurePage projectId="project-1" monitoringStatus={readyStatus} scopeConfigured />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Alerts' }));
+
+    await waitFor(() => expect(getInfraMetricPacks).toHaveBeenCalled());
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('No infrastructure alert rules');
+    expect(screen.queryByTestId('infra-service-notes')).toBeNull();
   });
 });

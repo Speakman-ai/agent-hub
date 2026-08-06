@@ -335,6 +335,7 @@ export const api = {
     // Read surface for the Resources, Metrics and Alerts tabs, plus the alert
     // status write. Polled on an interval; there is no metric WebSocket
     // (decision INFRA-UI). All Admin-gated server-side.
+    getInfraMetricPacks: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/metric-packs`),
     getInfraScopes: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/scopes`),
     // Live reachability probe for the designated monitoring profile. Issues one
     // `DescribeAlarms` against AWS, so call it when the view opens — never on a

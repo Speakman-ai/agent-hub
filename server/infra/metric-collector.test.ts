@@ -671,10 +671,19 @@ describe('runInfraMetricCollection', () => {
 
   it('batches to the 500-query ceiling across many resources', async () => {
     insertScope({ id: 's1' });
-    // 120 instances × 3 status-check metrics = 360 queries in the 60s group,
-    // and 360 in the 300s group — under the ceiling. 200 instances pushes the
-    // 60s group to 600, which must split.
+    // Queries are grouped by resolved period, and each group is split at the
+    // 500-query ceiling. 200 instances puts every group well past it, which is
+    // the point — the expected call count is derived from the pack so adding a
+    // metric changes the arithmetic rather than the assertion.
     for (let i = 0; i < 200; i += 1) insertResource(`i-${String(i).padStart(4, '0')}`);
+    const perPeriod = new Map<number, number>();
+    for (const spec of getServiceMetricPack('ec2')) {
+      perPeriod.set(spec.minPeriodSeconds, (perPeriod.get(spec.minPeriodSeconds) ?? 0) + 1);
+    }
+    const expectedCalls = [...perPeriod.values()].reduce(
+      (n, count) => n + Math.ceil((count * 200) / MAX_QUERIES_PER_REQUEST),
+      0,
+    );
 
     const client: CloudWatchMetricDataClient & { calls: GetMetricDataCommand[] } = {
       calls: [],
@@ -690,8 +699,7 @@ describe('runInfraMetricCollection', () => {
         MAX_QUERIES_PER_REQUEST,
       );
     }
-    // Two period groups of 600 queries each → two requests per group.
-    expect(client.calls).toHaveLength(4);
+    expect(client.calls).toHaveLength(expectedCalls);
     expect(r.metricsRequested).toBe(200 * EC2_PACK_SIZE);
   });
 
@@ -718,9 +726,11 @@ describe('runInfraMetricCollection', () => {
     );
     // The follow-up page is not a continuation token itself.
     expect(client.calls[2].input.NextToken).toBeUndefined();
-    // Each page is billed for the full query set it re-sends.
+    // Each page is billed for the full query set it re-sends, so the paginated
+    // batch is counted twice on top of the one pass over the whole pack.
     expect(r.queriesIssued).toBe(3);
-    expect(r.metricsRequested).toBe(EC2_PACK_SIZE + 3);
+    const resentBatchSize = (client.calls[0].input.MetricDataQueries ?? []).length;
+    expect(r.metricsRequested).toBe(EC2_PACK_SIZE + resentBatchSize);
     expect(enqueued.length).toBe(r.datapointsReturned);
   });
 
@@ -1388,9 +1398,9 @@ describe('per-service poll interval flooring', () => {
   });
 
   it('drops metrics that are not due when the tick is finer than their emission rate', () => {
-    // A 60-second tick: the three status-check metrics publish every minute and
-    // are due, while CPU / NetworkIn / NetworkOut publish every 5 minutes and
-    // are only due on the 5-minute boundary.
+    // A 60-second tick: only the metrics EC2 publishes every minute are due.
+    // Everything on the 5-minute basic-monitoring rate waits for the 5-minute
+    // boundary, whatever the tick cadence asks for.
     const offBoundary = Math.floor(NOW / 60_000) * 60_000 + 60_000;
     const planned = planQueries(
       [{ resource_key: 'k', account_id: 'a', resource_id: 'i-1', service: 'ec2' }],
@@ -1399,11 +1409,12 @@ describe('per-service poll interval flooring', () => {
       { tickIntervalMs: 60_000 },
     );
     const names = planned.map((p) => p.metricName).sort();
-    expect(names).toEqual([
-      'StatusCheckFailed',
-      'StatusCheckFailed_Instance',
-      'StatusCheckFailed_System',
-    ]);
+    const minutely = getServiceMetricPack('ec2')
+      .filter((s) => s.minPeriodSeconds === 60)
+      .map((s) => s.metricName)
+      .sort();
+    expect(minutely.length).toBeGreaterThan(0);
+    expect(names).toEqual(minutely);
   });
 
   it('includes the 5-minute metrics again on a 5-minute boundary', () => {

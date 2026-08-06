@@ -73,6 +73,7 @@ import {
   MAX_INFRA_SCOPES_PER_PROJECT,
 } from '../infra/infra-scope-store.js';
 import { collectableServices } from '../infra/service-metric-packs.js';
+import { INFRA_SERVICE_PACKS, infraPackedServices } from '../infra/packs/index.js';
 import {
   listInfraResources,
   listInfraResourceFacets,
@@ -354,6 +355,22 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
         }
         throw err;
       }
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/infra/metric-packs',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      // Static declarations — no DB, no AWS, no per-project state. The project
+      // in the path is an authorization scope, not an input: a caller who
+      // cannot see the project cannot read the catalog either.
+      res.json({ packs: infraPackedServices().map((service) => INFRA_SERVICE_PACKS[service]) });
     },
   );
 

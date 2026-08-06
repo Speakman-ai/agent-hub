@@ -27,10 +27,12 @@ vi.mock('../utils/api', () => ({
     listInfraAlerts: vi.fn(() => Promise.resolve({ alerts: [] })),
     listInfraAlertRules: vi.fn(() => Promise.resolve({ rules: [] })),
     setInfraAlertStatus: vi.fn(() => Promise.resolve({})),
+    getInfraMetricPacks: vi.fn(() => Promise.resolve({ packs: [] })),
   },
 }));
 
 import {
+  ServiceNotes,
   TABS,
   alertsEmptyCopy,
   buildAlertActionConfirm,
@@ -47,6 +49,7 @@ import {
   stampMatchesProject,
 } from './InfrastructureScreen';
 import { EMPTY_FILTERS } from '../utils/infraResources';
+import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import { joinAlertsToRules } from '@shared/utils/infraAlerts';
 
 describe('TABS', () => {
@@ -421,5 +424,78 @@ describe('buildAlertActionConfirm', () => {
     });
     expect(title).toBe('Resolve alert?');
     expect(message).toContain('NAT port allocation');
+  });
+});
+
+describe('ServiceNotes', () => {
+  const emptyPack: InfraServicePackWire = {
+    service: 'ec2',
+    label: 'EC2',
+    metrics: [],
+    dimensions: [],
+    absentMetrics: [],
+    defaultAlertRules: [],
+  };
+
+  const ec2Pack: InfraServicePackWire = {
+    ...emptyPack,
+    metrics: [
+      {
+        namespace: 'AWS/EC2',
+        metricName: 'CPUCreditBalance',
+        dimension: 'InstanceId',
+        metricType: 'balance',
+        stat: 'Minimum',
+        validStatistics: ['Sum', 'Average', 'Minimum', 'Maximum'],
+        minPeriodSeconds: 300,
+        availability: 'either',
+        appliesTo: { universal: false, condition: 'Burstable (T-family) instances only.' },
+        description: 'CPU credits accrued and unspent.',
+      },
+    ],
+    absentMetrics: [
+      {
+        label: 'Memory utilization',
+        reason: 'EC2 has no memory metric. The hypervisor cannot see inside the guest.',
+        remedy: 'Install the CloudWatch agent; it publishes memory to the CWAgent namespace.',
+      },
+    ],
+    defaultAlertRules: [
+      {
+        name: 'EC2 status check failed',
+        description: 'Two consecutive failed minutes.',
+        namespace: 'AWS/EC2',
+        metricName: 'StatusCheckFailed',
+        stat: 'Maximum',
+        periodS: 60,
+        threshold: 1,
+        comparisonOperator: 'GreaterThanOrEqualToThreshold',
+        evaluationPeriods: 2,
+        datapointsToAlarm: 2,
+        treatMissingData: 'missing',
+        severity: 'critical',
+        rationale: 'AWS best-practice alarm.',
+      },
+    ],
+  };
+
+  it('renders nothing without a pack', () => {
+    expect(ServiceNotes({ pack: null })).toBeNull();
+  });
+
+  it('renders nothing for a pack with no caveats and no rules to show', () => {
+    // A bare card of headings with no content under them is noise.
+    expect(ServiceNotes({ pack: emptyPack })).toBeNull();
+  });
+
+  it('renders the panel once the pack has something to say', () => {
+    expect(ServiceNotes({ pack: ec2Pack })).not.toBeNull();
+  });
+
+  it('renders the panel for the recommended rules even when nothing else applies', () => {
+    const rulesOnly = { ...emptyPack, defaultAlertRules: ec2Pack.defaultAlertRules };
+    expect(ServiceNotes({ pack: rulesOnly, showDefaultRules: true })).not.toBeNull();
+    // …but the Metrics tab, which does not show rules, still gets nothing.
+    expect(ServiceNotes({ pack: rulesOnly })).toBeNull();
   });
 });

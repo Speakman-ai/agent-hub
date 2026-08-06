@@ -169,6 +169,79 @@ describe('formatters', () => {
   });
 });
 
+describe('InfraMetricChart pack annotations', () => {
+  const packMetric = {
+    namespace: 'AWS/EC2',
+    metricName: 'CPUUtilization',
+    dimension: 'InstanceId',
+    metricType: 'gauge' as const,
+    stat: 'Average',
+    validStatistics: ['Average', 'Minimum', 'Maximum'],
+    minPeriodSeconds: 300,
+    availability: 'either' as const,
+    appliesTo: { universal: true, condition: '' },
+    description: 'Percentage of physical CPU time the instance used.',
+  };
+  const pack = {
+    service: 'ec2',
+    label: 'EC2',
+    metrics: [packMetric],
+    dimensions: [],
+    absentMetrics: [],
+    defaultAlertRules: [],
+  };
+
+  it('describes the selected metric when the pack declares it', async () => {
+    render(<InfraMetricChart projectId="p1" resourceKey="res-1" pack={pack} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('infra-metric-description').textContent).toContain(
+        'Percentage of physical CPU time',
+      ),
+    );
+  });
+
+  it('adds the caveat for a metric that not every resource publishes', async () => {
+    const conditional = {
+      ...pack,
+      metrics: [
+        {
+          ...packMetric,
+          availability: 'basic-only' as const,
+          appliesTo: { universal: false, condition: 'Instances with an EBS burst bucket.' },
+        },
+      ],
+    };
+    render(<InfraMetricChart projectId="p1" resourceKey="res-1" pack={conditional} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('infra-metric-description').textContent).toContain(
+        'Instances with an EBS burst bucket.',
+      ),
+    );
+    expect(screen.getByTestId('infra-metric-description').textContent).toContain(
+      'Detailed monitoring removes this metric',
+    );
+  });
+
+  it('says nothing when the series is not one the pack declares', async () => {
+    // Matched on the full identity: the pack's Average series does not describe
+    // the same metric stored on Maximum.
+    const other = { ...pack, metrics: [{ ...packMetric, stat: 'Maximum' }] };
+    render(<InfraMetricChart projectId="p1" resourceKey="res-1" pack={other} />);
+
+    await waitFor(() => expect(screen.getByTestId('infra-metric-line')).toBeTruthy());
+    expect(screen.queryByTestId('infra-metric-description')).toBeNull();
+  });
+
+  it('draws normally with no pack at all', async () => {
+    render(<InfraMetricChart projectId="p1" resourceKey="res-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('infra-metric-line')).toBeTruthy());
+    expect(screen.queryByTestId('infra-metric-description')).toBeNull();
+  });
+});
+
 describe('InfraMetricChart', () => {
   it('draws the line once the range arrives', async () => {
     render(<InfraMetricChart projectId="p1" resourceKey="res-1" />);

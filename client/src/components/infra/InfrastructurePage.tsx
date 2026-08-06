@@ -3,6 +3,9 @@ import { Activity, BellRing, Boxes, Cloud, Gauge, Server } from 'lucide-react';
 import InfraScopeEditor from './InfraScopeEditor';
 import InfraResourceBrowser, { type InfraResourceWire } from './InfraResourceBrowser';
 import InfraMetricChart from './InfraMetricChart';
+import InfraServiceNotes from './InfraServiceNotes';
+import { notesPackFor, type InfraServicePackWire } from '@shared/utils/infraPacks';
+import { api } from '../../utils/api';
 
 export interface InfraMonitoringStatus {
   profile?: string | null;
@@ -135,6 +138,28 @@ export default function InfrastructurePage({
     setSelected(null);
   }, [projectId]);
 
+  // The pack catalog is static declarations — no per-project state, no AWS
+  // call — so it is fetched once per project rather than per tab switch, and a
+  // failure is silent: a missing caveat is a worse chart, not a broken one.
+  const [packs, setPacks] = useState<InfraServicePackWire[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    setPacks([]);
+    api
+      .getInfraMetricPacks(projectId)
+      .then((body) => {
+        if (!cancelled) setPacks(Array.isArray(body?.packs) ? body.packs : []);
+      })
+      .catch(() => {
+        if (!cancelled) setPacks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const notesPack = notesPackFor(packs, selectedResource);
+
   const handleSelectResource = useCallback(
     (resource: InfraResourceWire) => {
       setSelected({ projectId, resource });
@@ -250,7 +275,9 @@ export default function InfrastructurePage({
                   projectId={projectId}
                   resourceKey={selectedResource.resourceKey}
                   resourceLabel={selectedResource.name || selectedResource.resourceId}
+                  pack={notesPack}
                 />
+                <InfraServiceNotes pack={notesPack} service={selectedResource.service} />
               </>
             ) : (
               <EmptyState testId="infra-metrics-no-resource" title="no resource selected">
@@ -266,9 +293,12 @@ export default function InfrastructurePage({
               </EmptyState>
             )}
             {hasScope && (
-              <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-5 text-sm text-gray-400">
-                No infrastructure alert rules configured yet.
-              </div>
+              <>
+                <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-5 text-sm text-gray-400">
+                  No infrastructure alert rules configured yet.
+                </div>
+                <InfraServiceNotes pack={notesPack} showDefaultRules />
+              </>
             )}
           </div>
         )}

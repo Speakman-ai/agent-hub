@@ -72,6 +72,13 @@ import {
   type InfraAlertRow,
   type InfraAlertStatus,
 } from '@shared/utils/infraAlerts';
+import {
+  findPackMetric,
+  metricCaveats,
+  notesPackFor,
+  summarizeDefaultRule,
+  type InfraServicePackWire,
+} from '@shared/utils/infraPacks';
 
 export type InfrastructureTab = 'overview' | 'resources' | 'metrics' | 'alerts';
 
@@ -608,7 +615,77 @@ function ResourcesTab({ projectId, onSelectResource, selectedResourceKey }: any)
 
 // ── Metrics ─────────────────────────────────────────────────────────────────
 
-function MetricsTab({ projectId, resource }: any) {
+/**
+ * What the service pack says that a chart cannot.
+ *
+ * Parity with the web `InfraServiceNotes` panel, and the copy is shared rather
+ * than retyped: an operator who reads "memory does not exist from the
+ * hypervisor" on the desktop must not read something subtly different on the
+ * phone.
+ */
+export function ServiceNotes({
+  pack,
+  showDefaultRules = false,
+}: {
+  pack: InfraServicePackWire | null;
+  showDefaultRules?: boolean;
+}) {
+  if (!pack) return null;
+  const conditional = pack.metrics.filter((m) => metricCaveats(m).length > 0);
+  if (pack.absentMetrics.length === 0 && conditional.length === 0 && !showDefaultRules) return null;
+
+  return (
+    <View style={styles.notesCard} testID="infra-service-notes">
+      {pack.absentMetrics.length > 0 ? (
+        <>
+          <Text style={styles.notesTitle}>What {pack.label} does not publish</Text>
+          {pack.absentMetrics.map((absent) => (
+            <View key={absent.label} style={styles.notesRow}>
+              <Text style={styles.notesLabel}>{absent.label}</Text>
+              <Text style={styles.hint}>
+                {absent.reason}
+                {absent.remedy ? ` ${absent.remedy}` : ''}
+              </Text>
+            </View>
+          ))}
+        </>
+      ) : null}
+
+      {conditional.length > 0 ? (
+        <View testID="infra-service-notes-conditional">
+          <Text style={styles.notesTitle}>Metrics only some resources publish</Text>
+          {conditional.map((metric) => (
+            <Text key={`${metric.metricName}-${metric.stat}`} style={styles.hint}>
+              {metric.metricName} — {metricCaveats(metric).join(' ')}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+
+      {showDefaultRules && pack.defaultAlertRules.length > 0 ? (
+        <View testID="infra-service-default-rules">
+          <Text style={styles.notesTitle}>Recommended {pack.label} alert rules</Text>
+          <Text style={styles.hint}>
+            AWS&rsquo;s own published alarm guidance. Nothing here is active until you create it as a
+            rule on the web Infrastructure module.
+          </Text>
+          {pack.defaultAlertRules.map((rule) => (
+            <View key={rule.name} style={styles.notesRow}>
+              <Text style={styles.notesLabel}>
+                {rule.name} · {rule.severity}
+              </Text>
+              <Text style={styles.hint}>
+                {rule.metricName} {summarizeDefaultRule(rule)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function MetricsTab({ projectId, resource, pack }: any) {
   const [series, setSeries] = useState<InfraSeriesWire[]>([]);
   const [selectedKey, setSelectedKey] = useState('');
   const [spanMs, setSpanMs] = useState(RANGE_OPTIONS[0].spanMs);
@@ -701,6 +778,9 @@ function MetricsTab({ projectId, resource }: any) {
     [range],
   );
 
+  const packMetric = findPackMetric(pack ?? null, selected);
+  const caveats = metricCaveats(packMetric);
+
   if (!resource) {
     return (
       <ScrollView contentContainerStyle={styles.content}>
@@ -740,6 +820,13 @@ function MetricsTab({ projectId, resource }: any) {
           />
         ))}
       </ScrollView>
+
+      {packMetric ? (
+        <Text style={styles.hint} testID="infra-metric-description">
+          {packMetric.description}
+          {caveats.length > 0 ? ` ${caveats.join(' ')}` : ''}
+        </Text>
+      ) : null}
 
       {loading ? <ActivityIndicator color={colors.gray400} /> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -800,6 +887,8 @@ function MetricsTab({ projectId, resource }: any) {
           ) : null}
         </View>
       ) : null}
+
+      <ServiceNotes pack={pack ?? null} />
     </ScrollView>
   );
 }
@@ -845,7 +934,7 @@ export function mergeFocusedAlert(
   return [focused, ...rows];
 }
 
-function AlertsTab({ projectId, focusAlertId }: any) {
+function AlertsTab({ projectId, focusAlertId, pack }: any) {
   const { lastInfraAlertEvent } = useApp();
   const [statusFilter, setStatusFilter] = useState<InfraAlertStatus | 'all'>(
     () => initialAlertStatusFilter(focusAlertId) as InfraAlertStatus | 'all',
@@ -993,6 +1082,8 @@ function AlertsTab({ projectId, focusAlertId }: any) {
           </View>
         );
       })}
+
+      <ServiceNotes pack={pack ?? null} showDefaultRules />
     </ScrollView>
   );
 }
@@ -1059,6 +1150,36 @@ export default function InfrastructureScreen({ route, navigation }: any) {
   const openAlertCount = stampMatchesProject(openAlerts, projectId) ? openAlerts!.count : null;
   // Guards the count against a slow response superseded by a newer one.
   const countGeneration = useRef(0);
+
+  // The pack catalog: static declarations, no AWS call, no per-project state.
+  // Stamped like everything else here so one project's caveats never annotate
+  // another's chart. A failure is silent — a missing caveat is a worse chart,
+  // not a broken one.
+  const [packState, setPackState] = useState<{
+    projectId: string;
+    packs: InfraServicePackWire[];
+  } | null>(null);
+  const packs = stampMatchesProject(packState, projectId) ? packState!.packs : [];
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    api
+      .getInfraMetricPacks(projectId)
+      .then((response: any) => {
+        if (cancelled) return;
+        setPackState({
+          projectId,
+          packs: Array.isArray(response?.packs) ? response.packs : [],
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setPackState({ projectId, packs: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -1150,6 +1271,8 @@ export default function InfrastructureScreen({ route, navigation }: any) {
 
   const hasScope = hasConfiguredScope(scopes, project);
 
+  const notesPack = notesPackFor(packs, selectedResource);
+
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
       <ProjectScreenHeader
@@ -1197,9 +1320,9 @@ export default function InfrastructureScreen({ route, navigation }: any) {
           selectedResourceKey={selectedResource?.resourceKey ?? null}
         />
       ) : tab === 'metrics' ? (
-        <MetricsTab projectId={projectId} resource={selectedResource} />
+        <MetricsTab projectId={projectId} resource={selectedResource} pack={notesPack} />
       ) : (
-        <AlertsTab projectId={projectId} focusAlertId={focusAlertId} />
+        <AlertsTab projectId={projectId} focusAlertId={focusAlertId} pack={notesPack} />
       )}
     </SafeAreaView>
   );
@@ -1215,6 +1338,17 @@ const styles = StyleSheet.create({
   tabTextActive: { color: colors.white, fontWeight: '600' },
   sectionTitle: { fontSize: 15, fontWeight: '600', color: colors.white, marginTop: 16, marginBottom: 6 },
   hint: { fontSize: 12, color: colors.gray500, marginTop: 6 },
+  notesCard: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    backgroundColor: colors.gray900,
+  },
+  notesTitle: { fontSize: 13, fontWeight: '600', color: colors.gray200, marginTop: 8 },
+  notesRow: { marginTop: 8 },
+  notesLabel: { fontSize: 12, fontWeight: '600', color: colors.gray300 },
   card: {
     backgroundColor: colors.gray900,
     borderRadius: 8,

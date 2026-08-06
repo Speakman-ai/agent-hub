@@ -22,10 +22,20 @@
  *     60s-tier series that is empty for four buckets out of five, which reads
  *     as a gap to the alert evaluator and stores a resolution we never had.
  *
- * Adding a service is adding an entry to {@link INFRA_SERVICE_METRIC_PACKS};
- * the collector picks it up with no further wiring, and a service with no pack
- * is simply not collected.
+ * Adding a service is adding a file under `packs/` and one line to
+ * {@link INFRA_SERVICE_PACKS}; the collector picks it up with no further
+ * wiring, and a service with no pack is simply not collected.
+ *
+ * The declarations themselves live in `packs/` — this module is the collector's
+ * narrow view of them. A pack carries what an operator needs (documented
+ * statistics, monitoring-mode availability, which instances publish a metric at
+ * all, what is structurally absent and why); the collector needs five of those
+ * fields and none of the prose, so {@link toMetricSpec} projects the pack down
+ * to exactly that. Keeping the projection one-way means an explanatory field
+ * can be added to a pack without touching the query path.
  */
+
+import { INFRA_SERVICE_PACKS, type InfraPackMetric } from './packs/index.js';
 
 /** One metric the collector requests per in-scope resource. */
 export interface InfraMetricSpec {
@@ -44,79 +54,27 @@ export interface InfraMetricSpec {
   minPeriodSeconds: number;
 }
 
-/**
- * EC2 (`AWS/EC2`, dimension `InstanceId`).
- *
- * The split between 60s and 300s entries is the documented one, not a guess:
- * status check metrics are "available at a 1-minute frequency at no charge",
- * while everything else follows the monitoring mode — "by default, each data
- * point covers the 5 minutes that follow the start time of activity for the
- * instance. If you've enabled detailed monitoring, each data point covers the
- * next minute". We floor at the *basic* rate because detailed monitoring is a
- * paid, per-instance opt-in we cannot detect from the describe call and must
- * not assume on the operator's behalf (INFRA-COST surfaces it as a
- * recommendation instead).
- *
- * `DiskRead*` / `DiskWrite*` are deliberately absent: those are instance-store
- * metrics, so on the EBS-only instance types most fleets run they report 0 or
- * nothing at all, and a chart of a metric that structurally cannot have data is
- * worse than no chart.
- */
-const EC2_METRICS: readonly InfraMetricSpec[] = [
-  {
-    namespace: 'AWS/EC2',
-    metricName: 'CPUUtilization',
-    stat: 'Average',
-    dimension: 'InstanceId',
-    minPeriodSeconds: 300,
-  },
-  // Maximum, not Average: these are 0/1 flags, and averaging a single failed
-  // minute across a 5-minute period dilutes it to 0.2 — a real failure that no
-  // longer looks like one.
-  {
-    namespace: 'AWS/EC2',
-    metricName: 'StatusCheckFailed',
-    stat: 'Maximum',
-    dimension: 'InstanceId',
-    minPeriodSeconds: 60,
-  },
-  {
-    namespace: 'AWS/EC2',
-    metricName: 'StatusCheckFailed_Instance',
-    stat: 'Maximum',
-    dimension: 'InstanceId',
-    minPeriodSeconds: 60,
-  },
-  {
-    namespace: 'AWS/EC2',
-    metricName: 'StatusCheckFailed_System',
-    stat: 'Maximum',
-    dimension: 'InstanceId',
-    minPeriodSeconds: 60,
-  },
-  // Sum, because the published value is bytes *during the period*; averaging it
-  // answers a question nobody asked.
-  {
-    namespace: 'AWS/EC2',
-    metricName: 'NetworkIn',
-    stat: 'Sum',
-    dimension: 'InstanceId',
-    minPeriodSeconds: 300,
-  },
-  {
-    namespace: 'AWS/EC2',
-    metricName: 'NetworkOut',
-    stat: 'Sum',
-    dimension: 'InstanceId',
-    minPeriodSeconds: 300,
-  },
-];
+/** The collector's five fields, taken from a pack metric declaration. */
+function toMetricSpec(metric: InfraPackMetric): InfraMetricSpec {
+  return {
+    namespace: metric.namespace,
+    metricName: metric.metricName,
+    stat: metric.stat,
+    dimension: metric.dimension,
+    minPeriodSeconds: metric.minPeriodSeconds,
+  };
+}
 
 /** Service token → the metrics the collector requests for each of its resources. */
 export const INFRA_SERVICE_METRIC_PACKS: Readonly<Record<string, readonly InfraMetricSpec[]>> =
-  Object.freeze({
-    ec2: EC2_METRICS,
-  });
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(INFRA_SERVICE_PACKS).map(([service, pack]) => [
+        service,
+        Object.freeze(pack.metrics.map(toMetricSpec)),
+      ]),
+    ),
+  );
 
 /** The pack for a service, or an empty list when the service has none yet. */
 export function getServiceMetricPack(service: string): readonly InfraMetricSpec[] {

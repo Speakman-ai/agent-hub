@@ -105,6 +105,137 @@ registerPath({
   },
 });
 
+// ─── Service metric packs ───────────────────────────────────────────────────
+
+const PackMetric = z.object({
+  namespace: z.string().openapi({ example: 'AWS/EC2' }),
+  metricName: z.string().openapi({ example: 'StatusCheckFailed' }),
+  dimension: z.string().openapi({
+    description: 'The dimension the resource’s own id binds to.',
+    example: 'InstanceId',
+  }),
+  metricType: z.enum(['gauge', 'counter', 'flag', 'balance']).openapi({
+    description:
+      'What the value is, which is what decides the statistic. A `flag` is a per-minute 0/1 check result and must be stored on `Maximum`; a `counter` accrues over the period and is stored on `Sum`.',
+  }),
+  stat: z.string().openapi({
+    description: 'The statistic this series is collected and stored on.',
+    example: 'Maximum',
+  }),
+  validStatistics: z.array(z.string()).openapi({
+    description:
+      'Every statistic AWS documents as meaningful for this metric. `Sum` is absent from the EBS burst-balance metrics because AWS states it is not applicable to them.',
+  }),
+  minPeriodSeconds: z.number().int().openapi({
+    description:
+      'The metric’s publication floor. Requesting a shorter period does not produce finer data, it produces a mostly-empty series that is billed in full.',
+    example: 60,
+  }),
+  availability: z.enum(['either', 'basic-only', 'detailed-only']).openapi({
+    description:
+      'Which EC2 monitoring mode publishes the metric at all. `basic-only` metrics disappear when detailed monitoring is enabled, which is the opposite of what an operator paying for it expects.',
+  }),
+  appliesTo: z
+    .object({
+      universal: z.boolean(),
+      condition: z.string().openapi({
+        description:
+          'Which resources publish it, when not all of them do. Empty when `universal` is true.',
+        example: 'Burstable performance (T-family) instances only.',
+      }),
+    })
+    .openapi({
+      description:
+        'The inventory records a resource id, not an instance type, so this is rendered to the operator rather than applied as a collection filter.',
+    }),
+  description: z.string().openapi({ description: 'One operator-facing line about the metric.' }),
+});
+
+const PacksResponse = registerComponent(
+  'InfraServicePacks',
+  z
+    .object({
+      packs: z.array(
+        z.object({
+          service: z.string().openapi({ example: 'ec2' }),
+          label: z.string().openapi({ example: 'EC2' }),
+          metrics: z.array(PackMetric),
+          dimensions: z.array(
+            z.object({
+              name: z.string().openapi({ example: 'ImageId' }),
+              detailedMonitoringOnly: z.boolean().openapi({
+                description:
+                  'True when the dimension is populated only for instances with detailed monitoring enabled. Slicing by it on a default fleet returns nothing.',
+              }),
+              description: z.string(),
+            }),
+          ),
+          absentMetrics: z.array(
+            z.object({
+              label: z.string().openapi({ example: 'Memory utilization' }),
+              reason: z.string().openapi({
+                description: 'Why the metric does not exist. A structural absence, not a failure.',
+              }),
+              remedy: z.string().nullable().openapi({
+                description: 'How to obtain it, when there is a way. Null when there is none.',
+              }),
+            }),
+          ),
+          defaultAlertRules: z.array(
+            z.object({
+              name: z.string(),
+              description: z.string(),
+              namespace: z.string(),
+              metricName: z.string(),
+              stat: z.string(),
+              periodS: z.number().int(),
+              threshold: z.number(),
+              comparisonOperator: z.enum([
+                'GreaterThanOrEqualToThreshold',
+                'GreaterThanThreshold',
+                'LessThanThreshold',
+                'LessThanOrEqualToThreshold',
+              ]),
+              evaluationPeriods: z.number().int(),
+              datapointsToAlarm: z.number().int(),
+              treatMissingData: z.enum(['missing', 'notBreaching', 'breaching', 'ignore']),
+              severity: z.enum(['critical', 'warning', 'info']),
+              rationale: z.string().openapi({
+                description:
+                  'Where the numbers come from, cited so a reviewer can check them against AWS’s published guidance.',
+              }),
+            }),
+          ),
+        }),
+      ),
+    })
+    .openapi({
+      description:
+        'The declared service packs. Static data — identical for every project, and carrying no account, credential or resource identifiers.',
+    }),
+);
+
+// GET /api/projects/{projectId}/infra/metric-packs
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/infra/metric-packs',
+  tags: ['Projects'],
+  summary: 'The declared metric packs, with their caveats and recommended alert rules',
+  description:
+    'What the collector asks CloudWatch for per service, plus everything an operator needs to read an empty chart correctly: which statistic each metric is legal on, which monitoring mode publishes it, which resources publish it at all, and what is structurally absent (EC2 has no memory or disk-usage metric because the hypervisor cannot see inside the guest).\n\n`defaultAlertRules` are templates encoding AWS’s own published alarm recommendations. Nothing here is written to `infra_alert_rules` — they exist so the rule editor opens on a recommendation rather than a blank form.\n\n**Cost:** free. Static declarations; no database read and no AWS call.',
+  request: { params: ProjectIdParam },
+  responses: {
+    200: {
+      description: 'The pack catalog.',
+      content: { 'application/json': { schema: PacksResponse } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});
+
 // ─── Cost (decision INFRA-COST) ─────────────────────────────────────────────
 
 const DegradationLevel = z.enum(['normal', 'widened', 'paused']).openapi({
