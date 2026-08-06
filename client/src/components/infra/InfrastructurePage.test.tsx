@@ -1,8 +1,35 @@
-import { describe, expect, it } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import InfrastructurePage from './InfrastructurePage';
+import { api } from '../../utils/api';
+
+// The Overview tab embeds the scope editor, which loads from the API on mount.
+(vi as any).mock('../../utils/api.js', () => ({
+  api: {
+    getInfraScopes: vi.fn(),
+    updateInfraScopes: vi.fn(),
+    projectInfraCost: vi.fn(),
+  },
+}));
+
+const getInfraScopes = vi.mocked(api.getInfraScopes);
+
+const emptyScopes = {
+  scopes: [],
+  projection: { metricsRequestedPerMonth: 0, estimatedMonthlyCostUsd: 0, perScope: [] },
+  collectableServices: ['ec2'],
+  uncollectableServices: [],
+  monthlyCeilingUsd: null,
+  degradation: 'normal',
+  maxScopes: 200,
+  configured: false,
+};
 
 describe('InfrastructurePage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getInfraScopes.mockResolvedValue(emptyScopes as any);
+  });
   const readyStatus = { profile: 'monitoring', region: 'us-east-1', reachable: true };
 
   it('switches between Overview, Resources, Metrics, and Alerts tabs', () => {
@@ -51,6 +78,42 @@ describe('InfrastructurePage', () => {
       />,
     );
     fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    expect(screen.getByTestId('infra-empty-scope')).toHaveTextContent('no scope configured');
+  });
+
+  it('does not carry one project’s live scope state into the next project', async () => {
+    // Regression: liveScopeConfigured survived a project switch, so project-b's
+    // Resources/Metrics/Alerts tabs were gated on project-a's answer until the
+    // new request settled.
+    const scoped = {
+      ...emptyScopes,
+      scopes: [{ id: 's1', enabled: true, profileName: 'm', region: 'us-east-2', service: 'ec2' }],
+      configured: true,
+    };
+    getInfraScopes.mockResolvedValueOnce(scoped as any).mockImplementationOnce(
+      () => new Promise(() => {}), // project-b's load never settles
+    );
+
+    const { rerender } = render(
+      <InfrastructurePage projectId="project-a" monitoringStatus={readyStatus} />,
+    );
+    // project-a has a scope, so the Resources tab shows inventory, not the
+    // empty state.
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    await waitFor(() =>
+      expect(screen.getByRole('tabpanel')).toHaveTextContent('Resource inventory'),
+    );
+
+    rerender(
+      <InfrastructurePage
+        projectId="project-b"
+        monitoringStatus={readyStatus}
+        scopeConfigured={false}
+      />,
+    );
+
+    // While project-b is still unknown, its own props decide — not project-a's
+    // stale answer.
     expect(screen.getByTestId('infra-empty-scope')).toHaveTextContent('no scope configured');
   });
 

@@ -379,6 +379,19 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  getInfraScopes: (projectId: string) => fetchJSON(`/projects/${projectId}/infra/scopes`),
+  updateInfraScopes: (projectId: string, data: Record<string, unknown>) =>
+    fetchJSON(`/projects/${projectId}/infra/scopes`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  // Prices a hypothetical allowlist. Persists nothing and issues no AWS calls,
+  // so the editor can call it on every edit.
+  projectInfraCost: (projectId: string, data: Record<string, unknown>) =>
+    fetchJSON(`/projects/${projectId}/infra/cost/projection`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   getInfraAlertRouting: (projectId: string) =>
     fetchJSON(`/projects/${projectId}/infra/alert-routing`),
   updateInfraAlertRouting: (projectId: string, data: Record<string, unknown>) =>

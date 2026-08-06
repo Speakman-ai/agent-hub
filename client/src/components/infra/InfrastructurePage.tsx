@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Activity, BellRing, Boxes, Cloud, Gauge, Server } from 'lucide-react';
+import InfraScopeEditor from './InfraScopeEditor';
 
 export interface InfraMonitoringStatus {
   profile?: string | null;
@@ -21,6 +22,7 @@ export interface InfrastructurePageProps {
   scopeConfigured?: boolean;
   /** True when the selected AWS metric requires a paid feature that is disabled. */
   paidFeatureOff?: boolean;
+  showToast?: (message: string, type?: string) => void;
 }
 
 type InfrastructureTab = 'overview' | 'resources' | 'metrics' | 'alerts';
@@ -86,11 +88,13 @@ function MonitoringStatusCard({
 }
 
 export default function InfrastructurePage({
+  projectId,
   projectName,
   project,
   monitoringStatus,
   scopeConfigured,
   paidFeatureOff,
+  showToast,
 }: InfrastructurePageProps): React.ReactElement {
   const [tab, setTab] = useState<InfrastructureTab>('overview');
   const status = monitoringStatus ?? null;
@@ -98,7 +102,34 @@ export default function InfrastructurePage({
   const inferredScopeConfigured = Array.isArray(project?.infraScopes)
     ? project.infraScopes.length > 0
     : Number(project?.infraScopeCount) > 0;
-  const hasScope = scopeConfigured ?? inferredScopeConfigured;
+  // The editor is authoritative once it has spoken to the server: it reports
+  // what is actually stored, where the props are a caller's guess from project
+  // metadata. Until then the guess drives the other tabs' empty states.
+  //
+  // Stamped with the project it describes rather than reset by an effect. The
+  // answer is only meaningful for one project, so binding it to that project
+  // makes it self-invalidating: on a switch the stamp stops matching and the
+  // value is ignored on the very same render, leaving no window in which the
+  // previous project's scope state decides whether this project's Resources,
+  // Metrics and Alerts tabs are shown.
+  const [liveScope, setLiveScope] = useState<{ projectId: string; configured: boolean } | null>(
+    null,
+  );
+  const liveScopeConfigured =
+    liveScope && liveScope.projectId === projectId ? liveScope.configured : null;
+  const hasScope = liveScopeConfigured ?? scopeConfigured ?? inferredScopeConfigured;
+
+  const handleScopesChange = useCallback(
+    (response: Record<string, any>) => {
+      setLiveScope({
+        projectId,
+        configured: Array.isArray(response?.scopes)
+          ? response.scopes.some((s: any) => s?.enabled !== false)
+          : !!response?.configured,
+      });
+    },
+    [projectId],
+  );
   // The shell has no paid-feature discovery endpoint yet. Keep the warning
   // explicit until the metrics/resource surfaces can report their own AWS
   // feature metadata; callers can override it once that data exists.
@@ -152,6 +183,11 @@ export default function InfrastructurePage({
                 Nothing is collected automatically.
               </EmptyState>
             )}
+            <InfraScopeEditor
+              projectId={projectId}
+              showToast={showToast}
+              onScopesChange={handleScopesChange}
+            />
           </div>
         ) : tab === 'resources' ? (
           hasScope ? (

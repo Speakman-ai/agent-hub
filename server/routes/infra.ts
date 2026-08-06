@@ -5,6 +5,8 @@
  *   GET  /api/projects/:projectId/infra/cost
  *   POST /api/projects/:projectId/infra/cost/projection
  *   PUT  /api/projects/:projectId/infra/cost/config
+ *   GET  /api/projects/:projectId/infra/scopes
+ *   PUT  /api/projects/:projectId/infra/scopes
  *   GET  /api/projects/:projectId/infra/retention
  *   PUT  /api/projects/:projectId/infra/retention
  *
@@ -20,6 +22,11 @@
  * degrades against. None of them call AWS — every figure is local SQLite or
  * pure arithmetic over the service metric packs, so the scope editor can price
  * a keystroke without spending anything to do it.
+ *
+ * The `scopes` routes are decision INFRA-SCOPE's operator surface: the opt-in
+ * allowlist that gates every billed request. `PUT` is a whole-list replace and
+ * optionally carries the ceiling, so approving a projection and capping it are
+ * one operator action against one price.
  *
  * The `retention` routes expose the window and byte quota the reaper enforces
  * against `infra.db`. They read and write config only — the deletes happen on
@@ -59,9 +66,18 @@ import {
   MAX_INFRA_PROJECT_QUOTA_BYTES,
 } from '../infra/infra-schema.js';
 import {
+  listInfraScopes,
+  replaceInfraScopes,
+  uncollectableServices,
+  InfraScopeValidationError,
+  MAX_INFRA_SCOPES_PER_PROJECT,
+} from '../infra/infra-scope-store.js';
+import { collectableServices } from '../infra/service-metric-packs.js';
+import {
   CostProjectionRequestSchema,
   CostCeilingRequestSchema,
   RetentionConfigRequestSchema,
+  ScopesReplaceRequestSchema,
 } from './infra.openapi.js';
 
 function validate<T extends z.ZodTypeAny>(
@@ -131,6 +147,51 @@ function buildCostBody(projectId: string, nowMs: number): Record<string, unknown
     configured: config.configured,
     projection,
     recentRuns: listInfraCollectRuns(projectId, 20).map(({ projectId: _pid, ...run }) => run),
+  };
+}
+
+/**
+ * The allowlist plus the price of running it.
+ *
+ * The projection covers **enabled** scopes only: a disabled scope issues no
+ * billed requests, so pricing it would overstate the bill and make pausing a
+ * scope look like it saved nothing. Degradation is passed through so the figure
+ * matches the cadence the collector is actually running at — except `paused`,
+ * which prices as `normal` because a paused project's number has to answer
+ * "what will this cost when it resumes", not "what does a stopped collector
+ * spend" (zero, for every configuration, which is not a decision aid).
+ */
+function buildScopesBody(projectId: string, nowMs: number): Record<string, unknown> {
+  const scopes = listInfraScopes(projectId, MAX_RESOURCE_STALENESS_MS, nowMs);
+  const config = getInfraCostConfig(projectId);
+  const projection = projectMonthlyApiCost(
+    scopes.filter((s) => s.enabled),
+    { degradation: config.degradationLevel === 'paused' ? 'normal' : config.degradationLevel },
+  );
+
+  return {
+    scopes,
+    projection,
+    collectableServices: collectableServices(),
+    uncollectableServices: uncollectableServices(scopes),
+    monthlyCeilingUsd: config.monthlyCeilingUsd,
+    degradation: config.degradationLevel,
+    maxScopes: MAX_INFRA_SCOPES_PER_PROJECT,
+    configured: scopes.length > 0,
+  };
+}
+
+/** Scopes body for a Hub whose `infra.db` never opened — nothing stored, nothing polled. */
+function emptyScopesBody(): Record<string, unknown> {
+  return {
+    scopes: [],
+    projection: { metricsRequestedPerMonth: 0, estimatedMonthlyCostUsd: 0, perScope: [] },
+    collectableServices: collectableServices(),
+    uncollectableServices: [],
+    monthlyCeilingUsd: null,
+    degradation: 'normal',
+    maxScopes: MAX_INFRA_SCOPES_PER_PROJECT,
+    configured: false,
   };
 }
 
@@ -259,6 +320,55 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
       const nowMs = Date.now();
       setInfraCostCeiling(projectId, parsed.data.monthlyCeilingUsd, nowMs);
       res.json(buildCostBody(projectId, nowMs));
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/infra/scopes',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      res.json(isInfraDbInitialized() ? buildScopesBody(projectId, Date.now()) : emptyScopesBody());
+    },
+  );
+
+  router.put(
+    '/api/projects/:projectId/infra/scopes',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(ScopesReplaceRequestSchema, req.body ?? {}, res);
+      if (!parsed.ok) return;
+      if (!isInfraDbInitialized()) {
+        res.status(503).json({ error: 'Infrastructure store is unavailable' });
+        return;
+      }
+      const nowMs = Date.now();
+      try {
+        // Ceiling first, inside the same request but before the scopes land: if
+        // the allowlist is rejected, an operator who also lowered their cap has
+        // still had the cap applied. Failing the other way round would widen the
+        // scope list while leaving the brake off.
+        if (parsed.data.monthlyCeilingUsd !== undefined) {
+          setInfraCostCeiling(projectId, parsed.data.monthlyCeilingUsd, nowMs);
+        }
+        replaceInfraScopes(projectId, parsed.data.scopes, nowMs);
+      } catch (err) {
+        if (err instanceof InfraScopeValidationError) {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+      res.json(buildScopesBody(projectId, nowMs));
     },
   );
 

@@ -7630,6 +7630,166 @@ components:
           description: New byte quota. Clamped to the documented bounds. Omit to leave as-is.
           example: 8589934592
       description: Set a project’s metric retention overrides.
+    InfraScope:
+      type: object
+      properties:
+        profileName:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Project AWS profile the scope collects through. Keyed on the profile rather than the account id because the profile is what the operator picks and what credential resolution needs.
+          example: monitoring
+        region:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: us-east-2
+        service:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "Service token, lowercased on save. Free text with no enum: the collectable list grows every release, and a token with no metric pack is accepted but reported back in `uncollectableServices` rather than rejected."
+          example: ec2
+        tagFilter:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: array
+            items:
+              type: string
+            minItems: 1
+          description: Optional tag filter as tag key -> accepted values. Values within one key are ORed, keys are ANDed — EC2 filter semantics, with `*` and `?` wildcards. Omit or send null to match every resource the describe call returns.
+          example: &a1
+            Environment:
+              - prod
+              - staging
+        enabled:
+          type: boolean
+        id:
+          type: string
+        projectId:
+          type: string
+        accountId:
+          type: string
+          nullable: true
+          description: Identity behind the profile, filled in once `sts:GetCallerIdentity` has run. Null until then — a scope is never blocked on a live AWS call.
+        createdAt:
+          type: number
+        updatedAt:
+          type: number
+        resourceCount:
+          type: number
+          description: Non-terminated resources inventory currently holds for this triple, within the collector’s own staleness bound. Zero on a new scope simply means the hourly inventory sync has not described the account yet — it does not mean the scope is free.
+      required:
+        - profileName
+        - region
+        - service
+        - enabled
+        - id
+        - projectId
+        - accountId
+        - createdAt
+        - updatedAt
+        - resourceCount
+      description: A stored scope with the population its projection is priced on.
+    InfraScopesResponse:
+      type: object
+      properties:
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/InfraScope"
+        projection:
+          $ref: "#/components/schemas/InfraCostProjection"
+        collectableServices:
+          type: array
+          items:
+            type: string
+          description: Service tokens that have a metric pack, for the editor’s service picker.
+        uncollectableServices:
+          type: array
+          items:
+            type: string
+          description: Services present in the allowlist that no metric pack covers. These are stored and priced at zero — the editor flags them so an inert scope does not read as a working one.
+        monthlyCeilingUsd:
+          type: number
+          nullable: true
+        degradation:
+          type: string
+          enum:
+            - normal
+            - widened
+            - paused
+          description: What the collector is doing about this project’s spend. `normal` polls at the configured tiers; `widened` multiplies every poll interval by 4 once month-to-date spend reaches the ceiling; `paused` stops issuing billed requests entirely once it reaches twice the ceiling.
+        maxScopes:
+          type: number
+        configured:
+          type: boolean
+          description: False when the project has no scope rows at all — nothing is being polled.
+      required:
+        - scopes
+        - projection
+        - collectableServices
+        - uncollectableServices
+        - monthlyCeilingUsd
+        - degradation
+        - maxScopes
+        - configured
+      description: The allowlist, priced. The projection covers enabled scopes only, since a disabled scope issues no billed requests.
+    InfraScopesReplaceRequest:
+      type: object
+      properties:
+        scopes:
+          type: array
+          items:
+            type: object
+            properties:
+              profileName:
+                type: string
+                minLength: 1
+                maxLength: 128
+                description: Project AWS profile the scope collects through. Keyed on the profile rather than the account id because the profile is what the operator picks and what credential resolution needs.
+                example: monitoring
+              region:
+                type: string
+                minLength: 1
+                maxLength: 128
+                example: us-east-2
+              service:
+                type: string
+                minLength: 1
+                maxLength: 128
+                description: "Service token, lowercased on save. Free text with no enum: the collectable list grows every release, and a token with no metric pack is accepted but reported back in `uncollectableServices` rather than rejected."
+                example: ec2
+              tagFilter:
+                type: object
+                nullable: true
+                additionalProperties:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                description: Optional tag filter as tag key -> accepted values. Values within one key are ORed, keys are ANDed — EC2 filter semantics, with `*` and `?` wildcards. Omit or send null to match every resource the describe call returns.
+                example: *a1
+              enabled:
+                type: boolean
+                description: Defaults to true. A disabled scope is retained rather than deleted, so its inventory and metric history survive being switched back on.
+            required:
+              - profileName
+              - region
+              - service
+            description: One (profile, region, service) triple in the collection allowlist.
+          maxItems: 200
+        monthlyCeilingUsd:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1000000
+          description: Optional ceiling to save in the same request. Omit to leave the current ceiling alone; null clears it. Accepted here so that approving a projection and capping it are one operator action and one write, with no window where the scopes saved and the cap did not.
+          example: 25
+      required:
+        - scopes
+      description: "The complete allowlist. This is a whole-list replace, not a patch: rows absent from the body are deleted."
     LogIngestBatch:
       type: object
       properties:
@@ -28040,7 +28200,7 @@ paths:
                         - nullable: true
                   minItems: 1
                   description: Row-major matrix of cell values to write.
-                  example: &a1
+                  example: &a2
                     - - Name
                       - Score
                     - - Alice
@@ -28165,7 +28325,7 @@ paths:
                         - nullable: true
                   minItems: 1
                   description: Row-major matrix of cell values to write.
-                  example: *a1
+                  example: *a2
                 valueInputOption:
                   type: string
                   enum:
@@ -29642,6 +29802,162 @@ paths:
                     description: Human-readable failure reason.
                 required:
                   - error
+  /api/projects/{projectId}/infra/scopes:
+    get:
+      tags:
+        - Projects
+      summary: Read the project’s collection allowlist and what it costs
+      description: |-
+        Returns every scope row for the project, enabled or not, alongside the projected monthly `GetMetricData` spend for the enabled ones.
+
+        Collection is opt-in (decision INFRA-SCOPE): an empty list means **nothing is polled**, never "poll everything". Auto-discovering an account would produce a surprise bill and a throttling storm in someone else’s account, so every billed request the collector issues traces back to a row here.
+
+        Issues no AWS calls — scopes, resource counts and pricing are all local.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: The allowlist and its projected monthly cost.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraScopesResponse"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+    put:
+      tags:
+        - Projects
+      summary: Replace the project’s collection allowlist
+      description: |-
+        Replaces the whole allowlist in one transaction. Rows absent from the body are **deleted**, which stops collection but touches neither `infra_resources` nor `infra_metric_points` — history a scope produced outlives the scope, and re-adding the triple resumes its charts rather than starting from an empty axis.
+
+        Whole-list rather than per-row on purpose: the editor prices the list before saving, and that price is a property of the whole list. Per-row saves would let an operator approve one estimate and commit a larger configuration a row at a time, each save individually consistent and the total never shown.
+
+        A surviving `(profile, region, service)` triple keeps its `id`, `createdAt` and resolved `accountId`. Tag filters are validated with the same parser the collector uses, so a filter that saves is one the collector will accept.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scopes:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      profileName:
+                        type: string
+                        minLength: 1
+                        maxLength: 128
+                        description: Project AWS profile the scope collects through. Keyed on the profile rather than the account id because the profile is what the operator picks and what credential resolution needs.
+                        example: monitoring
+                      region:
+                        type: string
+                        minLength: 1
+                        maxLength: 128
+                        example: us-east-2
+                      service:
+                        type: string
+                        minLength: 1
+                        maxLength: 128
+                        description: "Service token, lowercased on save. Free text with no enum: the collectable list grows every release, and a token with no metric pack is accepted but reported back in `uncollectableServices` rather than rejected."
+                        example: ec2
+                      tagFilter:
+                        type: object
+                        nullable: true
+                        additionalProperties:
+                          type: array
+                          items:
+                            type: string
+                          minItems: 1
+                        description: Optional tag filter as tag key -> accepted values. Values within one key are ORed, keys are ANDed — EC2 filter semantics, with `*` and `?` wildcards. Omit or send null to match every resource the describe call returns.
+                        example: *a1
+                      enabled:
+                        type: boolean
+                        description: Defaults to true. A disabled scope is retained rather than deleted, so its inventory and metric history survive being switched back on.
+                    required:
+                      - profileName
+                      - region
+                      - service
+                    description: One (profile, region, service) triple in the collection allowlist.
+                  maxItems: 200
+                monthlyCeilingUsd:
+                  type: number
+                  nullable: true
+                  minimum: 0
+                  maximum: 1000000
+                  description: Optional ceiling to save in the same request. Omit to leave the current ceiling alone; null clears it. Accepted here so that approving a projection and capping it are one operator action and one write, with no window where the scopes saved and the cap did not.
+                  example: 25
+              required:
+                - scopes
+              description: "The complete allowlist. This is a whole-list replace, not a patch: rows absent from the body are deleted."
+      responses:
+        "200":
+          description: Allowlist saved; the stored scopes and their projection are returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraScopesResponse"
+        "400":
+          description: Malformed body, a duplicate triple, or an unparseable tag filter.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is unavailable on this Hub.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
   /api/jobs:
     get:
       tags:
@@ -29959,7 +30275,7 @@ paths:
         - Log Ingest
       summary: OTLP/HTTP logs ingest
       description: "OpenTelemetry OTLP/HTTP logs endpoint. Accepts `application/json` and binary `application/x-protobuf` `ExportLogsServiceRequest` bodies, each optionally gzip-compressed (`Content-Encoding: gzip` or a raw gzip-framed body). Requests are capped at 1 MiB on the wire; batches at 1,000 records; single records at 256 KiB. Rejected records are reported via `partialSuccess` — the HTTP status stays 200 so the source app is never blocked. Fields (severity, timestamps, resource, attributes, scope, trace_id, span_id) are preserved and redacted before persistence."
-      security: &a2
+      security: &a3
         - logIngestToken: []
       requestBody:
         content:
@@ -30022,7 +30338,7 @@ paths:
         - Log Ingest
       summary: Agent Hub JSON log batch ingest
       description: "Simple JSON batch endpoint mapped to the same canonical OTel LogRecord model. Body is `{ resource?, records: [...] }`, optionally gzip-compressed. Same 1 MiB request / 1,000-record batch / 256 KiB record caps, source-token auth, and pre-persistence redaction as the OTLP endpoint."
-      security: *a2
+      security: *a3
       requestBody:
         content:
           application/json:

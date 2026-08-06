@@ -5817,6 +5817,7 @@ export default function App({ initialView }: any = {}) {
                           projectId={infraProjectId}
                           projectName={infraProject?.name}
                           project={infraProject}
+                          showToast={showToast}
                         />
                       </div>
                     </div>

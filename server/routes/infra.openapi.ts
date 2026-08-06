@@ -441,3 +441,146 @@ registerPath({
     },
   },
 });
+
+// ─── Scopes (decision INFRA-SCOPE) ──────────────────────────────────────────
+
+const TagFilter = z.record(z.string().min(1), z.array(z.string()).min(1)).openapi({
+  description:
+    'Optional tag filter as tag key -> accepted values. Values within one key are ORed, keys are ANDed — EC2 filter semantics, with `*` and `?` wildcards. Omit or send null to match every resource the describe call returns.',
+  example: { Environment: ['prod', 'staging'] },
+});
+
+const ScopeInput = z
+  .object({
+    profileName: z.string().min(1).max(128).openapi({
+      description:
+        'Project AWS profile the scope collects through. Keyed on the profile rather than the account id because the profile is what the operator picks and what credential resolution needs.',
+      example: 'monitoring',
+    }),
+    region: z.string().min(1).max(128).openapi({ example: 'us-east-2' }),
+    service: z.string().min(1).max(128).openapi({
+      description:
+        'Service token, lowercased on save. Free text with no enum: the collectable list grows every release, and a token with no metric pack is accepted but reported back in `uncollectableServices` rather than rejected.',
+      example: 'ec2',
+    }),
+    tagFilter: TagFilter.nullish(),
+    enabled: z.boolean().optional().openapi({
+      description:
+        'Defaults to true. A disabled scope is retained rather than deleted, so its inventory and metric history survive being switched back on.',
+    }),
+  })
+  .openapi({ description: 'One (profile, region, service) triple in the collection allowlist.' });
+
+const Scope = registerComponent(
+  'InfraScope',
+  ScopeInput.extend({
+    id: z.string(),
+    projectId: z.string(),
+    accountId: z.string().nullable().openapi({
+      description:
+        'Identity behind the profile, filled in once `sts:GetCallerIdentity` has run. Null until then — a scope is never blocked on a live AWS call.',
+    }),
+    enabled: z.boolean(),
+    createdAt: z.number(),
+    updatedAt: z.number(),
+    resourceCount: z.number().openapi({
+      description:
+        'Non-terminated resources inventory currently holds for this triple, within the collector’s own staleness bound. Zero on a new scope simply means the hourly inventory sync has not described the account yet — it does not mean the scope is free.',
+    }),
+  }).openapi({ description: 'A stored scope with the population its projection is priced on.' }),
+);
+
+const ScopesResponse = registerComponent(
+  'InfraScopesResponse',
+  z
+    .object({
+      scopes: z.array(Scope),
+      projection: CostProjection,
+      collectableServices: z.array(z.string()).openapi({
+        description: 'Service tokens that have a metric pack, for the editor’s service picker.',
+      }),
+      uncollectableServices: z.array(z.string()).openapi({
+        description:
+          'Services present in the allowlist that no metric pack covers. These are stored and priced at zero — the editor flags them so an inert scope does not read as a working one.',
+      }),
+      monthlyCeilingUsd: z.number().nullable(),
+      degradation: DegradationLevel,
+      maxScopes: z.number(),
+      configured: z.boolean().openapi({
+        description: 'False when the project has no scope rows at all — nothing is being polled.',
+      }),
+    })
+    .openapi({
+      description:
+        'The allowlist, priced. The projection covers enabled scopes only, since a disabled scope issues no billed requests.',
+    }),
+);
+
+// GET /api/projects/{projectId}/infra/scopes
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/infra/scopes',
+  tags: ['Projects'],
+  summary: 'Read the project’s collection allowlist and what it costs',
+  description:
+    'Returns every scope row for the project, enabled or not, alongside the projected monthly `GetMetricData` spend for the enabled ones.\n\nCollection is opt-in (decision INFRA-SCOPE): an empty list means **nothing is polled**, never "poll everything". Auto-discovering an account would produce a surprise bill and a throttling storm in someone else’s account, so every billed request the collector issues traces back to a row here.\n\nIssues no AWS calls — scopes, resource counts and pricing are all local.',
+  request: { params: ProjectIdParam },
+  responses: {
+    200: {
+      description: 'The allowlist and its projected monthly cost.',
+      content: { 'application/json': { schema: ScopesResponse } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});
+
+export const ScopesReplaceRequestSchema = z
+  .object({
+    scopes: z.array(ScopeInput).max(200),
+    monthlyCeilingUsd: z.number().min(0).max(1_000_000).nullable().optional().openapi({
+      description:
+        'Optional ceiling to save in the same request. Omit to leave the current ceiling alone; null clears it. Accepted here so that approving a projection and capping it are one operator action and one write, with no window where the scopes saved and the cap did not.',
+      example: 25,
+    }),
+  })
+  .openapi({
+    description:
+      'The complete allowlist. This is a whole-list replace, not a patch: rows absent from the body are deleted.',
+  });
+
+registerComponent('InfraScopesReplaceRequest', ScopesReplaceRequestSchema);
+
+// PUT /api/projects/{projectId}/infra/scopes
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/infra/scopes',
+  tags: ['Projects'],
+  summary: 'Replace the project’s collection allowlist',
+  description:
+    'Replaces the whole allowlist in one transaction. Rows absent from the body are **deleted**, which stops collection but touches neither `infra_resources` nor `infra_metric_points` — history a scope produced outlives the scope, and re-adding the triple resumes its charts rather than starting from an empty axis.\n\nWhole-list rather than per-row on purpose: the editor prices the list before saving, and that price is a property of the whole list. Per-row saves would let an operator approve one estimate and commit a larger configuration a row at a time, each save individually consistent and the total never shown.\n\nA surviving `(profile, region, service)` triple keeps its `id`, `createdAt` and resolved `accountId`. Tag filters are validated with the same parser the collector uses, so a filter that saves is one the collector will accept.',
+  request: {
+    params: ProjectIdParam,
+    body: { content: { 'application/json': { schema: ScopesReplaceRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Allowlist saved; the stored scopes and their projection are returned.',
+      content: { 'application/json': { schema: ScopesResponse } },
+    },
+    400: {
+      description: 'Malformed body, a duplicate triple, or an unparseable tag filter.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    503: {
+      description: 'The infrastructure store is unavailable on this Hub.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});

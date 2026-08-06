@@ -308,3 +308,227 @@ describe('infra retention routes', () => {
       .expect(404);
   });
 });
+
+describe('infra scope routes', () => {
+  it('reports an empty allowlist for a project that has opted into nothing', async () => {
+    const projectId = await freshProject();
+    const res = await request.get(`/api/projects/${projectId}/infra/scopes`).expect(200);
+
+    expect(res.body).toMatchObject({
+      scopes: [],
+      configured: false,
+      monthlyCeilingUsd: null,
+      degradation: 'normal',
+      uncollectableServices: [],
+    });
+    expect(res.body.projection).toEqual({
+      metricsRequestedPerMonth: 0,
+      estimatedMonthlyCostUsd: 0,
+      perScope: [],
+    });
+    // The service picker is populated from the metric packs, so the editor
+    // never has to hardcode a list that drifts from what the collector polls.
+    expect(res.body.collectableServices).toContain('ec2');
+    expect(res.body.maxScopes).toBeGreaterThan(0);
+  });
+
+  it('saves an allowlist and reads it back priced', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({
+        scopes: [
+          {
+            profileName: 'monitoring',
+            region: 'us-east-2',
+            service: 'ec2',
+            tagFilter: { Environment: ['prod'] },
+          },
+        ],
+      })
+      .expect(200);
+
+    expect(res.body.configured).toBe(true);
+    expect(res.body.scopes).toHaveLength(1);
+    expect(res.body.scopes[0]).toMatchObject({
+      profileName: 'monitoring',
+      region: 'us-east-2',
+      service: 'ec2',
+      tagFilter: { Environment: ['prod'] },
+      enabled: true,
+      accountId: null,
+      resourceCount: 0,
+    });
+
+    const after = await request.get(`/api/projects/${projectId}/infra/scopes`).expect(200);
+    expect(after.body.scopes[0].id).toBe(res.body.scopes[0].id);
+    expect(after.body.projection.perScope).toHaveLength(1);
+    // Zero inventory rows is the honest state for a scope the hourly sync has
+    // not described yet — priced at zero, but present in the breakdown.
+    expect(after.body.projection.perScope[0]).toMatchObject({
+      service: 'ec2',
+      region: 'us-east-2',
+      resourceCount: 0,
+    });
+  });
+
+  it('replaces the whole list, deleting rows absent from the body', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({
+        scopes: [
+          { profileName: 'monitoring', region: 'us-east-2', service: 'ec2' },
+          { profileName: 'monitoring', region: 'us-east-2', service: 'rds' },
+        ],
+      })
+      .expect(200);
+
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({ scopes: [{ profileName: 'monitoring', region: 'us-east-2', service: 'rds' }] })
+      .expect(200);
+
+    expect(res.body.scopes.map((s: { service: string }) => s.service)).toEqual(['rds']);
+  });
+
+  it('accepts an empty list, which turns collection off entirely', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({ scopes: [{ profileName: 'monitoring', region: 'us-east-2', service: 'ec2' }] })
+      .expect(200);
+
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({ scopes: [] })
+      .expect(200);
+
+    expect(res.body.scopes).toEqual([]);
+    expect(res.body.configured).toBe(false);
+    expect(res.body.projection.estimatedMonthlyCostUsd).toBe(0);
+  });
+
+  it('excludes a disabled scope from the projection but keeps the row', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({
+        scopes: [
+          { profileName: 'monitoring', region: 'us-east-2', service: 'ec2', enabled: false },
+        ],
+      })
+      .expect(200);
+
+    expect(res.body.scopes).toHaveLength(1);
+    expect(res.body.scopes[0].enabled).toBe(false);
+    expect(res.body.projection.perScope).toEqual([]);
+  });
+
+  it('flags a stored service that no metric pack collects', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({ scopes: [{ profileName: 'monitoring', region: 'us-east-2', service: 'quantumdb' }] })
+      .expect(200);
+
+    // Stored, not rejected — the service column is deliberately open — but
+    // reported so an inert scope does not read as a working one.
+    expect(res.body.scopes).toHaveLength(1);
+    expect(res.body.uncollectableServices).toEqual(['quantumdb']);
+    expect(res.body.projection.estimatedMonthlyCostUsd).toBe(0);
+  });
+
+  it('saves the ceiling in the same request as the scopes it caps', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({
+        scopes: [{ profileName: 'monitoring', region: 'us-east-2', service: 'ec2' }],
+        monthlyCeilingUsd: 25,
+      })
+      .expect(200);
+
+    expect(res.body.monthlyCeilingUsd).toBe(25);
+    // And it is the same ceiling the cost surface reports — one setting, not two.
+    const cost = await request.get(`/api/projects/${projectId}/infra/cost`).expect(200);
+    expect(cost.body.monthlyCeilingUsd).toBe(25);
+  });
+
+  it('leaves the ceiling alone when the body omits it, and clears it on null', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/infra/cost/config`)
+      .send({ monthlyCeilingUsd: 10 })
+      .expect(200);
+
+    const kept = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({ scopes: [] })
+      .expect(200);
+    expect(kept.body.monthlyCeilingUsd).toBe(10);
+
+    const cleared = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({ scopes: [], monthlyCeilingUsd: null })
+      .expect(200);
+    expect(cleared.body.monthlyCeilingUsd).toBeNull();
+  });
+
+  it('surfaces a duplicate triple as a 400 naming the offending scope', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({
+        scopes: [
+          { profileName: 'monitoring', region: 'us-east-2', service: 'ec2' },
+          { profileName: 'monitoring', region: 'us-east-2', service: 'ec2' },
+        ],
+      })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/duplicate scope/i);
+  });
+
+  it('surfaces an unparseable tag filter as a 400 rather than storing a dead scope', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({
+        scopes: [
+          {
+            profileName: 'monitoring',
+            region: 'us-east-2',
+            service: 'ec2',
+            tagFilter: { Environment: [] },
+          },
+        ],
+      })
+      .expect(400);
+  });
+
+  it('rejects a malformed body', async () => {
+    const projectId = await freshProject();
+    await request.put(`/api/projects/${projectId}/infra/scopes`).send({}).expect(400);
+    await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({ scopes: [{ profileName: 'monitoring', region: 'us-east-2' }] })
+      .expect(400);
+    await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({ scopes: [{ profileName: '', region: 'us-east-2', service: 'ec2' }] })
+      .expect(400);
+    await request
+      .put(`/api/projects/${projectId}/infra/scopes`)
+      .send({
+        scopes: [{ profileName: 'monitoring', region: 'us-east-2', service: 'ec2' }],
+        monthlyCeilingUsd: -1,
+      })
+      .expect(400);
+  });
+
+  it('404s both scope endpoints for an unknown project', async () => {
+    await request.get('/api/projects/does-not-exist/infra/scopes').expect(404);
+    await request.put('/api/projects/does-not-exist/infra/scopes').send({ scopes: [] }).expect(404);
+  });
+});
