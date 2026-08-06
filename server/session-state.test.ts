@@ -61,6 +61,17 @@ describe('resolveSessionState', () => {
     expect(resolveSessionState({ ...base, merged: true, finalizeStatus: 'pushed' })).toBe('merged');
   });
 
+  it.each(['ready_to_push', 'pushing'])(
+    'merged outranks a re-finalize parked at %s (nothing left to push)',
+    (finalizeStatus) => {
+      // Reported: a session whose PR merged, then re-finalized after review
+      // feedback, showed "Pending push" in the top bar beside its "Merged" PR
+      // pill. The newest run parks at ready_to_push because its validated head
+      // is the commit that already shipped.
+      expect(resolveSessionState({ ...base, merged: true, finalizeStatus })).toBe('merged');
+    },
+  );
+
   it('finalize phase outranks a lingering active task', () => {
     expect(resolveSessionState({ ...base, finalizeStatus: 'reviewing', hasActiveTask: true })).toBe(
       'reviewing',

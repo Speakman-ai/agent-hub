@@ -12,4 +12,10 @@ describe('deriveSessionState', () => {
         expect(deriveSessionState({ id: 's1' }, { finalizeStatusBySession: { s1: 'reviewing' } })).toBe('reviewing');
         expect(deriveSessionState({ id: 's2', state: 'pushed' })).toBe('pushed');
     });
+    // A merged session that re-finalizes parks its newest run at ready_to_push
+    // (its validated head is the commit that already shipped) — that must not
+    // regress the session badge to "Pending push".
+    it('keeps merged when a later finalize run parks at ready_to_push', () => {
+        expect(deriveSessionState({ id: 's1', state: 'merged' }, { finalizeStatusBySession: { s1: 'ready_to_push' } })).toBe('merged');
+    });
 });

@@ -40,6 +40,18 @@ describe('deriveSessionState', () => {
     expect(deriveSessionState({ id: 's1', state: 'pushed' })).toBe('pushed');
   });
 
+  // Reported: the top bar showed "Pending push" beside a "#772 · Merged" PR
+  // pill because the session re-finalized after its PR merged and the newest
+  // run parks at ready_to_push (its validated head is already pushed).
+  it('keeps a merged session merged when a later finalize run parks at ready_to_push', () => {
+    expect(
+      deriveSessionState(
+        { id: 's1', state: 'merged', finalize_status: 'ready_to_push' },
+        { finalizeStatusBySession: { s1: 'ready_to_push' } },
+      ),
+    ).toBe('merged');
+  });
+
   it('lets an active task override a stale settled seed', () => {
     expect(
       deriveSessionState({ id: 's1', state: 'pushed' }, { activeTaskSessionIds: { s1: true } }),

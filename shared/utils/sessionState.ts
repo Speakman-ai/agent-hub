@@ -43,12 +43,23 @@ export function finalizeStatusToState(
   }
 }
 
+/**
+ * States that describe the push step itself. `merged` strictly implies the
+ * branch was pushed, so neither may override it: a session whose PR merged and
+ * which then re-finalized (review feedback, a follow-up turn) parks its newest
+ * run at `ready_to_push`, and reporting that would regress the session to
+ * "Pending push" beside a "Merged" PR pill. Live activity states still win, so
+ * a re-finalize in flight is visible while it runs.
+ */
+const PUSH_STAGE_STATES: readonly SessionState[] = ['pending_push', 'pushed'];
+
 export function resolveSessionState(signals: SessionStateSignals): SessionState {
   const fromFinalize = finalizeStatusToState(signals?.finalizeStatus);
-  if (fromFinalize && fromFinalize !== 'pushed') return fromFinalize;
+  const pushStage = fromFinalize != null && PUSH_STAGE_STATES.includes(fromFinalize);
+  if (fromFinalize && !pushStage) return fromFinalize;
   if (signals?.hasActiveTask) return 'working';
   if (signals?.merged) return 'merged';
-  if (fromFinalize === 'pushed') return 'pushed';
+  if (fromFinalize) return fromFinalize;
   return DEFAULT_SESSION_STATE;
 }
 

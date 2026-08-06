@@ -61,6 +61,23 @@ describe('resolveSessionState', () => {
     expect(resolveSessionState({ merged: true, hasActiveTask: true })).toBe('working');
     expect(resolveSessionState({ merged: true, finalizeStatus: 'running' })).toBe('running_tests');
   });
+
+  // A merged session that re-finalizes (review feedback, a follow-up turn)
+  // parks its newest run at ready_to_push because the validated head is
+  // already pushed. Reporting that regressed the top bar to "Pending push"
+  // next to a "#772 · Merged" PR pill.
+  it.each(['ready_to_push', 'pushing'])(
+    'keeps merged when a later run parks at %s',
+    (finalizeStatus) => {
+      expect(resolveSessionState({ merged: true, finalizeStatus })).toBe('merged');
+    },
+  );
+
+  it('still reports the push stage when the session has not merged', () => {
+    expect(resolveSessionState({ finalizeStatus: 'ready_to_push' })).toBe('pending_push');
+    expect(resolveSessionState({ finalizeStatus: 'pushing' })).toBe('pending_push');
+    expect(resolveSessionState({ finalizeStatus: 'pushed' })).toBe('pushed');
+  });
 });
 
 describe('SESSION_STATE_META', () => {
