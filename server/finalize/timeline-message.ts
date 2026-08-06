@@ -12,6 +12,7 @@ export const FINALIZE_TIMELINE_KINDS = [
   'finalize_run_started',
   'finalize_rebase_result',
   'finalize_review_round',
+  'finalize_ci_absent',
   'finalize_checks_round',
   'finalize_flake_recovered',
   'finalize_ready_to_push',
@@ -203,6 +204,30 @@ export function writeFinalizeReviewRoundTimeline(
       verdict: args.verdict,
       threads: args.threads,
     },
+  });
+}
+
+/**
+ * The run found no CI config (no committed `.agent-hub/ci.yaml`, no
+ * server-stored one) and is proceeding checks-free. Written once per round so
+ * an operator who deleted a working config sees why nothing ran, rather than
+ * reading a green run as "the tests passed".
+ */
+export function writeFinalizeCiAbsentTimeline(
+  deps: TimelineMessageDeps,
+  args: {
+    sessionId: string | null | undefined;
+    runId: string;
+    round: number;
+  },
+): string | null {
+  return writeFinalizeTimelineMessage(deps, {
+    sessionId: args.sessionId,
+    kind: 'finalize_ci_absent',
+    content:
+      'No CI config for this project — Finalize is running review-only, with no checks. ' +
+      'Commit a .agent-hub/ci.yaml or store one on the server to gate this branch on tests.',
+    payload: { runId: args.runId, round: args.round },
   });
 }
 

@@ -1043,14 +1043,73 @@ describe('runFinalize — server-stored CI config fallback', () => {
       error: { code: 'ci_config_absent', message: 'file not found' },
     }) as never;
 
-  it('terminates with ci_config_missing when no committed file and no server config', async () => {
-    const { deps } = makeDeps({ loadCiConfigFromFile: fakeAbsentCommitted() });
+  // A brand-new project has neither a committed ci.yaml nor a server config.
+  // Finalize used to terminate `ci_config_missing` here, which meant a fresh
+  // project's very first Finalize could never complete — even though
+  // `evaluateFinalizeShipGate` already treats the same condition as
+  // "no gate, shipping allowed".
+  it('runs checks-free and parks at ready_to_push when no config exists anywhere', async () => {
+    const steps = fakeRunSteps(STEPS_OK);
+    const review = fakeRunReview(REVIEW_OK);
+    const { deps, stmts } = makeDeps({
+      loadCiConfigFromFile: fakeAbsentCommitted(),
+      runJobPhase: steps,
+      runReviewerDispatch: review,
+    });
     // Default getFinalizeServerCi mock returns undefined → nothing stored.
     const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(steps).not.toHaveBeenCalled();
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes a finalize_ci_absent timeline message so the skip is not silent', async () => {
+    const { deps, stmts } = makeDeps({ loadCiConfigFromFile: fakeAbsentCommitted() });
+
+    await runFinalize(deps, baseOpts());
+
+    const kinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => {
+        try {
+          return JSON.parse(String(call[7]))?.kind;
+        } catch {
+          return null;
+        }
+      },
+    );
+    expect(kinds).toContain('finalize_ci_absent');
+  });
+
+  // "Run Tests" has no reviewer phase to fall back on, so degrading would
+  // leave a run that executed nothing at all and still reported green.
+  it('still fails checks mode with ci_config_missing — there is no phase left to run', async () => {
+    const { deps } = makeDeps({ loadCiConfigFromFile: fakeAbsentCommitted() });
+    const result = await runFinalize(deps, baseOpts({ mode: 'checks' }));
     expect(result.kind).toBe('failed');
     if (result.kind === 'failed') {
       expect(result.failureReason).toBe('ci_config_missing');
     }
+  });
+
+  // Only genuine ABSENCE degrades. A committed-but-broken config is an
+  // explicit statement of intent and must keep failing the gate.
+  it('still fails with ci_config_invalid when a committed config is present but broken', async () => {
+    const brokenCommitted = vi.fn().mockResolvedValue({
+      ok: false,
+      error: { code: 'yaml_parse_error', message: 'bad indent' },
+    }) as never;
+    const steps = fakeRunSteps(STEPS_OK);
+    const { deps } = makeDeps({ loadCiConfigFromFile: brokenCommitted, runJobPhase: steps });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('ci_config_invalid');
+    }
+    expect(steps).not.toHaveBeenCalled();
   });
 
   it('falls back to a project-scoped server config when the committed file is absent', async () => {

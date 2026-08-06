@@ -4,6 +4,7 @@ import {
   parseFinalizeTimelineMetadata,
   readFinalizeLoopRound,
   writeFinalizeChecksRoundTimeline,
+  writeFinalizeCiAbsentTimeline,
   writeFinalizeFlakeRecoveredTimeline,
   writeFinalizeReviewRoundTimeline,
   writeFinalizeRunTerminalTimeline,
@@ -205,6 +206,25 @@ describe('timeline-message', () => {
     );
     const metadata = JSON.parse(stmts.addMessage.run.mock.calls[0][7] as string);
     expect(metadata.prUrl).toBeNull();
+  });
+
+  it('writeFinalizeCiAbsentTimeline names the file the user has to add', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeCiAbsentTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'm7' },
+      { sessionId: 'sess-1', runId: 'run-1', round: 2 },
+    );
+    const [, , , content, , , , metadataJson] = stmts.addMessage.run.mock.calls[0];
+    // A green run with no checks must not read as "the tests passed".
+    expect(String(content)).toMatch(/no ci config/i);
+    expect(String(content)).toMatch(/\.agent-hub\/ci\.yaml/);
+    const metadata = JSON.parse(String(metadataJson));
+    expect(metadata.kind).toBe('finalize_ci_absent');
+    expect(metadata.round).toBe(2);
   });
 
   it('readFinalizeLoopRound defaults invalid values to 0', () => {

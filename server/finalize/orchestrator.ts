@@ -109,6 +109,7 @@ import {
 } from './metrics.js';
 import {
   readFinalizeLoopRound,
+  writeFinalizeCiAbsentTimeline,
   writeFinalizeFlakeRecoveredTimeline,
   writeFinalizeReadyToPushTimeline,
   writeFinalizeRebaseResultTimeline,
@@ -549,7 +550,12 @@ export async function runFinalize(
   // targeting a single phase, keep their historical gating.
   const mode: FinalizeRunMode = opts.mode ?? 'full';
   const reviewRequired = mode !== 'checks';
-  const checksRequired = mode !== 'review';
+  // What the MODE asks for. The effective per-round `checksRequired` is
+  // narrowed from this: a round that resolves no CI config at all runs
+  // checks-free (see Phase 2). Recomputed every round so a fix dispatch that
+  // commits a ci.yaml re-enables checks on the next pass.
+  const checksRequestedByMode = mode !== 'review';
+  let checksRequired = checksRequestedByMode;
 
   // ─── Idempotency: dedup at the (project, branch, head_sha, mode) level ─
   const idempotencyKey = computeIdempotencyKey({
@@ -1163,49 +1169,76 @@ export async function runFinalize(
           log,
         );
       }
+      // Nothing configured anywhere. This is the normal state of a
+      // brand-new project, not a defect: `evaluateFinalizeShipGate` already
+      // treats a missing ci.yaml as "no gate, shipping allowed", so failing
+      // the run here made Finalize the only surface that punished the same
+      // condition — and it did so only AFTER the rebase phase, which can
+      // dispatch a conflict-fix turn and wait on it. Degrade to a
+      // checks-free run (rebase → review → push gate) instead, so a fresh
+      // project's first Finalize can complete.
+      //
+      // `mode === 'checks'` ("Run Tests") is the exception: it skips review,
+      // so degrading would leave a run with no phase at all. An explicit
+      // request to run tests when none are configured is a real error.
       if (ciSource === 'none' || parseResult === null) {
-        return terminate(
-          deps,
+        checksRequired = false;
+        if (!reviewRequired) {
+          return terminate(
+            deps,
+            runId,
+            'failed',
+            'ci_config_missing',
+            'No CI config found: no committed .agent-hub/ci.yaml and no server-stored config for this project. Set up Finalize — commit a ci.yaml or store one on the Agent Hub server.',
+            log,
+          );
+        }
+        parsedCi = null;
+        // Loud on purpose: an operator who DELETED a working config needs to
+        // see why no checks ran, not silently get a green run.
+        trace('ci_absent', { round: loopCount, ciSource, checksSkipped: true });
+        writeFinalizeCiAbsentTimeline(orchestratorTimelineDeps(deps), {
+          sessionId,
           runId,
-          'failed',
-          'ci_config_missing',
-          'No CI config found: no committed .agent-hub/ci.yaml and no server-stored config for this project. Set up Finalize — commit a ci.yaml or store one on the Agent Hub server.',
-          log,
-        );
-      }
-      if (!parseResult.ok) {
-        return terminate(
-          deps,
-          runId,
-          'failed',
-          'ci_config_invalid',
-          `${parseResult.error.code}: ${parseResult.error.message}`,
-          log,
-        );
-      }
-      parsedCi = parseResult.config;
-      // §13: ci.yaml's `timeout_minutes` may LOWER the cap but never
-      // raise it. The hard ceiling is FINALIZE_BUDGET_HARD_CEILING_SECONDS
-      // — resolveBudgetSeconds clamps to it. We also re-clamp against the
-      // current `budgetSeconds` so a dep-injected lower-than-default cap
-      // (used in tests) is not silently raised back to 60 by a permissive
-      // ci.yaml. Effectively: the narrowest of {dep, ci.yaml, hard cap}
-      // wins.
-      budgetSeconds = Math.min(
-        budgetSeconds,
-        resolveBudgetSeconds({ ciTimeoutMinutes: parsedCi.timeoutMinutes }),
-      );
+          round: loopCount,
+        });
+      } else {
+        checksRequired = checksRequestedByMode;
+        if (!parseResult.ok) {
+          return terminate(
+            deps,
+            runId,
+            'failed',
+            'ci_config_invalid',
+            `${parseResult.error.code}: ${parseResult.error.message}`,
+            log,
+          );
+        }
+        parsedCi = parseResult.config;
 
-      trace('ci_parsed', {
-        round: loopCount,
-        timeoutMinutes: parsedCi.timeoutMinutes ?? null,
-        budgetSeconds,
-        // Which config source won, and whether a server config was shadowed by
-        // a committed file. The run's trace is the audit trail for server
-        // configs (which, unlike a committed ci.yaml, are not visible in the PR).
-        ciSource,
-        ciShadowed,
-      });
+        // §13: ci.yaml's `timeout_minutes` may LOWER the cap but never
+        // raise it. The hard ceiling is FINALIZE_BUDGET_HARD_CEILING_SECONDS
+        // — resolveBudgetSeconds clamps to it. We also re-clamp against the
+        // current `budgetSeconds` so a dep-injected lower-than-default cap
+        // (used in tests) is not silently raised back to 60 by a permissive
+        // ci.yaml. Effectively: the narrowest of {dep, ci.yaml, hard cap}
+        // wins.
+        budgetSeconds = Math.min(
+          budgetSeconds,
+          resolveBudgetSeconds({ ciTimeoutMinutes: parsedCi.timeoutMinutes }),
+        );
+
+        trace('ci_parsed', {
+          round: loopCount,
+          timeoutMinutes: parsedCi.timeoutMinutes ?? null,
+          budgetSeconds,
+          // Which config source won, and whether a server config was shadowed by
+          // a committed file. The run's trace is the audit trail for server
+          // configs (which, unlike a committed ci.yaml, are not visible in the PR).
+          ciSource,
+          ciShadowed,
+        });
+      }
 
       if (opts.signal?.aborted) {
         return cancelTerminal(deps, runId, log);
@@ -1323,7 +1356,10 @@ export async function runFinalize(
       // `checksRequired` is false, so an approved review synthesizes a
       // green step outcome (below) and the combined gate folds to
       // "review-only".
-      if (!reviewerChangesRequested && checksRequired) {
+      // `parsedCi` is non-null whenever `checksRequired` is true — Phase 2
+      // clears both together. Testing it here is what proves that to the
+      // type checker, not a second condition.
+      if (!reviewerChangesRequested && checksRequired && parsedCi) {
         // Flip to tasks/running before the (potentially long) step phase so
         // the client shows "running checks" immediately after review completes.
         setPhase(deps, runId, sessionId, 'tasks', 'running', log);
@@ -1468,9 +1504,10 @@ export async function runFinalize(
           );
         }
       } else if (!reviewerChangesRequested && !checksRequired) {
-        // `review` mode, reviewer approved: no checks phase ran.
-        // Synthesize a green step outcome so the combined gate is driven
-        // by the reviewer verdict alone.
+        // Reviewer approved and no checks phase ran — either `review` mode,
+        // or a project with no CI config at all. Synthesize a green step
+        // outcome so the combined gate is driven by the reviewer verdict
+        // alone.
         lastStepOutcome = {
           status: 'success',
           stepResults: [],

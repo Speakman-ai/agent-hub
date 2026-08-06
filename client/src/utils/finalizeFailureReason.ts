@@ -15,6 +15,11 @@ const FINALIZE_FAILURE_REASON_DESCRIPTIONS = {
     'The automated fix did not land a new commit, so re-running the checks would fail the same way. The fixer may have committed to a different branch or made no commit.',
   ci_config_invalid:
     'Your .agent-hub/ci.yaml could not be parsed. Fix the config and run Finalize again.',
+  // A run with a reviewer phase no longer fails on an absent config — it goes
+  // checks-free instead. This code now only reaches the UI from "Run Tests",
+  // which has no other phase to fall back on, and from historical rows.
+  ci_config_missing:
+    'No CI config is set up for this project, so there are no tests to run. Commit a .agent-hub/ci.yaml or store one on the Agent Hub server.',
   review_failed:
     'The in-hub reviewer requested changes that were not resolved before the run ended.',
   infra_error:

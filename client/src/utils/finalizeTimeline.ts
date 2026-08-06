@@ -7,6 +7,7 @@ export const FINALIZE_TIMELINE_KINDS = [
   'finalize_run_started',
   'finalize_rebase_result',
   'finalize_review_round',
+  'finalize_ci_absent',
   'finalize_checks_round',
   'finalize_ready_to_push',
   'finalize_run_summary',

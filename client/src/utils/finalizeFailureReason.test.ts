@@ -26,6 +26,16 @@ describe('describeFinalizeFailureReason', () => {
     expect(text).not.toMatch(/no code changes/i);
   });
 
+  it('tells a user with no CI config how to set one up', () => {
+    // Regression: `ci_config_missing` had no entry, so the UI rendered the bare
+    // machine code with no next step for exactly the users least likely to
+    // recognise it — people on a brand-new project.
+    const text = describeFinalizeFailureReason('ci_config_missing');
+    expect(text).not.toBeNull();
+    expect(text!).toMatch(/ci\.yaml/i);
+    expect(text!).not.toBe('ci_config_missing');
+  });
+
   it('returns null for unknown, empty, or non-string reasons', () => {
     expect(describeFinalizeFailureReason('totally_made_up')).toBeNull();
     expect(describeFinalizeFailureReason('')).toBeNull();
