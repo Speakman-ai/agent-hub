@@ -1,6 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Activity, BellRing, Boxes, Cloud, Gauge, Server } from 'lucide-react';
 import InfraScopeEditor from './InfraScopeEditor';
+import InfraResourceBrowser, { type InfraResourceWire } from './InfraResourceBrowser';
+import InfraMetricChart from './InfraMetricChart';
 
 export interface InfraMonitoringStatus {
   profile?: string | null;
@@ -119,6 +121,28 @@ export default function InfrastructurePage({
     liveScope && liveScope.projectId === projectId ? liveScope.configured : null;
   const hasScope = liveScopeConfigured ?? scopeConfigured ?? inferredScopeConfigured;
 
+  // The resource the Metrics tab charts. Stamped with its project for the same
+  // reason `liveScope` is: a selection only means something for one project, so
+  // binding it makes the value self-invalidating on a switch rather than
+  // charting the previous project's resource under this project's header.
+  const [selected, setSelected] = useState<{
+    projectId: string;
+    resource: InfraResourceWire;
+  } | null>(null);
+  const selectedResource = selected && selected.projectId === projectId ? selected.resource : null;
+
+  useEffect(() => {
+    setSelected(null);
+  }, [projectId]);
+
+  const handleSelectResource = useCallback(
+    (resource: InfraResourceWire) => {
+      setSelected({ projectId, resource });
+      setTab('metrics');
+    },
+    [projectId],
+  );
+
   const handleScopesChange = useCallback(
     (response: Record<string, any>) => {
       setLiveScope({
@@ -130,10 +154,11 @@ export default function InfrastructurePage({
     },
     [projectId],
   );
-  // The shell has no paid-feature discovery endpoint yet. Keep the warning
-  // explicit until the metrics/resource surfaces can report their own AWS
-  // feature metadata; callers can override it once that data exists.
-  const selectedPaidFeatureOff = paidFeatureOff ?? project?.infraPaidFeatureOff ?? true;
+  // Off by default now that the Metrics tab draws real collected data: an
+  // unconditional warning in front of a working chart would train the operator
+  // to ignore it, and the notice has to stay meaningful for the panels that
+  // genuinely are empty because a paid AWS feature is disabled (INFRA-COST).
+  const selectedPaidFeatureOff = paidFeatureOff ?? project?.infraPaidFeatureOff ?? false;
   const monitoringProfile = project?.awsMonitoringProfile;
   const monitoringMissing =
     (!status?.profile && !monitoringProfile) ||
@@ -191,9 +216,11 @@ export default function InfrastructurePage({
           </div>
         ) : tab === 'resources' ? (
           hasScope ? (
-            <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-5 text-sm text-gray-400">
-              Resource inventory will appear after the first discovery run.
-            </div>
+            <InfraResourceBrowser
+              projectId={projectId}
+              onSelectResource={handleSelectResource}
+              selectedResourceKey={selectedResource?.resourceKey ?? null}
+            />
           ) : (
             <EmptyState testId="infra-empty-scope" title="no scope configured">
               Add an explicit account, region, and service scope before Agent Hub discovers
@@ -201,20 +228,36 @@ export default function InfrastructurePage({
             </EmptyState>
           )
         ) : tab === 'metrics' ? (
-          selectedPaidFeatureOff ? (
-            <EmptyState testId="infra-empty-paid-feature" title="this AWS paid feature is off">
-              This metric is published only when its AWS paid feature is enabled. Agent Hub will
-              show data here after the feature is turned on and the next collection run completes.
-            </EmptyState>
-          ) : !hasScope ? (
-            <EmptyState testId="infra-empty-scope" title="no scope configured">
-              Configure a collection scope before viewing infrastructure metrics.
-            </EmptyState>
-          ) : (
-            <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-5 text-sm text-gray-400">
-              Metric charts will appear after the first collection run.
-            </div>
-          )
+          <div className="space-y-3">
+            {selectedPaidFeatureOff && (
+              <EmptyState testId="infra-empty-paid-feature" title="this AWS paid feature is off">
+                Some metrics are published only when their AWS paid feature is enabled. Those panels
+                stay empty until the feature is turned on and the next collection run completes.
+              </EmptyState>
+            )}
+            {!hasScope ? (
+              <EmptyState testId="infra-empty-scope" title="no scope configured">
+                Configure a collection scope before viewing infrastructure metrics.
+              </EmptyState>
+            ) : selectedResource ? (
+              <>
+                <div className="text-xs text-gray-400">
+                  <span className="font-mono text-gray-200">{selectedResource.resourceId}</span>
+                  {selectedResource.name ? ` · ${selectedResource.name}` : ''} ·{' '}
+                  {selectedResource.service} · {selectedResource.region}
+                </div>
+                <InfraMetricChart
+                  projectId={projectId}
+                  resourceKey={selectedResource.resourceKey}
+                  resourceLabel={selectedResource.name || selectedResource.resourceId}
+                />
+              </>
+            ) : (
+              <EmptyState testId="infra-metrics-no-resource" title="no resource selected">
+                Pick a resource on the Resources tab to chart what has been collected for it.
+              </EmptyState>
+            )}
+          </div>
         ) : (
           <div className="space-y-3">
             {!hasScope && (

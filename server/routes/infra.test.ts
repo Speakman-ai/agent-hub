@@ -19,6 +19,10 @@ import {
   MIN_INFRA_PROJECT_QUOTA_BYTES,
   MAX_INFRA_PROJECT_QUOTA_BYTES,
 } from '../infra/infra-schema.js';
+import { getInfraDb, infraResourceKey } from '../infra/infra-db.js';
+import { insertInfraMetricPoints } from '../infra/infra-metric-store.js';
+import { recordInfraAlertEvaluation } from '../infra/alert-store.js';
+import { MAX_METRIC_WINDOW_MS } from '../infra/infra-metric-read.js';
 
 vi.mock('../infra/aws-clients.js', () => ({
   probeProjectMonitoringAccess: vi.fn(),
@@ -530,5 +534,386 @@ describe('infra scope routes', () => {
   it('404s both scope endpoints for an unknown project', async () => {
     await request.get('/api/projects/does-not-exist/infra/scopes').expect(404);
     await request.put('/api/projects/does-not-exist/infra/scopes').send({ scopes: [] }).expect(404);
+  });
+});
+
+// ── Resource browser and metric charts (decision INFRA-UI) ─────────────────
+
+const CHART_NOW = Date.now();
+const CHART_HOUR = 60 * 60 * 1000;
+
+function seedResource(
+  projectId: string,
+  over: {
+    resourceId?: string;
+    service?: string;
+    region?: string;
+    environment?: string | null;
+    state?: string | null;
+    name?: string | null;
+    tags?: Array<{ Key: string; Value: string }> | null;
+    lastSeen?: number;
+  } = {},
+): string {
+  const service = over.service ?? 'ec2';
+  const region = over.region ?? 'us-east-1';
+  const accountId = '111122223333';
+  const resourceId = over.resourceId ?? 'i-0abc123';
+  const resourceKey = infraResourceKey({ projectId, accountId, region, service, resourceId });
+  getInfraDb()
+    .prepare(
+      `INSERT INTO infra_resources (
+         resource_key, project_id, account_id, region, service, resource_id,
+         name, tags_json, environment, state, first_seen, last_seen
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      resourceKey,
+      projectId,
+      accountId,
+      region,
+      service,
+      resourceId,
+      over.name ?? null,
+      over.tags ? JSON.stringify(over.tags) : null,
+      over.environment ?? null,
+      over.state ?? 'running',
+      CHART_NOW - 24 * CHART_HOUR,
+      over.lastSeen ?? CHART_NOW,
+    );
+  return resourceKey;
+}
+
+describe('GET /api/projects/:projectId/infra/resources', () => {
+  it('lists inventory with facets for the filter controls', async () => {
+    const projectId = await freshProject();
+    seedResource(projectId, { resourceId: 'i-web', name: 'web-1', environment: 'prod' });
+    seedResource(projectId, { resourceId: 'db-1', service: 'rds', region: 'eu-west-1' });
+
+    const res = await request.get(`/api/projects/${projectId}/infra/resources`).expect(200);
+
+    expect(res.body.resources).toHaveLength(2);
+    expect(res.body.resources[0]).toHaveProperty('resourceKey');
+    expect(res.body.resources[0]).toHaveProperty('lastSeen');
+    expect(res.body.facets.services.sort()).toEqual(['ec2', 'rds']);
+    expect(res.body.facets.regions.sort()).toEqual(['eu-west-1', 'us-east-1']);
+    expect(res.body.facets.total).toBe(2);
+    expect(res.body.nextCursor).toBeNull();
+    expect(res.body.staleAfterMs).toBeGreaterThan(0);
+  });
+
+  it('filters by service, environment and tag', async () => {
+    const projectId = await freshProject();
+    seedResource(projectId, {
+      resourceId: 'i-prod',
+      environment: 'prod',
+      tags: [{ Key: 'Team', Value: 'platform' }],
+    });
+    seedResource(projectId, { resourceId: 'i-staging', environment: 'staging' });
+    seedResource(projectId, { resourceId: 'db-1', service: 'rds' });
+
+    const byService = await request
+      .get(`/api/projects/${projectId}/infra/resources?service=rds`)
+      .expect(200);
+    expect(byService.body.resources.map((r: any) => r.resourceId)).toEqual(['db-1']);
+
+    const byEnv = await request
+      .get(`/api/projects/${projectId}/infra/resources?environment=prod`)
+      .expect(200);
+    expect(byEnv.body.resources.map((r: any) => r.resourceId)).toEqual(['i-prod']);
+
+    const byTag = await request
+      .get(`/api/projects/${projectId}/infra/resources?tagKey=Team&tagValue=platform`)
+      .expect(200);
+    expect(byTag.body.resources.map((r: any) => r.resourceId)).toEqual(['i-prod']);
+  });
+
+  it('hides rows the collector has stopped polling, unless asked for them', async () => {
+    // Inventory rows are never deleted, so without the default staleness
+    // window the browser opens on every instance the account ever ran.
+    const projectId = await freshProject();
+    seedResource(projectId, { resourceId: 'i-fresh' });
+    seedResource(projectId, { resourceId: 'i-gone', lastSeen: CHART_NOW - 72 * CHART_HOUR });
+
+    const fresh = await request.get(`/api/projects/${projectId}/infra/resources`).expect(200);
+    expect(fresh.body.resources.map((r: any) => r.resourceId)).toEqual(['i-fresh']);
+
+    const all = await request
+      .get(`/api/projects/${projectId}/infra/resources?seenSince=0`)
+      .expect(200);
+    expect(all.body.resources.map((r: any) => r.resourceId).sort()).toEqual(['i-fresh', 'i-gone']);
+  });
+
+  it('rejects a malformed filter and 404s an unknown project', async () => {
+    const projectId = await freshProject();
+    await request.get(`/api/projects/${projectId}/infra/resources?limit=0`).expect(400);
+    await request.get(`/api/projects/${projectId}/infra/resources?limit=abc`).expect(400);
+    await request.get('/api/projects/does-not-exist/infra/resources').expect(404);
+  });
+});
+
+describe('GET /api/projects/:projectId/infra/metric-series', () => {
+  it('catalogs only series with stored points behind them', async () => {
+    const projectId = await freshProject();
+    const resourceKey = seedResource(projectId);
+    insertInfraMetricPoints([
+      {
+        projectId,
+        resourceKey,
+        namespace: 'AWS/EC2',
+        metricName: 'CPUUtilization',
+        stat: 'Average',
+        periodSeconds: 60,
+        tsMs: CHART_NOW - 60_000,
+        value: 12,
+      },
+    ]);
+
+    const res = await request
+      .get(
+        `/api/projects/${projectId}/infra/metric-series?resource=${encodeURIComponent(resourceKey)}`,
+      )
+      .expect(200);
+
+    expect(res.body.resource.resourceKey).toBe(resourceKey);
+    expect(res.body.series).toHaveLength(1);
+    expect(res.body.series[0]).toMatchObject({
+      metricName: 'CPUUtilization',
+      stat: 'Average',
+      periodSeconds: 60,
+      pointCount: 1,
+    });
+  });
+
+  it('requires a resource and 404s an unknown project', async () => {
+    const projectId = await freshProject();
+    await request.get(`/api/projects/${projectId}/infra/metric-series`).expect(400);
+    await request.get('/api/projects/does-not-exist/infra/metric-series?resource=x').expect(404);
+  });
+});
+
+describe('GET /api/projects/:projectId/infra/metrics', () => {
+  async function seedSeries(
+    projectId: string,
+    opts: { stat?: string; periodSeconds?: number; points: Array<{ tsMs: number; value: number }> },
+  ): Promise<string> {
+    const resourceKey = seedResource(projectId);
+    insertInfraMetricPoints(
+      opts.points.map((p) => ({
+        projectId,
+        resourceKey,
+        namespace: 'AWS/EC2',
+        metricName: 'CPUUtilization',
+        stat: opts.stat ?? 'Average',
+        periodSeconds: opts.periodSeconds ?? 60,
+        tsMs: p.tsMs,
+        value: p.value,
+      })),
+    );
+    return resourceKey;
+  }
+
+  it('rejects an unbounded window', async () => {
+    // `from` and `to` are the whole reason this route can be served at all:
+    // one series at 60s over a year is half a million rows.
+    const projectId = await freshProject();
+    const resource = encodeURIComponent(seedResource(projectId));
+    const base = `/api/projects/${projectId}/infra/metrics?resource=${resource}&metric=CPUUtilization`;
+
+    await request.get(base).expect(400);
+    await request.get(`${base}&from=${CHART_NOW - CHART_HOUR}`).expect(400);
+    await request.get(`${base}&to=${CHART_NOW}`).expect(400);
+  });
+
+  it('rejects an inverted or zero-width window', async () => {
+    const projectId = await freshProject();
+    const resource = encodeURIComponent(seedResource(projectId));
+    const base = `/api/projects/${projectId}/infra/metrics?resource=${resource}&metric=CPUUtilization`;
+
+    await request.get(`${base}&from=${CHART_NOW}&to=${CHART_NOW - CHART_HOUR}`).expect(400);
+    await request.get(`${base}&from=${CHART_NOW}&to=${CHART_NOW}`).expect(400);
+  });
+
+  it('rejects a window wider than CloudWatch’s longest retention tier', async () => {
+    const projectId = await freshProject();
+    const resource = encodeURIComponent(seedResource(projectId));
+    const from = CHART_NOW - (MAX_METRIC_WINDOW_MS + 1);
+    await request
+      .get(
+        `/api/projects/${projectId}/infra/metrics?resource=${resource}&metric=CPUUtilization&from=${from}&to=${CHART_NOW}`,
+      )
+      .expect(400);
+  });
+
+  it('serves a bucketed range and echoes the period it resolved', async () => {
+    const projectId = await freshProject();
+    const resourceKey = await seedSeries(projectId, {
+      points: [
+        { tsMs: CHART_NOW - 3 * 60_000, value: 10 },
+        { tsMs: CHART_NOW - 2 * 60_000, value: 20 },
+        { tsMs: CHART_NOW - 60_000, value: 30 },
+      ],
+    });
+
+    const res = await request
+      .get(
+        `/api/projects/${projectId}/infra/metrics?resource=${encodeURIComponent(resourceKey)}&metric=CPUUtilization&from=${CHART_NOW - CHART_HOUR}&to=${CHART_NOW}`,
+      )
+      .expect(200);
+
+    expect(res.body.periodSeconds).toBe(60);
+    expect(res.body.aggregation).toBe('avg');
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.points).toHaveLength(3);
+    expect(res.body.points.map((p: any) => p.value)).toEqual([10, 20, 30]);
+    expect(res.body.series).toMatchObject({ metricName: 'CPUUtilization', periodSeconds: 60 });
+    expect(res.body.resource.resourceKey).toBe(resourceKey);
+  });
+
+  it('coarsens the display period for a wide window rather than asking for a tier that is gone', async () => {
+    // The acceptance case: a 90-day view must not request 60s data that aged
+    // out of CloudWatch 75 days ago and render as an empty chart.
+    const projectId = await freshProject();
+    const resourceKey = await seedSeries(projectId, {
+      points: [{ tsMs: CHART_NOW - 60_000, value: 42 }],
+    });
+    const resource = encodeURIComponent(resourceKey);
+    const base = `/api/projects/${projectId}/infra/metrics?resource=${resource}&metric=CPUUtilization&to=${CHART_NOW}`;
+
+    const hour = await request.get(`${base}&from=${CHART_NOW - CHART_HOUR}`).expect(200);
+    expect(hour.body.periodSeconds).toBe(60);
+
+    const ninety = await request
+      .get(`${base}&from=${CHART_NOW - 90 * 24 * CHART_HOUR}`)
+      .expect(200);
+    // Never finer than the 3600s tier the window's start has aged into; wider
+    // still, because 90 days of hourly buckets overruns the bucket cap.
+    expect(ninety.body.periodSeconds).toBeGreaterThanOrEqual(3600);
+    // The point is still drawn — coarsening widens the bucket, it does not
+    // filter the series down to a tier nothing is stored at.
+    expect(ninety.body.points).toHaveLength(1);
+    expect(ninety.body.points[0].value).toBe(42);
+  });
+
+  it('never draws finer than the series is stored at', async () => {
+    const projectId = await freshProject();
+    const resourceKey = await seedSeries(projectId, {
+      periodSeconds: 300,
+      points: [{ tsMs: CHART_NOW - 300_000, value: 5 }],
+    });
+
+    const res = await request
+      .get(
+        `/api/projects/${projectId}/infra/metrics?resource=${encodeURIComponent(resourceKey)}&metric=CPUUtilization&from=${CHART_NOW - CHART_HOUR}&to=${CHART_NOW}`,
+      )
+      .expect(200);
+    expect(res.body.periodSeconds).toBe(300);
+  });
+
+  it('buckets a Maximum series by max, not by mean', async () => {
+    // Averaging a Maximum series erases the spike it was charted for.
+    const projectId = await freshProject();
+    const resourceKey = await seedSeries(projectId, {
+      stat: 'Maximum',
+      points: [
+        { tsMs: CHART_NOW - 30 * 24 * CHART_HOUR, value: 1 },
+        { tsMs: CHART_NOW - 30 * 24 * CHART_HOUR + 60_000, value: 99 },
+      ],
+    });
+
+    const res = await request
+      .get(
+        `/api/projects/${projectId}/infra/metrics?resource=${encodeURIComponent(resourceKey)}&metric=CPUUtilization&from=${CHART_NOW - 31 * 24 * CHART_HOUR}&to=${CHART_NOW}`,
+      )
+      .expect(200);
+
+    expect(res.body.aggregation).toBe('max');
+    expect(res.body.points).toHaveLength(1);
+    expect(res.body.points[0].value).toBe(99);
+    expect(res.body.points[0].count).toBe(2);
+  });
+
+  it('returns an empty series with a resolved period when nothing is stored', async () => {
+    const projectId = await freshProject();
+    const resourceKey = seedResource(projectId);
+
+    const res = await request
+      .get(
+        `/api/projects/${projectId}/infra/metrics?resource=${encodeURIComponent(resourceKey)}&metric=CPUUtilization&from=${CHART_NOW - CHART_HOUR}&to=${CHART_NOW}`,
+      )
+      .expect(200);
+
+    expect(res.body.points).toEqual([]);
+    expect(res.body.series).toBeNull();
+    expect(res.body.alarmSegments).toEqual([]);
+    // The window echo stays authoritative so the chart can still draw its axis.
+    expect(res.body.periodSeconds).toBe(60);
+    expect(res.body.fromMs).toBe(CHART_NOW - CHART_HOUR);
+    expect(res.body.toMs).toBe(CHART_NOW);
+  });
+
+  it('overlays alert state on the chart timeline', async () => {
+    const projectId = await freshProject();
+    const resourceKey = await seedSeries(projectId, {
+      points: [{ tsMs: CHART_NOW - 60_000, value: 90 }],
+    });
+
+    const rule = await request
+      .post(`/api/projects/${projectId}/infra/alert-rules`)
+      .send({
+        name: 'CPU high',
+        service: 'ec2',
+        namespace: 'AWS/EC2',
+        metricName: 'CPUUtilization',
+        stat: 'Average',
+        periodS: 60,
+        threshold: 80,
+        comparisonOperator: 'GreaterThanThreshold',
+        evaluationPeriods: 1,
+      })
+      .expect(201);
+
+    recordInfraAlertEvaluation({
+      projectId,
+      ruleId: rule.body.id,
+      resourceKey,
+      evaluation: {
+        state: 'ALARM',
+        previousState: 'OK',
+        transitioned: true,
+        reason: 'datapoints_breached',
+        evaluatedAtMs: CHART_NOW - 30 * 60_000,
+        realDatapoints: 1,
+        filledDatapoints: 0,
+        breachingDatapoints: 1,
+      },
+      observedAtMs: CHART_NOW - 30 * 60_000,
+      value: 90,
+      nowMs: CHART_NOW - 30 * 60_000,
+    });
+
+    const res = await request
+      .get(
+        `/api/projects/${projectId}/infra/metrics?resource=${encodeURIComponent(resourceKey)}&metric=CPUUtilization&from=${CHART_NOW - CHART_HOUR}&to=${CHART_NOW}`,
+      )
+      .expect(200);
+
+    expect(res.body.alarmSegments).toHaveLength(1);
+    expect(res.body.alarmSegments[0]).toMatchObject({
+      state: 'ALARM',
+      ruleId: rule.body.id,
+      startMs: CHART_NOW - 30 * 60_000,
+      endMs: CHART_NOW,
+    });
+    expect(res.body.alerts).toHaveLength(1);
+    expect(res.body.alerts[0]).toMatchObject({ state: 'ALARM', resourceKey });
+  });
+
+  it('404s an unknown project', async () => {
+    await request
+      .get(
+        `/api/projects/does-not-exist/infra/metrics?resource=x&metric=y&from=${CHART_NOW - CHART_HOUR}&to=${CHART_NOW}`,
+      )
+      .expect(404);
   });
 });

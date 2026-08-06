@@ -19,6 +19,7 @@ import {
   finishInfraCollectRun,
   recordInfraCollectRunProgress,
   MAX_METRIC_POINTS_PER_QUERY,
+  queryInfraMetricBuckets,
   type InfraMetricPointInput,
 } from './infra-metric-store.js';
 
@@ -515,5 +516,161 @@ describe('infra_collect_runs audit', () => {
         )
         .run(),
     ).toThrow();
+  });
+});
+
+describe('queryInfraMetricBuckets', () => {
+  const BUCKET = 300;
+
+  it('folds points into fixed-width buckets, oldest first', () => {
+    insertInfraMetricPoints([
+      point({ tsMs: 1_700_000_000_000, value: 10, periodSeconds: 60 }),
+      point({ tsMs: 1_700_000_060_000, value: 20, periodSeconds: 60 }),
+      point({ tsMs: 1_700_000_300_000, value: 30, periodSeconds: 60 }),
+    ]);
+
+    const { buckets, truncated } = queryInfraMetricBuckets({
+      projectId: 'proj-a',
+      resourceKey: RESOURCE,
+      metricName: 'CPUUtilization',
+      periodSeconds: 60,
+      startMs: 1_700_000_000_000,
+      endMs: 1_700_000_600_000,
+      bucketSeconds: BUCKET,
+      maxBuckets: 100,
+    });
+
+    expect(truncated).toBe(false);
+    // Bucket edges are multiples of the width from the epoch, not offsets from
+    // the window start — 1.7e12 is not itself a multiple of 300,000 ms.
+    expect(buckets).toEqual([
+      { tsMs: 1_699_999_800_000, minValue: 10, maxValue: 20, sumValue: 30, count: 2 },
+      { tsMs: 1_700_000_100_000, minValue: 30, maxValue: 30, sumValue: 30, count: 1 },
+    ]);
+  });
+
+  it('aligns buckets to a multiple of the width, not to the window start', () => {
+    // Same instant must land in the same bucket across two requests with
+    // different ranges, or the chart shimmers when its window is nudged.
+    insertInfraMetricPoints([point({ tsMs: 1_700_000_120_000, value: 7, periodSeconds: 60 })]);
+
+    for (const startMs of [1_700_000_000_000, 1_700_000_060_000]) {
+      const { buckets } = queryInfraMetricBuckets({
+        projectId: 'proj-a',
+        resourceKey: RESOURCE,
+        metricName: 'CPUUtilization',
+        periodSeconds: 60,
+        startMs,
+        endMs: 1_700_000_600_000,
+        bucketSeconds: BUCKET,
+        maxBuckets: 100,
+      });
+      expect(buckets[0].tsMs).toBe(1_700_000_100_000);
+    }
+  });
+
+  it('omits empty buckets rather than zero-filling them', () => {
+    // No observation is not a measurement of zero — the difference between an
+    // idle instance and one that stopped reporting.
+    insertInfraMetricPoints([
+      point({ tsMs: 1_700_000_000_000, value: 5, periodSeconds: 60 }),
+      point({ tsMs: 1_700_000_900_000, value: 5, periodSeconds: 60 }),
+    ]);
+
+    const { buckets } = queryInfraMetricBuckets({
+      projectId: 'proj-a',
+      resourceKey: RESOURCE,
+      metricName: 'CPUUtilization',
+      periodSeconds: 60,
+      startMs: 1_700_000_000_000,
+      endMs: 1_700_001_200_000,
+      bucketSeconds: BUCKET,
+      maxBuckets: 100,
+    });
+    expect(buckets.map((b) => b.tsMs)).toEqual([1_699_999_800_000, 1_700_000_700_000]);
+  });
+
+  it('serves a range far wider than the raw row cap', () => {
+    // The reason grouping happens in SQL: the collector stores everything at
+    // the finest tier, so a wide window is tens of thousands of rows and
+    // folding them in JavaScript would draw the chart from a truncated tail.
+    const points = [];
+    for (let i = 0; i < MAX_METRIC_POINTS_PER_QUERY + 500; i += 1) {
+      points.push(point({ tsMs: 1_700_000_000_000 + i * 60_000, value: 1, periodSeconds: 60 }));
+    }
+    insertInfraMetricPoints(points);
+
+    const { buckets, truncated } = queryInfraMetricBuckets({
+      projectId: 'proj-a',
+      resourceKey: RESOURCE,
+      metricName: 'CPUUtilization',
+      periodSeconds: 60,
+      startMs: 1_700_000_000_000,
+      endMs: 1_700_000_000_000 + (MAX_METRIC_POINTS_PER_QUERY + 500) * 60_000,
+      bucketSeconds: 3600,
+      maxBuckets: 200,
+    });
+
+    expect(truncated).toBe(false);
+    // Every point is represented: 5,500 minutes folded into hourly buckets.
+    expect(buckets.reduce((n, b) => n + b.count, 0)).toBe(MAX_METRIC_POINTS_PER_QUERY + 500);
+  });
+
+  it('reports truncation when the window holds more buckets than the cap', () => {
+    insertInfraMetricPoints([
+      point({ tsMs: 1_700_000_000_000, value: 1, periodSeconds: 60 }),
+      point({ tsMs: 1_700_000_300_000, value: 1, periodSeconds: 60 }),
+      point({ tsMs: 1_700_000_600_000, value: 1, periodSeconds: 60 }),
+    ]);
+
+    const { buckets, truncated } = queryInfraMetricBuckets({
+      projectId: 'proj-a',
+      resourceKey: RESOURCE,
+      metricName: 'CPUUtilization',
+      periodSeconds: 60,
+      startMs: 1_700_000_000_000,
+      endMs: 1_700_000_900_000,
+      bucketSeconds: BUCKET,
+      maxBuckets: 2,
+    });
+    expect(truncated).toBe(true);
+    expect(buckets).toHaveLength(2);
+  });
+
+  it('keeps two period tiers of one metric apart', () => {
+    // Leaving the period open is the filter that bites: the same metric stored
+    // at two tiers interleaves at duplicate timestamps with different meanings.
+    insertInfraMetricPoints([
+      point({ tsMs: 1_700_000_000_000, value: 10, periodSeconds: 60 }),
+      point({ tsMs: 1_700_000_000_000, value: 99, periodSeconds: 300 }),
+    ]);
+
+    const { buckets } = queryInfraMetricBuckets({
+      projectId: 'proj-a',
+      resourceKey: RESOURCE,
+      metricName: 'CPUUtilization',
+      periodSeconds: 60,
+      startMs: 1_700_000_000_000,
+      endMs: 1_700_000_600_000,
+      bucketSeconds: BUCKET,
+      maxBuckets: 100,
+    });
+    expect(buckets).toEqual([
+      { tsMs: 1_699_999_800_000, minValue: 10, maxValue: 10, sumValue: 10, count: 1 },
+    ]);
+  });
+
+  it('is empty for a series that has never been collected', () => {
+    const { buckets, truncated } = queryInfraMetricBuckets({
+      projectId: 'proj-a',
+      resourceKey: RESOURCE,
+      metricName: 'NothingHere',
+      startMs: 1_700_000_000_000,
+      endMs: 1_700_000_600_000,
+      bucketSeconds: BUCKET,
+      maxBuckets: 100,
+    });
+    expect(buckets).toEqual([]);
+    expect(truncated).toBe(false);
   });
 });

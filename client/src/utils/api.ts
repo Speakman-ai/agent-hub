@@ -309,6 +309,23 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
   return res.json() as Promise<T>;
 }
 
+/**
+ * Query string for the infra read routes.
+ *
+ * Empty and nullish values are dropped rather than sent blank: the server
+ * treats `?service=` as a filter for a service literally named the empty
+ * string, so a cleared dropdown would return nothing instead of everything.
+ */
+function infraQuery(params: Record<string, unknown>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    search.set(key, String(value));
+  }
+  const qs = search.toString();
+  return qs ? `?${qs}` : '';
+}
+
 export const api = {
   // Projects
   getProjects: () => fetchJSON<ProjectWire[]>('/projects'),
@@ -392,6 +409,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // Read surface for the Resources and Metrics tabs. Polled on an interval —
+  // there is no metric WebSocket (decision INFRA-UI).
+  listInfraResources: (projectId: string, params: Record<string, unknown> = {}) =>
+    fetchJSON(`/projects/${projectId}/infra/resources${infraQuery(params)}`),
+  listInfraMetricSeries: (projectId: string, resourceKey: string) =>
+    fetchJSON(`/projects/${projectId}/infra/metric-series${infraQuery({ resource: resourceKey })}`),
+  getInfraMetricRange: (projectId: string, params: Record<string, unknown>) =>
+    fetchJSON(`/projects/${projectId}/infra/metrics${infraQuery(params)}`),
   getInfraAlertRouting: (projectId: string) =>
     fetchJSON(`/projects/${projectId}/infra/alert-routing`),
   updateInfraAlertRouting: (projectId: string, data: Record<string, unknown>) =>

@@ -9,10 +9,30 @@ import { api } from '../../utils/api';
     getInfraScopes: vi.fn(),
     updateInfraScopes: vi.fn(),
     projectInfraCost: vi.fn(),
+    // The Resources tab embeds the inventory browser, which polls on mount.
+    listInfraResources: vi.fn(),
+    listInfraMetricSeries: vi.fn(),
+    getInfraMetricRange: vi.fn(),
   },
 }));
 
 const getInfraScopes = vi.mocked(api.getInfraScopes);
+const listInfraResources = vi.mocked(api.listInfraResources);
+
+const emptyResources = {
+  resources: [],
+  nextCursor: null,
+  facets: {
+    services: [],
+    regions: [],
+    accounts: [],
+    environments: [],
+    states: [],
+    tagKeys: [],
+    total: 0,
+  },
+  staleAfterMs: 24 * 60 * 60 * 1000,
+};
 
 const emptyScopes = {
   scopes: [],
@@ -27,8 +47,11 @@ const emptyScopes = {
 
 describe('InfrastructurePage', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // resetAllMocks, not clearAllMocks: `clear` leaves queued `…Once` values
+    // in place, which makes the suite order-dependent.
+    vi.resetAllMocks();
     getInfraScopes.mockResolvedValue(emptyScopes as any);
+    listInfraResources.mockResolvedValue(emptyResources as any);
   });
   const readyStatus = { profile: 'monitoring', region: 'us-east-1', reachable: true };
 
@@ -45,9 +68,9 @@ describe('InfrastructurePage', () => {
 
     expect(screen.getByRole('tabpanel')).toHaveTextContent('Monitoring profile ready');
     fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
-    expect(screen.getByRole('tabpanel')).toHaveTextContent('Resource inventory');
+    expect(screen.getByTestId('infra-resource-browser')).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: 'Metrics' }));
-    expect(screen.getByRole('tabpanel')).toHaveTextContent('Metric charts');
+    expect(screen.getByTestId('infra-metrics-no-resource')).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: 'Alerts' }));
     expect(screen.getByRole('tabpanel')).toHaveTextContent('No infrastructure alert rules');
   });
@@ -100,9 +123,7 @@ describe('InfrastructurePage', () => {
     // project-a has a scope, so the Resources tab shows inventory, not the
     // empty state.
     fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
-    await waitFor(() =>
-      expect(screen.getByRole('tabpanel')).toHaveTextContent('Resource inventory'),
-    );
+    await waitFor(() => expect(screen.getByTestId('infra-resource-browser')).toBeTruthy());
 
     rerender(
       <InfrastructurePage

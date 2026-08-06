@@ -363,6 +363,137 @@ export function queryInfraMetricPoints(q: InfraMetricQuery): InfraMetricPointRow
   return rows.map(mapPointRow).reverse();
 }
 
+/** One aggregated bucket, carrying every aggregate a caller might draw at. */
+export interface InfraMetricBucketRow {
+  /** Bucket's left edge, floored to a multiple of the bucket width. */
+  tsMs: number;
+  minValue: number;
+  maxValue: number;
+  sumValue: number;
+  /** Source datapoints folded into this bucket. */
+  count: number;
+}
+
+export interface InfraMetricBucketQuery extends InfraMetricQuery {
+  /** Bucket width. Points are grouped by `floor(ts_ms / width)`. */
+  bucketSeconds: number;
+  /** Buckets returned before the range is considered truncated. */
+  maxBuckets: number;
+}
+
+export interface InfraMetricBucketPage {
+  buckets: InfraMetricBucketRow[];
+  /**
+   * The window held more buckets than `maxBuckets`. The caller widened its
+   * period too little; the returned buckets are the *oldest* that fit.
+   */
+  truncated: boolean;
+}
+
+/**
+ * Aggregate a bounded range into fixed-width buckets, oldest first.
+ *
+ * The grouping happens in SQL rather than over the rows in JavaScript, and that
+ * is the difference between a chart that works and one that does not. The
+ * collector polls a 15-minute lookback every tick, so `resolvePeriod` is always
+ * evaluated on a fresh window and every stored point lands at the finest tier —
+ * 60s. A 30-day read is 43,200 rows for a single series, eight times
+ * {@link MAX_METRIC_POINTS_PER_QUERY}, so fetching the rows and folding them
+ * here would draw a month-long chart out of its most recent three and a half
+ * days with nothing to say so.
+ *
+ * All four aggregates come back from one scan because computing them together
+ * is free; which one is drawn is the caller's decision (`selectBucketValue`),
+ * and a `Maximum` series averaged into its buckets would erase the spike that
+ * is the entire reason someone charted it.
+ *
+ * Buckets are floored to a multiple of the width — the same alignment
+ * `alignWindow()` gives the collector — so an instant lands in the same bucket
+ * across two requests with different windows and the chart does not shimmer
+ * when its range is nudged.
+ *
+ * Empty buckets are **absent, not zero-filled**: no observation is not a
+ * measurement of zero, and the difference is an idle instance versus one that
+ * stopped reporting.
+ */
+export function queryInfraMetricBuckets(q: InfraMetricBucketQuery): InfraMetricBucketPage {
+  const db = getInfraDb();
+  const clauses = [
+    'project_id = ?',
+    'resource_key = ?',
+    'metric_name = ?',
+    'ts_ms >= ?',
+    'ts_ms <= ?',
+  ];
+  const params: (string | number)[] = [
+    q.projectId,
+    q.resourceKey,
+    q.metricName,
+    Math.floor(q.startMs),
+    Math.floor(q.endMs),
+  ];
+  if (q.namespace) {
+    clauses.push('namespace = ?');
+    params.push(q.namespace);
+  }
+  if (q.stat) {
+    clauses.push('stat = ?');
+    params.push(q.stat);
+  }
+  if (typeof q.periodSeconds === 'number') {
+    clauses.push('period_s = ?');
+    params.push(Math.floor(q.periodSeconds));
+  }
+  if (q.dimensionsHash) {
+    clauses.push('dimensions_hash = ?');
+    params.push(q.dimensionsHash);
+  }
+
+  const step = Math.max(1, Math.floor(q.bucketSeconds)) * 1000;
+  const maxBuckets = Math.max(1, Math.floor(q.maxBuckets));
+
+  // `CAST(? AS INTEGER)` is load-bearing, not decoration: better-sqlite3 binds
+  // a JavaScript number as a double, and `ts_ms / 300000.0` is *float*
+  // division, so the multiply puts every point back on its own timestamp and
+  // no bucketing happens at all. Casting the divisor makes SQLite use integer
+  // division, which floors — exact here because `ts_ms` is a positive integer
+  // by the write path's own validation.
+  const rows = db
+    .prepare(
+      `SELECT (ts_ms / CAST(? AS INTEGER)) * CAST(? AS INTEGER) AS bucket_ts,
+              MIN(value) AS min_value,
+              MAX(value) AS max_value,
+              SUM(value) AS sum_value,
+              COUNT(*)   AS n
+         FROM infra_metric_points
+        WHERE ${clauses.join(' AND ')}
+        GROUP BY bucket_ts
+        ORDER BY bucket_ts ASC
+        LIMIT ?`,
+    )
+    .all(step, step, ...params, maxBuckets + 1) as Array<{
+    bucket_ts: number;
+    min_value: number;
+    max_value: number;
+    sum_value: number;
+    n: number;
+  }>;
+
+  const truncated = rows.length > maxBuckets;
+  if (truncated) rows.length = maxBuckets;
+
+  return {
+    buckets: rows.map((r) => ({
+      tsMs: r.bucket_ts,
+      minValue: r.min_value,
+      maxValue: r.max_value,
+      sumValue: r.sum_value,
+      count: r.n,
+    })),
+    truncated,
+  };
+}
+
 interface InfraMetricPointDbRow {
   id: number;
   project_id: string;

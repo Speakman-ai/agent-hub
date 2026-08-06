@@ -74,10 +74,34 @@ import {
 } from '../infra/infra-scope-store.js';
 import { collectableServices } from '../infra/service-metric-packs.js';
 import {
+  listInfraResources,
+  listInfraResourceFacets,
+  listInfraResourceSeries,
+  getInfraResource,
+  serializeInfraResource,
+  type InfraResourceSeries,
+} from '../infra/infra-resource-store.js';
+import { queryInfraMetricBuckets, type InfraMetricBucketRow } from '../infra/infra-metric-store.js';
+import {
+  aggregationForStat,
+  buildInfraAlertOverlay,
+  resolveDisplayPeriod,
+  selectBucketValue,
+  MAX_CHART_BUCKETS,
+} from '../infra/infra-metric-read.js';
+import {
+  listInfraAlerts,
+  listInfraAlertTransitions,
+  serializeInfraAlert,
+} from '../infra/alert-store.js';
+import {
   CostProjectionRequestSchema,
   CostCeilingRequestSchema,
   RetentionConfigRequestSchema,
   ScopesReplaceRequestSchema,
+  ResourceListParamsSchema,
+  MetricSeriesParamsSchema,
+  MetricRangeParamsSchema,
 } from './infra.openapi.js';
 
 function validate<T extends z.ZodTypeAny>(
@@ -239,6 +263,68 @@ function emptyRetentionBody(): Record<string, unknown> {
     updatedAt: null,
     ...RETENTION_LIMITS,
     dbBytes: 0,
+  };
+}
+
+/**
+ * Pick the series a chart read should draw when the caller did not pin one.
+ *
+ * A `(resource, metric)` pair names a series only once namespace, stat, period
+ * and dimensions are also fixed, and the collector legitimately stores one
+ * metric under several of them. Rather than guess a tier the data may not be
+ * stored at — which returns an empty chart that looks like an outage — the
+ * choice is made from the catalog of what is *actually* stored, preferring the
+ * series with the most points and breaking ties deterministically so the same
+ * request draws the same chart twice.
+ */
+function pickMetricSeries(
+  catalog: readonly InfraResourceSeries[],
+  filters: {
+    metric: string;
+    namespace?: string;
+    stat?: string;
+    dimensionsHash?: string;
+    period?: number;
+  },
+): InfraResourceSeries | null {
+  const matches = catalog.filter(
+    (s) =>
+      s.metricName === filters.metric &&
+      (!filters.namespace || s.namespace === filters.namespace) &&
+      (!filters.stat || s.stat === filters.stat) &&
+      (!filters.dimensionsHash || s.dimensionsHash === filters.dimensionsHash) &&
+      (filters.period === undefined || s.periodSeconds === filters.period),
+  );
+  if (matches.length === 0) return null;
+  return matches.sort(
+    (a, b) =>
+      b.pointCount - a.pointCount ||
+      a.periodSeconds - b.periodSeconds ||
+      a.namespace.localeCompare(b.namespace) ||
+      a.stat.localeCompare(b.stat) ||
+      a.dimensionsHash.localeCompare(b.dimensionsHash),
+  )[0];
+}
+
+/** Empty chart body. The window and resolved period stay authoritative. */
+function emptyMetricBody(
+  resource: Record<string, unknown> | null,
+  fromMs: number,
+  toMs: number,
+  periodSeconds: number,
+): Record<string, unknown> {
+  return {
+    resource,
+    series: null,
+    fromMs,
+    toMs,
+    periodSeconds,
+    aggregation: 'avg',
+    maxBuckets: MAX_CHART_BUCKETS,
+    truncated: false,
+    points: [],
+    alarmSegments: [],
+    alerts: [],
   };
 }
 
@@ -404,6 +490,172 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
       // so the response is the authoritative statement of what was stored.
       setInfraRetentionConfig(projectId, parsed.data);
       res.json(buildRetentionBody(projectId));
+    },
+  );
+
+  // ── Read surface: resource browser and metric charts (INFRA-UI) ──────────
+
+  router.get(
+    '/api/projects/:projectId/infra/resources',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(ResourceListParamsSchema, req.query ?? {}, res);
+      if (!parsed.ok) return;
+      if (!isInfraDbInitialized()) {
+        res.json({
+          resources: [],
+          nextCursor: null,
+          facets: {
+            services: [],
+            regions: [],
+            accounts: [],
+            environments: [],
+            states: [],
+            tagKeys: [],
+            total: 0,
+          },
+          staleAfterMs: MAX_RESOURCE_STALENESS_MS,
+        });
+        return;
+      }
+
+      // Defaults to the collector's own staleness bound so the browser opens on
+      // what is actually being polled. Rows are never deleted, so without a
+      // default the first thing an operator sees is every instance the account
+      // has ever run. `seenSince=0` is the explicit way to ask for that.
+      const seenSinceMs =
+        parsed.data.seenSince === undefined
+          ? Date.now() - MAX_RESOURCE_STALENESS_MS
+          : parsed.data.seenSince;
+
+      const query = { projectId, ...parsed.data, seenSinceMs };
+      const page = listInfraResources(query);
+      res.json({
+        resources: page.resources.map(serializeInfraResource),
+        nextCursor: page.nextCursor,
+        facets: listInfraResourceFacets(query),
+        staleAfterMs: MAX_RESOURCE_STALENESS_MS,
+      });
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/infra/metric-series',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(MetricSeriesParamsSchema, req.query ?? {}, res);
+      if (!parsed.ok) return;
+      if (!isInfraDbInitialized()) {
+        res.json({ resource: null, series: [] });
+        return;
+      }
+      const resource = getInfraResource(projectId, parsed.data.resource);
+      res.json({
+        resource: resource ? serializeInfraResource(resource) : null,
+        series: listInfraResourceSeries(projectId, parsed.data.resource),
+      });
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/infra/metrics',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(MetricRangeParamsSchema, req.query ?? {}, res);
+      if (!parsed.ok) return;
+      const {
+        resource: resourceKey,
+        metric,
+        from,
+        to,
+        namespace,
+        stat,
+        dimensionsHash,
+      } = parsed.data;
+      const nowMs = Date.now();
+
+      if (!isInfraDbInitialized()) {
+        res.json(emptyMetricBody(null, from, to, resolveDisplayPeriod(from, to, nowMs)));
+        return;
+      }
+
+      const resourceRow = getInfraResource(projectId, resourceKey);
+      const resource = resourceRow ? serializeInfraResource(resourceRow) : null;
+      const series = pickMetricSeries(listInfraResourceSeries(projectId, resourceKey), {
+        metric,
+        namespace,
+        stat,
+        dimensionsHash,
+        period: parsed.data.period,
+      });
+
+      if (!series) {
+        res.json(emptyMetricBody(resource, from, to, resolveDisplayPeriod(from, to, nowMs)));
+        return;
+      }
+
+      // The display period is resolved from the window, never from a constant:
+      // CloudWatch's retention tier for the window's start, raised to the tier
+      // the series is stored at, then widened until the range fits the bucket
+      // cap. A caller pinning `period` pins the *stored* tier being read, not
+      // the width it is drawn at — those are different questions.
+      const periodSeconds = resolveDisplayPeriod(from, to, nowMs, {
+        storedPeriodSeconds: series.periodSeconds,
+      });
+      const aggregation = aggregationForStat(series.stat);
+      const { buckets, truncated } = queryInfraMetricBuckets({
+        projectId,
+        resourceKey,
+        metricName: metric,
+        namespace: series.namespace,
+        stat: series.stat,
+        dimensionsHash: series.dimensionsHash,
+        periodSeconds: series.periodSeconds,
+        startMs: from,
+        endMs: to,
+        bucketSeconds: periodSeconds,
+        maxBuckets: MAX_CHART_BUCKETS,
+      });
+
+      const alerts = listInfraAlerts({ projectId, resourceKey }).alerts;
+      const alarmSegments = buildInfraAlertOverlay(
+        alerts.map((alert) => ({ alert, transitions: listInfraAlertTransitions(alert.id) })),
+        from,
+        to,
+      );
+
+      res.json({
+        resource,
+        series,
+        fromMs: from,
+        toMs: to,
+        periodSeconds,
+        aggregation,
+        maxBuckets: MAX_CHART_BUCKETS,
+        truncated,
+        points: buckets.map((b: InfraMetricBucketRow) => ({
+          tsMs: b.tsMs,
+          value: selectBucketValue(aggregation, b),
+          count: b.count,
+        })),
+        alarmSegments,
+        alerts: alerts.map((alert) => serializeInfraAlert(alert)),
+      });
     },
   );
 
