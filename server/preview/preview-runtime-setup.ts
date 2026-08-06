@@ -25,6 +25,7 @@ import {
   DevServerRuntime,
   type DevServerRuntimeConfig,
   type DevServerNotifyStatusFn,
+  type ResolveSharedSessionEnvFn,
 } from './dev-server-runtime.js';
 import type { Project } from '../types.js';
 
@@ -49,6 +50,11 @@ export interface CreatePreviewRuntimesDeps {
   devServerConfig?: DevServerRuntimeConfig;
   /** Project resolver for the dev-server runtime's `reap` pass. */
   getProject?: (projectId: string) => Project | null;
+  /**
+   * Session-owned env lookup. Supplied in production so a preview runs inside
+   * the same boundary as the session's terminal and commands.
+   */
+  resolveSharedEnv?: ResolveSharedSessionEnvFn;
 }
 
 export interface CreatePreviewRuntimesResult {
@@ -81,6 +87,7 @@ export function createPreviewRuntimes(
     notifyLog: deps.notifyLog,
     notifyStatus: deps.notifyStatus,
     config: deps.devServerConfig,
+    ...(deps.resolveSharedEnv ? { resolveSharedEnv: deps.resolveSharedEnv } : {}),
   });
 
   const portMin = deps.devServerConfig?.portRange?.min ?? DEFAULT_PREVIEW_PORT_RANGE.min;

@@ -1,22 +1,28 @@
 /**
  * Sysbox capability probe + SessionEnv adapter selection.
  *
- * Per-session dev environments run behind a `SessionEnv` boundary with two
- * backends: the HOST adapter (direct host processes — the local-dev/Mac path)
- * and the SYSBOX adapter (per-session rootless container via sysbox-runc —
- * the default boundary on a self-hosted Linux server). This module decides
- * which backend the Hub uses at boot:
+ * Per-session dev environments run behind a `SessionEnv` boundary with three
+ * backends: HOST (direct host processes — the local-dev/Mac path), SYSBOX
+ * (per-session container via sysbox-runc, the strongest boundary), and
+ * CONTAINER (per-session privileged DinD container, the boundary available on
+ * any Docker host). This module decides which backend the Hub uses at boot:
  *
  *   1. `probeSysboxCapability()` checks the host: Linux, kernel >= 5.12
  *      (idmapped-mounts baseline for non-shiftfs distros; >= 5.19 removes the
  *      shiftfs dependency entirely), unprivileged user namespaces enabled,
  *      the `sysbox-runc` binary installed, and the runtime registered with
  *      the Docker daemon.
- *   2. `selectSessionEnvAdapter()` maps the probe + the `sessionEnvAdapter`
- *      config (`auto` | `host` | `sysbox`) to a selection. `auto` picks
- *      sysbox when available, else host. A forced `sysbox` that the probe
- *      rejects falls back to host with a loud warning rather than producing
- *      a runtime that cannot spawn.
+ *   2. `selectSessionEnvAdapter()` maps the probes + the `sessionEnvAdapter`
+ *      config (`auto` | `host` | `sysbox` | `container`) to a selection.
+ *      `auto` walks the backends strongest-first: sysbox, then container,
+ *      then host. A forced backend the probe rejects falls back to host with
+ *      a loud warning rather than producing a runtime that cannot spawn.
+ *
+ * Ordering matters because falling through to `host` means sessions have no
+ * boundary at all — they share the Hub's filesystem, ports, and process
+ * table. That used to be the outcome on every machine without sysbox, which
+ * is most of them. The container backend exists so the fallback is a weaker
+ * boundary rather than none.
  *
  * Host install doc + script: docs/deployment/SYSBOX-HOST-SETUP.md and
  * ops/scripts/setup-sysbox-host.sh.
@@ -24,15 +30,17 @@
 import { execFile } from 'child_process';
 import { readFile } from 'fs/promises';
 import os from 'os';
+import type { SessionEnvPortRouting } from './container-routing.js';
 
-export type SessionEnvAdapterKind = 'host' | 'sysbox';
-/** Operator intent: `auto` probes, `host`/`sysbox` force a backend. */
-export type SessionEnvAdapterMode = 'auto' | 'host' | 'sysbox';
+export type SessionEnvAdapterKind = 'host' | 'sysbox' | 'container';
+/** Operator intent: `auto` probes, the rest force a backend. */
+export type SessionEnvAdapterMode = 'auto' | 'host' | 'sysbox' | 'container';
 
 export const SESSION_ENV_ADAPTER_MODES: readonly SessionEnvAdapterMode[] = [
   'auto',
   'host',
   'sysbox',
+  'container',
 ];
 
 export function coerceSessionEnvAdapterMode(raw: unknown): SessionEnvAdapterMode {
@@ -204,10 +212,51 @@ function finalize(checks: SysboxCheck[]): SysboxProbeResult {
   return { available: missing.length === 0, checks, missing };
 }
 
+/**
+ * What the `container` backend needs: a docker daemon, and a route from the
+ * Hub to container IPs. Without the latter a container env has to publish
+ * ports, which drags back the shared host pool and the declare-before-start
+ * rule — so `auto` skips it and only an explicit request honors it.
+ */
+export interface ContainerCapability {
+  dockerAvailable: boolean;
+  routing: SessionEnvPortRouting;
+  /** Human-readable detail for the boot log when the backend is skipped. */
+  detail?: string;
+}
+
 export function selectSessionEnvAdapter(
   mode: SessionEnvAdapterMode,
   probe: SysboxProbeResult,
+  container: ContainerCapability = { dockerAvailable: false, routing: 'published-ports' },
 ): SessionEnvSelection {
+  const containerUsable = container.dockerAvailable && container.routing === 'container-ip';
+  const containerDetail =
+    container.detail ??
+    (!container.dockerAvailable
+      ? 'no usable docker daemon'
+      : 'container IPs are not routable from the Hub');
+
+  if (mode === 'container') {
+    if (container.dockerAvailable) {
+      return {
+        adapter: 'container',
+        mode,
+        forced: true,
+        fellBack: false,
+        reason: 'forced by config (sessionEnvAdapter=container)',
+        probe,
+      };
+    }
+    return {
+      adapter: 'host',
+      mode,
+      forced: false,
+      fellBack: true,
+      reason: `container backend forced by config but unavailable — falling back to host adapter: ${containerDetail}`,
+      probe,
+    };
+  }
   if (mode === 'host') {
     return {
       adapter: 'host',
@@ -226,6 +275,19 @@ export function selectSessionEnvAdapter(
         forced: true,
         fellBack: false,
         reason: 'forced by config (sessionEnvAdapter=sysbox); probe passed',
+        probe,
+      };
+    }
+    // A forced sysbox that the probe rejects prefers the container backend
+    // over host: the operator asked for isolation, so a weaker boundary is
+    // closer to the intent than no boundary.
+    if (containerUsable) {
+      return {
+        adapter: 'container',
+        mode,
+        forced: false,
+        fellBack: true,
+        reason: `sysbox forced by config but unavailable — using the container backend instead: ${probe.missing.join('; ')}`,
         probe,
       };
     }
@@ -248,12 +310,22 @@ export function selectSessionEnvAdapter(
       probe,
     };
   }
+  if (containerUsable) {
+    return {
+      adapter: 'container',
+      mode,
+      forced: false,
+      fellBack: false,
+      reason: `sysbox unavailable (auto) — using the container backend: ${probe.missing.join('; ')}`,
+      probe,
+    };
+  }
   return {
     adapter: 'host',
     mode,
     forced: false,
     fellBack: false,
-    reason: `sysbox unavailable (auto) — using host adapter: ${probe.missing.join('; ')}`,
+    reason: `sysbox unavailable (${probe.missing.join('; ')}) and container backend unusable (${containerDetail}) — using host adapter`,
     probe,
   };
 }
@@ -290,9 +362,10 @@ let cachedSelection: SessionEnvSelection | null = null;
 export async function initSessionEnvSelection(
   mode: SessionEnvAdapterMode,
   deps?: SysboxProbeDeps,
+  container?: ContainerCapability,
 ): Promise<SessionEnvSelection> {
   const probe = await probeSysboxCapability(deps);
-  cachedSelection = selectSessionEnvAdapter(mode, probe);
+  cachedSelection = selectSessionEnvAdapter(mode, probe, container);
   return cachedSelection;
 }
 

@@ -31,6 +31,12 @@ export type PreviewProxyDeps = {
    * so the request reaches that mapped extra port rather than the primary.
    */
   getSessionPreviewPort: (sessionId: string, internalPort?: number) => number | null;
+  /**
+   * Upstream host for a session, when it is not the Hub-wide default.
+   * A container env under container-IP routing answers on its own bridge
+   * address rather than loopback; returning null keeps the default.
+   */
+  getSessionPreviewHost?: (sessionId: string) => string | null;
   userOwnsSession: (req: AuthenticatedRequest, sessionId: string) => boolean;
   /**
    * Public URL of the Hub UI that's expected to iframe the preview
@@ -128,11 +134,11 @@ export function injectHtmlPreviewBaseHref(
 
 function upstreamRequestHeaders(
   req: IncomingMessage,
+  host: string,
   port: number,
 ): Record<string, string | string[]> {
   const headers = copyHeaders(req);
-  const upstreamHost = resolvePreviewUpstreamHost();
-  headers.host = `${upstreamHost}:${port}`;
+  headers.host = `${host}:${port}`;
   return headers;
 }
 
@@ -200,14 +206,14 @@ function proxyHttp(
   port: number,
   parentPublicUrl?: string | null,
   internalPort?: number,
+  upstreamHost: string = resolvePreviewUpstreamHost(),
 ): void {
-  const upstreamHost = resolvePreviewUpstreamHost();
   const mount =
     internalPort === undefined
       ? previewProxyMountPath(sessionId)
       : devServerPortProxyPath(sessionId, internalPort, false);
   const path = previewUpstreamPathForMount(req.originalUrl, mount);
-  const headers = upstreamRequestHeaders(req, port);
+  const headers = upstreamRequestHeaders(req, upstreamHost, port);
 
   const proxyReq = http.request(
     {
@@ -293,8 +299,12 @@ function denyUpgrade(socket: Duplex, statusLine: string): void {
   socket.destroy();
 }
 
-function buildUpgradeRequestLines(req: IncomingMessage, path: string, port: number): string {
-  const upstreamHost = resolvePreviewUpstreamHost();
+function buildUpgradeRequestLines(
+  req: IncomingMessage,
+  path: string,
+  upstreamHost: string,
+  port: number,
+): string {
   const lines = [`${req.method ?? 'GET'} ${path} HTTP/${req.httpVersion || '1.1'}`];
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
@@ -336,7 +346,7 @@ export function handlePreviewProxyUpgrade(
     return;
   }
 
-  const upstreamHost = resolvePreviewUpstreamHost();
+  const upstreamHost = deps.getSessionPreviewHost?.(sessionId) ?? resolvePreviewUpstreamHost();
   const mount =
     internalPort == null
       ? previewProxyMountPath(sessionId)
@@ -344,7 +354,7 @@ export function handlePreviewProxyUpgrade(
   const path = previewUpstreamPathForMount(req.url, mount);
 
   const proxySocket = net.connect({ host: upstreamHost, port }, () => {
-    proxySocket.write(buildUpgradeRequestLines(req, path, port));
+    proxySocket.write(buildUpgradeRequestLines(req, path, upstreamHost, port));
     if (head.length > 0) proxySocket.write(head);
     socket.pipe(proxySocket);
     proxySocket.pipe(socket);
@@ -410,20 +420,31 @@ export function createPreviewProxyHandler(deps: PreviewProxyDeps): RequestHandle
       res.status(503).send('No active preview for this session');
       return;
     }
-    proxyHttp(req, res, sessionId, port, deps.parentPublicUrl, internalPort ?? undefined);
+    proxyHttp(
+      req,
+      res,
+      sessionId,
+      port,
+      deps.parentPublicUrl,
+      internalPort ?? undefined,
+      deps.getSessionPreviewHost?.(sessionId) ?? resolvePreviewUpstreamHost(),
+    );
   };
 }
 
 /** Default wiring for `index.ts` — same port lookup as the HTTP proxy routes. */
 export function attachDefaultPreviewProxyUpgrade(
   server: Server,
-  lookup: Pick<PreviewProxyDeps, 'getSessionPreviewPort'>,
+  lookup: Pick<PreviewProxyDeps, 'getSessionPreviewPort' | 'getSessionPreviewHost'>,
   opts?: { subdomainBase?: string | null },
 ): void {
   attachPreviewProxyUpgrade(
     server,
     {
       getSessionPreviewPort: lookup.getSessionPreviewPort,
+      ...(lookup.getSessionPreviewHost
+        ? { getSessionPreviewHost: lookup.getSessionPreviewHost }
+        : {}),
       userOwnsSession: defaultUserOwnsSession,
     },
     opts,

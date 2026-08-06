@@ -28,6 +28,7 @@
  */
 
 import type { Project } from '../types.js';
+import type { SessionEnvKind } from '../session-env/session-env.js';
 import {
   AWS_AMBIENT_CREDENTIAL_KEYS,
   mergeProjectAwsSpawnEnv,
@@ -41,10 +42,10 @@ export interface BuildTerminalShellEnvOpts {
   /**
    * Isolation boundary the PTY runs in. Only the `host` adapter shares a
    * filesystem with the Hub, so only there can the shell read the generated
-   * config files; a sysbox shell would get paths that do not exist inside its
-   * container.
+   * config files; a containerized shell would get paths that do not exist
+   * inside its own filesystem.
    */
-  envKind: 'host' | 'sysbox';
+  envKind: SessionEnvKind;
 }
 
 /**

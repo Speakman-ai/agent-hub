@@ -28,12 +28,40 @@ export function resolveSessionEnvBackend(opts: {
   configured: SessionEnvBackendChoice;
   /** Typically `probeSysboxCapability().available` (sysbox-capability.ts). */
   sysboxAvailable: boolean;
+  /** Whether a usable docker daemon was found (`container` backend). */
+  dockerAvailable?: boolean;
+  /**
+   * Whether the Hub can dial container IPs (`container-ip` routing). When it
+   * cannot, a container env has to publish ports, which reintroduces the
+   * shared host pool and the declare-ports-before-start rule that the
+   * container backend exists to remove — so `auto` declines it. An explicit
+   * `container` still honors the request.
+   */
+  containerRoutingUsable?: boolean;
   /** Backends with a registered adapter. Defaults to the live registry. */
   registeredBackends?: ReadonlySet<SessionEnvKind>;
 }): SessionEnvKind {
   const registered = opts.registeredBackends ?? registeredSessionEnvBackends();
   const sysboxUsable = opts.sysboxAvailable && registered.has('sysbox');
+  const containerUsable =
+    opts.dockerAvailable === true &&
+    opts.containerRoutingUsable === true &&
+    registered.has('container');
   if (opts.configured === 'host') return 'host';
+  if (opts.configured === 'container') {
+    if (opts.dockerAvailable !== true) {
+      throw new Error(
+        'sessionEnvAdapter is set to "container" but no usable docker daemon was found. ' +
+          'Start docker or set sessionEnvAdapter to "host"/"auto".',
+      );
+    }
+    if (!registered.has('container')) {
+      throw new Error(
+        'sessionEnvAdapter is set to "container" but no container adapter is registered in this build.',
+      );
+    }
+    return 'container';
+  }
   if (opts.configured === 'sysbox') {
     if (!opts.sysboxAvailable) {
       throw new Error(
@@ -49,7 +77,12 @@ export function resolveSessionEnvBackend(opts: {
     }
     return 'sysbox';
   }
-  return sysboxUsable ? 'sysbox' : 'host';
+  // `auto`, in descending order of isolation strength. Falling to `host`
+  // means sessions share the Hub machine, so it is the last resort rather
+  // than the default it used to be on any box without sysbox.
+  if (sysboxUsable) return 'sysbox';
+  if (containerUsable) return 'container';
+  return 'host';
 }
 
 export interface CreateSessionEnvOpts {
@@ -78,6 +111,17 @@ const backendRegistry = new Map<SessionEnvKind, SessionEnvFactory>([
       new SysboxSessionEnv({
         sessionId: opts.sessionId,
         worktreePath: opts.worktreePath,
+        isolation: 'sysbox-runc',
+        ...opts.sysboxDeps,
+      }),
+  ],
+  [
+    'container',
+    (opts) =>
+      new SysboxSessionEnv({
+        sessionId: opts.sessionId,
+        worktreePath: opts.worktreePath,
+        isolation: 'privileged',
         ...opts.sysboxDeps,
       }),
   ],

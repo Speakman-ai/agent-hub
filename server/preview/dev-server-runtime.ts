@@ -138,6 +138,18 @@ export type CreateDevServerEnvFn = (opts: {
   allocateHostPort: (internalPort: number) => number;
 }) => SessionEnv;
 
+/**
+ * Resolve the environment the session already owns, if any.
+ *
+ * A containerized env *is* the session's isolation boundary, so the preview
+ * must run in the same one as the terminal — otherwise "start the dev server,
+ * then curl it from the terminal" fails, and the agent's tests run against a
+ * different Postgres than the preview serves. Returning null means the
+ * runtime creates its own env, which is correct for the host adapter where
+ * there is no boundary to share in the first place.
+ */
+export type ResolveSharedSessionEnvFn = (sessionId: string) => Promise<SessionEnv | null>;
+
 export interface DevServerRuntimeConfig {
   /** Host-port pool for primary ports. Default 4100–4999. */
   portRange?: PortRange;
@@ -178,6 +190,11 @@ export interface DevServerRuntimeDeps {
   /** {ok,status} health probe; throws are treated as "not up yet". */
   fetch: HealthFetchFn;
   createEnv?: CreateDevServerEnvFn;
+  /**
+   * Session-owned env lookup. When it yields an env, the preview runs inside
+   * the session's existing boundary instead of starting a second one.
+   */
+  resolveSharedEnv?: ResolveSharedSessionEnvFn;
   clock?: Clock;
   config?: DevServerRuntimeConfig;
   /**
@@ -302,6 +319,12 @@ interface ActiveDevServer {
   tail: string[];
   primaryHostPort: number;
   primaryUrl: string;
+  /**
+   * False when the env belongs to the session rather than to this preview.
+   * A shared env outlives the dev server — stopping the preview must not
+   * take the terminal's shell and the project's databases down with it.
+   */
+  ownsEnv: boolean;
   /** Set before dispose so the exit handler doesn't mark a stop as a crash. */
   stopping: boolean;
 }
@@ -320,6 +343,7 @@ export class DevServerRuntime {
   private readonly db: Database;
   private readonly fetch: HealthFetchFn;
   private readonly createEnv: CreateDevServerEnvFn;
+  private readonly resolveSharedEnv: ResolveSharedSessionEnvFn | null;
   private readonly clock: Clock;
   private readonly portRange: PortRange;
   private readonly readyTimeoutMs: number;
@@ -358,6 +382,7 @@ export class DevServerRuntime {
           worktreePath: opts.worktreePath,
           hostDeps: { allocateHostPort: opts.allocateHostPort },
         }));
+    this.resolveSharedEnv = deps.resolveSharedEnv ?? null;
     this.clock = deps.clock ?? systemClock;
     this.portRange = deps.config?.portRange ?? DEFAULT_PREVIEW_PORT_RANGE;
     this.readyTimeoutMs = deps.config?.readyTimeoutMs ?? DEFAULT_DEV_SERVER_READY_TIMEOUT_MS;
@@ -461,13 +486,7 @@ export class DevServerRuntime {
     const entry = this.active.get(devServerId);
     if (entry) {
       entry.stopping = true;
-      try {
-        await entry.env.dispose({ graceMs: this.disposeGraceMs });
-      } catch (err) {
-        this.logger.warn(
-          `[dev-server] env dispose failed for ${devServerId}: ${(err as Error).message}`,
-        );
-      }
+      await this.releaseEnv(entry, devServerId);
       this.active.delete(devServerId);
     } else {
       // Restart-orphan: the row survived a Hub restart, so there is no
@@ -624,6 +643,24 @@ export class DevServerRuntime {
     if (internalPort === undefined) return row.port > 0 ? row.port : null;
     const match = this.getPorts(row.id).find((p) => p.internalPort === internalPort);
     return match && match.hostPort > 0 ? match.hostPort : null;
+  }
+
+  /**
+   * Host the preview proxy should dial for `sessionId`, or null to use the
+   * Hub-wide default.
+   *
+   * Loopback is only correct when the env publishes its ports onto the host.
+   * A container env under container-IP routing publishes nothing and answers
+   * on its own bridge address, so dialing loopback would reach either
+   * nothing or — worse — an unrelated process that happens to hold the port.
+   */
+  getSessionUpstreamHost(sessionId: string): string | null {
+    const row = this.getActiveBySessionId(sessionId);
+    if (!row) return null;
+    const env = this.active.get(row.id)?.env;
+    if (!env || env.disposed) return null;
+    // Every mapping in one env shares a dial host, so the first is enough.
+    return env.listPortMappings()[0]?.host ?? null;
   }
 
   /** All port mappings for a group — primary first. */
@@ -801,18 +838,27 @@ export class DevServerRuntime {
     const reservedByInternal = new Map(reserved.map((r) => [r.internalPort, r.hostPort]));
 
     let env: SessionEnv;
+    let ownsEnv = false;
     try {
-      env = this.createEnv({
-        sessionId,
-        worktreePath,
-        allocateHostPort: (internalPort) => {
-          const hostPort = reservedByInternal.get(internalPort);
-          if (hostPort === undefined) {
-            throw new Error(`No reserved host port for internal port ${internalPort}`);
-          }
-          return hostPort;
-        },
-      });
+      // Prefer the session's own environment so the preview, the terminal,
+      // and anything the agent runs share one boundary.
+      const shared = this.resolveSharedEnv ? await this.resolveSharedEnv(sessionId) : null;
+      if (shared) {
+        env = shared;
+      } else {
+        ownsEnv = true;
+        env = this.createEnv({
+          sessionId,
+          worktreePath,
+          allocateHostPort: (internalPort) => {
+            const hostPort = reservedByInternal.get(internalPort);
+            if (hostPort === undefined) {
+              throw new Error(`No reserved host port for internal port ${internalPort}`);
+            }
+            return hostPort;
+          },
+        });
+      }
     } catch (err) {
       // Adapter construction can fail (for example, a selected sysbox
       // backend becoming unavailable after the boot probe). Do not
@@ -834,6 +880,7 @@ export class DevServerRuntime {
         internalPort: primaryEntry.internalPort,
         primary: true,
       }),
+      ownsEnv,
       stopping: false,
     };
     this.active.set(groupId, record);
@@ -976,14 +1023,29 @@ export class DevServerRuntime {
     return { devServerId: groupId, url: record.primaryUrl, port: primaryEntry.hostPort };
   }
 
-  /** Undo a partially-started group: dispose the env, drop the rows. */
+  /**
+   * Release the env behind a stopping dev server.
+   *
+   * An env this runtime created is disposed outright. A session-owned env is
+   * only relieved of *this* dev server's process — the session, its terminal,
+   * and its backing services keep running.
+   */
+  private async releaseEnv(record: ActiveDevServer, label: string): Promise<void> {
+    try {
+      if (record.ownsEnv) {
+        await record.env.dispose({ graceMs: this.disposeGraceMs });
+      } else {
+        record.proc?.kill('SIGTERM');
+      }
+    } catch (err) {
+      this.logger.warn(`[dev-server] env release failed for ${label}: ${(err as Error).message}`);
+    }
+  }
+
+  /** Undo a partially-started group: release the env, drop the rows. */
   private async rollbackStart(groupId: string, record: ActiveDevServer): Promise<void> {
     record.stopping = true;
-    try {
-      await record.env.dispose({ graceMs: this.disposeGraceMs });
-    } catch {
-      // Best-effort — the row delete below frees the ports either way.
-    }
+    await this.releaseEnv(record, groupId);
     this.active.delete(groupId);
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
   }
@@ -1250,13 +1312,7 @@ export class DevServerRuntime {
     // health timeout can leave grandchildren alive; SessionEnv.dispose
     // owns the process-group SIGTERM → SIGKILL grace and port release.
     if (record && !record.env.disposed) {
-      try {
-        await record.env.dispose({ graceMs: this.disposeGraceMs });
-      } catch (err) {
-        this.logger.warn(
-          `[dev-server ${groupId}] env dispose after failure threw: ${(err as Error).message}`,
-        );
-      }
+      await this.releaseEnv(record, groupId);
     }
     this.logger.warn(`[dev-server ${groupId}] failed: ${reason}`);
     if (record && this.notifyStatus) {
