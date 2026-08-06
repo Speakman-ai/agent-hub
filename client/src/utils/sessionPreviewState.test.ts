@@ -373,6 +373,29 @@ describe('resolvePreviewBrowserUrl', () => {
       ),
     ).toBe(`https://${sid}.preview.example.com/orders?status=open#row=42`);
   });
+
+  it('gives an extra portMap entry its own <port>--<sid> origin', () => {
+    // The `/p/<internalPort>` sub-mount used to survive the strip, so an
+    // extra port loaded as `https://<sid>.<base>/p/8787/` — the primary
+    // port's origin, under a path its dev server knows nothing about.
+    // Each port needs its own origin rendering at `/` for the same reason
+    // the primary does.
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/p/8787/orders?q=1`, {
+        subdomainBase: 'preview.example.com',
+      }),
+    ).toBe(`https://8787--${sid}.preview.example.com/orders?q=1`);
+  });
+
+  it('routes the bare extra-port mount to that port at the origin root', () => {
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/p/3000`, {
+        subdomainBase: 'preview.example.com',
+      }),
+    ).toBe(`https://3000--${sid}.preview.example.com/`);
+  });
 });
 
 describe('rewriteLoopbackPreviewUrl', () => {

@@ -264,6 +264,7 @@ import { PtySession } from './terminal/pty-session.js';
 import { buildTerminalShellEnv } from './terminal/terminal-shell-env.js';
 import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
+import { previewSubdomainRewrittenUrl } from './preview/preview-public-url.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { PREVIEW_REAPER_CRON } from './preview/preview-runtime-primitives.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
@@ -851,13 +852,11 @@ app.use(
 app.use((req, _res, next) => {
   const base = config.previewSubdomainBase;
   if (!base) return next();
-  const sessionId = parsePreviewSubdomainHost(req.headers.host, base);
-  if (!sessionId) return next();
+  const target = parsePreviewSubdomainHost(req.headers.host, base);
+  if (!target) return next();
   // Preserve the original suffix (query string included). Express
   // strips the host from req.url already, so it's just `/some/path?q=v`.
-  const original = req.url || '/';
-  const suffix = original.startsWith('/') ? original : `/${original}`;
-  req.url = `/api/sessions/${encodeURIComponent(sessionId)}/preview/proxy${suffix}`;
+  req.url = previewSubdomainRewrittenUrl(target, req.url);
   // Mark so `authMiddleware` can choose the right cookie Path scope
   // (Path=/ on the subdomain origin vs. the proxy mount path on the
   // main Hub origin) and downstream handlers can pick the right CSP

@@ -79,6 +79,36 @@ describe('startSessionPreview', () => {
     expect(runtime.start).toHaveBeenCalledWith('sess-1', project, '/tmp/wt');
   });
 
+  it('refuses to start when the deployment can only serve a path-prefix preview', async () => {
+    // Starting anyway produces a preview that boots, reports ready, and
+    // then white-screens or never hot-reloads — a deployment problem that
+    // looks like an application bug.
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast: vi.fn(),
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getSession: () => session,
+      routing: { publicUrl: 'https://hub.example.com', subdomainBase: null },
+    });
+    expect(result).toMatchObject({ ok: false, statusCode: 501 });
+    expect(handlePreviewBlock).not.toHaveBeenCalled();
+  });
+
+  it('starts normally when subdomain routing is configured', async () => {
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast: vi.fn(),
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getDevServerRuntime: () => null,
+      getSession: () => session,
+      routing: {
+        publicUrl: 'https://hub.example.com',
+        subdomainBase: 'preview.hub.example.com',
+      },
+    });
+    expect(result).toEqual({ ok: true, started: true });
+  });
+
   it('returns 409 before worktree provisioning finishes', async () => {
     const result = await startSessionPreview({
       sessionId: 'sess-1',

@@ -49,6 +49,7 @@ import {
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
 } from './preview-schema.js';
 import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-port-reclaim.js';
+import { isHostPortFree, type IsPortFreeFn } from './host-port-probe.js';
 import type { Clock, HealthFetchFn, PortRange } from './preview-runtime-primitives.js';
 import { parseDbTime, systemClock } from './preview-runtime-primitives.js';
 import { appendPreviewLogTailLine, DEFAULT_PREVIEW_LOG_TAIL_LINES } from './preview-log-tail.js';
@@ -192,8 +193,15 @@ export interface DevServerRuntimeDeps {
   /** Project resolver for `reap`'s TTL lookup + orphan detection. */
   getProject?: (projectId: string) => Project | null;
   /** Signal a pid (negative = process group). Used only for rows that
-   *  survived a Hub restart, where no live SessionEnv exists. */
-  kill?: (pid: number, signal: NodeJS.Signals) => void;
+   *  survived a Hub restart, where no live SessionEnv exists. Signal `0`
+   *  is a liveness check: it throws ESRCH when the process is gone. */
+  kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
+  /**
+   * Host-level port availability check, consulted before a port is
+   * handed out. Defaults to a real socket bind (`isHostPortFree`);
+   * tests inject a stub to stay hermetic.
+   */
+  isPortFree?: IsPortFreeFn;
   notifyLog?: DevServerNotifyLogFn;
   notifyStatus?: DevServerNotifyStatusFn;
   logger?: { log: (m: string) => void; warn: (m: string) => void; error: (m: string) => void };
@@ -330,7 +338,8 @@ export class DevServerRuntime {
   private readonly sessionLockTimeoutMs: number;
   private readonly loadProjectEnv: DevServerRuntimeDeps['loadProjectEnv'];
   private readonly getProject: DevServerRuntimeDeps['getProject'];
-  private readonly killFn: (pid: number, signal: NodeJS.Signals) => void;
+  private readonly killFn: (pid: number, signal: NodeJS.Signals | 0) => void;
+  private readonly isPortFree: IsPortFreeFn;
   private readonly notifyLog: DevServerNotifyLogFn | null;
   private readonly notifyStatus: DevServerNotifyStatusFn | null;
   private readonly logger: NonNullable<DevServerRuntimeDeps['logger']>;
@@ -365,6 +374,7 @@ export class DevServerRuntime {
     this.loadProjectEnv = deps.loadProjectEnv;
     this.getProject = deps.getProject;
     this.killFn = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
+    this.isPortFree = deps.isPortFree ?? isHostPortFree;
     this.notifyLog = deps.notifyLog ?? null;
     this.notifyStatus = deps.notifyStatus ?? null;
     this.logger = deps.logger ?? {
@@ -461,8 +471,10 @@ export class DevServerRuntime {
       this.active.delete(devServerId);
     } else {
       // Restart-orphan: the row survived a Hub restart, so there is no
-      // live SessionEnv. Best-effort SIGTERM to the recorded pid's
-      // process group so the tree doesn't outlive the row.
+      // live SessionEnv to dispose. Signal the recorded pid directly,
+      // escalating to SIGKILL, because the row (and its port) is about
+      // to be deleted — a survivor here becomes the orphan that hijacks
+      // the next session allocated this port.
       const pidRow = this.db
         .prepare(
           `SELECT pid FROM worktree_preview_processes
@@ -470,19 +482,64 @@ export class DevServerRuntime {
         )
         .get(devServerId) as { pid: number } | undefined;
       if (pidRow?.pid) {
-        try {
-          this.killFn(-pidRow.pid, 'SIGTERM');
-        } catch {
-          try {
-            this.killFn(pidRow.pid, 'SIGTERM');
-          } catch {
-            // Already gone.
-          }
-        }
+        await this.terminateOrphanPid(pidRow.pid, devServerId);
       }
     }
     // FK ON DELETE CASCADE removes the process rows + frees the ports.
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(devServerId);
+  }
+
+  /**
+   * SIGTERM → grace → SIGKILL a pid that has no live `SessionEnv`.
+   *
+   * Signals the process group first (the spawn is a group leader, so
+   * this reaches `npm` → `vite` grandchildren) and falls back to the
+   * bare pid. Returns once the process is gone or the grace window has
+   * elapsed and SIGKILL has been sent.
+   */
+  /**
+   * SIGKILL a pid whose port reservation is being reclaimed. Routed
+   * through the injected `kill` so tests never signal a real process.
+   */
+  private readonly killReclaimedPid = (pid: number): void => {
+    for (const target of [-pid, pid]) {
+      try {
+        this.killFn(target, 'SIGKILL');
+        return;
+      } catch {
+        // ESRCH: already gone, or not a group leader — try the bare pid.
+      }
+    }
+  };
+
+  private async terminateOrphanPid(pid: number, devServerId: string): Promise<void> {
+    const signal = (sig: NodeJS.Signals | 0): boolean => {
+      for (const target of [-pid, pid]) {
+        try {
+          this.killFn(target, sig);
+          return true;
+        } catch {
+          // ESRCH on the group form is expected when the child was not a
+          // group leader; retry the bare pid before giving up.
+        }
+      }
+      return false;
+    };
+
+    if (!signal('SIGTERM')) return; // Already gone.
+
+    const deadline = this.clock.nowMs() + this.disposeGraceMs;
+    const pollMs = Math.max(1, Math.min(100, Math.floor(this.disposeGraceMs / 5)));
+    while (this.clock.nowMs() < deadline) {
+      await this.clock.sleep(pollMs);
+      if (!signal(0)) return; // Exited within the grace window.
+    }
+
+    if (signal('SIGKILL')) {
+      this.logger.warn(
+        `[dev-server] pid ${pid} for ${devServerId} ignored SIGTERM; sent SIGKILL before releasing its port`,
+      );
+    }
   }
 
   /** Stop every dev-server group owned by `sessionId`. Returns the count. */
@@ -704,7 +761,12 @@ export class DevServerRuntime {
     const entries = resolveDevServerPortEntries(cfg);
     const names = uniquePortEntryNames(entries);
 
-    const reclaimed = reclaimFailedPortsInRange(this.db, this.portRange.min, this.portRange.max);
+    const reclaimed = reclaimFailedPortsInRange(
+      this.db,
+      this.portRange.min,
+      this.portRange.max,
+      this.killReclaimedPid,
+    );
     if (reclaimed > 0) {
       this.logger.log(`[dev-server] reclaimed ${reclaimed} failed preview port(s)`);
     }
@@ -727,8 +789,8 @@ export class DevServerRuntime {
         const primary = entry.primary === true;
         reserved.push(
           primary
-            ? this.reservePooledRow(groupId, sessionId, names[i], entry.internalPort)
-            : this.reserveIdentityRow(groupId, sessionId, names[i], entry.internalPort),
+            ? await this.reservePooledRow(groupId, sessionId, names[i], entry.internalPort)
+            : await this.reserveIdentityRow(groupId, sessionId, names[i], entry.internalPort),
         );
       }
     } catch (err) {
@@ -931,15 +993,15 @@ export class DevServerRuntime {
    * the shared `UNIQUE(port)` — the loser of a concurrent-start race
    * reclaims failed holders and picks the next free port.
    */
-  private reservePooledRow(
+  private async reservePooledRow(
     groupId: string,
     sessionId: string,
     name: string,
     internalPort: number,
-  ): ReservedEntry {
+  ): Promise<ReservedEntry> {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      const hostPort = this.allocatePort();
+      const hostPort = await this.allocatePort();
       const inserted = this.tryInsertProcessRow(
         groupId,
         sessionId,
@@ -952,7 +1014,7 @@ export class DevServerRuntime {
       this.logger.warn(
         `[dev-server] port ${hostPort} conflict for ${name} on attempt ${attempt + 1}, retrying`,
       );
-      reclaimFailedPortHolder(this.db, hostPort);
+      reclaimFailedPortHolder(this.db, hostPort, this.killReclaimedPid);
     }
     throw new Error('unreachable: dev-server port retry loop exited without returning');
   }
@@ -964,12 +1026,12 @@ export class DevServerRuntime {
    * UNIQUE conflict after one reclaim attempt is a real cross-session
    * collision and fails the start loudly.
    */
-  private reserveIdentityRow(
+  private async reserveIdentityRow(
     groupId: string,
     sessionId: string,
     name: string,
     internalPort: number,
-  ): ReservedEntry {
+  ): Promise<ReservedEntry> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const inserted = this.tryInsertProcessRow(
         groupId,
@@ -979,8 +1041,23 @@ export class DevServerRuntime {
         internalPort,
         false,
       );
-      if (inserted) return inserted;
-      reclaimFailedPortHolder(this.db, internalPort);
+      if (inserted) {
+        // An extra port can't be steered via PORT, so the process will
+        // bind this exact number. If something already holds it the
+        // proxy would tunnel to that stranger instead — fail the start
+        // rather than serve someone else's app on this session's URL.
+        if (!(await this.isPortFree(internalPort))) {
+          this.db
+            .prepare(`DELETE FROM worktree_preview_processes WHERE id = ?`)
+            .run(inserted.rowId);
+          throw new Error(
+            `Dev-server port ${internalPort} ("${name}") is already in use by a process the Hub does not manage. ` +
+              'Stop whatever is listening on it, or change the portMap entry.',
+          );
+        }
+        return inserted;
+      }
+      reclaimFailedPortHolder(this.db, internalPort, this.killReclaimedPid);
     }
     throw new Error(
       `Dev-server port ${internalPort} ("${name}") is already in use by another preview or dev server`,
@@ -1012,7 +1089,17 @@ export class DevServerRuntime {
     return { rowId, name, internalPort, hostPort, primary };
   }
 
-  private allocatePort(): number {
+  /**
+   * Next port that is free **both** in the pool table and on the host.
+   *
+   * The DB check alone is not enough: teardown paths exist that delete a
+   * process row without confirming the process died, so a port can read
+   * as free while an orphaned dev server still holds the socket. Handing
+   * that port out makes the proxy serve the orphan's app under this
+   * session's URL. Probing the socket demotes that from a silent
+   * wrong-app preview to "the allocator skipped a busy port".
+   */
+  private async allocatePort(): Promise<number> {
     const taken = new Set(
       (
         this.db
@@ -1024,11 +1111,25 @@ export class DevServerRuntime {
           .all(this.portRange.min, this.portRange.max) as Array<{ port: number }>
       ).map((r) => r.port),
     );
+    const squatted: number[] = [];
     for (let p = this.portRange.min; p <= this.portRange.max; p++) {
-      if (!taken.has(p)) return p;
+      if (taken.has(p)) continue;
+      if (!(await this.isPortFree(p))) {
+        squatted.push(p);
+        continue;
+      }
+      if (squatted.length > 0) {
+        this.logger.warn(
+          `[dev-server] skipped ${squatted.length} untracked in-use port(s) before allocating ${p}: ${squatted.join(', ')}. ` +
+            'These are held by processes the Hub no longer tracks (orphaned dev servers); ' +
+            'stop them to return the ports to the pool.',
+        );
+      }
+      return p;
     }
     throw new Error(
-      `Dev-server port pool exhausted: all ports in [${this.portRange.min}, ${this.portRange.max}] are in use`,
+      `Dev-server port pool exhausted: all ports in [${this.portRange.min}, ${this.portRange.max}] are in use ` +
+        `(${taken.size} tracked by the Hub, ${squatted.length} held by untracked processes)`,
     );
   }
 

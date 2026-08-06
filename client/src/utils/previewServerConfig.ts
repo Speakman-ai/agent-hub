@@ -79,6 +79,34 @@ export function resolvePreviewAllowedHosts(env: any) {
 export const PREVIEW_WATCH_IGNORED = ['**/.agent-hub-preview/**'];
 
 /**
+ * HMR transport settings — normally none.
+ *
+ * When `hmr.port` matches the dev-server port (the default), Vite's client
+ * derives the WebSocket host, port, and protocol from the location it was
+ * served from. Behind a same-origin proxy that forwards the upgrade, that
+ * inference is already correct: a page served over `https://…/` dials
+ * `wss://…/` on 443, and a plain-http Hub dials `ws://`.
+ *
+ * Pinning `clientPort: 443` / `protocol: 'wss'` — as this did — only matches
+ * one deployment shape. Anywhere else (a local http Hub, a non-443 port) the
+ * client dials an origin that doesn't exist and HMR silently dies, which is
+ * indistinguishable from the proxy dropping the upgrade. Both knobs stay
+ * available for deployments that genuinely terminate elsewhere, but nothing
+ * is emitted unless an operator sets them.
+ */
+export function buildPreviewHmrConfig(env: any) {
+  const clientPort = Number(env.AGENT_HUB_PREVIEW_HMR_CLIENT_PORT) || null;
+  const protocol = (env.AGENT_HUB_PREVIEW_HMR_PROTOCOL || '').trim();
+  if (!clientPort && !protocol) return {};
+  return {
+    hmr: {
+      ...(protocol ? { protocol } : {}),
+      ...(clientPort ? { clientPort } : {}),
+    },
+  };
+}
+
+/**
  * Build the Vite `server` config for preview/HMR mode, or null when not in a
  * session preview. Kept a pure function of `env` so it is unit-testable
  * without running the full vite.config.js (which shells out to git, etc.).
@@ -97,13 +125,6 @@ export function buildPreviewServerConfig(env: any) {
   const apiTarget =
     env.AGENT_HUB_PREVIEW_API_TARGET ||
     `http://127.0.0.1:${Number(env.AGENT_HUB_PORT) || DEFAULT_API_PORT}`;
-  // HMR rides the Hub preview proxy's WebSocket tunnel. The public origin is TLS
-  // on 443 while Vite listens on `port` internally, so the HMR client must be
-  // told the public port/protocol. Defaults suit the prod TLS deployment;
-  // override for a plain-http Hub.
-  const hmrClientPort = Number(env.AGENT_HUB_PREVIEW_HMR_CLIENT_PORT) || 443;
-  const hmrProtocol = env.AGENT_HUB_PREVIEW_HMR_PROTOCOL || 'wss';
-
   return {
     host: '0.0.0.0',
     port,
@@ -111,7 +132,7 @@ export function buildPreviewServerConfig(env: any) {
     // `*.preview.<base>` session subdomains rather than a blanket `true` (the
     // dev server also proxies /api same-origin). See resolvePreviewAllowedHosts.
     allowedHosts: resolvePreviewAllowedHosts(env),
-    hmr: { protocol: hmrProtocol, clientPort: hmrClientPort },
+    ...buildPreviewHmrConfig(env),
     // Under the sysbox session backend the worktree is bind-mounted into a
     // per-session container, and inotify can miss events across the mount, so
     // poll to keep HMR reliable on both backends.

@@ -14,22 +14,47 @@ export type ReclaimFailedPortResult = {
   groupDeleted: boolean;
 };
 
+/**
+ * Kill the process recorded on a row whose port is being released.
+ * Defaults to a real `process.kill`; tests inject a spy.
+ *
+ * Reclaiming a port while its process still listens is how an orphan
+ * ends up serving a *different* session's preview, so the kill happens
+ * before the row (and therefore the port reservation) disappears.
+ */
+export type KillReclaimedPidFn = (pid: number) => void;
+
+const defaultKillReclaimedPid: KillReclaimedPidFn = (pid) => {
+  // The row is failed and about to be deleted — no reason to negotiate a
+  // graceful shutdown. Group form first so npm → vite children go too.
+  for (const target of [-pid, pid]) {
+    try {
+      process.kill(target, 'SIGKILL');
+      return;
+    } catch {
+      // ESRCH: already gone, or not a group leader — try the bare pid.
+    }
+  }
+};
+
 export function reclaimFailedPortHolder(
   db: Database,
   port: number,
+  killPid: KillReclaimedPidFn = defaultKillReclaimedPid,
 ): ReclaimFailedPortResult | null {
   const conflicting = db
     .prepare(
-      `SELECT id, status, group_id
+      `SELECT id, status, group_id, pid
          FROM worktree_preview_processes
         WHERE port = ?`,
     )
-    .get(port) as { id: string; status: string; group_id: string } | undefined;
+    .get(port) as { id: string; status: string; group_id: string; pid: number | null } | undefined;
 
   if (!conflicting || conflicting.status !== 'failed') {
     return null;
   }
 
+  if (conflicting.pid) killPid(conflicting.pid);
   db.prepare(`DELETE FROM worktree_preview_processes WHERE id = ?`).run(conflicting.id);
   const remaining = db
     .prepare(`SELECT COUNT(*) AS n FROM worktree_preview_processes WHERE group_id = ?`)
@@ -43,7 +68,12 @@ export function reclaimFailedPortHolder(
 }
 
 /** Delete every `failed` process row (and empty groups) in a port range. */
-export function reclaimFailedPortsInRange(db: Database, min: number, max: number): number {
+export function reclaimFailedPortsInRange(
+  db: Database,
+  min: number,
+  max: number,
+  killPid: KillReclaimedPidFn = defaultKillReclaimedPid,
+): number {
   const ports = db
     .prepare(
       `SELECT DISTINCT port
@@ -55,7 +85,7 @@ export function reclaimFailedPortsInRange(db: Database, min: number, max: number
 
   let reclaimed = 0;
   for (const { port } of ports) {
-    if (reclaimFailedPortHolder(db, port)) reclaimed++;
+    if (reclaimFailedPortHolder(db, port, killPid)) reclaimed++;
   }
   return reclaimed;
 }

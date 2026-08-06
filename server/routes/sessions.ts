@@ -2178,6 +2178,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
             | StartSessionPreviewDeps['getDevServerRuntime']
             | undefined,
           getSession: (id) => stmts.getSession.get(id) as SessionRow | undefined,
+          routing: {
+            publicUrl: config.publicUrl,
+            subdomainBase: config.previewSubdomainBase,
+          },
         });
         if (!result.ok) {
           return res.status(result.statusCode).json({ error: result.error });

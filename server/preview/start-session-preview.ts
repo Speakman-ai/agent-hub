@@ -8,6 +8,7 @@ import type { BroadcastFn, Project, SessionRow } from '../types.js';
 import type { PreviewRuntimeLike } from './preview-block.js';
 import { handlePreviewBlock, resolvePreviewHandlerReadyTimeoutMs } from './preview-block.js';
 import type { PreviewTask } from './preview-block.js';
+import { previewRoutingBlockReason, type PreviewRoutingInputs } from './preview-routing-mode.js';
 
 export interface StartSessionPreviewBody {
   route?: string;
@@ -21,6 +22,8 @@ export type StartSessionPreviewDeps = {
   findAgent: (agentId: string) => { project: Project; agent: { id: string } } | null;
   getDevServerRuntime?: () => DevServerRuntimeLike | null;
   getSession: (sessionId: string) => SessionRow | undefined;
+  /** Deployment URL shape; see `previewRoutingBlockReason`. */
+  routing?: PreviewRoutingInputs;
 };
 
 /**
@@ -70,6 +73,15 @@ export async function startSessionPreview(
   deps: StartSessionPreviewDeps,
 ): Promise<StartSessionPreviewResult> {
   const { sessionId, body, broadcast, findAgent, getSession } = deps;
+
+  // Refuse before spawning anything. A path-prefix preview boots fine and
+  // reports ready, so starting one just moves the failure somewhere it
+  // looks like a bug in the user's app rather than in the deployment.
+  if (deps.routing) {
+    const blocked = previewRoutingBlockReason(deps.routing);
+    if (blocked) return { ok: false, error: blocked, statusCode: 501 };
+  }
+
   const session = getSession(sessionId);
   if (!session) {
     return { ok: false, error: 'Session not found', statusCode: 404 };
