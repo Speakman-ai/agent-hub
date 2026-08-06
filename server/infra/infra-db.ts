@@ -112,6 +112,20 @@ export function initInfraDb(dataDir: string): Database.Database {
   // throw here on an older install, which is the one gap the reconciler's own
   // docs call out as still needing a hand-written migration.
   const { alters, blocked } = reconcileSchema(db, [INFRA_TABLES_SCHEMA]);
+  const addedTransitionNotificationColumn = alters.some(
+    (alter) =>
+      alter.table === 'infra_alert_transitions' && alter.column === 'notification_delivered_at_ms',
+  );
+  if (addedTransitionNotificationColumn) {
+    // Rows that predate durable notification recovery were already handled by
+    // the old runner. Mark only that migration batch as delivered; leaving
+    // this update unconditional would erase a crash-recovery row on restart.
+    db.prepare(
+      `UPDATE infra_alert_transitions
+          SET notification_delivered_at_ms = at_ms
+        WHERE notification_delivered_at_ms IS NULL`,
+    ).run();
+  }
   for (const alter of alters) {
     console.log(`[infra] schema drift repaired: added ${alter.table}.${alter.column}`);
   }

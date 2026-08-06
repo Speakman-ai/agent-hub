@@ -44,6 +44,8 @@ import { api } from '../utils/api';
       updatedBy: null,
       updatedAt: null,
     }),
+    getInfraAlertRouting: vi.fn().mockResolvedValue({ routing: [] }),
+    updateInfraAlertRouting: vi.fn().mockResolvedValue({ routing: [] }),
     resetReleaseNotificationSettings: vi.fn().mockResolvedValue({
       projectId: 'p1',
       releaseDigestPrompt: 'Write a concise customer-facing release digest.',

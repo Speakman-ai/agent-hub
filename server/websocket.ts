@@ -423,20 +423,22 @@ export default function createWebSocket(
 
   function broadcast(data: Record<string, unknown>): void {
     const msg = JSON.stringify(data);
-    wss.clients.forEach((client: WsClient) => {
-      if (client.readyState !== WsClient.OPEN) return;
-      const stamp = getWsAuthVisibility(client as AuthStampedWs);
-      if (
-        !shouldDeliverBroadcast(data, stamp, {
-          resolveProjectId: resolveProjectIdFromEvent,
-          findProject: findProjectLocal,
-          getSessionOwner,
-        })
-      ) {
-        return;
-      }
-      client.send(msg);
-    });
+    if (data.suppressWebSocket !== true) {
+      wss.clients.forEach((client: WsClient) => {
+        if (client.readyState !== WsClient.OPEN) return;
+        const stamp = getWsAuthVisibility(client as AuthStampedWs);
+        if (
+          !shouldDeliverBroadcast(data, stamp, {
+            resolveProjectId: resolveProjectIdFromEvent,
+            findProject: findProjectLocal,
+            getSessionOwner,
+          })
+        ) {
+          return;
+        }
+        client.send(msg);
+      });
+    }
     // Fan out relevant broadcasts to mobile clients via Expo push. Fire-and-
     // forget: push dispatch must never block the WebSocket hot path.
     //

@@ -26,6 +26,7 @@ import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
 import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection';
 import ProjectMembersSection from './ProjectMembersSection';
+import InfraAlertRoutingSection from './InfraAlertRoutingSection';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar';
 import { isWorkflowProject } from '../utils/projectMode';
 import {
@@ -1146,6 +1147,8 @@ export function ProjectsSection({
       {/* Per-user default Finalize automation level for new sessions in this
           project. Scoped to the signed-in user. */}
       <ProjectDefaultAutomationSection projectId={p.id} />
+
+      <InfraAlertRoutingSection projectId={p.id} showToast={showToast} />
 
       {/* Agent Hub git hosting — host the repo on the Hub itself; GitHub
           becomes an optional downstream mirror. Self-contained: fetches

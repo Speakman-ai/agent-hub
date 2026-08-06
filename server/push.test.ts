@@ -7,6 +7,7 @@ import {
   threadMessagePush,
   reviewAssignedPush,
   prMergedPush,
+  infraAlertPush,
   parseEnabledEvents,
   tokenAcceptsEvent,
   buildMessages,
@@ -83,6 +84,21 @@ describe('push formatters', () => {
       'PR #12 merged by dev: "X"',
     );
   });
+
+  it('formats infrastructure alert transitions without account data', () => {
+    expect(
+      infraAlertPush({
+        severity: 'critical',
+        ruleName: 'CPU high',
+        resourceId: 'i-123',
+        fromState: 'OK',
+        toState: 'ALARM',
+      }),
+    ).toEqual({
+      title: 'Critical infrastructure alert',
+      body: 'CPU high on i-123: OK → ALARM',
+    });
+  });
 });
 
 describe('parseEnabledEvents / tokenAcceptsEvent', () => {
@@ -124,6 +140,7 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
       'thread_message',
       'review_assigned_to_you',
       'pr_merged',
+      'infra_alert',
     ];
     for (const e of required) expect(PUSH_EVENT_TYPES).toContain(e);
   });
@@ -330,6 +347,33 @@ describe('mapBroadcastToPush', () => {
     expect(mapBroadcastToPush({ type: 'awaiting_input', waiting: false })).toBeNull();
   });
 
+  it('maps infra alert transitions and honors routing suppression for push', () => {
+    const mapped = mapBroadcastToPush({
+      type: 'infra_alert_transition',
+      projectId: 'p1',
+      alertId: 'alert-1',
+      ruleId: 'rule-1',
+      severity: 'critical',
+      ruleName: 'CPU high',
+      resourceId: 'i-123',
+      fromState: 'OK',
+      toState: 'ALARM',
+    });
+    expect(mapped?.event).toBe('infra_alert');
+    expect(mapped?.payload.data).toMatchObject({
+      projectId: 'p1',
+      alertId: 'alert-1',
+      resourceId: 'i-123',
+      type: 'infra_alert',
+    });
+    expect(
+      mapBroadcastToPush({
+        type: 'infra_alert_transition',
+        suppressPush: true,
+      }),
+    ).toBeNull();
+  });
+
   it('maps finalize_run_completed to ready_to_push and pushed, forwarding agentId', () => {
     const ready = mapBroadcastToPush({
       type: 'finalize_run_completed',
@@ -439,6 +483,42 @@ describe('handleBroadcastForPush', () => {
       },
     );
     expect(sent).toBe(1);
+  });
+
+  it('honors infra alert per-token opt-out while retaining project visibility filtering', async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
+      return {
+        json: async () => ({ data: body.map(() => ({ status: 'ok' })) }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const sent = await handleBroadcastForPush(
+      {
+        type: 'infra_alert_transition',
+        projectId: 'project-a',
+        alertId: 'alert-a',
+        resourceId: 'i-123',
+        severity: 'critical',
+        ruleName: 'CPU high',
+        fromState: 'OK',
+        toState: 'ALARM',
+      },
+      {
+        fetchFn,
+        getAllTokens: () => [
+          token('enabled', ['infra_alert'], 'owner'),
+          token('opted-out', ['awaiting_feedback'], 'owner'),
+          token('other-project', ['infra_alert'], 'other'),
+        ],
+        removeToken: () => {},
+        findProjectById: () => ({ id: 'project-a', ownerUserId: 'owner' }) as any,
+        resolveProjectId: () => 'project-a',
+      },
+    );
+    expect(sent).toBe(1);
+    const call = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const payload = JSON.parse(String((call[1] as RequestInit).body));
+    expect(payload.map((message: ExpoPushMessage) => message.to)).toEqual(['enabled']);
   });
 
   it('resolves agentId from the session for finalize pushes that lack it', async () => {

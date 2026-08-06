@@ -617,6 +617,27 @@ describe('runInfraAlertEvaluation', () => {
     expect(result.transitions).toBe(1);
     expect(result.broadcastErrors).toBe(1);
     expect(getInfraAlertForResource(rule.id, RESOURCE_KEY)?.state).toBe('ALARM');
+
+    const recoveredBroadcast = vi.fn();
+    runInfraAlertEvaluation({ nowMs: NOW, broadcast: recoveredBroadcast });
+    expect(recoveredBroadcast).toHaveBeenCalledTimes(1);
+    expect(recoveredBroadcast.mock.calls[0][0]).toMatchObject({
+      type: 'infra_alert_transition',
+      toState: 'ALARM',
+      resourceId: 'i-0abc',
+    });
+  });
+
+  it('keeps a transition pending when no broadcast transport is configured', () => {
+    seedResource();
+    seedRule({ evaluationPeriods: 2 });
+    seedSeries([95, 97, 99]);
+
+    runInfraAlertEvaluation({ nowMs: NOW });
+
+    const recoveredBroadcast = vi.fn();
+    runInfraAlertEvaluation({ nowMs: NOW, broadcast: recoveredBroadcast });
+    expect(recoveredBroadcast).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the AWS account id out of the broadcast (INFRA-NOTIFY)', () => {

@@ -50,6 +50,14 @@ export function prMergedNotification({ cardTitle, prNumber, mergedBy }: any) {
         body: `PR #${prNumber} merged${mergedBy ? ` by ${mergedBy}` : ''}: "${cardTitle}"`,
     };
 }
+export function infraAlertNotification({ severity, ruleName, resourceId, fromState, toState }: any) {
+    const label = severity ? `${severity[0].toUpperCase()}${severity.slice(1)}` : 'Infrastructure';
+    const transition = toState ? `: ${fromState || 'state'} → ${toState}` : '';
+    return {
+        title: `${label} infrastructure alert`,
+        body: `${ruleName || 'Alert'} on ${resourceId || 'resource'}${transition}`,
+    };
+}
 /**
  * @param {object} data
  * @param {{
@@ -145,6 +153,10 @@ export function mapBroadcastToNotification(data: any, opts: any = {}) {
                 mergedBy: data.mergedBy,
             });
             return { event: 'pr_merged', title, body };
+        }
+        case 'infra_alert_transition': {
+            const { title, body } = infraAlertNotification(data);
+            return { event: 'infra_alert', title, body };
         }
         default:
             return null;

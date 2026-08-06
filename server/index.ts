@@ -141,6 +141,7 @@ import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
 import createInfraRoutes from './routes/infra.js';
 import createInfraAlertRoutes from './routes/infra-alerts.js';
+import createInfraAlertRoutingRoutes from './routes/infra-alert-routing.js';
 import createDevServerWizardRoutes from './routes/dev-server-wizard.js';
 import createRumWizardRoutes from './routes/rum-wizard.js';
 import createLogsWizardRoutes from './routes/logs-wizard.js';
@@ -284,6 +285,10 @@ import {
   runInfraRetentionReaper,
   INFRA_RETENTION_REAPER_CRON,
 } from './infra/infra-retention-reaper.js';
+import {
+  runInfraAlertOutboxWorker,
+  INFRA_ALERT_OUTBOX_WORKER_CRON,
+} from './infra/alert-outbox-worker.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
@@ -1371,6 +1376,14 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     },
     { name: 'release-notification-outbox-worker', noOverlap: true },
   );
+  void runInfraAlertOutboxWorker();
+  cron.schedule(
+    INFRA_ALERT_OUTBOX_WORKER_CRON,
+    () => {
+      void runInfraAlertOutboxWorker();
+    },
+    { name: 'infra-alert-outbox-worker', noOverlap: true },
+  );
 }
 
 /** Full route wiring; exported so integration tests can `vi.spyOn(routeDeps, 'broadcast')`. */
@@ -1532,6 +1545,7 @@ app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
 app.use(createInfraRoutes(routeDeps));
 app.use(createInfraAlertRoutes(routeDeps));
+app.use(createInfraAlertRoutingRoutes(routeDeps));
 app.use(createDevServerWizardRoutes(routeDeps));
 app.use(createRumWizardRoutes(routeDeps));
 app.use(createLogsWizardRoutes(routeDeps));

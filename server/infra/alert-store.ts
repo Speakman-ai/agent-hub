@@ -110,6 +110,7 @@ export interface InfraAlertTransitionRow {
   reason: InfraAlarmReason | null;
   actor: string;
   at_ms: number;
+  notification_delivered_at_ms: number | null;
 }
 
 // ── Rule validation ────────────────────────────────────────────────────────
@@ -461,6 +462,8 @@ export interface InfraAlertRecordResult {
   autoResolved: boolean;
   /** True when the alarm state changed. Callers fire notifications on this. */
   stateChanged: boolean;
+  /** Transition row id when this evaluation recorded a state/status change. */
+  transitionId: number | null;
   /**
    * True when the evaluation was older than the state currently stored, so only
    * the aggregates were folded in and no transition was recorded.
@@ -588,6 +591,7 @@ function recordEvaluationLocked(
       reopened: false,
       autoResolved: false,
       stateChanged: false,
+      transitionId: null,
       stale: false,
     };
   }
@@ -636,7 +640,7 @@ function recordEvaluationLocked(
       nowMs,
       nowMs,
     );
-    appendInfraAlertTransition(db, {
+    const transitionId = appendInfraAlertTransition(db, {
       alertId: id,
       projectId,
       fromState: 'OK',
@@ -653,6 +657,7 @@ function recordEvaluationLocked(
       reopened: false,
       autoResolved: false,
       stateChanged: true,
+      transitionId,
       stale: false,
     };
   }
@@ -671,6 +676,7 @@ function recordEvaluationLocked(
         reopened: false,
         autoResolved: false,
         stateChanged: false,
+        transitionId: null,
         stale: true,
       };
     }
@@ -686,6 +692,7 @@ function recordEvaluationLocked(
       reopened: false,
       autoResolved: false,
       stateChanged: false,
+      transitionId: null,
       stale: true,
     };
   }
@@ -748,8 +755,9 @@ function recordEvaluationLocked(
     projectId,
   );
 
+  let transitionId: number | null = null;
   if (stateChanged || status !== existing.status) {
-    appendInfraAlertTransition(db, {
+    transitionId = appendInfraAlertTransition(db, {
       alertId: existing.id,
       projectId,
       fromState: existing.state,
@@ -772,6 +780,7 @@ function recordEvaluationLocked(
     reopened,
     autoResolved,
     stateChanged,
+    transitionId,
     stale: false,
   };
 }
@@ -800,22 +809,27 @@ interface InfraAlertTransitionInput {
  * periodic sweep would have to re-find the over-long alerts, and a table with
  * no reaper of its own would grow without bound between sweeps.
  */
-function appendInfraAlertTransition(db: Database.Database, input: InfraAlertTransitionInput): void {
-  db.prepare(
-    `INSERT INTO infra_alert_transitions
+function appendInfraAlertTransition(
+  db: Database.Database,
+  input: InfraAlertTransitionInput,
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO infra_alert_transitions
        (alert_id, project_id, from_state, to_state, from_status, to_status, reason, actor, at_ms)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    input.alertId,
-    input.projectId,
-    input.fromState,
-    input.toState,
-    input.fromStatus,
-    input.toStatus,
-    input.reason,
-    input.actor,
-    input.atMs,
-  );
+    )
+    .run(
+      input.alertId,
+      input.projectId,
+      input.fromState,
+      input.toState,
+      input.fromStatus,
+      input.toStatus,
+      input.reason,
+      input.actor,
+      input.atMs,
+    );
   db.prepare(
     `DELETE FROM infra_alert_transitions
       WHERE alert_id = ?
@@ -826,6 +840,7 @@ function appendInfraAlertTransition(db: Database.Database, input: InfraAlertTran
            LIMIT ?
         )`,
   ).run(input.alertId, input.alertId, INFRA_ALERT_TRANSITION_HISTORY_LIMIT);
+  return Number(result.lastInsertRowid);
 }
 
 /**
@@ -1045,6 +1060,53 @@ export function listInfraAlertTransitions(
       alertId,
       Math.max(1, Math.min(INFRA_ALERT_TRANSITION_HISTORY_LIMIT, limit)),
     ) as InfraAlertTransitionRow[];
+}
+
+/**
+ * State-changing transitions whose notification fan-out has not completed.
+ *
+ * The alert row and this history row commit before the delivery code runs, so
+ * the next sweep can recover a process crash in that gap. Status-only history
+ * entries are intentionally excluded: notifications are keyed to alarm state
+ * changes, not operator/status bookkeeping.
+ */
+export function listPendingInfraAlertTransitions(
+  projectId?: string,
+  limit = 100,
+): InfraAlertTransitionRow[] {
+  const clauses = ['from_state <> to_state', 'notification_delivered_at_ms IS NULL'];
+  const params: unknown[] = [];
+  if (projectId) {
+    clauses.push('project_id = ?');
+    params.push(projectId);
+  }
+  params.push(Math.max(1, Math.min(500, Math.floor(limit))));
+  return getInfraDb()
+    .prepare(
+      `SELECT * FROM infra_alert_transitions
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY at_ms ASC, id ASC
+        LIMIT ?`,
+    )
+    .all(...params) as InfraAlertTransitionRow[];
+}
+
+/** Mark one state-changing transition's notification intent as delivered. */
+export function markInfraAlertTransitionNotificationDelivered(
+  transitionId: number,
+  deliveredAtMs = Date.now(),
+): boolean {
+  return (
+    getInfraDb()
+      .prepare(
+        `UPDATE infra_alert_transitions
+            SET notification_delivered_at_ms = ?
+          WHERE id = ?
+            AND from_state <> to_state
+            AND notification_delivered_at_ms IS NULL`,
+      )
+      .run(deliveredAtMs, transitionId).changes > 0
+  );
 }
 
 // ── Serialization ──────────────────────────────────────────────────────────

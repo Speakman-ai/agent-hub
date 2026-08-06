@@ -12,6 +12,7 @@ export const PUSH_EVENT_OPTIONS = [
     { key: 'thread_message', label: 'Thread messages', desc: 'New cron or heartbeat message' },
     { key: 'review_assigned_to_you', label: 'Review assigned to you', desc: 'PR or card needs review' },
     { key: 'pr_merged', label: 'PR merged', desc: 'Linked PR was merged' },
+    { key: 'infra_alert', label: 'Infrastructure alerts', desc: 'AWS monitoring state changes' },
 ];
 const PERMISSION_LABEL: Record<string, any> = {
     granted: 'Granted',

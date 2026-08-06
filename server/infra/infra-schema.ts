@@ -178,6 +178,23 @@ export const DEFAULT_INFRA_ALERT_SEVERITY: InfraAlertSeverity = 'warning';
 export const INFRA_ALERT_STATUSES = ['open', 'resolved', 'ignored'] as const;
 export type InfraAlertStatus = (typeof INFRA_ALERT_STATUSES)[number];
 
+/** Delivery channels for an alert transition. */
+export const INFRA_ALERT_CHANNELS = ['in_app', 'push', 'email'] as const;
+export type InfraAlertChannel = (typeof INFRA_ALERT_CHANNELS)[number];
+
+/**
+ * Defaults are resolved in code and are intentionally not stored.  Critical
+ * alerts page every channel, warnings page the live channels, and informational
+ * alerts stay in the product.  An operator can override any individual row.
+ */
+export const DEFAULT_INFRA_ALERT_CHANNELS: Readonly<
+  Record<InfraAlertSeverity, readonly InfraAlertChannel[]>
+> = {
+  critical: ['in_app', 'push', 'email'],
+  warning: ['in_app', 'push'],
+  info: ['in_app'],
+};
+
 /**
  * Transition rows retained per alert before the oldest are trimmed.
  *
@@ -556,7 +573,47 @@ export const INFRA_TABLES_SCHEMA = `
     reason      TEXT,
     -- User id, or one of the system:* actors.
     actor       TEXT NOT NULL,
-    at_ms       INTEGER NOT NULL
+    at_ms       INTEGER NOT NULL,
+    -- Null until every configured delivery path has been attempted. This
+    -- makes a committed transition recoverable after a process crash between
+    -- the alert write and notification fan-out.
+    notification_delivered_at_ms INTEGER
+  );
+
+  -- Per-project alert delivery overrides. Missing rows resolve to the
+  -- severity defaults above; storing only overrides keeps a future default
+  -- change from requiring a migration of every project.
+  CREATE TABLE IF NOT EXISTS infra_alert_routing (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    severity    TEXT NOT NULL CHECK (severity IN ('critical', 'warning', 'info')),
+    channel     TEXT NOT NULL CHECK (channel IN ('in_app', 'push', 'email')),
+    enabled     INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE (project_id, severity, channel)
+  );
+
+  -- Email delivery is deliberately an outbox: SMTP is transient and an
+  -- alert transition must not be lost because a provider was unavailable.
+  CREATE TABLE IF NOT EXISTS infra_alert_outbox (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    alert_id        TEXT NOT NULL,
+    severity        TEXT NOT NULL CHECK (severity IN ('critical', 'warning', 'info')),
+    transition_key  TEXT NOT NULL,
+    recipient_email TEXT NOT NULL,
+    subject         TEXT NOT NULL,
+    body_text       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+      CHECK (status IN ('pending', 'sending', 'sent', 'error')),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    sent_at         TEXT,
+    next_attempt_at TEXT,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (transition_key, recipient_email)
   );
 `;
 
@@ -648,6 +705,14 @@ export const INFRA_INDEXES_SCHEMA = `
   -- index read in either direction.
   CREATE INDEX IF NOT EXISTS idx_infra_alert_transitions_alert
     ON infra_alert_transitions(alert_id, at_ms DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_infra_alert_transitions_pending
+    ON infra_alert_transitions(notification_delivered_at_ms, id);
+  CREATE INDEX IF NOT EXISTS idx_infra_alert_routing_project
+    ON infra_alert_routing(project_id, severity, channel);
+  CREATE INDEX IF NOT EXISTS idx_infra_alert_outbox_status
+    ON infra_alert_outbox(status, next_attempt_at, created_at);
+  CREATE INDEX IF NOT EXISTS idx_infra_alert_outbox_project
+    ON infra_alert_outbox(project_id, created_at DESC);
 `;
 
 /**

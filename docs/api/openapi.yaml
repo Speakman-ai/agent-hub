@@ -6618,6 +6618,111 @@ components:
       required:
         - error
       description: Error envelope for hook routes.
+    InfraAlertRoutingEntry:
+      type: object
+      properties:
+        severity:
+          type: string
+          enum:
+            - critical
+            - warning
+            - info
+        channel:
+          type: string
+          enum:
+            - in_app
+            - push
+            - email
+        enabled:
+          type: boolean
+      required:
+        - severity
+        - channel
+        - enabled
+    InfraAlertRoutingResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        routing:
+          type: array
+          items:
+            type: object
+            properties:
+              projectId:
+                type: string
+              severity:
+                type: string
+                enum:
+                  - critical
+                  - warning
+                  - info
+              channels:
+                type: object
+                properties:
+                  in_app:
+                    type: boolean
+                  push:
+                    type: boolean
+                  email:
+                    type: boolean
+                required:
+                  - in_app
+                  - push
+                  - email
+              isDefault:
+                type: boolean
+              overrides:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    project_id:
+                      type: string
+                    severity:
+                      type: string
+                      enum:
+                        - critical
+                        - warning
+                        - info
+                    channel:
+                      type: string
+                      enum:
+                        - in_app
+                        - push
+                        - email
+                    enabled:
+                      type: integer
+                    created_at:
+                      type: integer
+                    updated_at:
+                      type: integer
+                  required:
+                    - id
+                    - project_id
+                    - severity
+                    - channel
+                    - enabled
+                    - created_at
+                    - updated_at
+            required:
+              - projectId
+              - severity
+              - channels
+              - isDefault
+              - overrides
+      required:
+        - projectId
+        - routing
+    InfraAlertRoutingError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
     InfraAlertRuleCreateRequest:
       type: object
       properties:
@@ -28390,6 +28495,106 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HooksErrorResponse"
+  /api/projects/{projectId}/infra/alert-routing:
+    get:
+      tags:
+        - Infrastructure
+      summary: Resolve infrastructure alert delivery routing
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Resolved alert routing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRoutingResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRoutingError"
+    put:
+      tags:
+        - Infrastructure
+      summary: Set an infrastructure alert delivery override
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InfraAlertRoutingEntry"
+      responses:
+        "200":
+          description: Updated alert routing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRoutingResponse"
+        "400":
+          description: Invalid routing entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRoutingError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRoutingError"
+  /api/projects/{projectId}/infra/alert-routing/{severity}/{channel}:
+    delete:
+      tags:
+        - Infrastructure
+      summary: Remove an infrastructure alert delivery override
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - critical
+              - warning
+              - info
+          required: true
+          name: severity
+          in: path
+        - schema:
+            type: string
+            enum:
+              - in_app
+              - push
+              - email
+          required: true
+          name: channel
+          in: path
+      responses:
+        "200":
+          description: Updated alert routing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRoutingResponse"
+        "404":
+          description: Project or routing override not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraAlertRoutingError"
   /api/projects/{projectId}/infra/alert-rules:
     get:
       tags:
@@ -31787,6 +31992,7 @@ paths:
                       - thread_message
                       - review_assigned_to_you
                       - pr_merged
+                      - infra_alert
       responses:
         "200":
           description: Updated.

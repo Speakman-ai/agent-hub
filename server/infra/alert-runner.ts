@@ -55,11 +55,17 @@ import {
 } from './alert-evaluator.js';
 import {
   getInfraAlertForResource,
+  getInfraAlert,
+  getInfraAlertRule,
   listEnabledInfraAlertRules,
+  listPendingInfraAlertTransitions,
+  markInfraAlertTransitionNotificationDelivered,
   recordInfraAlertEvaluation,
   toThresholdRule,
   type InfraAlertRecordResult,
+  type InfraAlertRow,
   type InfraAlertRuleRow,
+  type InfraAlertTransitionRow,
 } from './alert-store.js';
 import { getInfraDb, isInfraDbInitialized, parseInfraResourceKey } from './infra-db.js';
 import {
@@ -79,6 +85,7 @@ import {
   matchesInfraTagFilter,
 } from './tag-filter.js';
 import type { BroadcastFn } from '../types.js';
+import { notifyInfraAlertTransition } from './alert-notifications.js';
 
 /**
  * Slots fetched beyond N. See the module header — this reproduces AWS's only
@@ -491,6 +498,96 @@ export function buildTransitionBroadcast(
   };
 }
 
+/** Rebuild a safe notification payload from a transition retained in SQLite. */
+function buildPersistedTransitionBroadcast(
+  rule: InfraAlertRuleRow,
+  alert: InfraAlertRow,
+  transition: InfraAlertTransitionRow,
+): Record<string, unknown> {
+  const identity = parseInfraResourceKey(alert.resource_key);
+  return {
+    type: 'infra_alert_transition',
+    projectId: transition.project_id,
+    alertId: transition.alert_id,
+    ruleId: rule.id,
+    ruleName: rule.name,
+    severity: rule.severity,
+    service: rule.service,
+    metricName: rule.metric_name,
+    // A malformed key must never leak the account-bearing resource key.
+    resourceId: identity?.resourceId ?? 'unknown',
+    fromState: transition.from_state,
+    toState: transition.to_state,
+    reason: transition.reason,
+    status: transition.to_status,
+    created: transition.from_state === 'OK',
+    reopened: transition.actor === 'system:recurrence',
+    autoResolved: transition.actor === 'system:recovery',
+    value: alert.last_value,
+    breachingDatapoints: alert.breaching_datapoints,
+    at: transition.at_ms,
+  };
+}
+
+/** Retry delivery for state changes committed by a prior, interrupted sweep. */
+function recoverPendingInfraAlertNotifications(
+  opts: InfraAlertEvaluationOptions,
+  result: InfraAlertEvaluationResult,
+  nowMs: number,
+): void {
+  let transitions: InfraAlertTransitionRow[];
+  try {
+    transitions = listPendingInfraAlertTransitions(opts.projectId);
+  } catch (err) {
+    console.warn(
+      '[infra-alert-runner] could not load pending alert notifications:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
+
+  for (const transition of transitions) {
+    try {
+      const alert = getInfraAlert(transition.project_id, transition.alert_id);
+      const rule = alert ? getInfraAlertRule(transition.project_id, alert.rule_id) : null;
+      if (!alert || !rule) {
+        // The owning alert/rule was removed after the transition was written;
+        // there is no safe payload left to deliver, so retire the orphan.
+        markInfraAlertTransitionNotificationDelivered(transition.id, nowMs);
+        continue;
+      }
+      const event = buildPersistedTransitionBroadcast(rule, alert, transition);
+      const notification = notifyInfraAlertTransition({
+        projectId: transition.project_id,
+        alertId: transition.alert_id,
+        transitionKey: String(transition.id),
+        severity: rule.severity,
+        resourceId: String(event.resourceId),
+        ruleName: rule.name,
+        metricName: rule.metric_name,
+        fromState: transition.from_state,
+        toState: transition.to_state,
+        reason: transition.reason,
+        value: alert.last_value,
+        broadcast: event,
+      });
+      if (notification.broadcast) {
+        if (!opts.broadcast) continue;
+        opts.broadcast(event);
+      }
+      if (notification.emailEnqueueFailures === 0) {
+        markInfraAlertTransitionNotificationDelivered(transition.id, nowMs);
+      }
+    } catch (err) {
+      result.broadcastErrors += 1;
+      console.warn(
+        `[infra-alert-runner] pending notification ${transition.id} failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+}
+
 /**
  * Evaluate one rule against one resource and fold the verdict into the store.
  *
@@ -542,18 +639,40 @@ function evaluateResource(
   // opening an incident. Notifying off the evaluator would page on both.
   if (!record.stateChanged) return;
   result.transitions += 1;
-  if (!opts.broadcast) return;
   try {
-    opts.broadcast(
-      buildTransitionBroadcast(
-        rule,
-        resource,
-        record,
-        evaluation,
-        previousState,
-        range.latestValue,
-      ),
+    const event = buildTransitionBroadcast(
+      rule,
+      resource,
+      record,
+      evaluation,
+      previousState,
+      range.latestValue,
     );
+    const notification = notifyInfraAlertTransition({
+      projectId: rule.project_id,
+      alertId: record.alert?.id ?? '',
+      transitionKey: String(
+        record.transitionId ??
+          `${record.alert?.id ?? rule.id}:${previousState}:${evaluation.state}:${evaluation.evaluatedAtMs}`,
+      ),
+      severity: rule.severity,
+      resourceId: resource.resource_id,
+      ruleName: rule.name,
+      metricName: rule.metric_name,
+      fromState: previousState,
+      toState: evaluation.state,
+      reason: evaluation.reason,
+      value: range.latestValue,
+      broadcast: event,
+    });
+    if (notification.broadcast && opts.broadcast) opts.broadcast(event);
+    if (
+      record.transitionId != null &&
+      (!notification.broadcast || Boolean(opts.broadcast)) &&
+      notification.emailEnqueueFailures === 0
+    ) {
+      markInfraAlertTransitionNotificationDelivered(record.transitionId, nowMs);
+    }
   } catch (err) {
     // A WebSocket fan-out failure must not lose the persisted transition or
     // abort the sweep. The row is already committed; the client re-reads it.
@@ -585,6 +704,11 @@ export function runInfraAlertEvaluation(
   if (!isInfraDbInitialized()) return result;
 
   const nowMs = opts.nowMs ?? Date.now();
+
+  // Recover transitions committed by a prior sweep that crashed before its
+  // notification fan-out completed. This runs before fresh evaluation so a
+  // repeated state does not hide the persisted transition.
+  recoverPendingInfraAlertNotifications(opts, result, nowMs);
 
   let rules: InfraAlertRuleRow[];
   try {

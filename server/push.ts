@@ -38,6 +38,7 @@ export const PUSH_EVENT_TYPES = [
   'thread_message',
   'review_assigned_to_you',
   'pr_merged',
+  'infra_alert',
 ] as const;
 
 export type PushEventType = (typeof PUSH_EVENT_TYPES)[number];
@@ -143,6 +144,25 @@ export function prMergedPush(args: { cardTitle: string; prNumber: number; merged
   return {
     title: 'PR merged',
     body: `PR #${args.prNumber} merged${args.mergedBy ? ` by ${args.mergedBy}` : ''}: "${args.cardTitle}"`,
+  };
+}
+
+export function infraAlertPush(args: {
+  severity?: string;
+  ruleName?: string;
+  resourceId?: string;
+  fromState?: string;
+  toState?: string;
+}): { title: string; body: string } {
+  const severity = args.severity
+    ? `${args.severity[0]!.toUpperCase()}${args.severity.slice(1)}`
+    : 'Infrastructure';
+  const rule = args.ruleName || 'Alert';
+  const resource = args.resourceId || 'resource';
+  const transition = args.toState ? `: ${args.fromState || 'state'} → ${args.toState}` : '';
+  return {
+    title: `${severity} infrastructure alert`,
+    body: `${rule} on ${resource}${transition}`,
   };
 }
 
@@ -654,6 +674,34 @@ export function mapBroadcastToPush(data: BroadcastData): {
             prNumber: data.prNumber,
             cardId: data.cardId,
             type: 'pr_merged',
+          },
+        },
+      };
+    }
+
+    case 'infra_alert_transition': {
+      if (data.suppressPush === true) return null;
+      const { title, body } = infraAlertPush({
+        severity: typeof data.severity === 'string' ? data.severity : undefined,
+        ruleName: typeof data.ruleName === 'string' ? data.ruleName : undefined,
+        resourceId: typeof data.resourceId === 'string' ? data.resourceId : undefined,
+        fromState: typeof data.fromState === 'string' ? data.fromState : undefined,
+        toState: typeof data.toState === 'string' ? data.toState : undefined,
+      });
+      return {
+        event: 'infra_alert',
+        payload: {
+          title,
+          body,
+          data: {
+            projectId: data.projectId,
+            alertId: data.alertId,
+            ruleId: data.ruleId,
+            resourceId: data.resourceId,
+            severity: data.severity,
+            fromState: data.fromState,
+            toState: data.toState,
+            type: 'infra_alert',
           },
         },
       };

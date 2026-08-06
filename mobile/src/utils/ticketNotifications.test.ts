@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { awaitingFeedbackNotification, readyToPushNotification, pushedNotification, supportTicketCreatedNotification, threadMessageNotification, reviewAssignedNotification, prMergedNotification, mapBroadcastToNotification, } from './ticketNotifications';
+import { awaitingFeedbackNotification, readyToPushNotification, pushedNotification, supportTicketCreatedNotification, threadMessageNotification, reviewAssignedNotification, prMergedNotification, infraAlertNotification, mapBroadcastToNotification, } from './ticketNotifications';
 describe('ticketNotification formatters', () => {
     it('formats awaiting feedback', () => {
         expect(awaitingFeedbackNotification({ sessionName: 'Ship' })).toEqual({
@@ -24,6 +24,12 @@ describe('ticketNotification formatters', () => {
     it('formats review assigned and PR merged', () => {
         expect(reviewAssignedNotification({ cardTitle: 'X' }).body).toBe('"X" needs your review');
         expect(prMergedNotification({ cardTitle: 'X', prNumber: 7, mergedBy: 'dev' }).body).toBe('PR #7 merged by dev: "X"');
+    });
+    it('formats infrastructure alert transitions', () => {
+        expect(infraAlertNotification({ severity: 'critical', ruleName: 'CPU high', resourceId: 'i-123', fromState: 'OK', toState: 'ALARM' })).toEqual({
+            title: 'Critical infrastructure alert',
+            body: 'CPU high on i-123: OK → ALARM',
+        });
     });
 });
 describe('mapBroadcastToNotification', () => {

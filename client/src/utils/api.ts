@@ -379,6 +379,13 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  getInfraAlertRouting: (projectId: string) =>
+    fetchJSON(`/projects/${projectId}/infra/alert-routing`),
+  updateInfraAlertRouting: (projectId: string, data: Record<string, unknown>) =>
+    fetchJSON(`/projects/${projectId}/infra/alert-routing`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   resetReleaseNotificationSettings: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/release-notification-settings/reset`, { method: 'POST' }),
   listReleaseDigestRecipients: (projectId: any) =>
