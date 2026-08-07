@@ -401,6 +401,59 @@ export interface InfraHealthIngestRevokeResponse {
 }
 
 /**
+ * An unmet precondition between a project and unattended collection, in the
+ * order an operator should resolve them. Mirrors `InfraSetupBlocker` in
+ * `server/infra-setup-draft.ts`.
+ */
+export type InfraSetupBlockerWire =
+  | 'infra-disabled'
+  | 'no-profiles'
+  | 'only-sso-profiles'
+  | 'no-monitoring-profile'
+  | 'storage-unavailable'
+  | 'no-scope';
+
+export interface InfraSetupProfileSummaryWire {
+  name: string;
+  type: 'sso' | 'static' | 'role';
+  region?: string | null;
+  monitoringCapable: boolean;
+}
+
+/**
+ * The Hub-side readiness report behind the Infrastructure module's empty state.
+ * The endpoint calls AWS zero times (decision INFRA-WIZARD), which is what
+ * makes it cheap enough to fetch on every render of the module.
+ */
+export interface InfraSetupDraftWire {
+  projectId: string;
+  infraEnabled: boolean;
+  profiles: InfraSetupProfileSummaryWire[];
+  designatedMonitoringProfile: string | null;
+  monitoringProfile: string | null;
+  monitoringCapableProfiles: string[];
+  storageReady: boolean;
+  scopes: Array<Record<string, unknown>>;
+  enabledScopeCount: number;
+  alertRuleCount: number;
+  enabledAlertRuleCount: number;
+  blockers: InfraSetupBlockerWire[];
+  notes: string[];
+}
+
+export interface InfraSetupDraftResponse {
+  projectId: string;
+  draft: InfraSetupDraftWire;
+}
+
+export interface InfraWizardStartResponse {
+  sessionId: string;
+  agentId: string;
+  draft: InfraSetupDraftWire;
+  session?: Record<string, unknown>;
+}
+
+/**
  * Query string for the infra read routes.
  *
  * Empty and nullish values are dropped rather than sent blank: the server
@@ -489,6 +542,20 @@ export const api = {
     }),
   getInfraMetricPacks: (projectId: string) =>
     fetchJSON<{ packs: InfraServicePackWire[] }>(`/projects/${projectId}/infra/metric-packs`),
+  // ── AI infrastructure setup wizard ───────────────────────────────
+  // Hub-side readiness only: configured AWS profiles and their types, the
+  // monitoring designation, the stored allowlist, and the `blockers[]` still
+  // standing between this project and unattended collection. Issues no AWS
+  // calls, so the module's empty state can read it freely.
+  getInfraSetupDraft: (projectId: string) =>
+    fetchJSON<InfraSetupDraftResponse>(`/projects/${projectId}/infra/setup-draft`),
+  // Spawn the worktree-backed `[Infra Setup]` session that probes the account
+  // read-only and proposes an allowlist. Returns `{ sessionId, agentId, draft }`.
+  startInfraWizard: (projectId: string) =>
+    fetchJSON<InfraWizardStartResponse>(`/projects/${projectId}/infra/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   getInfraScopes: (projectId: string) => fetchJSON(`/projects/${projectId}/infra/scopes`),
   updateInfraScopes: (projectId: string, data: Record<string, unknown>) =>
     fetchJSON(`/projects/${projectId}/infra/scopes`, {

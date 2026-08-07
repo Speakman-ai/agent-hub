@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Activity, BellRing, Boxes, Cloud, Gauge, Server } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Activity,
+  AlertCircle,
+  BellRing,
+  Boxes,
+  Cloud,
+  Gauge,
+  Loader2,
+  Server,
+  Sparkles,
+} from 'lucide-react';
 import InfraScopeEditor from './InfraScopeEditor';
 import InfraHealthTimeline from './InfraHealthTimeline';
 import InfraSpendPanel from './InfraSpendPanel';
@@ -8,7 +18,7 @@ import InfraResourceBrowser, { type InfraResourceWire } from './InfraResourceBro
 import InfraMetricChart from './InfraMetricChart';
 import InfraServiceNotes from './InfraServiceNotes';
 import { notesPackFor, type InfraServicePackWire } from '@shared/utils/infraPacks';
-import { api } from '../../utils/api';
+import { api, type InfraSetupBlockerWire, type InfraSetupDraftWire } from '../../utils/api';
 
 export interface InfraMonitoringStatus {
   profile?: string | null;
@@ -29,6 +39,39 @@ export interface InfrastructurePageProps {
   /** Scope data is supplied by the scope editor once that surface is available. */
   scopeConfigured?: boolean;
   showToast?: (message: string, type?: string) => void;
+  /**
+   * Focus a chat session. Supplied by the host app; when it is absent the
+   * "Set up with AI" button is not rendered at all, because starting a wizard
+   * session the user is then never navigated to would strand it.
+   */
+  onOpenSession?: (target: { sessionId: string; agentId: string }) => void;
+}
+
+/**
+ * The operator-facing meaning of one draft blocker.
+ *
+ * Server-side these are codes, and the draft's `notes[]` carry the prose —
+ * including detail no enum can, like the name of a designation that no longer
+ * resolves. So the codes get a short title here and the notes render beneath
+ * them verbatim, rather than this table trying to restate the server.
+ */
+export function describeInfraBlocker(blocker: InfraSetupBlockerWire): string {
+  switch (blocker) {
+    case 'infra-disabled':
+      return 'The Infrastructure module is off for this project.';
+    case 'no-profiles':
+      return 'No AWS profiles are configured for this project.';
+    case 'only-sso-profiles':
+      return 'Every configured profile is interactive SSO, which cannot run unattended.';
+    case 'no-monitoring-profile':
+      return 'No usable monitoring profile is designated.';
+    case 'storage-unavailable':
+      return 'The infrastructure database is not open, so stored scopes could not be read.';
+    case 'no-scope':
+      return 'No collection scope is enabled, so nothing is polled.';
+    default:
+      return blocker;
+  }
 }
 
 type InfrastructureTab = 'overview' | 'resources' | 'metrics' | 'alerts';
@@ -100,9 +143,32 @@ export default function InfrastructurePage({
   monitoringStatus,
   scopeConfigured,
   showToast,
+  onOpenSession,
 }: InfrastructurePageProps): React.ReactElement {
   const [tab, setTab] = useState<InfrastructureTab>('overview');
   const status = monitoringStatus ?? null;
+
+  // AI setup wizard: spawns a worktree-backed `[Infra Setup]` session that
+  // probes the account read-only and proposes an allowlist, then focuses it.
+  //
+  // The draft is stamped with the project it describes, for the same reason
+  // `liveScope` and `selected` are below: clearing it in an effect leaves one
+  // render in which the previous project's blockers are on screen under this
+  // project's header. Stamping makes it self-invalidating on the same render.
+  const [draftState, setDraftState] = useState<{
+    projectId: string;
+    draft: InfraSetupDraftWire;
+  } | null>(null);
+  const draft = draftState && draftState.projectId === projectId ? draftState.draft : null;
+  const blockers = draft?.blockers ?? [];
+  const [wizardStarting, setWizardStarting] = useState(false);
+  const [wizardError, setWizardError] = useState<string | null>(null);
+
+  // Guard against a stale async response committing to the wrong project.
+  // Without it, starting the wizard and switching projects mid-request would
+  // navigate to a session belonging to the project the user just left. Set
+  // synchronously before any load starts.
+  const activePidRef = useRef('');
 
   const inferredScopeConfigured = Array.isArray(project?.infraScopes)
     ? project.infraScopes.length > 0
@@ -137,6 +203,50 @@ export default function InfrastructurePage({
   useEffect(() => {
     setSelected(null);
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    activePidRef.current = projectId;
+    const pid = projectId;
+    setWizardError(null);
+    // Reset the pending flag too: a still-in-flight start from the previous
+    // project keeps its guarded `finally` from clearing it (the pid check
+    // skips), so without this the new project would inherit a permanently
+    // disabled "Set up with AI" button.
+    setWizardStarting(false);
+    api
+      .getInfraSetupDraft(pid)
+      .then((body) => {
+        if (activePidRef.current !== pid) return; // stale — project changed
+        if (body?.draft) setDraftState({ projectId: pid, draft: body.draft });
+      })
+      .catch(() => {
+        // A readiness report the operator cannot see is a worse empty state,
+        // not a broken module. The tabs below stand on their own data.
+        if (activePidRef.current === pid) setDraftState(null);
+      });
+  }, [projectId]);
+
+  const handleStartWizard = useCallback(async () => {
+    if (!projectId || wizardStarting) return;
+    const pid = projectId;
+    setWizardStarting(true);
+    setWizardError(null);
+    try {
+      const res = await api.startInfraWizard(pid);
+      if (activePidRef.current !== pid) return; // switched projects
+      if (!res?.sessionId) {
+        setWizardError('Server did not return a wizard session id');
+        return;
+      }
+      if (onOpenSession) onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
+    } catch (err) {
+      if (activePidRef.current !== pid) return;
+      setWizardError((err as Error)?.message || 'Failed to start the infrastructure setup wizard');
+    } finally {
+      if (activePidRef.current === pid) setWizardStarting(false);
+    }
+  }, [projectId, wizardStarting, onOpenSession]);
 
   // The pack catalog is static declarations — no per-project state, no AWS
   // call — so it is fetched once per project rather than per tab switch, and a
@@ -187,15 +297,44 @@ export default function InfrastructurePage({
 
   return (
     <div className="flex h-full flex-col" data-testid="infrastructure-page">
-      <header className="mb-3 flex items-center gap-2">
-        <Server size={18} className="text-gray-400" />
-        <div>
-          <h2 className="text-lg font-semibold text-gray-100">Infrastructure</h2>
-          <p className="text-xs text-gray-500">
-            AWS resource health, metrics, and alerts{projectName ? ` for ${projectName}` : ''}.
-          </p>
+      <header className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Server size={18} className="text-gray-400" />
+          <div>
+            <h2 className="text-lg font-semibold text-gray-100">Infrastructure</h2>
+            <p className="text-xs text-gray-500">
+              AWS resource health, metrics, and alerts{projectName ? ` for ${projectName}` : ''}.
+            </p>
+          </div>
         </div>
+        {onOpenSession && (
+          <button
+            type="button"
+            onClick={handleStartWizard}
+            disabled={!projectId || wizardStarting}
+            data-testid="infra-setup-wizard-button"
+            title="Let an AI agent probe this AWS account read-only and propose a collection scope"
+            className="inline-flex flex-shrink-0 items-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {wizardStarting ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Sparkles size={14} />
+            )}
+            {wizardStarting ? 'Starting…' : 'Set up with AI'}
+          </button>
+        )}
       </header>
+
+      {wizardError && (
+        <div
+          className="mb-3 flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300"
+          data-testid="infra-setup-wizard-error"
+        >
+          <AlertCircle size={14} className="flex-shrink-0" />
+          <span>{wizardError}</span>
+        </div>
+      )}
 
       <nav className="mb-3 flex items-center gap-1 border-b border-gray-800" role="tablist">
         {TABS.map((item) => (
@@ -221,6 +360,42 @@ export default function InfrastructurePage({
       <div className="min-h-0 flex-1 overflow-y-auto" role="tabpanel" id={`infra-panel-${tab}`}>
         {tab === 'overview' ? (
           <div className="space-y-3">
+            {/* First on the tab on purpose: every panel below reports on a
+                collection pipeline that is not running yet, and this is the
+                only one that says why. The draft costs nothing to fetch —
+                it calls AWS zero times — so an unconfigured project reads the
+                specific reason rather than a wall of generic empty states. */}
+            {blockers.length > 0 && (
+              <div
+                className="rounded-xl border border-amber-900/60 bg-amber-950/20 p-5"
+                data-testid="infra-setup-blockers"
+              >
+                <h3 className="text-sm font-medium text-amber-200">
+                  Infrastructure monitoring is not collecting yet
+                </h3>
+                <ul className="mt-2 space-y-1 text-xs leading-5 text-amber-100/80">
+                  {blockers.map((blocker) => (
+                    <li key={blocker} data-testid={`infra-blocker-${blocker}`}>
+                      {describeInfraBlocker(blocker)}
+                    </li>
+                  ))}
+                </ul>
+                {draft?.notes?.length ? (
+                  <ul className="mt-3 space-y-1 border-t border-amber-900/60 pt-3 text-xs leading-5 text-gray-400">
+                    {draft.notes.map((note, i) => (
+                      <li key={i}>{note}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {onOpenSession && (
+                  <p className="mt-3 text-xs text-gray-500">
+                    Use <span className="text-gray-300">Set up with AI</span> above to walk through
+                    this with an agent: it probes the account read-only, prices the scope, and saves
+                    the allowlist.
+                  </p>
+                )}
+              </div>
+            )}
             <MonitoringStatusCard status={status} missing={monitoringMissing} />
             {!hasScope && (
               <EmptyState testId="infra-empty-scope" title="no scope configured">

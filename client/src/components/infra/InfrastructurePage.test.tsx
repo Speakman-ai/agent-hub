@@ -25,6 +25,10 @@ import { api } from '../../utils/api';
     listInfraMetricSeries: vi.fn(),
     getInfraMetricRange: vi.fn(),
     getInfraMetricPacks: vi.fn(),
+    // The AI setup wizard: a Hub-side readiness draft read on mount, and the
+    // session spawn behind the "Set up with AI" button.
+    getInfraSetupDraft: vi.fn(),
+    startInfraWizard: vi.fn(),
   },
 }));
 
@@ -34,6 +38,8 @@ const getInfraMetricPacks = vi.mocked(api.getInfraMetricPacks);
 const getInfraSpend = vi.mocked(api.getInfraSpend);
 const getInfraQuotas = vi.mocked(api.getInfraQuotas);
 const getInfraHealthEvents = vi.mocked(api.getInfraHealthEvents);
+const getInfraSetupDraft = vi.mocked(api.getInfraSetupDraft);
+const startInfraWizard = vi.mocked(api.startInfraWizard);
 
 const ec2Pack = {
   service: 'ec2',
@@ -142,6 +148,31 @@ const emptyScopes = {
   configured: false,
 };
 
+/** A readiness draft with nothing outstanding — the fully-configured project. */
+function readyDraft(projectId = 'project-1', overrides: Record<string, unknown> = {}) {
+  return {
+    projectId,
+    draft: {
+      projectId,
+      infraEnabled: true,
+      profiles: [
+        { name: 'monitoring', type: 'role', region: 'us-east-1', monitoringCapable: true },
+      ],
+      designatedMonitoringProfile: 'monitoring',
+      monitoringProfile: 'monitoring',
+      monitoringCapableProfiles: ['monitoring'],
+      storageReady: true,
+      scopes: [{}],
+      enabledScopeCount: 1,
+      alertRuleCount: 1,
+      enabledAlertRuleCount: 1,
+      blockers: [],
+      notes: [],
+      ...overrides,
+    },
+  };
+}
+
 describe('InfrastructurePage', () => {
   beforeEach(() => {
     // resetAllMocks, not clearAllMocks: `clear` leaves queued `…Once` values
@@ -163,6 +194,7 @@ describe('InfrastructurePage', () => {
       expression: 'm1/SERVICE_QUOTA(m1)*100',
       staleAfterMs: 0,
     } as any);
+    getInfraSetupDraft.mockResolvedValue(readyDraft() as any);
   });
   const readyStatus = { profile: 'monitoring', region: 'us-east-1', reachable: true };
 
@@ -399,5 +431,223 @@ describe('InfrastructurePage', () => {
     await waitFor(() => expect(getInfraMetricPacks).toHaveBeenCalled());
     expect(screen.getByRole('tabpanel')).toHaveTextContent('No infrastructure alert rules');
     expect(screen.queryByTestId('infra-service-notes')).toBeNull();
+  });
+
+  describe('AI setup wizard', () => {
+    const onOpenSession = vi.fn();
+
+    it('hides the button when no onOpenSession handler is supplied', async () => {
+      render(<InfrastructurePage projectId="project-1" monitoringStatus={readyStatus} />);
+      await waitFor(() => expect(getInfraSetupDraft).toHaveBeenCalledWith('project-1'));
+      // Spawning a wizard session the user is never navigated to would strand it.
+      expect(screen.queryByTestId('infra-setup-wizard-button')).toBeNull();
+    });
+
+    it('starts the wizard for the active project and focuses the new session', async () => {
+      startInfraWizard.mockResolvedValue({
+        sessionId: 'sess-1',
+        agentId: 'agent-1',
+      } as any);
+      render(
+        <InfrastructurePage
+          projectId="project-1"
+          monitoringStatus={readyStatus}
+          onOpenSession={onOpenSession}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('infra-setup-wizard-button'));
+
+      await waitFor(() => expect(startInfraWizard).toHaveBeenCalledWith('project-1'));
+      await waitFor(() =>
+        expect(onOpenSession).toHaveBeenCalledWith({ sessionId: 'sess-1', agentId: 'agent-1' }),
+      );
+    });
+
+    it('disables the button while the spawn is pending and re-enables it after', async () => {
+      let resolve: (value: any) => void = () => {};
+      startInfraWizard.mockReturnValue(
+        new Promise((r) => {
+          resolve = r;
+        }) as any,
+      );
+      render(
+        <InfrastructurePage
+          projectId="project-1"
+          monitoringStatus={readyStatus}
+          onOpenSession={onOpenSession}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('infra-setup-wizard-button'));
+      await waitFor(() => expect(screen.getByTestId('infra-setup-wizard-button')).toBeDisabled());
+      expect(screen.getByTestId('infra-setup-wizard-button')).toHaveTextContent('Starting…');
+
+      resolve({ sessionId: 'sess-1', agentId: 'agent-1' });
+      await waitFor(() =>
+        expect(screen.getByTestId('infra-setup-wizard-button')).not.toBeDisabled(),
+      );
+    });
+
+    it('surfaces a spawn failure instead of navigating', async () => {
+      startInfraWizard.mockRejectedValue(new Error('Project has no agents to host the wizard'));
+      render(
+        <InfrastructurePage
+          projectId="project-1"
+          monitoringStatus={readyStatus}
+          onOpenSession={onOpenSession}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('infra-setup-wizard-button'));
+
+      expect(await screen.findByTestId('infra-setup-wizard-error')).toHaveTextContent(
+        'Project has no agents to host the wizard',
+      );
+      expect(onOpenSession).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a response with no session id rather than navigating to undefined', async () => {
+      startInfraWizard.mockResolvedValue({} as any);
+      render(
+        <InfrastructurePage
+          projectId="project-1"
+          monitoringStatus={readyStatus}
+          onOpenSession={onOpenSession}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('infra-setup-wizard-button'));
+
+      expect(await screen.findByTestId('infra-setup-wizard-error')).toHaveTextContent(
+        'did not return a wizard session id',
+      );
+      expect(onOpenSession).not.toHaveBeenCalled();
+    });
+
+    it('does not navigate to the previous project’s session after a project switch', async () => {
+      // The stale-project guard: without it, switching projects while the spawn
+      // is in flight focuses a session belonging to the project just left.
+      let resolve: (value: any) => void = () => {};
+      startInfraWizard.mockReturnValue(
+        new Promise((r) => {
+          resolve = r;
+        }) as any,
+      );
+      const { rerender } = render(
+        <InfrastructurePage
+          projectId="project-a"
+          monitoringStatus={readyStatus}
+          onOpenSession={onOpenSession}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('infra-setup-wizard-button'));
+      await waitFor(() => expect(startInfraWizard).toHaveBeenCalledWith('project-a'));
+
+      getInfraSetupDraft.mockResolvedValue(readyDraft('project-b') as any);
+      rerender(
+        <InfrastructurePage
+          projectId="project-b"
+          monitoringStatus={readyStatus}
+          onOpenSession={onOpenSession}
+        />,
+      );
+      await waitFor(() => expect(getInfraSetupDraft).toHaveBeenCalledWith('project-b'));
+
+      resolve({ sessionId: 'sess-a', agentId: 'agent-a' });
+      await waitFor(() =>
+        // The switch also clears the pending flag, so project-b's button is
+        // usable rather than stuck disabled behind project-a's request.
+        expect(screen.getByTestId('infra-setup-wizard-button')).not.toBeDisabled(),
+      );
+      expect(onOpenSession).not.toHaveBeenCalled();
+    });
+
+    it('renders the draft blockers as the module’s empty state', async () => {
+      getInfraSetupDraft.mockResolvedValue(
+        readyDraft('project-1', {
+          infraEnabled: false,
+          monitoringProfile: null,
+          designatedMonitoringProfile: null,
+          monitoringCapableProfiles: [],
+          enabledScopeCount: 0,
+          blockers: ['infra-disabled', 'only-sso-profiles', 'no-monitoring-profile', 'no-scope'],
+          notes: ['Every configured profile is IAM Identity Center (SSO).'],
+        }) as any,
+      );
+      render(
+        <InfrastructurePage
+          projectId="project-1"
+          monitoringStatus={readyStatus}
+          onOpenSession={onOpenSession}
+        />,
+      );
+
+      const panel = await screen.findByTestId('infra-setup-blockers');
+      expect(panel).toHaveTextContent('Infrastructure module is off');
+      expect(screen.getByTestId('infra-blocker-only-sso-profiles')).toHaveTextContent(
+        'cannot run unattended',
+      );
+      expect(screen.getByTestId('infra-blocker-no-scope')).toBeTruthy();
+      // The server's prose carries detail no enum can — a designation that no
+      // longer resolves, the eligible profile names — so it renders verbatim.
+      expect(panel).toHaveTextContent('IAM Identity Center (SSO)');
+      expect(panel).toHaveTextContent('Set up with AI');
+    });
+
+    it('hides the blockers panel when nothing is outstanding', async () => {
+      render(
+        <InfrastructurePage
+          projectId="project-1"
+          monitoringStatus={readyStatus}
+          onOpenSession={onOpenSession}
+        />,
+      );
+      await waitFor(() => expect(getInfraSetupDraft).toHaveBeenCalledWith('project-1'));
+      expect(screen.queryByTestId('infra-setup-blockers')).toBeNull();
+    });
+
+    it('does not show the previous project’s blockers after a switch', async () => {
+      getInfraSetupDraft.mockResolvedValue(
+        readyDraft('project-a', { blockers: ['no-scope'] }) as any,
+      );
+      const { rerender } = render(
+        <InfrastructurePage projectId="project-a" monitoringStatus={readyStatus} />,
+      );
+      await screen.findByTestId('infra-blocker-no-scope');
+
+      let resolveB: (value: any) => void = () => {};
+      getInfraSetupDraft.mockReturnValue(
+        new Promise((r) => {
+          resolveB = r;
+        }) as any,
+      );
+      rerender(<InfrastructurePage projectId="project-b" monitoringStatus={readyStatus} />);
+      // Stamped, not cleared by an effect: project-a's blockers are gone on the
+      // very first render of project-b, not one render later.
+      expect(screen.queryByTestId('infra-setup-blockers')).toBeNull();
+
+      resolveB(readyDraft('project-b') as any);
+      await waitFor(() => expect(getInfraSetupDraft).toHaveBeenCalledWith('project-b'));
+    });
+
+    it('renders the module when the readiness draft cannot be loaded', async () => {
+      // A readiness report the operator cannot see is a worse empty state, not
+      // a broken module.
+      getInfraSetupDraft.mockRejectedValue(new Error('403'));
+      render(
+        <InfrastructurePage
+          projectId="project-1"
+          monitoringStatus={readyStatus}
+          scopeConfigured
+          onOpenSession={onOpenSession}
+        />,
+      );
+
+      await waitFor(() => expect(getInfraSetupDraft).toHaveBeenCalledWith('project-1'));
+      expect(screen.queryByTestId('infra-setup-blockers')).toBeNull();
+      expect(screen.getByTestId('infra-setup-wizard-button')).not.toBeDisabled();
+    });
   });
 });
