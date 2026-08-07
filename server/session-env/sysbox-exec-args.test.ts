@@ -92,6 +92,13 @@ describe('buildStartSysboxContainerArgv', () => {
     expect(argv).toContain('--runtime=sysbox-runc');
   });
 
+  it('boots as root so the entrypoint can align runner with the worktree owner', () => {
+    // usermod refuses a uid change while a process runs as that user, so the
+    // entrypoint must not itself be running as `runner`. Interactive work still
+    // lands as `runner` — the exec builders pin `-u`.
+    expect(argv.join(' ')).toContain('--user root');
+  });
+
   it('never weakens the sysbox boundary or mounts the host docker socket', () => {
     expect(argv).not.toContain('--privileged');
     expect(argv).not.toContain('--cgroupns=host');

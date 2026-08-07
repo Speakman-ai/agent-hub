@@ -2,7 +2,87 @@
 # Start inner dockerd for Finalize DinD runners, then hold the container open.
 set -euo pipefail
 
-DOCKERD_LOG=/tmp/dockerd.log
+# Must NOT live in /tmp. /tmp is world-writable and sticky, so when
+# fs.protected_regular=1 the kernel's may_create_in_sticky() refuses an O_CREAT
+# open of a file owned by another user — and it has no CAP_DAC_OVERRIDE bypass,
+# so even root is refused. The entrypoint runs as `runner` while the dockerd
+# redirect below runs under sudo, so a /tmp path makes root fail to open the
+# runner-owned log with EACCES and dockerd never starts. The Finalize fleet AMI
+# sets the sysctl to 0, which is why only Hub-host DinD (session envs) hit it.
+DOCKERD_LOG=/var/log/dockerd.log
+
+RUNNER_USER="${RUNNER_USER:-runner}"
+
+# Lowest id to park an evicted account on. Above the normal login range, so it
+# cannot collide with a workspace owner id a Hub might report.
+EVICTED_ID_BASE=61000
+
+# First unused id at or above EVICTED_ID_BASE in the passwd or group database.
+free_id() {
+  local db="$1" id="$EVICTED_ID_BASE"
+  while getent "$db" "$id" >/dev/null 2>&1; do
+    id=$((id + 1))
+  done
+  printf '%s' "$id"
+}
+
+# usermod/groupmod refuse an id that is already taken, and the ubuntu base image
+# ships an `ubuntu` account on 1000:1000 — exactly the ids a Hub running as uid
+# 1000 reports. Park the incumbent on a free high id rather than deleting an
+# account the image may depend on.
+evict_id_holder() {
+  local db="$1" want="$2" holder free
+  holder="$(getent "$db" "$want" | cut -d: -f1)"
+  if [ -z "$holder" ] || [ "$holder" = "$RUNNER_USER" ]; then
+    return 0
+  fi
+  free="$(free_id "$db")"
+  echo "[finalize-runner] moving ${db} '${holder}' off id ${want} -> ${free}"
+  if [ "$db" = passwd ]; then
+    sudo usermod -u "$free" "$holder"
+  else
+    sudo groupmod -g "$free" "$holder"
+  fi
+}
+
+# The session worktree is bind-mounted from the host, so its files carry the
+# uid/gid of the process that created them — the Hub, typically uid 1000. A
+# container user on a different uid gets an effectively read-only workspace and
+# git refuses the checkout outright as "dubious ownership", which makes the
+# session unusable for editing, building, or committing. Align the runner
+# account with the owner the Hub reports; this is what devcontainers do via
+# updateRemoteUserUID. Unset means no-op, which is the Finalize path.
+align_runner_identity() {
+  local want_uid="${AGENT_HUB_WORKSPACE_UID:-}"
+  local want_gid="${AGENT_HUB_WORKSPACE_GID:-}"
+  if [ -z "$want_uid" ]; then
+    return 0
+  fi
+
+  local cur_uid cur_gid
+  cur_uid="$(id -u "$RUNNER_USER")"
+  cur_gid="$(id -g "$RUNNER_USER")"
+  want_gid="${want_gid:-$cur_gid}"
+  if [ "$want_uid" = "$cur_uid" ] && [ "$want_gid" = "$cur_gid" ]; then
+    return 0
+  fi
+
+  echo "[finalize-runner] aligning ${RUNNER_USER} to ${want_uid}:${want_gid} (workspace owner)"
+  if [ "$want_gid" != "$cur_gid" ]; then
+    evict_id_holder group "$want_gid"
+    sudo groupmod -g "$want_gid" "$RUNNER_USER"
+  fi
+  if [ "$want_uid" != "$cur_uid" ]; then
+    evict_id_holder passwd "$want_uid"
+    sudo usermod -u "$want_uid" "$RUNNER_USER"
+  fi
+  # usermod re-owns files under $HOME but leaves their group, and never touches
+  # paths outside it.
+  sudo chown -R "${want_uid}:${want_gid}" "/home/${RUNNER_USER}" 2>/dev/null || true
+  if [ -d /github/workspace ]; then
+    sudo chown "${want_uid}:${want_gid}" /github/workspace 2>/dev/null || true
+  fi
+}
 
 # Configure a registry pull-through cache / mirror for the inner dockerd when
 # FINALIZE_REGISTRY_MIRROR is set (e.g. http://host.docker.internal:5000 locally,
@@ -61,7 +141,9 @@ start_dockerd() {
     return 0
   fi
 
-  : > "${DOCKERD_LOG}" 2>/dev/null || sudo sh -c ": > ${DOCKERD_LOG}"
+  # Created as root so the sudo'd append below is opening its own file, and
+  # 0644 so the failure `tail` at the end of this function can still read it.
+  sudo sh -c ": > ${DOCKERD_LOG} && chmod 0644 ${DOCKERD_LOG}"
 
   # A healthy overlay2 daemon is ready in a few seconds; cap the wait at ~30s so
   # a genuinely broken overlay2 falls through to vfs fast instead of burning 60s.
@@ -86,6 +168,7 @@ start_dockerd() {
 
 case "${1:-}" in
   daemon)
+    align_runner_identity
     configure_registry_mirror
     prepare_image_cache
     start_dockerd

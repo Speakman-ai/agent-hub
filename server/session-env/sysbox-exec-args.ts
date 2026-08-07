@@ -94,6 +94,29 @@ export interface SysboxPortPublish {
   hostPort: number;
 }
 
+/**
+ * Numeric owner of the bind-mounted worktree, as the Hub sees it. The
+ * container entrypoint aligns its `runner` account with these ids; without
+ * that the mount is read-only to the session and git rejects the checkout as
+ * "dubious ownership". See `align_runner_identity` in the runner entrypoint.
+ */
+export const WORKSPACE_UID_ENV = 'AGENT_HUB_WORKSPACE_UID';
+export const WORKSPACE_GID_ENV = 'AGENT_HUB_WORKSPACE_GID';
+
+export interface WorkspaceOwner {
+  uid: number;
+  gid: number;
+}
+
+/** Container env carrying {@link WorkspaceOwner}; empty when unknown. */
+export function workspaceOwnerEnv(owner: WorkspaceOwner | null): Record<string, string> {
+  if (!owner) return {};
+  return {
+    [WORKSPACE_UID_ENV]: String(owner.uid),
+    [WORKSPACE_GID_ENV]: String(owner.gid),
+  };
+}
+
 /** Container isolation runtime. See the module header. */
 export type ContainerIsolation = 'sysbox-runc' | 'privileged';
 
@@ -191,6 +214,13 @@ export function buildStartSysboxContainerArgv(opts: StartSysboxContainerOptions)
     opts.containerName,
     ...sessionLabels(opts.sessionId),
   ];
+
+  // Boot as root so the entrypoint can align `runner` with the worktree owner:
+  // usermod refuses a uid change while any process runs as that user, and the
+  // image's own USER would make the entrypoint exactly such a process. Nothing
+  // interactive lands here — every exec below pins `-u runner`, which resolves
+  // to the aligned ids.
+  args.push('--user', 'root');
 
   args.push('-v', `${hostMount}:${SYSBOX_SESSION_WORKSPACE}:rw`);
   args.push('-v', `${sysboxGraphVolumeName(opts.containerName)}:/var/lib/docker`);
