@@ -447,6 +447,6 @@ jobs:
             if [[ "$BOOL_RESET" == "true" ]]; then
               echo "**Reset mode** on instance \`$DEPLOY_INSTANCE_ID\`."
             else
-              echo "Restarted \`agenthub-server\` on \`$DEPLOY_INSTANCE_ID\` (pull picks up \`:\$DEPLOY_TAG\`)."
+              echo "Restarted \`agenthub-server\` on \`$DEPLOY_INSTANCE_ID\` (pull picks up \`:$DEPLOY_TAG\`)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

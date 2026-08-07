@@ -112,6 +112,16 @@ describe('ECR publish + push-image deploy contract', () => {
     );
   });
 
+  it('prints the tag it rolled out in the run summary', () => {
+    // The escapes elsewhere are deliberate — those lines are inside the
+    // heredoc sent to SSM, where expansion has to happen on the remote host.
+    // The summary is an ordinary step shell, so the same escape reaches the
+    // reader as the literal `$DEPLOY_TAG` and the summary stops naming which
+    // image actually went out.
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toMatch(/pull picks up \\`:\$DEPLOY_TAG\\`/);
+  });
+
   // Regression guard for the dev-sandbox manual-deploy switch. The thin
   // `push-image.yml` entrypoint must stay manual-only (no `push:` trigger).
   // Rollout itself is additionally gated by `inputs.rollout` on the reusable
