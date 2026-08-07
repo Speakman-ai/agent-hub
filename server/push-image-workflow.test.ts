@@ -93,8 +93,23 @@ describe('ECR publish + push-image deploy contract', () => {
     // The SSM script must perform the equality check (anchor on the FATAL
     // line so a future refactor can't accidentally drop the assertion).
     expect(yml).toContain('LOCAL_REPO_DIGEST');
-    expect(yml).toContain('host :main digest');
+    expect(yml).toContain('host :\\$DEPLOY_TAG digest');
     expect(yml).toMatch(/!=\s+just-pushed digest/);
+  });
+
+  it('asserts against the moving tag it published rather than a literal main', () => {
+    // A dispatch on a non-main ref publishes `<ref-name>` and the target host is
+    // pointed at that same tag. Comparing a hardcoded `:main` there inspected an
+    // unrelated, usually older image, so the assertion could only fail: the image
+    // was live and correct while CI reported the rollout as broken.
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toMatch(/moving_tag:\s*\$\{\{\s*steps\.tags\.outputs\.branch\s*\}\}/);
+    expect(yml).toMatch(
+      /DEPLOY_TAG:\s*\$\{\{\s*needs\.push\.outputs\.moving_tag\s*\|\|\s*'main'\s*\}\}/,
+    );
+    expect(yml, 'the digest lookup must use the tag, not a literal').not.toMatch(
+      /docker image inspect \$\{ECR_PUBLIC_URI\}:main/,
+    );
   });
 
   // Regression guard for the dev-sandbox manual-deploy switch. The thin

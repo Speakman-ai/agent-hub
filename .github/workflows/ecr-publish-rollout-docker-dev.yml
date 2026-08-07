@@ -1,5 +1,6 @@
 # Builds the server image and pushes it to public ECR, then optionally
-# restarts the dockerized dev sandbox (SSM pull :main digest check).
+# restarts the dockerized dev sandbox (SSM pull, digest checked against the
+# moving tag this run published).
 #
 # Called by `release-all.yml` after a semver tag is pushed. Also reachable
 # directly via `workflow_dispatch` for emergency image builds without a
@@ -104,6 +105,8 @@ jobs:
     timeout-minutes: 75
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      # The moving tag this run published, for the deploy job's digest assertion.
+      moving_tag: ${{ steps.tags.outputs.branch }}
     steps:
       # Reusable workflows inherit the *caller's* github.event_name (e.g.
       # workflow_dispatch when Release invokes us), not "workflow_call". Branching
@@ -262,12 +265,20 @@ jobs:
       # is reused, so a single-account setup only needs the push role configured.
       # The image PUSH (above) targets ECR_REGISTRY; this deploy step assumes the
       # target-account role and SSMs that instance. The target box runs the
-      # agenthub-server systemd unit and pulls ${ECR_PUBLIC_URI}:main (cross-account
-      # pull is fine — the registry is public), so the digest assertion still holds.
+      # agenthub-server systemd unit and pulls ${ECR_PUBLIC_URI}:${DEPLOY_TAG}
+      # (cross-account pull is fine — the registry is public), so the digest
+      # assertion still holds.
       AWS_ROLE_TO_ASSUME: ${{ vars.DOCKER_DEPLOY_ROLE_ARN || vars.ECR_PUSH_ROLE_ARN }}
       AWS_DEPLOY_REGION: ${{ vars.DOCKER_DEPLOY_REGION || 'us-east-2' }}
       DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}
       EXPECTED_DIGEST: ${{ needs.push.outputs.digest }}
+      # Assert against the moving tag this run actually published, not a literal
+      # `main`. A dispatch on any other ref publishes `<ref-name>` and the target
+      # host is pointed at that same tag, so the hardcoded `main` compared an
+      # unrelated (usually older) image and the job could only ever fail — the
+      # image was live and correct while CI reported a failed rollout. On a main
+      # build this resolves to `main`, unchanged.
+      DEPLOY_TAG: ${{ needs.push.outputs.moving_tag || 'main' }}
 
     steps:
       - name: Configure AWS credentials (OIDC)
@@ -312,6 +323,7 @@ jobs:
             SCRIPT=$(cat <<EOF
           set -euo pipefail
           EXPECTED_DIGEST="$EXPECTED_DIGEST"
+          DEPLOY_TAG="$DEPLOY_TAG"
           sudo systemctl restart agenthub-server
           sudo systemctl is-active agenthub-server
 
@@ -324,11 +336,11 @@ jobs:
           attempts=0
           while :; do
             attempts=\$(( attempts + 1 ))
-            LOCAL_DIGEST=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:main \
+            LOCAL_DIGEST=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:\$DEPLOY_TAG \
               --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
               | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
             CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' 2>/dev/null || true)
-            LOCAL_IMAGE_ID=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:main --format '{{.Id}}' 2>/dev/null || true)
+            LOCAL_IMAGE_ID=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:\$DEPLOY_TAG --format '{{.Id}}' 2>/dev/null || true)
 
             digest_ok="false"
             container_ok="false"
@@ -363,12 +375,12 @@ jobs:
           fi
 
           if [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
-            echo "FATAL: host :main digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
+            echo "FATAL: host :\$DEPLOY_TAG digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
             exit 1
           fi
 
           if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" != "\$LOCAL_IMAGE_ID" ]; then
-            echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :main image-id (\$LOCAL_IMAGE_ID)" >&2
+            echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :\$DEPLOY_TAG image-id (\$LOCAL_IMAGE_ID)" >&2
             exit 1
           fi
 
@@ -449,6 +461,6 @@ jobs:
             if [[ "$BOOL_RESET" == "true" ]]; then
               echo "**Reset mode** on instance \`$DEPLOY_INSTANCE_ID\`."
             else
-              echo "Restarted \`agenthub-server\` on \`$DEPLOY_INSTANCE_ID\` (pull picks up \`:main\`)."
+              echo "Restarted \`agenthub-server\` on \`$DEPLOY_INSTANCE_ID\` (pull picks up \`:\$DEPLOY_TAG\`)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
