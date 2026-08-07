@@ -368,7 +368,15 @@ export default function DevServerSection({
       </TouchableOpacity>
       <Text style={styles.hint}>
         Not sure what to fill in? The agent walkthrough opens a guided chat that scans the repo,
-        confirms the start command, ports, and env/secret split, and saves the config for you.
+        confirms the start command, ports, and env/secret split, and saves the config for you. It
+        also checks the app is reachable from a preview browser, which this form can&apos;t do for
+        you.
+      </Text>
+      <Text style={styles.hint}>
+        Configuring by hand? The preview browser is not on the machine running your app, so it needs
+        to bind 0.0.0.0, allow the proxied Host header, and reach its own API by a relative or
+        same-origin URL rather than localhost. A hardcoded loopback API URL is the common one: the
+        page loads and every request fails, so the preview looks healthy.
       </Text>
       {wizardError && (
         <View style={styles.errorBox}>
