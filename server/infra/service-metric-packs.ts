@@ -128,6 +128,15 @@ export const INFRA_SERVICE_POLL_TIERS: Readonly<Record<string, number>> = Object
   // collector tick raises this to its own cadence anyway; the 60 records what
   // the service deserves if the tick ever gets finer.
   ecs: 60,
+  // The three networking services are INFRA-COST's named 1-minute class ("ALB,
+  // NAT … can be tight"), and all three publish at 60s: ELB "measures and sends
+  // its metrics in 60-second intervals", and "NAT gateway metrics are sent to
+  // CloudWatch at 1-minute intervals". Asking for less would stale a signal
+  // whose whole value is catching a target going unhealthy or a port pool
+  // running dry before the next deploy does.
+  alb: 60,
+  nlb: 60,
+  natgw: 60,
 });
 
 /** The tier for a service, or the default when it has none. */

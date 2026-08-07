@@ -7,18 +7,36 @@
  * commit that declares it.
  */
 
+import { ALB_PACK } from './alb.js';
 import { EC2_PACK } from './ec2.js';
 import { ECS_PACK } from './ecs.js';
+import { NATGW_PACK } from './natgw.js';
+import { NLB_PACK } from './nlb.js';
 import type { InfraPackMetric, InfraServicePack } from './types.js';
 
 export * from './types.js';
+export { ALB_PACK } from './alb.js';
 export { EC2_PACK } from './ec2.js';
 export { ECS_PACK, ECS_CONTAINER_INSIGHTS_FEATURE } from './ecs.js';
+export { NATGW_PACK } from './natgw.js';
+export { NLB_PACK } from './nlb.js';
 
-/** Service token → pack. */
+/**
+ * Service token → pack.
+ *
+ * ALB and NLB are two services rather than one `elbv2` because CloudWatch treats
+ * them as two: different namespaces, and a `LoadBalancer` dimension whose *name*
+ * is identical on both. A single token would make the collector request every
+ * `AWS/ApplicationELB` metric against each Network Load Balancer and vice versa,
+ * and every one of those is a billed `GetMetricData` entry returning an empty
+ * series.
+ */
 export const INFRA_SERVICE_PACKS: Readonly<Record<string, InfraServicePack>> = Object.freeze({
   [EC2_PACK.service]: EC2_PACK,
   [ECS_PACK.service]: ECS_PACK,
+  [ALB_PACK.service]: ALB_PACK,
+  [NLB_PACK.service]: NLB_PACK,
+  [NATGW_PACK.service]: NATGW_PACK,
 });
 
 /** The pack for a service, or `null` when the service has none yet. */

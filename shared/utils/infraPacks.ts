@@ -13,7 +13,7 @@
  * and mobile into `<Text>`, and the strings themselves must not diverge.
  */
 
-export type InfraPackMetricType = 'gauge' | 'counter' | 'flag' | 'balance';
+export type InfraPackMetricType = 'gauge' | 'counter' | 'flag' | 'balance' | 'latency';
 
 export type InfraPackAvailability = 'either' | 'basic-only' | 'detailed-only';
 

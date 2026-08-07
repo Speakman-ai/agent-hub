@@ -14,8 +14,26 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { DescribeInstancesCommand } from '@aws-sdk/client-ec2';
-import type { DescribeInstancesCommandOutput, Instance, Reservation } from '@aws-sdk/client-ec2';
+import { DescribeInstancesCommand, DescribeNatGatewaysCommand } from '@aws-sdk/client-ec2';
+import type {
+  DescribeInstancesCommandOutput,
+  DescribeNatGatewaysCommandOutput,
+  Instance,
+  NatGateway,
+  Reservation,
+} from '@aws-sdk/client-ec2';
+import {
+  DescribeLoadBalancersCommand,
+  DescribeTagsCommand,
+  DescribeTargetGroupsCommand,
+} from '@aws-sdk/client-elastic-load-balancing-v2';
+import type {
+  DescribeLoadBalancersCommandOutput,
+  DescribeTagsCommandOutput,
+  DescribeTargetGroupsCommandOutput,
+  LoadBalancer,
+  TargetGroup,
+} from '@aws-sdk/client-elastic-load-balancing-v2';
 import {
   DescribeClustersCommand,
   DescribeServicesCommand,
@@ -32,10 +50,18 @@ import {
   isContainerInsightsOnValue,
   ECS_CONTAINER_INSIGHTS_ON_VALUES,
   INFRA_INVENTORY_SYNC_CRON,
+  INFRA_SYNCABLE_SERVICES,
+  MAX_PAGES_PER_SCOPE,
+  isAwsAuthorizationError,
+  isElbTagNotFoundError,
+  loadBalancerDimensionValue,
+  targetGroupDimensionValue,
   type Ec2DescribeClient,
   type EcsDescribeClient,
+  type ElbDescribeClient,
   type InfraScopeRow,
 } from './inventory-sync.js';
+import { infraPackedServices } from './packs/index.js';
 import { estimateIntervalSeconds } from '../cron-tick.js';
 // The collector's own planner, so "is it collected" is answered by the code
 // that decides it rather than by re-reading the feature flag in the test.
@@ -984,5 +1010,824 @@ describe('runInfraInventorySync — ECS', () => {
     });
 
     expect(result).toMatchObject({ scopes: 2, synced: 1, failed: 1, upserted: 1 });
+  });
+});
+
+// ─── Networking services (ALB, NLB, NAT Gateway) ────────────────────────────
+
+const ELB_ARN_PREFIX = 'arn:aws:elasticloadbalancing:us-east-1:111122223333';
+
+function loadBalancer(
+  kind: 'app' | 'net',
+  name: string,
+  id: string,
+  extra: Partial<LoadBalancer> = {},
+): LoadBalancer {
+  return {
+    LoadBalancerArn: `${ELB_ARN_PREFIX}:loadbalancer/${kind}/${name}/${id}`,
+    LoadBalancerName: name,
+    Type: kind === 'app' ? 'application' : 'network',
+    State: { Code: 'active' },
+    ...extra,
+  };
+}
+
+function targetGroup(name: string, id: string, loadBalancerArns: string[]): TargetGroup {
+  return {
+    TargetGroupArn: `${ELB_ARN_PREFIX}:targetgroup/${name}/${id}`,
+    TargetGroupName: name,
+    LoadBalancerArns: loadBalancerArns,
+  };
+}
+
+/**
+ * An ELBv2 stub. Answers the three commands the walk issues and records them,
+ * so a test can assert on pagination and batching rather than only on rows.
+ *
+ * Load balancers and target groups are served as *pages*, each consumed in
+ * order, so a test can drive `NextMarker` and the page cap. The `loadBalancers`
+ * / `targetGroups` shorthands are a single page with no marker.
+ */
+function stubElb(opts: {
+  loadBalancers?: LoadBalancer[];
+  loadBalancerPages?: Array<Partial<DescribeLoadBalancersCommandOutput>>;
+  targetGroups?: TargetGroup[];
+  targetGroupPages?: Array<Partial<DescribeTargetGroupsCommandOutput>>;
+  tags?: Record<string, Array<{ Key: string; Value: string }>>;
+  /** Thrown by every `DescribeTags` call when set. */
+  tagsError?: unknown;
+  /**
+   * ARNs that were deleted between the describe walk and the tag call. Any
+   * `DescribeTags` request containing one fails wholesale, which is exactly how
+   * AWS behaves: the call is all-or-nothing per batch.
+   */
+  notFoundArns?: string[];
+}): ElbDescribeClient & {
+  calls: unknown[];
+  lbCalls: DescribeLoadBalancersCommand[];
+  tgCalls: DescribeTargetGroupsCommand[];
+  tagCalls: DescribeTagsCommand[];
+} {
+  const calls: unknown[] = [];
+  const lbCalls: DescribeLoadBalancersCommand[] = [];
+  const tgCalls: DescribeTargetGroupsCommand[] = [];
+  const tagCalls: DescribeTagsCommand[] = [];
+  const lbPages = opts.loadBalancerPages ?? [{ LoadBalancers: opts.loadBalancers ?? [] }];
+  const tgPages = opts.targetGroupPages ?? [{ TargetGroups: opts.targetGroups ?? [] }];
+  let lbIndex = 0;
+  let tgIndex = 0;
+
+  return {
+    calls,
+    lbCalls,
+    tgCalls,
+    tagCalls,
+    async send(command: unknown) {
+      calls.push(command);
+      if (command instanceof DescribeLoadBalancersCommand) {
+        lbCalls.push(command);
+        const page = lbPages[lbIndex] ?? {};
+        lbIndex += 1;
+        return page as DescribeLoadBalancersCommandOutput;
+      }
+      if (command instanceof DescribeTargetGroupsCommand) {
+        tgCalls.push(command);
+        const page = tgPages[tgIndex] ?? {};
+        tgIndex += 1;
+        return page as DescribeTargetGroupsCommandOutput;
+      }
+      if (command instanceof DescribeTagsCommand) {
+        tagCalls.push(command);
+        if (opts.tagsError) throw opts.tagsError;
+        const arns = (command.input.ResourceArns ?? []) as string[];
+        if (opts.notFoundArns?.some((arn) => arns.includes(arn))) {
+          throw awsError('LoadBalancerNotFoundException');
+        }
+        return {
+          TagDescriptions: arns.map((ResourceArn) => ({
+            ResourceArn,
+            Tags: opts.tags?.[ResourceArn] ?? [],
+          })),
+        } as DescribeTagsCommandOutput;
+      }
+      throw new Error('unexpected command');
+    },
+  } as ElbDescribeClient & {
+    calls: unknown[];
+    lbCalls: DescribeLoadBalancersCommand[];
+    tgCalls: DescribeTargetGroupsCommand[];
+    tagCalls: DescribeTagsCommand[];
+  };
+}
+
+/** An AWS-shaped error, so the classifiers are exercised as they will be live. */
+function awsError(name: string, httpStatusCode?: number): Error {
+  const err = new Error(name);
+  err.name = name;
+  if (httpStatusCode !== undefined) {
+    (err as unknown as { $metadata: { httpStatusCode: number } }).$metadata = { httpStatusCode };
+  }
+  return err;
+}
+
+/** An EC2 stub that answers `DescribeNatGateways`. */
+function stubNatGateways(
+  pages: Array<Partial<DescribeNatGatewaysCommandOutput>>,
+): Ec2DescribeClient & { calls: DescribeNatGatewaysCommand[] } {
+  const calls: DescribeNatGatewaysCommand[] = [];
+  let index = 0;
+  return {
+    calls,
+    async send(command: DescribeNatGatewaysCommand) {
+      calls.push(command);
+      const page = pages[index] ?? {};
+      index += 1;
+      return page as DescribeNatGatewaysCommandOutput;
+    },
+  } as Ec2DescribeClient & { calls: DescribeNatGatewaysCommand[] };
+}
+
+function natGateway(id: string, extra: Partial<NatGateway> = {}): NatGateway {
+  return { NatGatewayId: id, State: 'available', ...extra };
+}
+
+/** The stored rows in the shape the collector reads them. */
+function collectableRows(): CollectableResource[] {
+  return getInfraDb()
+    .prepare(
+      `SELECT resource_key, account_id, resource_id, service, tags_json,
+              metric_dimensions_json, features_json
+         FROM infra_resources ORDER BY resource_id`,
+    )
+    .all() as CollectableResource[];
+}
+
+describe('syncable services cover every pack', () => {
+  it('can inventory every service that has a metric pack', () => {
+    // The failure this guards against, caught in review: packs were registered
+    // and served to the UI while the sync allowlist still read ['ec2','ecs'],
+    // so ALB, NLB and NAT Gateway had metrics and default rules with no
+    // resource rows to collect against. A pack with no describer is inert.
+    expect([...INFRA_SYNCABLE_SERVICES].sort()).toEqual(infraPackedServices());
+  });
+});
+
+describe('ELBv2 ARN → CloudWatch dimension value', () => {
+  it('keeps the app/ and net/ discriminator, which is all that separates them', () => {
+    // The dimension *name* is `LoadBalancer` on both namespaces, so the value's
+    // prefix is the only thing saying which service a series belongs to.
+    expect(
+      loadBalancerDimensionValue(`${ELB_ARN_PREFIX}:loadbalancer/app/web/50dc6c495c0c9188`),
+    ).toBe('app/web/50dc6c495c0c9188');
+    expect(
+      loadBalancerDimensionValue(`${ELB_ARN_PREFIX}:loadbalancer/net/ingest/50dc6c495c0c9188`),
+    ).toBe('net/ingest/50dc6c495c0c9188');
+  });
+
+  it('keeps the literal targetgroup/ prefix AWS documents as part of the value', () => {
+    expect(targetGroupDimensionValue(`${ELB_ARN_PREFIX}:targetgroup/api/73e2d6bc24d8a067`)).toBe(
+      'targetgroup/api/73e2d6bc24d8a067',
+    );
+  });
+
+  it('returns null rather than a wrong dimension for anything unparseable', () => {
+    for (const bad of [undefined, '', 'not-an-arn', `${ELB_ARN_PREFIX}:loadbalancer/`]) {
+      expect(loadBalancerDimensionValue(bad)).toBeNull();
+    }
+    expect(targetGroupDimensionValue('arn:aws:ecs:us-east-1:1:cluster/prod')).toBeNull();
+  });
+});
+
+describe('runInfraInventorySync — ALB and NLB', () => {
+  it('writes a load balancer row and its target group row', async () => {
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const alb = loadBalancer('app', 'web', '50dc6c495c0c9188');
+    const tg = targetGroup('api', '73e2d6bc24d8a067', [alb.LoadBalancerArn!]);
+    const elb = stubElb({
+      loadBalancers: [alb],
+      targetGroups: [tg],
+      tags: {
+        [alb.LoadBalancerArn!]: [
+          { Key: 'Name', Value: 'web-lb' },
+          { Key: 'Environment', Value: 'prod' },
+        ],
+      },
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+    expect(result.failed).toBe(0);
+    expect(result.upserted).toBe(2);
+
+    const rows = allResources();
+    const lbRow = rows.find((r) => r.resource_id === 'app/web/50dc6c495c0c9188')!;
+    expect(lbRow.service).toBe('alb');
+    expect(lbRow.name).toBe('web');
+    expect(lbRow.state).toBe('active');
+    expect(lbRow.environment).toBe('prod');
+    expect(JSON.parse(lbRow.metric_dimensions_json!)).toEqual({
+      LoadBalancer: 'app/web/50dc6c495c0c9188',
+    });
+
+    // The target group carries BOTH dimensions: AWS publishes the host counts
+    // only at LoadBalancer + TargetGroup, so a row with one of them collects
+    // nothing.
+    const tgRow = rows.find((r) => r.resource_id.includes('targetgroup/'))!;
+    expect(JSON.parse(tgRow.metric_dimensions_json!)).toEqual({
+      LoadBalancer: 'app/web/50dc6c495c0c9188',
+      TargetGroup: 'targetgroup/api/73e2d6bc24d8a067',
+    });
+  });
+
+  it('partitions on Type so an NLB never lands in an alb scope', async () => {
+    // One DescribeLoadBalancers API returns every type. Without the filter an
+    // `alb` scope would write NLB rows and the collector would issue
+    // AWS/ApplicationELB queries against them — billed, and empty forever.
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const elb = stubElb({
+      loadBalancers: [
+        loadBalancer('app', 'web', 'aaaa'),
+        loadBalancer('net', 'ingest', 'bbbb'),
+        { ...loadBalancer('app', 'gw', 'cccc'), Type: 'gateway' },
+      ],
+    });
+
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+    expect(allResources().map((r) => r.resource_id)).toEqual(['app/web/aaaa']);
+  });
+
+  it('writes network load balancers for an nlb scope', async () => {
+    insertScope({ id: 'nlb1', service: 'nlb', account_id: '111122223333' });
+    const elb = stubElb({
+      loadBalancers: [loadBalancer('app', 'web', 'aaaa'), loadBalancer('net', 'ingest', 'bbbb')],
+    });
+
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+    const rows = allResources();
+    expect(rows.map((r) => r.resource_id)).toEqual(['net/ingest/bbbb']);
+    expect(rows[0]!.service).toBe('nlb');
+  });
+
+  it('drops target groups attached to an out-of-scope load balancer', async () => {
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const alb = loadBalancer('app', 'web', 'aaaa');
+    const nlb = loadBalancer('net', 'ingest', 'bbbb');
+    const elb = stubElb({
+      loadBalancers: [alb, nlb],
+      targetGroups: [
+        targetGroup('api', 'tg1', [alb.LoadBalancerArn!]),
+        targetGroup('stream', 'tg2', [nlb.LoadBalancerArn!]),
+        // Unattached: publishes no host counts, so it is not worth a row.
+        targetGroup('orphan', 'tg3', []),
+      ],
+    });
+
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+    const ids = allResources().map((r) => r.resource_id);
+    expect(ids).toContain('app/web/aaaa/targetgroup/api/tg1');
+    expect(ids.some((id) => id.includes('tg2'))).toBe(false);
+    expect(ids.some((id) => id.includes('tg3'))).toBe(false);
+  });
+
+  it('survives a DescribeTags failure with untagged rows rather than no rows', async () => {
+    // DescribeTags is all-or-nothing per batch of 20, so one ARN deleted
+    // between the describe and the tag call 400s the whole batch. Losing tags
+    // costs a Name; failing the scope costs the region its inventory.
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const elb = stubElb({
+      loadBalancers: [loadBalancer('app', 'web', 'aaaa')],
+      tagsError: awsError('LoadBalancerNotFoundException'),
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+    expect(result.failed).toBe(0);
+    expect(result.upserted).toBe(1);
+    expect(allResources()[0]!.tags_json).toBeNull();
+  });
+
+  it('applies the tag filter client-side, since no ELBv2 describe accepts one', async () => {
+    insertScope({
+      id: 'alb1',
+      service: 'alb',
+      account_id: '111122223333',
+      tag_filter_json: JSON.stringify({ Environment: ['prod'] }),
+    });
+    const keep = loadBalancer('app', 'web', 'aaaa');
+    const drop = loadBalancer('app', 'staging', 'bbbb');
+    const elb = stubElb({
+      loadBalancers: [keep, drop],
+      tags: { [keep.LoadBalancerArn!]: [{ Key: 'Environment', Value: 'prod' }] },
+    });
+
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+    expect(allResources().map((r) => r.resource_id)).toEqual(['app/web/aaaa']);
+  });
+
+  it('produces rows the collector actually binds pack metrics to, end to end', async () => {
+    // The reviewer's concern, answered by the code that decides it: registering
+    // a pack is worthless unless a described resource yields real queries.
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const alb = loadBalancer('app', 'web', 'aaaa');
+    const elb = stubElb({
+      loadBalancers: [alb],
+      targetGroups: [targetGroup('api', 'tg1', [alb.LoadBalancerArn!])],
+    });
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    const planned = planQueries(collectableRows(), T0 - 900_000, T0);
+    const names = new Set(planned.map((p) => p.metricName));
+    expect(planned.every((p) => p.namespace === 'AWS/ApplicationELB')).toBe(true);
+    // Load-balancer-keyed metrics.
+    expect(names).toContain('RequestCount');
+    expect(names).toContain('HTTPCode_ELB_5XX_Count');
+    // The percentile series, which only exist because the target latency
+    // metric is declared three times.
+    expect(planned.filter((p) => p.metricName === 'TargetResponseTime').map((p) => p.stat)).toEqual(
+      expect.arrayContaining(['Average', 'p50', 'p99']),
+    );
+    // Target-group-keyed metrics — the ones with no load-balancer-only series.
+    expect(names).toContain('HealthyHostCount');
+    expect(names).toContain('UnHealthyHostCount');
+    expect(names).toContain('RequestCountPerTarget');
+  });
+});
+
+describe('runInfraInventorySync — NAT Gateway', () => {
+  it('writes a zonal gateway on NatGatewayId alone', async () => {
+    insertScope({ id: 'nat1', service: 'natgw', account_id: '111122223333' });
+    const ec2 = stubNatGateways([
+      {
+        NatGateways: [
+          natGateway('nat-aaa', {
+            AvailabilityMode: 'zonal',
+            Tags: [
+              { Key: 'Name', Value: 'egress' },
+              { Key: 'Environment', Value: 'prod' },
+            ],
+          }),
+        ],
+      },
+    ]);
+
+    await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: () => ec2 });
+    const row = allResources()[0]!;
+    expect(row.service).toBe('natgw');
+    expect(row.resource_id).toBe('nat-aaa');
+    expect(row.name).toBe('egress');
+    expect(row.state).toBe('available');
+    expect(row.environment).toBe('prod');
+    expect(JSON.parse(row.metric_dimensions_json!)).toEqual({ NatGatewayId: 'nat-aaa' });
+  });
+
+  it('treats an absent availabilityMode as zonal', async () => {
+    // The field postdates the regional feature, so every gateway older than it
+    // is zonal — and zonal is the arm that collects. Guessing "regional" would
+    // silently stop collecting a gateway that works.
+    insertScope({ id: 'nat1', service: 'natgw', account_id: '111122223333' });
+    const ec2 = stubNatGateways([{ NatGateways: [natGateway('nat-aaa')] }]);
+
+    await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: () => ec2 });
+    expect(JSON.parse(allResources()[0]!.metric_dimensions_json!)).toEqual({
+      NatGatewayId: 'nat-aaa',
+    });
+  });
+
+  it('pushes the tag filter into the API, as the instance walk does', async () => {
+    insertScope({
+      id: 'nat1',
+      service: 'natgw',
+      account_id: '111122223333',
+      tag_filter_json: JSON.stringify({ Environment: ['prod'] }),
+    });
+    const ec2 = stubNatGateways([{ NatGateways: [] }]);
+    await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: () => ec2 });
+
+    expect(ec2.calls[0]!.input.Filter).toEqual([{ Name: 'tag:Environment', Values: ['prod'] }]);
+  });
+
+  it('gives a regional gateway one row per AZ, keyed so it cannot be billed', async () => {
+    // A regional gateway publishes at NatGatewayId + AvailabilityZone, which no
+    // pack metric declares. Recording both names makes bindMetricDimensions
+    // refuse the row — so it is visible in inventory and costs nothing. Writing
+    // NatGatewayId alone would look right and bill a GetMetricData entry per
+    // metric per tick, forever, for a series AWS does not publish.
+    insertScope({ id: 'nat1', service: 'natgw', account_id: '111122223333' });
+    const ec2 = stubNatGateways([
+      {
+        NatGateways: [
+          natGateway('nat-reg', {
+            AvailabilityMode: 'regional',
+            NatGatewayAddresses: [
+              { AvailabilityZone: 'us-east-1a' },
+              { AvailabilityZone: 'us-east-1b' },
+              // Same zone twice: two EIPs in one AZ is one series.
+              { AvailabilityZone: 'us-east-1a' },
+            ],
+          }),
+        ],
+      },
+    ]);
+
+    await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: () => ec2 });
+    const rows = allResources();
+    expect(rows.map((r) => r.resource_id)).toEqual(['nat-reg@us-east-1a', 'nat-reg@us-east-1b']);
+    expect(JSON.parse(rows[0]!.metric_dimensions_json!)).toEqual({
+      NatGatewayId: 'nat-reg',
+      AvailabilityZone: 'us-east-1a',
+    });
+
+    // The load-bearing half: no billed query is planned for it.
+    expect(planQueries(collectableRows(), T0 - 900_000, T0)).toEqual([]);
+  });
+
+  it('skips a regional gateway whose zones cannot be resolved', async () => {
+    insertScope({ id: 'nat1', service: 'natgw', account_id: '111122223333' });
+    const ec2 = stubNatGateways([
+      { NatGateways: [natGateway('nat-reg', { AvailabilityMode: 'regional' })] },
+    ]);
+
+    const result = await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: () => ec2 });
+    // Counted rather than guessed at: there is no dimension map for it that is
+    // both honest and non-billing.
+    expect(result.skipped).toBe(1);
+    expect(allResources()).toEqual([]);
+  });
+
+  it('follows NextToken across NAT gateway pages', async () => {
+    // Same class of gap the ELB walk had: a stub that never returns a token
+    // lets a broken loop look correct while omitting every gateway past the
+    // first page. EC2 pages on NextToken, not the Marker ELBv2 uses.
+    insertScope({ id: 'nat1', service: 'natgw', account_id: '111122223333' });
+    const ec2 = stubNatGateways([
+      { NatGateways: [natGateway('nat-aaa')], NextToken: 'page2' },
+      { NatGateways: [natGateway('nat-bbb')] },
+    ]);
+
+    const result = await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: () => ec2 });
+
+    expect(result.upserted).toBe(2);
+    expect(ec2.calls).toHaveLength(2);
+    expect(ec2.calls[0]!.input.NextToken).toBeUndefined();
+    expect(ec2.calls[1]!.input.NextToken).toBe('page2');
+    expect(ec2.calls[0]!.input.MaxResults).toBe(1000);
+  });
+
+  it('stops the NAT walk at the page cap and warns', async () => {
+    insertScope({ id: 'nat1', service: 'natgw', account_id: '111122223333' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ec2 = stubNatGateways(
+      Array.from({ length: MAX_PAGES_PER_SCOPE + 5 }, (_, i) => ({
+        NatGateways: [natGateway(`nat-${i}`)],
+        NextToken: `page${i + 2}`,
+      })),
+    );
+
+    const result = await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: () => ec2 });
+
+    expect(ec2.calls).toHaveLength(MAX_PAGES_PER_SCOPE);
+    expect(result.upserted).toBe(MAX_PAGES_PER_SCOPE);
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/inventory may be incomplete/i);
+  });
+
+  it('produces rows the collector binds every NAT metric to, end to end', async () => {
+    insertScope({ id: 'nat1', service: 'natgw', account_id: '111122223333' });
+    const ec2 = stubNatGateways([
+      { NatGateways: [natGateway('nat-aaa', { AvailabilityMode: 'zonal' })] },
+    ]);
+    await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: () => ec2 });
+
+    const planned = planQueries(collectableRows(), T0 - 900_000, T0);
+    const names = new Set(planned.map((p) => p.metricName));
+    expect(planned.every((p) => p.namespace === 'AWS/NATGateway')).toBe(true);
+    expect(names).toContain('ErrorPortAllocation');
+    expect(names).toContain('PacketsDropCount');
+    // Both denominators of AWS's documented drop-ratio formula.
+    expect(names).toContain('PacketsInFromSource');
+    expect(names).toContain('PacketsInFromDestination');
+  });
+});
+
+describe('ELBv2 pagination', () => {
+  it('follows NextMarker across load balancer pages', async () => {
+    // ELBv2 pages on Marker/NextMarker where EC2 and ECS use NextToken. A stub
+    // that never returns a marker would let a broken loop look correct while
+    // silently omitting every resource past the first page of a large region.
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const elb = stubElb({
+      loadBalancerPages: [
+        { LoadBalancers: [loadBalancer('app', 'web', 'aaaa')], NextMarker: 'page2' },
+        { LoadBalancers: [loadBalancer('app', 'api', 'bbbb')], NextMarker: 'page3' },
+        { LoadBalancers: [loadBalancer('app', 'admin', 'cccc')] },
+      ],
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(result.upserted).toBe(3);
+    expect(elb.lbCalls).toHaveLength(3);
+    // The first request carries no marker; each subsequent one carries the
+    // marker the previous page returned.
+    expect(elb.lbCalls[0]!.input.Marker).toBeUndefined();
+    expect(elb.lbCalls[1]!.input.Marker).toBe('page2');
+    expect(elb.lbCalls[2]!.input.Marker).toBe('page3');
+    expect(allResources().map((r) => r.resource_id)).toEqual([
+      'app/admin/cccc',
+      'app/api/bbbb',
+      'app/web/aaaa',
+    ]);
+  });
+
+  it('follows NextMarker across target group pages', async () => {
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const alb = loadBalancer('app', 'web', 'aaaa');
+    const elb = stubElb({
+      loadBalancers: [alb],
+      targetGroupPages: [
+        { TargetGroups: [targetGroup('api', 'tg1', [alb.LoadBalancerArn!])], NextMarker: 'tgp2' },
+        { TargetGroups: [targetGroup('worker', 'tg2', [alb.LoadBalancerArn!])] },
+      ],
+    });
+
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(elb.tgCalls).toHaveLength(2);
+    expect(elb.tgCalls[1]!.input.Marker).toBe('tgp2');
+    const ids = allResources().map((r) => r.resource_id);
+    expect(ids).toContain('app/web/aaaa/targetgroup/api/tg1');
+    expect(ids).toContain('app/web/aaaa/targetgroup/worker/tg2');
+  });
+
+  it('requests the documented 400-item page size on both walks', async () => {
+    // PageSize maxes at 400. Omitting it would silently fall back to the API
+    // default and multiply the round trips for a large region.
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const elb = stubElb({ loadBalancers: [loadBalancer('app', 'web', 'aaaa')] });
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(elb.lbCalls[0]!.input.PageSize).toBe(400);
+    expect(elb.tgCalls[0]!.input.PageSize).toBe(400);
+  });
+
+  it('stops at the page cap and says the inventory may be incomplete', async () => {
+    // A malformed or looping NextMarker must not spin a tick forever holding a
+    // client open. The cap is the backstop, and it has to be loud: silently
+    // truncating an inventory reads as "these resources do not exist".
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const elb = stubElb({
+      // Every page returns a marker, so only the cap can end the loop.
+      loadBalancerPages: Array.from({ length: MAX_PAGES_PER_SCOPE + 5 }, (_, i) => ({
+        LoadBalancers: [loadBalancer('app', `lb-${i}`, `id${i}`)],
+        NextMarker: `page${i + 2}`,
+      })),
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(elb.lbCalls).toHaveLength(MAX_PAGES_PER_SCOPE);
+    expect(result.upserted).toBe(MAX_PAGES_PER_SCOPE);
+    expect(result.failed).toBe(0);
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/inventory may be incomplete/i);
+  });
+
+  it('stops at the page cap on the target group walk too', async () => {
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const alb = loadBalancer('app', 'web', 'aaaa');
+    const elb = stubElb({
+      loadBalancers: [alb],
+      targetGroupPages: Array.from({ length: MAX_PAGES_PER_SCOPE + 5 }, (_, i) => ({
+        TargetGroups: [targetGroup(`tg-${i}`, `id${i}`, [alb.LoadBalancerArn!])],
+        NextMarker: `page${i + 2}`,
+      })),
+    });
+
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(elb.tgCalls).toHaveLength(MAX_PAGES_PER_SCOPE);
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/stopped listing target groups/i);
+  });
+});
+
+describe('DescribeTags failure classification', () => {
+  it('recognises the documented not-found race in both spellings', () => {
+    // The wire code is `LoadBalancerNotFound`; the SDK suffixes the modelled
+    // exception with `Exception`. Both have to match.
+    expect(isElbTagNotFoundError(awsError('LoadBalancerNotFound'))).toBe(true);
+    expect(isElbTagNotFoundError(awsError('LoadBalancerNotFoundException'))).toBe(true);
+    expect(isElbTagNotFoundError(awsError('TargetGroupNotFoundException'))).toBe(true);
+    expect(isElbTagNotFoundError(awsError('AccessDeniedException'))).toBe(false);
+    expect(isElbTagNotFoundError(undefined)).toBe(false);
+  });
+
+  it('recognises a permissions failure by name or by 403', () => {
+    expect(isAwsAuthorizationError(awsError('AccessDeniedException'))).toBe(true);
+    expect(isAwsAuthorizationError(awsError('UnauthorizedOperation'))).toBe(true);
+    expect(isAwsAuthorizationError(awsError('AuthFailure'))).toBe(true);
+    // AWS is inconsistent about the status, so an unfamiliar name on a 403
+    // still counts.
+    expect(isAwsAuthorizationError(awsError('SomethingElse', 403))).toBe(true);
+    expect(isAwsAuthorizationError(awsError('ThrottlingException'))).toBe(false);
+    expect(isAwsAuthorizationError(undefined)).toBe(false);
+  });
+
+  it('fails the scope when DescribeTags is denied, rather than reporting success', async () => {
+    // The upgrade hazard: elasticloadbalancing:DescribeTags was added to the
+    // published policy after the packs shipped, so a role built against the
+    // older document has the describe grants and not this one. Degrading would
+    // present an inventory with no names — and, on a tag-filtered scope, no
+    // resources at all — while the sweep reported success.
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const elb = stubElb({
+      loadBalancers: [loadBalancer('app', 'web', 'aaaa')],
+      tagsError: awsError('AccessDeniedException'),
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(result.failed).toBe(1);
+    expect(result.synced).toBe(0);
+    expect(result.upserted).toBe(0);
+    // Nothing half-written: the scope threw before any upsert.
+    expect(allResources()).toEqual([]);
+    // And the log names the action to grant, since that is the whole fix.
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/elasticloadbalancing:DescribeTags/);
+  });
+
+  it('does not silently empty a tag-filtered scope when tags cannot be read', async () => {
+    // The sharpest form of the same bug: with a tag filter, no tags means no
+    // matches, so a swallowed error yields zero resources and a green sync.
+    insertScope({
+      id: 'alb1',
+      service: 'alb',
+      account_id: '111122223333',
+      tag_filter_json: JSON.stringify({ Environment: ['prod'] }),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const elb = stubElb({
+      loadBalancers: [loadBalancer('app', 'web', 'aaaa')],
+      tagsError: awsError('AccessDeniedException'),
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(result.failed).toBe(1);
+    expect(allResources()).toEqual([]);
+  });
+
+  it('fails the scope on an unrecognised tag error rather than guessing', async () => {
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const elb = stubElb({
+      loadBalancers: [loadBalancer('app', 'web', 'aaaa')],
+      tagsError: awsError('ThrottlingException'),
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    // A transient failure is retried by the next hourly sweep, and one failed
+    // scope never costs the others their inventory.
+    expect(result.failed).toBe(1);
+    expect(allResources()).toEqual([]);
+  });
+});
+
+describe('DescribeTags deletion race — recovering the survivors', () => {
+  it('re-asks per ARN so a deleted resource does not cost the batch its tags', async () => {
+    // DescribeTags is all-or-nothing per batch of 20, so one load balancer
+    // deleted between the describe walk and the tag call would otherwise strip
+    // tags from every other resource in that batch.
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const live = loadBalancer('app', 'web', 'aaaa');
+    const gone = loadBalancer('app', 'ghost', 'bbbb');
+    const elb = stubElb({
+      loadBalancers: [live, gone],
+      notFoundArns: [gone.LoadBalancerArn!],
+      tags: { [live.LoadBalancerArn!]: [{ Key: 'Name', Value: 'web-lb' }] },
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(result.failed).toBe(0);
+    // One batch call that failed, then one retry per ARN.
+    expect(elb.tagCalls).toHaveLength(3);
+    expect(elb.tagCalls[0]!.input.ResourceArns).toHaveLength(2);
+    expect(elb.tagCalls.slice(1).every((c) => c.input.ResourceArns!.length === 1)).toBe(true);
+
+    // The survivor keeps its tags; only the deleted one goes untagged.
+    const rows = allResources();
+    expect(JSON.parse(rows.find((r) => r.resource_id === 'app/web/aaaa')!.tags_json!)).toEqual([
+      { Key: 'Name', Value: 'web-lb' },
+    ]);
+    expect(rows.find((r) => r.resource_id === 'app/ghost/bbbb')!.tags_json).toBeNull();
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/1 of 2 resource\(s\) disappeared/);
+  });
+
+  it('keeps tag-filtered survivors that the batch failure would have excluded', async () => {
+    // The reviewer's scenario, and the reason the retry is not just tidiness:
+    // with a tag filter, a resource whose tags could not be read does not match,
+    // so absorbing the batch failure silently drops every live load balancer
+    // that happened to share a batch with a deleted one.
+    insertScope({
+      id: 'alb1',
+      service: 'alb',
+      account_id: '111122223333',
+      tag_filter_json: JSON.stringify({ Environment: ['prod'] }),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const live = loadBalancer('app', 'web', 'aaaa');
+    const alsoLive = loadBalancer('app', 'api', 'cccc');
+    const gone = loadBalancer('app', 'ghost', 'bbbb');
+    const elb = stubElb({
+      loadBalancers: [live, alsoLive, gone],
+      notFoundArns: [gone.LoadBalancerArn!],
+      tags: {
+        [live.LoadBalancerArn!]: [{ Key: 'Environment', Value: 'prod' }],
+        [alsoLive.LoadBalancerArn!]: [{ Key: 'Environment', Value: 'prod' }],
+      },
+    });
+
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(allResources().map((r) => r.resource_id)).toEqual(['app/api/cccc', 'app/web/aaaa']);
+  });
+
+  it('recovers target group tags too, not just load balancer ones', async () => {
+    // Load balancers and target groups share one batch, so the race affects
+    // both — and target group rows are what the host-count rules evaluate on.
+    insertScope({
+      id: 'alb1',
+      service: 'alb',
+      account_id: '111122223333',
+      tag_filter_json: JSON.stringify({ Environment: ['prod'] }),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const alb = loadBalancer('app', 'web', 'aaaa');
+    const gone = loadBalancer('app', 'ghost', 'bbbb');
+    const tg = targetGroup('api', 'tg1', [alb.LoadBalancerArn!]);
+    const elb = stubElb({
+      loadBalancers: [alb, gone],
+      targetGroups: [tg],
+      notFoundArns: [gone.LoadBalancerArn!],
+      tags: {
+        [alb.LoadBalancerArn!]: [{ Key: 'Environment', Value: 'prod' }],
+        [tg.TargetGroupArn!]: [{ Key: 'Environment', Value: 'prod' }],
+      },
+    });
+
+    await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(allResources().map((r) => r.resource_id)).toEqual([
+      'app/web/aaaa',
+      'app/web/aaaa/targetgroup/api/tg1',
+    ]);
+  });
+
+  it('does not retry a single-ARN batch that is genuinely gone', async () => {
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const gone = loadBalancer('app', 'ghost', 'bbbb');
+    const elb = stubElb({
+      loadBalancers: [gone],
+      notFoundArns: [gone.LoadBalancerArn!],
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(result.failed).toBe(0);
+    // One call, no pointless retry of a batch that is already a single ARN.
+    expect(elb.tagCalls).toHaveLength(1);
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/disappeared before its tags/);
+  });
+
+  it('still fails the scope when a per-ARN retry is denied', async () => {
+    // A permissions failure must not be able to hide inside the race handling:
+    // the retry loop classifies its own errors rather than assuming every
+    // failure on the second attempt is another deletion.
+    insertScope({ id: 'alb1', service: 'alb', account_id: '111122223333' });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = loadBalancer('app', 'web', 'aaaa');
+    const b = loadBalancer('app', 'api', 'cccc');
+    let call = 0;
+    const elb: ElbDescribeClient = {
+      async send(command: unknown) {
+        if (command instanceof DescribeLoadBalancersCommand) {
+          return { LoadBalancers: [a, b] } as unknown as DescribeLoadBalancersCommandOutput;
+        }
+        if (command instanceof DescribeTargetGroupsCommand) {
+          return { TargetGroups: [] } as unknown as DescribeTargetGroupsCommandOutput;
+        }
+        call += 1;
+        // The batch races, then the role turns out to lack the permission.
+        throw call === 1 ? awsError('LoadBalancerNotFoundException') : awsError('AccessDenied');
+      },
+    } as ElbDescribeClient;
+
+    const result = await runInfraInventorySync({ nowMs: T0, elbClientFactory: () => elb });
+
+    expect(result.failed).toBe(1);
+    expect(allResources()).toEqual([]);
   });
 });

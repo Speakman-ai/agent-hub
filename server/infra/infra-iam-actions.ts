@@ -178,6 +178,11 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     why: 'Target-group dimensions for UnHealthyHostCount, which is alarmed per target group.',
   },
   {
+    action: 'elasticloadbalancing:DescribeTags',
+    capability: 'inventory',
+    why: 'Load balancer and target group tags. Separate from the describe calls because, alone among the inventoried services, an ELBv2 describe response carries no tags — so without this a scope tag filter matches nothing and every load balancer loses its Name.',
+  },
+  {
     action: 'elasticloadbalancing:DescribeTargetHealth',
     capability: 'inventory',
     why: 'Which targets are unhealthy right now, so an alert names the instance rather than only a count.',

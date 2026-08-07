@@ -69,6 +69,7 @@ Resources:
               - rds:DescribeDBClusters
               - elasticloadbalancing:DescribeLoadBalancers
               - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeTags
               - elasticloadbalancing:DescribeTargetHealth
               - lambda:ListFunctions
               - lambda:GetFunctionConfiguration

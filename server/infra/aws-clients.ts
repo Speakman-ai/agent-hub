@@ -27,6 +27,7 @@
 import { CloudWatchClient, DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { ECSClient } from '@aws-sdk/client-ecs';
+import { ElasticLoadBalancingV2Client } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { findProject } from '../project-model.js';
 import { getProjectAwsMonitoringProfile, getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
 import {
@@ -98,6 +99,7 @@ interface DestroyableClient {
 const cloudWatchClients = new Map<string, CloudWatchClient>();
 const ec2Clients = new Map<string, EC2Client>();
 const ecsClients = new Map<string, ECSClient>();
+const elbClients = new Map<string, ElasticLoadBalancingV2Client>();
 
 /**
  * Every client cache, so adding a service means adding one map here rather than
@@ -109,6 +111,7 @@ const clientCaches: Array<Map<string, DestroyableClient>> = [
   cloudWatchClients,
   ec2Clients,
   ecsClients,
+  elbClients,
 ];
 
 /**
@@ -214,6 +217,32 @@ export function getProjectEcsClient(projectId: string, opts: ProjectAwsClientOpt
     credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
   });
   ecsClients.set(key, client);
+  return client;
+}
+
+/**
+ * An Elastic Load Balancing v2 client bound to one project profile and region.
+ *
+ * Serves both the `alb` and `nlb` scopes: ELBv2 has a single
+ * `DescribeLoadBalancers` API returning every type, and the caller partitions on
+ * the `Type` field. Inventory sync also calls `DescribeTargetGroups` and
+ * `DescribeTags` through it — the latter because, unlike EC2 and NAT gateways,
+ * an ELBv2 describe response carries no tags at all.
+ */
+export function getProjectElbV2Client(
+  projectId: string,
+  opts: ProjectAwsClientOpts = {},
+): ElasticLoadBalancingV2Client {
+  const { profileName, region, use } = resolveTarget(projectId, opts);
+  const key = clientKey(projectId, profileName, region, use);
+  const existing = elbClients.get(key);
+  if (existing) return existing;
+
+  const client = new ElasticLoadBalancingV2Client({
+    region,
+    credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
+  });
+  elbClients.set(key, client);
   return client;
 }
 

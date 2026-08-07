@@ -41,15 +41,31 @@ export type InfraMetricType =
   /** A per-minute 0/1 check result. `Maximum` so one failing minute survives aggregation. */
   | 'flag'
   /** Remaining credit in a burst bucket. Only the low-water mark matters. */
-  | 'balance';
+  | 'balance'
+  /**
+   * A per-request duration, which is a *distribution* rather than a level.
+   *
+   * Separate from `gauge` because the summary that answers a question about it
+   * is usually not the mean. AWS makes the point itself, on the page that
+   * documents ALB `TargetResponseTime`: an app serving most requests from cache
+   * in 1-2 ms and the rest in 100-200 ms has a maximum of ~200 ms and an
+   * average that "doesn't indicate the distribution of the data". So this is
+   * the one metric type where a percentile statistic is legal — see
+   * {@link isStatisticValidForMetricType}.
+   */
+  | 'latency';
 
 /**
- * The statistic a metric of each type is stored on.
+ * The named statistics a metric of each type is stored on.
  *
  * Deliberately narrow — one entry per type for `flag` and `counter`, because
- * there is exactly one defensible answer. `gauge` and `balance` allow the
- * spread because "how high did it get" and "how low did it get" are both real
- * questions about the same series.
+ * there is exactly one defensible answer. `gauge`, `balance` and `latency`
+ * allow the spread because "how high did it get" and "how low did it get" are
+ * both real questions about the same series.
+ *
+ * Not the whole answer for `latency`: percentiles are legal there too and there
+ * are infinitely many of them, so the membership test is
+ * {@link isStatisticValidForMetricType} rather than a lookup in this table.
  */
 export const STATISTICS_BY_METRIC_TYPE: Readonly<Record<InfraMetricType, readonly string[]>> =
   Object.freeze({
@@ -57,7 +73,67 @@ export const STATISTICS_BY_METRIC_TYPE: Readonly<Record<InfraMetricType, readonl
     counter: Object.freeze(['Sum']),
     flag: Object.freeze(['Maximum']),
     balance: Object.freeze(['Minimum', 'Maximum']),
+    latency: Object.freeze(['Average', 'Minimum', 'Maximum']),
   });
+
+/**
+ * AWS's own notation for "any percentile", used verbatim in
+ * {@link InfraPackMetric.validStatistics} where the docs print it.
+ *
+ * The ALB metrics page lists `TargetResponseTime`'s useful statistics as
+ * "`Average` and `pNN.NN` (percentiles)" — it names no specific percentile
+ * because every one of them is legal. Recording that token rather than guessing
+ * a list keeps `validStatistics` a transcription of the docs instead of an
+ * interpretation of them, and {@link isStatisticDocumented} expands it.
+ */
+export const PERCENTILE_STATISTIC_TOKEN = 'pNN.NN';
+
+/**
+ * CloudWatch's percentile statistic syntax: `p` then 0-100, up to two decimals.
+ *
+ * "You can specify any percentile, using up to two decimal places (for example,
+ * p95.45)." The upper bound is spelled separately because `p100` has three
+ * digits where every other legal value has one or two.
+ */
+const PERCENTILE_STATISTIC = /^p(?:100(?:\.0{1,2})?|\d{1,2}(?:\.\d{1,2})?)$/;
+
+/** Whether a statistic string is a CloudWatch percentile such as `p99` or `p95.45`. */
+export function isPercentileStatistic(stat: string): boolean {
+  return PERCENTILE_STATISTIC.test(stat);
+}
+
+/**
+ * Metric types whose value is a distribution, so a percentile of it means
+ * something.
+ *
+ * A percentile of a `counter` is nonsense (the 99th percentile of a per-period
+ * total is a statement about the periods, not the thing being counted), and a
+ * percentile of a `flag` is a diluted 0/1. Gating on the type is what stops a
+ * future pack storing `p99` of `StatusCheckFailed` and calling it monitoring.
+ */
+const PERCENTILE_METRIC_TYPES: ReadonlySet<InfraMetricType> = new Set<InfraMetricType>(['latency']);
+
+/** Whether this statistic is one the metric's *type* can meaningfully be stored on. */
+export function isStatisticValidForMetricType(metricType: InfraMetricType, stat: string): boolean {
+  if (STATISTICS_BY_METRIC_TYPE[metricType].includes(stat)) return true;
+  return PERCENTILE_METRIC_TYPES.has(metricType) && isPercentileStatistic(stat);
+}
+
+/**
+ * Whether the metric's stored statistic is one AWS documents as meaningful
+ * for it, expanding {@link PERCENTILE_STATISTIC_TOKEN} to any percentile.
+ *
+ * The sibling of {@link isStatisticValidForMetricType}: that one asks whether
+ * the statistic suits the *kind* of value, this one asks whether AWS says the
+ * statistic is meaningful for this specific metric. Both have to hold.
+ */
+export function isStatisticDocumented(metric: InfraPackMetric): boolean {
+  if (metric.validStatistics.includes(metric.stat)) return true;
+  return (
+    metric.validStatistics.includes(PERCENTILE_STATISTIC_TOKEN) &&
+    isPercentileStatistic(metric.stat)
+  );
+}
 
 /**
  * Which EC2 monitoring mode publishes a metric at all.

@@ -35,9 +35,12 @@
 
 import {
   DescribeInstancesCommand,
+  DescribeNatGatewaysCommand,
+  type DescribeNatGatewaysCommandOutput,
   type DescribeInstancesCommandOutput,
   type Filter,
   type Instance,
+  type NatGateway,
 } from '@aws-sdk/client-ec2';
 import {
   DescribeClustersCommand,
@@ -53,8 +56,18 @@ import {
   type ListServicesCommandOutput,
   type Service as EcsService,
 } from '@aws-sdk/client-ecs';
+import {
+  DescribeLoadBalancersCommand,
+  DescribeTagsCommand,
+  DescribeTargetGroupsCommand,
+  type DescribeLoadBalancersCommandOutput,
+  type DescribeTagsCommandOutput,
+  type DescribeTargetGroupsCommandOutput,
+  type LoadBalancer,
+  type TargetGroup,
+} from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getInfraDb, isInfraDbInitialized, infraResourceKey } from './infra-db.js';
-import { getProjectEc2Client, getProjectEcsClient } from './aws-clients.js';
+import { getProjectEc2Client, getProjectEcsClient, getProjectElbV2Client } from './aws-clients.js';
 import {
   compileInfraTagFilter,
   isEmptyInfraTagFilter,
@@ -77,7 +90,43 @@ export const INFRA_INVENTORY_SYNC_CRON = '17 * * * *';
 /** Service tokens this sweep knows how to describe. */
 const EC2_SERVICE = 'ec2';
 const ECS_SERVICE = 'ecs';
-export const INFRA_SYNCABLE_SERVICES: readonly string[] = Object.freeze([EC2_SERVICE, ECS_SERVICE]);
+const ALB_SERVICE = 'alb';
+const NLB_SERVICE = 'nlb';
+const NATGW_SERVICE = 'natgw';
+export const INFRA_SYNCABLE_SERVICES: readonly string[] = Object.freeze([
+  EC2_SERVICE,
+  ECS_SERVICE,
+  ALB_SERVICE,
+  NLB_SERVICE,
+  NATGW_SERVICE,
+]);
+
+/**
+ * Scope service token → the `Type` value ELBv2 reports for it.
+ *
+ * ELBv2 has one `DescribeLoadBalancers` API returning every load balancer type,
+ * so both scopes issue the same call and partition on this. That is also why
+ * `alb` and `nlb` are separate scope services rather than one `elbv2`: they are
+ * separate CloudWatch namespaces whose `LoadBalancer` dimension has the same
+ * *name*, so a merged token would query each namespace against the other's
+ * resources and be billed for the empty result.
+ *
+ * `gateway` (Gateway Load Balancer) is deliberately unmapped — it is a third
+ * documented `Type` with its own namespace and no pack here.
+ */
+const ELB_TYPE_BY_SERVICE: Readonly<Record<string, string>> = Object.freeze({
+  [ALB_SERVICE]: 'application',
+  [NLB_SERVICE]: 'network',
+});
+
+/** `DescribeTags` "can specify up to 20 resources in a single call". */
+const ELB_DESCRIBE_TAGS_BATCH = 20;
+
+/** `PageSize` on both ELBv2 describe calls: "Maximum value of 400". */
+const ELB_PAGE_SIZE = 400;
+
+/** `DescribeNatGateways` `MaxResults`: "Maximum value of 1000". */
+const NATGW_PAGE_SIZE = 1000;
 
 /** `ListClusters` and `ListServices` both cap a page at 100. */
 const ECS_LIST_PAGE_SIZE = 100;
@@ -98,7 +147,7 @@ const ECS_DESCRIBE_SERVICES_BATCH = 10;
  * region, far past any plausible scope. It exists so a malformed or looping
  * `NextToken` cannot spin a tick forever holding a client open.
  */
-const MAX_PAGES_PER_SCOPE = 100;
+export const MAX_PAGES_PER_SCOPE = 100;
 
 /** The subset of an `infra_scopes` row this sweep needs. */
 export interface InfraScopeRow {
@@ -111,9 +160,17 @@ export interface InfraScopeRow {
   tag_filter_json: string | null;
 }
 
-/** Just enough of an `EC2Client` to describe instances; keeps tests SDK-free. */
+/** Just enough of an `EC2Client` for the instance and NAT gateway walks. */
 export interface Ec2DescribeClient {
   send(command: DescribeInstancesCommand): Promise<DescribeInstancesCommandOutput>;
+  send(command: DescribeNatGatewaysCommand): Promise<DescribeNatGatewaysCommandOutput>;
+}
+
+/** Just enough of an `ElasticLoadBalancingV2Client` for the three-call walk. */
+export interface ElbDescribeClient {
+  send(command: DescribeLoadBalancersCommand): Promise<DescribeLoadBalancersCommandOutput>;
+  send(command: DescribeTargetGroupsCommand): Promise<DescribeTargetGroupsCommandOutput>;
+  send(command: DescribeTagsCommand): Promise<DescribeTagsCommandOutput>;
 }
 
 /** Just enough of an `ECSClient` for the four-call inventory walk. */
@@ -132,6 +189,8 @@ export interface InfraInventorySyncOptions {
   ec2ClientFactory?: (scope: InfraScopeRow) => Ec2DescribeClient;
   /** Test seam: build the ECS client for a scope. */
   ecsClientFactory?: (scope: InfraScopeRow) => EcsDescribeClient;
+  /** Test seam: build the ELBv2 client for a scope. */
+  elbClientFactory?: (scope: InfraScopeRow) => ElbDescribeClient;
 }
 
 export interface InfraInventorySyncResult {
@@ -620,6 +679,543 @@ async function describeEcsScope(
   return { resources, skipped };
 }
 
+// ─── Elastic Load Balancing v2 (ALB + NLB) ──────────────────────────────────
+
+/**
+ * The CloudWatch `LoadBalancer` dimension value out of a load balancer ARN.
+ *
+ * AWS: "Specify the load balancer as follows: `app/load-balancer-name/
+ * 1234567890123456` (the final portion of the load balancer ARN)." That final
+ * portion is everything after `loadbalancer/`, and it keeps the `app/` or `net/`
+ * discriminator — which is the only thing in the dimension *value* that says
+ * which namespace the series belongs to, since the dimension *name* is
+ * `LoadBalancer` on both services.
+ */
+export function loadBalancerDimensionValue(arn: string | undefined): string | null {
+  if (!arn) return null;
+  const marker = ':loadbalancer/';
+  const at = arn.indexOf(marker);
+  if (at < 0) return null;
+  const tail = arn.slice(at + marker.length);
+  return tail.length > 0 ? tail : null;
+}
+
+/**
+ * The CloudWatch `TargetGroup` dimension value out of a target group ARN.
+ *
+ * AWS: "Specify the target group as follows: `targetgroup/target-group-name/
+ * 1234567890123456` (the final portion of the target group ARN)." Note the
+ * literal `targetgroup/` prefix is part of the value, unlike an ECS name.
+ */
+export function targetGroupDimensionValue(arn: string | undefined): string | null {
+  if (!arn) return null;
+  const marker = ':targetgroup/';
+  const at = arn.indexOf(marker);
+  if (at < 0) return null;
+  const tail = arn.slice(at + marker.length);
+  return tail.length > 0 ? `targetgroup/${tail}` : null;
+}
+
+/** Every load balancer in the region, following ELBv2's `Marker` pagination. */
+async function listLoadBalancers(
+  client: ElbDescribeClient,
+  scope: InfraScopeRow,
+): Promise<LoadBalancer[]> {
+  const out: LoadBalancer[] = [];
+  // ELBv2 pages on `Marker`/`NextMarker`, not the `NextToken` that EC2 and ECS
+  // use. Same loop shape, different field names — worth stating because the two
+  // sit side by side in this file.
+  let marker: string | undefined;
+  let pages = 0;
+  do {
+    const page = await client.send(
+      new DescribeLoadBalancersCommand({
+        PageSize: ELB_PAGE_SIZE,
+        ...(marker ? { Marker: marker } : {}),
+      }),
+    );
+    out.push(...(page.LoadBalancers ?? []));
+    marker = page.NextMarker ?? undefined;
+    pages += 1;
+  } while (marker && pages < MAX_PAGES_PER_SCOPE);
+  if (marker) {
+    console.warn(
+      `[infra-inventory-sync] ${describeScope(scope)}: stopped listing load balancers at the ${MAX_PAGES_PER_SCOPE}-page cap; inventory may be incomplete`,
+    );
+  }
+  return out;
+}
+
+/**
+ * Every target group in the region, following `Marker` pagination.
+ *
+ * Deliberately unfiltered rather than one `DescribeTargetGroups` call per load
+ * balancer: the API takes a single optional `LoadBalancerArn`, so filtering
+ * would be N calls for N load balancers where one paginated walk answers for
+ * all of them. The caller discards target groups whose parent is out of scope.
+ */
+async function listTargetGroups(
+  client: ElbDescribeClient,
+  scope: InfraScopeRow,
+): Promise<TargetGroup[]> {
+  const out: TargetGroup[] = [];
+  let marker: string | undefined;
+  let pages = 0;
+  do {
+    const page = await client.send(
+      new DescribeTargetGroupsCommand({
+        PageSize: ELB_PAGE_SIZE,
+        ...(marker ? { Marker: marker } : {}),
+      }),
+    );
+    out.push(...(page.TargetGroups ?? []));
+    marker = page.NextMarker ?? undefined;
+    pages += 1;
+  } while (marker && pages < MAX_PAGES_PER_SCOPE);
+  if (marker) {
+    console.warn(
+      `[infra-inventory-sync] ${describeScope(scope)}: stopped listing target groups at the ${MAX_PAGES_PER_SCOPE}-page cap`,
+    );
+  }
+  return out;
+}
+
+/** The error `name` / `Code` off an AWS SDK error, whichever it carries. */
+function awsErrorName(err: unknown): string {
+  if (!err || typeof err !== 'object') return '';
+  const e = err as { name?: string; Code?: string };
+  return e.name ?? e.Code ?? '';
+}
+
+/**
+ * Whether a `DescribeTags` failure is the documented "one ARN in the batch is
+ * gone" race.
+ *
+ * `DescribeTags` is all-or-nothing, so a single load balancer or target group
+ * deleted between the describe walk and this call fails the whole batch of 20
+ * with `LoadBalancerNotFound` / `TargetGroupNotFound`. The SDK suffixes modelled
+ * exceptions with `Exception`, and the wire code does not, so the match is on
+ * the shared substring rather than an exact name list.
+ */
+export function isElbTagNotFoundError(err: unknown): boolean {
+  return /NotFound/i.test(awsErrorName(err));
+}
+
+/**
+ * Whether an AWS error is a permissions failure.
+ *
+ * Checked by name rather than status alone because AWS is not consistent about
+ * the status: `UnauthorizedOperation` from EC2 arrives as a 403, but several
+ * services return `AccessDeniedException` on a 400.
+ */
+export function isAwsAuthorizationError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  if ((err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 403) {
+    return true;
+  }
+  return /AccessDenied|Unauthorized|AuthFailure|Forbidden/i.test(awsErrorName(err));
+}
+
+/**
+ * Tags for a batch of ELBv2 ARNs, as `arn → [{Key,Value}]`.
+ *
+ * ELBv2 is the one service here whose describe response carries no tags at all,
+ * so this is a mandatory second call rather than an enrichment — and that is
+ * what makes its failure mode dangerous rather than cosmetic. A scope with a
+ * tag filter matches resources *against these tags*, so a tag call that quietly
+ * returns nothing does not merely drop names: it drops **every resource in the
+ * scope** while the sweep reports success. An empty Resources tab and a green
+ * sync is the worst combination this module can produce.
+ *
+ * So exactly one failure degrades, and everything else fails the scope:
+ *
+ *   - **A not-found race degrades.** One ARN deleted between the describe and
+ *     this call is expected, self-correcting, and costs that batch its tags.
+ *     Failing the region's whole inventory over it would be the wrong trade.
+ *   - **Anything else throws**, including `AccessDenied`. That is the live
+ *     upgrade hazard: `elasticloadbalancing:DescribeTags` was added to the
+ *     published policy after the load balancer packs shipped, so a role created
+ *     against the older document has the describe grants and not this one.
+ *     Degrading there would present a silently empty — or silently unfiltered —
+ *     inventory indefinitely. A failed scope is counted, logged with the action
+ *     to grant, retried on the next hourly tick, and confined to this scope;
+ *     every other service and region still syncs.
+ */
+/**
+ * Re-throw a `DescribeTags` failure the caller decided not to absorb.
+ *
+ * Shared by the batch call and the per-ARN retry so both surface an
+ * `AccessDenied` the same way — the retry path is exactly where a permissions
+ * failure would otherwise be mistaken for more of the deletion race.
+ */
+function throwElbTagError(err: unknown): never {
+  const detail = err instanceof Error ? err.message : String(err);
+  if (isAwsAuthorizationError(err)) {
+    throw new Error(
+      `elasticloadbalancing:DescribeTags was denied. ELBv2 describe responses carry no tags, so without it every load balancer and target group loses its name and any tag filter on this scope would match nothing. Grant the action to the monitoring role — see docs/guides/aws-monitoring-iam. (${detail})`,
+    );
+  }
+  throw new Error(`could not read ELBv2 tags: ${detail}`);
+}
+
+/** One `DescribeTags` call, writing what it returns into `byArn`. */
+async function describeTagsInto(
+  client: ElbDescribeClient,
+  byArn: Map<string, Array<{ Key: string; Value: string }>>,
+  arns: string[],
+): Promise<void> {
+  const out = await client.send(new DescribeTagsCommand({ ResourceArns: arns }));
+  for (const description of out.TagDescriptions ?? []) {
+    if (!description.ResourceArn) continue;
+    byArn.set(
+      description.ResourceArn,
+      (description.Tags ?? [])
+        .filter((t): t is { Key: string; Value?: string } => typeof t.Key === 'string')
+        .map((t) => ({ Key: t.Key, Value: t.Value ?? '' })),
+    );
+  }
+}
+
+async function fetchElbTags(
+  client: ElbDescribeClient,
+  scope: InfraScopeRow,
+  arns: string[],
+): Promise<Map<string, Array<{ Key: string; Value: string }>>> {
+  const byArn = new Map<string, Array<{ Key: string; Value: string }>>();
+  for (const batch of chunk(arns, ELB_DESCRIBE_TAGS_BATCH)) {
+    try {
+      await describeTagsInto(client, byArn, batch);
+      continue;
+    } catch (err) {
+      if (!isElbTagNotFoundError(err)) throwElbTagError(err);
+      // Fall through to the per-ARN recovery below.
+    }
+
+    // The deletion race, and the reason it cannot simply be absorbed: the batch
+    // is all-or-nothing, so one deleted ARN costs the other nineteen their
+    // tags — and on a tag-filtered scope a resource with no tags does not match,
+    // so nineteen live load balancers would silently vanish from the inventory
+    // until a later sweep happened to batch them differently. Re-asking one ARN
+    // at a time isolates the casualty. It costs at most `ELB_DESCRIBE_TAGS_BATCH`
+    // extra calls, only for a batch that actually raced, on an hourly sweep.
+    if (batch.length === 1) {
+      console.warn(
+        `[infra-inventory-sync] ${describeScope(scope)}: ${batch[0]} disappeared before its tags could be read`,
+      );
+      continue;
+    }
+
+    let lost = 0;
+    for (const arn of batch) {
+      try {
+        await describeTagsInto(client, byArn, [arn]);
+      } catch (err) {
+        // Still not found on its own: this is the resource that was actually
+        // deleted. Anything else on the retry is a real failure and is thrown,
+        // so a permissions error cannot hide inside the race handling.
+        if (!isElbTagNotFoundError(err)) throwElbTagError(err);
+        lost += 1;
+      }
+    }
+    console.warn(
+      `[infra-inventory-sync] ${describeScope(scope)}: ${lost} of ${batch.length} resource(s) disappeared before their tags could be read; recovered tags for the rest`,
+    );
+  }
+  return byArn;
+}
+
+/** One load balancer row, keyed on the CloudWatch `LoadBalancer` dimension. */
+function toLoadBalancerResource(
+  lb: LoadBalancer,
+  tags: Array<{ Key: string; Value: string }>,
+  scope: InfraScopeRow,
+): DiscoveredResource | null {
+  const dimension = loadBalancerDimensionValue(lb.LoadBalancerArn);
+  if (!dimension) return null;
+  const accountId = accountIdFromArn(lb.LoadBalancerArn) ?? scope.account_id;
+  if (!accountId) return null;
+
+  return {
+    accountId,
+    // The dimension value, not the bare name: it is unique within the account
+    // and region (the name is not, across load balancer types) and it is the
+    // identity CloudWatch itself uses.
+    resourceId: dimension,
+    name: lb.LoadBalancerName ?? dimension,
+    tagsJson: tags.length > 0 ? JSON.stringify(tags) : null,
+    environment: tagValue(tags, 'Environment'),
+    // active / provisioning / active_impaired / failed.
+    state: lb.State?.Code ?? null,
+    metricDimensions: { LoadBalancer: dimension },
+    features: {},
+  };
+}
+
+/**
+ * One target group row, keyed on `LoadBalancer` + `TargetGroup`.
+ *
+ * These rows are not optional decoration: AWS publishes `HealthyHostCount` and
+ * `UnHealthyHostCount` only at this dimension pair, so without a target-group
+ * row the host-count metrics and all four host-count default rules in both
+ * load balancer packs have nothing to collect against.
+ */
+function toTargetGroupResource(
+  tg: TargetGroup,
+  loadBalancerDimension: string,
+  tags: Array<{ Key: string; Value: string }>,
+  scope: InfraScopeRow,
+): DiscoveredResource | null {
+  const dimension = targetGroupDimensionValue(tg.TargetGroupArn);
+  if (!dimension) return null;
+  const accountId = accountIdFromArn(tg.TargetGroupArn) ?? scope.account_id;
+  if (!accountId) return null;
+
+  return {
+    accountId,
+    // Prefixed with the load balancer so the inventory browser reads correctly
+    // and so the row cannot collide with the same target group reachable from
+    // another scope. The dimension values themselves stay unprefixed.
+    resourceId: `${loadBalancerDimension}/${dimension}`,
+    name: tg.TargetGroupName ?? dimension,
+    tagsJson: tags.length > 0 ? JSON.stringify(tags) : null,
+    environment: tagValue(tags, 'Environment'),
+    // A target group has no lifecycle state of its own in the describe
+    // response; its health is the metric, not an attribute.
+    state: null,
+    metricDimensions: { LoadBalancer: loadBalancerDimension, TargetGroup: dimension },
+    features: {},
+  };
+}
+
+/**
+ * Describe one ALB or NLB scope: load balancers of the scope's type, plus the
+ * target groups attached to them.
+ *
+ * Three calls per scope regardless of size — one paginated walk each for load
+ * balancers and target groups, then batched `DescribeTags`.
+ *
+ * The tag filter is applied client-side because no ELBv2 describe API accepts
+ * one, and it is applied to load balancers and target groups independently: an
+ * operator who tagged their load balancers but not their target groups would
+ * otherwise lose the host-count rows, which are the only reason target groups
+ * are collected at all.
+ */
+async function describeElbScope(
+  client: ElbDescribeClient,
+  scope: InfraScopeRow,
+): Promise<{ resources: DiscoveredResource[]; skipped: number }> {
+  const wantedType = ELB_TYPE_BY_SERVICE[scope.service];
+  if (!wantedType) throw new Error(`no ELBv2 type mapped for service '${scope.service}'`);
+
+  const tagFilter = compileInfraTagFilter(scope.tag_filter_json);
+  const filtered = !isEmptyInfraTagFilter(tagFilter);
+
+  const loadBalancers = (await listLoadBalancers(client, scope)).filter(
+    (lb) => lb.Type === wantedType,
+  );
+  if (loadBalancers.length === 0) return { resources: [], skipped: 0 };
+
+  // A target group belongs to at most one load balancer — AWS documents
+  // `LoadBalancerArns` as "you can use each target group with only one load
+  // balancer", backed by a non-adjustable quota of 1. The array shape is
+  // handled rather than trusted, but an unattached target group (0 entries)
+  // publishes no host counts and is dropped.
+  const inScope = new Map<string, string>();
+  for (const lb of loadBalancers) {
+    const dimension = loadBalancerDimensionValue(lb.LoadBalancerArn);
+    if (dimension && lb.LoadBalancerArn) inScope.set(lb.LoadBalancerArn, dimension);
+  }
+  const targetGroups = (await listTargetGroups(client, scope)).filter((tg) =>
+    (tg.LoadBalancerArns ?? []).some((arn) => inScope.has(arn)),
+  );
+
+  const tags = await fetchElbTags(client, scope, [
+    ...loadBalancers.map((lb) => lb.LoadBalancerArn).filter((a): a is string => Boolean(a)),
+    ...targetGroups.map((tg) => tg.TargetGroupArn).filter((a): a is string => Boolean(a)),
+  ]);
+
+  const resources: DiscoveredResource[] = [];
+  let skipped = 0;
+
+  for (const lb of loadBalancers) {
+    const row = toLoadBalancerResource(lb, tags.get(lb.LoadBalancerArn ?? '') ?? [], scope);
+    if (!row) {
+      skipped += 1;
+      continue;
+    }
+    if (!filtered || matchesInfraTagFilter(row.tagsJson, tagFilter)) resources.push(row);
+  }
+
+  for (const tg of targetGroups) {
+    const parentArn = (tg.LoadBalancerArns ?? []).find((arn) => inScope.has(arn));
+    const parent = parentArn ? inScope.get(parentArn) : undefined;
+    if (!parent) {
+      skipped += 1;
+      continue;
+    }
+    const row = toTargetGroupResource(tg, parent, tags.get(tg.TargetGroupArn ?? '') ?? [], scope);
+    if (!row) {
+      skipped += 1;
+      continue;
+    }
+    if (filtered && !matchesInfraTagFilter(row.tagsJson, tagFilter)) continue;
+    resources.push(row);
+  }
+
+  return { resources, skipped };
+}
+
+// ─── NAT Gateway ────────────────────────────────────────────────────────────
+
+/**
+ * AWS's two `availabilityMode` values, and the one this pack can collect.
+ *
+ * "Indicates whether this is a zonal (single-AZ) or regional (multi-AZ) NAT
+ * gateway." A zonal gateway publishes at `NatGatewayId` alone; a regional one
+ * publishes at `NatGatewayId` **together with** `AvailabilityZone`, which is a
+ * different CloudWatch series and one the pack does not declare yet.
+ */
+const NATGW_MODE_REGIONAL = 'regional';
+
+/**
+ * The distinct Availability Zones a NAT gateway is currently serving.
+ *
+ * There is no top-level `AvailabilityZone` on the describe response; it hangs
+ * off each `NatGatewayAddresses` entry ("The Availability Zone where this
+ * Elastic IP address (EIP) is being used to handle outbound NAT traffic"). For a
+ * regional gateway that set is also dynamic, since AWS expands and contracts its
+ * AZ coverage.
+ */
+function natGatewayZones(gateway: NatGateway): string[] {
+  const zones = new Set<string>();
+  for (const address of gateway.NatGatewayAddresses ?? []) {
+    if (address.AvailabilityZone) zones.add(address.AvailabilityZone);
+  }
+  return [...zones].sort();
+}
+
+/**
+ * One NAT gateway row.
+ *
+ * The dimension map is the whole point of the branch here. A **zonal** gateway
+ * gets `{ NatGatewayId }`, which is exactly what every pack metric declares, so
+ * it collects. A **regional** gateway gets `{ NatGatewayId, AvailabilityZone }`,
+ * a two-name set that matches no declared metric, so `bindMetricDimensions`
+ * refuses it and the collector issues no query for it at all.
+ *
+ * That refusal is deliberate and is the cheaper of the two failures. Writing
+ * `{ NatGatewayId }` for a regional gateway would look right and bill a
+ * `GetMetricData` entry per metric per tick, forever, for a series AWS does not
+ * publish at that dimension — and the resulting empty charts would be
+ * indistinguishable from broken collection. Leaving the map off entirely is
+ * worse still: `resolveResourceDimensions` would synthesise `{ NatGatewayId }`
+ * from the service's unambiguous single dimension and bill for it anyway.
+ *
+ * So a regional gateway is inventoried, visible, and silent — and the pack's
+ * "Regional NAT gateway metrics" absent-metric note explains the empty tab.
+ * When a later card declares the regional dimension set, these rows begin
+ * collecting with no change here.
+ */
+function toNatGatewayResource(
+  gateway: NatGateway,
+  zone: string | null,
+  scope: InfraScopeRow,
+): DiscoveredResource | null {
+  const natGatewayId = gateway.NatGatewayId;
+  if (!natGatewayId) return null;
+  // NAT gateways carry no ARN in the describe response and no owner id, so the
+  // scope's account is the only source. It stays NULL until something has run
+  // sts:GetCallerIdentity for the profile, and a row with no account has no
+  // derivable resource_key.
+  const accountId = scope.account_id;
+  if (!accountId) return null;
+
+  const tags = (gateway.Tags ?? [])
+    .filter((t): t is { Key: string; Value?: string } => typeof t.Key === 'string')
+    .map((t) => ({ Key: t.Key, Value: t.Value ?? '' }));
+
+  return {
+    accountId,
+    // Regional gateways get one row per Availability Zone, because CloudWatch
+    // publishes one series per zone and a single row can hold only one
+    // dimension map. The suffix keeps `resource_id` unique per (project,
+    // account, region, service).
+    resourceId: zone ? `${natGatewayId}@${zone}` : natGatewayId,
+    name: tagValue(tags, 'Name') ?? natGatewayId,
+    tagsJson: tags.length > 0 ? JSON.stringify(tags) : null,
+    environment: tagValue(tags, 'Environment'),
+    // pending / failed / available / deleting / deleted.
+    state: gateway.State ?? null,
+    metricDimensions: zone
+      ? { NatGatewayId: natGatewayId, AvailabilityZone: zone }
+      : { NatGatewayId: natGatewayId },
+    features: {},
+  };
+}
+
+/**
+ * Describe every in-scope NAT gateway, following pagination.
+ *
+ * Unlike ELBv2, EC2 returns tags inline and accepts a server-side `tag:<key>`
+ * filter, so the scope's filter is pushed into the API rather than applied
+ * afterwards — the same trade the EC2 instance walk makes.
+ */
+async function describeNatGatewayScope(
+  client: Ec2DescribeClient,
+  scope: InfraScopeRow,
+): Promise<{ resources: DiscoveredResource[]; skipped: number }> {
+  const filters = buildEc2TagFilters(scope.tag_filter_json);
+  const resources: DiscoveredResource[] = [];
+  let skipped = 0;
+  let nextToken: string | undefined;
+  let pages = 0;
+
+  do {
+    const out = await client.send(
+      new DescribeNatGatewaysCommand({
+        MaxResults: NATGW_PAGE_SIZE,
+        ...(filters.length > 0 ? { Filter: filters } : {}),
+        ...(nextToken ? { NextToken: nextToken } : {}),
+      }),
+    );
+    for (const gateway of out.NatGateways ?? []) {
+      // An absent availabilityMode reads as zonal: the field postdates the
+      // regional feature, so every gateway that predates it is zonal, and zonal
+      // is also the arm that collects. Guessing "regional" for an unknown value
+      // would silently stop collecting a gateway that works.
+      const regional =
+        typeof gateway.AvailabilityMode === 'string' &&
+        gateway.AvailabilityMode.toLowerCase() === NATGW_MODE_REGIONAL;
+      const zones = regional ? natGatewayZones(gateway) : [];
+
+      if (regional && zones.length === 0) {
+        // A regional gateway with no resolvable zone has no dimension map we
+        // can write that is both honest and non-billing, so it is counted
+        // rather than guessed at.
+        skipped += 1;
+        continue;
+      }
+
+      const rows = regional
+        ? zones.map((zone) => toNatGatewayResource(gateway, zone, scope))
+        : [toNatGatewayResource(gateway, null, scope)];
+      for (const row of rows) {
+        if (row) resources.push(row);
+        else skipped += 1;
+      }
+    }
+    nextToken = out.NextToken ?? undefined;
+    pages += 1;
+  } while (nextToken && pages < MAX_PAGES_PER_SCOPE);
+
+  if (nextToken) {
+    console.warn(
+      `[infra-inventory-sync] ${describeScope(scope)}: stopped at the ${MAX_PAGES_PER_SCOPE}-page cap; inventory may be incomplete`,
+    );
+  }
+  return { resources, skipped };
+}
+
 /**
  * Persist one scope's discovered resources.
  *
@@ -716,6 +1312,18 @@ async function syncScope(
       ? opts.ecsClientFactory(scope)
       : getProjectEcsClient(scope.project_id, clientOpts);
     discovered = await describeEcsScope(client, scope);
+  } else if (scope.service === ALB_SERVICE || scope.service === NLB_SERVICE) {
+    const client = opts.elbClientFactory
+      ? opts.elbClientFactory(scope)
+      : getProjectElbV2Client(scope.project_id, clientOpts);
+    discovered = await describeElbScope(client, scope);
+  } else if (scope.service === NATGW_SERVICE) {
+    // NAT gateways are an EC2 API, so this shares the instance walk's client
+    // and its cache entry rather than opening a second connection pool.
+    const client = opts.ec2ClientFactory
+      ? opts.ec2ClientFactory(scope)
+      : getProjectEc2Client(scope.project_id, clientOpts);
+    discovered = await describeNatGatewayScope(client, scope);
   } else {
     throw new Error(`no inventory describer for service '${scope.service}'`);
   }

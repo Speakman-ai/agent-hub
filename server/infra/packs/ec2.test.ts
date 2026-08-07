@@ -11,7 +11,11 @@
 import { describe, it, expect } from 'vitest';
 import { EC2_PACK } from './ec2.js';
 import { INFRA_SERVICE_PACKS, getInfraServicePack, infraPackedServices } from './index.js';
-import { STATISTICS_BY_METRIC_TYPE, type InfraServicePack } from './types.js';
+import {
+  isStatisticDocumented,
+  isStatisticValidForMetricType,
+  type InfraServicePack,
+} from './types.js';
 import { getServiceMetricPack, collectableServices } from '../service-metric-packs.js';
 import { isValidCloudWatchPeriod } from '../infra-metric-store.js';
 import { INFRA_COMPARISON_OPERATORS, INFRA_TREAT_MISSING_DATA_MODES } from '../alert-evaluator.js';
@@ -29,7 +33,7 @@ describe('service pack registry', () => {
   it('resolves a pack by token and reports the packed services', () => {
     expect(getInfraServicePack('ec2')).toBe(EC2_PACK);
     expect(getInfraServicePack('nope')).toBeNull();
-    expect(infraPackedServices()).toEqual(['ec2', 'ecs']);
+    expect(infraPackedServices()).toEqual(['alb', 'ec2', 'ecs', 'natgw', 'nlb']);
   });
 
   it('projects every pack metric into the collector query list', () => {
@@ -62,9 +66,9 @@ describe.each(ALL_PACKS.map((pack) => [pack.service, pack] as const))(
     it('declares a statistic that is valid for the metric type', () => {
       for (const metric of pack.metrics) {
         expect(
-          STATISTICS_BY_METRIC_TYPE[metric.metricType],
+          isStatisticValidForMetricType(metric.metricType, metric.stat),
           `${metric.metricName} is a ${metric.metricType} stored on ${metric.stat}`,
-        ).toContain(metric.stat);
+        ).toBe(true);
       }
     });
 
@@ -72,9 +76,9 @@ describe.each(ALL_PACKS.map((pack) => [pack.service, pack] as const))(
       for (const metric of pack.metrics) {
         expect(metric.validStatistics.length).toBeGreaterThan(0);
         expect(
-          metric.validStatistics,
+          isStatisticDocumented(metric),
           `${metric.metricName} stores ${metric.stat}, which AWS does not list as meaningful`,
-        ).toContain(metric.stat);
+        ).toBe(true);
       }
     });
 

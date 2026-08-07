@@ -65,7 +65,7 @@ you know precisely what stops working.
 | `Sid` | Actions | What breaks without it |
 | --- | --- | --- |
 | `AgentHubCallerIdentity` | `sts:GetCallerIdentity` | Nothing — AWS allows this for every identity and ignores an explicit `Deny`. It is here as documentation of a call we make, not as a grant that changes anything. |
-| `AgentHubResourceInventory` | `ec2:Describe*` (regions, instances, instance status, volumes, NAT gateways, tags), `ecs:List*`/`Describe*` (clusters, services), `rds:DescribeDBInstances`/`DescribeDBClusters`, `elasticloadbalancing:Describe*` (load balancers, target groups, target health), `lambda:ListFunctions`/`GetFunctionConfiguration`, `s3:ListAllMyBuckets`/`GetBucketLocation`/`GetBucketTagging` | The hourly inventory sync. Nothing appears in the resource browser and the metric collector has no query list to build from. |
+| `AgentHubResourceInventory` | `ec2:Describe*` (regions, instances, instance status, volumes, NAT gateways, tags), `ecs:List*`/`Describe*` (clusters, services), `rds:DescribeDBInstances`/`DescribeDBClusters`, `elasticloadbalancing:Describe*` (load balancers, target groups, target health, tags), `lambda:ListFunctions`/`GetFunctionConfiguration`, `s3:ListAllMyBuckets`/`GetBucketLocation`/`GetBucketTagging` | The hourly inventory sync. Nothing appears in the resource browser and the metric collector has no query list to build from. |
 | `AgentHubMetricRead` | `cloudwatch:GetMetricData`, `GetMetricStatistics`, `ListMetrics` | All charts and all alert evaluation. |
 | `AgentHubAlarmRead` | `cloudwatch:DescribeAlarms` | Your own CloudWatch alarm state stops appearing beside Agent Hub's. |
 | `AgentHubTagRead` | `tag:GetResources` | Tag filters on a collection scope. |

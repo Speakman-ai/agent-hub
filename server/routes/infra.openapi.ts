@@ -115,17 +115,18 @@ const PackMetric = z.object({
       'The exact CloudWatch dimension-name set this series is keyed on. Exact, not a subset: `AWS/ECS` `CPUUtilization` at `ClusterName` and at `ClusterName` + `ServiceName` are two different numbers, so a pack may declare the same metric name twice and only the dimension set tells them apart.',
     example: ['ClusterName', 'ServiceName'],
   }),
-  metricType: z.enum(['gauge', 'counter', 'flag', 'balance']).openapi({
+  metricType: z.enum(['gauge', 'counter', 'flag', 'balance', 'latency']).openapi({
     description:
-      'What the value is, which is what decides the statistic. A `flag` is a per-minute 0/1 check result and must be stored on `Maximum`; a `counter` accrues over the period and is stored on `Sum`.',
+      'What the value is, which is what decides the statistic. A `flag` is a per-minute 0/1 check result and must be stored on `Maximum`; a `counter` accrues over the period and is stored on `Sum`. A `latency` is a distribution rather than a level, and is the only type a percentile statistic is legal on.',
   }),
   stat: z.string().openapi({
-    description: 'The statistic this series is collected and stored on.',
+    description:
+      'The statistic this series is collected and stored on. A CloudWatch percentile such as `p99` for a `latency` metric, otherwise a named statistic.',
     example: 'Maximum',
   }),
   validStatistics: z.array(z.string()).openapi({
     description:
-      'Every statistic AWS documents as meaningful for this metric. `Sum` is absent from the EBS burst-balance metrics because AWS states it is not applicable to them.',
+      'Every statistic AWS documents as meaningful for this metric. `Sum` is absent from the EBS burst-balance metrics because AWS states it is not applicable to them. The literal token `pNN.NN` stands for any percentile, and is AWS’s own notation on the ALB `TargetResponseTime` entry.',
   }),
   minPeriodSeconds: z.number().int().openapi({
     description:
