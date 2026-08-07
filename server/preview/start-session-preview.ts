@@ -83,7 +83,13 @@ export async function startSessionPreview(
   }
 
   const session = getSession(sessionId);
-  if (!session) {
+  // A soft-deleted session is gone as far as every other consumer is concerned
+  // (`SessionEnvManager.resolveWorktree`, `PtyHost.createSession`, the sidebar),
+  // and it must be gone here too. Without this the start is accepted with
+  // `{ok:true,started:true}` and then fails minutes later inside the env manager
+  // as "has no workspace yet, wait for workspace provisioning to finish" —
+  // pointing at a provisioning step that is not running and never will.
+  if (!session || session.deleted_at) {
     return { ok: false, error: 'Session not found', statusCode: 404 };
   }
 

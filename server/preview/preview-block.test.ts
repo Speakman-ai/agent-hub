@@ -272,6 +272,50 @@ describe('detectPreviewBlock — malformed payloads produce reasons, not crashes
 
 // ─── Handler tests ─────────────────────────────────────────────────────
 
+describe('handlePreviewBlock — declining and failing are visible on the log', () => {
+  // Every decline and the early failure used to communicate over the session's
+  // WebSocket and nowhere else. The API answers `{ok:true,started:true}`
+  // regardless, so a start that did nothing left the server log completely
+  // silent, and diagnosing it meant attaching a WS client to reproduce.
+  it('logs why a start was declined for an unconfigured project', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const project = { id: 'p1', name: 'p', cwd: '/r', ahw: '/a', agents: [] } as Project;
+      await handlePreviewBlock('sess-1', { target: 'client', route: '/x' }, makeDeps({ project }));
+      expect(warn.mock.calls.flat().join(' ')).toContain('sess-1');
+      expect(warn.mock.calls.flat().join(' ')).toMatch(/no prEnv config/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs why a start was declined when the runtime is not wired', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const deps = makeDeps({ project: configuredProject() });
+      Object.assign(deps, { runtime: null });
+      await handlePreviewBlock('sess-1', { target: 'client', route: '/x' }, deps);
+      expect(warn.mock.calls.flat().join(' ')).toMatch(/runtime is not wired/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs the cause when startPreview throws', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const fake = makeRuntime();
+      fake.runtime.startPreview = () => Promise.reject(new Error('no workspace yet'));
+      const deps = makeDeps({ project: configuredProject() });
+      Object.assign(deps, { runtime: fake.runtime });
+      await handlePreviewBlock('sess-1', { target: 'client', route: '/x' }, deps);
+      expect(error.mock.calls.flat().join(' ')).toContain('no workspace yet');
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
 describe('handlePreviewBlock — gating', () => {
   it('emits preview_unavailable with wizard intent + legacy wizardUrl when project has no prEnv', async () => {
     const project = { id: 'p1', name: 'p', cwd: '/r', ahw: '/a', agents: [] } as Project;
