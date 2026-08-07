@@ -54,6 +54,34 @@ import {
   type QuotaBandTone,
   type QuotaHeadroomResponse,
 } from '@shared/utils/quotaHeadroom';
+import { copyToClipboard } from '../utils/clipboard';
+import { getServerBaseUrl } from '../utils/config';
+import {
+  HEALTH_EVENT_LIMIT,
+  HEALTH_VISIBLE_ROWS,
+  INGEST_SETUP_NOTE,
+  TOKEN_ONCE_WARNING,
+  formatEventPattern,
+  formatHealthStatus,
+  healthEmptyState,
+  healthEventMetaLine,
+  healthEventService,
+  healthEventTypeCode,
+  healthIngestUrl,
+  healthSeverityLabel,
+  healthTruncationNote,
+  ingestActionLabel,
+  ingestTokenSummary,
+  isHealthDescriptionClampable,
+  isIngestTokenLive,
+  normalizeHealthSeverity,
+  sortHealthEvents,
+  truncateHealthDescription,
+  type InfraHealthEventWire,
+  type InfraHealthEventsResponse,
+  type InfraHealthIngestResponse,
+  type InfraHealthSeverity,
+} from '../utils/infraHealth';
 import {
   EMPTY_FILTERS,
   formatAge,
@@ -992,6 +1020,481 @@ function SpendSection({ projectId }: { projectId: string }) {
   );
 }
 
+// ── AWS Health ──────────────────────────────────────────────────────────────
+
+/**
+ * Dot and label colour per severity — the RN peer of the web panel's Tailwind
+ * tokens (`bg-red-500` / `bg-amber-500` / `bg-sky-500`).
+ */
+export const HEALTH_SEVERITY_COLOR: Record<InfraHealthSeverity, string> = {
+  critical: colors.red400,
+  warning: colors.amber400,
+  info: colors.sky400,
+};
+
+/** Status-pill colours. Unknown statuses fall back to the neutral `closed` look. */
+export const HEALTH_STATUS_STYLE: Record<string, { color: string; backgroundColor: string }> = {
+  OPEN: { color: colors.red400, backgroundColor: colors.red900_50 },
+  UPCOMING: { color: colors.sky300, backgroundColor: colors.sky500_15 },
+  CLOSED: { color: colors.gray400, backgroundColor: colors.gray800 },
+};
+
+interface HealthSectionState {
+  projectId: string;
+  data: InfraHealthEventsResponse | null;
+  error: string | null;
+}
+
+interface HealthIngestState {
+  projectId: string;
+  data: InfraHealthIngestResponse | null;
+  error: string | null;
+}
+
+/**
+ * A freshly minted plaintext credential.
+ *
+ * Stamped with its project for the same reason every other piece of state on
+ * this screen is, but with more at stake: this one cannot be re-fetched to
+ * correct itself, so a token rendered under the wrong project header is a
+ * secret the operator may well paste into the wrong AWS account.
+ */
+interface MintedTokenState {
+  projectId: string;
+  token: string;
+}
+
+/** Label + monospace value + a Copy button. Used for the URL and the pattern. */
+function HealthCopyField({
+  label,
+  value,
+  testID,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  testID: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <View style={styles.healthField}>
+      <View style={styles.rowHead}>
+        <Text style={styles.healthFieldLabel}>{label}</Text>
+        <TouchableOpacity onPress={onCopy} style={styles.healthCopyBtn} testID={`${testID}-copy`}>
+          <Text style={styles.healthCopyBtnText}>{copied ? 'Copied' : 'Copy'}</Text>
+        </TouchableOpacity>
+      </View>
+      {/* `selectable` as well as the button: long-press-to-copy is the gesture
+          phone users reach for first, and it also survives a clipboard module
+          that failed to link. */}
+      <Text style={styles.healthCode} selectable testID={testID}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * AWS Health events.
+ *
+ * The only infra surface that reports news the Hub did not go looking for.
+ * Everything else on this tab polls AWS and reports what it measured; this
+ * reports what AWS knows and we cannot — a degraded control plane in the
+ * Region, an EBS volume flagged for retirement — which is why it sits above the
+ * spend and quota sections. Money can wait; an incident in flight cannot.
+ *
+ * Ingest-only by design: the Hub never calls the AWS Health API (that needs a
+ * Business/Enterprise support plan). An operator-owned EventBridge rule pushes
+ * events at the ingest route instead, which is why this section carries a whole
+ * credential-management affordance that no other infra section needs.
+ */
+function HealthSection({ projectId }: { projectId: string }) {
+  const { lastInfraHealthEvent } = useApp() as { lastInfraHealthEvent?: any };
+  const [state, setState] = useState<HealthSectionState | null>(null);
+  const [ingest, setIngest] = useState<HealthIngestState | null>(null);
+  const [minted, setMinted] = useState<MintedTokenState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  /**
+   * Tri-state so the default can follow the data without fighting the operator.
+   * `null` means nobody has tapped: the setup block then opens itself exactly
+   * when ingest is unconfigured, which is the only time it is the next action.
+   * A tap pins it either way.
+   */
+  const [setupOverride, setSetupOverride] = useState<boolean | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const forProject = stampMatchesProject(state, projectId) ? state : null;
+  const data = forProject?.data ?? null;
+  const error = forProject?.error ?? null;
+  const ingestForProject = stampMatchesProject(ingest, projectId) ? ingest : null;
+  const mintedToken = stampMatchesProject(minted, projectId) ? minted!.token : null;
+
+  const generation = useRef(createRequestGeneration()).current;
+  const ingestGeneration = useRef(createRequestGeneration()).current;
+  // Who owns `busy`. Separate from the read generation for the same reason
+  // `savingOwner` is in SpendSection: that counter advances on every 60s poll,
+  // and a poll must not be able to take a mint's flag away.
+  const busyOwner = useRef(0);
+
+  const load = useCallback(() => {
+    if (!projectId) return;
+    const token = generation.begin();
+    api
+      .getInfraHealthEvents(projectId, { limit: HEALTH_EVENT_LIMIT })
+      .then((response: any) => {
+        if (!generation.isCurrent(token)) return;
+        setState({ projectId, data: response ?? null, error: null });
+        setNowMs(Date.now());
+      })
+      .catch((err: any) => {
+        if (!generation.isCurrent(token)) return;
+        // The events already on screen are deliberately kept. A transient blip
+        // must not blank an outage the operator is in the middle of reading —
+        // and, unlike a metric, a past health event does not go stale.
+        setState((prev) => ({
+          projectId,
+          data: stampMatchesProject(prev, projectId) ? (prev?.data ?? null) : null,
+          error: err?.message || 'Failed to load AWS Health events',
+        }));
+      });
+  }, [projectId, generation]);
+
+  useEffect(() => {
+    // Everything project-scoped resets together. The minted token especially:
+    // it belongs to one project, cannot be re-read, and has no business
+    // surviving a navigation.
+    busyOwner.current += 1;
+    setBusy(false);
+    setMinted(null);
+    setIngest(null);
+    setSetupOverride(null);
+    setExpanded({});
+    setCopied(null);
+    load();
+  }, [load]);
+
+  useVisibleIntervalRefresh(load, POLL_MS);
+
+  useEffect(() => {
+    // Live parity with web, which listens for the `infra_health_event` window
+    // CustomEvent. Refetching rather than splicing the broadcast in: the
+    // broadcast is a summary, and only a re-read keeps `total` and
+    // `ingestConfigured` honest.
+    if (!isInfraAlertEventForProject(lastInfraHealthEvent, projectId)) return;
+    load();
+  }, [lastInfraHealthEvent, projectId, load]);
+
+  const setupOpen = setupOverride ?? (data ? !data.ingestConfigured : false);
+
+  useEffect(() => {
+    // Fetched lazily: an operator whose rule already works should never pay a
+    // round-trip for a block they will not open.
+    if (!projectId || !setupOpen || ingestForProject) return;
+    const token = ingestGeneration.begin();
+    api
+      .getInfraHealthIngest(projectId)
+      .then((response: any) => {
+        if (!ingestGeneration.isCurrent(token)) return;
+        setIngest({ projectId, data: response ?? null, error: null });
+      })
+      .catch((err: any) => {
+        if (!ingestGeneration.isCurrent(token)) return;
+        setIngest({
+          projectId,
+          data: null,
+          error: err?.message || 'Failed to load ingest settings',
+        });
+      });
+  }, [projectId, setupOpen, ingestForProject, ingestGeneration]);
+
+  const copy = useCallback((value: string, key: string, label: string) => {
+    void copyToClipboard(value).then((ok: boolean) => {
+      if (ok) setCopied(key);
+      else Alert.alert('AWS Health', `${label} could not be copied.`);
+    });
+  }, []);
+
+  const mint = useCallback(() => {
+    if (!projectId || busy) return;
+    setBusy(true);
+    const owner = ++busyOwner.current;
+    api
+      .createInfraHealthIngestToken(projectId)
+      .then((response: any) => {
+        if (busyOwner.current !== owner) return;
+        setMinted({ projectId, token: response?.token || '' });
+        setIngest({
+          projectId,
+          data: {
+            token: response?.info ?? null,
+            ingestPath: response?.ingestPath ?? '',
+            eventPattern: response?.eventPattern ?? {},
+          },
+          error: null,
+        });
+        setCopied(null);
+        // `ingestConfigured` just flipped; re-read so the empty state stops
+        // claiming the rule was never wired up.
+        load();
+      })
+      .catch((err: any) => {
+        if (busyOwner.current !== owner) return;
+        const message = err?.message || 'The ingest token could not be created.';
+        setIngest((prev) => ({
+          projectId,
+          data: stampMatchesProject(prev, projectId) ? (prev?.data ?? null) : null,
+          error: message,
+        }));
+        Alert.alert('AWS Health', message);
+      })
+      .finally(() => {
+        if (busyOwner.current === owner) setBusy(false);
+      });
+  }, [projectId, busy, load]);
+
+  const revoke = useCallback(() => {
+    if (!projectId || busy) return;
+    setBusy(true);
+    const owner = ++busyOwner.current;
+    api
+      .revokeInfraHealthIngestToken(projectId)
+      .then((response: any) => {
+        if (busyOwner.current !== owner) return;
+        setMinted(null);
+        setIngest((prev) =>
+          stampMatchesProject(prev, projectId) && prev?.data
+            ? { projectId, data: { ...prev.data, token: response?.token ?? null }, error: null }
+            : prev,
+        );
+        load();
+      })
+      .catch((err: any) => {
+        if (busyOwner.current !== owner) return;
+        const message = err?.message || 'The ingest token could not be revoked.';
+        Alert.alert('AWS Health', message);
+      })
+      .finally(() => {
+        if (busyOwner.current === owner) setBusy(false);
+      });
+  }, [projectId, busy, load]);
+
+  const confirmRevoke = () => {
+    Alert.alert(
+      'Revoke ingest token?',
+      'AWS Health deliveries using this token start failing immediately. Events already received are kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Revoke', style: 'destructive', onPress: revoke },
+      ],
+    );
+  };
+
+  const events = useMemo(() => sortHealthEvents(data?.events), [data]);
+  const visible = events.slice(0, HEALTH_VISIBLE_ROWS);
+  const truncation = healthTruncationNote(visible.length, data?.total ?? events.length);
+
+  const ingestData = ingestForProject?.data ?? null;
+  const ingestError = ingestForProject?.error ?? null;
+  const tokenInfo = ingestData?.token ?? null;
+  const ingestUrl = ingestData ? healthIngestUrl(getServerBaseUrl(), ingestData.ingestPath) : '';
+  const patternJson = formatEventPattern(ingestData?.eventPattern);
+  const emptyState = healthEmptyState(Boolean(data?.ingestConfigured));
+
+  return (
+    <>
+      <Text style={styles.sectionTitle}>AWS Health</Text>
+
+      {error ? (
+        <Text style={styles.error} testID="infra-health-error">
+          {error}
+        </Text>
+      ) : null}
+      {!data && !error ? <Text style={styles.hint}>Loading AWS Health events…</Text> : null}
+
+      {data && events.length === 0 ? (
+        <View style={styles.emptyCard} testID={emptyState.testID}>
+          <Text style={styles.healthEmptyTitle}>{emptyState.title}</Text>
+          <Text style={styles.emptyText}>{emptyState.body}</Text>
+        </View>
+      ) : null}
+
+      {visible.map((event) => (
+        <HealthRow
+          key={event.id}
+          event={event}
+          nowMs={nowMs}
+          expanded={Boolean(expanded[event.id])}
+          onToggle={() =>
+            setExpanded((prev) => ({ ...prev, [event.id]: !prev[event.id] }))
+          }
+        />
+      ))}
+      {truncation ? (
+        <Text style={styles.hint} testID="infra-health-truncated">
+          {truncation}
+        </Text>
+      ) : null}
+
+      <TouchableOpacity
+        onPress={() => setSetupOverride(!setupOpen)}
+        style={styles.healthSetupToggle}
+        testID="infra-health-setup-toggle"
+      >
+        <Text style={styles.healthLink}>{setupOpen ? '▾ Ingest setup' : '▸ Ingest setup'}</Text>
+      </TouchableOpacity>
+
+      {setupOpen ? (
+        <View testID="infra-health-setup">
+          {ingestError ? (
+            <Text style={styles.error} testID="infra-health-setup-error">
+              {ingestError}
+            </Text>
+          ) : null}
+
+          <Text style={styles.hint} testID="infra-health-setup-note">
+            {INGEST_SETUP_NOTE}
+          </Text>
+
+          {ingestData ? (
+            <>
+              <HealthCopyField
+                label="Ingest URL"
+                value={ingestUrl}
+                testID="infra-health-ingest-url"
+                copied={copied === 'url'}
+                onCopy={() => copy(ingestUrl, 'url', 'Ingest URL')}
+              />
+              <HealthCopyField
+                label="Event pattern"
+                value={patternJson}
+                testID="infra-health-event-pattern"
+                copied={copied === 'pattern'}
+                onCopy={() => copy(patternJson, 'pattern', 'Event pattern')}
+              />
+            </>
+          ) : !ingestError ? (
+            <Text style={styles.hint}>Loading ingest settings…</Text>
+          ) : null}
+
+          {mintedToken ? (
+            <View style={styles.healthTokenBox} testID="infra-health-token-reveal">
+              <Text style={styles.healthTokenWarning} testID="infra-health-token-warning">
+                {TOKEN_ONCE_WARNING}
+              </Text>
+              <Text style={styles.healthCode} selectable testID="infra-health-token-plaintext">
+                {mintedToken}
+              </Text>
+              <TouchableOpacity
+                onPress={() => copy(mintedToken, 'token', 'Ingest token')}
+                style={styles.healthCopyBtn}
+                testID="infra-health-copy-token"
+              >
+                <Text style={styles.healthCopyBtnText}>
+                  {copied === 'token' ? 'Copied' : 'Copy token'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          <TouchableOpacity
+            style={[styles.secondaryButton, busy && styles.disabled]}
+            disabled={busy}
+            onPress={mint}
+            testID="infra-health-mint"
+          >
+            <Text style={styles.secondaryButtonText}>
+              {busy ? '…' : ingestActionLabel(tokenInfo)}
+            </Text>
+          </TouchableOpacity>
+          {isIngestTokenLive(tokenInfo) ? (
+            <TouchableOpacity
+              style={[styles.secondaryButton, busy && styles.disabled]}
+              disabled={busy}
+              onPress={confirmRevoke}
+              testID="infra-health-revoke"
+            >
+              <Text style={styles.secondaryButtonText}>Revoke</Text>
+            </TouchableOpacity>
+          ) : null}
+          {ingestTokenSummary(tokenInfo, nowMs) ? (
+            <Text style={styles.hint} testID="infra-health-token-info">
+              {ingestTokenSummary(tokenInfo, nowMs)}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+    </>
+  );
+}
+
+function HealthRow({
+  event,
+  nowMs,
+  expanded,
+  onToggle,
+}: {
+  event: InfraHealthEventWire;
+  nowMs: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const severity = normalizeHealthSeverity(event.severity);
+  const status = formatHealthStatus(event.statusCode);
+  const description = truncateHealthDescription(event.description, expanded);
+  const clampable = isHealthDescriptionClampable(event.description);
+
+  return (
+    <View
+      style={[styles.card, styles.healthRow, { borderLeftColor: HEALTH_SEVERITY_COLOR[severity] }]}
+      testID="infra-health-event"
+    >
+      <View style={styles.rowHead}>
+        <View
+          style={[styles.healthDot, { backgroundColor: HEALTH_SEVERITY_COLOR[severity] }]}
+          testID="infra-health-severity-dot"
+        />
+        <Text
+          style={[styles.healthSeverity, { color: HEALTH_SEVERITY_COLOR[severity] }]}
+          testID="infra-health-severity"
+        >
+          {healthSeverityLabel(severity)}
+        </Text>
+        <Text style={styles.rowTitle} numberOfLines={1} testID="infra-health-service">
+          {healthEventService(event)}
+        </Text>
+        {status ? (
+          <Text
+            style={[styles.statePill, HEALTH_STATUS_STYLE[status] ?? HEALTH_STATUS_STYLE.CLOSED]}
+            testID="infra-health-status"
+          >
+            {status}
+          </Text>
+        ) : null}
+      </View>
+      <Text style={styles.mono} numberOfLines={2} testID="infra-health-type-code">
+        {healthEventTypeCode(event)}
+      </Text>
+      <Text style={styles.rowMeta} testID="infra-health-meta">
+        {healthEventMetaLine(event, nowMs)}
+      </Text>
+      {description.text ? (
+        <Text style={styles.healthDescription} testID="infra-health-description">
+          {description.text}
+        </Text>
+      ) : null}
+      {clampable ? (
+        <TouchableOpacity onPress={onToggle} testID="infra-health-expand">
+          <Text style={styles.healthLink}>{expanded ? 'Show less' : 'Show more'}</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
+
 function OverviewTab({
   projectId,
   project,
@@ -1063,6 +1566,11 @@ function OverviewTab({
       ) : null}
       <Text style={styles.hint}>Scope is edited on the web Infrastructure module.</Text>
 
+      {/* Above the spend section, mirroring web: this is operational news AWS
+          pushed at us — a degraded control plane, a retiring volume — and the
+          only thing on this tab that can be happening right now. The money
+          below it is never that urgent. */}
+      {projectId ? <HealthSection projectId={projectId} /> : null}
       {/* Below the scope, mirroring web: that block prices a decision the
           operator is about to make, this one reports the bill it lands on. */}
       {projectId ? <SpendSection projectId={projectId} /> : null}
@@ -2055,6 +2563,47 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   emptyText: { fontSize: 13, color: colors.gray400 },
+  healthEmptyTitle: { fontSize: 13, color: colors.gray300, fontWeight: '600', marginBottom: 4 },
+  // The severity colour lives on the row's left edge rather than only in a dot:
+  // a phone is read at arm's length in bad light, and an 8px dot is not a
+  // signal at that distance.
+  healthRow: { borderLeftWidth: 3 },
+  healthDot: { width: 8, height: 8, borderRadius: 4 },
+  healthSeverity: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase' },
+  healthDescription: { fontSize: 12, color: colors.gray400, marginTop: 6, lineHeight: 18 },
+  healthLink: { fontSize: 12, color: colors.sky400, marginTop: 4 },
+  healthSetupToggle: { marginTop: 10 },
+  healthField: { marginTop: 10 },
+  healthFieldLabel: { fontSize: 12, color: colors.gray400, fontWeight: '600' },
+  healthCode: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: colors.gray300,
+    backgroundColor: colors.gray950,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 6,
+    padding: 8,
+    marginTop: 4,
+  },
+  healthCopyBtn: {
+    marginLeft: 'auto',
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  healthCopyBtnText: { fontSize: 11, color: colors.gray300 },
+  healthTokenBox: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.amber900_40,
+    backgroundColor: colors.yellow900_50,
+  },
+  healthTokenWarning: { fontSize: 12, color: colors.amber400, lineHeight: 17 },
   warnBox: {
     backgroundColor: colors.yellow900_50,
     borderRadius: 8,

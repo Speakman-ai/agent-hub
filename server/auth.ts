@@ -86,6 +86,11 @@ const PUBLIC_METHOD_PATTERNS: readonly { methods: readonly string[]; re: RegExp 
   // and the body-parser skip regex in index.ts (both accept an optional `/`), so
   // `/api/otel/v1/logs/` can't fall through to a 401 instead of the token flow.
   { methods: ['POST'], re: /^\/api\/(?:otel\/v1\/logs|logs\/ingest)\/?$/ },
+  // Write-only AWS Health ingest. Self-authenticates from an `ahhealth_` token
+  // (Bearer / X-AgentHub-Health-Token) resolved by the route, presented by an
+  // EventBridge API destination in the operator's own AWS account — there is no
+  // Hub session behind it, so the auth middleware must let it through.
+  { methods: ['POST'], re: /^\/api\/infra\/health\/ingest\/?$/ },
 ];
 
 /** Public-route allowlist predicate; exported for write-only credential tests. */

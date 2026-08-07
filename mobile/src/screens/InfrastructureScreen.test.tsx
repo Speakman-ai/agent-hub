@@ -16,6 +16,9 @@ vi.mock('react-native', () => ({
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
 vi.mock('../components/ProjectScreenHeader', () => ({ default: 'ProjectScreenHeader' }));
 vi.mock('../context/AppContext', () => ({ useApp: () => ({}) }));
+// `utils/config` pulls in AsyncStorage at module load, which has no node build.
+// The screen only needs the server base to render the AWS Health ingest URL.
+vi.mock('../utils/config', () => ({ getServerBaseUrl: () => 'https://hub.example.com' }));
 vi.mock('../utils/api', () => ({
   api: {
     getInfraScopes: vi.fn(() => Promise.resolve({ scopes: [] })),
@@ -39,6 +42,14 @@ vi.mock('../utils/api', () => ({
       }),
     ),
     updateInfraSpendConfig: vi.fn(() => Promise.resolve({ enabled: false, days: [] })),
+    getInfraHealthEvents: vi.fn(() =>
+      Promise.resolve({ events: [], total: 0, ingestConfigured: false }),
+    ),
+    getInfraHealthIngest: vi.fn(() =>
+      Promise.resolve({ token: null, ingestPath: '/api/infra/health/ingest', eventPattern: {} }),
+    ),
+    createInfraHealthIngestToken: vi.fn(() => Promise.resolve({ token: 'ahhealth_x' })),
+    revokeInfraHealthIngestToken: vi.fn(() => Promise.resolve({ revoked: true, token: null })),
   },
 }));
 
@@ -67,7 +78,14 @@ import {
   QUOTA_VISIBLE_ROWS,
   QUOTA_TONE_COLOR,
   quotaTruncationNote,
+  HEALTH_SEVERITY_COLOR,
+  HEALTH_STATUS_STYLE,
 } from './InfrastructureScreen';
+import {
+  formatHealthStatus,
+  healthEmptyState,
+  normalizeHealthSeverity,
+} from '../utils/infraHealth';
 import { quotaRefreshFailureNote } from '@shared/utils/quotaHeadroom';
 import { EMPTY_FILTERS } from '../utils/infraResources';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
@@ -954,5 +972,45 @@ describe('quota refresh failures on mobile', () => {
 
   it('says nothing when the last poll succeeded', () => {
     expect(quotaRefreshFailureNote(null, NOW, NOW)).toBeNull();
+  });
+});
+
+describe('AWS Health severity and status styling', () => {
+  it('gives each severity a distinct colour', () => {
+    const values = Object.values(HEALTH_SEVERITY_COLOR);
+    expect(new Set(values).size).toBe(values.length);
+  });
+
+  it('has a colour for every severity the normalizer can produce', () => {
+    for (const raw of ['critical', 'warning', 'info', 'not-a-severity', null, undefined]) {
+      expect(HEALTH_SEVERITY_COLOR[normalizeHealthSeverity(raw)]).toBeTruthy();
+    }
+  });
+
+  it('has a pill style for every status the formatter can produce', () => {
+    for (const raw of ['open', 'closed', 'upcoming']) {
+      expect(HEALTH_STATUS_STYLE[formatHealthStatus(raw)!]).toBeTruthy();
+    }
+  });
+
+  it('falls back to the neutral pill for a status AWS invents later', () => {
+    const unknown = formatHealthStatus('some-new-status')!;
+    expect(HEALTH_STATUS_STYLE[unknown] ?? HEALTH_STATUS_STYLE.CLOSED).toBe(
+      HEALTH_STATUS_STYLE.CLOSED,
+    );
+  });
+
+  it('draws an open event apart from a closed one', () => {
+    expect(HEALTH_STATUS_STYLE.OPEN.color).not.toBe(HEALTH_STATUS_STYLE.CLOSED.color);
+  });
+});
+
+describe('AWS Health empty states on the Overview tab', () => {
+  // The section renders one of these two whenever `events` is empty, and which
+  // one it is decides whether the operator goes and creates an EventBridge rule
+  // or does nothing at all.
+  it('distinguishes an unwired ingest from a quiet account', () => {
+    expect(healthEmptyState(false).testID).toBe('infra-health-not-configured');
+    expect(healthEmptyState(true).testID).toBe('infra-health-empty');
   });
 });

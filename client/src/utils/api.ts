@@ -313,6 +313,94 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
 }
 
 /**
+ * AWS Health severity, as classified server-side from the event type category.
+ * Mirrors the infra alert severity vocabulary so both surfaces colour alike.
+ */
+export type InfraHealthSeverity = 'critical' | 'warning' | 'info';
+
+/** AWS Health lifecycle status. Null when AWS omitted it from the payload. */
+export type InfraHealthStatusCode = 'open' | 'closed' | 'upcoming' | null;
+
+export interface InfraHealthAffectedEntityWire {
+  entityValue: string;
+  status?: string | null;
+  lastUpdatedMs?: number | null;
+}
+
+/** One stored AWS Health event (server `serializeInfraHealthEvent`). */
+export interface InfraHealthEventWire {
+  id: string;
+  projectId: string;
+  eventArn: string;
+  communicationId: string | null;
+  region: string | null;
+  deliveryRegion: string | null;
+  detailType: string | null;
+  service: string | null;
+  eventTypeCode: string | null;
+  eventTypeCategory: string | null;
+  eventScopeCode: string | null;
+  statusCode: InfraHealthStatusCode;
+  severity: InfraHealthSeverity;
+  startTime: number | null;
+  endTime: number | null;
+  lastUpdated: number | null;
+  description: string | null;
+  affectedEntities: InfraHealthAffectedEntityWire[];
+  affectedEntityCount: number;
+  /**
+   * True when AWS delivered this copy to the account's *backup* Region rather
+   * than the Region the event is about. AWS deliberately fans account-specific
+   * events out to a second Region, so a duplicate-looking row is expected.
+   */
+  backupEvent: boolean;
+  page: number | null;
+  totalPages: number | null;
+  eventTime: number | null;
+  receivedAt: number;
+}
+
+export interface InfraHealthEventsResponse {
+  events: InfraHealthEventWire[];
+  total: number;
+  /**
+   * Whether a live ingest token exists. Distinguishes "the EventBridge rule was
+   * never wired up" from "wired up and nothing has happened", which are very
+   * different operator next-actions.
+   */
+  ingestConfigured: boolean;
+}
+
+/** Non-secret ingest credential metadata. Never carries the token itself. */
+export interface InfraHealthIngestTokenInfoWire {
+  projectId: string;
+  tokenPrefix: string;
+  createdAt: number;
+  rotatedAt: number | null;
+  revokedAt: number | null;
+  lastUsedAt: number | null;
+}
+
+export interface InfraHealthIngestResponse {
+  token: InfraHealthIngestTokenInfoWire | null;
+  ingestPath: string;
+  eventPattern: Record<string, readonly string[]>;
+}
+
+export interface InfraHealthIngestMintResponse {
+  /** Plaintext credential. Returned exactly once and never readable again. */
+  token: string;
+  info: InfraHealthIngestTokenInfoWire;
+  ingestPath: string;
+  eventPattern: Record<string, readonly string[]>;
+}
+
+export interface InfraHealthIngestRevokeResponse {
+  revoked: boolean;
+  token: InfraHealthIngestTokenInfoWire | null;
+}
+
+/**
  * Query string for the infra read routes.
  *
  * Empty and nullish values are dropped rather than sent blank: the server
@@ -425,6 +513,29 @@ export const api = {
   // collector already stored, and never touches AWS on this path.
   getInfraQuotas: (projectId: string, params: Record<string, unknown> = {}) =>
     fetchJSON<QuotaHeadroomResponse>(`/projects/${projectId}/infra/quotas${infraQuery(params)}`),
+  // AWS Health event timeline for the Overview tab. Ingest-only: the Hub never
+  // calls AWS on this path, it reads what an operator-owned EventBridge rule
+  // pushed at `/api/infra/health/ingest`. `ingestConfigured` is what lets the
+  // timeline tell "the rule was never wired up" apart from "genuinely quiet".
+  getInfraHealthEvents: (projectId: string, params: Record<string, unknown> = {}) =>
+    fetchJSON<InfraHealthEventsResponse>(
+      `/projects/${projectId}/infra/health-events${infraQuery(params)}`,
+    ),
+  // Non-secret metadata about the ingest credential, plus the exact ingest path
+  // and EventBridge pattern the operator has to paste into their own account.
+  getInfraHealthIngest: (projectId: string) =>
+    fetchJSON<InfraHealthIngestResponse>(`/projects/${projectId}/infra/health-ingest`),
+  // Mints (or rotates) the ingest credential. This is the ONLY response that
+  // ever carries the plaintext token — it cannot be read back afterwards, so a
+  // caller that drops it has to rotate.
+  createInfraHealthIngestToken: (projectId: string) =>
+    fetchJSON<InfraHealthIngestMintResponse>(`/projects/${projectId}/infra/health-ingest`, {
+      method: 'POST',
+    }),
+  revokeInfraHealthIngestToken: (projectId: string) =>
+    fetchJSON<InfraHealthIngestRevokeResponse>(`/projects/${projectId}/infra/health-ingest`, {
+      method: 'DELETE',
+    }),
   // Opts the project in or out of the billed Cost Explorer poll. Returns the
   // same spend body, so the panel repaints from the response rather than
   // refetching.

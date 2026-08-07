@@ -166,6 +166,31 @@ export function infraAlertPush(args: {
   };
 }
 
+/**
+ * Push copy for an AWS Health event ingested from EventBridge.
+ *
+ * The headline already names the service, event type code, and Region, so the
+ * body adds only the lifecycle — "is this starting or finished" is the thing an
+ * operator wants off a lock screen.
+ */
+export function infraHealthEventPush(args: {
+  severity?: string;
+  headline?: string;
+  statusCode?: string;
+  eventTypeCategory?: string;
+}): { title: string; body: string } {
+  const severity = args.severity
+    ? `${args.severity[0]!.toUpperCase()}${args.severity.slice(1)}`
+    : 'AWS';
+  const headline = args.headline || 'AWS Health event';
+  const status = args.statusCode ? ` · ${args.statusCode}` : '';
+  const category = args.eventTypeCategory ? ` (${args.eventTypeCategory})` : '';
+  return {
+    title: `${severity} AWS Health event`,
+    body: `${headline}${status}${category}`,
+  };
+}
+
 // ── Preference filtering ────────────────────────────────────────────────
 
 /**
@@ -674,6 +699,35 @@ export function mapBroadcastToPush(data: BroadcastData): {
             prNumber: data.prNumber,
             cardId: data.cardId,
             type: 'pr_merged',
+          },
+        },
+      };
+    }
+
+    case 'infra_health_event': {
+      if (data.suppressPush === true) return null;
+      const { title, body } = infraHealthEventPush({
+        severity: typeof data.severity === 'string' ? data.severity : undefined,
+        headline: typeof data.headline === 'string' ? data.headline : undefined,
+        statusCode: typeof data.statusCode === 'string' ? data.statusCode : undefined,
+        eventTypeCategory:
+          typeof data.eventTypeCategory === 'string' ? data.eventTypeCategory : undefined,
+      });
+      return {
+        // Reuses the `infra_alert` push type on purpose (decision
+        // INFRA-NOTIFY): per-token opt-in then works with no mobile settings
+        // change, and an operator who muted infrastructure pages meant it for
+        // AWS Health notices too.
+        event: 'infra_alert',
+        payload: {
+          title,
+          body,
+          data: {
+            projectId: data.projectId,
+            healthEventId: data.healthEventId,
+            eventArn: data.eventArn,
+            severity: data.severity,
+            type: 'infra_health_event',
           },
         },
       };

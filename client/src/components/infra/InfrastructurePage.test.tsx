@@ -14,6 +14,12 @@ import { api } from '../../utils/api';
     getInfraSpend: vi.fn(),
     getInfraQuotas: vi.fn(),
     updateInfraSpendConfig: vi.fn(),
+    // …and the AWS Health timeline, which reads the ingested event list on
+    // mount and lazily loads ingest settings when its setup section opens.
+    getInfraHealthEvents: vi.fn(),
+    getInfraHealthIngest: vi.fn(),
+    createInfraHealthIngestToken: vi.fn(),
+    revokeInfraHealthIngestToken: vi.fn(),
     // The Resources tab embeds the inventory browser, which polls on mount.
     listInfraResources: vi.fn(),
     listInfraMetricSeries: vi.fn(),
@@ -27,6 +33,7 @@ const listInfraResources = vi.mocked(api.listInfraResources);
 const getInfraMetricPacks = vi.mocked(api.getInfraMetricPacks);
 const getInfraSpend = vi.mocked(api.getInfraSpend);
 const getInfraQuotas = vi.mocked(api.getInfraQuotas);
+const getInfraHealthEvents = vi.mocked(api.getInfraHealthEvents);
 
 const ec2Pack = {
   service: 'ec2',
@@ -144,6 +151,11 @@ describe('InfrastructurePage', () => {
     listInfraResources.mockResolvedValue(emptyResources as any);
     getInfraMetricPacks.mockResolvedValue({ packs: [ec2Pack] } as any);
     getInfraSpend.mockResolvedValue(optedOutSpend as any);
+    getInfraHealthEvents.mockResolvedValue({
+      events: [],
+      total: 0,
+      ingestConfigured: true,
+    } as any);
     getInfraQuotas.mockResolvedValue({
       quotas: [],
       summary: { critical: 0, warning: 0, ok: 0, unknown: 0, total: 0 },

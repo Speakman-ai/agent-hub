@@ -76,6 +76,10 @@ components:
       in: cookie
       name: agent_hub_session
       description: Session cookie issued by `POST /api/auth/login`.
+    infraHealthIngestToken:
+      type: http
+      scheme: bearer
+      description: Write-only `ahhealth_` AWS Health ingest token (also accepted via `X-AgentHub-Health-Token`). Identifies exactly one project; grants no read, query, or management access.
     logIngestToken:
       type: http
       scheme: bearer
@@ -7264,6 +7268,331 @@ components:
           description: "`resolved` closes it out, `ignored` mutes it through recurrence, `open` reopens it."
       required:
         - status
+    AwsHealthEventEnvelope:
+      type: object
+      properties:
+        version:
+          type: string
+        id:
+          type: string
+          description: EventBridge message id. Unique per delivery, so it is NOT usable for dedupe across the backup Region.
+        detail-type:
+          type: string
+          description: Must be `AWS Health Event` or `AWS Health Abuse Event`.
+          example: AWS Health Event
+        source:
+          type: string
+          enum:
+            - aws.health
+          description: Must be exactly `aws.health`. AWS documents that a rule pattern using a wildcard such as `aws.health*` never matches.
+        account:
+          type: string
+          example: "123456789012"
+        time:
+          type: string
+          example: 2026-01-27T01:43:21Z
+        region:
+          type: string
+          description: The Region the notification was DELIVERED to, not necessarily the impacted one.
+        resources:
+          type: array
+          items:
+            type: string
+        detail:
+          type: object
+          properties:
+            eventArn:
+              type: string
+              description: ARN of the Health event. Stable across every update to the same incident, and half of the dedupe key.
+              example: arn:aws:health:us-east-1::event/EC2/AWS_EC2_OPERATIONAL_ISSUE/AWS_EC2_OPERATIONAL_ISSUE_7f35c8ae
+            communicationId:
+              type: string
+              description: Identifies one specific communication about the event. The other half of the dedupe key.
+              example: 01b0993207d81a09dcd552ebd1e633e36cf1f09a-1
+            service:
+              type: string
+            eventTypeCode:
+              type: string
+              example: AWS_EC2_OPERATIONAL_ISSUE
+            eventTypeCategory:
+              type: string
+              description: "`issue`, `accountNotification`, `scheduledChange`, or `investigation`."
+              example: issue
+            eventScopeCode:
+              type: string
+              example: PUBLIC
+            statusCode:
+              type: string
+              example: open
+            eventRegion:
+              type: string
+              description: The Region actually impacted, which under the backup-Region fan-out often differs from the envelope `region`.
+            startTime:
+              type: string
+              description: RFC-1123 string, not ISO-8601.
+              example: Fri, 27 Jan 2023 06:02:51 GMT
+            endTime:
+              type: string
+            lastUpdatedTime:
+              type: string
+            eventDescription:
+              type: array
+              items:
+                type: object
+                properties:
+                  language:
+                    type: string
+                  latestDescription:
+                    type: string
+            affectedEntities:
+              type: array
+              items:
+                type: object
+                properties:
+                  entityValue:
+                    type: string
+                  status:
+                    type: string
+                  lastUpdatedTime:
+                    type: string
+            affectedAccount:
+              type: string
+            backupEvent:
+              type: string
+              description: Delivered as the string `"true"`/`"false"`, not a boolean.
+            page:
+              type: string
+            totalPages:
+              type: string
+          required:
+            - eventArn
+            - communicationId
+            - eventTypeCode
+            - eventTypeCategory
+          additionalProperties:
+            nullable: true
+      required:
+        - detail-type
+        - source
+        - account
+        - region
+        - detail
+      additionalProperties:
+        nullable: true
+      description: One AWS Health event as delivered by Amazon EventBridge.
+    InfraHealthIngestResult:
+      type: object
+      properties:
+        accepted:
+          type: integer
+          description: Events written for the first time.
+        deduped:
+          type: integer
+          description: "Deliveries suppressed as duplicates of an already-stored (eventArn, communicationId). A steady non-zero count is normal: EventBridge delivery is at-least-once and AWS additionally fans account-specific events out to a backup Region."
+        rejected:
+          type: integer
+          description: Payload entries that were not usable Health events.
+        overflow:
+          type: integer
+          description: Entries dropped beyond the 100-event cap.
+        reasons:
+          type: array
+          items:
+            type: string
+          description: Present only when nothing was accepted, to make a misconfigured rule diagnosable.
+      required:
+        - accepted
+        - deduped
+        - rejected
+        - overflow
+    InfraHealthEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        eventArn:
+          type: string
+        communicationId:
+          type: string
+        region:
+          type: string
+          description: Impacted Region, falling back to the delivery Region.
+        deliveryRegion:
+          type: string
+        detailType:
+          type: string
+        service:
+          type: string
+          nullable: true
+        eventTypeCode:
+          type: string
+        eventTypeCategory:
+          type: string
+        eventScopeCode:
+          type: string
+          nullable: true
+        statusCode:
+          type: string
+          nullable: true
+        severity:
+          type: string
+          enum:
+            - critical
+            - warning
+            - info
+          description: Severity this event routes under. `closed` events are downgraded to `info`.
+        startTime:
+          type: number
+          nullable: true
+          description: Unix ms; null if unparseable.
+        endTime:
+          type: number
+          nullable: true
+        lastUpdated:
+          type: number
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        affectedEntities:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              nullable: true
+        affectedEntityCount:
+          type: integer
+        backupEvent:
+          type: boolean
+          description: True when delivered via the backup Region rather than the impacted one.
+        page:
+          type: integer
+        totalPages:
+          type: integer
+        eventTime:
+          type: number
+          nullable: true
+        receivedAt:
+          type: number
+      required:
+        - id
+        - projectId
+        - eventArn
+        - communicationId
+        - region
+        - deliveryRegion
+        - detailType
+        - service
+        - eventTypeCode
+        - eventTypeCategory
+        - eventScopeCode
+        - statusCode
+        - severity
+        - startTime
+        - endTime
+        - lastUpdated
+        - description
+        - affectedEntities
+        - affectedEntityCount
+        - backupEvent
+        - page
+        - totalPages
+        - eventTime
+        - receivedAt
+    InfraHealthEventList:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/InfraHealthEvent"
+        total:
+          type: integer
+        ingestConfigured:
+          type: boolean
+          description: False when no unrevoked ingest token exists, which distinguishes "no events yet" from "the EventBridge rule was never wired up".
+      required:
+        - events
+        - total
+        - ingestConfigured
+    InfraHealthIngestTokenInfo:
+      type: object
+      nullable: true
+      properties:
+        projectId:
+          type: string
+        tokenPrefix:
+          type: string
+          description: Non-secret prefix, for identification only.
+        createdAt:
+          type: number
+        rotatedAt:
+          type: number
+          nullable: true
+        revokedAt:
+          type: number
+          nullable: true
+        lastUsedAt:
+          type: number
+          nullable: true
+          description: Last successful ingest, or null if the rule never delivered.
+      required:
+        - projectId
+        - tokenPrefix
+        - createdAt
+        - rotatedAt
+        - revokedAt
+        - lastUsedAt
+    InfraHealthIngestConfig:
+      type: object
+      properties:
+        token:
+          $ref: "#/components/schemas/InfraHealthIngestTokenInfo"
+        ingestPath:
+          type: string
+          example: /api/infra/health/ingest
+        eventPattern:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The literal EventBridge rule pattern to paste into the monitored account. `source` must match `aws.health` exactly — AWS documents that a wildcard such as `aws.health*` never matches.
+          example: &a1
+            source:
+              - aws.health
+            detail-type:
+              - AWS Health Event
+              - AWS Health Abuse Event
+      required:
+        - token
+        - ingestPath
+        - eventPattern
+    InfraHealthIngestTokenMint:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Plaintext `ahhealth_` token. Returned exactly once — it is stored only as a SHA-256 digest and cannot be read back.
+        info:
+          $ref: "#/components/schemas/InfraHealthIngestTokenInfo"
+        ingestPath:
+          type: string
+        eventPattern:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The literal EventBridge rule pattern to paste into the monitored account. `source` must match `aws.health` exactly — AWS documents that a wildcard such as `aws.health*` never matches.
+          example: *a1
+      required:
+        - token
+        - info
+        - ingestPath
+        - eventPattern
     InfraMonitoringStatus:
       type: object
       properties:
@@ -8196,7 +8525,7 @@ components:
               type: string
             minItems: 1
           description: Optional tag filter as tag key -> accepted values. Values within one key are ORed, keys are ANDed — EC2 filter semantics, with `*` and `?` wildcards. Omit or send null to match every resource the describe call returns.
-          example: &a1
+          example: &a2
             Environment:
               - prod
               - staging
@@ -8307,7 +8636,7 @@ components:
                     type: string
                   minItems: 1
                 description: Optional tag filter as tag key -> accepted values. Values within one key are ORed, keys are ANDed — EC2 filter semantics, with `*` and `?` wildcards. Omit or send null to match every resource the describe call returns.
-                example: *a1
+                example: *a2
               enabled:
                 type: boolean
                 description: Defaults to true. A disabled scope is retained rather than deleted, so its inventory and metric history survive being switched back on.
@@ -29009,7 +29338,7 @@ paths:
                         - nullable: true
                   minItems: 1
                   description: Row-major matrix of cell values to write.
-                  example: &a2
+                  example: &a3
                     - - Name
                       - Score
                     - - Alice
@@ -29134,7 +29463,7 @@ paths:
                         - nullable: true
                   minItems: 1
                   description: Row-major matrix of cell values to write.
-                  example: *a2
+                  example: *a3
                 valueInputOption:
                   type: string
                   enum:
@@ -30270,6 +30599,308 @@ paths:
                     description: Human-readable failure reason.
                 required:
                   - error
+  /api/infra/health/ingest:
+    post:
+      tags:
+        - Infrastructure
+      summary: Ingest an AWS Health event from EventBridge
+      security:
+        - infraHealthIngestToken: []
+      description: |-
+        Write-only endpoint targeted by an **operator-created** EventBridge rule in the monitored AWS account, via an API destination using `API_KEY` or Bearer authorization.
+
+        Agent Hub deliberately does **not** call the Health API `DescribeEvents`: it requires a Business Support+ / Enterprise / Unified Operations plan and returns `SubscriptionRequiredException` otherwise, while EventBridge delivery of the same events is free to every AWS customer. The Hub creates nothing in the monitored account — setup is entirely operator-performed.
+
+        The rule pattern must match the source **exactly**:
+
+        ```json
+        { "source": ["aws.health"], "detail-type": ["AWS Health Event", "AWS Health Abuse Event"] }
+        ```
+
+        A wildcard such as `"aws.health*"` silently never matches.
+
+        **Duplicates are expected.** EventBridge delivery is at-least-once and AWS fans account-specific events out to a backup Region on purpose, so ingestion dedupes on `eventArn` + `communicationId` (widened by the affected account and page number) and reports the suppressed count as `deduped`.
+
+        The handler performs one bounded SQLite write and returns, because EventBridge times out an API-destination request that takes longer than 5 seconds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: "#/components/schemas/AwsHealthEventEnvelope"
+                - type: array
+                  items:
+                    $ref: "#/components/schemas/AwsHealthEventEnvelope"
+                  maxItems: 100
+              description: A single EventBridge envelope (what an API destination sends) or an array of up to 100 of them.
+      responses:
+        "200":
+          description: |-
+            Delivery processed. Inspect `accepted` / `deduped`.
+
+            A payload that was not a Health event also returns 200, with `accepted: 0` and a `reasons` array. EventBridge does not retry a plain 4xx, so a 400 would not be re-delivered — it would simply count as a failed invocation, filling the dead-letter queue and firing `FailedInvocations` alarms for deliveries that are merely out of scope. A rule scoped slightly too broadly is a configuration nit, not an outage.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraHealthIngestResult"
+        "400":
+          description: Malformed JSON body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or revoked ingest token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Request body exceeds the 1 MiB cap.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "429":
+          description: Per-IP or per-project rate limit exceeded. Retry after the `Retry-After` delay.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is unavailable. Retryable — EventBridge redelivers for up to 24 hours.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/infra/health-events:
+    get:
+      tags:
+        - Projects
+      summary: List ingested AWS Health events
+      description: |-
+        Reads the Health events an operator-created EventBridge rule has delivered to this project. **No AWS call is made** — this is a local read of ingested data, so it is free and works on any AWS support tier.
+
+        By default each incident collapses to its newest communication, which is what the Infrastructure Overview timeline renders.
+      parameters:
+        - schema:
+            type: string
+            example: agent-hub
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+            description: Maximum rows returned.
+          required: false
+          description: Maximum rows returned.
+          name: limit
+          in: query
+        - schema:
+            anyOf:
+              - type: boolean
+              - type: string
+                enum:
+                  - "true"
+                  - "false"
+            description: "Default `true`: collapse each incident to its newest communication, which is what the Overview timeline shows. Pass `false` to see every update AWS published about an event."
+          required: false
+          description: "Default `true`: collapse each incident to its newest communication, which is what the Overview timeline shows. Pass `false` to see every update AWS published about an event."
+          name: latestOnly
+          in: query
+        - schema:
+            type: string
+            enum:
+              - open
+              - closed
+              - upcoming
+            description: Restrict to one lifecycle state.
+          required: false
+          description: Restrict to one lifecycle state.
+          name: statusCode
+          in: query
+      responses:
+        "200":
+          description: Timeline rows, newest first. A project whose infrastructure store never opened returns an empty list rather than an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraHealthEventList"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/infra/health-ingest:
+    get:
+      tags:
+        - Projects
+      summary: Read AWS Health ingest configuration
+      description: Returns the non-secret metadata for the project ingest token, the ingest path, and the exact EventBridge rule pattern to create in the monitored account. Never returns the token plaintext.
+      parameters:
+        - schema:
+            type: string
+            example: agent-hub
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Ingest configuration. `token` is null when none has been minted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraHealthIngestConfig"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is not initialized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags:
+        - Projects
+      summary: Mint or rotate the AWS Health ingest token
+      description: |-
+        Creates the project ingest token, or replaces an existing one. Rotation takes effect immediately — there is no grace window, so update the EventBridge connection in the same sitting. Rotating also clears a revocation, so it doubles as re-enable.
+
+        The plaintext is in this response body and nowhere else.
+      parameters:
+        - schema:
+            type: string
+            example: agent-hub
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "201":
+          description: Token minted. Copy the plaintext now.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraHealthIngestTokenMint"
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is not initialized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags:
+        - Projects
+      summary: Revoke the AWS Health ingest token
+      description: Disables ingest without destroying the audit trail — the row is kept with `revokedAt` set, and subsequent deliveries are rejected with 401. Idempotent.
+      parameters:
+        - schema:
+            type: string
+            example: agent-hub
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: "`revoked` is false when the token was already revoked or never existed."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked:
+                    type: boolean
+                  token:
+                    $ref: "#/components/schemas/InfraHealthIngestTokenInfo"
+                required:
+                  - revoked
+                  - token
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is not initialized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/infra/monitoring-status:
     get:
       tags:
@@ -30943,7 +31574,7 @@ paths:
                             type: string
                           minItems: 1
                         description: Optional tag filter as tag key -> accepted values. Values within one key are ORed, keys are ANDed — EC2 filter semantics, with `*` and `?` wildcards. Omit or send null to match every resource the describe call returns.
-                        example: *a1
+                        example: *a2
                       enabled:
                         type: boolean
                         description: Defaults to true. A disabled scope is retained rather than deleted, so its inventory and metric history survive being switched back on.
@@ -31616,7 +32247,7 @@ paths:
         - Log Ingest
       summary: OTLP/HTTP logs ingest
       description: "OpenTelemetry OTLP/HTTP logs endpoint. Accepts `application/json` and binary `application/x-protobuf` `ExportLogsServiceRequest` bodies, each optionally gzip-compressed (`Content-Encoding: gzip` or a raw gzip-framed body). Requests are capped at 1 MiB on the wire; batches at 1,000 records; single records at 256 KiB. Rejected records are reported via `partialSuccess` — the HTTP status stays 200 so the source app is never blocked. Fields (severity, timestamps, resource, attributes, scope, trace_id, span_id) are preserved and redacted before persistence."
-      security: &a3
+      security: &a4
         - logIngestToken: []
       requestBody:
         content:
@@ -31679,7 +32310,7 @@ paths:
         - Log Ingest
       summary: Agent Hub JSON log batch ingest
       description: "Simple JSON batch endpoint mapped to the same canonical OTel LogRecord model. Body is `{ resource?, records: [...] }`, optionally gzip-compressed. Same 1 MiB request / 1,000-record batch / 256 KiB record caps, source-token auth, and pre-persistence redaction as the OTLP endpoint."
-      security: *a3
+      security: *a4
       requestBody:
         content:
           application/json:

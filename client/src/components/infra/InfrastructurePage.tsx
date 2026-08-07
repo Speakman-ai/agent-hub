@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Activity, BellRing, Boxes, Cloud, Gauge, Server } from 'lucide-react';
 import InfraScopeEditor from './InfraScopeEditor';
+import InfraHealthTimeline from './InfraHealthTimeline';
 import InfraSpendPanel from './InfraSpendPanel';
 import InfraQuotaHeadroomPanel from './InfraQuotaHeadroomPanel';
 import InfraResourceBrowser, { type InfraResourceWire } from './InfraResourceBrowser';
@@ -232,6 +233,11 @@ export default function InfrastructurePage({
               showToast={showToast}
               onScopesChange={handleScopesChange}
             />
+            {/* Above the spend panels on purpose: this is operational news AWS
+                pushed at us — a degraded control plane, a retiring volume —
+                which is the only thing on this tab that can be happening right
+                now. The money below it is never that urgent. */}
+            <InfraHealthTimeline projectId={projectId} showToast={showToast} />
             {/* Below the scope editor on purpose: that panel prices a decision
                 the operator is about to make, this one reports the bill that
                 decision lands on. */}

@@ -239,6 +239,99 @@ export const INFRA_ALERT_EVALUATOR_ACTOR = 'system:evaluator';
 export const MAX_INFRA_ALERT_LIST_LIMIT = 200;
 export const DEFAULT_INFRA_ALERT_LIST_LIMIT = 50;
 
+// ── AWS Health events (EventBridge ingest) ───────────────────────────────
+//
+// Health events reach the Hub by an EventBridge rule the OPERATOR creates in
+// their own account, targeting our ingest endpoint through an API destination.
+// We deliberately do not call the Health API (`DescribeEvents`): that API
+// requires Business Support+ and throws `SubscriptionRequiredException` on any
+// lesser plan, whereas EventBridge delivery of Health events is free to every
+// AWS customer. The Hub side is ingest-only — it creates nothing in the
+// monitored account, which also keeps INFRA-CRED's read-only posture intact.
+
+/**
+ * Categories AWS publishes on `detail.eventTypeCategory`.
+ *
+ * The Health API reference documents four but notes `investigation` "isn't
+ * supported at this time"; it is listed here so a future AWS rollout lands as
+ * a known value rather than an unmappable one.
+ */
+export const INFRA_HEALTH_EVENT_CATEGORIES = [
+  'issue',
+  'accountNotification',
+  'scheduledChange',
+  'investigation',
+] as const;
+export type InfraHealthEventCategory = (typeof INFRA_HEALTH_EVENT_CATEGORIES)[number];
+
+/** Lifecycle AWS publishes on `detail.statusCode`. */
+export const INFRA_HEALTH_EVENT_STATUSES = ['open', 'closed', 'upcoming'] as const;
+export type InfraHealthEventStatus = (typeof INFRA_HEALTH_EVENT_STATUSES)[number];
+
+/**
+ * Severity each category maps onto so Health events can reuse the INFRA-NOTIFY
+ * routing table, which is keyed by {@link InfraAlertSeverity}.
+ *
+ * A `closed` event is downgraded to `info` regardless of category by
+ * `healthEventSeverity()` — an issue AWS has already resolved is a timeline
+ * entry, not a page.
+ */
+export const INFRA_HEALTH_CATEGORY_SEVERITY: Readonly<
+  Record<InfraHealthEventCategory, InfraAlertSeverity>
+> = {
+  issue: 'critical',
+  investigation: 'warning',
+  scheduledChange: 'warning',
+  accountNotification: 'info',
+};
+
+/**
+ * `detail-type` values AWS sends under `source: aws.health`.
+ *
+ * Abuse events are a separate detail-type on the same source and are always
+ * treated as critical — they are account-security notices, not capacity news.
+ */
+export const INFRA_HEALTH_DETAIL_TYPE = 'AWS Health Event';
+export const INFRA_HEALTH_ABUSE_DETAIL_TYPE = 'AWS Health Abuse Event';
+
+/** `ahhealth_`-prefixed write-only ingest credential, mirroring `ahlog_`. */
+export const INFRA_HEALTH_TOKEN_PREFIX = 'ahhealth_';
+
+/**
+ * Path an operator's EventBridge API destination posts to.
+ *
+ * Lives here rather than in the ingest route module because the Admin-facing
+ * route hands it to the UI as setup material, and importing the ingest route
+ * for one string would drag its notification fan-out — and through it the main
+ * database — into every consumer.
+ */
+export const INFRA_HEALTH_INGEST_PATH = '/api/infra/health/ingest';
+
+/**
+ * Rows retained per project before the oldest are trimmed on insert.
+ *
+ * Health events are low-rate (a busy account sees a handful a day), but the
+ * table has no other bound: the retention reaper deliberately owns
+ * `infra_metric_points` and nothing else, so trimming happens at the one moment
+ * the row count is already being touched.
+ */
+export const INFRA_HEALTH_EVENT_HISTORY_LIMIT = 2000;
+
+/** Paging bounds for the Health event list. */
+export const MAX_INFRA_HEALTH_EVENT_LIST_LIMIT = 200;
+export const DEFAULT_INFRA_HEALTH_EVENT_LIST_LIMIT = 50;
+
+/**
+ * Longest `latestDescription` persisted. AWS caps an EventBridge message at
+ * 256 KB and a public event's description carries the full incident narrative;
+ * the timeline shows a summary, so storing the whole thing would bloat every
+ * list read for text nobody renders.
+ */
+export const MAX_INFRA_HEALTH_DESCRIPTION_CHARS = 4000;
+
+/** Affected entities persisted per event; the rest are counted, not stored. */
+export const MAX_INFRA_HEALTH_AFFECTED_ENTITIES = 50;
+
 /**
  * Table DDL for `infra.db`, kept separate from the index DDL below.
  *
@@ -781,6 +874,116 @@ export const INFRA_TABLES_SCHEMA = `
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (transition_key, recipient_email)
   );
+
+  -- Write-only credential an operator's EventBridge API destination presents
+  -- to the ingest route. Same storage model as log_sources' ahlog_ token and
+  -- api_keys: sha256 of a 256-bit random token, plus a non-secret prefix that
+  -- gives the lookup an index seek. Plaintext is returned once, at mint.
+  --
+  -- One row per project rather than per rule: an operator needs a rule in
+  -- every Region they care about (Health delivers per-Region, and global
+  -- events only to us-east-1), and making them mint a token per Region would
+  -- be friction with no security gain -- every rule reports into the same
+  -- project anyway. The delivering account is read from the event body, not
+  -- from the token.
+  CREATE TABLE IF NOT EXISTS infra_health_ingest_tokens (
+    project_id    TEXT PRIMARY KEY,
+    token_hash    TEXT NOT NULL,
+    token_prefix  TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    -- Set when the token is re-minted; the previous hash is overwritten, so
+    -- rotation is immediate rather than a grace window. An operator updates
+    -- the EventBridge connection in the same sitting.
+    rotated_at    INTEGER,
+    -- Revocation is a write-disable, not a delete: the resolve query requires
+    -- revoked_at IS NULL, which keeps the audit trail of when ingest stopped.
+    revoked_at    INTEGER,
+    -- Last successful token resolution. Lets the UI say "no events since you
+    -- created the rule" versus "the rule was never wired up".
+    last_used_at  INTEGER
+  );
+
+  -- One row per AWS Health COMMUNICATION, not per event. EventBridge delivery
+  -- is at-least-once and AWS additionally fans account-specific events out to
+  -- a backup Region, so duplicates are the normal case rather than an edge
+  -- case. AWS's own guidance is to "deduplicate AWS Health events using
+  -- eventARN and communicationId"; the unique constraint below is that
+  -- guidance, widened by two columns for cases the guidance does not cover:
+  --
+  --   * affected_account -- the docs state "an event ARN isn't unique to a
+  --     specific AWS account or Region", so under organizational view the same
+  --     ARN legitimately arrives once per member account. Normalized to the
+  --     envelope account when absent, never NULL, because SQLite treats NULLs
+  --     as distinct and a NULL here would silently reopen the dedupe hole.
+  --   * page -- AWS documents the page number as already folded into
+  --     communicationId ("12345678910-1") in one place and as shared across
+  --     pages in another. Including it is correct under either reading: it is
+  --     redundant if the suffix is present, and load-bearing if it is not.
+  --
+  -- Successive updates to the same incident share eventArn and carry a new
+  -- communicationId, so history accumulates as rows and the timeline collapses
+  -- to the newest row per (event_arn, affected_account) on read.
+  CREATE TABLE IF NOT EXISTS infra_health_events (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT NOT NULL,
+    event_arn          TEXT NOT NULL,
+    communication_id   TEXT NOT NULL,
+    -- Account the event is ABOUT (detail.affectedAccount), defaulted to the
+    -- delivering account. Distinct from account_id under a delegated admin.
+    affected_account   TEXT NOT NULL,
+    -- Account the event was DELIVERED to (envelope "account").
+    account_id         TEXT NOT NULL,
+    -- Envelope "region" is where the notification landed, which under the
+    -- backup-Region fan-out is often NOT the impacted Region. event_region
+    -- (detail.eventRegion) is the one an operator cares about; both are kept
+    -- so a backup duplicate is explicable rather than looking like a bug.
+    delivery_region    TEXT NOT NULL,
+    event_region       TEXT,
+    -- "AWS Health Event" or "AWS Health Abuse Event".
+    detail_type        TEXT NOT NULL,
+    service            TEXT,
+    event_type_code    TEXT NOT NULL,
+    -- No CHECK constraint, deliberately: AWS documents "investigation" as not
+    -- yet emitted and has added categories before. The reconciler is
+    -- additive-only and cannot rewrite a constraint, so an unknown category
+    -- must be storable -- the parser maps it to a severity, it does not reject.
+    event_type_category TEXT NOT NULL,
+    -- "PUBLIC" or "ACCOUNT_SPECIFIC". ("NONE" is an API-only artifact and is
+    -- never delivered over EventBridge.)
+    event_scope_code   TEXT,
+    status_code        TEXT,
+    -- Severity this event resolves to for INFRA-NOTIFY routing. Persisted
+    -- rather than recomputed so a later mapping change cannot rewrite the
+    -- severity a notification was actually delivered under.
+    severity           TEXT NOT NULL CHECK (severity IN ('critical', 'warning', 'info')),
+    -- AWS sends these as RFC-1123 strings ("Thu, 27 Aug 2026 13:19:03 GMT"),
+    -- not ISO-8601; the parser normalizes to ms epoch. NULL when absent or
+    -- unparseable -- lastUpdatedTime is documented Required but is missing
+    -- from several of AWS's own published examples.
+    start_time_ms      INTEGER,
+    end_time_ms        INTEGER,
+    last_updated_ms    INTEGER,
+    -- en_US latestDescription, truncated. Public events carry only the latest
+    -- update here, not the full history.
+    description        TEXT,
+    affected_entities_json TEXT,
+    -- Total entities AWS reported, which can exceed the number stored.
+    affected_entity_count  INTEGER NOT NULL DEFAULT 0,
+    -- detail.backupEvent, delivered as the STRING "true"/"false".
+    backup_event       INTEGER NOT NULL DEFAULT 0 CHECK (backup_event IN (0, 1)),
+    page               INTEGER NOT NULL DEFAULT 1,
+    total_pages        INTEGER NOT NULL DEFAULT 1,
+    -- Envelope "time", i.e. when EventBridge emitted it.
+    event_time_ms      INTEGER,
+    received_at_ms     INTEGER NOT NULL,
+    -- Null until the INFRA-NOTIFY fan-out has been attempted, mirroring
+    -- infra_alert_transitions.notification_delivered_at_ms: it makes an
+    -- ingested event recoverable after a crash between the write and the
+    -- notification, and it is what stops a re-delivered duplicate from
+    -- notifying twice (the duplicate never inserts, so it is never pending).
+    notification_delivered_at_ms INTEGER,
+    UNIQUE (project_id, event_arn, communication_id, affected_account, page)
+  );
 `;
 
 /**
@@ -897,6 +1100,23 @@ export const INFRA_INDEXES_SCHEMA = `
     ON infra_alert_outbox(status, next_attempt_at, created_at);
   CREATE INDEX IF NOT EXISTS idx_infra_alert_outbox_project
     ON infra_alert_outbox(project_id, created_at DESC);
+
+  -- The prefix seek that fronts every token resolution, so a forged token is
+  -- rejected without scanning. Not unique: a revoked row and its replacement
+  -- can briefly share a prefix.
+  CREATE INDEX IF NOT EXISTS idx_infra_health_tokens_prefix
+    ON infra_health_ingest_tokens(token_prefix);
+
+  -- The timeline read: newest communication first, per project.
+  CREATE INDEX IF NOT EXISTS idx_infra_health_events_project
+    ON infra_health_events(project_id, received_at_ms DESC, id DESC);
+  -- Collapsing history to the current state of each incident, and the
+  -- oldest-first delete the per-project trim issues, from one index.
+  CREATE INDEX IF NOT EXISTS idx_infra_health_events_arn
+    ON infra_health_events(project_id, event_arn, affected_account, received_at_ms DESC);
+  -- Crash-recovery sweep over events whose notification never fanned out.
+  CREATE INDEX IF NOT EXISTS idx_infra_health_events_pending
+    ON infra_health_events(notification_delivered_at_ms, id);
 `;
 
 /**

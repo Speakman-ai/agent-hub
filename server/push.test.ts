@@ -8,6 +8,7 @@ import {
   reviewAssignedPush,
   prMergedPush,
   infraAlertPush,
+  infraHealthEventPush,
   parseEnabledEvents,
   tokenAcceptsEvent,
   buildMessages,
@@ -83,6 +84,24 @@ describe('push formatters', () => {
     expect(prMergedPush({ cardTitle: 'X', prNumber: 12, mergedBy: 'dev' }).body).toBe(
       'PR #12 merged by dev: "X"',
     );
+  });
+
+  it('formats AWS Health events, degrading when fields are missing', () => {
+    expect(
+      infraHealthEventPush({
+        severity: 'warning',
+        headline: 'EC2 AWS_EC2_INSTANCE_RETIREMENT_SCHEDULED (us-east-1)',
+        statusCode: 'upcoming',
+        eventTypeCategory: 'scheduledChange',
+      }),
+    ).toEqual({
+      title: 'Warning AWS Health event',
+      body: 'EC2 AWS_EC2_INSTANCE_RETIREMENT_SCHEDULED (us-east-1) · upcoming (scheduledChange)',
+    });
+    expect(infraHealthEventPush({})).toEqual({
+      title: 'AWS AWS Health event',
+      body: 'AWS Health event',
+    });
   });
 
   it('formats infrastructure alert transitions without account data', () => {
@@ -372,6 +391,35 @@ describe('mapBroadcastToPush', () => {
         suppressPush: true,
       }),
     ).toBeNull();
+  });
+
+  it('maps AWS Health events onto the infra_alert push type', () => {
+    // Reusing the existing push event type is deliberate (decision
+    // INFRA-NOTIFY): per-token opt-in then works with no mobile settings
+    // change. The `data.type` discriminator is what keeps the two apart.
+    const mapped = mapBroadcastToPush({
+      type: 'infra_health_event',
+      projectId: 'p1',
+      healthEventId: 'evt-1',
+      eventArn: 'arn:aws:health:us-east-1::event/EC2/AWS_EC2_OPERATIONAL_ISSUE/abc',
+      severity: 'critical',
+      headline: 'EC2 AWS_EC2_OPERATIONAL_ISSUE (us-east-1)',
+      statusCode: 'open',
+      eventTypeCategory: 'issue',
+    });
+    expect(mapped?.event).toBe('infra_alert');
+    expect(mapped?.payload.title).toBe('Critical AWS Health event');
+    expect(mapped?.payload.body).toContain('EC2 AWS_EC2_OPERATIONAL_ISSUE');
+    expect(mapped?.payload.data).toMatchObject({
+      projectId: 'p1',
+      healthEventId: 'evt-1',
+      severity: 'critical',
+      type: 'infra_health_event',
+    });
+  });
+
+  it('honors push suppression for AWS Health events', () => {
+    expect(mapBroadcastToPush({ type: 'infra_health_event', suppressPush: true })).toBeNull();
   });
 
   it('maps finalize_run_completed to ready_to_push and pushed, forwarding agentId', () => {

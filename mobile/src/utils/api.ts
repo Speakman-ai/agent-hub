@@ -343,6 +343,19 @@ export const api = {
     // tier and a read-through cache would charge a cent per screen open.
     getInfraSpend: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/spend${infraQuery(params)}`),
     getInfraQuotas: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/quotas${infraQuery(params)}`),
+    // AWS Health event timeline for the Overview tab. Ingest-only: the Hub never
+    // calls AWS on this path, it reads what an operator-owned EventBridge rule
+    // pushed at `/api/infra/health/ingest`. `ingestConfigured` is what lets the
+    // timeline tell "the rule was never wired up" apart from "genuinely quiet".
+    getInfraHealthEvents: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/health-events${infraQuery(params)}`),
+    // Non-secret metadata about the ingest credential, plus the exact ingest
+    // path and EventBridge pattern the operator pastes into their own account.
+    getInfraHealthIngest: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/health-ingest`),
+    // Mints (or rotates) the ingest credential. This is the ONLY response that
+    // ever carries the plaintext token — it cannot be read back afterwards, so a
+    // caller that drops it has to rotate.
+    createInfraHealthIngestToken: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/health-ingest`, { method: 'POST' }),
+    revokeInfraHealthIngestToken: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/health-ingest`, { method: 'DELETE' }),
     // Opts the project in or out of the billed Cost Explorer poll. Returns the
     // same spend body, so the screen repaints from the response.
     updateInfraSpendConfig: (projectId: any, data: { enabled: boolean }) => fetchJSON(`/projects/${projectId}/infra/spend/config`, {

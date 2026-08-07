@@ -392,6 +392,121 @@ describe('infra_collect_runs', () => {
   });
 });
 
+describe('infra_health_events', () => {
+  function insertHealthEvent(over: Partial<Record<string, string | number | null>> = {}): void {
+    const row = {
+      id: 'he-1',
+      project_id: 'proj-a',
+      event_arn: 'arn:aws:health:us-east-1::event/EC2/AWS_EC2_OPERATIONAL_ISSUE/abc',
+      communication_id: 'comm-1',
+      affected_account: '111122223333',
+      account_id: '111122223333',
+      delivery_region: 'us-east-1',
+      event_region: 'us-east-1',
+      detail_type: 'AWS Health Event',
+      service: 'EC2',
+      event_type_code: 'AWS_EC2_OPERATIONAL_ISSUE',
+      event_type_category: 'issue',
+      event_scope_code: 'PUBLIC',
+      status_code: 'open',
+      severity: 'critical',
+      start_time_ms: 1000,
+      end_time_ms: null,
+      last_updated_ms: null,
+      description: 'trouble',
+      affected_entities_json: null,
+      affected_entity_count: 0,
+      backup_event: 0,
+      page: 1,
+      total_pages: 1,
+      event_time_ms: null,
+      received_at_ms: 2000,
+      notification_delivered_at_ms: null,
+      ...over,
+    };
+    db.prepare(
+      `INSERT INTO infra_health_events (
+         id, project_id, event_arn, communication_id, affected_account, account_id,
+         delivery_region, event_region, detail_type, service, event_type_code,
+         event_type_category, event_scope_code, status_code, severity,
+         start_time_ms, end_time_ms, last_updated_ms, description,
+         affected_entities_json, affected_entity_count, backup_event,
+         page, total_pages, event_time_ms, received_at_ms, notification_delivered_at_ms
+       ) VALUES (
+         @id, @project_id, @event_arn, @communication_id, @affected_account, @account_id,
+         @delivery_region, @event_region, @detail_type, @service, @event_type_code,
+         @event_type_category, @event_scope_code, @status_code, @severity,
+         @start_time_ms, @end_time_ms, @last_updated_ms, @description,
+         @affected_entities_json, @affected_entity_count, @backup_event,
+         @page, @total_pages, @event_time_ms, @received_at_ms, @notification_delivered_at_ms
+       )`,
+    ).run(row);
+  }
+
+  it('has the expected columns', () => {
+    expect(colNames('infra_health_events')).toContain('communication_id');
+    expect(colNames('infra_health_events')).toContain('affected_account');
+    expect(colNames('infra_health_events')).toContain('notification_delivered_at_ms');
+  });
+
+  it('rejects a duplicate (project, arn, communication, account, page)', () => {
+    // This constraint IS the at-least-once dedupe guarantee.
+    insertHealthEvent();
+    expect(() => insertHealthEvent({ id: 'he-2' })).toThrow(/UNIQUE/i);
+  });
+
+  it('allows the same arn+communication for a different affected account', () => {
+    insertHealthEvent();
+    expect(() => insertHealthEvent({ id: 'he-2', affected_account: '999988887777' })).not.toThrow();
+  });
+
+  it('allows separate pages of one paginated event', () => {
+    insertHealthEvent();
+    expect(() => insertHealthEvent({ id: 'he-2', page: 2, total_pages: 2 })).not.toThrow();
+  });
+
+  it('constrains severity to the routing vocabulary', () => {
+    expect(() => insertHealthEvent({ id: 'he-x', severity: 'bogus' })).toThrow(/CHECK/i);
+  });
+
+  it('does NOT constrain event_type_category, so a new AWS category is storable', () => {
+    expect(() =>
+      insertHealthEvent({ id: 'he-y', communication_id: 'c2', event_type_category: 'brandNew' }),
+    ).not.toThrow();
+  });
+
+  it('indexes the timeline, incident-collapse and pending-notification reads', () => {
+    expect(indexNames('infra_health_events').sort()).toEqual([
+      'idx_infra_health_events_arn',
+      'idx_infra_health_events_pending',
+      'idx_infra_health_events_project',
+    ]);
+  });
+});
+
+describe('infra_health_ingest_tokens', () => {
+  it('is keyed by project and stores only a hash plus a prefix', () => {
+    const cols = colNames('infra_health_ingest_tokens');
+    expect(cols).toContain('token_hash');
+    expect(cols).toContain('token_prefix');
+    expect(cols).not.toContain('token');
+    db.prepare(
+      `INSERT INTO infra_health_ingest_tokens
+         (project_id, token_hash, token_prefix, created_at)
+       VALUES ('proj-a', 'hash', 'ahhealth_abc', 1)`,
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO infra_health_ingest_tokens
+             (project_id, token_hash, token_prefix, created_at)
+           VALUES ('proj-a', 'hash2', 'ahhealth_def', 2)`,
+        )
+        .run(),
+    ).toThrow(/UNIQUE|PRIMARY/i);
+  });
+});
+
 describe('migration idempotency', () => {
   it('re-executing the DDL preserves existing rows and throws nothing', () => {
     insertScope();

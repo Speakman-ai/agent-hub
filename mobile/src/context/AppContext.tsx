@@ -133,6 +133,13 @@ export function AppProvider({ children }: any) {
     // `resourceKey`, because it fans out to every client of the project while
     // the alert routes themselves are Admin-gated.
     const [lastInfraAlertEvent, setLastInfraAlertEvent] = useState<any>(null);
+    // Last `infra_health_event` WS event. The AWS Health timeline on the
+    // Infrastructure Overview consumes this to refetch. Kept separate from
+    // `lastInfraAlertEvent` because they are opposite kinds of news: an alert is
+    // something the Hub measured and decided, a health event is something AWS
+    // pushed at us about its own estate, and a single "infra changed" signal
+    // would make each surface refetch on the other's traffic.
+    const [lastInfraHealthEvent, setLastInfraHealthEvent] = useState<any>(null);
     // Last `user_todo_update` WS event — drives live TodosScreen refetches
     // without a poll. RN has no DOM event bus, so (mirroring the web
     // window CustomEvent) we surface the last event through context state and
@@ -910,6 +917,24 @@ export function AppProvider({ children }: any) {
                     // Repeat transitions can carry an identical payload; bump so an
                     // effect keyed on this object still re-runs (same reason
                     // `lastDeploymentEvent` carries one).
+                    bump: Date.now(),
+                });
+                break;
+            case 'infra_health_event':
+                setLastInfraHealthEvent({
+                    type: data.type,
+                    projectId: data.projectId,
+                    healthEventId: data.healthEventId,
+                    eventArn: data.eventArn,
+                    severity: data.severity,
+                    service: data.service,
+                    region: data.region,
+                    eventTypeCode: data.eventTypeCode,
+                    statusCode: data.statusCode,
+                    headline: data.headline,
+                    // AWS re-publishes an event as it progresses, and the two
+                    // copies can be byte-identical here; bump so an effect keyed
+                    // on this object still re-runs.
                     bump: Date.now(),
                 });
                 break;
@@ -2173,6 +2198,8 @@ export function AppProvider({ children }: any) {
         lastReleaseNotificationEvent,
         // Infrastructure (alert state transitions)
         lastInfraAlertEvent,
+        // Infrastructure (AWS Health events pushed in by an operator's rule)
+        lastInfraHealthEvent,
         // Cross-project personal todos (live refetch signal)
         lastUserTodoEvent,
         // Threads

@@ -2898,6 +2898,16 @@ export default function App({ initialView }: any = {}) {
           window.dispatchEvent(new CustomEvent('wiki_delete', { detail: data }));
           break;
 
+        // An AWS Health event arrived at the ingest route (server/infra
+        // health-event-notifications.ts). Bridged to a window CustomEvent so
+        // <InfraHealthTimeline /> refreshes the moment AWS pushes an outage
+        // rather than on its next poll, without subscribing to the WS directly.
+        // The broadcast fans out to every client, so the listener filters by
+        // projectId before refetching.
+        case 'infra_health_event':
+          window.dispatchEvent(new CustomEvent('infra_health_event', { detail: data }));
+          break;
+
         // Finalize reviewer-dispatch fires one of these per row after the
         // COMMIT (see server/finalize/reviewer-dispatch.ts). Bridged to a
         // window CustomEvent so `<ReviewerThreadsPanel />` can refetch

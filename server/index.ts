@@ -142,6 +142,8 @@ import createProjectAwsRoutes from './routes/project-aws.js';
 import createInfraRoutes from './routes/infra.js';
 import createInfraAlertRoutes from './routes/infra-alerts.js';
 import createInfraAlertRoutingRoutes from './routes/infra-alert-routing.js';
+import createInfraHealthRoutes from './routes/infra-health.js';
+import createInfraHealthIngestRoutes from './routes/infra-health-ingest.js';
 import createDevServerWizardRoutes from './routes/dev-server-wizard.js';
 import createRumWizardRoutes from './routes/rum-wizard.js';
 import createLogsWizardRoutes from './routes/logs-wizard.js';
@@ -290,6 +292,10 @@ import {
   runInfraAlertOutboxWorker,
   INFRA_ALERT_OUTBOX_WORKER_CRON,
 } from './infra/alert-outbox-worker.js';
+import {
+  recoverPendingInfraHealthNotifications,
+  INFRA_HEALTH_RECOVERY_CRON,
+} from './infra/health-event-recovery.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
@@ -686,6 +692,10 @@ const REPLAY_INGEST_PATH = /^\/api\/replays(?:\/[A-Za-z0-9._-]+\/events)?\/?$/;
 // Skip it for those POSTs. Trailing-slash-tolerant to match the route's
 // non-strict routing and the public-path check in auth.ts.
 const LOG_INGEST_PATH = /^\/api\/(?:otel\/v1\/logs|logs\/ingest)\/?$/;
+// Public AWS Health ingest. The route mounts its own `express.json` with a
+// 1 MiB cap; letting the 20 MB global parser run first would allow an
+// unauthenticated caller to allocate 20 MB before the token is even checked.
+const INFRA_HEALTH_INGEST_PATH_RE = /^\/api\/infra\/health\/ingest\/?$/;
 const globalJsonParser = express.json({
   limit: '20mb',
   verify: (req: Request, _res, buf: Buffer) => {
@@ -697,7 +707,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     req.method === 'POST' &&
     (ARTIFACT_UPLOAD_PATH.test(req.path) ||
       REPLAY_INGEST_PATH.test(req.path) ||
-      LOG_INGEST_PATH.test(req.path))
+      LOG_INGEST_PATH.test(req.path) ||
+      INFRA_HEALTH_INGEST_PATH_RE.test(req.path))
   ) {
     return next();
   }
@@ -1403,6 +1414,21 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     },
     { name: 'infra-alert-outbox-worker', noOverlap: true },
   );
+
+  // AWS Health ingest commits the event, answers EventBridge inside its
+  // 5-second timeout, and fans out afterwards. This sweep re-runs the fan-out
+  // for anything that crashed or failed in that window.
+  const sweepInfraHealth = (): void => {
+    recoverPendingInfraHealthNotifications({
+      projectIds: getProjects().map((project) => project.id),
+      broadcast,
+    });
+  };
+  sweepInfraHealth();
+  cron.schedule(INFRA_HEALTH_RECOVERY_CRON, sweepInfraHealth, {
+    name: 'infra-health-notification-recovery',
+    noOverlap: true,
+  });
 }
 
 /** Full route wiring; exported so integration tests can `vi.spyOn(routeDeps, 'broadcast')`. */
@@ -1532,6 +1558,10 @@ app.use(createLogIssueRoutes(routeDeps));
 // Write-only customer-log ingest (OTLP/HTTP + Agent Hub JSON batch). Public
 // (see auth.ts PUBLIC_METHOD_PATTERNS); self-authenticate from an `ahlog_` token.
 app.use(createLogIngestRoutes(routeDeps));
+// Write-only AWS Health ingest, targeted by an EventBridge rule in the
+// operator's own account. Public on the same terms; self-authenticates from an
+// `ahhealth_` token.
+app.use(createInfraHealthIngestRoutes(routeDeps));
 app.use(createHeartbeatRoutes(routeDeps));
 app.use(createCronRoutes(routeDeps));
 app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));
@@ -1565,6 +1595,7 @@ app.use(createProjectAwsRoutes(routeDeps));
 app.use(createInfraRoutes(routeDeps));
 app.use(createInfraAlertRoutes(routeDeps));
 app.use(createInfraAlertRoutingRoutes(routeDeps));
+app.use(createInfraHealthRoutes(routeDeps));
 app.use(createDevServerWizardRoutes(routeDeps));
 app.use(createRumWizardRoutes(routeDeps));
 app.use(createLogsWizardRoutes(routeDeps));
