@@ -38,7 +38,12 @@ import {
   type DevServerPortMapEntry,
 } from '../dev-server-config.js';
 import { applyPreviewDevInstallDefaults } from './preview-dev-install-env.js';
-import type { SessionEnv, SessionEnvExit, SessionEnvProcess } from '../session-env/session-env.js';
+import type {
+  SessionEnv,
+  SessionEnvExit,
+  SessionEnvPortMapping,
+  SessionEnvProcess,
+} from '../session-env/session-env.js';
 import type { SessionEnvPortRouting } from '../session-env/container-routing.js';
 import { isLoopbackHost } from '../loopback-host.js';
 import { createSessionEnv } from '../session-env/select-session-env.js';
@@ -289,11 +294,23 @@ export interface BuildDevServerSpawnEnvResult {
  * validator already rejects user-supplied PORT). `envPort` is the port
  * the process must bind inside its env (host adapter: the allocated
  * host port; sysbox: the internal port).
+ *
+ * `upstreamHost` is the address the Hub's proxy will actually connect over,
+ * published as `AGENT_HUB_PREVIEW_HEALTH_HOST` so a dev server that gates on
+ * the `Host` header allows it. Under container-IP routing this is the session
+ * container's address, which is assigned at create time and therefore cannot be
+ * baked into any config: without it a Vite dev server allowlists only the
+ * static default and answers the proxy with its blocked-host 403 — *after* the
+ * readiness probe passed, because the probe sends `Host: localhost`. The result
+ * is a preview that reports ready and shows an error page, which reads as a bug
+ * in the app. A value pinned in `devServer.env` still wins; that is an operator
+ * deliberately naming the host.
  */
 export function buildDevServerSpawnEnv(opts: {
   config: DevServerConfig;
   projectSecrets: Record<string, string>;
   envPort: number;
+  upstreamHost?: string | null;
 }): BuildDevServerSpawnEnvResult {
   const env: Record<string, string> = { ...opts.config.env };
   const missingSecretKeys: string[] = [];
@@ -309,6 +326,10 @@ export function buildDevServerSpawnEnv(opts: {
   // defaulting NODE_ENV here keeps the Hub's NODE_ENV=production out of the
   // dev server's `npm ci` (which would otherwise omit devDependencies).
   applyPreviewDevInstallDefaults(env, (key) => key in opts.config.env);
+  const upstreamHost = opts.upstreamHost?.trim();
+  if (upstreamHost && !('AGENT_HUB_PREVIEW_HEALTH_HOST' in opts.config.env)) {
+    env.AGENT_HUB_PREVIEW_HEALTH_HOST = upstreamHost;
+  }
   env.PORT = String(opts.envPort);
   return { env, missingSecretKeys };
 }
@@ -677,6 +698,19 @@ export class DevServerRuntime {
     return isLoopbackHost(host) ? null : host;
   }
 
+  /**
+   * The dial host worth telling the dev server about, or null.
+   *
+   * Same rule as {@link getSessionUpstreamHost}, applied to a mapping in hand
+   * during startup rather than to a row that is not `ready` yet — the allowlist
+   * has to be in the spawn env before the process starts, which is strictly
+   * before the proxy can ask where to dial.
+   */
+  private upstreamHostForDialHost(dialHost: string | null): string | null {
+    if (!dialHost || isLoopbackHost(dialHost)) return null;
+    return dialHost;
+  }
+
   /** All port mappings for a group — primary first. */
   getPorts(devServerId: string): DevServerPortRow[] {
     const rows = this.db
@@ -925,6 +959,22 @@ export class DevServerRuntime {
       const mappings = await env.mapPortsOut(orderedInternalPorts);
       primaryEnvPort = mappings[0].envPort;
       primaryDialHost = mappings[0].host;
+      // The env decides where a port actually answers, so it — not the
+      // reservation — is the authority. They diverge whenever the env was not
+      // created by this call: a session-owned env comes from the manager without
+      // the pooled allocator, so a published-ports adapter falls back to
+      // identity mapping while the reserved row still holds a pool number. The
+      // row feeds the health probe, the proxy, and the client URL, so leaving it
+      // stale means dialing a port nothing listens on — every preview times out
+      // or 502s, with the app itself perfectly healthy.
+      this.adoptEnvPortMappings(reserved, orderedInternalPorts, mappings, sessionId);
+      record.primaryHostPort = primaryEntry.hostPort;
+      record.primaryUrl = this.portClientUrl({
+        sessionId,
+        hostPort: primaryEntry.hostPort,
+        internalPort: primaryEntry.internalPort,
+        primary: true,
+      });
     } catch (err) {
       await this.rollbackStart(groupId, record);
       throw err;
@@ -947,6 +997,10 @@ export class DevServerRuntime {
       config: cfg,
       projectSecrets,
       envPort: primaryEnvPort,
+      // Only when it is the env's own address. A loopback mapping means the
+      // Hub reaches the process over the gateway translation it already has
+      // configured, so overriding it here would name the wrong side.
+      upstreamHost: this.upstreamHostForDialHost(primaryDialHost),
     });
     if (missingSecretKeys.length > 0) {
       this.logger.warn(
@@ -1121,6 +1175,53 @@ export class DevServerRuntime {
       }
     }
     return reserved;
+  }
+
+  /**
+   * Rewrites reservations that the env did not honor, in place and in the row.
+   *
+   * A reservation is a request; `mapPortsOut` is the answer. An adapter is free
+   * to return something else — the identity fallback when it has no allocator is
+   * the case that happens in production — and everything downstream reads the
+   * row, so the row has to carry the answer.
+   *
+   * A rewrite can collide with another group's host-port reservation, in which
+   * case the UPDATE throws on the partial unique index. That is the correct
+   * outcome: two live previews cannot share one host port, and the caller
+   * rolls the start back rather than publishing a URL that serves the other
+   * session's app.
+   */
+  private adoptEnvPortMappings(
+    reserved: ReservedEntry[],
+    orderedInternalPorts: number[],
+    mappings: SessionEnvPortMapping[],
+    sessionId: string,
+  ): void {
+    for (let i = 0; i < orderedInternalPorts.length; i++) {
+      // `hostPort` is the port the Hub dials, which is the only one the row
+      // means. Not `envPort` — a publishing adapter translates, so the process
+      // binds its internal port while the Hub reaches it on another, and taking
+      // that one would break the case this is meant to protect.
+      const dialPort = mappings[i]?.hostPort;
+      if (dialPort === undefined) continue;
+      const entry = reserved.find((r) => r.internalPort === orderedInternalPorts[i]);
+      if (!entry || entry.hostPort === dialPort) continue;
+
+      const url = this.portClientUrl({
+        sessionId,
+        hostPort: dialPort,
+        internalPort: entry.internalPort,
+        primary: entry.primary,
+      });
+      this.db
+        .prepare(`UPDATE worktree_preview_processes SET port = ?, url = ? WHERE id = ?`)
+        .run(dialPort, url, entry.rowId);
+      this.logger.warn(
+        `[dev-server] ${entry.name}: env dials internal ${entry.internalPort} on ${dialPort}, ` +
+          `not the reserved ${entry.hostPort}; following the env`,
+      );
+      entry.hostPort = dialPort;
+    }
   }
 
   /**

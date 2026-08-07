@@ -363,6 +363,54 @@ describe('DevServerRuntime helpers', () => {
     expect(result.env.NODE_ENV).toBe('development');
   });
 
+  describe('upstream host for the dev server allowlist', () => {
+    const config = {
+      startCommand: 'npm run dev',
+      env: {} as Record<string, string>,
+      secretKeys: [],
+      portMap: [],
+      aptPackages: [],
+    };
+
+    it('names the host the proxy will send, so a host-gated dev server allows it', () => {
+      // A container address is assigned at create time, so it cannot be in any
+      // committed config. Vite rejects an unknown Host with a 403 — after the
+      // readiness probe passed, because the probe sends `Host: localhost`. The
+      // preview then reports ready and shows an error page.
+      const result = buildDevServerSpawnEnv({
+        config,
+        projectSecrets: {},
+        envPort: 4200,
+        upstreamHost: '172.17.0.9',
+      });
+      expect(result.env.AGENT_HUB_PREVIEW_HEALTH_HOST).toBe('172.17.0.9');
+    });
+
+    it('leaves a host pinned in devServer.env alone', () => {
+      const result = buildDevServerSpawnEnv({
+        config: { ...config, env: { AGENT_HUB_PREVIEW_HEALTH_HOST: 'gateway.internal' } },
+        projectSecrets: {},
+        envPort: 4200,
+        upstreamHost: '172.17.0.9',
+      });
+      expect(result.env.AGENT_HUB_PREVIEW_HEALTH_HOST).toBe('gateway.internal');
+    });
+
+    it('says nothing when there is no host to name', () => {
+      // Loopback mappings resolve through the Hub-wide default, which knows
+      // about gateway translation; naming a side here would override it.
+      for (const upstreamHost of [null, undefined, '  ']) {
+        const result = buildDevServerSpawnEnv({
+          config,
+          projectSecrets: {},
+          envPort: 4200,
+          upstreamHost,
+        });
+        expect(result.env).not.toHaveProperty('AGENT_HUB_PREVIEW_HEALTH_HOST');
+      }
+    });
+  });
+
   it('normalizes a primary port and disambiguates duplicate labels', () => {
     const entries = resolveDevServerPortEntries({
       startCommand: 'npm run dev',
@@ -604,6 +652,36 @@ describe('DevServerRuntime lifecycle', () => {
       expect(h.runtime.getSessionUpstreamHost('session-shared')).toBe('172.17.0.9');
     });
 
+    it('follows the env mapping when the session env did not honor the reservation', async () => {
+      // The production shape of this: `SessionEnvManager` creates the session's
+      // env without the preview's pooled allocator, so a publishing adapter
+      // falls back to mapping each port to itself. The reservation said 4500 and
+      // the app is reachable on 4200 — and the row is what the readiness probe,
+      // the proxy, and the client URL all read, so leaving it at 4500 means
+      // every preview on this path times out against a dead port.
+      const shared = new FakeSessionEnv('session-shared', (internalPort) => internalPort);
+      const h = makeHarness({ resolveSharedEnv: async () => shared });
+
+      const started = await h.runtime.start(
+        'session-shared',
+        makeProject({ portMap: [{ internalPort: 4200, label: 'Frontend', primary: true }] }),
+        '/worktree',
+      );
+      await flushMicrotasks();
+
+      expect(started.port).toBe(4200);
+      const row = h.db.prepare(`SELECT port, url FROM worktree_preview_processes`).get() as {
+        port: number;
+        url: string;
+      };
+      expect(row.port).toBe(4200);
+      expect(row.url).toContain('/preview/proxy/4200');
+      // The probe followed the same number, rather than the reserved 4500.
+      const probed = h.fetch.mock.calls.map((c) => String(c[0])).join(' ');
+      expect(probed).toContain(':4200');
+      expect(probed).not.toContain(':4500');
+    });
+
     it('reports no override for a session with no live env', () => {
       const h = makeHarness();
       expect(h.runtime.getSessionUpstreamHost('never-started')).toBeNull();
@@ -653,6 +731,20 @@ describe('DevServerRuntime lifecycle', () => {
         .prepare(`SELECT port, internal_port, dial_scope FROM worktree_preview_processes`)
         .get() as { port: number; internal_port: number; dial_scope: string };
       expect(row).toEqual({ port: 4200, internal_port: 4200, dial_scope: 'env' });
+    });
+
+    it('tells the dev server which Host the proxy will send', async () => {
+      // Otherwise a Vite-based dev server allowlists only the static default
+      // and answers the proxied iframe request — and the HMR upgrade — with its
+      // blocked-host 403, while the readiness probe (Host: localhost) passes.
+      const shared = containerEnv('session-c', '172.17.0.9');
+      const h = makeHarness({ resolveSharedEnv: async () => shared });
+
+      await h.runtime.start('session-c', project(), '/worktree');
+
+      expect(shared.spawnCalls[0].opts.env).toMatchObject({
+        AGENT_HUB_PREVIEW_HEALTH_HOST: '172.17.0.9',
+      });
     });
 
     it('probes the container address, not the Hub-wide health host', async () => {

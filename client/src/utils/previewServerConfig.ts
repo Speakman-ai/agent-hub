@@ -22,10 +22,16 @@ const DEFAULT_API_PORT = 3051;
 export const DEFAULT_PREVIEW_CLIENT_PORT = 3050;
 
 /**
- * The fixed internal hostname the Hub reaches the dev server over — both the
+ * The internal hostname the Hub reaches the dev server over — both the
  * readiness probe and the preview proxy connect via
- * `AGENT_HUB_PREVIEW_HEALTH_HOST` (default `host.docker.internal` in the
- * DinD deployment), never the public subdomain. Vite MUST allow it.
+ * `AGENT_HUB_PREVIEW_HEALTH_HOST`, never the public subdomain. Vite MUST allow
+ * it.
+ *
+ * Not necessarily fixed: under container-IP routing the dev-server runtime
+ * injects the session container's own address, which is assigned when the
+ * container is created and so cannot be pinned in any committed config. The
+ * default covers the published-ports deployment, where the Hub goes through the
+ * docker-host gateway.
  */
 export function resolvePreviewUpstreamAllowedHost(env: any) {
   return (env.AGENT_HUB_PREVIEW_HEALTH_HOST || 'host.docker.internal').trim();

@@ -75,6 +75,18 @@ export class SessionEnvManager {
   private readonly idleTtlMs: number;
   private readonly logger: NonNullable<SessionEnvManagerDeps['logger']>;
   private readonly entries = new Map<string, Entry>();
+  /**
+   * Teardowns still in flight, keyed by session.
+   *
+   * A session's container name is derived from its id, so the old container and
+   * its replacement compete for one name. `dispose` drops the map entry as soon
+   * as it starts — it has to, or a caller would be handed an env that is already
+   * going away — which leaves a window where `ensure` sees nothing and starts
+   * building while `docker rm -f` is still running. Docker then either rejects
+   * the name as in use or, if the removal lands second, deletes the container
+   * the new session is using. Creation waits on this instead.
+   */
+  private readonly teardowns = new Map<string, Promise<void>>();
 
   constructor(deps: SessionEnvManagerDeps) {
     this.deps = deps;
@@ -111,6 +123,11 @@ export class SessionEnvManager {
 
   async #create(sessionId: string, entry: Entry): Promise<SessionEnv> {
     if (this.deps.bootSweep) await this.deps.bootSweep.catch(() => undefined);
+    // A failed teardown must not wedge the session: the name may well be free
+    // anyway, and refusing to build leaves the session with no environment at
+    // all. Waiting is what matters, not the outcome.
+    const teardown = this.teardowns.get(sessionId);
+    if (teardown) await teardown.catch(() => undefined);
     const worktreePath = this.deps.resolveWorktree(sessionId);
     if (!worktreePath) {
       throw new Error(
@@ -152,8 +169,24 @@ export class SessionEnvManager {
   /** Tear down one session's env. Idempotent. */
   async dispose(sessionId: string): Promise<void> {
     const entry = this.entries.get(sessionId);
-    if (!entry) return;
+    if (!entry) {
+      // Already being torn down by another caller. Reporting "done" while the
+      // container is still there would let the caller act on a name it does
+      // not own yet.
+      await this.teardowns.get(sessionId)?.catch(() => undefined);
+      return;
+    }
     this.entries.delete(sessionId);
+    const teardown = this.#teardown(sessionId, entry);
+    this.teardowns.set(sessionId, teardown);
+    try {
+      await teardown;
+    } finally {
+      if (this.teardowns.get(sessionId) === teardown) this.teardowns.delete(sessionId);
+    }
+  }
+
+  async #teardown(sessionId: string, entry: Entry): Promise<void> {
     let env = entry.env;
     if (!env) {
       // Creation still in flight — wait for it so we dispose a real env

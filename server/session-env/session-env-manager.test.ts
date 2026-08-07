@@ -187,6 +187,82 @@ describe('SessionEnvManager teardown', () => {
     expect(manager.listSessions()).toEqual([]);
   });
 
+  /**
+   * Replaces `dispose` with one that hangs until released, standing in for a
+   * `docker rm -f` still in flight.
+   */
+  function holdDispose(env: FakeEnv): { release: () => void } {
+    let release = () => {};
+    const removal = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    env.dispose = async () => {
+      env.disposeCalls++;
+      await removal;
+      env.disposed = true;
+    };
+    return { release };
+  }
+
+  /** Lets every pending microtask and I/O callback run. */
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  it('waits for a teardown to finish before building a replacement', async () => {
+    // A session's container name comes from its id, so the old container and
+    // its replacement compete for one name. Building while the removal is
+    // still running either fails on the name being in use or — if the removal
+    // lands second — deletes the container the session just started using.
+    const { manager, created } = makeManager();
+    await manager.ensure('s1');
+    const { release } = holdDispose(created[0]);
+
+    const disposing = manager.dispose('s1');
+    const rebuilding = manager.ensure('s1');
+    await settle();
+    expect(created).toHaveLength(1);
+
+    release();
+    await disposing;
+    const replacement = await rebuilding;
+    expect(created).toHaveLength(2);
+    expect(replacement).toBe(created[1] as unknown as SessionEnv);
+    expect(manager.get('s1')).toBe(created[1] as unknown as SessionEnv);
+  });
+
+  it('reports a concurrent dispose as done only once the env is gone', async () => {
+    // The second caller finds no entry. Returning immediately would tell it the
+    // container is gone while it is still being removed.
+    const { manager, created } = makeManager();
+    await manager.ensure('s1');
+    const { release } = holdDispose(created[0]);
+
+    const first = manager.dispose('s1');
+    let secondSettled = false;
+    const second = manager.dispose('s1').then(() => {
+      secondSettled = true;
+    });
+    await settle();
+    expect(secondSettled).toBe(false);
+
+    release();
+    await Promise.all([first, second]);
+    expect(secondSettled).toBe(true);
+    expect(created[0].disposeCalls).toBe(1);
+  });
+
+  it('builds a replacement even when the teardown failed', async () => {
+    // The name is probably free anyway, and refusing would leave the session
+    // with no environment at all.
+    const { manager, created } = makeManager();
+    await manager.ensure('s1');
+    created[0].dispose = async () => {
+      throw new Error('docker rm failed');
+    };
+
+    await manager.dispose('s1');
+    await expect(manager.ensure('s1')).resolves.toBe(created[1] as unknown as SessionEnv);
+  });
+
   it('disposes every env on shutdown', async () => {
     const { manager, created, setWorktree } = makeManager();
     setWorktree('s2', '/wt/s2');
