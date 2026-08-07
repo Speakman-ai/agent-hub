@@ -104,11 +104,12 @@ export function buildDevServerKickoffPrompt(
       draft.healthPathGuess +
       '`). Optional; must start with `/`.',
     '5. **Environment** — Scan for `process.env` / `import.meta.env` usage as needed. For each variable, ask in **plain prose** whether it is non-secret (`env`) or a secret (`secretKeys`). Never echo secret values back. Reserved keys (`PORT`, `AGENT_HUB_*`, `NODE_*`, `PATH`, `HOME`) are injected by the server — do not add them.',
-    '6. **Persist** — `POST $AGENT_HUB_URL/api/projects/' +
+    '6. **Reachability from a remote browser** — the preview browser is not on the machine running the app; it arrives through the Hub proxy. Check four things against the repo and fix what fails (these are code edits — commit them on this branch). (a) The server binds `0.0.0.0`, not `127.0.0.1`, or the health probe never succeeds. (b) The proxied Host header is allowed — Vite `server.allowedHosts`, webpack `allowedHosts`, Django `ALLOWED_HOSTS`, Rails `config.hosts` — since the proxy sends a container address you cannot know up front. (c) The client does **not** hardcode a loopback API URL; that one loads the page and then fails every request, so derive the API root from `document.baseURI` (primary port is under `/api/sessions/<id>/preview/proxy/`, extra ports at `/p/<port>/` on the same origin) and fall back to the loopback default so local dev is unchanged. (d) POSTs need the preview origin trusted (Django `CSRF_TRUSTED_ORIGINS`, or the framework equivalent) or every form 403s. Read hosts and origins from env vars named in `devServer.env` — never bake a deployment hostname into the repo. The `dev-server-setup` skill has the full checklist.',
+    '7. **Persist** — `POST $AGENT_HUB_URL/api/projects/' +
       projectId +
       '/dev-server/setup-apply` with `{ "devServer": { … }, "secrets": { "env": "<dotenv lines for secret values>" } }`. `devServer.env` holds non-secret values; `devServer.secretKeys` lists secret NAMES only; the plaintext secret values go in `secrets.env` as `KEY=value` dotenv lines (stored encrypted, never in the config). On HTTP 400 fix the reported `prEnv.devServer.<path>` error and retry.',
-    '7. **Verify (optional)** — Tell the user they can click **Start preview** on this session to boot the dev server and confirm it comes up on the mapped port.',
-    '8. **`POST $AGENT_HUB_URL/api/projects/' +
+    '8. **Verify (optional)** — Tell the user they can click **Start preview** on this session to boot the dev server and confirm it comes up on the mapped port.',
+    '9. **`POST $AGENT_HUB_URL/api/projects/' +
       projectId +
       '/dev-server/wizard-complete`** then `<agenthub:close-card>`.',
     '',

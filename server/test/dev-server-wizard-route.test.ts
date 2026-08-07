@@ -218,6 +218,31 @@ describe('buildDevServerKickoffPrompt', () => {
     // Surfaces the recommended start command in the summary.
     expect(prompt).toContain('npm run dev');
   });
+
+  it('makes the agent check the app is reachable from a remote browser', () => {
+    // A config that boots the process is not enough: the preview browser is on
+    // another machine, so an app that binds loopback, trusts only its own Host,
+    // hardcodes a loopback API URL, or rejects the preview Origin still fails —
+    // and #3 fails *after* the preview reports ready, which reads as an app bug.
+    const prompt = buildDevServerKickoffPrompt('proj-1', '/tmp/work', draft, 'sess-1');
+    expect(prompt).toContain('0.0.0.0');
+    expect(prompt).toMatch(/ALLOWED_HOSTS|allowedHosts/);
+    expect(prompt).toContain('document.baseURI');
+    expect(prompt).toContain('CSRF_TRUSTED_ORIGINS');
+    // The preview domain is deployment-specific; a baked-in guess fails silently
+    // everywhere else, so the guidance must point at env-provided values.
+    expect(prompt).toMatch(/never bake a deployment hostname/i);
+  });
+
+  it('keeps the walkthrough steps uniquely numbered', () => {
+    // The step list is hand-numbered prose, so inserting one is easy to get
+    // wrong — two "6." entries would have the agent skip a step silently.
+    const prompt = buildDevServerKickoffPrompt('proj-1', '/tmp/work', draft, 'sess-1');
+    const steps = [...prompt.matchAll(/^(\d+)\. \*\*/gm)].map((m) => Number(m[1]));
+    expect(steps.length).toBeGreaterThan(5);
+    expect(steps).toEqual([...steps].sort((a, b) => a - b));
+    expect(new Set(steps).size).toBe(steps.length);
+  });
 });
 
 describe('POST /api/projects/:projectId/dev-server/setup-apply', () => {
