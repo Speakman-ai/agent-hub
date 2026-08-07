@@ -43,7 +43,12 @@ interface Harness {
 }
 
 function makeManager(
-  opts: { kind?: SessionEnvKind; idleTtlMs?: number; failOnMount?: boolean } = {},
+  opts: {
+    kind?: SessionEnvKind;
+    idleTtlMs?: number;
+    failOnMount?: boolean;
+    bootSweep?: Promise<unknown>;
+  } = {},
 ): Harness {
   const created: FakeEnv[] = [];
   const worktrees = new Map<string, string | null>([['s1', '/wt/s1']]);
@@ -61,6 +66,7 @@ function makeManager(
       return env as unknown as SessionEnv;
     },
     ...(opts.idleTtlMs !== undefined ? { idleTtlMs: opts.idleTtlMs } : {}),
+    ...(opts.bootSweep ? { bootSweep: opts.bootSweep } : {}),
     logger: { log: () => {}, warn: () => {} },
   });
   return { manager, created, setWorktree: (id, p) => worktrees.set(id, p) };
@@ -75,6 +81,34 @@ describe('SessionEnvManager.ensure', () => {
     expect(created[0].worktreePath).toBe('/wt/s1');
     expect(created[0].mountCalls).toBe(1);
     expect(manager.get('s1')).toBe(env);
+  });
+
+  it('waits for the boot sweep before creating a container', async () => {
+    // The boot GC sweep deletes every labeled session container as a leak from
+    // a previous run, but the servers accept traffic before it finishes. A
+    // container created inside that window gets swept, and the readiness probe
+    // then polls something that no longer exists until it times out.
+    let sweepDone!: () => void;
+    const bootSweep = new Promise<void>((resolve) => {
+      sweepDone = resolve;
+    });
+    const { manager, created } = makeManager({ bootSweep });
+
+    const pending = manager.ensure('s1');
+    await Promise.resolve();
+    expect(created).toHaveLength(0);
+
+    sweepDone();
+    await pending;
+    expect(created).toHaveLength(1);
+  });
+
+  it('still creates the env when the boot sweep fails', async () => {
+    const { manager, created } = makeManager({
+      bootSweep: Promise.reject(new Error('docker down')),
+    });
+    await manager.ensure('s1');
+    expect(created).toHaveLength(1);
   });
 
   it('returns the same env to repeat callers', async () => {
