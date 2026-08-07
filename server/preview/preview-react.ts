@@ -133,7 +133,12 @@ export interface PreviewRuntimeForReact {
   getActiveBySessionId(sessionId: string): PreviewReactRow | null;
   getLogTail(groupId: string): string[];
   touchPreview(groupId: string): void;
-  serverReachableUrlForPort(port: number): string;
+  /**
+   * `sessionId` resolves the session's own dial host — required for a
+   * container-routed env, which answers on its own address rather than
+   * anywhere on the Hub's host.
+   */
+  serverReachableUrlForPort(port: number, sessionId?: string): string;
 }
 
 export interface PreviewReActDeps {
@@ -397,7 +402,7 @@ export async function runPreviewReActStep(
     );
   }
 
-  const serverUrl = runtime.serverReachableUrlForPort(row.port);
+  const serverUrl = runtime.serverReachableUrlForPort(row.port, chatSessionId);
   let origin: string;
   try {
     origin = new URL(serverUrl).origin;

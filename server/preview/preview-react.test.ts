@@ -275,7 +275,9 @@ describe('preview-react — drive ops', () => {
     );
     expect(r.hostExit).toBe(0);
     expect(page.goto).toHaveBeenCalledWith(`${ORIGIN}/settings`, expect.anything());
-    expect(runtime.serverReachableUrlForPort).toHaveBeenCalledWith(PORT);
+    // Session id is passed so a container-routed env resolves its own dial
+    // host rather than the Hub-wide default.
+    expect(runtime.serverReachableUrlForPort).toHaveBeenCalledWith(PORT, SESSION_ID);
     // The pinned-origin allowance let a localhost target through SSRF policy.
     expect(r.markdown).toContain(`${ORIGIN}/settings`);
   });

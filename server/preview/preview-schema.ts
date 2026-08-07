@@ -17,10 +17,11 @@
  * different lifecycle, different UNIQUE key" rationale documented in
  * `port-pool.ts`.
  *
- * The `UNIQUE(port)` constraint plus a bounded retry in `insertStartingRow`
- * (up to 3 attempts) handles the rare race where two concurrent
- * `startPreview()` calls pick the same gap — the loser retries with the
- * next free port.
+ * Host-port uniqueness (see `ensureHostScopedPreviewPortUniqueness`) plus a
+ * bounded retry in the runtime's reservation path (up to 3 attempts) handles
+ * the rare race where two concurrent `startPreview()` calls pick the same gap
+ * — the loser retries with the next free port. Ports inside a session env are
+ * exempt from that uniqueness, because they are not host ports at all.
  *
  * Status state machine:
  *   `starting` → `ready`    (health-check succeeded)
@@ -75,16 +76,41 @@ export const WORKTREE_PREVIEWS_SCHEMA = `
  *
  * `worktree_preview_processes` is the per-process detail row. Carries
  * its own pid, port, URL, status, and log path. The `name` column is
- * the join key from the project's port-map label. We keep
- * `UNIQUE(port)` global to the preview pool (not scoped per group) so
- * the same allocator semantics from the old single-process table still
- * apply across the new multi-process world — two groups can't both
- * claim port 4101.
+ * the join key from the project's port-map label. Host-port uniqueness
+ * spans the whole pool rather than one group, so the allocator semantics
+ * from the old single-process table still apply across the multi-process
+ * world — two groups can't both claim host port 4101.
  *
  * The two tables are migrated *into* by `MIGRATE_LEGACY_PREVIEWS_SQL`
  * below — any row left in the legacy `worktree_previews` table is
  * folded into the new shape as a 1-process group named `app`.
  */
+/**
+ * Which port space a process row's `port` lives in.
+ *
+ * - `host` — a port on the Hub's machine, drawn from the shared preview pool.
+ *   Unique host-wide: two processes cannot both bind 4101.
+ * - `env`  — a port inside the session env's own network namespace, reached by
+ *   dialing the env directly. Namespaced per session, so the same number
+ *   recurring across sessions is expected.
+ */
+export type PreviewDialScope = 'host' | 'env';
+
+/**
+ * Partial unique index replacing the original `port INTEGER NOT NULL UNIQUE`.
+ *
+ * Deliberately *not* part of the CREATE TABLE block above. That block runs
+ * `CREATE TABLE IF NOT EXISTS`, which is a no-op against a database whose
+ * table predates `dial_scope` — and the index would then be created before the
+ * column it filters on exists, failing every boot with "no such column".
+ * `ensureHostScopedPreviewPortUniqueness` owns it instead, after the column is
+ * guaranteed.
+ */
+const HOST_PORT_UNIQUE_INDEX_SQL = `
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_preview_processes_host_port
+    ON worktree_preview_processes(port) WHERE dial_scope = 'host';
+`;
+
 export const WORKTREE_PREVIEW_GROUPS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS worktree_preview_groups (
     id              TEXT PRIMARY KEY,
@@ -109,19 +135,24 @@ export const WORKTREE_PREVIEW_GROUPS_SCHEMA = `
     group_id        TEXT NOT NULL REFERENCES worktree_preview_groups(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     pid             INTEGER,
-    port            INTEGER NOT NULL UNIQUE,
+    -- The port the proxy dials. Which space that number lives in is
+    -- dial_scope's job: a host port drawn from the shared pool, or a port
+    -- inside the session env's own network namespace.
+    port            INTEGER NOT NULL,
     url             TEXT NOT NULL,
     log_path        TEXT,
     status          TEXT NOT NULL CHECK(status IN ('pending','starting','ready','failed')),
     started_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    -- Dev-server companion columns. port stores the HOST port the
-    -- proxy dials; internal_port is the port from the project's
-    -- devServer portMap (what the process is told to serve inside the
-    -- session env). is_primary marks the entry that keeps the
+    -- Dev-server companion columns. internal_port is the port from the
+    -- project's devServer portMap (what the process is told to serve inside
+    -- the session env). is_primary marks the entry that keeps the
     -- back-compat /preview/proxy/ mount. NULL / 0 on older rows.
-    -- rows.
     internal_port   INTEGER,
     is_primary      INTEGER NOT NULL DEFAULT 0,
+    -- Which port space the port column belongs to. See
+    -- ensureHostScopedPreviewPortUniqueness below for why uniqueness can
+    -- only apply to the 'host' half.
+    dial_scope      TEXT NOT NULL DEFAULT 'host' CHECK(dial_scope IN ('host','env')),
     UNIQUE(group_id, name)
   );
   CREATE INDEX IF NOT EXISTS idx_worktree_preview_processes_group
@@ -165,8 +196,8 @@ export const MIGRATE_LEGACY_PREVIEWS_SQL = `
    );
 
   -- Sanity cleanup: a legacy row whose port collides with an already-
-  -- migrated process row would skip the process INSERT (UNIQUE(port)
-  -- conflict + INSERT OR IGNORE) but still leave the group row in
+  -- migrated process row would skip the process INSERT (host-port
+  -- uniqueness + INSERT OR IGNORE) but still leave the group row in
   -- place. Drop any orphan groups so callers never see a group with
   -- zero processes. Restricted to groups whose id matches a legacy
   -- row so we never touch live, runtime-managed groups that are
@@ -204,6 +235,95 @@ export function ensureDevServerPreviewColumns(db: { exec(sql: string): unknown }
   }
 }
 
+interface MigrationDb {
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(...args: unknown[]): unknown };
+}
+
+/**
+ * Scope preview-port uniqueness to the host port space.
+ *
+ * The table originally declared `port INTEGER NOT NULL UNIQUE`, which encoded
+ * an assumption that every preview port is a host port out of one machine-wide
+ * pool. That holds only while the Hub reaches a dev server by publishing it
+ * onto the host. A session env that routes by container IP publishes nothing:
+ * the process binds inside its own network namespace, so two sessions both
+ * serving 4200 is normal — and a global UNIQUE(port) rejects the second one,
+ * failing an unrelated session's preview for no reason.
+ *
+ * Uniqueness therefore applies only to rows the Hub dials on the host
+ * (`dial_scope = 'host'`), as a partial unique index. Env-scoped rows are
+ * exempt; `UNIQUE(group_id, name)` still keeps one row per named process, so
+ * nothing is left unconstrained.
+ *
+ * SQLite cannot drop a column-level UNIQUE in place, so an existing database
+ * needs a table rebuild. Detection reads the stored DDL rather than probing
+ * `PRAGMA index_list` for an auto-index name, since the latter is an
+ * implementation detail. Fresh databases already ship the new shape and skip
+ * straight to the index.
+ *
+ * Must run *after* {@link ensureDevServerPreviewColumns}: the rebuild copies
+ * `internal_port` / `is_primary`, so those columns have to exist first.
+ */
+export function ensureHostScopedPreviewPortUniqueness(db: MigrationDb): void {
+  try {
+    db.exec(
+      `ALTER TABLE worktree_preview_processes
+         ADD COLUMN dial_scope TEXT NOT NULL DEFAULT 'host'`,
+    );
+  } catch (err) {
+    const msg = (err as Error).message ?? '';
+    if (!msg.includes('duplicate column name')) throw err;
+  }
+
+  const row = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get('worktree_preview_processes') as { sql?: string } | undefined;
+  // A CHECK on dial_scope is only present on the rebuilt/fresh shape, so its
+  // absence alone does not imply the old UNIQUE. Test for the constraint
+  // itself: `port INTEGER NOT NULL UNIQUE`, allowing any run of whitespace.
+  const hasGlobalPortUnique = /\bport\s+INTEGER\s+NOT\s+NULL\s+UNIQUE\b/i.test(row?.sql ?? '');
+
+  if (hasGlobalPortUnique) {
+    // Single exec so the rebuild is one transaction: a crash mid-way would
+    // otherwise leave the table dropped and the data only in the temp copy.
+    db.exec(`
+      BEGIN;
+      CREATE TABLE worktree_preview_processes_rebuild (
+        id              TEXT PRIMARY KEY,
+        group_id        TEXT NOT NULL REFERENCES worktree_preview_groups(id) ON DELETE CASCADE,
+        name            TEXT NOT NULL,
+        pid             INTEGER,
+        port            INTEGER NOT NULL,
+        url             TEXT NOT NULL,
+        log_path        TEXT,
+        status          TEXT NOT NULL CHECK(status IN ('pending','starting','ready','failed')),
+        started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        internal_port   INTEGER,
+        is_primary      INTEGER NOT NULL DEFAULT 0,
+        dial_scope      TEXT NOT NULL DEFAULT 'host' CHECK(dial_scope IN ('host','env')),
+        UNIQUE(group_id, name)
+      );
+      INSERT INTO worktree_preview_processes_rebuild
+        (id, group_id, name, pid, port, url, log_path, status, started_at,
+         internal_port, is_primary, dial_scope)
+      SELECT id, group_id, name, pid, port, url, log_path, status, started_at,
+             internal_port, is_primary, COALESCE(dial_scope, 'host')
+        FROM worktree_preview_processes;
+      DROP TABLE worktree_preview_processes;
+      ALTER TABLE worktree_preview_processes_rebuild
+        RENAME TO worktree_preview_processes;
+      CREATE INDEX IF NOT EXISTS idx_worktree_preview_processes_group
+        ON worktree_preview_processes(group_id);
+      CREATE INDEX IF NOT EXISTS idx_worktree_preview_processes_status
+        ON worktree_preview_processes(status);
+      COMMIT;
+    `);
+  }
+
+  db.exec(HOST_PORT_UNIQUE_INDEX_SQL);
+}
+
 /**
  * Columns older preview runtimes added to `worktree_preview_groups` at
  * construction time. The dev-server runtime never writes them, so on an
@@ -236,8 +356,8 @@ export function dropComposePreviewColumns(db: { exec(sql: string): unknown }): v
 
 /**
  * Rows older runtimes owned. Nothing can
- * stop their processes now, so leaving them behind would pin their ports
- * against the allocator's UNIQUE(port) invariant forever. Dev-server rows
+ * stop their processes now, so leaving them behind would pin their host ports
+ * against the allocator forever. Dev-server rows
  * (`runtime = 'dev-server'`) are never touched.
  */
 export function deleteOrphanedNonDevServerPreviewRows(db: {
