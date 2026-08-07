@@ -215,8 +215,28 @@ RUN chmod +x /usr/local/bin/runner-entrypoint.sh
 # Used by the `agent` entrypoint mode; harmless in `daemon` (job) containers.
 COPY runner-agent.mjs /usr/local/bin/runner-agent.mjs
 
-# Non-root runner user (GHA-style workspace path)
-RUN useradd -m -s /bin/bash runner \
+# Non-root runner user (GHA-style workspace path), pinned to uid/gid 1000.
+#
+# Left to itself `useradd` lands runner on 1001, because ubuntu:24.04 ships an
+# `ubuntu` account on 1000. That matters for session environments: the worktree
+# is bind-mounted from the Hub host and carries the Hub's uid — 1000 in every
+# supported deployment — so a mismatched container user gets an effectively
+# read-only workspace and git rejects it as "dubious ownership".
+#
+# It has to be fixed HERE because it cannot be fixed at runtime. The entrypoint
+# runs AS this account, and no mechanism can renumber the account a live process
+# is using: `usermod` refuses outright ("user runner is currently used by
+# process 1"), and rewriting /etc/passwd directly orphans the running uid, after
+# which every `sudo` fails with "you do not exist in the passwd database". At
+# build time nothing is running yet, so the same operation is safe.
+#
+# `ubuntu` is parked on a high id rather than deleted, in case the image depends
+# on it. GitHub's own runner images use 1001 for `runner`, but nothing keys off
+# the number, so matching the Hub host is the more useful invariant.
+RUN usermod -u 61000 ubuntu \
+    && groupmod -g 61000 ubuntu \
+    && groupadd -g 1000 runner \
+    && useradd -m -s /bin/bash -u 1000 -g runner runner \
     && usermod -aG docker runner \
     && mkdir -p /github/workspace \
     && chown runner:runner /github/workspace \

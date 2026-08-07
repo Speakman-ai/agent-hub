@@ -13,45 +13,24 @@ DOCKERD_LOG=/var/log/dockerd.log
 
 RUNNER_USER="${RUNNER_USER:-runner}"
 
-# Lowest id to park an evicted account on. Above the normal login range, so it
-# cannot collide with a workspace owner id a Hub might report.
-EVICTED_ID_BASE=61000
-
-# First unused id at or above EVICTED_ID_BASE in the passwd or group database.
-free_id() {
-  local db="$1" id="$EVICTED_ID_BASE"
-  while getent "$db" "$id" >/dev/null 2>&1; do
-    id=$((id + 1))
-  done
-  printf '%s' "$id"
-}
-
-# usermod/groupmod refuse an id that is already taken, and the ubuntu base image
-# ships an `ubuntu` account on 1000:1000 — exactly the ids a Hub running as uid
-# 1000 reports. Park the incumbent on a free high id rather than deleting an
-# account the image may depend on.
-evict_id_holder() {
-  local db="$1" want="$2" holder free
-  holder="$(getent "$db" "$want" | cut -d: -f1)"
-  if [ -z "$holder" ] || [ "$holder" = "$RUNNER_USER" ]; then
-    return 0
-  fi
-  free="$(free_id "$db")"
-  echo "[finalize-runner] moving ${db} '${holder}' off id ${want} -> ${free}"
-  if [ "$db" = passwd ]; then
-    sudo usermod -u "$free" "$holder"
-  else
-    sudo groupmod -g "$free" "$holder"
-  fi
-}
-
 # The session worktree is bind-mounted from the host, so its files carry the
 # uid/gid of the process that created them — the Hub, typically uid 1000. A
 # container user on a different uid gets an effectively read-only workspace and
-# git refuses the checkout outright as "dubious ownership", which makes the
-# session unusable for editing, building, or committing. Align the runner
-# account with the owner the Hub reports; this is what devcontainers do via
-# updateRemoteUserUID. Unset means no-op, which is the Finalize path.
+# git refuses the checkout as "dubious ownership", which makes the session
+# unusable for editing, building, or committing. The Dockerfile therefore pins
+# $RUNNER_USER to 1000:1000 to match; this only verifies the result.
+#
+# Repairing a mismatch here is not possible, which is why this checks instead of
+# fixing. The entrypoint runs AS $RUNNER_USER, and nothing can renumber the
+# account a live process is using: `usermod` refuses ("user runner is currently
+# used by process 1", exit 8) and rewriting /etc/passwd orphans the running uid,
+# after which every `sudo` — including the one that starts dockerd — dies with
+# "you do not exist in the passwd database". Both were tried; both leave the
+# container dead in a way that reads as a mystery start failure.
+#
+# So a mismatch is reported as the build-time problem it actually is, rather than
+# handing back a container whose workspace silently rejects every write.
+# AGENT_HUB_WORKSPACE_UID unset means no check, which is the Finalize path.
 align_runner_identity() {
   local want_uid="${AGENT_HUB_WORKSPACE_UID:-}"
   local want_gid="${AGENT_HUB_WORKSPACE_GID:-}"
@@ -67,21 +46,10 @@ align_runner_identity() {
     return 0
   fi
 
-  echo "[finalize-runner] aligning ${RUNNER_USER} to ${want_uid}:${want_gid} (workspace owner)"
-  if [ "$want_gid" != "$cur_gid" ]; then
-    evict_id_holder group "$want_gid"
-    sudo groupmod -g "$want_gid" "$RUNNER_USER"
-  fi
-  if [ "$want_uid" != "$cur_uid" ]; then
-    evict_id_holder passwd "$want_uid"
-    sudo usermod -u "$want_uid" "$RUNNER_USER"
-  fi
-  # usermod re-owns files under $HOME but leaves their group, and never touches
-  # paths outside it.
-  sudo chown -R "${want_uid}:${want_gid}" "/home/${RUNNER_USER}" 2>/dev/null || true
-  if [ -d /github/workspace ]; then
-    sudo chown "${want_uid}:${want_gid}" /github/workspace 2>/dev/null || true
-  fi
+  echo "[finalize-runner] FATAL: workspace is owned by ${want_uid}:${want_gid} but ${RUNNER_USER} is ${cur_uid}:${cur_gid}." >&2
+  echo "[finalize-runner] A running account cannot be renumbered from inside its own container." >&2
+  echo "[finalize-runner] Rebuild this image with ${RUNNER_USER} on ${want_uid}:${want_gid} (see the useradd step in the Dockerfile)." >&2
+  return 1
 }
 
 # Configure a registry pull-through cache / mirror for the inner dockerd when
