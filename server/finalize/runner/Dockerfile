@@ -25,6 +25,7 @@ ARG RUNNER_DOCKER_VERSION=28.0.4
 ARG RUNNER_COMPOSE_VERSION=2.38.2
 ARG RUNNER_BUILDX_VERSION=0.34.1
 ARG RUNNER_GH_VERSION=2.95.0
+ARG RUNNER_AWSCLI_VERSION=2.36.8
 ARG RUNNER_ENFORCE_VERSION_PINS=0
 
 # Run apt's download/verify step as root instead of the unprivileged `_apt` user.
@@ -138,13 +139,43 @@ RUN set -e; \
     fi; \
     rm -rf /var/lib/apt/lists/*
 
+# AWS CLI v2, from AWS's official installer. Not available via apt: Ubuntu 24.04
+# (noble) dropped the `awscli` package, so a project declaring it in
+# `prEnv.devServer.aptPackages` gets "no candidate" and the whole apt batch
+# fails. Repo scripts that sync a database or fetch artifacts from S3 need it,
+# and GitHub's ubuntu-24.04 image ships it, so this is parity too.
+#
+# AWS keeps every published version at a stable URL indefinitely, so the exact
+# pin does not age out the way an apt pin does; the fallback to the unversioned
+# "latest" zip exists only for a transient CDN miss, and is refused under
+# RUNNER_ENFORCE_VERSION_PINS=1.
+ARG TARGETARCH
+RUN set -e; \
+    case "${TARGETARCH}" in \
+      arm64) AWS_ARCH=aarch64 ;; \
+      *)     AWS_ARCH=x86_64 ;; \
+    esac; \
+    cd /tmp; \
+    if curl -fsSL -o awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}-${RUNNER_AWSCLI_VERSION}.zip"; then \
+      echo "Pinned aws-cli=${RUNNER_AWSCLI_VERSION}"; \
+    elif [ "${RUNNER_ENFORCE_VERSION_PINS}" = "1" ]; then \
+      echo "ERROR: pinned aws-cli=${RUNNER_AWSCLI_VERSION} unavailable and RUNNER_ENFORCE_VERSION_PINS=1" >&2; exit 1; \
+    else \
+      echo "WARN: pinned aws-cli=${RUNNER_AWSCLI_VERSION} unavailable; falling back to latest. Bump RUNNER_AWSCLI_VERSION + runner-image-versions.ts." >&2; \
+      curl -fsSL -o awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip"; \
+    fi; \
+    unzip -q awscliv2.zip; \
+    ./aws/install; \
+    rm -rf /tmp/awscliv2.zip /tmp/aws
+
 # Record targeted vs installed toolchain versions in the build log (parity audit).
 RUN echo "Runner toolchain (targeted -> installed):" \
     && echo "  node:    ${RUNNER_NODE_VERSION} -> $(node --version 2>/dev/null || echo '?')" \
     && echo "  docker:  ${RUNNER_DOCKER_VERSION} -> $(docker --version 2>/dev/null || echo '?')" \
     && echo "  compose: ${RUNNER_COMPOSE_VERSION} -> $(docker compose version 2>/dev/null || echo '?')" \
     && echo "  buildx:  ${RUNNER_BUILDX_VERSION} -> $(docker buildx version 2>/dev/null || echo '?')" \
-    && echo "  gh:      ${RUNNER_GH_VERSION} -> $(gh --version 2>/dev/null | head -n1 || echo '?')"
+    && echo "  gh:      ${RUNNER_GH_VERSION} -> $(gh --version 2>/dev/null | head -n1 || echo '?')" \
+    && echo "  aws:     ${RUNNER_AWSCLI_VERSION} -> $(aws --version 2>/dev/null || echo '?')"
 
 # Cypress E2E browser.
 #   amd64 (GHA parity / prod): Google Chrome stable from Google's apt repo.
