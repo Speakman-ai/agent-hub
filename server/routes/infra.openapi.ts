@@ -115,6 +115,14 @@ const PackMetric = z.object({
       'The exact CloudWatch dimension-name set this series is keyed on. Exact, not a subset: `AWS/ECS` `CPUUtilization` at `ClusterName` and at `ClusterName` + `ServiceName` are two different numbers, so a pack may declare the same metric name twice and only the dimension set tells them apart.',
     example: ['ClusterName', 'ServiceName'],
   }),
+  dimensionValues: z
+    .record(z.string(), z.string())
+    .optional()
+    .openapi({
+      description:
+        'Dimension **values** the series is additionally pinned to, present only where the dimension names alone do not identify it. `AWS/S3` is the case it exists for: `BucketSizeBytes` and `NumberOfObjects` are both keyed on `BucketName` + `StorageType`, but AWS documents `AllStorageTypes` as the object count’s only valid storage-type filter and does not list it among the byte total’s. A resource whose recorded dimension value contradicts a pin is skipped exactly as a dimension-name mismatch is.',
+      example: { StorageType: 'AllStorageTypes' },
+    }),
   metricType: z.enum(['gauge', 'counter', 'flag', 'balance', 'latency']).openapi({
     description:
       'What the value is, which is what decides the statistic. A `flag` is a per-minute 0/1 check result and must be stored on `Maximum`; a `counter` accrues over the period and is stored on `Sum`. A `latency` is a distribution rather than a level, and is the only type a percentile statistic is legal on.',

@@ -28,6 +28,7 @@ import { CloudWatchClient, DescribeAlarmsCommand } from '@aws-sdk/client-cloudwa
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { ECSClient } from '@aws-sdk/client-ecs';
 import { ElasticLoadBalancingV2Client } from '@aws-sdk/client-elastic-load-balancing-v2';
+import { S3Client } from '@aws-sdk/client-s3';
 import { findProject } from '../project-model.js';
 import { getProjectAwsMonitoringProfile, getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
 import {
@@ -100,6 +101,7 @@ const cloudWatchClients = new Map<string, CloudWatchClient>();
 const ec2Clients = new Map<string, EC2Client>();
 const ecsClients = new Map<string, ECSClient>();
 const elbClients = new Map<string, ElasticLoadBalancingV2Client>();
+const s3Clients = new Map<string, S3Client>();
 
 /**
  * Every client cache, so adding a service means adding one map here rather than
@@ -112,6 +114,7 @@ const clientCaches: Array<Map<string, DestroyableClient>> = [
   ec2Clients,
   ecsClients,
   elbClients,
+  s3Clients,
 ];
 
 /**
@@ -243,6 +246,37 @@ export function getProjectElbV2Client(
     credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
   });
   elbClients.set(key, client);
+  return client;
+}
+
+/**
+ * An S3 client bound to one project profile and region.
+ *
+ * The region pinning is load-bearing here in a way it is not for the other
+ * services, because S3 is the one API in this module that is partly global.
+ * `ListBuckets` returns every bucket in the account from any endpoint, so a
+ * scope has to narrow it — and AWS's own narrowing parameter comes with a
+ * constraint: "Requests made to a Regional endpoint that is different from the
+ * `bucket-region` parameter are not supported." A client built for the scope's
+ * region is therefore the only client that may ask about that region's buckets.
+ *
+ * Nothing on this path reads object data. Inventory calls `ListBuckets`,
+ * `GetBucketLocation`, `GetBucketTagging` and
+ * `ListBucketMetricsConfigurations` — bucket metadata only, which is why
+ * `s3:GetObject` is on `INFRA_IAM_FORBIDDEN_ACTIONS` rather than in the
+ * published policy.
+ */
+export function getProjectS3Client(projectId: string, opts: ProjectAwsClientOpts = {}): S3Client {
+  const { profileName, region, use } = resolveTarget(projectId, opts);
+  const key = clientKey(projectId, profileName, region, use);
+  const existing = s3Clients.get(key);
+  if (existing) return existing;
+
+  const client = new S3Client({
+    region,
+    credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
+  });
+  s3Clients.set(key, client);
   return client;
 }
 

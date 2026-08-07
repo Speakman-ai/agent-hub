@@ -1,6 +1,6 @@
 # Read-only IAM policy for Agent Hub infrastructure monitoring
 
-Policy version: 1
+Policy version: 2
 
 Agent Hub's Infrastructure module polls CloudWatch and the per-service describe
 APIs on a schedule. This directory publishes exactly what to grant it, in three
@@ -55,7 +55,8 @@ specific places (verified against the managed-policy reference, version v45):
    Agent Hub calls it.)
 
 It is also missing `tag:GetResources` (scope tag filters), `lambda:Get*` (so no
-`GetFunctionConfiguration`), and `s3:GetBucketLocation` / `s3:GetBucketTagging`.
+`GetFunctionConfiguration`), and `s3:GetBucketLocation` / `s3:GetBucketTagging` /
+`s3:GetMetricsConfiguration`.
 
 ## What this policy grants, and why
 
@@ -65,7 +66,7 @@ you know precisely what stops working.
 | `Sid` | Actions | What breaks without it |
 | --- | --- | --- |
 | `AgentHubCallerIdentity` | `sts:GetCallerIdentity` | Nothing — AWS allows this for every identity and ignores an explicit `Deny`. It is here as documentation of a call we make, not as a grant that changes anything. |
-| `AgentHubResourceInventory` | `ec2:Describe*` (regions, instances, instance status, volumes, NAT gateways, tags), `ecs:List*`/`Describe*` (clusters, services), `rds:DescribeDBInstances`/`DescribeDBClusters`, `elasticloadbalancing:Describe*` (load balancers, target groups, target health, tags), `lambda:ListFunctions`/`GetFunctionConfiguration`, `s3:ListAllMyBuckets`/`GetBucketLocation`/`GetBucketTagging` | The hourly inventory sync. Nothing appears in the resource browser and the metric collector has no query list to build from. |
+| `AgentHubResourceInventory` | `ec2:Describe*` (regions, instances, instance status, volumes, NAT gateways, tags), `ecs:List*`/`Describe*` (clusters, services), `rds:DescribeDBInstances`/`DescribeDBClusters`, `elasticloadbalancing:Describe*` (load balancers, target groups, target health, tags), `lambda:ListFunctions`/`GetFunctionConfiguration`, `s3:ListAllMyBuckets`/`GetBucketLocation`/`GetBucketTagging`/`GetMetricsConfiguration` | The hourly inventory sync. Nothing appears in the resource browser and the metric collector has no query list to build from. |
 | `AgentHubMetricRead` | `cloudwatch:GetMetricData`, `GetMetricStatistics`, `ListMetrics` | All charts and all alert evaluation. |
 | `AgentHubAlarmRead` | `cloudwatch:DescribeAlarms` | Your own CloudWatch alarm state stops appearing beside Agent Hub's. |
 | `AgentHubTagRead` | `tag:GetResources` | Tag filters on a collection scope. |
@@ -87,7 +88,8 @@ the policy must specify `"*"`. That covers every `ec2:Describe*`, every
 `servicequotas:ListServiceQuotas`.
 
 A handful of the rest *are* scopable (`cloudwatch:DescribeAlarms` to alarm ARNs,
-`ecs:DescribeServices` to service ARNs, `s3:GetBucketTagging` to bucket ARNs,
+`ecs:DescribeServices` to service ARNs, `s3:GetBucketTagging` and
+`s3:GetMetricsConfiguration` to bucket ARNs,
 `lambda:GetFunctionConfiguration` to function ARNs). Splitting them into a
 narrower statement buys little — the account-wide discovery calls in the same
 policy already see everything — and adds a large breakage surface as your

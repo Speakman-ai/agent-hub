@@ -27,7 +27,7 @@
  */
 
 /** Bumped whenever the published policy document changes. */
-export const INFRA_IAM_POLICY_VERSION = 1;
+export const INFRA_IAM_POLICY_VERSION = 2;
 
 /**
  * Statement `Sid` per capability in the published policy. Every capability gets
@@ -211,6 +211,11 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     action: 's3:GetBucketTagging',
     capability: 'inventory',
     why: 'Bucket tags for scope tag filters. Reads tags, never object data.',
+  },
+  {
+    action: 's3:GetMetricsConfiguration',
+    capability: 'inventory',
+    why: 'The IAM action behind ListBucketMetricsConfigurations: whether a bucket has a CloudWatch metrics configuration, and under which filter ids. S3 request metrics do not exist without one, so this is what makes the paid metrics detected rather than assumed — without it every bucket reads as having none and the request-metric panels go permanently, silently empty.',
   },
 
   // ── Metrics (INFRA-COLLECT) ──────────────────────────────────────

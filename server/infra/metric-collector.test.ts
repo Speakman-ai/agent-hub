@@ -565,6 +565,29 @@ describe('planQueries', () => {
       expect(planQueries([legacy], NOW - 900_000, NOW)).toEqual([]);
     });
 
+    it('refuses a metric whose pinned dimension value does not match the resource', () => {
+      // The S3 case the pin exists for: `NumberOfObjects` is published at
+      // `StorageType=AllStorageTypes` and nowhere else, while `BucketSizeBytes`
+      // is published at every real storage class. Both are keyed on the same
+      // dimension *names*, so without the value check every storage-class row
+      // would carry a permanently empty, permanently billed object count.
+      const bucketRow = (storageType: string): CollectableResource => ({
+        resource_key: `k-logs-${storageType}`,
+        account_id: '111122223333',
+        resource_id: `logs@${storageType}`,
+        service: 's3',
+        metric_dimensions_json: JSON.stringify({ BucketName: 'logs', StorageType: storageType }),
+      });
+      // A day boundary, because the free storage metrics are due once a day.
+      const dayStart = Math.ceil(NOW / 86_400_000) * 86_400_000;
+
+      const storageClass = planQueries([bucketRow('StandardStorage')], dayStart - 1, dayStart);
+      expect(namesOf(storageClass)).toEqual(new Set(['BucketSizeBytes']));
+
+      const allTypes = planQueries([bucketRow('AllStorageTypes')], dayStart - 1, dayStart);
+      expect(namesOf(allTypes)).toContain('NumberOfObjects');
+    });
+
     it('ignores an unparseable dimension column rather than failing the tick', () => {
       const broken: CollectableResource = {
         resource_key: 'k-i-1',

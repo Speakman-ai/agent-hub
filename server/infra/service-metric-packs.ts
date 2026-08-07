@@ -50,6 +50,12 @@ export interface InfraMetricSpec {
    * only when the resource's own recorded dimensions are this same set.
    */
   dimensions: readonly string[];
+  /**
+   * Dimension values the series is additionally pinned to, when the dimension
+   * names alone do not identify it. Absent for almost every metric; see
+   * {@link InfraPackMetric.dimensionValues} for the S3 case that forces it.
+   */
+  dimensionValues?: Readonly<Record<string, string>>;
   /** Provider feature the resource must have for this metric to exist, or `null`. */
   requiresFeature: string | null;
   /**
@@ -60,13 +66,14 @@ export interface InfraMetricSpec {
   minPeriodSeconds: number;
 }
 
-/** The collector's six fields, taken from a pack metric declaration. */
+/** The collector's fields, taken from a pack metric declaration. */
 function toMetricSpec(metric: InfraPackMetric): InfraMetricSpec {
   return {
     namespace: metric.namespace,
     metricName: metric.metricName,
     stat: metric.stat,
     dimensions: metric.dimensions,
+    dimensionValues: metric.dimensionValues,
     requiresFeature: metric.requiresFeature,
     minPeriodSeconds: metric.minPeriodSeconds,
   };
@@ -137,6 +144,14 @@ export const INFRA_SERVICE_POLL_TIERS: Readonly<Record<string, number>> = Object
   alb: 60,
   nlb: 60,
   natgw: 60,
+  // S3 is deliberately not in INFRA-COST's 1-minute class, and the entry is
+  // here to record that rather than to change anything: 300 is the default and
+  // also the collector tick, so it is the finest cadence anything can run at.
+  // The interesting number for S3 is per-metric, not per-service — the daily
+  // storage metrics floor at 86,400s and are polled once a day, while the paid
+  // request metrics publish every minute and are polled every tick. A single
+  // service tier could serve neither.
+  s3: 300,
 });
 
 /** The tier for a service, or the default when it has none. */

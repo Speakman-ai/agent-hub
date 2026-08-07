@@ -12,6 +12,7 @@ import { EC2_PACK } from './ec2.js';
 import { ECS_PACK } from './ecs.js';
 import { NATGW_PACK } from './natgw.js';
 import { NLB_PACK } from './nlb.js';
+import { S3_PACK } from './s3.js';
 import type { InfraPackMetric, InfraServicePack } from './types.js';
 
 export * from './types.js';
@@ -20,6 +21,7 @@ export { EC2_PACK } from './ec2.js';
 export { ECS_PACK, ECS_CONTAINER_INSIGHTS_FEATURE } from './ecs.js';
 export { NATGW_PACK } from './natgw.js';
 export { NLB_PACK } from './nlb.js';
+export { S3_PACK, S3_REQUEST_METRICS_FEATURE, S3_ALL_STORAGE_TYPES } from './s3.js';
 
 /**
  * Service token → pack.
@@ -37,6 +39,7 @@ export const INFRA_SERVICE_PACKS: Readonly<Record<string, InfraServicePack>> = O
   [ALB_PACK.service]: ALB_PACK,
   [NLB_PACK.service]: NLB_PACK,
   [NATGW_PACK.service]: NATGW_PACK,
+  [S3_PACK.service]: S3_PACK,
 });
 
 /** The pack for a service, or `null` when the service has none yet. */

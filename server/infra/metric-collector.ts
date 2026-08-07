@@ -428,13 +428,19 @@ export function resourceHasFeature(
 /**
  * Bind one pack metric to one resource, or `null` when it does not apply.
  *
- * Two rules, and both are about not paying for a series that cannot exist:
+ * Three rules, and all of them are about not paying for a series that cannot
+ * exist:
  *
  *   - **The dimension set must match exactly.** CloudWatch keys a series on its
  *     full dimension combination, so `AWS/ECS` `CPUUtilization` at
  *     `ClusterName` and at `ClusterName` + `ServiceName` are different numbers.
  *     A subset match would bill an ECS cluster row for the service-level query
  *     and return nothing.
+ *   - **A pinned dimension value must match too.** Rare, and S3 is the reason:
+ *     `NumberOfObjects` exists only at `StorageType=AllStorageTypes` and
+ *     `BucketSizeBytes` exists at every other storage class and not there, both
+ *     on the same dimension names. Without the value check each bucket would
+ *     carry one permanently empty billed series per storage class.
  *   - **A gated metric needs the feature recorded as on.** An unrecorded
  *     feature counts as off, which is the fail-closed direction: the cost of
  *     guessing wrong towards "on" is a billed request for a series the account
@@ -459,6 +465,13 @@ export function bindMetricDimensions(
   for (const name of spec.dimensions) {
     const value = dimensions[name];
     if (value === undefined) return null;
+    // A pinned value is part of the series identity, so a mismatch means the
+    // metric does not apply to this resource — not that it should be queried
+    // with the pack's value instead. Overriding would ask CloudWatch about a
+    // different resource entirely.
+    if (spec.dimensionValues?.[name] !== undefined && spec.dimensionValues[name] !== value) {
+      return null;
+    }
     bound[name] = value;
   }
   return bound;

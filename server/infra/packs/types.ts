@@ -208,6 +208,30 @@ export interface InfraPackMetric {
    * and vice versa.
    */
   dimensions: readonly string[];
+  /**
+   * Dimension **values** this series is additionally pinned to, when the
+   * dimension names alone do not identify it.
+   *
+   * Absent for almost every metric, because a dimension set normally is the
+   * identity: `InstanceId` takes whatever value the instance has. S3 is the
+   * exception that forces the field. `AWS/S3` `BucketSizeBytes` and
+   * `NumberOfObjects` are both keyed on `BucketName` + `StorageType`, but AWS
+   * documents `NumberOfObjects`' only valid storage-type filter as
+   * `AllStorageTypes`, and `AllStorageTypes` is not among `BucketSizeBytes`'
+   * filters. The two metrics live at the same dimension *names* and at disjoint
+   * dimension *values*.
+   *
+   * Without this, a `StandardStorage` row would be billed a `GetMetricData`
+   * entry for an object count that does not exist there, and the
+   * `AllStorageTypes` row one for a byte total that does not exist there — two
+   * permanently empty charts per bucket, which is exactly the "empty because
+   * broken or empty because impossible?" ambiguity these packs exist to remove.
+   *
+   * The collector treats a mismatch as "this metric does not apply to this
+   * resource", identically to a dimension-name mismatch. See
+   * `bindMetricDimensions`.
+   */
+  dimensionValues?: Readonly<Record<string, string>>;
   metricType: InfraMetricType;
   /** The statistic the collector requests and the store keys on. */
   stat: string;

@@ -22,6 +22,13 @@ export interface InfraPackMetricWire {
   metricName: string;
   /** The exact CloudWatch dimension-name set this series is keyed on. */
   dimensions: string[];
+  /**
+   * Dimension values the series is additionally pinned to, when the dimension
+   * names alone do not identify it. Absent for almost every metric — S3's
+   * `NumberOfObjects` (`StorageType=AllStorageTypes` and nowhere else) is the
+   * case it exists for.
+   */
+  dimensionValues?: Record<string, string>;
   metricType: InfraPackMetricType;
   stat: string;
   validStatistics: string[];

@@ -33,7 +33,7 @@ describe('service pack registry', () => {
   it('resolves a pack by token and reports the packed services', () => {
     expect(getInfraServicePack('ec2')).toBe(EC2_PACK);
     expect(getInfraServicePack('nope')).toBeNull();
-    expect(infraPackedServices()).toEqual(['alb', 'ec2', 'ecs', 'natgw', 'nlb']);
+    expect(infraPackedServices()).toEqual(['alb', 'ec2', 'ecs', 'natgw', 'nlb', 's3']);
   });
 
   it('projects every pack metric into the collector query list', () => {
@@ -51,6 +51,9 @@ describe('service pack registry', () => {
           metricName: metric.metricName,
           stat: metric.stat,
           dimensions: metric.dimensions,
+          // Optional, and undefined for every pack but S3 — where AWS keys two
+          // metrics on the same dimension names at disjoint dimension values.
+          dimensionValues: metric.dimensionValues,
           requiresFeature: metric.requiresFeature,
           minPeriodSeconds: metric.minPeriodSeconds,
         });

@@ -28,9 +28,11 @@
  *     region of inventory.
  *
  * Adding a service is adding a describer and a branch in {@link syncScope}.
- * EC2 and ECS are implemented; ECS is the one that shows what the shape has to
- * support in general, because a single scope there produces two *kinds* of row
- * (clusters and services) keyed on different CloudWatch dimension sets.
+ * ECS shows what the shape has to support in general, because a single scope
+ * there produces two *kinds* of row (clusters and services) keyed on different
+ * CloudWatch dimension sets. S3 pushes that to three kinds and is the only
+ * describer that calls CloudWatch, because which storage classes a bucket holds
+ * objects in is a question the S3 API cannot answer.
  */
 
 import {
@@ -66,15 +68,37 @@ import {
   type LoadBalancer,
   type TargetGroup,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
+import {
+  GetBucketLocationCommand,
+  GetBucketTaggingCommand,
+  ListBucketMetricsConfigurationsCommand,
+  ListBucketsCommand,
+  type Bucket,
+  type GetBucketLocationCommandOutput,
+  type GetBucketTaggingCommandOutput,
+  type ListBucketMetricsConfigurationsCommandOutput,
+  type ListBucketsCommandOutput,
+} from '@aws-sdk/client-s3';
+import { ListMetricsCommand, type ListMetricsCommandOutput } from '@aws-sdk/client-cloudwatch';
 import { getInfraDb, isInfraDbInitialized, infraResourceKey } from './infra-db.js';
-import { getProjectEc2Client, getProjectEcsClient, getProjectElbV2Client } from './aws-clients.js';
+import {
+  getProjectCloudWatchClient,
+  getProjectEc2Client,
+  getProjectEcsClient,
+  getProjectElbV2Client,
+  getProjectS3Client,
+} from './aws-clients.js';
 import {
   compileInfraTagFilter,
   isEmptyInfraTagFilter,
   matchesInfraTagFilter,
   parseInfraTagFilter,
 } from './tag-filter.js';
-import { ECS_CONTAINER_INSIGHTS_FEATURE } from './packs/index.js';
+import {
+  ECS_CONTAINER_INSIGHTS_FEATURE,
+  S3_ALL_STORAGE_TYPES,
+  S3_REQUEST_METRICS_FEATURE,
+} from './packs/index.js';
 
 /**
  * Hourly, at a fixed off-the-hour minute.
@@ -93,12 +117,14 @@ const ECS_SERVICE = 'ecs';
 const ALB_SERVICE = 'alb';
 const NLB_SERVICE = 'nlb';
 const NATGW_SERVICE = 'natgw';
+const S3_SERVICE = 's3';
 export const INFRA_SYNCABLE_SERVICES: readonly string[] = Object.freeze([
   EC2_SERVICE,
   ECS_SERVICE,
   ALB_SERVICE,
   NLB_SERVICE,
   NATGW_SERVICE,
+  S3_SERVICE,
 ]);
 
 /**
@@ -127,6 +153,17 @@ const ELB_PAGE_SIZE = 400;
 
 /** `DescribeNatGateways` `MaxResults`: "Maximum value of 1000". */
 const NATGW_PAGE_SIZE = 1000;
+
+/**
+ * `ListBuckets` `max-buckets`: "Maximum value of 10000".
+ *
+ * Sent explicitly rather than relying on the default, because AWS only supports
+ * unpaginated `ListBuckets` for accounts on the default 10,000-bucket quota and
+ * "all unpaginated ListBuckets requests will be rejected" above it. Passing
+ * `max-buckets` is what makes the call paginated, so an account with a raised
+ * quota keeps working.
+ */
+const S3_LIST_BUCKETS_PAGE_SIZE = 10_000;
 
 /** `ListClusters` and `ListServices` both cap a page at 100. */
 const ECS_LIST_PAGE_SIZE = 100;
@@ -182,6 +219,30 @@ export interface EcsDescribeClient {
   send(command: ListAccountSettingsCommand): Promise<ListAccountSettingsCommandOutput>;
 }
 
+/** Just enough of an `S3Client` for the bucket walk. */
+export interface S3DescribeClient {
+  send(command: ListBucketsCommand): Promise<ListBucketsCommandOutput>;
+  send(command: GetBucketLocationCommand): Promise<GetBucketLocationCommandOutput>;
+  send(command: GetBucketTaggingCommand): Promise<GetBucketTaggingCommandOutput>;
+  send(
+    command: ListBucketMetricsConfigurationsCommand,
+  ): Promise<ListBucketMetricsConfigurationsCommandOutput>;
+}
+
+/**
+ * Just enough of a `CloudWatchClient` for the one discovery call inventory makes.
+ *
+ * Only S3 needs this, and only for `ListMetrics`. Decision INFRA-COLLECT allows
+ * it exactly here — "`ListMetrics(RecentlyActive='PT3H')` used only to prune
+ * queries for resources that are not currently reporting" — and never as an
+ * inventory source. `RecentlyActive` is omitted rather than set, because `PT3H`
+ * is its only legal value and a metric published once a day is outside that
+ * window for 21 hours out of every 24.
+ */
+export interface CloudWatchListMetricsClient {
+  send(command: ListMetricsCommand): Promise<ListMetricsCommandOutput>;
+}
+
 export interface InfraInventorySyncOptions {
   /** Injected clock so tests can assert on `first_seen` / `last_seen`. */
   nowMs?: number;
@@ -191,6 +252,10 @@ export interface InfraInventorySyncOptions {
   ecsClientFactory?: (scope: InfraScopeRow) => EcsDescribeClient;
   /** Test seam: build the ELBv2 client for a scope. */
   elbClientFactory?: (scope: InfraScopeRow) => ElbDescribeClient;
+  /** Test seam: build the S3 client for a scope. */
+  s3ClientFactory?: (scope: InfraScopeRow) => S3DescribeClient;
+  /** Test seam: build the CloudWatch client the S3 walk discovers storage classes with. */
+  cloudWatchClientFactory?: (scope: InfraScopeRow) => CloudWatchListMetricsClient;
 }
 
 export interface InfraInventorySyncResult {
@@ -1216,6 +1281,481 @@ async function describeNatGatewayScope(
   return { resources, skipped };
 }
 
+// ─── S3 ─────────────────────────────────────────────────────────────────────
+
+/**
+ * `GetBucketLocation`'s answer for the region that has no location constraint.
+ *
+ * AWS: "Buckets in Region `us-east-1` have a `LocationConstraint` of `null`",
+ * which arrives as an absent or empty field rather than the region name.
+ */
+const S3_DEFAULT_LOCATION = 'us-east-1';
+
+/**
+ * The one legacy `LocationConstraint` value that is not a region code.
+ *
+ * `EU` predates regional naming and still means `eu-west-1`. Every other value
+ * `GetBucketLocation` returns is the region code itself.
+ */
+const S3_LEGACY_LOCATIONS: Readonly<Record<string, string>> = Object.freeze({ EU: 'eu-west-1' });
+
+/** `NoSuchTagSet` is S3's way of saying "this bucket has no tags", not an error. */
+function isS3NoSuchTagSetError(err: unknown): boolean {
+  return awsErrorName(err) === 'NoSuchTagSet';
+}
+
+/**
+ * Running tally for one kind of per-bucket metadata read across a scope.
+ *
+ * The counts exist to separate the two failures that look identical one bucket
+ * at a time: *the role has no grant* (every bucket denies) and *this one bucket's
+ * policy denies us* (one does). See {@link assertS3ReadNotSystemicallyDenied}.
+ */
+interface S3ReadTally {
+  /** Buckets this read was attempted on. */
+  attempted: number;
+  /** Attempts that came back as an authorization failure. */
+  denied: number;
+}
+
+const freshS3ReadTally = (): S3ReadTally => ({ attempted: 0, denied: 0 });
+
+/**
+ * Record a per-bucket metadata failure and warn. Never throws.
+ *
+ * Per-bucket rather than per-scope, which is a correction of the obvious first
+ * design. Re-throwing an `AccessDenied` here would be loud, but a single bucket
+ * whose *bucket policy* denies the monitoring role would then permanently break
+ * S3 inventory for the whole region, and there is no per-bucket exclusion an
+ * operator could use to get out of it. The systemic case that genuinely warrants
+ * failing the scope — the role has no `s3:GetBucketTagging` or
+ * `s3:GetMetricsConfiguration` grant at all — is caught after the walk instead,
+ * by {@link assertS3ReadNotSystemicallyDenied}, where the tally can tell the two
+ * apart.
+ *
+ * The caller treats an unreadable bucket as skipped rather than as an empty
+ * answer, so a failure never gets written down as a fact. Rows are never
+ * deleted, so the bucket keeps its previous values until the next hourly sweep.
+ */
+function recordS3MetadataFailure(
+  scope: InfraScopeRow,
+  bucket: string,
+  what: string,
+  err: unknown,
+  tally: S3ReadTally,
+): void {
+  if (isAwsAuthorizationError(err)) tally.denied += 1;
+  console.warn(
+    `[infra-inventory-sync] ${describeScope(scope)}: could not read ${what} for bucket ${bucket} —`,
+    err instanceof Error ? err.message : String(err),
+  );
+}
+
+/**
+ * Fail the scope when *every* bucket denied a read, which is a missing grant.
+ *
+ * This is the half that must stay loud, and each read fails differently:
+ *
+ *   - without `s3:GetBucketTagging` every bucket reads as untagged, so a
+ *     tag-filtered scope matches nothing;
+ *   - without `s3:GetMetricsConfiguration` every bucket reads as having no
+ *     metrics configuration, so the paid request metrics stop being collected
+ *     and the UI cheerfully explains that none are configured;
+ *   - without `cloudwatch:ListMetrics` every bucket reads as holding no storage
+ *     classes, so no `BucketSizeBytes` row is written at all and every storage
+ *     chart in the project quietly empties.
+ *
+ * All three are complete-looking inventories that are wrong, and the ELBv2 tag
+ * path has been bitten by that exact shape twice.
+ *
+ * **Every read this guards must therefore increment `attempted`**, including the
+ * ones that degrade to an empty answer rather than skipping the bucket. A reader
+ * that only counted its denials would leave `attempted` at zero, take the
+ * early return below, and turn this guard into decoration — which is precisely
+ * what happened to the storage-class read before review caught it.
+ *
+ * A partial denial is not this. It is one bucket's policy, it is already warned
+ * about, and it must not cost every other bucket in the region its inventory.
+ */
+function assertS3ReadNotSystemicallyDenied(
+  scope: InfraScopeRow,
+  what: string,
+  action: string,
+  tally: S3ReadTally,
+): void {
+  if (tally.attempted === 0 || tally.denied < tally.attempted) return;
+  throw new Error(
+    `every bucket denied ${what} (${tally.denied}/${tally.attempted}); grant ${action} to the monitoring role`,
+  );
+}
+
+/**
+ * Every bucket the scope's region owns, following the continuation token.
+ *
+ * `BucketRegion` does the filtering server-side, which is what keeps this from
+ * being an account-wide walk repeated once per region a project monitors. AWS
+ * pairs that parameter with a constraint the client already satisfies:
+ * "Requests made to a Regional endpoint that is different from the
+ * `bucket-region` parameter are not supported" — and `getProjectS3Client` builds
+ * the client for the scope's own region.
+ */
+async function listS3Buckets(client: S3DescribeClient, scope: InfraScopeRow): Promise<Bucket[]> {
+  const buckets: Bucket[] = [];
+  let continuationToken: string | undefined;
+  let pages = 0;
+  do {
+    const out = await client.send(
+      new ListBucketsCommand({
+        BucketRegion: scope.region,
+        MaxBuckets: S3_LIST_BUCKETS_PAGE_SIZE,
+        ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+      }),
+    );
+    buckets.push(...(out.Buckets ?? []));
+    continuationToken = out.ContinuationToken ?? undefined;
+    pages += 1;
+  } while (continuationToken && pages < MAX_PAGES_PER_SCOPE);
+
+  if (continuationToken) {
+    console.warn(
+      `[infra-inventory-sync] ${describeScope(scope)}: stopped listing buckets at the ${MAX_PAGES_PER_SCOPE}-page cap; inventory may be incomplete`,
+    );
+  }
+  return buckets;
+}
+
+/**
+ * The region a bucket lives in, or `null` when it cannot be established.
+ *
+ * `BucketRegion` comes back on the list response and is used when it is there.
+ * `GetBucketLocation` is the fallback rather than the primary, which inverts the
+ * obvious reading of "inventory via ListAllMyBuckets + GetBucketLocation": one
+ * extra API call per bucket per sweep is a real cost on an account with
+ * thousands of them, and the list already carries the answer.
+ *
+ * The check is not redundant with the server-side `BucketRegion` filter. A
+ * partition or endpoint that ignores the filter would hand back the whole
+ * account, and writing those rows under the scope's region would attach a
+ * bucket's inventory row to a region whose CloudWatch endpoint has no metrics
+ * for it — a permanently empty chart with no explanation.
+ */
+async function resolveBucketRegion(
+  client: S3DescribeClient,
+  bucket: Bucket,
+  scope: InfraScopeRow,
+  tally: S3ReadTally,
+): Promise<string | null> {
+  if (bucket.BucketRegion) return bucket.BucketRegion;
+  const name = bucket.Name;
+  if (!name) return null;
+  tally.attempted += 1;
+  try {
+    const out = await client.send(new GetBucketLocationCommand({ Bucket: name }));
+    const constraint = out.LocationConstraint ?? '';
+    if (constraint === '') return S3_DEFAULT_LOCATION;
+    return S3_LEGACY_LOCATIONS[constraint] ?? constraint;
+  } catch (err) {
+    recordS3MetadataFailure(scope, name, 'the bucket location', err, tally);
+    return null;
+  }
+}
+
+/**
+ * A bucket's tags in the `[{Key,Value}]` shape the rest of this module uses, or
+ * `null` when they could not be read.
+ *
+ * `null` and `[]` are deliberately different answers. An untagged bucket really
+ * has no tags; an unreadable one has tags we do not know, and a scope tag filter
+ * evaluated against the empty array would silently *exclude* it. Returning null
+ * lets the caller count the bucket as skipped instead of writing a failure down
+ * as a fact.
+ */
+async function fetchBucketTags(
+  client: S3DescribeClient,
+  scope: InfraScopeRow,
+  bucket: string,
+  tally: S3ReadTally,
+): Promise<Array<{ Key: string; Value: string }> | null> {
+  tally.attempted += 1;
+  try {
+    const out = await client.send(new GetBucketTaggingCommand({ Bucket: bucket }));
+    const tags: Array<{ Key: string; Value: string }> = [];
+    for (const tag of out.TagSet ?? []) {
+      if (typeof tag.Key === 'string') tags.push({ Key: tag.Key, Value: tag.Value ?? '' });
+    }
+    return tags;
+  } catch (err) {
+    // An untagged bucket is the common case, not a failure.
+    if (isS3NoSuchTagSetError(err)) return [];
+    recordS3MetadataFailure(scope, bucket, 'tags', err, tally);
+    return null;
+  }
+}
+
+/**
+ * The ids of every CloudWatch metrics configuration on a bucket.
+ *
+ * This is the "detected, not assumed" half of the paid request metrics. An empty
+ * list means S3 publishes no request metrics for the bucket at all, so the
+ * collector must not spend a `GetMetricData` entry on them and the UI must say
+ * why the panels are empty rather than rendering eleven blank charts.
+ *
+ * No cap on the number of configurations, deliberately. AWS allows 1,000 per
+ * bucket and each one is a full set of request-metric series, so a pathological
+ * bucket really is expensive — but a silent cap here would change *what is
+ * monitored* without telling anyone. The guardrails for that are the ones
+ * decision INFRA-COST already built: the scope editor's projected monthly cost
+ * is computed from these rows before an operator saves, and the per-project
+ * monthly ceiling widens then pauses collection on breach.
+ */
+async function listBucketMetricFilterIds(
+  client: S3DescribeClient,
+  scope: InfraScopeRow,
+  bucket: string,
+  tally: S3ReadTally,
+): Promise<string[] | null> {
+  const ids: string[] = [];
+  let continuationToken: string | undefined;
+  let pages = 0;
+  tally.attempted += 1;
+  try {
+    do {
+      const out = await client.send(
+        new ListBucketMetricsConfigurationsCommand({
+          Bucket: bucket,
+          ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+        }),
+      );
+      for (const config of out.MetricsConfigurationList ?? []) {
+        if (config.Id) ids.push(config.Id);
+      }
+      // `IsTruncated` is the authority; the token is only meaningful with it.
+      continuationToken = out.IsTruncated ? (out.NextContinuationToken ?? undefined) : undefined;
+      pages += 1;
+    } while (continuationToken && pages < MAX_PAGES_PER_SCOPE);
+  } catch (err) {
+    recordS3MetadataFailure(scope, bucket, 'metrics configurations', err, tally);
+    // Not `[]`: an empty list is the claim "this bucket has no request metrics",
+    // which the UI renders as a positive statement and the collector acts on.
+    // Making that claim from a failed read is how a paid feature goes silently
+    // uncollected.
+    return null;
+  }
+  return ids;
+}
+
+/**
+ * The storage classes a bucket currently reports `BucketSizeBytes` for.
+ *
+ * There is no S3 API that answers this — no describe call reports which storage
+ * classes a bucket holds objects in — so the answer comes from CloudWatch
+ * itself. `ListMetrics` filtered to one `BucketName` returns one entry per
+ * storage class with a series, because AWS's dimension filter is a subset match:
+ * "If you specify one dimension name and a metric has that dimension and also
+ * other dimensions, it will be returned."
+ *
+ * `ListMetrics` "doesn't return information about metrics if those metrics
+ * haven't reported data in the past two weeks", which is a feature here rather
+ * than the limitation it is for inventory generally: a storage class the bucket
+ * emptied a fortnight ago should stop being charted and stop being billed for.
+ * The corollary — a class first used today is not discoverable until its first
+ * daily report lands — is recorded in the pack's `absentMetrics`.
+ */
+async function listBucketStorageTypes(
+  cloudWatch: CloudWatchListMetricsClient,
+  scope: InfraScopeRow,
+  bucket: string,
+  tally: S3ReadTally,
+): Promise<string[]> {
+  const storageTypes = new Set<string>();
+  let nextToken: string | undefined;
+  let pages = 0;
+  tally.attempted += 1;
+  try {
+    do {
+      const out = await cloudWatch.send(
+        new ListMetricsCommand({
+          Namespace: 'AWS/S3',
+          MetricName: 'BucketSizeBytes',
+          Dimensions: [{ Name: 'BucketName', Value: bucket }],
+          ...(nextToken ? { NextToken: nextToken } : {}),
+        }),
+      );
+      for (const metric of out.Metrics ?? []) {
+        // Guard the bucket as well as reading the class: the filter is a subset
+        // match, so a future call that widened it would otherwise silently
+        // attribute another bucket's storage classes to this one.
+        const dimensions = metric.Dimensions ?? [];
+        const name = dimensions.find((d) => d.Name === 'BucketName')?.Value;
+        const storageType = dimensions.find((d) => d.Name === 'StorageType')?.Value;
+        if (name === bucket && storageType) storageTypes.add(storageType);
+      }
+      nextToken = out.NextToken ?? undefined;
+      pages += 1;
+    } while (nextToken && pages < MAX_PAGES_PER_SCOPE);
+  } catch (err) {
+    recordS3MetadataFailure(scope, bucket, 'storage classes', err, tally);
+    // `[]` is safe *for one bucket* where it is not for the other two reads: a
+    // missing storage class costs that bucket some BucketSizeBytes rows and
+    // claims nothing, and the rows are additive so they reappear next sweep.
+    //
+    // It is not safe for *every* bucket, which is why the attempt above is
+    // tallied. Degrading silently across the whole scope is how a role missing
+    // `cloudwatch:ListMetrics` turns into "every storage chart quietly
+    // disappeared and the sync said OK" — see assertS3ReadNotSystemicallyDenied.
+    return [];
+  }
+  return [...storageTypes].sort();
+}
+
+/**
+ * Walk one S3 scope: buckets, then each bucket's storage classes and metrics
+ * configurations.
+ *
+ * One bucket produces up to three *kinds* of row, because `AWS/S3` publishes
+ * three kinds of series and CloudWatch keys each on its own dimension set:
+ *
+ *   - **The bucket row** (`<bucket>`), keyed `BucketName` + `StorageType` at
+ *     `AllStorageTypes`. This is where `NumberOfObjects` lives — AWS documents
+ *     that filter as the metric's only valid one — and it is the row that
+ *     carries the `requestMetrics` feature flag for the whole bucket, so the
+ *     Metrics tab has somewhere to say "this bucket has no metrics
+ *     configuration" for a bucket that has none and therefore no filter rows.
+ *   - **A storage-class row** (`<bucket>@<StorageType>`) per class the bucket
+ *     currently reports, carrying that class's `BucketSizeBytes`.
+ *   - **A filter row** (`<bucket>#<FilterId>`) per metrics configuration,
+ *     carrying the paid request metrics.
+ *
+ * The tag filter is applied to the bucket and inherited by all of its rows.
+ * S3 has no server-side tag filter on `ListBuckets`, so this is the ELBv2
+ * situation rather than the EC2 one: filter after the read, with the same parser
+ * the collector re-applies at query time, so a malformed filter throws and fails
+ * the scope instead of silently widening it.
+ *
+ * A bucket whose tags or metrics configurations could not be read is **skipped**
+ * rather than written with a guessed answer, and counted. Its existing rows keep
+ * the values the last successful sweep wrote — rows are never deleted — so a
+ * denial or a transient failure costs an hour of freshness rather than turning
+ * into a false claim about the bucket. If *every* bucket denied one of those
+ * reads, that is a missing IAM grant rather than a bucket policy, and the scope
+ * fails.
+ */
+async function describeS3Scope(
+  client: S3DescribeClient,
+  cloudWatch: CloudWatchListMetricsClient,
+  scope: InfraScopeRow,
+): Promise<{ resources: DiscoveredResource[]; skipped: number }> {
+  const tagFilter = compileInfraTagFilter(scope.tag_filter_json);
+  const filtered = !isEmptyInfraTagFilter(tagFilter);
+
+  const resources: DiscoveredResource[] = [];
+  let skipped = 0;
+  const locationReads = freshS3ReadTally();
+  const tagReads = freshS3ReadTally();
+  const filterReads = freshS3ReadTally();
+  const storageReads = freshS3ReadTally();
+
+  for (const bucket of await listS3Buckets(client, scope)) {
+    const name = bucket.Name;
+    if (!name) {
+      skipped += 1;
+      continue;
+    }
+    // A bucket ARN carries no account id — `arn:aws:s3:::name` has an empty
+    // account field — so unlike ECS there is nothing free to read here and the
+    // scope's own account is the only source. It stays NULL until something has
+    // run sts:GetCallerIdentity for the profile.
+    const accountId = scope.account_id;
+    if (!accountId) {
+      skipped += 1;
+      continue;
+    }
+
+    const region = await resolveBucketRegion(client, bucket, scope, locationReads);
+    // Not counted as skipped: a bucket in another region is out of this scope,
+    // which is the filter working rather than inventory failing. A bucket whose
+    // region could not be read at all *is* a gap, and reads as null here.
+    if (region === null) {
+      skipped += 1;
+      continue;
+    }
+    if (region !== scope.region) continue;
+
+    const tags = await fetchBucketTags(client, scope, name, tagReads);
+    // Unreadable tags are not "no tags". Evaluating a filter against an empty
+    // array would drop the bucket without saying so.
+    if (tags === null) {
+      skipped += 1;
+      continue;
+    }
+    const tagsJson = tags.length > 0 ? JSON.stringify(tags) : null;
+    if (filtered && !matchesInfraTagFilter(tagsJson, tagFilter)) continue;
+
+    const filterIds = await listBucketMetricFilterIds(client, scope, name, filterReads);
+    // Same reasoning: writing `requestMetrics: false` from a failed read is a
+    // claim, and the UI renders it as one.
+    if (filterIds === null) {
+      skipped += 1;
+      continue;
+    }
+    const shared = {
+      accountId,
+      tagsJson,
+      environment: tagValue(tags, 'Environment'),
+      // A bucket has no lifecycle state to report: it exists or `ListBuckets`
+      // stops returning it, and the row then ages out on `last_seen`.
+      state: null,
+      features: { [S3_REQUEST_METRICS_FEATURE]: filterIds.length > 0 },
+    };
+
+    resources.push({
+      ...shared,
+      resourceId: name,
+      name,
+      metricDimensions: { BucketName: name, StorageType: S3_ALL_STORAGE_TYPES },
+    });
+
+    for (const storageType of await listBucketStorageTypes(cloudWatch, scope, name, storageReads)) {
+      // The bucket row already holds this dimension pair. Emitting it twice
+      // would collide on `resource_id` and make the second write clobber the
+      // first's name.
+      if (storageType === S3_ALL_STORAGE_TYPES) continue;
+      resources.push({
+        ...shared,
+        resourceId: `${name}@${storageType}`,
+        name: `${name} (${storageType})`,
+        metricDimensions: { BucketName: name, StorageType: storageType },
+      });
+    }
+
+    for (const filterId of filterIds) {
+      resources.push({
+        ...shared,
+        resourceId: `${name}#${filterId}`,
+        name: `${name} (${filterId})`,
+        metricDimensions: { BucketName: name, FilterId: filterId },
+      });
+    }
+  }
+
+  assertS3ReadNotSystemicallyDenied(scope, 'its location', 's3:GetBucketLocation', locationReads);
+  assertS3ReadNotSystemicallyDenied(scope, 'its tags', 's3:GetBucketTagging', tagReads);
+  assertS3ReadNotSystemicallyDenied(
+    scope,
+    'its metrics configurations',
+    's3:GetMetricsConfiguration',
+    filterReads,
+  );
+  assertS3ReadNotSystemicallyDenied(
+    scope,
+    'its storage classes',
+    'cloudwatch:ListMetrics',
+    storageReads,
+  );
+
+  return { resources, skipped };
+}
+
 /**
  * Persist one scope's discovered resources.
  *
@@ -1324,6 +1864,16 @@ async function syncScope(
       ? opts.ec2ClientFactory(scope)
       : getProjectEc2Client(scope.project_id, clientOpts);
     discovered = await describeNatGatewayScope(client, scope);
+  } else if (scope.service === S3_SERVICE) {
+    const client = opts.s3ClientFactory
+      ? opts.s3ClientFactory(scope)
+      : getProjectS3Client(scope.project_id, clientOpts);
+    // The only service whose inventory needs CloudWatch: which storage classes a
+    // bucket holds objects in exists nowhere in the S3 API.
+    const cloudWatch = opts.cloudWatchClientFactory
+      ? opts.cloudWatchClientFactory(scope)
+      : getProjectCloudWatchClient(scope.project_id, clientOpts);
+    discovered = await describeS3Scope(client, cloudWatch, scope);
   } else {
     throw new Error(`no inventory describer for service '${scope.service}'`);
   }

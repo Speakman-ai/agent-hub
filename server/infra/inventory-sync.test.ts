@@ -41,6 +41,21 @@ import {
   ListClustersCommand,
   ListServicesCommand,
 } from '@aws-sdk/client-ecs';
+import {
+  GetBucketLocationCommand,
+  GetBucketTaggingCommand,
+  ListBucketMetricsConfigurationsCommand,
+  ListBucketsCommand,
+} from '@aws-sdk/client-s3';
+import type {
+  Bucket,
+  GetBucketLocationCommandOutput,
+  GetBucketTaggingCommandOutput,
+  ListBucketMetricsConfigurationsCommandOutput,
+  ListBucketsCommandOutput,
+} from '@aws-sdk/client-s3';
+import { ListMetricsCommand } from '@aws-sdk/client-cloudwatch';
+import type { ListMetricsCommandOutput } from '@aws-sdk/client-cloudwatch';
 import { initInfraDb, getInfraDb, closeInfraDb, infraResourceKey } from './infra-db.js';
 import {
   runInfraInventorySync,
@@ -56,10 +71,12 @@ import {
   isElbTagNotFoundError,
   loadBalancerDimensionValue,
   targetGroupDimensionValue,
+  type CloudWatchListMetricsClient,
   type Ec2DescribeClient,
   type EcsDescribeClient,
   type ElbDescribeClient,
   type InfraScopeRow,
+  type S3DescribeClient,
 } from './inventory-sync.js';
 import { infraPackedServices } from './packs/index.js';
 import { estimateIntervalSeconds } from '../cron-tick.js';
@@ -70,6 +87,7 @@ import { planQueries, type CollectableResource } from './metric-collector.js';
 let dir: string;
 
 const T0 = 1_700_000_000_000;
+const DAY_MS = 86_400_000;
 const T1 = T0 + 3_600_000;
 
 interface ResourceRow {
@@ -1829,5 +1847,605 @@ describe('DescribeTags deletion race — recovering the survivors', () => {
 
     expect(result.failed).toBe(1);
     expect(allResources()).toEqual([]);
+  });
+});
+
+// ─── S3 ─────────────────────────────────────────────────────────────────────
+
+interface S3StubOptions {
+  buckets?: Bucket[];
+  bucketPages?: Array<Partial<ListBucketsCommandOutput>>;
+  /** `GetBucketLocation` answers, for buckets whose list entry carries no region. */
+  locations?: Record<string, string | undefined>;
+  locationError?: unknown;
+  tags?: Record<string, Array<{ Key: string; Value: string }>>;
+  tagsError?: unknown;
+  /** Metrics configuration ids per bucket. Absent means the bucket has none. */
+  filterIds?: Record<string, string[]>;
+  filterError?: unknown;
+}
+
+function stubS3(opts: S3StubOptions): S3DescribeClient & {
+  listCalls: ListBucketsCommand[];
+  locationCalls: GetBucketLocationCommand[];
+  tagCalls: GetBucketTaggingCommand[];
+  filterCalls: ListBucketMetricsConfigurationsCommand[];
+} {
+  const listCalls: ListBucketsCommand[] = [];
+  const locationCalls: GetBucketLocationCommand[] = [];
+  const tagCalls: GetBucketTaggingCommand[] = [];
+  const filterCalls: ListBucketMetricsConfigurationsCommand[] = [];
+  const pages = opts.bucketPages ?? [{ Buckets: opts.buckets ?? [] }];
+  let pageIndex = 0;
+
+  return {
+    listCalls,
+    locationCalls,
+    tagCalls,
+    filterCalls,
+    async send(command: unknown) {
+      if (command instanceof ListBucketsCommand) {
+        listCalls.push(command);
+        const page = pages[pageIndex] ?? {};
+        pageIndex += 1;
+        return page as ListBucketsCommandOutput;
+      }
+      if (command instanceof GetBucketLocationCommand) {
+        locationCalls.push(command);
+        if (opts.locationError) throw opts.locationError;
+        const bucket = command.input.Bucket ?? '';
+        return {
+          LocationConstraint: opts.locations?.[bucket],
+        } as unknown as GetBucketLocationCommandOutput;
+      }
+      if (command instanceof GetBucketTaggingCommand) {
+        tagCalls.push(command);
+        if (opts.tagsError) throw opts.tagsError;
+        const bucket = command.input.Bucket ?? '';
+        const tags = opts.tags?.[bucket];
+        // AWS raises NoSuchTagSet rather than returning an empty set.
+        if (!tags) throw awsError('NoSuchTagSet');
+        return { TagSet: tags } as unknown as GetBucketTaggingCommandOutput;
+      }
+      if (command instanceof ListBucketMetricsConfigurationsCommand) {
+        filterCalls.push(command);
+        if (opts.filterError) throw opts.filterError;
+        const bucket = command.input.Bucket ?? '';
+        return {
+          MetricsConfigurationList: (opts.filterIds?.[bucket] ?? []).map((Id) => ({ Id })),
+          IsTruncated: false,
+        } as unknown as ListBucketMetricsConfigurationsCommandOutput;
+      }
+      throw new Error(`unexpected S3 command ${String(command)}`);
+    },
+  } as S3DescribeClient & {
+    listCalls: ListBucketsCommand[];
+    locationCalls: GetBucketLocationCommand[];
+    tagCalls: GetBucketTaggingCommand[];
+    filterCalls: ListBucketMetricsConfigurationsCommand[];
+  };
+}
+
+/** A CloudWatch stub answering the storage-class discovery call. */
+function stubListMetrics(
+  storageTypes: Record<string, string[]>,
+  error?: unknown,
+  /** Buckets whose discovery fails while the rest succeed. */
+  errorBuckets?: Record<string, unknown>,
+): CloudWatchListMetricsClient & { calls: ListMetricsCommand[] } {
+  const calls: ListMetricsCommand[] = [];
+  return {
+    calls,
+    async send(command: ListMetricsCommand) {
+      calls.push(command);
+      if (error) throw error;
+      const bucket = command.input.Dimensions?.find((d) => d.Name === 'BucketName')?.Value ?? '';
+      if (errorBuckets && bucket in errorBuckets) throw errorBuckets[bucket];
+      return {
+        Metrics: (storageTypes[bucket] ?? []).map((storageType) => ({
+          Namespace: 'AWS/S3',
+          MetricName: 'BucketSizeBytes',
+          Dimensions: [
+            { Name: 'BucketName', Value: bucket },
+            { Name: 'StorageType', Value: storageType },
+          ],
+        })),
+      } as ListMetricsCommandOutput;
+    },
+  };
+}
+
+const s3Scope = { id: 's3', service: 's3', account_id: '111122223333' } as const;
+
+describe('runInfraInventorySync — S3', () => {
+  it('writes one bucket row, one row per storage class, and one per metrics filter', async () => {
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }],
+      tags: { logs: [{ Key: 'Environment', Value: 'prod' }] },
+      filterIds: { logs: ['EntireBucket', 'images'] },
+    });
+    const cw = stubListMetrics({ logs: ['StandardStorage', 'GlacierStorage'] });
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => cw,
+    });
+
+    expect(result).toMatchObject({ synced: 1, failed: 0, upserted: 5, skipped: 0 });
+    const rows = allResources();
+    expect(rows.map((r) => r.resource_id)).toEqual([
+      'logs',
+      'logs#EntireBucket',
+      'logs#images',
+      'logs@GlacierStorage',
+      'logs@StandardStorage',
+    ]);
+    // The bucket row is where the object count lives — AWS publishes
+    // NumberOfObjects at AllStorageTypes and nowhere else.
+    expect(JSON.parse(rows[0]!.metric_dimensions_json!)).toEqual({
+      BucketName: 'logs',
+      StorageType: 'AllStorageTypes',
+    });
+    expect(JSON.parse(rows[1]!.metric_dimensions_json!)).toEqual({
+      BucketName: 'logs',
+      FilterId: 'EntireBucket',
+    });
+    expect(JSON.parse(rows[4]!.metric_dimensions_json!)).toEqual({
+      BucketName: 'logs',
+      StorageType: 'StandardStorage',
+    });
+    // Every row inherits the bucket's tags, environment and feature flag.
+    for (const row of rows) {
+      expect(row.environment).toBe('prod');
+      expect(JSON.parse(row.features_json!)).toEqual({ requestMetrics: true });
+      expect(row.state).toBeNull();
+    }
+  });
+
+  it('records request metrics as off for a bucket with no metrics configuration', async () => {
+    // The whole point of the detection: without a configuration S3 publishes no
+    // request metrics at all, so the collector must not spend a GetMetricData
+    // entry on them and the UI must be able to say why the panel is empty.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({ buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }] });
+    const cw = stubListMetrics({ logs: ['StandardStorage'] });
+
+    await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => cw,
+    });
+
+    const rows = allResources();
+    expect(rows.map((r) => r.resource_id)).toEqual(['logs', 'logs@StandardStorage']);
+    for (const row of rows) {
+      expect(JSON.parse(row.features_json!)).toEqual({ requestMetrics: false });
+    }
+
+    // And the collector plans no request-metric query for it — asserted through
+    // the planner rather than by re-reading the flag. The clock is the first
+    // tick after a UTC day boundary, which is the one tick a day the free
+    // storage metrics are due on.
+    const collectable = rows.map((row) => ({
+      resource_key: row.resource_key,
+      account_id: row.account_id,
+      resource_id: row.resource_id,
+      service: 's3',
+      metric_dimensions_json: row.metric_dimensions_json,
+      features_json: row.features_json,
+    })) as CollectableResource[];
+    const dayStart = Math.ceil(T0 / DAY_MS) * DAY_MS;
+    const planned = planQueries(collectable, dayStart - 3 * DAY_MS, dayStart + 1000);
+    expect(planned.map((q) => `${q.metricName} ${JSON.stringify(q.dimensions)}`).sort()).toEqual(
+      [
+        // The storage-class row: the byte total lives here.
+        'BucketSizeBytes {"BucketName":"logs","StorageType":"StandardStorage"}',
+        // And on the bucket row too, where it returns nothing. BucketSizeBytes is
+        // left unpinned on purpose so a storage class AWS adds later collects
+        // automatically; the price is this one empty daily series per bucket, and
+        // the metric's own appliesTo condition is what explains the empty chart.
+        'BucketSizeBytes {"BucketName":"logs","StorageType":"AllStorageTypes"}',
+        // The object count, pinned, so it is never asked of a storage-class row.
+        'NumberOfObjects {"BucketName":"logs","StorageType":"AllStorageTypes"}',
+      ].sort(),
+    );
+    // Both at the daily period, not the 60s retention tier, or CloudWatch has
+    // nothing to return for a metric it publishes once a day.
+    expect(new Set(planned.map((q) => q.periodSeconds))).toEqual(new Set([86_400]));
+
+    // Four hours later the same two metrics are not due again. This is the
+    // concrete form of "polled at most a few times a day because they only
+    // update daily" — at the 5-minute tick, being due every tick would be 288
+    // billed requests a day for one datapoint.
+    expect(planQueries(collectable, dayStart, dayStart + 4 * 60 * 60 * 1000)).toEqual([]);
+  });
+
+  it('narrows ListBuckets to the scope region and does not call GetBucketLocation', async () => {
+    // BucketRegion filters server-side, so the account-wide walk is not repeated
+    // per region and no extra per-bucket call is paid for.
+    insertScope({ ...s3Scope, region: 'eu-west-1' });
+    const s3 = stubS3({ buckets: [{ Name: 'logs', BucketRegion: 'eu-west-1' }] });
+
+    await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(s3.listCalls[0]!.input.BucketRegion).toBe('eu-west-1');
+    // Explicit MaxBuckets is what makes the call paginated; AWS rejects
+    // unpaginated ListBuckets for accounts above the default bucket quota.
+    expect(s3.listCalls[0]!.input.MaxBuckets).toBe(10_000);
+    expect(s3.locationCalls).toEqual([]);
+    expect(allResources()).toHaveLength(1);
+  });
+
+  it('drops a bucket the list returned from another region', async () => {
+    // A partition or endpoint that ignored BucketRegion would otherwise attach
+    // the row to a region whose CloudWatch endpoint has no metrics for it.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      buckets: [
+        { Name: 'here', BucketRegion: 'us-east-1' },
+        { Name: 'elsewhere', BucketRegion: 'eu-west-1' },
+      ],
+    });
+
+    await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(allResources().map((r) => r.resource_id)).toEqual(['here']);
+  });
+
+  it('falls back to GetBucketLocation, treating an empty constraint as us-east-1', async () => {
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      buckets: [{ Name: 'legacy' }, { Name: 'old-eu' }],
+      // "Buckets in Region us-east-1 have a LocationConstraint of null", and
+      // `EU` is the one legacy value that is not a region code.
+      locations: { legacy: undefined, 'old-eu': 'EU' },
+    });
+
+    await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(s3.locationCalls).toHaveLength(2);
+    expect(allResources().map((r) => r.resource_id)).toEqual(['legacy']);
+  });
+
+  it('applies the scope tag filter to the bucket and to every row it produces', async () => {
+    // ListBuckets has no server-side tag filter, so this is the ELBv2 situation:
+    // filter after the read, with the parser the collector re-applies at query
+    // time.
+    insertScope({ ...s3Scope, tag_filter_json: JSON.stringify({ Environment: ['prod'] }) });
+    const s3 = stubS3({
+      buckets: [
+        { Name: 'prod-logs', BucketRegion: 'us-east-1' },
+        { Name: 'dev-logs', BucketRegion: 'us-east-1' },
+      ],
+      tags: {
+        'prod-logs': [{ Key: 'Environment', Value: 'prod' }],
+        'dev-logs': [{ Key: 'Environment', Value: 'dev' }],
+      },
+      filterIds: { 'prod-logs': ['EntireBucket'], 'dev-logs': ['EntireBucket'] },
+    });
+    const cw = stubListMetrics({
+      'prod-logs': ['StandardStorage'],
+      'dev-logs': ['StandardStorage'],
+    });
+
+    await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => cw,
+    });
+
+    expect(allResources().map((r) => r.resource_id)).toEqual([
+      'prod-logs',
+      'prod-logs#EntireBucket',
+      'prod-logs@StandardStorage',
+    ]);
+  });
+
+  it('discovers storage classes from ListMetrics scoped to the one bucket', async () => {
+    // There is no S3 API that reports which storage classes a bucket holds
+    // objects in. ListMetrics' dimension filter is a subset match, so filtering
+    // on BucketName alone returns one entry per class with a live series.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({ buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }] });
+    const cw = stubListMetrics({ logs: ['StandardStorage', 'GlacierStorage'] });
+
+    await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => cw,
+    });
+
+    expect(cw.calls).toHaveLength(1);
+    expect(cw.calls[0]!.input).toMatchObject({
+      Namespace: 'AWS/S3',
+      MetricName: 'BucketSizeBytes',
+      Dimensions: [{ Name: 'BucketName', Value: 'logs' }],
+    });
+    // PT3H is ListMetrics' only legal RecentlyActive value and a daily metric is
+    // outside that window for 21 hours a day, so it must not be sent.
+    expect(cw.calls[0]!.input.RecentlyActive).toBeUndefined();
+  });
+
+  it('never emits a second AllStorageTypes row when ListMetrics reports one', async () => {
+    // The bucket row already holds that dimension pair; a duplicate would
+    // collide on resource_id and clobber the bucket row's name.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({ buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }] });
+    const cw = stubListMetrics({ logs: ['AllStorageTypes', 'StandardStorage'] });
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => cw,
+    });
+
+    expect(result.upserted).toBe(2);
+    expect(allResources().map((r) => r.resource_id)).toEqual(['logs', 'logs@StandardStorage']);
+    expect(allResources()[0]!.name).toBe('logs');
+  });
+
+  it('keeps a bucket whose CloudWatch discovery failed, minus its storage rows', async () => {
+    // A CloudWatch failure must not cost the bucket its request metrics or its
+    // inventory row. The sweep is hourly, so the storage rows return next time.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }],
+      filterIds: { logs: ['EntireBucket'] },
+    });
+    const cw = stubListMetrics({}, awsError('InternalServiceError', 500));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => cw,
+    });
+
+    expect(result.failed).toBe(0);
+    expect(allResources().map((r) => r.resource_id)).toEqual(['logs', 'logs#EntireBucket']);
+  });
+
+  it('keeps every other bucket when one bucket policy denies a read', async () => {
+    // One bucket's policy denying the monitoring role must not cost the region
+    // its S3 inventory: there is no per-bucket exclusion an operator could use
+    // to get out of that, so the sweep would stay broken forever.
+    insertScope({ ...s3Scope });
+    const denied = awsError('AccessDenied');
+    const s3 = stubS3({
+      buckets: [
+        { Name: 'locked', BucketRegion: 'us-east-1' },
+        { Name: 'open', BucketRegion: 'us-east-1' },
+      ],
+      filterIds: { open: ['EntireBucket'] },
+    });
+    const original = s3.send.bind(s3);
+    (s3 as unknown as { send: (c: unknown) => Promise<unknown> }).send = async (c: unknown) => {
+      if (
+        c instanceof ListBucketMetricsConfigurationsCommand &&
+        (c as ListBucketMetricsConfigurationsCommand).input.Bucket === 'locked'
+      ) {
+        throw denied;
+      }
+      return original(c as never);
+    };
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    // The denied bucket is skipped rather than written with a guessed answer —
+    // `requestMetrics: false` from a failed read is a claim the UI renders.
+    expect(result).toMatchObject({ synced: 1, failed: 0, skipped: 1 });
+    expect(allResources().map((r) => r.resource_id)).toEqual(['open', 'open#EntireBucket']);
+  });
+
+  it('fails the scope when the role cannot read metrics configurations', async () => {
+    // Swallowing this would report success while reading every bucket in the
+    // region as having no request metrics — a complete-looking inventory that
+    // has silently stopped collecting paid series.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }],
+      filterError: awsError('AccessDenied'),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(result.failed).toBe(1);
+    expect(allResources()).toEqual([]);
+  });
+
+  it('fails the scope when every bucket denies the storage-class discovery', async () => {
+    // Caught in review: the storage read degrades to [] per bucket rather than
+    // skipping it, so it originally never tallied an attempt and this guard
+    // could not fire at all. Without `cloudwatch:ListMetrics` no BucketSizeBytes
+    // row is written for any bucket, so every storage chart in the project
+    // empties while the sweep reports success — the exact silent-and-complete
+    // failure the tally exists to catch.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      buckets: [
+        { Name: 'a', BucketRegion: 'us-east-1' },
+        { Name: 'b', BucketRegion: 'us-east-1' },
+      ],
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}, awsError('AccessDenied')),
+    });
+
+    expect(result.failed).toBe(1);
+    expect(allResources()).toEqual([]);
+  });
+
+  it('keeps the other buckets when one bucket denies the storage-class discovery', async () => {
+    // The boundary the guard must not trip on. One denial is a bucket policy,
+    // and it costs that bucket its BucketSizeBytes rows only — those are
+    // additive and return on the next sweep, so the bucket keeps its object
+    // count and its request metrics rather than vanishing.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      buckets: [
+        { Name: 'locked', BucketRegion: 'us-east-1' },
+        { Name: 'open', BucketRegion: 'us-east-1' },
+      ],
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () =>
+        stubListMetrics({ open: ['StandardStorage'] }, undefined, {
+          locked: awsError('AccessDenied'),
+        }),
+    });
+
+    expect(result).toMatchObject({ synced: 1, failed: 0, skipped: 0 });
+    expect(allResources().map((r) => r.resource_id)).toEqual([
+      'locked',
+      'open',
+      'open@StandardStorage',
+    ]);
+  });
+
+  it('fails the scope when every bucket denies, which is a missing grant', async () => {
+    // The discriminator: one denial is a bucket policy, all of them is an IAM
+    // gap. Under a gap every bucket reads as having no metrics configuration,
+    // so the paid series stop being collected while the sweep reports success —
+    // the same silent-and-complete-looking failure the ELBv2 tag path hit twice.
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      buckets: [
+        { Name: 'a', BucketRegion: 'us-east-1' },
+        { Name: 'b', BucketRegion: 'us-east-1' },
+      ],
+      filterError: awsError('AccessDenied'),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(result.failed).toBe(1);
+    expect(allResources()).toEqual([]);
+  });
+
+  it('does not evaluate a tag filter against tags it failed to read', async () => {
+    // The subtle one. Treating an unreadable bucket as untagged silently
+    // *excludes* it from a tag-filtered scope, so the bucket disappears from an
+    // inventory that reports success. Counting it as skipped keeps the gap
+    // visible in the sweep result.
+    insertScope({ ...s3Scope, tag_filter_json: JSON.stringify({ Environment: ['prod'] }) });
+    const s3 = stubS3({
+      buckets: [{ Name: 'unreadable', BucketRegion: 'us-east-1' }],
+      tagsError: awsError('InternalError', 500),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(result).toMatchObject({ synced: 1, failed: 0, upserted: 0, skipped: 1 });
+  });
+
+  it('fails the scope when the role cannot read bucket tags', async () => {
+    // Same reasoning: without the grant every bucket reads as untagged, so a
+    // tag-filtered scope would quietly match nothing.
+    insertScope({ ...s3Scope, tag_filter_json: JSON.stringify({ Environment: ['prod'] }) });
+    const s3 = stubS3({
+      buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }],
+      tagsError: awsError('AccessDenied'),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(result.failed).toBe(1);
+    expect(allResources()).toEqual([]);
+  });
+
+  it('treats NoSuchTagSet as an untagged bucket rather than a failure', async () => {
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({ buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }] });
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(result.failed).toBe(0);
+    expect(allResources()[0]).toMatchObject({ tags_json: null, environment: null });
+  });
+
+  it('skips a bucket whose account cannot be resolved', async () => {
+    // A bucket ARN carries no account id, so the scope's own account is the only
+    // source and it stays NULL until sts:GetCallerIdentity has run.
+    insertScope({ id: 's3', service: 's3' });
+    const s3 = stubS3({ buckets: [{ Name: 'logs', BucketRegion: 'us-east-1' }] });
+
+    const result = await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(result).toMatchObject({ upserted: 0, skipped: 1, failed: 0 });
+  });
+
+  it('follows the ListBuckets continuation token', async () => {
+    insertScope({ ...s3Scope });
+    const s3 = stubS3({
+      bucketPages: [
+        { Buckets: [{ Name: 'a', BucketRegion: 'us-east-1' }], ContinuationToken: 'next' },
+        { Buckets: [{ Name: 'b', BucketRegion: 'us-east-1' }] },
+      ],
+    });
+
+    await runInfraInventorySync({
+      nowMs: T0,
+      s3ClientFactory: () => s3,
+      cloudWatchClientFactory: () => stubListMetrics({}),
+    });
+
+    expect(s3.listCalls).toHaveLength(2);
+    expect(s3.listCalls[1]!.input.ContinuationToken).toBe('next');
+    expect(allResources().map((r) => r.resource_id)).toEqual(['a', 'b']);
   });
 });

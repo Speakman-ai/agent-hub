@@ -7335,6 +7335,13 @@ components:
                       example:
                         - ClusterName
                         - ServiceName
+                    dimensionValues:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: "Dimension **values** the series is additionally pinned to, present only where the dimension names alone do not identify it. `AWS/S3` is the case it exists for: `BucketSizeBytes` and `NumberOfObjects` are both keyed on `BucketName` + `StorageType`, but AWS documents `AllStorageTypes` as the object count’s only valid storage-type filter and does not list it among the byte total’s. A resource whose recorded dimension value contradicts a pin is skipped exactly as a dimension-name mismatch is."
+                      example:
+                        StorageType: AllStorageTypes
                     metricType:
                       type: string
                       enum:
