@@ -1,5 +1,7 @@
 import http from 'node:http';
+import type { IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import express from 'express';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, it, expect } from 'vitest';
@@ -10,6 +12,8 @@ import {
   injectHtmlPreviewBaseHref,
   parsePreviewProxyInternalPort,
   parsePreviewProxySessionId,
+  shouldRewriteHtmlResponse,
+  upstreamRequestHeaders,
 } from './preview-proxy.js';
 
 describe('parsePreviewProxySessionId', () => {
@@ -47,6 +51,59 @@ describe('parsePreviewProxyInternalPort', () => {
   });
 });
 
+describe('upstreamRequestHeaders', () => {
+  function fakeReq(headers: Record<string, string>): IncomingMessage {
+    return { headers } as unknown as IncomingMessage;
+  }
+
+  it('points Host at the upstream the request is dialed to', () => {
+    const out = upstreamRequestHeaders(fakeReq({ host: 'example.test' }), '172.17.0.4', 8000);
+    expect(out.host).toBe('172.17.0.4:8000');
+  });
+
+  // We read HTML bodies as text to inject <base href>; a gzipped body would be
+  // edited as binary. Asking upstream for identity keeps the rewrite sound, and
+  // the upstream is one container-local hop away so compression buys nothing.
+  it('drops accept-encoding so bodies we may rewrite arrive uncompressed', () => {
+    const out = upstreamRequestHeaders(
+      fakeReq({ host: 'example.test', 'accept-encoding': 'gzip, br' }),
+      '127.0.0.1',
+      4200,
+    );
+    expect(out['accept-encoding']).toBeUndefined();
+  });
+
+  it('forwards other request headers untouched', () => {
+    const out = upstreamRequestHeaders(
+      fakeReq({ host: 'example.test', 'x-custom': 'v', cookie: 'a=b' }),
+      '127.0.0.1',
+      4200,
+    );
+    expect(out['x-custom']).toBe('v');
+    expect(out.cookie).toBe('a=b');
+  });
+});
+
+describe('shouldRewriteHtmlResponse', () => {
+  it('rewrites uncompressed HTML', () => {
+    expect(shouldRewriteHtmlResponse('text/html; charset=utf-8', undefined)).toBe(true);
+    expect(shouldRewriteHtmlResponse('text/html', 'identity')).toBe(true);
+  });
+
+  it('never rewrites non-HTML', () => {
+    expect(shouldRewriteHtmlResponse('application/json', undefined)).toBe(false);
+    expect(shouldRewriteHtmlResponse(undefined, undefined)).toBe(false);
+  });
+
+  // Belt-and-braces for an upstream that compresses regardless of
+  // accept-encoding: stream it through rather than corrupt it.
+  it('never rewrites a compressed body', () => {
+    expect(shouldRewriteHtmlResponse('text/html', 'gzip')).toBe(false);
+    expect(shouldRewriteHtmlResponse('text/html', 'br')).toBe(false);
+    expect(shouldRewriteHtmlResponse('text/html', 'GZIP')).toBe(false);
+  });
+});
+
 describe('injectHtmlPreviewBaseHref', () => {
   it('inserts base href under head', () => {
     const html = '<html><head><title>x</title></head><body></body></html>';
@@ -75,6 +132,32 @@ describe('injectHtmlPreviewBaseHref', () => {
     expect(out).toContain('<base href="/api/sessions/sess-1/preview/proxy/">');
     expect(out).not.toContain('href="/"');
     expect(out.match(/<base\b/gi)?.length).toBe(1);
+  });
+
+  // Regression: the old fallback prepended the tag to ANY body served as
+  // text/html. Survey Tracker's /health answers text/html with the body "OK",
+  // so the proxy turned it into `<base href="...">OK`. Now that API traffic
+  // reaches the backend through the /p/<port> sub-mount, non-document bodies
+  // with an HTML content type are routine.
+  it('leaves a non-document text/html body byte-identical', () => {
+    expect(injectHtmlPreviewBaseHref('OK', 'sess-1')).toBe('OK');
+    expect(injectHtmlPreviewBaseHref('{"detail":"ok"}', 'sess-1')).toBe('{"detail":"ok"}');
+    expect(injectHtmlPreviewBaseHref('', 'sess-1')).toBe('');
+  });
+
+  // A gzipped document read as text matches none of the document patterns, so
+  // it must fall through untouched rather than gain a prepended tag.
+  it('does not prepend a tag to a body it cannot recognise as a document', () => {
+    const binaryish = '\u001f\u008b\u0008\u0000garbage';
+    expect(injectHtmlPreviewBaseHref(binaryish, 'sess-1')).toBe(binaryish);
+  });
+
+  it('injects into a document that omits the optional <head> tag', () => {
+    const html = '<html><body><p>hi</p></body></html>';
+    const out = injectHtmlPreviewBaseHref(html, 'sess-1');
+    expect(out).toContain('<base href="/api/sessions/sess-1/preview/proxy/">');
+    // Must land inside the implied head, i.e. before any body content.
+    expect(out.indexOf('<base')).toBeLessThan(out.indexOf('<body'));
   });
 
   it('points the base href at the /p/<internalPort> sub-mount for extra ports', () => {
@@ -146,6 +229,82 @@ describe('preview proxy routing (end-to-end)', () => {
     const primary = await request(app).get('/api/sessions/sess-1/preview/proxy/assets/app.js');
     expect(primary.status).toBe(200);
     expect(primary.text).toBe('primary:GET:/assets/app.js');
+  });
+
+  /** Upstream that answers with a fixed body, content type, and encoding. */
+  async function startFixedUpstream(
+    body: Buffer | string,
+    headers: Record<string, string>,
+  ): Promise<number> {
+    const server = http.createServer((req, res) => {
+      for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+      res.end(body);
+    });
+    upstreams.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return (server.address() as AddressInfo).port;
+  }
+
+  // Reproduces the observed corruption: Survey Tracker's /health answers
+  // `text/html` with the body `OK`, and the proxy returned `<base href="…">OK`.
+  it('does not inject into a text/html body that is not a document', async () => {
+    const port = await startFixedUpstream('OK', { 'content-type': 'text/html; charset=utf-8' });
+    const app = appWith(() => port);
+    const res = await request(app).get('/api/sessions/sess-1/preview/proxy/p/8000/health');
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('OK');
+    expect(res.text).not.toContain('<base');
+  });
+
+  it('still injects into a real HTML document', async () => {
+    const port = await startFixedUpstream('<html><head><title>t</title></head></html>', {
+      'content-type': 'text/html',
+    });
+    const app = appWith(() => port);
+    const res = await request(app).get('/api/sessions/sess-1/preview/proxy/');
+    expect(res.text).toContain('<base href="/api/sessions/sess-1/preview/proxy/">');
+  });
+
+  it('asks the upstream not to compress, so HTML arrives rewritable', async () => {
+    let seen: string | undefined = 'unset';
+    const server = http.createServer((req, res) => {
+      seen = req.headers['accept-encoding'] as string | undefined;
+      res.setHeader('content-type', 'text/html');
+      res.end('<html><head></head></html>');
+    });
+    upstreams.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+
+    const app = appWith(() => port);
+    const res = await request(app)
+      .get('/api/sessions/sess-1/preview/proxy/')
+      .set('accept-encoding', 'gzip, br');
+    expect(seen).toBeUndefined();
+    expect(res.text).toContain('<base href=');
+  });
+
+  // An upstream that compresses regardless must pass through byte-for-byte
+  // rather than have a tag prepended to its gzip stream.
+  it('passes a compressed HTML body through untouched', async () => {
+    const gzipped = gzipSync(Buffer.from('<html><head></head><body>hi</body></html>'));
+    const port = await startFixedUpstream(gzipped, {
+      'content-type': 'text/html',
+      'content-encoding': 'gzip',
+    });
+    const app = appWith(() => port);
+    const res = await request(app)
+      .get('/api/sessions/sess-1/preview/proxy/')
+      .responseType('blob')
+      .set('accept-encoding', 'identity');
+    // supertest/superagent transparently gunzips, so compare the decoded body:
+    // the point is that no `<base>` tag was spliced into the gzip stream.
+    const received = Buffer.isBuffer(res.body) ? res.body : Buffer.from(String(res.text ?? ''));
+    const decoded = received.equals(gzipped)
+      ? gunzipSync(received).toString()
+      : received.toString();
+    expect(decoded).toBe('<html><head></head><body>hi</body></html>');
+    expect(decoded).not.toContain('<base');
   });
 
   it('503s when the requested extra port is not mapped', async () => {
