@@ -249,8 +249,16 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     { pkg: 'body-parser', min: '2.3.0', advisory: 'GHSA-v422-hmwv-36x6', line: '2.x' },
     // GHSA-r292-9mhp-454m: uncatchable stack-overflow DoS via a crafted long-path tar.
     { pkg: 'tar', min: '7.5.21', advisory: 'GHSA-r292-9mhp-454m' },
-    // GHSA-c2j3-45gr-mqc4: CUSTOM_ELEMENT_HANDLING bypasses afterSanitizeElements.
-    { pkg: 'dompurify', min: '3.4.12', advisory: 'GHSA-c2j3-45gr-mqc4' },
+    // GHSA-c2j3-45gr-mqc4 (3.4.12): CUSTOM_ELEMENT_HANDLING bypasses
+    // afterSanitizeElements. GHSA-55q2-fjhq-7xh7 (3.4.13) supersedes it: on the
+    // IN_PLACE path a node detached by an uponSanitizeElement/beforeSanitizeElements
+    // hook -- the documented `node.remove()` pattern -- was left un-neutralized,
+    // so a queued resource handler on the detached subtree (`<img onerror>`,
+    // `<video>` error, lazy `onload`, ...) still fired in page scope after
+    // sanitize returned. 3.4.13 neutralizes the detached subtree inline. The
+    // floor names the stricter constraint; the behavioural guard further down
+    // asserts the installed code actually strips those handlers.
+    { pkg: 'dompurify', min: '3.4.13', advisory: 'GHSA-55q2-fjhq-7xh7' },
     // GHSA-4x5r-pxfx-6jf8: arbitrary file read via a sourceMappingURL comment.
     { pkg: '@babel/core', min: '7.29.6', advisory: 'GHSA-4x5r-pxfx-6jf8' },
     // GHSA-6vfc-qv3f-vr6c (12.3.2) + GHSA-6v5v-wf23-fmfq (>14.1.1, i.e. 14.2.0).
@@ -655,6 +663,112 @@ describe('hono/cors bounds preflight header parsing (GHSA-8j4g-w8fx-2239)', () =
       // requested headers would also finish inside the timeout.
       expect(child.stdout, detail).toBe(`ALLOW=${EXPECTED_ALLOW_LENGTH}`);
     }, 30_000);
+  }
+});
+
+/**
+ * GHSA-55q2-fjhq-7xh7: on the IN_PLACE path DOMPurify treated a node detached
+ * by a sanitize hook as "already gone" and returned early, leaving the caller
+ * holding a live subtree with its event-handler attributes intact. The caller
+ * built that tree in the real document, so an `<img onerror>` in it is already
+ * armed and fires in page scope once sanitize returns -- even though the
+ * handler never reached the sanitized tree. `node.remove()` inside
+ * `uponSanitizeElement` is the pattern DOMPurify's own docs recommend for
+ * dropping an element, so this is reachable from documented usage.
+ *
+ * The floor above proves a version string; this proves the installed code
+ * strips the handler. Mutation-checked: 3.4.12 leaves `onerror="alert(1)"` on
+ * the detached `<img>`, 3.4.13 returns null for it.
+ *
+ * Both the sanitized output and `DOMPurify.removed` look identical on the two
+ * versions -- the detached subtree is the only place the difference shows --
+ * so the assertion has to reach into the node the hook kept a reference to.
+ */
+describe('dompurify neutralizes hook-detached IN_PLACE subtrees (GHSA-55q2-fjhq-7xh7)', () => {
+  const require_ = createRequire(import.meta.url);
+
+  /** Minimal surface of the two untyped modules this guard drives. */
+  interface JsdomModule {
+    JSDOM: new (html: string) => { window: { document: Document } };
+  }
+  interface PurifyInstance {
+    addHook: (event: string, cb: (node: Element, data: { tagName: string }) => void) => void;
+    sanitize: (node: Element, cfg: Record<string, unknown>) => unknown;
+  }
+
+  /**
+   * `jsdom` is declared by the repo root and by `client`, never by `server`, so
+   * resolve it through `createRequire` (node's own upward walk) rather than a
+   * static import -- server has no `@types/jsdom` and the specifier would not
+   * typecheck.
+   */
+  let jsdom: JsdomModule | null = null;
+  try {
+    jsdom = require_('jsdom') as JsdomModule;
+  } catch {
+    jsdom = null;
+  }
+
+  /**
+   * Every `dompurify` copy installed at the version its lockfile resolved. A
+   * mismatch means the tree predates the lock, so the code on disk says
+   * nothing about what a fresh `npm ci` would install.
+   */
+  const copies: Array<{ workspace: string; key: string; dir: string; version: string }> = [];
+  for (const { name, lock } of LOCKFILES) {
+    const root = dirname(join(here, lock));
+    for (const [key, meta] of Object.entries(lockPackages(lock))) {
+      if (packageNameOf(key) !== 'dompurify' || !meta.version) continue;
+      const manifest = join(root, key, 'package.json');
+      if (!existsSync(manifest)) continue;
+      const installed = (JSON.parse(readFileSync(manifest, 'utf8')) as { version?: string })
+        .version;
+      if (installed !== meta.version) continue;
+      copies.push({ workspace: name, key, dir: join(root, key), version: meta.version });
+    }
+  }
+
+  if (copies.length === 0) {
+    it.skip('no dompurify copy is installed at its lockfile version (run npm ci --include=dev)', () => {});
+  } else if (!jsdom) {
+    it.skip('jsdom is not installed, so the DOM guard cannot run (run npm ci --include=dev)', () => {});
+  }
+
+  for (const { workspace, key, dir, version } of jsdom ? copies : []) {
+    it(`${workspace}: ${key}@${version} strips handlers from a hook-detached subtree`, () => {
+      const { JSDOM } = jsdom!;
+      const createDOMPurify = require_(dir) as (win: unknown) => PurifyInstance;
+
+      const dom = new JSDOM('<!doctype html><body></body>');
+      const purify = createDOMPurify(dom.window);
+
+      let detached: Element | null = null;
+      purify.addHook('uponSanitizeElement', (node, data) => {
+        if (data.tagName === 'section') {
+          detached = node;
+          node.remove();
+        }
+      });
+
+      const root = dom.window.document.createElement('div');
+      root.innerHTML = '<section><img src=x onerror="alert(1)"></section>';
+      dom.window.document.body.appendChild(root);
+
+      purify.sanitize(root, { IN_PLACE: true });
+
+      const subtree = detached as Element | null;
+      expect(subtree, `${key} hook never saw the <section> to detach`).not.toBeNull();
+      const img = subtree!.querySelector('img');
+      // Asserts the fix did not simply empty the subtree -- a neutralized
+      // <img> must still be there, just disarmed.
+      expect(img, `${key} detached subtree lost its <img>`).not.toBeNull();
+      expect(
+        img!.getAttribute('onerror'),
+        `${key}@${version} left onerror armed on a subtree detached by an ` +
+          'uponSanitizeElement hook during IN_PLACE sanitize; it is missing the ' +
+          'GHSA-55q2-fjhq-7xh7 fix.',
+      ).toBeNull();
+    });
   }
 });
 
