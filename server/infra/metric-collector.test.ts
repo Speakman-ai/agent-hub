@@ -257,7 +257,13 @@ describe('resolvePeriod', () => {
 });
 
 describe('effectivePeriod', () => {
-  const spec = { namespace: 'AWS/EC2', metricName: 'X', stat: 'Average', dimension: 'InstanceId' };
+  const spec = {
+    namespace: 'AWS/EC2',
+    metricName: 'X',
+    stat: 'Average',
+    dimensions: ['InstanceId'],
+    requiresFeature: null,
+  };
 
   it('raises the retention tier to the metric emission floor', () => {
     expect(effectivePeriod({ ...spec, minPeriodSeconds: 300 }, NOW - 60_000, NOW)).toBe(300);
@@ -445,6 +451,132 @@ describe('planQueries', () => {
     const byMetric = new Map(planned.map((p) => [p.metricName, p.periodSeconds]));
     expect(byMetric.get('StatusCheckFailed')).toBe(60);
     expect(byMetric.get('CPUUtilization')).toBe(300);
+  });
+
+  describe('dimension binding and paid-feature gating', () => {
+    /** An ECS row as inventory sync writes it. */
+    const ecs = (
+      resourceId: string,
+      metricDimensions: Record<string, string>,
+      features: Record<string, boolean> | null = null,
+    ): CollectableResource => ({
+      resource_key: `k-${resourceId}`,
+      account_id: '111122223333',
+      resource_id: resourceId,
+      service: 'ecs',
+      metric_dimensions_json: JSON.stringify(metricDimensions),
+      features_json: features ? JSON.stringify(features) : null,
+    });
+
+    const namesOf = (planned: ReturnType<typeof planQueries>) =>
+      new Set(planned.map((p) => p.metricName));
+
+    it('gives a cluster row the cluster-keyed metrics and a service row the service-keyed ones', () => {
+      // The whole point of exact dimension-set matching: `AWS/ECS`
+      // CPUUtilization exists at both levels and they are different numbers.
+      const cluster = planQueries([ecs('prod', { ClusterName: 'prod' })], NOW - 900_000, NOW);
+      for (const p of cluster) expect(p.dimensions).toEqual({ ClusterName: 'prod' });
+      expect(namesOf(cluster)).toContain('CPUReservation');
+      // Service-only metrics must not be requested for a cluster row.
+      expect(namesOf(cluster)).not.toContain('LiveTaskCount');
+
+      const service = planQueries(
+        [ecs('prod/api', { ClusterName: 'prod', ServiceName: 'api' })],
+        NOW - 900_000,
+        NOW,
+      );
+      for (const p of service) {
+        expect(p.dimensions).toEqual({ ClusterName: 'prod', ServiceName: 'api' });
+      }
+      expect(namesOf(service)).toContain('LiveTaskCount');
+      // Cluster-only metrics must not be requested for a service row.
+      expect(namesOf(service)).not.toContain('CPUReservation');
+    });
+
+    it('never requests a gated metric for a resource without the feature', () => {
+      // Skipped, not merely empty: `GetMetricData` bills per metric requested,
+      // so asking for a namespace the account does not publish is spend with no
+      // possible return.
+      const off = planQueries(
+        [
+          ecs(
+            'prod/api',
+            { ClusterName: 'prod', ServiceName: 'api' },
+            { containerInsights: false },
+          ),
+        ],
+        NOW - 900_000,
+        NOW,
+      );
+      expect(off.every((p) => p.namespace === 'AWS/ECS')).toBe(true);
+      expect(namesOf(off)).not.toContain('RunningTaskCount');
+    });
+
+    it('treats an unrecorded feature as off', () => {
+      // Fail closed. Guessing towards "on" costs a billed request every tick,
+      // forever, for a series that does not exist.
+      const unknown = planQueries(
+        [ecs('prod/api', { ClusterName: 'prod', ServiceName: 'api' })],
+        NOW - 900_000,
+        NOW,
+      );
+      expect(unknown.every((p) => p.namespace === 'AWS/ECS')).toBe(true);
+    });
+
+    it('requests the gated metrics once the feature is recorded as on', () => {
+      const on = planQueries(
+        [ecs('prod/api', { ClusterName: 'prod', ServiceName: 'api' }, { containerInsights: true })],
+        NOW - 900_000,
+        NOW,
+      );
+      expect(namesOf(on)).toContain('RunningTaskCount');
+      expect(namesOf(on)).toContain('RestartCount');
+      // The free metrics are still there — the gate adds, it does not replace.
+      expect(namesOf(on)).toContain('CPUUtilization');
+    });
+
+    it('falls back to the resource id for a row written before the dimension column', () => {
+      // Every EC2 row on an install that predates the column has a NULL here,
+      // and it must keep collecting exactly what it collected yesterday until
+      // the next hourly sweep fills it in.
+      const legacy: CollectableResource = {
+        resource_key: 'k-i-1',
+        account_id: '111122223333',
+        resource_id: 'i-1',
+        service: 'ec2',
+      };
+      const planned = planQueries([legacy], NOW - 900_000, NOW);
+      expect(planned).toHaveLength(EC2_PACK_SIZE);
+      expect(planned[0].dimensions).toEqual({ InstanceId: 'i-1' });
+    });
+
+    it('collects nothing for a multi-dimension service with no recorded dimensions', () => {
+      // The fallback is only safe where a service's whole pack agrees on one
+      // dimension. ECS does not: binding `prod/api` to `ClusterName` because it
+      // happens to be a single-dimension metric would query a cluster that does
+      // not exist and be billed for it. Better to collect nothing until the
+      // next sweep records the real map.
+      const legacy: CollectableResource = {
+        resource_key: 'k-api',
+        account_id: '111122223333',
+        resource_id: 'prod/api',
+        service: 'ecs',
+      };
+      expect(planQueries([legacy], NOW - 900_000, NOW)).toEqual([]);
+    });
+
+    it('ignores an unparseable dimension column rather than failing the tick', () => {
+      const broken: CollectableResource = {
+        resource_key: 'k-i-1',
+        account_id: '111122223333',
+        resource_id: 'i-1',
+        service: 'ec2',
+        metric_dimensions_json: '{not json',
+      };
+      const planned = planQueries([broken], NOW - 900_000, NOW);
+      expect(planned).toHaveLength(EC2_PACK_SIZE);
+      expect(planned[0].dimensions).toEqual({ InstanceId: 'i-1' });
+    });
   });
 });
 

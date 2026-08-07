@@ -124,6 +124,152 @@ describe('initInfraDb', () => {
   });
 });
 
+/**
+ * Upgrading a database that predates a column.
+ *
+ * `CREATE TABLE IF NOT EXISTS` is a no-op on a table that already exists —
+ * SQLite does not diff the body against the live table — so adding a column to
+ * the CREATE body reaches new installs only. `initInfraDb` runs
+ * `reconcileSchema` immediately afterwards to close that gap, and this suite is
+ * what proves it for `infra_resources`, whose newest columns the collector and
+ * the alert sweep both reference by name.
+ *
+ * The failure this prevents is not subtle: `better-sqlite3` validates column
+ * names at *prepare* time, so a drifted column takes down inventory sync and
+ * every read that names it, on exactly the installs that have data worth
+ * keeping.
+ */
+describe('initInfraDb — upgrading a pre-existing infra.db', () => {
+  /** Write an `infra_resources` exactly as it looked before this change. */
+  function seedLegacyDb(): void {
+    const legacy = new Database(path.join(dir, INFRA_DB_FILENAME));
+    legacy.exec(`
+      CREATE TABLE infra_resources (
+        resource_key TEXT PRIMARY KEY,
+        project_id   TEXT NOT NULL,
+        account_id   TEXT NOT NULL,
+        region       TEXT NOT NULL,
+        service      TEXT NOT NULL,
+        resource_id  TEXT NOT NULL,
+        name         TEXT,
+        tags_json    TEXT,
+        environment  TEXT,
+        state        TEXT,
+        first_seen   INTEGER NOT NULL,
+        last_seen    INTEGER NOT NULL,
+        UNIQUE (project_id, account_id, region, service, resource_id)
+      );
+    `);
+    legacy
+      .prepare(
+        `INSERT INTO infra_resources
+           (resource_key, project_id, account_id, region, service, resource_id,
+            name, tags_json, environment, state, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'legacy-key',
+        'proj',
+        '111122223333',
+        'us-east-1',
+        'ec2',
+        'i-legacy',
+        'web-1',
+        null,
+        null,
+        'running',
+        1,
+        2,
+      );
+    legacy.close();
+  }
+
+  it('adds the columns the collector and alert sweep name', () => {
+    seedLegacyDb();
+    initInfraDb(dir);
+
+    const columns = (
+      getInfraDb().prepare("PRAGMA table_info('infra_resources')").all() as { name: string }[]
+    ).map((c) => c.name);
+    expect(columns).toContain('metric_dimensions_json');
+    expect(columns).toContain('features_json');
+  });
+
+  it('keeps the rows that were already there', () => {
+    // Additive only: reconciliation must never rewrite or drop data. A row that
+    // predates the column reads back with NULL in it, which the collector
+    // treats as "nothing recorded" rather than as an error.
+    seedLegacyDb();
+    initInfraDb(dir);
+
+    const row = getInfraDb()
+      .prepare('SELECT * FROM infra_resources WHERE resource_key = ?')
+      .get('legacy-key') as Record<string, unknown>;
+    expect(row.resource_id).toBe('i-legacy');
+    expect(row.name).toBe('web-1');
+    expect(row.first_seen).toBe(1);
+    expect(row.metric_dimensions_json).toBeNull();
+    expect(row.features_json).toBeNull();
+  });
+
+  it('accepts the inventory upsert that writes them', () => {
+    // The concrete runtime failure a missing column produces: this statement is
+    // the one inventory sync prepares every sweep, and better-sqlite3 rejects
+    // it at prepare time if either column is absent.
+    seedLegacyDb();
+    initInfraDb(dir);
+
+    const upsert = getInfraDb().prepare(`
+      INSERT INTO infra_resources (
+        resource_key, project_id, account_id, region, service, resource_id,
+        name, tags_json, environment, state, metric_dimensions_json, features_json,
+        first_seen, last_seen
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(resource_key) DO UPDATE SET
+        metric_dimensions_json = excluded.metric_dimensions_json,
+        features_json = excluded.features_json,
+        last_seen = excluded.last_seen
+    `);
+    expect(() =>
+      upsert.run(
+        'legacy-key',
+        'proj',
+        '111122223333',
+        'us-east-1',
+        'ec2',
+        'i-legacy',
+        'web-1',
+        null,
+        null,
+        'running',
+        JSON.stringify({ InstanceId: 'i-legacy' }),
+        null,
+        1,
+        99,
+      ),
+    ).not.toThrow();
+
+    const row = getInfraDb()
+      .prepare('SELECT * FROM infra_resources WHERE resource_key = ?')
+      .get('legacy-key') as Record<string, unknown>;
+    expect(JSON.parse(String(row.metric_dimensions_json))).toEqual({ InstanceId: 'i-legacy' });
+    expect(row.last_seen).toBe(99);
+  });
+
+  it('is idempotent across restarts', () => {
+    seedLegacyDb();
+    initInfraDb(dir);
+    closeInfraDb();
+    // A second boot must not attempt the ALTER again — SQLite errors on a
+    // duplicate column name, which would crash-loop every subsequent start.
+    expect(() => initInfraDb(dir)).not.toThrow();
+    const columns = (
+      getInfraDb().prepare("PRAGMA table_info('infra_resources')").all() as { name: string }[]
+    ).map((c) => c.name);
+    expect(columns.filter((c) => c === 'metric_dimensions_json')).toHaveLength(1);
+  });
+});
+
 describe('getInfraDb', () => {
   it('throws before init rather than opening a database implicitly', () => {
     expect(isInfraDbInitialized()).toBe(false);

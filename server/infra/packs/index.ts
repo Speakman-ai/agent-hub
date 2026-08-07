@@ -8,14 +8,17 @@
  */
 
 import { EC2_PACK } from './ec2.js';
+import { ECS_PACK } from './ecs.js';
 import type { InfraPackMetric, InfraServicePack } from './types.js';
 
 export * from './types.js';
 export { EC2_PACK } from './ec2.js';
+export { ECS_PACK, ECS_CONTAINER_INSIGHTS_FEATURE } from './ecs.js';
 
 /** Service token → pack. */
 export const INFRA_SERVICE_PACKS: Readonly<Record<string, InfraServicePack>> = Object.freeze({
   [EC2_PACK.service]: EC2_PACK,
+  [ECS_PACK.service]: ECS_PACK,
 });
 
 /** The pack for a service, or `null` when the service has none yet. */
@@ -33,5 +36,9 @@ export function infraPackedServices(): string[] {
  * Not a storage key — `infra_metric_store.ts` owns that.
  */
 export function describeInfraPackMetric(metric: InfraPackMetric): string {
-  return `${metric.namespace}/${metric.metricName} (${metric.stat})`;
+  // The dimension set is part of the identity, not decoration: `AWS/ECS`
+  // `CPUUtilization` exists at `ClusterName` and at `ClusterName` +
+  // `ServiceName`, and a log line naming only the metric and statistic cannot
+  // tell an operator which of the two it is talking about.
+  return `${metric.namespace}/${metric.metricName} (${metric.stat}) by ${metric.dimensions.join('+')}`;
 }

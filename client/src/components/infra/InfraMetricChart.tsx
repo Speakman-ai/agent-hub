@@ -139,6 +139,13 @@ export interface InfraMetricChartProps {
    * without it.
    */
   pack?: InfraServicePackWire | null;
+  /**
+   * Dimension names the charted resource's series are keyed on. A pack can
+   * declare the same metric at two dimension sets — cluster-level and
+   * service-level ECS CPU are different numbers — and this is what picks the
+   * declaration whose description and caveats actually apply.
+   */
+  dimensionNames?: readonly string[] | null;
 }
 
 export default function InfraMetricChart({
@@ -146,6 +153,7 @@ export default function InfraMetricChart({
   resourceKey,
   resourceLabel,
   pack = null,
+  dimensionNames = null,
 }: InfraMetricChartProps): React.ReactElement {
   const [series, setSeries] = useState<InfraSeriesWire[]>([]);
   const [selectedKey, setSelectedKey] = useState<string>('');
@@ -254,7 +262,7 @@ export default function InfraMetricChart({
   );
 
   const selectedSeries = series.find((s) => seriesKey(s) === selectedKey) ?? null;
-  const packMetric = findPackMetric(pack, selectedSeries);
+  const packMetric = findPackMetric(pack, selectedSeries, dimensionNames);
   const caveats = metricCaveats(packMetric);
 
   const selectClass =

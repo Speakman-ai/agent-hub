@@ -434,6 +434,7 @@ describe('ServiceNotes', () => {
     metrics: [],
     dimensions: [],
     absentMetrics: [],
+    features: [],
     defaultAlertRules: [],
   };
 
@@ -443,13 +444,14 @@ describe('ServiceNotes', () => {
       {
         namespace: 'AWS/EC2',
         metricName: 'CPUCreditBalance',
-        dimension: 'InstanceId',
+        dimensions: ['InstanceId'],
         metricType: 'balance',
         stat: 'Minimum',
         validStatistics: ['Sum', 'Average', 'Minimum', 'Maximum'],
         minPeriodSeconds: 300,
         availability: 'either',
         appliesTo: { universal: false, condition: 'Burstable (T-family) instances only.' },
+        requiresFeature: null,
         description: 'CPU credits accrued and unspent.',
       },
     ],
@@ -467,6 +469,7 @@ describe('ServiceNotes', () => {
         namespace: 'AWS/EC2',
         metricName: 'StatusCheckFailed',
         stat: 'Maximum',
+        dimensions: ['InstanceId'],
         periodS: 60,
         threshold: 1,
         comparisonOperator: 'GreaterThanOrEqualToThreshold',
@@ -497,5 +500,92 @@ describe('ServiceNotes', () => {
     expect(ServiceNotes({ pack: rulesOnly, showDefaultRules: true })).not.toBeNull();
     // …but the Metrics tab, which does not show rules, still gets nothing.
     expect(ServiceNotes({ pack: rulesOnly })).toBeNull();
+  });
+
+  describe('paid feature notices — parity with the web panel', () => {
+    const ecsPack: InfraServicePackWire = {
+      service: 'ecs',
+      label: 'ECS',
+      metrics: [
+        {
+          namespace: 'ECS/ContainerInsights',
+          metricName: 'RunningTaskCount',
+          dimensions: ['ClusterName', 'ServiceName'],
+          metricType: 'gauge',
+          stat: 'Minimum',
+          validStatistics: ['Average', 'Minimum', 'Maximum'],
+          minPeriodSeconds: 60,
+          availability: 'either',
+          appliesTo: { universal: true, condition: '' },
+          requiresFeature: 'containerInsights',
+          description: 'Tasks running.',
+        },
+      ],
+      dimensions: [],
+      absentMetrics: [],
+      features: [
+        {
+          key: 'containerInsights',
+          label: 'Container Insights',
+          whenOff: 'The ECS/ContainerInsights metrics are not published for this cluster.',
+          costNote: 'AWS charges Container Insights metrics as CloudWatch custom metrics.',
+          docsUrl: 'https://docs.aws.amazon.com/AmazonECS/latest/developerguide/x.html',
+        },
+      ],
+      defaultAlertRules: [],
+    };
+
+    /**
+     * Every string the rendered tree puts on screen, flattened.
+     *
+     * Children are concatenated with nothing between them, which is what React
+     * itself does: `{feature.label} is off for this resource` compiles to two
+     * adjacent children, and joining them with a space would invent a double
+     * space that is nowhere in the rendered output. Whitespace is then
+     * collapsed, so an assertion is about the words on screen rather than about
+     * how the markup happens to be split across interpolations.
+     */
+    function textOf(node: unknown): string {
+      if (node === null || node === undefined || typeof node === 'boolean') return '';
+      if (typeof node === 'string' || typeof node === 'number') return String(node);
+      if (Array.isArray(node)) return node.map(textOf).join('');
+      const props = (node as { props?: { children?: unknown } }).props;
+      return props ? textOf(props.children) : '';
+    }
+
+    /** {@link textOf} with runs of whitespace collapsed to single spaces. */
+    const rendered = (node: unknown): string => textOf(node).replace(/\s+/g, ' ').trim();
+
+    it('names the feature, what it hides, and what it costs', () => {
+      // The web panel says exactly this; an operator must not read one story on
+      // the desktop and a different one on the phone.
+      const text = rendered(
+        ServiceNotes({ pack: ecsPack, resource: { features: { containerInsights: false } } }),
+      );
+      expect(text).toContain('Container Insights is off for this resource');
+      expect(text).toContain('not published for this cluster');
+      expect(text).toContain('custom metrics');
+      expect(text).toContain('RunningTaskCount');
+    });
+
+    it('says nothing once the feature is on', () => {
+      const text = rendered(
+        ServiceNotes({ pack: ecsPack, resource: { features: { containerInsights: true } } }),
+      );
+      expect(text).not.toContain('Container Insights is off');
+      // Nothing else in this pack has anything to say, so the card collapses.
+      expect(
+        ServiceNotes({ pack: ecsPack, resource: { features: { containerInsights: true } } }),
+      ).toBeNull();
+    });
+
+    it('treats an unrecorded feature as off, matching the collector', () => {
+      const text = rendered(ServiceNotes({ pack: ecsPack, resource: { service: 'ecs' } }));
+      expect(text).toContain('Container Insights is off for this resource');
+    });
+
+    it('claims nothing with no resource selected', () => {
+      expect(ServiceNotes({ pack: ecsPack })).toBeNull();
+    });
   });
 });

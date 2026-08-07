@@ -153,6 +153,11 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     why: 'Desired vs running task counts and deployment state per service.',
   },
   {
+    action: 'ecs:ListAccountSettings',
+    capability: 'inventory',
+    why: 'Resolve the account-wide Container Insights default. A cluster that was never configured explicitly returns an empty settings list and inherits this value, so without it such a cluster reads as "off" and its paid metrics are never collected.',
+  },
+  {
     action: 'rds:DescribeDBInstances',
     capability: 'inventory',
     why: 'RDS instance inventory (1-minute metrics, free by default).',

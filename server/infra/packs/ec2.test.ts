@@ -29,7 +29,7 @@ describe('service pack registry', () => {
   it('resolves a pack by token and reports the packed services', () => {
     expect(getInfraServicePack('ec2')).toBe(EC2_PACK);
     expect(getInfraServicePack('nope')).toBeNull();
-    expect(infraPackedServices()).toEqual(['ec2']);
+    expect(infraPackedServices()).toEqual(['ec2', 'ecs']);
   });
 
   it('projects every pack metric into the collector query list', () => {
@@ -46,7 +46,8 @@ describe('service pack registry', () => {
           namespace: metric.namespace,
           metricName: metric.metricName,
           stat: metric.stat,
-          dimension: metric.dimension,
+          dimensions: metric.dimensions,
+          requiresFeature: metric.requiresFeature,
           minPeriodSeconds: metric.minPeriodSeconds,
         });
       }
@@ -78,8 +79,58 @@ describe.each(ALL_PACKS.map((pack) => [pack.service, pack] as const))(
     });
 
     it('names every metric uniquely within the pack', () => {
-      const keys = pack.metrics.map((m) => `${m.namespace}/${m.metricName}/${m.stat}`);
+      // The dimension set is part of the identity. `AWS/ECS` `CPUUtilization`
+      // is declared twice on purpose — once for a cluster and once for a
+      // service — because they are different numbers measuring different
+      // things. Two declarations sharing a dimension set would be a duplicate.
+      const keys = pack.metrics.map(
+        (m) => `${m.namespace}/${m.metricName}/${m.stat}/${[...m.dimensions].sort().join('+')}`,
+      );
       expect(new Set(keys).size).toBe(keys.length);
+    });
+
+    it('keys every metric on at least one dimension', () => {
+      // A dimensionless CloudWatch query is legal and returns the aggregate
+      // across every resource in the account — which is emphatically not what a
+      // per-resource chart is asking for.
+      for (const metric of pack.metrics) {
+        expect(
+          metric.dimensions.length,
+          `${metric.metricName} declares no dimensions`,
+        ).toBeGreaterThan(0);
+        expect(new Set(metric.dimensions).size).toBe(metric.dimensions.length);
+      }
+    });
+
+    it('gates every metric on a feature the pack declares', () => {
+      // A requiresFeature naming a feature the pack does not describe is a
+      // metric the collector will never request and the UI cannot explain —
+      // silently uncollected, which is the exact failure mode this epic exists
+      // to prevent.
+      const keys = new Set(pack.features.map((f) => f.key));
+      for (const metric of pack.metrics) {
+        if (metric.requiresFeature === null) continue;
+        expect(keys, `${metric.metricName} is gated on an undeclared feature`).toContain(
+          metric.requiresFeature,
+        );
+      }
+    });
+
+    it('explains what every declared feature costs and links AWS for it', () => {
+      for (const feature of pack.features) {
+        expect(feature.key.length).toBeGreaterThan(0);
+        expect(feature.label.length).toBeGreaterThan(0);
+        expect(feature.whenOff.length).toBeGreaterThan(0);
+        // The cost claim is the point of the panel, and a claim without a
+        // source is one an operator has to take on trust.
+        expect(feature.costNote.length).toBeGreaterThan(0);
+        expect(feature.docsUrl).toMatch(/^https:\/\/docs\.aws\.amazon\.com\//);
+        // A feature nothing is gated on has nothing to explain.
+        expect(
+          pack.metrics.some((m) => m.requiresFeature === feature.key),
+          `${feature.key} gates no metric`,
+        ).toBe(true);
+      }
     });
 
     it('declares a period CloudWatch can actually return', () => {
@@ -105,7 +156,7 @@ describe.each(ALL_PACKS.map((pack) => [pack.service, pack] as const))(
     it('binds every metric to a dimension the pack declares', () => {
       const names = new Set(pack.dimensions.map((d) => d.name));
       for (const metric of pack.metrics) {
-        expect(names).toContain(metric.dimension);
+        for (const name of metric.dimensions) expect(names).toContain(name);
       }
     });
 
@@ -117,7 +168,7 @@ describe.each(ALL_PACKS.map((pack) => [pack.service, pack] as const))(
         pack.dimensions.filter((d) => d.detailedMonitoringOnly).map((d) => d.name),
       );
       for (const metric of pack.metrics) {
-        expect(detailedOnly).not.toContain(metric.dimension);
+        for (const name of metric.dimensions) expect(detailedOnly).not.toContain(name);
       }
     });
 
@@ -148,12 +199,25 @@ describe.each(ALL_PACKS.map((pack) => [pack.service, pack] as const))(
       // A rule on an uncollected metric sits in INSUFFICIENT_DATA forever, which
       // is worse than no rule: it teaches operators that the state column lies.
       for (const rule of pack.defaultAlertRules) {
+        // Matched on the full series identity, dimensions included. A pack may
+        // declare one metric at two levels, and a rule that resolved to the
+        // wrong one would be validated against a threshold that means nothing
+        // for the series it actually evaluates.
         const metric = pack.metrics.find(
-          (m) => m.namespace === rule.namespace && m.metricName === rule.metricName,
+          (m) =>
+            m.namespace === rule.namespace &&
+            m.metricName === rule.metricName &&
+            m.dimensions.length === rule.dimensions.length &&
+            rule.dimensions.every((d) => m.dimensions.includes(d)),
         );
-        expect(metric, `${rule.name} targets an undeclared metric`).toBeDefined();
+        expect(metric, `${rule.name} targets an undeclared series`).toBeDefined();
         expect(rule.stat).toBe(metric!.stat);
         expect(rule.periodS).toBeGreaterThanOrEqual(metric!.minPeriodSeconds);
+        // A gated rule is fine — it simply does not fire until the feature is
+        // on — but it must be gated on a feature the pack explains.
+        if (metric!.requiresFeature !== null) {
+          expect(pack.features.map((f) => f.key)).toContain(metric!.requiresFeature);
+        }
       }
     });
 

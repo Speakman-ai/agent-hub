@@ -11,10 +11,12 @@
  * Presentational: the pack is a prop, fetched once by the page rather than per
  * mount, because the catalog is static and identical for every project.
  */
-import { AlertTriangle, Info } from 'lucide-react';
+import { AlertTriangle, Info, Lock } from 'lucide-react';
 import {
+  featureNotices,
   metricCaveats,
   summarizeDefaultRule,
+  type InfraPackResource,
   type InfraServicePackWire,
 } from '@shared/utils/infraPacks';
 
@@ -22,6 +24,12 @@ export interface InfraServiceNotesProps {
   pack: InfraServicePackWire | null;
   /** The service token the caller wanted, used only to explain a missing pack. */
   service?: string | null;
+  /**
+   * The resource in view. Required for the paid-feature notices, because a
+   * feature like Container Insights is a property of one cluster rather than of
+   * the project — with nothing selected there is no honest claim to make.
+   */
+  resource?: InfraPackResource | null;
   /** Show the recommended alert rules. Off on the Metrics tab, on for Alerts. */
   showDefaultRules?: boolean;
 }
@@ -29,6 +37,7 @@ export interface InfraServiceNotesProps {
 export default function InfraServiceNotes({
   pack,
   service,
+  resource = null,
   showDefaultRules = false,
 }: InfraServiceNotesProps): React.ReactElement | null {
   if (!pack) {
@@ -45,9 +54,40 @@ export default function InfraServiceNotes({
   }
 
   const conditional = pack.metrics.filter((m) => metricCaveats(m).length > 0);
+  const offFeatures = featureNotices(pack, resource);
 
   return (
     <div className="space-y-3" data-testid="infra-service-notes">
+      {offFeatures.map(({ feature, gatedMetricNames }) => (
+        <section
+          key={feature.key}
+          className="rounded-xl border border-amber-900/60 bg-amber-950/20 p-4"
+          data-testid={`infra-feature-off-${feature.key}`}
+        >
+          <h3 className="flex items-center gap-1.5 text-sm font-medium text-amber-200">
+            <Lock size={14} className="text-amber-400" />
+            {feature.label} is off for this resource
+          </h3>
+          <p className="mt-1.5 text-[11px] leading-5 text-gray-400">{feature.whenOff}</p>
+          <p className="mt-2 text-[11px] leading-5 text-gray-500">
+            <span className="font-medium text-gray-400">What it costs: </span>
+            {feature.costNote}{' '}
+            <a
+              href={feature.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sky-400 hover:underline"
+            >
+              AWS documentation
+            </a>
+          </p>
+          <p className="mt-2 text-[11px] leading-5 text-gray-500">
+            <span className="font-medium text-gray-400">Not collected: </span>
+            <code className="text-gray-400">{gatedMetricNames.join(', ')}</code>
+          </p>
+        </section>
+      ))}
+
       {pack.absentMetrics.length > 0 && (
         <section className="rounded-xl border border-gray-800 bg-gray-900/40 p-4">
           <h3 className="flex items-center gap-1.5 text-sm font-medium text-gray-200">

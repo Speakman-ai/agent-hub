@@ -35,7 +35,8 @@ const spec = (over: Partial<InfraMetricSpec> = {}): InfraMetricSpec => ({
   namespace: 'AWS/EC2',
   metricName: 'CPUUtilization',
   stat: 'Average',
-  dimension: 'InstanceId',
+  dimensions: ['InstanceId'],
+  requiresFeature: null,
   minPeriodSeconds: 300,
   ...over,
 });

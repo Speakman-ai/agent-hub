@@ -64,6 +64,7 @@ Resources:
               - ecs:DescribeClusters
               - ecs:ListServices
               - ecs:DescribeServices
+              - ecs:ListAccountSettings
               - rds:DescribeDBInstances
               - rds:DescribeDBClusters
               - elasticloadbalancing:DescribeLoadBalancers

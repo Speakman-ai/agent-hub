@@ -173,13 +173,14 @@ describe('InfraMetricChart pack annotations', () => {
   const packMetric = {
     namespace: 'AWS/EC2',
     metricName: 'CPUUtilization',
-    dimension: 'InstanceId',
+    dimensions: ['InstanceId'],
     metricType: 'gauge' as const,
     stat: 'Average',
     validStatistics: ['Average', 'Minimum', 'Maximum'],
     minPeriodSeconds: 300,
     availability: 'either' as const,
     appliesTo: { universal: true, condition: '' },
+    requiresFeature: null,
     description: 'Percentage of physical CPU time the instance used.',
   };
   const pack = {
@@ -187,6 +188,7 @@ describe('InfraMetricChart pack annotations', () => {
     label: 'EC2',
     metrics: [packMetric],
     dimensions: [],
+    features: [],
     absentMetrics: [],
     defaultAlertRules: [],
   };

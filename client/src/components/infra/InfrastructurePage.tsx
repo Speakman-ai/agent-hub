@@ -25,8 +25,6 @@ export interface InfrastructurePageProps {
   monitoringStatus?: InfraMonitoringStatus | null;
   /** Scope data is supplied by the scope editor once that surface is available. */
   scopeConfigured?: boolean;
-  /** True when the selected AWS metric requires a paid feature that is disabled. */
-  paidFeatureOff?: boolean;
   showToast?: (message: string, type?: string) => void;
 }
 
@@ -98,7 +96,6 @@ export default function InfrastructurePage({
   project,
   monitoringStatus,
   scopeConfigured,
-  paidFeatureOff,
   showToast,
 }: InfrastructurePageProps): React.ReactElement {
   const [tab, setTab] = useState<InfrastructureTab>('overview');
@@ -179,11 +176,6 @@ export default function InfrastructurePage({
     },
     [projectId],
   );
-  // Off by default now that the Metrics tab draws real collected data: an
-  // unconditional warning in front of a working chart would train the operator
-  // to ignore it, and the notice has to stay meaningful for the panels that
-  // genuinely are empty because a paid AWS feature is disabled (INFRA-COST).
-  const selectedPaidFeatureOff = paidFeatureOff ?? project?.infraPaidFeatureOff ?? false;
   const monitoringProfile = project?.awsMonitoringProfile;
   const monitoringMissing =
     (!status?.profile && !monitoringProfile) ||
@@ -254,12 +246,6 @@ export default function InfrastructurePage({
           )
         ) : tab === 'metrics' ? (
           <div className="space-y-3">
-            {selectedPaidFeatureOff && (
-              <EmptyState testId="infra-empty-paid-feature" title="this AWS paid feature is off">
-                Some metrics are published only when their AWS paid feature is enabled. Those panels
-                stay empty until the feature is turned on and the next collection run completes.
-              </EmptyState>
-            )}
             {!hasScope ? (
               <EmptyState testId="infra-empty-scope" title="no scope configured">
                 Configure a collection scope before viewing infrastructure metrics.
@@ -276,8 +262,13 @@ export default function InfrastructurePage({
                   resourceKey={selectedResource.resourceKey}
                   resourceLabel={selectedResource.name || selectedResource.resourceId}
                   pack={notesPack}
+                  dimensionNames={Object.keys(selectedResource.metricDimensions ?? {})}
                 />
-                <InfraServiceNotes pack={notesPack} service={selectedResource.service} />
+                <InfraServiceNotes
+                  pack={notesPack}
+                  service={selectedResource.service}
+                  resource={selectedResource}
+                />
               </>
             ) : (
               <EmptyState testId="infra-metrics-no-resource" title="no resource selected">

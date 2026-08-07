@@ -34,6 +34,15 @@
 
 import type { InfraPackAlertRule, InfraPackMetric, InfraServicePack } from './types.js';
 
+/**
+ * Every `AWS/EC2` metric here is keyed on the instance alone. The fleet-wide
+ * dimensions (`AutoScalingGroupName`, `ImageId`, `InstanceType`) are declared
+ * on the pack for the UI to explain, but nothing is collected on them: an
+ * inventory row is one instance, and a per-ASG series would be billed once per
+ * member of the group for the same number.
+ */
+const INSTANCE_ID = Object.freeze(['InstanceId']);
+
 /** Every instance publishes it, whatever the family or hypervisor. */
 const UNIVERSAL = Object.freeze({ universal: true, condition: '' });
 
@@ -81,7 +90,7 @@ function statusCheck(
   return {
     namespace: 'AWS/EC2',
     metricName,
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'flag',
     // Maximum, not Average: these are 0/1 per-minute flags, and averaging one
     // failed minute across a 5-minute period reports 0.2 — a real failure that
@@ -91,6 +100,7 @@ function statusCheck(
     minPeriodSeconds: 60,
     availability: 'either',
     appliesTo,
+    requiresFeature: null,
     description,
   };
 }
@@ -100,7 +110,7 @@ function ebsCounter(metricName: string, description: string): InfraPackMetric {
   return {
     namespace: 'AWS/EC2',
     metricName,
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'counter',
     stat: 'Sum',
     validStatistics: COUNTER_STATS,
@@ -110,6 +120,7 @@ function ebsCounter(metricName: string, description: string): InfraPackMetric {
     minPeriodSeconds: 300,
     availability: 'either',
     appliesTo: NITRO_ONLY,
+    requiresFeature: null,
     description,
   };
 }
@@ -126,7 +137,7 @@ function ebsBalance(metricName: string, description: string): InfraPackMetric {
   return {
     namespace: 'AWS/EC2',
     metricName,
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'balance',
     stat: 'Minimum',
     validStatistics: Object.freeze(['Minimum', 'Maximum']),
@@ -135,6 +146,7 @@ function ebsBalance(metricName: string, description: string): InfraPackMetric {
     // monitoring does not upgrade this series, it removes it.
     availability: 'basic-only',
     appliesTo: EBS_BURST_ONLY,
+    requiresFeature: null,
     description,
   };
 }
@@ -143,13 +155,14 @@ const EC2_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
   {
     namespace: 'AWS/EC2',
     metricName: 'CPUUtilization',
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'gauge',
     stat: 'Average',
     validStatistics: Object.freeze(['Average', 'Minimum', 'Maximum']),
     minPeriodSeconds: 300,
     availability: 'either',
     appliesTo: UNIVERSAL,
+    requiresFeature: null,
     description:
       'Percentage of physical CPU time the instance used. Guest and hypervisor time combined, so it can differ from what top reports inside the instance.',
   },
@@ -175,25 +188,27 @@ const EC2_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
   {
     namespace: 'AWS/EC2',
     metricName: 'NetworkIn',
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'counter',
     stat: 'Sum',
     validStatistics: COUNTER_STATS,
     minPeriodSeconds: 300,
     availability: 'either',
     appliesTo: UNIVERSAL,
+    requiresFeature: null,
     description: 'Bytes received on all network interfaces during the period.',
   },
   {
     namespace: 'AWS/EC2',
     metricName: 'NetworkOut',
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'counter',
     stat: 'Sum',
     validStatistics: COUNTER_STATS,
     minPeriodSeconds: 300,
     availability: 'either',
     appliesTo: UNIVERSAL,
+    requiresFeature: null,
     description: 'Bytes sent on all network interfaces during the period.',
   },
 
@@ -214,7 +229,7 @@ const EC2_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
   {
     namespace: 'AWS/EC2',
     metricName: 'CPUCreditBalance',
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'balance',
     // Minimum for the same reason the EBS balances use it: the trough is the
     // event. A T-instance that hit zero mid-period was throttled mid-period,
@@ -227,6 +242,7 @@ const EC2_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
     minPeriodSeconds: 300,
     availability: 'either',
     appliesTo: BURSTABLE_ONLY,
+    requiresFeature: null,
     description:
       'CPU credits the instance has accrued and not spent. At 0 a standard T-instance is capped at its baseline; an unlimited one starts paying for surplus credits.',
   },
@@ -234,26 +250,28 @@ const EC2_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
   {
     namespace: 'AWS/EC2',
     metricName: 'InstanceEBSIOPSExceededCheck',
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'flag',
     stat: 'Maximum',
     validStatistics: COUNTER_STATS,
     minPeriodSeconds: 60,
     availability: 'either',
     appliesTo: NITRO_ONLY,
+    requiresFeature: null,
     description:
       'Whether the workload tried to drive more IOPS than the instance type allows in the last minute. 1 means EBS throttled it at the instance, not the volume.',
   },
   {
     namespace: 'AWS/EC2',
     metricName: 'InstanceEBSThroughputExceededCheck',
-    dimension: 'InstanceId',
+    dimensions: INSTANCE_ID,
     metricType: 'flag',
     stat: 'Maximum',
     validStatistics: COUNTER_STATS,
     minPeriodSeconds: 60,
     availability: 'either',
     appliesTo: NITRO_ONLY,
+    requiresFeature: null,
     description:
       'Whether the workload tried to drive more EBS throughput than the instance type allows in the last minute. Same instance-level ceiling as the IOPS check.',
   },
@@ -273,6 +291,7 @@ const EC2_DEFAULT_ALERT_RULES: readonly InfraPackAlertRule[] = Object.freeze([
     namespace: 'AWS/EC2',
     metricName: 'StatusCheckFailed',
     stat: 'Maximum',
+    dimensions: INSTANCE_ID,
     // AWS's recommendation says period 300; we use 60 because the metric is
     // published every minute at no charge and a 5-minute period delays the page
     // by four minutes for nothing. Evaluation periods and datapoints are kept
@@ -295,6 +314,7 @@ const EC2_DEFAULT_ALERT_RULES: readonly InfraPackAlertRule[] = Object.freeze([
     namespace: 'AWS/EC2',
     metricName: 'StatusCheckFailed_AttachedEBS',
     stat: 'Maximum',
+    dimensions: INSTANCE_ID,
     periodS: 60,
     threshold: 1,
     comparisonOperator: 'GreaterThanOrEqualToThreshold',
@@ -314,6 +334,7 @@ const EC2_DEFAULT_ALERT_RULES: readonly InfraPackAlertRule[] = Object.freeze([
     namespace: 'AWS/EC2',
     metricName: 'CPUUtilization',
     stat: 'Average',
+    dimensions: INSTANCE_ID,
     periodS: 300,
     threshold: 80,
     comparisonOperator: 'GreaterThanThreshold',
@@ -332,6 +353,7 @@ const EC2_DEFAULT_ALERT_RULES: readonly InfraPackAlertRule[] = Object.freeze([
     // Minimum, and Sum is not merely unusual here — AWS documents it as not
     // applicable to this metric.
     stat: 'Minimum',
+    dimensions: INSTANCE_ID,
     periodS: 300,
     // 20% rather than 0: at zero the instance is already throttled, which makes
     // the alarm a report rather than a warning. 20% of a bucket that drains in
@@ -355,6 +377,7 @@ const EC2_DEFAULT_ALERT_RULES: readonly InfraPackAlertRule[] = Object.freeze([
     namespace: 'AWS/EC2',
     metricName: 'EBSByteBalance%',
     stat: 'Minimum',
+    dimensions: INSTANCE_ID,
     periodS: 300,
     threshold: 20,
     comparisonOperator: 'LessThanThreshold',
@@ -397,6 +420,12 @@ export const EC2_PACK: InfraServicePack = Object.freeze({
         'Every instance of one type. Published only for instances with detailed monitoring enabled.',
     },
   ]),
+  // Detailed monitoring is a paid opt-in and would fit the feature vocabulary,
+  // but `DescribeInstances` reports it per instance and inventory sync does not
+  // record it yet, so nothing here can be gated on it honestly. Until it is,
+  // the monitoring-mode caveats stay documentation (`availability`) rather than
+  // a collection gate.
+  features: Object.freeze([]),
   absentMetrics: Object.freeze([
     {
       label: 'Memory utilization',

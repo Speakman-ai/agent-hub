@@ -34,6 +34,7 @@ import {
   bucketPointsIntoSlots,
   evaluationRangeLength,
   listRuleResources,
+  type AlertableResource,
   readEvaluationRange,
   resolveSeriesDimensionsHash,
   AmbiguousMetricSeriesError,
@@ -80,6 +81,8 @@ function seedResource(overrides: Partial<Record<string, unknown>> = {}): string 
     tags_json: JSON.stringify([{ Key: 'env', Value: 'prod' }]),
     environment: null,
     state: 'running',
+    metric_dimensions_json: null,
+    features_json: null,
     first_seen: NOW - 10 * MINUTE,
     last_seen: NOW,
     ...overrides,
@@ -88,9 +91,11 @@ function seedResource(overrides: Partial<Record<string, unknown>> = {}): string 
     .prepare(
       `INSERT INTO infra_resources
          (resource_key, project_id, account_id, region, service, resource_id, name,
-          tags_json, environment, state, first_seen, last_seen)
+          tags_json, environment, state, metric_dimensions_json, features_json,
+          first_seen, last_seen)
        VALUES (@resource_key, @project_id, @account_id, @region, @service, @resource_id,
-               @name, @tags_json, @environment, @state, @first_seen, @last_seen)`,
+               @name, @tags_json, @environment, @state, @metric_dimensions_json,
+               @features_json, @first_seen, @last_seen)`,
     )
     .run(row);
   return row.resource_key as string;
@@ -288,6 +293,135 @@ describe('resolveSeriesDimensionsHash', () => {
     expect(() => resolveSeriesDimensionsHash(seedRule(), RESOURCE, ...window())).toThrow(
       AmbiguousMetricSeriesError,
     );
+  });
+
+  /**
+   * A service whose pack declares one metric at two dimension sets.
+   *
+   * ECS declares `AWS/ECS` `CPUUtilization` on `ClusterName` and on
+   * `ClusterName` + `ServiceName`, and a rule row carries no dimensions to tell
+   * them apart. Taking the first matching declaration hands a *service*
+   * resource the *cluster* declaration, which cannot bind to it — so a pair
+   * that is perfectly well-determined would throw instead of evaluating.
+   */
+  describe('a pack that declares one metric at two dimension sets', () => {
+    const ECS_CLUSTER_KEY = 'ecs-cluster-key';
+    const ECS_SERVICE_KEY = 'ecs-service-key';
+
+    const ecsRule = () =>
+      seedRule({
+        name: 'ECS service CPU high',
+        service: 'ecs',
+        namespace: 'AWS/ECS',
+        metricName: 'CPUUtilization',
+        stat: 'Average',
+      });
+
+    /** Store one CPUUtilization series against an ECS row. */
+    function seedEcsSeries(resourceKey: string, dimensions: Record<string, string>): void {
+      insertInfraMetricPoints(
+        [1, 2, 3].map((value, i) => ({
+          projectId: PROJECT,
+          resourceKey,
+          namespace: 'AWS/ECS',
+          metricName: 'CPUUtilization',
+          dimensions,
+          stat: 'Average',
+          periodSeconds: 60,
+          tsMs: NOW - (3 - i) * MINUTE,
+          value,
+        })),
+      );
+    }
+
+    /**
+     * Deliberately routed through `listRuleResources` rather than a literal
+     * `{resource_key, resource_id}`. The dimension map only reaches the binding
+     * if the sweep's own SELECT carries it, and a test that hand-built the
+     * resource would pass against a query that never selected the column.
+     */
+    function ecsResource(rule: InfraAlertRuleRow, key: string): AlertableResource {
+      const found = listRuleResources(rule, NOW).find((r) => r.resource_key === key);
+      expect(found, `${key} was not selected by the sweep`).toBeDefined();
+      return found!;
+    }
+
+    it('binds a service resource to the service-level declaration, not the first one', () => {
+      seedResource({
+        resource_key: ECS_SERVICE_KEY,
+        service: 'ecs',
+        resource_id: 'prod/api',
+        metric_dimensions_json: JSON.stringify({ ClusterName: 'prod', ServiceName: 'api' }),
+      });
+      // Two sets on the same row forces the pack-preference branch. The stray
+      // one stands in for anything the account also published under this name.
+      seedEcsSeries(ECS_SERVICE_KEY, { ClusterName: 'prod', ServiceName: 'api' });
+      seedEcsSeries(ECS_SERVICE_KEY, { ClusterName: 'prod', TaskDefinitionFamily: 'api' });
+
+      const rule = ecsRule();
+      expect(
+        resolveSeriesDimensionsHash(rule, ecsResource(rule, ECS_SERVICE_KEY), ...window()),
+      ).toBe(infraDimensionsHash({ ClusterName: 'prod', ServiceName: 'api' }));
+    });
+
+    it('binds a cluster resource to the cluster-level declaration of the same metric', () => {
+      seedResource({
+        resource_key: ECS_CLUSTER_KEY,
+        service: 'ecs',
+        resource_id: 'prod',
+        metric_dimensions_json: JSON.stringify({ ClusterName: 'prod' }),
+      });
+      seedEcsSeries(ECS_CLUSTER_KEY, { ClusterName: 'prod' });
+      seedEcsSeries(ECS_CLUSTER_KEY, { ClusterName: 'prod', ServiceName: 'api' });
+
+      const rule = ecsRule();
+      expect(
+        resolveSeriesDimensionsHash(rule, ecsResource(rule, ECS_CLUSTER_KEY), ...window()),
+      ).toBe(infraDimensionsHash({ ClusterName: 'prod' }));
+    });
+
+    it('carries the dimension map through a rule pinned to one resource', () => {
+      // The pinned branch is a separate SELECT and would drift independently.
+      seedResource({
+        resource_key: ECS_SERVICE_KEY,
+        service: 'ecs',
+        resource_id: 'prod/api',
+        metric_dimensions_json: JSON.stringify({ ClusterName: 'prod', ServiceName: 'api' }),
+      });
+      seedEcsSeries(ECS_SERVICE_KEY, { ClusterName: 'prod', ServiceName: 'api' });
+      seedEcsSeries(ECS_SERVICE_KEY, { ClusterName: 'prod', TaskDefinitionFamily: 'api' });
+
+      const rule = seedRule({
+        name: 'ECS pinned CPU high',
+        service: 'ecs',
+        namespace: 'AWS/ECS',
+        metricName: 'CPUUtilization',
+        stat: 'Average',
+        resourceKey: ECS_SERVICE_KEY,
+      });
+      expect(
+        resolveSeriesDimensionsHash(rule, ecsResource(rule, ECS_SERVICE_KEY), ...window()),
+      ).toBe(infraDimensionsHash({ ClusterName: 'prod', ServiceName: 'api' }));
+    });
+
+    it('still refuses when neither declaration matches what was stored', () => {
+      // The guard has to keep failing closed: widening the search must not turn
+      // "none of these is the pack's series" into a guess.
+      seedResource({
+        resource_key: ECS_SERVICE_KEY,
+        service: 'ecs',
+        resource_id: 'prod/api',
+        metric_dimensions_json: JSON.stringify({ ClusterName: 'prod', ServiceName: 'api' }),
+      });
+      seedEcsSeries(ECS_SERVICE_KEY, { ClusterName: 'prod', TaskDefinitionFamily: 'api' });
+      seedEcsSeries(ECS_SERVICE_KEY, { ClusterName: 'other', TaskDefinitionFamily: 'api' });
+
+      const rule = ecsRule();
+      const resource = ecsResource(rule, ECS_SERVICE_KEY);
+      expect(() => resolveSeriesDimensionsHash(rule, resource, ...window())).toThrow(
+        AmbiguousMetricSeriesError,
+      );
+    });
   });
 
   it('does not confuse another period tier for a second dimension set', () => {

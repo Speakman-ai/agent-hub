@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  featureNotices,
   findServicePack,
   findPackMetric,
   metricCaveats,
   notesPackFor,
+  resourceHasFeature,
+  sameDimensionSet,
   summarizeDefaultRule,
   type InfraPackMetricWire,
   type InfraServicePackWire,
@@ -13,13 +16,14 @@ function metric(overrides: Partial<InfraPackMetricWire> = {}): InfraPackMetricWi
   return {
     namespace: 'AWS/EC2',
     metricName: 'CPUUtilization',
-    dimension: 'InstanceId',
+    dimensions: ['InstanceId'],
     metricType: 'gauge',
     stat: 'Average',
     validStatistics: ['Average', 'Minimum', 'Maximum'],
     minPeriodSeconds: 300,
     availability: 'either',
     appliesTo: { universal: true, condition: '' },
+    requiresFeature: null,
     description: 'CPU.',
     ...overrides,
   };
@@ -41,6 +45,7 @@ const pack: InfraServicePackWire = {
   ],
   dimensions: [],
   absentMetrics: [],
+  features: [],
   defaultAlertRules: [],
 };
 
@@ -138,6 +143,7 @@ describe('summarizeDefaultRule', () => {
     description: 'd',
     namespace: 'AWS/EC2',
     metricName: 'StatusCheckFailed',
+    dimensions: ['InstanceId'],
     treatMissingData: 'missing' as const,
     severity: 'critical' as const,
     rationale: 'because',
@@ -169,5 +175,128 @@ describe('summarizeDefaultRule', () => {
         datapointsToAlarm: 3,
       }),
     ).toBe('Minimum < 20 for 3 of 5 × 300s');
+  });
+});
+
+describe('sameDimensionSet', () => {
+  it('compares dimension names as a set, not as a list', () => {
+    expect(sameDimensionSet(['ClusterName', 'ServiceName'], ['ServiceName', 'ClusterName'])).toBe(
+      true,
+    );
+    expect(sameDimensionSet(['ClusterName'], ['ClusterName', 'ServiceName'])).toBe(false);
+    expect(sameDimensionSet([], [])).toBe(true);
+  });
+});
+
+describe('findPackMetric with two declarations of one metric', () => {
+  // The ECS shape: `AWS/ECS` CPUUtilization exists at the cluster level and at
+  // the service level, and they are different numbers about different things.
+  const clusterCpu = metric({
+    namespace: 'AWS/ECS',
+    dimensions: ['ClusterName'],
+    description: 'cluster',
+  });
+  const serviceCpu = metric({
+    namespace: 'AWS/ECS',
+    dimensions: ['ClusterName', 'ServiceName'],
+    description: 'service',
+  });
+  const ecs: InfraServicePackWire = { ...pack, service: 'ecs', metrics: [clusterCpu, serviceCpu] };
+  const series = { namespace: 'AWS/ECS', metricName: 'CPUUtilization', stat: 'Average' };
+
+  it('picks the declaration whose dimension set matches the resource', () => {
+    expect(findPackMetric(ecs, series, ['ClusterName'])).toBe(clusterCpu);
+    expect(findPackMetric(ecs, series, ['ServiceName', 'ClusterName'])).toBe(serviceCpu);
+  });
+
+  it('falls back to the first declaration when the caller knows no dimensions', () => {
+    // Better a description that is right for one of the two than none at all,
+    // and every caller that has a resource in hand does know them.
+    expect(findPackMetric(ecs, series)).toBe(clusterCpu);
+    expect(findPackMetric(ecs, series, ['SomethingElse'])).toBe(clusterCpu);
+  });
+
+  it('still resolves a metric declared only once, dimensions or not', () => {
+    expect(findPackMetric(pack, { ...series, namespace: 'AWS/EC2' })).toBe(pack.metrics[0]);
+  });
+});
+
+describe('resourceHasFeature', () => {
+  it('requires an explicit true, so absent and false both read as off', () => {
+    expect(resourceHasFeature({ features: { containerInsights: true } }, 'containerInsights')).toBe(
+      true,
+    );
+    expect(
+      resourceHasFeature({ features: { containerInsights: false } }, 'containerInsights'),
+    ).toBe(false);
+    expect(resourceHasFeature({ features: {} }, 'containerInsights')).toBe(false);
+    expect(resourceHasFeature({}, 'containerInsights')).toBe(false);
+    expect(resourceHasFeature(null, 'containerInsights')).toBe(false);
+    // A truthy non-boolean is not a flag. Fail closed, same as the collector.
+    expect(
+      resourceHasFeature({ features: { containerInsights: 'yes' } }, 'containerInsights'),
+    ).toBe(false);
+  });
+});
+
+describe('featureNotices', () => {
+  const containerInsights = {
+    key: 'containerInsights',
+    label: 'Container Insights',
+    whenOff: 'The ECS/ContainerInsights metrics are not published.',
+    costNote: 'Charged as CloudWatch custom metrics.',
+    docsUrl: 'https://docs.aws.amazon.com/x',
+  };
+  const ecs: InfraServicePackWire = {
+    ...pack,
+    service: 'ecs',
+    features: [containerInsights],
+    metrics: [
+      metric({ namespace: 'AWS/ECS', metricName: 'CPUUtilization' }),
+      metric({
+        namespace: 'ECS/ContainerInsights',
+        metricName: 'RunningTaskCount',
+        requiresFeature: 'containerInsights',
+      }),
+      metric({
+        namespace: 'ECS/ContainerInsights',
+        metricName: 'RestartCount',
+        requiresFeature: 'containerInsights',
+      }),
+    ],
+  };
+
+  it('names what is not collected when the feature is off', () => {
+    const notices = featureNotices(ecs, { service: 'ecs', features: { containerInsights: false } });
+    expect(notices).toHaveLength(1);
+    expect(notices[0].feature).toBe(containerInsights);
+    // Sorted and de-duplicated, so the list reads the same on every render.
+    expect(notices[0].gatedMetricNames).toEqual(['RestartCount', 'RunningTaskCount']);
+  });
+
+  it('says nothing once the feature is on', () => {
+    expect(featureNotices(ecs, { service: 'ecs', features: { containerInsights: true } })).toEqual(
+      [],
+    );
+  });
+
+  it('treats an unrecorded feature as off, matching the collector', () => {
+    expect(featureNotices(ecs, { service: 'ecs' })).toHaveLength(1);
+  });
+
+  it('says nothing with no resource selected', () => {
+    // A feature belongs to one cluster, not to a project. With nothing selected
+    // there is no honest claim to make.
+    expect(featureNotices(ecs, null)).toEqual([]);
+  });
+
+  it('ignores a feature no metric is gated on', () => {
+    const orphan: InfraServicePackWire = { ...ecs, metrics: [ecs.metrics[0]] };
+    expect(featureNotices(orphan, { service: 'ecs' })).toEqual([]);
+  });
+
+  it('says nothing for a pack that declares no features at all', () => {
+    expect(featureNotices(pack, { service: 'ec2' })).toEqual([]);
+    expect(featureNotices(null, { service: 'ec2' })).toEqual([]);
   });
 });

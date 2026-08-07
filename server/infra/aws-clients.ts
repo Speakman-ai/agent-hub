@@ -26,6 +26,7 @@
 
 import { CloudWatchClient, DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
 import { EC2Client } from '@aws-sdk/client-ec2';
+import { ECSClient } from '@aws-sdk/client-ecs';
 import { findProject } from '../project-model.js';
 import { getProjectAwsMonitoringProfile, getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
 import {
@@ -96,6 +97,7 @@ interface DestroyableClient {
 
 const cloudWatchClients = new Map<string, CloudWatchClient>();
 const ec2Clients = new Map<string, EC2Client>();
+const ecsClients = new Map<string, ECSClient>();
 
 /**
  * Every client cache, so adding a service means adding one map here rather than
@@ -103,7 +105,11 @@ const ec2Clients = new Map<string, EC2Client>();
  * `destroyProjectAwsClients` leaks sockets and, worse, survives a profile edit
  * still pinned to the region it was built for.
  */
-const clientCaches: Array<Map<string, DestroyableClient>> = [cloudWatchClients, ec2Clients];
+const clientCaches: Array<Map<string, DestroyableClient>> = [
+  cloudWatchClients,
+  ec2Clients,
+  ecsClients,
+];
 
 /**
  * `use` is part of the key, not just a construction detail.
@@ -185,6 +191,29 @@ export function getProjectEc2Client(projectId: string, opts: ProjectAwsClientOpt
     credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
   });
   ec2Clients.set(key, client);
+  return client;
+}
+
+/**
+ * An ECS client bound to one project profile and region.
+ *
+ * Inventory sync calls `ListClusters` / `DescribeClusters` / `ListServices` /
+ * `DescribeServices` through it. `DescribeClusters` is also where the Container
+ * Insights setting comes from, which decides whether the paid
+ * `ECS/ContainerInsights` metrics are collected at all — so this client is on
+ * the path that keeps a disabled feature from being billed for.
+ */
+export function getProjectEcsClient(projectId: string, opts: ProjectAwsClientOpts = {}): ECSClient {
+  const { profileName, region, use } = resolveTarget(projectId, opts);
+  const key = clientKey(projectId, profileName, region, use);
+  const existing = ecsClients.get(key);
+  if (existing) return existing;
+
+  const client = new ECSClient({
+    region,
+    credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
+  });
+  ecsClients.set(key, client);
   return client;
 }
 

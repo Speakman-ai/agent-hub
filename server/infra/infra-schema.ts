@@ -42,6 +42,22 @@ export const INFRA_DB_FILENAME = 'infra.db';
 export const INFRA_RESOURCE_KEY_SEPARATOR = '|';
 
 /**
+ * Provider states that mean the resource no longer exists.
+ *
+ * Rows are never deleted (decision INFRA-SCOPE) — a chart must keep its subject
+ * — but `GetMetricData` bills per metric requested whether or not the resource
+ * is still there, so the collector stops asking about anything in one of these
+ * states rather than waiting out the staleness window.
+ *
+ * Compared case-insensitively: EC2 reports lowercase `terminated`, ECS reports
+ * uppercase `INACTIVE`, and neither provider is going to change to suit us.
+ */
+export const INFRA_TERMINAL_RESOURCE_STATES: readonly string[] = Object.freeze([
+  'terminated',
+  'inactive',
+]);
+
+/**
  * `dimensions_hash` value for a metric point carrying no dimensions. A literal
  * sentinel rather than the hash of an empty object so the overwhelmingly common
  * case stays readable in the table and costs no digest.
@@ -299,6 +315,26 @@ export const INFRA_TABLES_SCHEMA = `
     environment  TEXT,
     -- Provider lifecycle state ('running', 'stopped', 'terminated', …).
     state        TEXT,
+    -- The CloudWatch dimension map this resource's series are keyed on, as
+    -- JSON: {"InstanceId":"i-0abc"} for an EC2 instance,
+    -- {"ClusterName":"prod","ServiceName":"api"} for an ECS service.
+    --
+    -- Stored rather than derived from resource_id because a dimension set is
+    -- not always one value. ECS is the first service where it is not: a cluster
+    -- is keyed on ClusterName alone and a service on ClusterName + ServiceName,
+    -- and the collector uses an exact set match to decide which pack metrics
+    -- apply — which is what keeps a cluster row out of the service-level query
+    -- and off the bill for it.
+    --
+    -- NULL on rows written before this column existed. The collector falls back
+    -- to binding resource_id to a single-dimension metric, which is exactly what
+    -- those rows were collected under; the next inventory sweep fills it in.
+    metric_dimensions_json TEXT,
+    -- Opt-in provider features detected for this resource, as a JSON object of
+    -- boolean flags: {"containerInsights":true}. A pack metric declaring
+    -- requiresFeature is skipped for a resource whose flags do not carry it,
+    -- so a paid feature nobody turned on costs no billed GetMetricData entries.
+    features_json TEXT,
     first_seen   INTEGER NOT NULL,
     last_seen    INTEGER NOT NULL,
     UNIQUE (project_id, account_id, region, service, resource_id)

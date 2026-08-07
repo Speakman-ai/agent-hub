@@ -78,7 +78,11 @@ import { getServiceMetricPack } from './service-metric-packs.js';
 // evaluates must be the set the collector is fetching data for. If the two
 // staleness bounds ever diverge, every resource in the gap evaluates against a
 // series nothing is filling and walks into INSUFFICIENT_DATA.
-import { MAX_RESOURCE_STALENESS_MS } from './metric-collector.js';
+import {
+  MAX_RESOURCE_STALENESS_MS,
+  bindMetricDimensions,
+  resolveResourceDimensions,
+} from './metric-collector.js';
 import {
   compileInfraTagFilter,
   isEmptyInfraTagFilter,
@@ -98,6 +102,10 @@ export interface AlertableResource {
   resource_key: string;
   resource_id: string;
   tags_json?: string | null;
+  /** CloudWatch dimension map, as written by inventory sync. */
+  metric_dimensions_json?: string | null;
+  /** Detected provider feature flags. */
+  features_json?: string | null;
 }
 
 export interface InfraAlertEvaluationOptions {
@@ -186,7 +194,13 @@ export function listRuleResources(rule: InfraAlertRuleRow, nowMs: number): Alert
   if (rule.resource_key) {
     const pinned = getInfraDb()
       .prepare(
-        `SELECT resource_key, resource_id, tags_json
+        // metric_dimensions_json and features_json are selected because
+        // resolveSeriesDimensionsHash binds the pack declaration to *this*
+        // resource's dimension set. Omitting them makes every resource look
+        // like it has none, which silently degrades to the single-dimension
+        // fallback — right for EC2 by luck, and wrong for any service that
+        // declares a metric at more than one dimension set.
+        `SELECT resource_key, resource_id, tags_json, metric_dimensions_json, features_json
            FROM infra_resources
           WHERE project_id = ? AND resource_key = ?`,
       )
@@ -231,7 +245,7 @@ export function listRuleResources(rule: InfraAlertRuleRow, nowMs: number): Alert
   }
   const rows = getInfraDb()
     .prepare(
-      `SELECT resource_key, resource_id, tags_json
+      `SELECT resource_key, resource_id, tags_json, metric_dimensions_json, features_json
          FROM infra_resources
         WHERE ${clauses.join(' AND ')}
         ORDER BY resource_id`,
@@ -355,15 +369,29 @@ export class AmbiguousMetricSeriesError extends Error {
  * dimensions yet (that is a schema change, tracked separately), so the series is
  * resolved here, in this order:
  *
- *   1. **One dimension set present** — unambiguous, use it. This is every rule
- *      on today's packs, which plan exactly one dimension per (metric, stat).
- *      Taking the observed set rather than the pack's also means a pack whose
- *      dimension name changed keeps evaluating against the data we actually
- *      collected instead of going quietly dark.
+ *   1. **One dimension set present** — unambiguous, use it. Taking the observed
+ *      set rather than the pack's also means a pack whose dimension name changed
+ *      keeps evaluating against the data we actually collected instead of going
+ *      quietly dark.
  *   2. **Several present** — prefer the set this rule's service metric pack
- *      collects, which is the series the collector deliberately asked for.
+ *      collects *for this resource*, which is the series the collector
+ *      deliberately asked for.
  *   3. **Several, none from the pack** — refuse. Throwing costs this pair its
  *      tick and is counted; guessing would page on a number nobody chose.
+ *
+ * Step 2 must consider **every** pack declaration matching the rule's series
+ * identity, not the first one. ECS declares `AWS/ECS` `CPUUtilization` twice —
+ * once on `ClusterName` and once on `ClusterName` + `ServiceName` — and a rule
+ * row carries no dimensions to tell them apart. Taking the first match would
+ * hand a service resource the cluster-level declaration, which then fails to
+ * bind and drops through to a thrown `AmbiguousMetricSeriesError` on a pair that
+ * is not actually ambiguous.
+ *
+ * The **resource** is what disambiguates, and it does so completely: a resource
+ * has exactly one recorded dimension set, and {@link bindMetricDimensions}
+ * matches a declaration to it only on an exact set match, so at most one
+ * declaration can ever bind. The loop below is therefore deterministic rather
+ * than a first-wins heuristic.
  *
  * The distinct-hash probe is a second query rather than a wider read of the
  * points themselves, because only a probe can be *bounded and complete*: a
@@ -399,12 +427,24 @@ export function resolveSeriesDimensionsHash(
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0].dimensions_hash;
 
-  const spec = getServiceMetricPack(rule.service).find(
-    (s) =>
-      s.namespace === rule.namespace && s.metricName === rule.metric_name && s.stat === rule.stat,
-  );
-  if (spec) {
-    const packHash = infraDimensionsHash({ [spec.dimension]: resource.resource_id });
+  // Resolved once: the resource's dimension set is the same for every candidate
+  // declaration, and it is what decides which of them applies.
+  const dimensions = resolveResourceDimensions({ ...resource, service: rule.service });
+  for (const spec of getServiceMetricPack(rule.service)) {
+    if (
+      spec.namespace !== rule.namespace ||
+      spec.metricName !== rule.metric_name ||
+      spec.stat !== rule.stat
+    ) {
+      continue;
+    }
+    // The same binding the collector planned the query with, so the series a
+    // rule evaluates on cannot drift from the series that was collected. A
+    // declaration whose dimension set does not match this resource — or whose
+    // paid feature is off for it — does not bind, and the next one is tried.
+    const bound = bindMetricDimensions(spec, resource, dimensions);
+    if (!bound) continue;
+    const packHash = infraDimensionsHash(bound);
     if (rows.some((r) => r.dimensions_hash === packHash)) return packHash;
   }
   throw new AmbiguousMetricSeriesError(

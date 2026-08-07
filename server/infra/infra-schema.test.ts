@@ -171,6 +171,8 @@ describe('infra_resources', () => {
         'tags_json',
         'environment',
         'state',
+        'metric_dimensions_json',
+        'features_json',
         'first_seen',
         'last_seen',
       ].sort(),

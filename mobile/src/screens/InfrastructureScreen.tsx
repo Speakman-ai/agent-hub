@@ -73,10 +73,12 @@ import {
   type InfraAlertStatus,
 } from '@shared/utils/infraAlerts';
 import {
+  featureNotices,
   findPackMetric,
   metricCaveats,
   notesPackFor,
   summarizeDefaultRule,
+  type InfraPackResource,
   type InfraServicePackWire,
 } from '@shared/utils/infraPacks';
 
@@ -625,17 +627,37 @@ function ResourcesTab({ projectId, onSelectResource, selectedResourceKey }: any)
  */
 export function ServiceNotes({
   pack,
+  resource = null,
   showDefaultRules = false,
 }: {
   pack: InfraServicePackWire | null;
+  /** The resource in view; a paid feature belongs to one resource, not a project. */
+  resource?: InfraPackResource | null;
   showDefaultRules?: boolean;
 }) {
   if (!pack) return null;
   const conditional = pack.metrics.filter((m) => metricCaveats(m).length > 0);
-  if (pack.absentMetrics.length === 0 && conditional.length === 0 && !showDefaultRules) return null;
+  const offFeatures = featureNotices(pack, resource);
+  if (
+    pack.absentMetrics.length === 0 &&
+    conditional.length === 0 &&
+    offFeatures.length === 0 &&
+    !showDefaultRules
+  ) {
+    return null;
+  }
 
   return (
     <View style={styles.notesCard} testID="infra-service-notes">
+      {offFeatures.map(({ feature, gatedMetricNames }) => (
+        <View key={feature.key} testID={`infra-feature-off-${feature.key}`}>
+          <Text style={styles.notesTitle}>{feature.label} is off for this resource</Text>
+          <Text style={styles.hint}>{feature.whenOff}</Text>
+          <Text style={styles.hint}>What it costs: {feature.costNote}</Text>
+          <Text style={styles.hint}>Not collected: {gatedMetricNames.join(', ')}</Text>
+        </View>
+      ))}
+
       {pack.absentMetrics.length > 0 ? (
         <>
           <Text style={styles.notesTitle}>What {pack.label} does not publish</Text>
@@ -778,7 +800,13 @@ function MetricsTab({ projectId, resource, pack }: any) {
     [range],
   );
 
-  const packMetric = findPackMetric(pack ?? null, selected);
+  // Dimension names from the resource, so a pack that declares the same metric
+  // at two dimension sets annotates the chart with the right one.
+  const packMetric = findPackMetric(
+    pack ?? null,
+    selected,
+    Object.keys(resource?.metricDimensions ?? {}),
+  );
   const caveats = metricCaveats(packMetric);
 
   if (!resource) {
@@ -888,7 +916,7 @@ function MetricsTab({ projectId, resource, pack }: any) {
         </View>
       ) : null}
 
-      <ServiceNotes pack={pack ?? null} />
+      <ServiceNotes pack={pack ?? null} resource={resource ?? null} />
     </ScrollView>
   );
 }

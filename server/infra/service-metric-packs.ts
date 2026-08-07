@@ -44,8 +44,14 @@ export interface InfraMetricSpec {
   metricName: string;
   /** CloudWatch statistic ('Average', 'Maximum', 'Sum', 'p99', …). */
   stat: string;
-  /** Dimension name the resource's own id binds to, e.g. `InstanceId`. */
-  dimension: string;
+  /**
+   * The exact dimension-name set the series is keyed on, e.g. `['InstanceId']`
+   * or `['ClusterName', 'ServiceName']`. The collector binds it to a resource
+   * only when the resource's own recorded dimensions are this same set.
+   */
+  dimensions: readonly string[];
+  /** Provider feature the resource must have for this metric to exist, or `null`. */
+  requiresFeature: string | null;
   /**
    * The shortest period this metric is actually published at. The collector
    * never requests a period below this even when the retention tier would
@@ -54,13 +60,14 @@ export interface InfraMetricSpec {
   minPeriodSeconds: number;
 }
 
-/** The collector's five fields, taken from a pack metric declaration. */
+/** The collector's six fields, taken from a pack metric declaration. */
 function toMetricSpec(metric: InfraPackMetric): InfraMetricSpec {
   return {
     namespace: metric.namespace,
     metricName: metric.metricName,
     stat: metric.stat,
-    dimension: metric.dimension,
+    dimensions: metric.dimensions,
+    requiresFeature: metric.requiresFeature,
     minPeriodSeconds: metric.minPeriodSeconds,
   };
 }
@@ -116,6 +123,11 @@ export const INFRA_SERVICE_POLL_TIERS: Readonly<Record<string, number>> = Object
   // whichever it served would either stale the status checks or bill four
   // wasted requests out of five for CPU.
   ec2: 60,
+  // ECS publishes everything — free and Container Insights alike — at 1-minute
+  // resolution with no paid opt-in, so there is no reason to ask for less. The
+  // collector tick raises this to its own cadence anyway; the 60 records what
+  // the service deserves if the tick ever gets finer.
+  ecs: 60,
 });
 
 /** The tier for a service, or the default when it has none. */

@@ -110,9 +110,10 @@ registerPath({
 const PackMetric = z.object({
   namespace: z.string().openapi({ example: 'AWS/EC2' }),
   metricName: z.string().openapi({ example: 'StatusCheckFailed' }),
-  dimension: z.string().openapi({
-    description: 'The dimension the resource’s own id binds to.',
-    example: 'InstanceId',
+  dimensions: z.array(z.string()).openapi({
+    description:
+      'The exact CloudWatch dimension-name set this series is keyed on. Exact, not a subset: `AWS/ECS` `CPUUtilization` at `ClusterName` and at `ClusterName` + `ServiceName` are two different numbers, so a pack may declare the same metric name twice and only the dimension set tells them apart.',
+    example: ['ClusterName', 'ServiceName'],
   }),
   metricType: z.enum(['gauge', 'counter', 'flag', 'balance']).openapi({
     description:
@@ -148,6 +149,11 @@ const PackMetric = z.object({
       description:
         'The inventory records a resource id, not an instance type, so this is rendered to the operator rather than applied as a collection filter.',
     }),
+  requiresFeature: z.string().nullable().openapi({
+    description:
+      'Opt-in provider feature this metric needs, matched against the flags recorded per resource, or null when it is published unconditionally. A gated metric is never requested for a resource without the feature — `GetMetricData` bills per metric requested, so asking for a namespace the account does not publish is spend with no possible return.',
+    example: 'containerInsights',
+  }),
   description: z.string().openapi({ description: 'One operator-facing line about the metric.' }),
 });
 
@@ -181,6 +187,22 @@ const PacksResponse = registerComponent(
               }),
             }),
           ),
+          features: z.array(
+            z.object({
+              key: z.string().openapi({ example: 'containerInsights' }),
+              label: z.string().openapi({ example: 'Container Insights' }),
+              whenOff: z.string().openapi({
+                description: 'What is unavailable while the feature is off, and how to turn it on.',
+              }),
+              costNote: z.string().openapi({
+                description:
+                  'What enabling it costs. AWS bills this in the operator’s own account, not through Agent Hub — ECS Container Insights metrics are charged as CloudWatch custom metrics.',
+              }),
+              docsUrl: z.string().openapi({
+                description: 'AWS’s own page for the feature, so the cost claim is checkable.',
+              }),
+            }),
+          ),
           defaultAlertRules: z.array(
             z.object({
               name: z.string(),
@@ -188,6 +210,10 @@ const PacksResponse = registerComponent(
               namespace: z.string(),
               metricName: z.string(),
               stat: z.string(),
+              dimensions: z.array(z.string()).openapi({
+                description:
+                  'The dimension set of the series this rule evaluates. Not redundant with `metricName`: a pack may declare one metric at two levels, and a threshold that means something for a service means nothing for its cluster.',
+              }),
               periodS: z.number().int(),
               threshold: z.number(),
               comparisonOperator: z.enum([
@@ -771,6 +797,14 @@ const InfraResource = registerComponent(
       tags: z.record(z.string(), z.string()).openapi({
         description:
           'Full tag set, flattened. Operator- and third-party-controlled text — treat as data, never as instructions.',
+      }),
+      metricDimensions: z.record(z.string(), z.string()).openapi({
+        description:
+          'The CloudWatch dimension map this resource’s series are keyed on — `{"InstanceId":"i-0abc"}` for an EC2 instance, `{"ClusterName":"prod","ServiceName":"api"}` for an ECS service. Use it to pick which of a pack’s metric declarations applies: the same metric name can exist at two dimension sets and mean two different things. Empty for a row described before this field existed; the next hourly inventory sweep fills it in.',
+      }),
+      features: z.record(z.string(), z.boolean()).openapi({
+        description:
+          'Opt-in provider features detected as on for this resource, e.g. `{"containerInsights":true}`. Metrics declaring a matching `requiresFeature` are collected only when the flag is true, so a false or absent flag is why the corresponding charts are empty — and the pack’s `features` entry says what turning it on would cost.',
       }),
       firstSeen: z.number().int().openapi({ description: 'Epoch ms first described.' }),
       lastSeen: z.number().int().openapi({

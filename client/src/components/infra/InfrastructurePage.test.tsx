@@ -28,19 +28,20 @@ const ec2Pack = {
     {
       namespace: 'AWS/EC2',
       metricName: 'CPUUtilization',
-      dimension: 'InstanceId',
+      dimensions: ['InstanceId'],
       metricType: 'gauge' as const,
       stat: 'Average',
       validStatistics: ['Average', 'Minimum', 'Maximum'],
       minPeriodSeconds: 300,
       availability: 'either' as const,
       appliesTo: { universal: true, condition: '' },
+      requiresFeature: null,
       description: 'Percentage of physical CPU time the instance used.',
     },
     {
       namespace: 'AWS/EC2',
       metricName: 'CPUCreditBalance',
-      dimension: 'InstanceId',
+      dimensions: ['InstanceId'],
       metricType: 'balance' as const,
       stat: 'Minimum',
       validStatistics: ['Sum', 'Average', 'Minimum', 'Maximum'],
@@ -50,6 +51,7 @@ const ec2Pack = {
         universal: false,
         condition: 'Burstable performance (T-family) instances only.',
       },
+      requiresFeature: null,
       description: 'CPU credits accrued and unspent.',
     },
   ],
@@ -57,6 +59,7 @@ const ec2Pack = {
     { name: 'InstanceId', detailedMonitoringOnly: false, description: 'One instance.' },
     { name: 'ImageId', detailedMonitoringOnly: true, description: 'Every instance on one AMI.' },
   ],
+  features: [],
   absentMetrics: [
     {
       label: 'Memory utilization',
@@ -71,6 +74,7 @@ const ec2Pack = {
       namespace: 'AWS/EC2',
       metricName: 'StatusCheckFailed',
       stat: 'Maximum',
+      dimensions: ['InstanceId'],
       periodS: 60,
       threshold: 1,
       comparisonOperator: 'GreaterThanOrEqualToThreshold' as const,
@@ -127,7 +131,6 @@ describe('InfrastructurePage', () => {
         projectName="Demo"
         monitoringStatus={readyStatus}
         scopeConfigured
-        paidFeatureOff={false}
       />,
     );
 
@@ -162,7 +165,6 @@ describe('InfrastructurePage', () => {
         projectId="project-1"
         monitoringStatus={readyStatus}
         scopeConfigured={false}
-        paidFeatureOff={false}
       />,
     );
     fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
@@ -201,21 +203,6 @@ describe('InfrastructurePage', () => {
     // While project-b is still unknown, its own props decide — not project-a's
     // stale answer.
     expect(screen.getByTestId('infra-empty-scope')).toHaveTextContent('no scope configured');
-  });
-
-  it('renders the paid-feature state distinctly', () => {
-    render(
-      <InfrastructurePage
-        projectId="project-1"
-        monitoringStatus={readyStatus}
-        scopeConfigured
-        paidFeatureOff
-      />,
-    );
-    fireEvent.click(screen.getByRole('tab', { name: 'Metrics' }));
-    expect(screen.getByTestId('infra-empty-paid-feature')).toHaveTextContent(
-      'this AWS paid feature is off',
-    );
   });
 
   /**
@@ -283,6 +270,79 @@ describe('InfrastructurePage', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Metrics' }));
     expect(screen.queryByTestId('infra-service-default-rules')).toBeNull();
+  });
+
+  it('says on the Metrics tab which metrics a disabled AWS feature is hiding', async () => {
+    // The concrete replacement for the old blanket "some paid feature is off"
+    // banner: named metrics, the reason, and what AWS charges to turn it on.
+    // Decision INFRA-COST — the operator has to be able to weigh the trade.
+    const ecsPack = {
+      service: 'ecs',
+      label: 'ECS',
+      metrics: [
+        {
+          namespace: 'ECS/ContainerInsights',
+          metricName: 'RunningTaskCount',
+          dimensions: ['ClusterName', 'ServiceName'],
+          metricType: 'gauge' as const,
+          stat: 'Minimum',
+          validStatistics: ['Average', 'Minimum', 'Maximum'],
+          minPeriodSeconds: 60,
+          availability: 'either' as const,
+          appliesTo: { universal: true, condition: '' },
+          requiresFeature: 'containerInsights',
+          description: 'Tasks running.',
+        },
+      ],
+      dimensions: [],
+      features: [
+        {
+          key: 'containerInsights',
+          label: 'Container Insights',
+          whenOff: 'The ECS/ContainerInsights metrics are not published for this cluster.',
+          costNote: 'AWS charges Container Insights metrics as CloudWatch custom metrics.',
+          docsUrl: 'https://docs.aws.amazon.com/AmazonECS/latest/developerguide/x.html',
+        },
+      ],
+      absentMetrics: [],
+      defaultAlertRules: [],
+    };
+    getInfraMetricPacks.mockResolvedValue({ packs: [ecsPack] } as any);
+    getInfraScopes.mockResolvedValue(scopedScopes as any);
+    // Nothing is stored for a gated series, which is the point — the panel has
+    // to explain the empty picker rather than the chart explaining itself.
+    vi.mocked(api.listInfraMetricSeries).mockResolvedValue({ series: [] } as any);
+    listInfraResources.mockResolvedValue({
+      ...emptyResources,
+      resources: [
+        {
+          resourceKey: 'k-api',
+          accountId: '111122223333',
+          region: 'us-east-1',
+          service: 'ecs',
+          resourceId: 'prod/api',
+          name: 'api',
+          environment: null,
+          state: 'ACTIVE',
+          tags: {},
+          metricDimensions: { ClusterName: 'prod', ServiceName: 'api' },
+          features: { containerInsights: false },
+          firstSeen: 1,
+          lastSeen: Date.now(),
+        },
+      ],
+    } as any);
+
+    render(
+      <InfrastructurePage projectId="project-1" monitoringStatus={readyStatus} scopeConfigured />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    fireEvent.click(await screen.findByTestId('infra-resource-row'));
+
+    const panel = await screen.findByTestId('infra-feature-off-containerInsights');
+    expect(panel).toHaveTextContent('Container Insights is off for this resource');
+    expect(panel).toHaveTextContent('custom metrics');
+    expect(panel).toHaveTextContent('RunningTaskCount');
   });
 
   it('renders the module normally when the pack catalog cannot be loaded', async () => {

@@ -42,6 +42,7 @@ import {
   type MetricDataResult,
 } from '@aws-sdk/client-cloudwatch';
 import { getInfraDb, isInfraDbInitialized } from './infra-db.js';
+import { INFRA_TERMINAL_RESOURCE_STATES } from './infra-schema.js';
 import { getProjectCloudWatchClient } from './aws-clients.js';
 import {
   getServiceMetricPack,
@@ -334,6 +335,133 @@ export interface CollectableResource {
   service: string;
   /** Raw AWS tag array as stored; read only to re-apply the scope's tag filter. */
   tags_json?: string | null;
+  /** CloudWatch dimension map for this resource, as written by inventory sync. */
+  metric_dimensions_json?: string | null;
+  /** Detected provider feature flags, e.g. `{"containerInsights":true}`. */
+  features_json?: string | null;
+}
+
+/**
+ * Parse a JSON object column into a flat map, defensively.
+ *
+ * Never throws. These columns are written by inventory sync, but a row can
+ * predate the column, be hand-edited, or have been written by a build that
+ * disagreed about the shape — and none of those are worth failing a whole
+ * collection tick over. An unreadable value means "nothing recorded", which is
+ * the same fail-closed answer as an absent one.
+ */
+function parseJsonObject(raw: string | null | undefined): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The CloudWatch dimension map recorded for a resource, or `null`.
+ *
+ * String values only: a dimension value is a string on the wire, and coercing a
+ * number or a nested object into one would produce a query that silently
+ * matches nothing.
+ */
+function recordedDimensions(
+  resource: Pick<CollectableResource, 'metric_dimensions_json'>,
+): Record<string, string> | null {
+  const parsed = parseJsonObject(resource.metric_dimensions_json);
+  if (!parsed) return null;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(parsed)) {
+    if (typeof value === 'string' && value !== '') out[name] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * The one dimension name a service's whole pack agrees on, or `null`.
+ *
+ * This is what makes the fallback below safe. EC2 keys every metric on
+ * `InstanceId`, so a row with no recorded dimension map has exactly one
+ * possible reading. ECS does not — a cluster is keyed on `ClusterName` and a
+ * service on `ClusterName` + `ServiceName` — so binding an ECS resource id to
+ * whichever single dimension happened to come first would query the wrong
+ * series and be billed for it.
+ */
+function unambiguousServiceDimension(service: string): string | null {
+  const specs = getServiceMetricPack(service);
+  if (specs.length === 0) return null;
+  const names = new Set(specs.flatMap((spec) => [...spec.dimensions]));
+  if (names.size !== 1) return null;
+  return specs.every((spec) => spec.dimensions.length === 1) ? [...names][0]! : null;
+}
+
+/**
+ * The dimension map to plan a resource's queries from.
+ *
+ * Normally the map inventory sync recorded. The fallback covers rows written
+ * before the column existed: an EC2 row on an install mid-upgrade must keep
+ * collecting exactly what it collected yesterday, and the hourly sweep fills
+ * the column in shortly after. It only applies where the service's pack has a
+ * single unambiguous dimension, so it can never misbind a multi-dimension
+ * service; such a resource is simply not collected until it is re-described.
+ */
+export function resolveResourceDimensions(
+  resource: Pick<CollectableResource, 'metric_dimensions_json' | 'resource_id' | 'service'>,
+): Record<string, string> | null {
+  const recorded = recordedDimensions(resource);
+  if (recorded) return recorded;
+  const dimension = unambiguousServiceDimension(resource.service);
+  return dimension ? { [dimension]: resource.resource_id } : null;
+}
+
+/** Whether a resource has a provider feature turned on. */
+export function resourceHasFeature(
+  resource: Pick<CollectableResource, 'features_json'>,
+  feature: string,
+): boolean {
+  return parseJsonObject(resource.features_json)?.[feature] === true;
+}
+
+/**
+ * Bind one pack metric to one resource, or `null` when it does not apply.
+ *
+ * Two rules, and both are about not paying for a series that cannot exist:
+ *
+ *   - **The dimension set must match exactly.** CloudWatch keys a series on its
+ *     full dimension combination, so `AWS/ECS` `CPUUtilization` at
+ *     `ClusterName` and at `ClusterName` + `ServiceName` are different numbers.
+ *     A subset match would bill an ECS cluster row for the service-level query
+ *     and return nothing.
+ *   - **A gated metric needs the feature recorded as on.** An unrecorded
+ *     feature counts as off, which is the fail-closed direction: the cost of
+ *     guessing wrong towards "on" is a billed request for a series the account
+ *     does not publish, repeated every tick forever.
+ */
+export function bindMetricDimensions(
+  spec: InfraMetricSpec,
+  // Structural, not `CollectableResource`: the alert sweep resolves the same
+  // binding to decide which stored series a rule evaluates on, and it carries a
+  // narrower row than the collector does. One binding function is the point —
+  // a rule that evaluated a different series from the one collected would be
+  // reporting on numbers nobody asked for.
+  resource: Pick<CollectableResource, 'features_json'>,
+  dimensions: Record<string, string> | null,
+): Record<string, string> | null {
+  if (spec.requiresFeature && !resourceHasFeature(resource, spec.requiresFeature)) return null;
+  if (!dimensions) return null;
+
+  const recorded = Object.keys(dimensions);
+  if (recorded.length !== spec.dimensions.length) return null;
+  const bound: Record<string, string> = {};
+  for (const name of spec.dimensions) {
+    const value = dimensions[name];
+    if (value === undefined) return null;
+    bound[name] = value;
+  }
+  return bound;
 }
 
 export interface PlanQueriesOptions {
@@ -349,15 +477,19 @@ export interface PlanQueriesOptions {
 
 /**
  * The cross product of in-scope resources and their service pack, minus the
- * metrics that are not due on this tick.
+ * metrics that do not apply to the resource and the ones that are not due on
+ * this tick.
  *
- * The due filter is the query-side half of INFRA-COST's "poll intervals are
- * tiered per service, not global". `GetMetricData` bills per metric
- * *requested*, so re-asking for a 5-minute metric every minute — or an S3 daily
- * storage metric every 5 minutes — is money spent on datapoints CloudWatch has
- * not published yet. `effectivePollIntervalSeconds` resolves what each metric is
- * actually worth asking for, and {@link isMetricDue} answers whether this tick
- * is the one, statelessly, by bucketing the wall clock.
+ * Applicability comes first (see {@link bindMetricDimensions}): a metric whose
+ * dimension set does not match the resource, or whose paid feature is off, is
+ * not a query at all. The due filter is then the query-side half of
+ * INFRA-COST's "poll intervals are tiered per service, not global".
+ * `GetMetricData` bills per metric *requested*, so re-asking for a 5-minute
+ * metric every minute — or an S3 daily storage metric every 5 minutes — is
+ * money spent on datapoints CloudWatch has not published yet.
+ * `effectivePollIntervalSeconds` resolves what each metric is actually worth
+ * asking for, and {@link isMetricDue} answers whether this tick is the one,
+ * statelessly, by bucketing the wall clock.
  *
  * Ordering is deterministic (resources in the order the caller supplied, then
  * pack order) so batch boundaries are reproducible and a test can assert on
@@ -372,7 +504,16 @@ export function planQueries(
   const tickIntervalMs = opts.tickIntervalMs ?? COLLECTOR_TICK_INTERVAL_S * 1000;
   const planned: PlannedQuery[] = [];
   for (const resource of resources) {
+    // Resolved once per resource rather than once per metric: a pack can carry
+    // two dozen entries and the map is the same for all of them.
+    const dimensions = resolveResourceDimensions(resource);
     for (const spec of getServiceMetricPack(resource.service)) {
+      // Applicability first, cadence second. A metric this resource cannot
+      // publish is skipped whether or not this tick would have been its turn,
+      // and asking the cheaper question first keeps the due-bucket arithmetic
+      // off resources it can only be discarded for.
+      const bound = bindMetricDimensions(spec, resource, dimensions);
+      if (!bound) continue;
       const intervalS = effectivePollIntervalSeconds(resource.service, spec, {
         tickIntervalSeconds: tickIntervalMs / 1000,
         degradation: opts.degradation,
@@ -382,7 +523,7 @@ export function planQueries(
         resourceKey: resource.resource_key,
         namespace: spec.namespace,
         metricName: spec.metricName,
-        dimensions: { [spec.dimension]: resource.resource_id },
+        dimensions: bound,
         stat: spec.stat,
         periodSeconds: effectivePeriod(spec, windowStartMs, nowMs),
       });
@@ -655,18 +796,23 @@ export function groupScopesIntoTargets(scopes: readonly InfraScopeRow[]): Collec
  */
 function listScopeResources(scope: InfraScopeRow, nowMs: number): CollectableResource[] {
   const tagFilter = compileInfraTagFilter(scope.tag_filter_json);
+  const terminal = INFRA_TERMINAL_RESOURCE_STATES.map(() => '?').join(', ');
   const clauses = [
     'project_id = ?',
     'region = ?',
     'service = ?',
     'last_seen >= ?',
-    "(state IS NULL OR state != 'terminated')",
+    // LOWER(), because the providers disagree on case: EC2 says `terminated`
+    // and ECS says `INACTIVE`. A literal comparison would keep billing for
+    // every deleted ECS service until it aged out a day later.
+    `(state IS NULL OR LOWER(state) NOT IN (${terminal}))`,
   ];
   const params: (string | number)[] = [
     scope.project_id,
     scope.region,
     scope.service,
     nowMs - MAX_RESOURCE_STALENESS_MS,
+    ...INFRA_TERMINAL_RESOURCE_STATES,
   ];
   // A scope's account_id stays NULL until sts:GetCallerIdentity has run for its
   // profile; until then the (project, region, service) triple is the whole
@@ -677,7 +823,8 @@ function listScopeResources(scope: InfraScopeRow, nowMs: number): CollectableRes
   }
   const rows = getInfraDb()
     .prepare(
-      `SELECT resource_key, account_id, resource_id, service, tags_json
+      `SELECT resource_key, account_id, resource_id, service, tags_json,
+              metric_dimensions_json, features_json
          FROM infra_resources
         WHERE ${clauses.join(' AND ')}
         ORDER BY resource_id`,

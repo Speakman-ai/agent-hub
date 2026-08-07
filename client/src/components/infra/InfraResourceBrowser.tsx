@@ -29,6 +29,10 @@ export interface InfraResourceWire {
   environment: string | null;
   state: string | null;
   tags: Record<string, string>;
+  /** CloudWatch dimension map the resource's series are keyed on. */
+  metricDimensions?: Record<string, unknown> | null;
+  /** Paid provider features detected as on for this resource. */
+  features?: Record<string, unknown> | null;
   firstSeen: number;
   lastSeen: number;
 }

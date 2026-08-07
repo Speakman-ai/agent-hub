@@ -87,13 +87,51 @@ export interface InfraMetricApplicability {
   condition: string;
 }
 
+/**
+ * A paid or opt-in provider feature a metric depends on.
+ *
+ * Distinct from {@link InfraMetricApplicability}, which describes resources
+ * that structurally cannot publish a metric. A feature is something the
+ * operator can turn on and be billed for, so the honest UI answer is not "this
+ * does not exist" but "this exists, it is off, and here is what switching it on
+ * costs you". ECS Container Insights is the first of these; EC2 detailed
+ * monitoring is the obvious second.
+ *
+ * The `key` is matched against the flags inventory sync records per resource,
+ * so a metric gated on a feature is never *requested* for a resource that does
+ * not have it — an empty chart with an explanation is cheaper than an empty
+ * chart with a bill.
+ */
+export interface InfraPackFeature {
+  /** Matched against the resource's recorded feature flags, e.g. `containerInsights`. */
+  key: string;
+  label: string;
+  /** What is unavailable while it is off. Operator-facing, one or two sentences. */
+  whenOff: string;
+  /** What turning it on costs. AWS bills this in the operator's account, not ours. */
+  costNote: string;
+  /** AWS's own page for the feature, so the cost claim is checkable. */
+  docsUrl: string;
+}
+
 /** One metric a pack declares, with everything needed to explain it. */
 export interface InfraPackMetric {
   /** CloudWatch namespace, e.g. `AWS/EC2`. */
   namespace: string;
   metricName: string;
-  /** The dimension the resource's own id binds to, e.g. `InstanceId`. */
-  dimension: string;
+  /**
+   * The **exact** dimension-name set this series is keyed on, e.g.
+   * `['InstanceId']` or `['ClusterName', 'ServiceName']`.
+   *
+   * Exact, not a subset: CloudWatch treats every dimension combination as its
+   * own series, so `AWS/ECS` `CPUUtilization` on `ClusterName` and the same
+   * metric on `ClusterName` + `ServiceName` are two different numbers
+   * measuring two different things. The collector binds a metric to a resource
+   * only when the resource's recorded dimensions are exactly this set, which is
+   * what keeps an ECS cluster row from being billed for the service-level query
+   * and vice versa.
+   */
+  dimensions: readonly string[];
   metricType: InfraMetricType;
   /** The statistic the collector requests and the store keys on. */
   stat: string;
@@ -103,6 +141,15 @@ export interface InfraPackMetric {
   minPeriodSeconds: number;
   availability: InfraMonitoringAvailability;
   appliesTo: InfraMetricApplicability;
+  /**
+   * The {@link InfraPackFeature} key this metric needs, or `null` when it is
+   * published unconditionally.
+   *
+   * A gated metric is skipped entirely for a resource whose flags do not carry
+   * the feature. That is a cost decision as much as a correctness one: every
+   * `GetMetricData` entry is billed whether or not the series exists.
+   */
+  requiresFeature: string | null;
   /** One line, operator-facing. Rendered beside the metric in the chart picker. */
   description: string;
 }
@@ -149,6 +196,16 @@ export interface InfraPackAlertRule {
   namespace: string;
   metricName: string;
   stat: string;
+  /**
+   * The dimension set of the series this rule evaluates, matching one of the
+   * pack's metric declarations.
+   *
+   * Not redundant with `metricName`: a pack may declare the same metric at two
+   * levels — `AWS/ECS` `CPUUtilization` is one number for a cluster and another
+   * for a service — and a rule that named only the metric would be ambiguous
+   * about which of the two 80% means anything for.
+   */
+  dimensions: readonly string[];
   periodS: number;
   threshold: number;
   comparisonOperator:
@@ -173,5 +230,7 @@ export interface InfraServicePack {
   metrics: readonly InfraPackMetric[];
   dimensions: readonly InfraPackDimension[];
   absentMetrics: readonly InfraPackAbsentMetric[];
+  /** Opt-in provider features this service's metrics are gated on. Often empty. */
+  features: readonly InfraPackFeature[];
   defaultAlertRules: readonly InfraPackAlertRule[];
 }

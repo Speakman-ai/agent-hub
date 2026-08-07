@@ -20,14 +20,25 @@ export type InfraPackAvailability = 'either' | 'basic-only' | 'detailed-only';
 export interface InfraPackMetricWire {
   namespace: string;
   metricName: string;
-  dimension: string;
+  /** The exact CloudWatch dimension-name set this series is keyed on. */
+  dimensions: string[];
   metricType: InfraPackMetricType;
   stat: string;
   validStatistics: string[];
   minPeriodSeconds: number;
   availability: InfraPackAvailability;
   appliesTo: { universal: boolean; condition: string };
+  /** Provider feature key this metric needs, or `null` when it is unconditional. */
+  requiresFeature: string | null;
   description: string;
+}
+
+export interface InfraPackFeatureWire {
+  key: string;
+  label: string;
+  whenOff: string;
+  costNote: string;
+  docsUrl: string;
 }
 
 export interface InfraPackDimensionWire {
@@ -48,6 +59,8 @@ export interface InfraPackAlertRuleWire {
   namespace: string;
   metricName: string;
   stat: string;
+  /** The dimension set of the series this rule evaluates, e.g. `['ClusterName']`. */
+  dimensions: string[];
   periodS: number;
   threshold: number;
   comparisonOperator:
@@ -68,7 +81,15 @@ export interface InfraServicePackWire {
   metrics: InfraPackMetricWire[];
   dimensions: InfraPackDimensionWire[];
   absentMetrics: InfraPackAbsentMetricWire[];
+  features: InfraPackFeatureWire[];
   defaultAlertRules: InfraPackAlertRuleWire[];
+}
+
+/** A resource as far as the pack helpers care: its dimensions and its features. */
+export interface InfraPackResource {
+  service?: string | null;
+  metricDimensions?: Record<string, unknown> | null;
+  features?: Record<string, unknown> | null;
 }
 
 /** Anything with a series identity — a stored series or a metric declaration. */
@@ -115,16 +136,86 @@ export function notesPackFor(
 export function findPackMetric(
   pack: InfraServicePackWire | null | undefined,
   series: InfraSeriesIdentity | null | undefined,
+  /**
+   * The dimension names the stored series is keyed on, when the caller knows
+   * them. A pack may declare the same metric on two dimension sets — `AWS/ECS`
+   * `CPUUtilization` is one number for a cluster and a different one for a
+   * service — and without this the first declaration wins and the chart is
+   * annotated with the wrong caveats.
+   */
+  dimensionNames?: readonly string[] | null,
 ): InfraPackMetricWire | null {
   if (!pack || !series) return null;
-  return (
-    pack.metrics.find(
-      (m) =>
-        m.namespace === series.namespace &&
-        m.metricName === series.metricName &&
-        m.stat === series.stat,
-    ) ?? null
+  const candidates = pack.metrics.filter(
+    (m) =>
+      m.namespace === series.namespace &&
+      m.metricName === series.metricName &&
+      m.stat === series.stat,
   );
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1 || !dimensionNames) return candidates[0];
+  return candidates.find((m) => sameDimensionSet(m.dimensions, dimensionNames)) ?? candidates[0];
+}
+
+/** Set equality over dimension names, order-independent. */
+export function sameDimensionSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const seen = new Set(a);
+  return b.every((name) => seen.has(name));
+}
+
+/**
+ * Whether a resource has a provider feature turned on.
+ *
+ * Strict `true`, so an absent flag, a stale row from before the flag existed,
+ * and an explicit `false` all read as off. That matches the collector, which
+ * refuses to spend money on a feature it cannot confirm.
+ */
+export function resourceHasFeature(
+  resource: InfraPackResource | null | undefined,
+  feature: string,
+): boolean {
+  return resource?.features?.[feature] === true;
+}
+
+/** One "this is off, here is what it costs to turn on" notice for the UI. */
+export interface InfraFeatureNotice {
+  feature: InfraPackFeatureWire;
+  /** Metrics in the pack that are not collected because the feature is off. */
+  gatedMetricNames: string[];
+}
+
+/**
+ * The features that are off for a resource, with what each of them is hiding.
+ *
+ * This is the answer to the question an empty Metrics tab raises and cannot
+ * answer for itself. Decision INFRA-COST: "The UI states plainly which panels
+ * are empty because a paid AWS feature is off, rather than rendering a broken
+ * chart." A gated metric is never requested for a resource without the feature,
+ * so those series do not merely look empty — they genuinely do not exist, and
+ * the only honest thing to render is the reason and the price.
+ *
+ * Returns an empty array with no resource selected: a feature is a property of
+ * a cluster, not of a project, so "Container Insights is off" is a claim there
+ * is nothing to base without knowing which resource is being asked about.
+ */
+export function featureNotices(
+  pack: InfraServicePackWire | null | undefined,
+  resource: InfraPackResource | null | undefined,
+): InfraFeatureNotice[] {
+  if (!pack || !resource) return [];
+  const notices: InfraFeatureNotice[] = [];
+  for (const feature of pack.features ?? []) {
+    if (resourceHasFeature(resource, feature.key)) continue;
+    const gated = pack.metrics.filter((m) => m.requiresFeature === feature.key);
+    // A feature no metric in the pack depends on has nothing to explain.
+    if (gated.length === 0) continue;
+    notices.push({
+      feature,
+      gatedMetricNames: [...new Set(gated.map((m) => m.metricName))].sort(),
+    });
+  }
+  return notices;
 }
 
 /**

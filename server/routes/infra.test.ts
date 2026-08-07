@@ -128,12 +128,13 @@ describe('GET /api/projects/:projectId/infra/metric-packs', () => {
     );
     expect(statusCheck).toMatchObject({
       namespace: 'AWS/EC2',
-      dimension: 'InstanceId',
+      dimensions: ['InstanceId'],
       metricType: 'flag',
       stat: 'Maximum',
       minPeriodSeconds: 60,
       availability: 'either',
       appliesTo: { universal: true, condition: '' },
+      requiresFeature: null,
     });
     expect(statusCheck.validStatistics).not.toContain('Sum');
 
@@ -155,6 +156,49 @@ describe('GET /api/projects/:projectId/infra/metric-packs', () => {
     expect(absentLabels).toMatch(/Memory/i);
     expect(absentLabels).toMatch(/Disk-space/i);
     expect(ec2.defaultAlertRules.length).toBe(EC2_PACK.defaultAlertRules.length);
+  });
+
+  it('serves the ECS pack with its paid-feature gate intact', async () => {
+    // The gate is what the Metrics tab reads to say "Container Insights is off,
+    // here is what turning it on costs" instead of drawing an empty chart, so
+    // it has to survive serialization along with the metrics it gates.
+    const projectId = await freshProject();
+    const res = await request.get(`/api/projects/${projectId}/infra/metric-packs`).expect(200);
+
+    const ecs = res.body.packs.find((p: { service: string }) => p.service === 'ecs');
+    expect(ecs.label).toBe('ECS');
+    expect(ecs.features).toContainEqual(
+      expect.objectContaining({
+        key: 'containerInsights',
+        label: 'Container Insights',
+        costNote: expect.stringMatching(/custom metric/i),
+      }),
+    );
+
+    // The same metric name at two dimension sets is two declarations, and the
+    // wire has to keep them apart or a chart is annotated with the wrong one.
+    const cpu = ecs.metrics.filter(
+      (m: { metricName: string }) => m.metricName === 'CPUUtilization',
+    );
+    expect(cpu).toHaveLength(2);
+    expect(cpu.map((m: { dimensions: string[] }) => m.dimensions.join('+')).sort()).toEqual([
+      'ClusterName',
+      'ClusterName+ServiceName',
+    ]);
+
+    const running = ecs.metrics.find(
+      (m: { metricName: string }) => m.metricName === 'RunningTaskCount',
+    );
+    expect(running.namespace).toBe('ECS/ContainerInsights');
+    expect(running.requiresFeature).toBe('containerInsights');
+
+    // Free metrics stay ungated, or the collector would stop asking for the one
+    // thing ECS publishes to everybody at no charge.
+    for (const metric of ecs.metrics.filter(
+      (m: { namespace: string }) => m.namespace === 'AWS/ECS',
+    )) {
+      expect(metric.requiresFeature).toBeNull();
+    }
   });
 
   it('carries no credential or account-identifying material', async () => {

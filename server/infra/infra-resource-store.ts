@@ -33,6 +33,8 @@ export interface InfraResourceRow {
   tags_json: string | null;
   environment: string | null;
   state: string | null;
+  metric_dimensions_json: string | null;
+  features_json: string | null;
   first_seen: number;
   last_seen: number;
 }
@@ -379,6 +381,26 @@ export function parseResourceTags(tagsJson: string | null): Record<string, strin
   }
 }
 
+/**
+ * Parse a JSON-object column (`metric_dimensions_json`, `features_json`) for
+ * the wire.
+ *
+ * Same defensive contract as {@link parseResourceTags}, and `{}` for a row that
+ * predates the column. Values are passed through as-is rather than coerced:
+ * dimension values are strings and feature flags are booleans, and a client
+ * that gets something else should see it rather than a laundered version of it.
+ */
+export function parseResourceJsonObject(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
 /** Inventory row -> wire shape. Tags arrive parsed; every value is data. */
 export function serializeInfraResource(row: InfraResourceRow): Record<string, unknown> {
   return {
@@ -392,6 +414,15 @@ export function serializeInfraResource(row: InfraResourceRow): Record<string, un
     environment: row.environment,
     state: row.state,
     tags: parseResourceTags(row.tags_json),
+    // The dimension set the resource's series are keyed on, so a client can
+    // tell which of a pack's declarations applies: `AWS/ECS` `CPUUtilization`
+    // means one thing at `ClusterName` and another at `ClusterName` +
+    // `ServiceName`, and the metric name alone cannot distinguish them.
+    metricDimensions: parseResourceJsonObject(row.metric_dimensions_json),
+    // Which paid provider features are on for this resource. Drives the
+    // "Container Insights is off, here is what it would cost" notice rather
+    // than rendering charts that can only be empty.
+    features: parseResourceJsonObject(row.features_json),
     firstSeen: row.first_seen,
     lastSeen: row.last_seen,
   };
