@@ -7,6 +7,8 @@ describe('isSetupWizardSession', () => {
     expect(isSetupWizardSession({ name: '[Finalize Setup] Acme' })).toBe(true);
     expect(isSetupWizardSession({ name: '[RUM Setup] Acme' })).toBe(true);
     expect(isSetupWizardSession({ name: '[Deploy Setup] Acme' })).toBe(true);
+    expect(isSetupWizardSession({ name: '[Logs Setup] Acme' })).toBe(true);
+    expect(isSetupWizardSession({ name: '[Infra Setup] Acme' })).toBe(true);
   });
 
   it('keeps the prefix list in sync with the matcher', () => {

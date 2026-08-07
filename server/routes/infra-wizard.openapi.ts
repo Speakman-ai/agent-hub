@@ -120,6 +120,81 @@ const InfraSetupDraftResponse = registerComponent(
     .openapi({ description: 'Infrastructure monitoring readiness for a project.' }),
 );
 
+const InfraWizardStartResponse = registerComponent(
+  'InfraWizardStartResponse',
+  z
+    .object({
+      sessionId: z.string(),
+      agentId: z.string(),
+      draft: InfraSetupDraft,
+      session: z
+        .unknown()
+        .openapi({ description: 'Raw `sessions` row for the spawned wizard session.' }),
+    })
+    .openapi({ description: 'Infrastructure setup wizard session spawned successfully.' }),
+);
+
+const ApplyTagFilter = z.record(z.string().min(1), z.array(z.string()).min(1)).openapi({
+  description: 'Tag key -> accepted values (ORed). Omit or null to match every resource.',
+});
+
+const ApplyScopeInput = z.object({
+  profileName: z.string().min(1).max(128).openapi({
+    description: 'A project AWS profile name. Collection needs one that is not interactive SSO.',
+  }),
+  region: z.string().min(1).max(128).openapi({ example: 'us-east-2' }),
+  service: z
+    .string()
+    .min(1)
+    .max(128)
+    .openapi({ description: 'Service key, lowercased on write.', example: 'ec2' }),
+  tagFilter: ApplyTagFilter.nullish(),
+  enabled: z.boolean().optional().openapi({
+    description: 'Defaults to true. A disabled scope is a pause, not a delete.',
+  }),
+});
+
+/**
+ * Body of `POST .../infra/setup-apply`.
+ *
+ * `scopes` is the complete allowlist, not a patch — the underlying
+ * `replaceInfraScopes` deletes any triple absent from the list, which is why the
+ * kickoff prompt makes the agent show a before/after when rows already exist.
+ */
+export const InfraSetupApplyRequestSchema = z
+  .object({
+    scopes: z.array(ApplyScopeInput).max(200).openapi({
+      description:
+        'The complete `infra_scopes` allowlist to store. Replaces the existing list; omitted triples are deleted.',
+    }),
+    monthlyCeilingUsd: z.number().min(0).max(1_000_000).nullable().optional().openapi({
+      description:
+        'Monthly AWS API spend ceiling. `null` clears it. Omit to leave the current ceiling untouched. Required (here or already stored) when `infraEnabled` is true.',
+    }),
+    infraEnabled: z.boolean().optional().openapi({
+      description:
+        'Toggle the per-project Infrastructure module. Omit to leave the current flag untouched. Setting it to true requires an effective spend ceiling — see `monthlyCeilingUsd`.',
+    }),
+  })
+  .openapi({ description: 'Infrastructure collection scope proposed by the wizard session.' });
+
+registerComponent('InfraSetupApplyRequest', InfraSetupApplyRequestSchema);
+
+const InfraSetupApplyResponse = registerComponent(
+  'InfraSetupApplyResponse',
+  z
+    .object({
+      ok: z.literal(true),
+      infraEnabled: z.boolean(),
+      monthlyCeilingUsd: z.number().nullable(),
+      scopes: z.array(z.unknown()).openapi({ description: 'The stored allowlist, re-read.' }),
+      projection: z
+        .unknown()
+        .openapi({ description: 'Projected monthly API cost for the enabled scopes.' }),
+    })
+    .openapi({ description: 'The allowlist as stored, not an echo of the request.' }),
+);
+
 registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/infra/setup-draft',
@@ -149,5 +224,85 @@ registerPath({
       content: jsonContent(InfraSetupDraftResponse),
     },
     404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/infra/setup-wizard',
+  tags: ['Infrastructure'],
+  summary: 'Spawn the guided infrastructure setup session',
+  description: [
+    'Admin+. Creates an `[Infra Setup]` worktree-backed session, seeds it with the',
+    'Hub-local readiness draft, and starts the agent turn fire-and-forget. Returns as',
+    'soon as the session row exists — the walkthrough itself runs asynchronously over',
+    'the chat WebSocket.',
+    '',
+    'The session probes the live AWS account **describe-only** (never `GetMetricData`,',
+    'never paginated `ListMetrics`, never an SSO login) and ends by calling',
+    '`setup-apply` with a proposed collection allowlist. It writes configuration, not',
+    'repository files, so there is nothing to commit and no PR to open.',
+    '',
+    'The draft is embedded in the kickoff prompt inside explicit',
+    '`-----BEGIN UNTRUSTED AWS PROBE-----` markers, and the same fence binds every',
+    'string the agent later reads out of the account. AWS resource names, bucket names',
+    'and tag values are third-party-controlled input; none of them are interpolated',
+    'into the prompt’s authoritative text.',
+  ].join('\n'),
+  request: {
+    params: ProjectIdParam,
+    body: {
+      content: jsonContent(
+        z.object({}).openapi({ description: 'No body fields; send an empty object.' }),
+      ),
+    },
+  },
+  responses: {
+    201: { description: 'Wizard session spawned.', content: jsonContent(InfraWizardStartResponse) },
+    400: errorResponse(
+      'Project has no agents to host the wizard, or no `cwd` configured. The session is worktree-backed, so it needs a checkout to branch from; refusing here avoids a session that is created but can never start.',
+    ),
+    404: errorResponse('Project not found.'),
+    500: errorResponse('Wizard agent could not be resolved.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/infra/setup-apply',
+  tags: ['Infrastructure'],
+  summary: 'Persist the collection allowlist proposed by the wizard',
+  description: [
+    'Admin+. Stores the `infra_scopes` allowlist the wizard session agreed with the',
+    'operator, plus an optional monthly spend ceiling and the module toggle. This is',
+    'configuration persistence — it writes `infra.db` and `projects.json`, never repo',
+    'files.',
+    '',
+    '`scopes` is the **complete** list, not a patch: any (profile, region, service)',
+    'triple absent from it is deleted. Surviving triples keep their id, creation time',
+    'and resolved account id.',
+    '',
+    'Writes are ordered ceiling → allowlist → module flag, so a rejected allowlist',
+    'still leaves a lowered cap applied and collection is only enabled once both the',
+    'scope it would poll and the ceiling that stops it are in place.',
+    '',
+    'Setting `infraEnabled` to true is refused with 400 unless a ceiling is in effect —',
+    'either sent in the same request or stored by an earlier apply. `GetMetricData` is',
+    'billed per 1,000 metrics with no free tier, so enabling collection with no cap',
+    'would leave the collector nothing to degrade against. The ceiling is never',
+    'defaulted on the operator’s behalf.',
+  ].join('\n'),
+  request: {
+    params: ProjectIdParam,
+    body: { content: jsonContent(InfraSetupApplyRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Allowlist stored.',
+      content: jsonContent(InfraSetupApplyResponse),
+    },
+    400: errorResponse('Request body failed validation, or a scope row was rejected.'),
+    404: errorResponse('Project not found.'),
+    503: errorResponse('Infrastructure store is unavailable.'),
   },
 });
