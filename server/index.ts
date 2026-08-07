@@ -1163,7 +1163,16 @@ const backgroundShellWatcher = new BackgroundShellWatcher({
 // feature happened to start first. Preview, terminal, and session commands
 // all resolve the same env from here, so they share one filesystem, one set
 // of backing services, and one network.
+// Opened once the boot GC sweep settles. Creating an env before then races the
+// sweep, which would delete the new container as a leak — see
+// SessionEnvManagerDeps.bootSweep.
+let openSessionEnvBootGate: () => void = () => {};
+const sessionEnvBootSweep = new Promise<void>((resolve) => {
+  openSessionEnvBootGate = resolve;
+});
+
 const sessionEnvManager = new SessionEnvManager({
+  bootSweep: sessionEnvBootSweep,
   resolveWorktree: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session || session.deleted_at) return null;
@@ -2215,7 +2224,10 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         }
         return undefined;
       })
-      .catch((e) => console.error('[session-env] capability probe failed:', (e as Error).message));
+      .catch((e) => console.error('[session-env] capability probe failed:', (e as Error).message))
+      // Always open the gate, including on a failed probe or sweep: a session
+      // env that can never start is worse than one started without the sweep.
+      .finally(() => openSessionEnvBootGate());
 
     // Hosted-git notify hooks embed this process's port — refresh on every
     // boot so post-receive notifications reach the current process.

@@ -48,6 +48,17 @@ export interface SessionEnvManagerDeps {
   allocateHostPort?: (internalPort: number) => number | Promise<number>;
   /** Idle envs with no live processes are reaped after this long. Default 4h. */
   idleTtlMs?: number;
+  /**
+   * Resolves once the boot GC sweep has finished. That sweep deletes every
+   * labeled session container it finds, on the premise that envs live only in
+   * Hub memory so anything labeled must be from a previous run. The HTTP and
+   * WebSocket servers accept traffic well before it completes, so without this
+   * gate a terminal opened seconds after a restart creates a container the
+   * sweep then removes as a leak — the readiness probe polls a container that
+   * no longer exists and fails minutes later. Rejections are ignored: a failed
+   * sweep must not make every session env unstartable.
+   */
+  bootSweep?: Promise<unknown>;
   logger?: { log: (m: string) => void; warn: (m: string) => void };
 }
 
@@ -99,6 +110,7 @@ export class SessionEnvManager {
   }
 
   async #create(sessionId: string, entry: Entry): Promise<SessionEnv> {
+    if (this.deps.bootSweep) await this.deps.bootSweep.catch(() => undefined);
     const worktreePath = this.deps.resolveWorktree(sessionId);
     if (!worktreePath) {
       throw new Error(
