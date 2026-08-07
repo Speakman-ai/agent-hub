@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import {
+  WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
   DEV_SERVER_RUNTIME_KIND,
   dropComposePreviewColumns,
+  deleteEnvScopedPreviewRows,
   deleteOrphanedNonDevServerPreviewRows,
   ensureHostScopedPreviewPortUniqueness,
 } from './preview-schema.js';
@@ -255,6 +257,114 @@ describe('ensureHostScopedPreviewPortUniqueness', () => {
     expect(() => insertProcess(db, 'b', 4200, 'env')).not.toThrow();
     expect(() => insertProcess(db, 'c', 4101, 'host')).not.toThrow();
     expect(() => insertProcess(db, 'd', 4101, 'host')).toThrow(/UNIQUE/i);
+    db.close();
+  });
+});
+
+describe('deleteEnvScopedPreviewRows', () => {
+  /** Group + one process row, with the `worktree_previews` companion row. */
+  function seed(
+    db: Database.Database,
+    id: string,
+    port: number,
+    dialScope: 'host' | 'env',
+    opts: { extraHostRow?: boolean } = {},
+  ): void {
+    db.prepare(
+      `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, runtime)
+       VALUES (?, ?, 'proj', 'ready', '${DEV_SERVER_RUNTIME_KIND}')`,
+    ).run(`group-${id}`, `session-${id}`);
+    db.prepare(
+      `INSERT INTO worktree_previews (id, session_id, project_id, port, url, status)
+       VALUES (?, ?, 'proj', ?, 'http://localhost/', 'ready')`,
+    ).run(`group-${id}`, `session-${id}`, port);
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, port, url, status, is_primary, dial_scope)
+       VALUES (?, ?, ?, ?, 'http://localhost/', 'ready', 1, ?)`,
+    ).run(id, `group-${id}`, `web-${id}`, port, dialScope);
+    if (opts.extraHostRow) {
+      db.prepare(
+        `INSERT INTO worktree_preview_processes
+           (id, group_id, name, port, url, status, is_primary, dial_scope)
+         VALUES (?, ?, ?, ?, 'http://localhost/', 'ready', 0, 'host')`,
+      ).run(`${id}-api`, `group-${id}`, `api-${id}`, port + 1);
+    }
+  }
+
+  function freshDb(): Database.Database {
+    const db = openLegacyDb();
+    // openLegacyDb models only the group/process tables; the sweep also clears
+    // the legacy single-row companion, so it has to exist here.
+    db.exec(WORKTREE_PREVIEWS_SCHEMA);
+    ensureHostScopedPreviewPortUniqueness(db);
+    return db;
+  }
+
+  // The bug: a Hub restart destroys every session container, but its preview
+  // rows persist, so the Hub came back advertising a ready preview whose
+  // upstream was gone and the proxy 502'd until someone restarted it by hand.
+  it('removes rows whose upstream lived in a session container', () => {
+    const db = freshDb();
+    seed(db, 'env-1', 4200, 'env');
+
+    expect(deleteEnvScopedPreviewRows(db)).toBe(1);
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_processes`).get()).toEqual({
+      n: 0,
+    });
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get()).toEqual({ n: 0 });
+    // The legacy companion row is cleared too, or the UI keeps rendering it.
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM worktree_previews`).get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  it('leaves host-published rows alone', () => {
+    // Those are reclaimed by liveness, not by assumption: a host port may be
+    // held by a process this Hub never spawned.
+    const db = freshDb();
+    seed(db, 'host-1', 4101, 'host');
+
+    expect(deleteEnvScopedPreviewRows(db)).toBe(0);
+    expect(db.prepare(`SELECT id FROM worktree_preview_processes`).all()).toEqual([
+      { id: 'host-1' },
+    ]);
+    db.close();
+  });
+
+  it('keeps a group that still has a host-dialed process', () => {
+    const db = freshDb();
+    seed(db, 'mixed-1', 4200, 'env', { extraHostRow: true });
+
+    // The env row goes; the group survives because a host row still needs it.
+    expect(deleteEnvScopedPreviewRows(db)).toBe(0);
+    expect(db.prepare(`SELECT id FROM worktree_preview_processes`).all()).toEqual([
+      { id: 'mixed-1-api' },
+    ]);
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get()).toEqual({ n: 1 });
+    db.close();
+  });
+
+  it('frees the ports for a fresh start on the same numbers', () => {
+    const db = freshDb();
+    seed(db, 'env-1', 4200, 'env');
+    deleteEnvScopedPreviewRows(db);
+
+    expect(() => seed(db, 'env-2', 4200, 'env')).not.toThrow();
+    db.close();
+  });
+
+  it('is a no-op on a database with no previews', () => {
+    const db = freshDb();
+    expect(deleteEnvScopedPreviewRows(db)).toBe(0);
+    db.close();
+  });
+
+  it('is idempotent across repeated boots', () => {
+    const db = freshDb();
+    seed(db, 'env-1', 4200, 'env');
+
+    expect(deleteEnvScopedPreviewRows(db)).toBe(1);
+    expect(deleteEnvScopedPreviewRows(db)).toBe(0);
     db.close();
   });
 });

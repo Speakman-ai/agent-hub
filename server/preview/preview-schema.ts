@@ -383,6 +383,57 @@ export function deleteOrphanedNonDevServerPreviewRows(db: {
 }
 
 /**
+ * Drop preview rows served from inside a session container.
+ *
+ * A dev server in a session env is reachable only through the in-memory
+ * `SessionEnv` handle that owns its container, and a restart destroys every one
+ * of those (the boot reconcile sweep then removes the containers themselves).
+ * The rows, however, live in SQLite and survive — so without this the Hub comes
+ * back advertising a ready preview whose upstream no longer exists, and the
+ * proxy answers `502 ECONNREFUSED` forever while the UI shows it running. The
+ * only recovery was to stop and restart the preview by hand.
+ *
+ * Deleting rather than marking `stopped` is deliberate and matches
+ * {@link deleteOrphanedNonDevServerPreviewRows}: it clears the way for a fresh
+ * start on the same ports and makes the UI offer "Start preview" again.
+ *
+ * Host-scoped rows are left alone. Those are reclaimed by liveness, not by
+ * assumption (see `preview-port-reclaim.ts`) — a published host port can belong
+ * to a process this Hub did not spawn.
+ */
+export function deleteEnvScopedPreviewRows(db: {
+  prepare(sql: string): {
+    run(...args: unknown[]): { changes: number };
+    all(...args: unknown[]): unknown[];
+  };
+}): number {
+  const affected = db
+    .prepare(
+      `SELECT DISTINCT group_id AS groupId
+         FROM worktree_preview_processes
+        WHERE dial_scope = 'env'`,
+    )
+    .all() as Array<{ groupId: string }>;
+  if (affected.length === 0) return 0;
+
+  db.prepare(`DELETE FROM worktree_preview_processes WHERE dial_scope = 'env'`).run();
+
+  // Only groups emptied by the delete above are removed, so a group that still
+  // has a host-dialed process (a mixed-routing row set) keeps its identity.
+  let groupsRemoved = 0;
+  for (const { groupId } of affected) {
+    const remaining = db
+      .prepare(`SELECT COUNT(*) AS n FROM worktree_preview_processes WHERE group_id = ?`)
+      .all(groupId) as Array<{ n: number }>;
+    if ((remaining[0]?.n ?? 0) > 0) continue;
+    db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
+    db.prepare(`DELETE FROM worktree_previews WHERE id = ?`).run(groupId);
+    groupsRemoved += 1;
+  }
+  return groupsRemoved;
+}
+
+/**
  * Default port range for preview processes. Sits above the PR-env pool's
  * default (3100–3999) so the two ranges never overlap on the same host.
  * 1000 ports is plenty of headroom for the per-session preview use case.

@@ -10,6 +10,7 @@ import {
   MIGRATE_LEGACY_PREVIEWS_SQL,
   ensureDevServerPreviewColumns,
   ensureHostScopedPreviewPortUniqueness,
+  deleteEnvScopedPreviewRows,
   deleteOrphanedNonDevServerPreviewRows,
   dropComposePreviewColumns,
 } from './preview/preview-schema.js';
@@ -3240,6 +3241,20 @@ function initDb(dataDir: string): void {
     dropComposePreviewColumns(db);
   } catch (err) {
     console.warn('[db] compose preview cleanup failed:', (err as Error).message);
+  }
+
+  // Previews served from inside a session container cannot outlive the Hub
+  // process that held their SessionEnv handle, and the boot reconcile sweep
+  // removes those containers outright. Their rows do survive here, so without
+  // this the Hub returns advertising a ready preview that only ever answers
+  // 502.
+  try {
+    const dropped = deleteEnvScopedPreviewRows(db);
+    if (dropped > 0) {
+      console.log(`[db] cleared ${dropped} preview group(s) whose session container is gone`);
+    }
+  } catch (err) {
+    console.warn('[db] session-env preview cleanup failed:', (err as Error).message);
   }
 
   // Worktree-preview secrets: per-project encrypted env merged into
