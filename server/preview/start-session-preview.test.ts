@@ -55,6 +55,20 @@ describe('startSessionPreview', () => {
     expect(handlePreviewBlock).not.toHaveBeenCalled();
   });
 
+  it('returns 404 for a soft-deleted session', async () => {
+    // The row survives deletion, so this path used to be accepted and then fail
+    // deep in the env manager as "has no workspace yet, wait for provisioning" —
+    // a provisioning step that is not running for a deleted session.
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast: vi.fn(),
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getSession: () => ({ ...session, deleted_at: '2026-08-06 20:54:48' }) as SessionRow,
+    });
+    expect(result).toEqual({ ok: false, error: 'Session not found', statusCode: 404 });
+    expect(handlePreviewBlock).not.toHaveBeenCalled();
+  });
+
   it('adapts the managed dev-server runtime and preserves the worktree cwd', async () => {
     const broadcast = vi.fn();
     const runtime = {

@@ -811,6 +811,13 @@ export class DevServerRuntime {
     const cfg = parsed.value;
     const entries = resolveDevServerPortEntries(cfg);
     const names = uniquePortEntryNames(entries);
+    // Everything from here to the first health probe can take minutes (container
+    // create, apt packages, install, first compile) while emitting nothing at
+    // all. Mark the entry so a start that stalls can be told apart from one that
+    // was declined upstream or never arrived.
+    this.logger.log(
+      `[dev-server] starting ${project.id} for session ${sessionId}: ${JSON.stringify(cfg.startCommand)} (ports ${entries.map((e) => e.internalPort).join(', ')})`,
+    );
 
     const reclaimed = reclaimFailedPortsInRange(
       this.db,
