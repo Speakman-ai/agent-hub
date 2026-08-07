@@ -22,6 +22,12 @@ import {
 import {
   requireProjectMonitoringProfile,
   getProjectCloudWatchClient,
+  getProjectEc2Client,
+  getProjectEcsClient,
+  getProjectElbV2Client,
+  getProjectLambdaClient,
+  getProjectRdsClient,
+  getProjectS3Client,
   destroyProjectAwsClients,
   invalidateProjectAwsAccess,
   probeProjectMonitoringAccess,
@@ -47,6 +53,34 @@ vi.mock('@aws-sdk/client-cloudwatch', () => {
   }
   return { CloudWatchClient, DescribeAlarmsCommand };
 });
+
+/**
+ * A stand-in for one of the non-CloudWatch service clients.
+ *
+ * They are mocked for one reason: {@link destroyProjectAwsClients} walks a
+ * hand-maintained list of cache maps, and the failure mode when a service is
+ * added without extending that list is a cache that leaks sockets and, worse,
+ * survives a profile edit still pinned to the region it was built for. Testing
+ * that needs a real constructor call per service, which needs a mock per SDK.
+ */
+function mockServiceClient(name: string) {
+  const Client = vi.fn(function (this: FakeClient, config: Record<string, unknown>) {
+    this.config = config;
+    this.send = vi.fn(async () => ({}));
+    this.destroy = vi.fn();
+    clients.push(this);
+  });
+  return { [name]: Client };
+}
+
+vi.mock('@aws-sdk/client-ec2', () => mockServiceClient('EC2Client'));
+vi.mock('@aws-sdk/client-ecs', () => mockServiceClient('ECSClient'));
+vi.mock('@aws-sdk/client-elastic-load-balancing-v2', () =>
+  mockServiceClient('ElasticLoadBalancingV2Client'),
+);
+vi.mock('@aws-sdk/client-lambda', () => mockServiceClient('LambdaClient'));
+vi.mock('@aws-sdk/client-rds', () => mockServiceClient('RDSClient'));
+vi.mock('@aws-sdk/client-s3', () => mockServiceClient('S3Client'));
 
 vi.mock('../project-model.js', () => ({ findProject: vi.fn() }));
 
@@ -118,6 +152,75 @@ beforeEach(() => {
     secretAccessKey: 'secret',
   }));
   setProject({ monitoring: STATIC_PROFILE }, 'monitoring');
+});
+
+/**
+ * Every per-service getter, so a new service is added here or the teardown and
+ * caching invariants below silently stop covering it.
+ */
+const SERVICE_CLIENT_GETTERS = [
+  ['CloudWatch', getProjectCloudWatchClient],
+  ['EC2', getProjectEc2Client],
+  ['ECS', getProjectEcsClient],
+  ['ELBv2', getProjectElbV2Client],
+  ['RDS', getProjectRdsClient],
+  ['Lambda', getProjectLambdaClient],
+  ['S3', getProjectS3Client],
+] as const;
+
+describe('per-service client cache', () => {
+  it.each(SERVICE_CLIENT_GETTERS)(
+    'reuses one %s client per project, profile and region',
+    (_name, get) => {
+      expect(get(PROJECT_ID)).toBe(get(PROJECT_ID));
+      expect(get(PROJECT_ID, { region: 'eu-west-1' })).not.toBe(get(PROJECT_ID));
+      expect(clients).toHaveLength(2);
+    },
+  );
+
+  it.each(SERVICE_CLIENT_GETTERS)('builds the %s client for the resolved region', (_name, get) => {
+    get(PROJECT_ID, { region: 'ap-south-1' });
+    expect(clients[0]!.config.region).toBe('ap-south-1');
+    // The facade, not resolved credentials: a rotated profile is picked up
+    // without rebuilding the client.
+    expect(typeof clients[0]!.config.credentials).toBe('function');
+  });
+
+  it.each(SERVICE_CLIENT_GETTERS)(
+    'refuses to build an %s client with no monitoring profile',
+    (_name, get) => {
+      setProject({ monitoring: STATIC_PROFILE }, null);
+      expect(() => get(PROJECT_ID)).toThrow(MonitoringProfileRequiredError);
+      expect(clients).toHaveLength(0);
+    },
+  );
+
+  it('destroys every service cache, not just the ones someone remembered', () => {
+    // The invariant `clientCaches` exists to hold. A service whose map is
+    // missing from that list leaks sockets and survives a profile edit still
+    // pinned to its old region, which is invisible until a collector reads the
+    // wrong account's metrics.
+    for (const [, get] of SERVICE_CLIENT_GETTERS) get(PROJECT_ID);
+    expect(clients).toHaveLength(SERVICE_CLIENT_GETTERS.length);
+
+    destroyProjectAwsClients(PROJECT_ID);
+
+    for (const client of clients) expect(client.destroy).toHaveBeenCalled();
+    // Dropped from the cache too, so the next call builds fresh.
+    const before = clients.length;
+    for (const [, get] of SERVICE_CLIENT_GETTERS) get(PROJECT_ID);
+    expect(clients).toHaveLength(before + SERVICE_CLIENT_GETTERS.length);
+  });
+
+  it('scopes teardown to one project', () => {
+    setProject({ monitoring: STATIC_PROFILE }, 'monitoring', PROJECT_ID);
+    for (const [, get] of SERVICE_CLIENT_GETTERS) get(PROJECT_ID);
+    const mine = [...clients];
+
+    destroyProjectAwsClients('some-other-project');
+
+    for (const client of mine) expect(client.destroy).not.toHaveBeenCalled();
+  });
 });
 
 describe('requireProjectMonitoringProfile', () => {

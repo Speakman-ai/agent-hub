@@ -144,6 +144,19 @@ export const INFRA_SERVICE_POLL_TIERS: Readonly<Record<string, number>> = Object
   alb: 60,
   nlb: 60,
   natgw: 60,
+  // RDS is named in INFRA-COST's 1-minute class, and unlike EC2 it needs no
+  // qualification: AWS "automatically sends metric data to CloudWatch in
+  // 1-minute periods" for every RDS metric, with no basic-vs-detailed split and
+  // no per-instance opt-in to pay for. So the tier and every metric's own floor
+  // agree at 60, and the only thing raising the effective interval is the
+  // collector tick.
+  rds: 60,
+  // Lambda publishes everything at 1-minute resolution — "Lambda sends metric
+  // data to CloudWatch in 1-minute intervals" — and charges nothing for it:
+  // "there's no additional charge for these metrics". The whole cost of
+  // monitoring Lambda is our own GetMetricData bill, which is a function of how
+  // many series the pack declares rather than of this tier.
+  lambda: 60,
   // S3 is deliberately not in INFRA-COST's 1-minute class, and the entry is
   // here to record that rather than to change anything: 300 is the default and
   // also the collector tick, so it is the finest cadence anything can run at.

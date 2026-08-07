@@ -56,6 +56,14 @@ import type {
 } from '@aws-sdk/client-s3';
 import { ListMetricsCommand } from '@aws-sdk/client-cloudwatch';
 import type { ListMetricsCommandOutput } from '@aws-sdk/client-cloudwatch';
+import { DescribeDBInstancesCommand } from '@aws-sdk/client-rds';
+import type { DBInstance, DescribeDBInstancesCommandOutput } from '@aws-sdk/client-rds';
+import { ListFunctionsCommand, ListTagsCommand } from '@aws-sdk/client-lambda';
+import type {
+  FunctionConfiguration,
+  ListFunctionsCommandOutput,
+  ListTagsCommandOutput,
+} from '@aws-sdk/client-lambda';
 import { initInfraDb, getInfraDb, closeInfraDb, infraResourceKey } from './infra-db.js';
 import {
   runInfraInventorySync,
@@ -76,6 +84,8 @@ import {
   type EcsDescribeClient,
   type ElbDescribeClient,
   type InfraScopeRow,
+  type LambdaDescribeClient,
+  type RdsDescribeClient,
   type S3DescribeClient,
 } from './inventory-sync.js';
 import { infraPackedServices } from './packs/index.js';
@@ -252,7 +262,7 @@ describe('runInfraInventorySync — first sync', () => {
 
   it('ignores disabled scopes and scopes for services this sweep does not describe', async () => {
     insertScope({ id: 'disabled', enabled: 0 } as Partial<InfraScopeRow> & { id: string });
-    insertScope({ id: 'rds', service: 'rds' });
+    insertScope({ id: 'dynamodb', service: 'dynamodb' });
     const factory = vi.fn();
 
     const result = await runInfraInventorySync({ nowMs: T0, ec2ClientFactory: factory });
@@ -2447,5 +2457,400 @@ describe('runInfraInventorySync — S3', () => {
     expect(s3.listCalls).toHaveLength(2);
     expect(s3.listCalls[1]!.input.ContinuationToken).toBe('next');
     expect(allResources().map((r) => r.resource_id)).toEqual(['a', 'b']);
+  });
+});
+
+// ─── RDS ────────────────────────────────────────────────────────────────────
+
+/** An RDS stub answering `DescribeDBInstances` with the given pages in order. */
+function stubRds(
+  pages: Array<Partial<DescribeDBInstancesCommandOutput>>,
+): RdsDescribeClient & { calls: DescribeDBInstancesCommand[] } {
+  const calls: DescribeDBInstancesCommand[] = [];
+  let i = 0;
+  return {
+    calls,
+    async send(command: DescribeDBInstancesCommand) {
+      calls.push(command);
+      return (pages[i++] ?? {}) as DescribeDBInstancesCommandOutput;
+    },
+  };
+}
+
+const rdsScope = { id: 'rds', service: 'rds' } as const;
+
+function dbInstance(overrides: Partial<DBInstance> = {}): DBInstance {
+  return {
+    DBInstanceIdentifier: 'orders',
+    DBInstanceArn: 'arn:aws:rds:us-east-1:111122223333:db:orders',
+    DBInstanceStatus: 'available',
+    Engine: 'postgres',
+    ...overrides,
+  };
+}
+
+describe('runInfraInventorySync — RDS', () => {
+  it('writes one row per DB instance keyed on the DBInstanceIdentifier dimension', async () => {
+    insertScope({ ...rdsScope });
+    const rds = stubRds([
+      {
+        DBInstances: [
+          dbInstance({
+            TagList: [
+              { Key: 'Environment', Value: 'prod' },
+              { Key: 'Name', Value: 'Orders primary' },
+            ],
+          }),
+        ],
+      },
+    ]);
+
+    const result = await runInfraInventorySync({ nowMs: T0, rdsClientFactory: () => rds });
+
+    expect(result).toMatchObject({ synced: 1, failed: 0, upserted: 1, skipped: 0 });
+    const [row] = allResources();
+    expect(row!.resource_id).toBe('orders');
+    expect(JSON.parse(row!.metric_dimensions_json!)).toEqual({ DBInstanceIdentifier: 'orders' });
+    // The instance ARN carries the account in field 4, so nothing has to have
+    // run sts:GetCallerIdentity for the profile first.
+    expect(row!.account_id).toBe('111122223333');
+    expect(row!.name).toBe('Orders primary');
+    expect(row!.environment).toBe('prod');
+    expect(row!.state).toBe('available');
+    // No gated metrics in this pack, so the column stays honest about it.
+    expect(row!.features_json).toBeNull();
+  });
+
+  it('names an untagged instance after its identifier rather than leaving it nameless', async () => {
+    // Unlike an EC2 instance id, a DB instance identifier is operator-chosen
+    // and is already the name people use for it.
+    insertScope({ ...rdsScope });
+    const rds = stubRds([{ DBInstances: [dbInstance()] }]);
+
+    await runInfraInventorySync({ nowMs: T0, rdsClientFactory: () => rds });
+
+    expect(allResources()[0]!.name).toBe('orders');
+    expect(allResources()[0]!.tags_json).toBeNull();
+  });
+
+  it('records storage-full as the state AWS reports, not as a failure', async () => {
+    insertScope({ ...rdsScope });
+    const rds = stubRds([{ DBInstances: [dbInstance({ DBInstanceStatus: 'storage-full' })] }]);
+
+    await runInfraInventorySync({ nowMs: T0, rdsClientFactory: () => rds });
+
+    expect(allResources()[0]!.state).toBe('storage-full');
+  });
+
+  it('keeps Aurora cluster members, which DescribeDBInstances returns alongside provisioned ones', async () => {
+    // They publish a real if different subset of AWS/RDS. Dropping them would
+    // make an Aurora fleet invisible to the resource browser rather than merely
+    // partially charted.
+    insertScope({ ...rdsScope });
+    const rds = stubRds([
+      {
+        DBInstances: [
+          dbInstance(),
+          dbInstance({
+            DBInstanceIdentifier: 'analytics-1',
+            DBInstanceArn: 'arn:aws:rds:us-east-1:111122223333:db:analytics-1',
+            DBClusterIdentifier: 'analytics',
+            Engine: 'aurora-postgresql',
+          }),
+        ],
+      },
+    ]);
+
+    await runInfraInventorySync({ nowMs: T0, rdsClientFactory: () => rds });
+
+    expect(allResources().map((r) => r.resource_id)).toEqual(['analytics-1', 'orders']);
+  });
+
+  it('follows the Marker, which RDS names identically on request and response', async () => {
+    insertScope({ ...rdsScope });
+    const rds = stubRds([
+      { DBInstances: [dbInstance()], Marker: 'next' },
+      {
+        DBInstances: [
+          dbInstance({
+            DBInstanceIdentifier: 'billing',
+            DBInstanceArn: 'arn:aws:rds:us-east-1:111122223333:db:billing',
+          }),
+        ],
+      },
+    ]);
+
+    await runInfraInventorySync({ nowMs: T0, rdsClientFactory: () => rds });
+
+    expect(rds.calls).toHaveLength(2);
+    expect(rds.calls[0]!.input.Marker).toBeUndefined();
+    expect(rds.calls[1]!.input.Marker).toBe('next');
+    expect(allResources().map((r) => r.resource_id)).toEqual(['billing', 'orders']);
+  });
+
+  it('applies the tag filter client-side, because DescribeDBInstances has no tag filter', async () => {
+    // Its documented Filters names are db-cluster-id, db-instance-id,
+    // dbi-resource-id, domain and engine. Pushing a tag predicate into the API
+    // is not on offer, so a regression that "optimised" this into the request
+    // would send a filter AWS rejects.
+    insertScope({ ...rdsScope, tag_filter_json: JSON.stringify({ Environment: 'prod' }) });
+    const rds = stubRds([
+      {
+        DBInstances: [
+          dbInstance({ TagList: [{ Key: 'Environment', Value: 'prod' }] }),
+          dbInstance({
+            DBInstanceIdentifier: 'staging-db',
+            DBInstanceArn: 'arn:aws:rds:us-east-1:111122223333:db:staging-db',
+            TagList: [{ Key: 'Environment', Value: 'staging' }],
+          }),
+          dbInstance({
+            DBInstanceIdentifier: 'untagged',
+            DBInstanceArn: 'arn:aws:rds:us-east-1:111122223333:db:untagged',
+          }),
+        ],
+      },
+    ]);
+
+    const result = await runInfraInventorySync({ nowMs: T0, rdsClientFactory: () => rds });
+
+    expect(rds.calls[0]!.input.Filters).toBeUndefined();
+    expect(allResources().map((r) => r.resource_id)).toEqual(['orders']);
+    // A filtered-out instance is the filter working, not inventory failing.
+    expect(result.skipped).toBe(0);
+  });
+
+  it('counts an instance it cannot key rather than writing a row without an account', async () => {
+    insertScope({ ...rdsScope });
+    const rds = stubRds([
+      {
+        DBInstances: [
+          // No ARN and no scope account: nothing to derive a resource_key from.
+          dbInstance({ DBInstanceArn: undefined }),
+          dbInstance({ DBInstanceIdentifier: undefined }),
+        ],
+      },
+    ]);
+
+    const result = await runInfraInventorySync({ nowMs: T0, rdsClientFactory: () => rds });
+
+    expect(result).toMatchObject({ upserted: 0, skipped: 2, failed: 0 });
+  });
+
+  it('falls back to the scope account when the instance carries no ARN', async () => {
+    insertScope({ ...rdsScope, account_id: '999988887777' });
+    const rds = stubRds([{ DBInstances: [dbInstance({ DBInstanceArn: undefined })] }]);
+
+    await runInfraInventorySync({ nowMs: T0, rdsClientFactory: () => rds });
+
+    expect(allResources()[0]!.account_id).toBe('999988887777');
+  });
+});
+
+// ─── Lambda ─────────────────────────────────────────────────────────────────
+
+interface LambdaStubOptions {
+  functionPages?: Array<Partial<ListFunctionsCommandOutput>>;
+  /** Function name → tag map, in Lambda's own `{key: value}` shape. */
+  tags?: Record<string, Record<string, string>>;
+  /** Function names whose ListTags call fails, with the error to throw. */
+  tagErrors?: Record<string, unknown>;
+  /** Fails every ListTags call, which is what a missing grant looks like. */
+  tagsError?: unknown;
+}
+
+function stubLambda(opts: LambdaStubOptions): LambdaDescribeClient & {
+  listCalls: ListFunctionsCommand[];
+  tagCalls: ListTagsCommand[];
+} {
+  const listCalls: ListFunctionsCommand[] = [];
+  const tagCalls: ListTagsCommand[] = [];
+  let page = 0;
+  return {
+    listCalls,
+    tagCalls,
+    async send(command: ListFunctionsCommand | ListTagsCommand) {
+      if (command instanceof ListFunctionsCommand) {
+        listCalls.push(command);
+        return (opts.functionPages?.[page++] ?? {}) as ListFunctionsCommandOutput;
+      }
+      if (command instanceof ListTagsCommand) {
+        tagCalls.push(command);
+        if (opts.tagsError) throw opts.tagsError;
+        const name = (command.input.Resource ?? '').split(':').pop() ?? '';
+        if (opts.tagErrors && name in opts.tagErrors) throw opts.tagErrors[name];
+        return { Tags: opts.tags?.[name] ?? {} } as ListTagsCommandOutput;
+      }
+      throw new Error(`unexpected Lambda command ${String(command)}`);
+    },
+  } as LambdaDescribeClient & {
+    listCalls: ListFunctionsCommand[];
+    tagCalls: ListTagsCommand[];
+  };
+}
+
+const lambdaScope = { id: 'lambda', service: 'lambda' } as const;
+
+function lambdaFn(
+  name: string,
+  overrides: Partial<FunctionConfiguration> = {},
+): FunctionConfiguration {
+  return {
+    FunctionName: name,
+    FunctionArn: `arn:aws:lambda:us-east-1:111122223333:function:${name}`,
+    State: 'Active',
+    ...overrides,
+  };
+}
+
+describe('runInfraInventorySync — Lambda', () => {
+  it('writes one row per function keyed on the FunctionName dimension', async () => {
+    insertScope({ ...lambdaScope });
+    const lambda = stubLambda({
+      functionPages: [{ Functions: [lambdaFn('checkout')] }],
+      tags: { checkout: { Environment: 'prod', Team: 'payments' } },
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(result).toMatchObject({ synced: 1, failed: 0, upserted: 1, skipped: 0 });
+    const [row] = allResources();
+    expect(row!.resource_id).toBe('checkout');
+    expect(JSON.parse(row!.metric_dimensions_json!)).toEqual({ FunctionName: 'checkout' });
+    expect(row!.account_id).toBe('111122223333');
+    expect(row!.name).toBe('checkout');
+    expect(row!.environment).toBe('prod');
+    expect(row!.state).toBe('Active');
+    // Lambda hands tags back as a {key: value} map; every other service here
+    // uses [{Key, Value}], and the stored JSON has to speak that shape or the
+    // tag filter and the resource browser both stop matching.
+    expect(JSON.parse(row!.tags_json!)).toEqual([
+      { Key: 'Environment', Value: 'prod' },
+      { Key: 'Team', Value: 'payments' },
+    ]);
+  });
+
+  it('reads tags per function, because ListFunctions returns none', async () => {
+    insertScope({ ...lambdaScope });
+    const lambda = stubLambda({
+      functionPages: [{ Functions: [lambdaFn('a'), lambdaFn('b')] }],
+    });
+
+    await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(lambda.tagCalls.map((c) => c.input.Resource)).toEqual([
+      'arn:aws:lambda:us-east-1:111122223333:function:a',
+      'arn:aws:lambda:us-east-1:111122223333:function:b',
+    ]);
+    expect(allResources().every((r) => r.tags_json === null)).toBe(true);
+  });
+
+  it('follows NextMarker rather than Marker on the ListFunctions response', async () => {
+    // The asymmetry is the bug this pins: the request field is `Marker` and the
+    // response field is `NextMarker`. Reading `out.Marker` would be undefined
+    // on every page, so the walk would silently stop after the first fifty
+    // functions and report a complete-looking inventory.
+    insertScope({ ...lambdaScope });
+    const lambda = stubLambda({
+      functionPages: [
+        { Functions: [lambdaFn('a')], NextMarker: 'page-2' },
+        { Functions: [lambdaFn('b')] },
+      ],
+    });
+
+    await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(lambda.listCalls).toHaveLength(2);
+    expect(lambda.listCalls[0]!.input.Marker).toBeUndefined();
+    expect(lambda.listCalls[1]!.input.Marker).toBe('page-2');
+    expect(allResources().map((r) => r.resource_id)).toEqual(['a', 'b']);
+  });
+
+  it('records an Inactive function rather than dropping it', async () => {
+    // AWS idles a function that has gone unused, and an idled function is
+    // exactly the one whose ProvisionedConcurrencyUtilization series is absent.
+    insertScope({ ...lambdaScope });
+    const lambda = stubLambda({
+      functionPages: [{ Functions: [lambdaFn('rarely-used', { State: 'Inactive' })] }],
+    });
+
+    await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(allResources()[0]!.state).toBe('Inactive');
+  });
+
+  it('applies the tag filter client-side', async () => {
+    insertScope({ ...lambdaScope, tag_filter_json: JSON.stringify({ Environment: 'prod' }) });
+    const lambda = stubLambda({
+      functionPages: [{ Functions: [lambdaFn('checkout'), lambdaFn('sandbox')] }],
+      tags: { checkout: { Environment: 'prod' }, sandbox: { Environment: 'dev' } },
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(allResources().map((r) => r.resource_id)).toEqual(['checkout']);
+    expect(result.skipped).toBe(0);
+  });
+
+  it('skips one function whose tags are denied without costing the others theirs', async () => {
+    // A single function's resource policy denying us must not break inventory
+    // for the whole region, and an unreadable tag set is never written down as
+    // "no tags" — that would silently strip the environment label.
+    insertScope({ ...lambdaScope });
+    const lambda = stubLambda({
+      functionPages: [{ Functions: [lambdaFn('locked'), lambdaFn('open')] }],
+      tags: { open: { Environment: 'prod' } },
+      tagErrors: { locked: awsError('AccessDeniedException', 403) },
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(result).toMatchObject({ synced: 1, failed: 0, upserted: 1, skipped: 1 });
+    expect(allResources().map((r) => r.resource_id)).toEqual(['open']);
+  });
+
+  it('fails the scope when every function denies its tags, which is a missing grant', async () => {
+    // Without lambda:ListTags every function reads as untagged, so a
+    // tag-filtered scope matches nothing and nothing carries an environment
+    // label — a complete-looking inventory that is wrong.
+    insertScope({ ...lambdaScope });
+    const lambda = stubLambda({
+      functionPages: [{ Functions: [lambdaFn('a'), lambdaFn('b')] }],
+      tagsError: awsError('AccessDeniedException', 403),
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(result).toMatchObject({ synced: 0, failed: 1, upserted: 0 });
+    expect(allResources()).toEqual([]);
+  });
+
+  it('asks for the page size AWS will honour rather than the one it documents', async () => {
+    // "ListFunctions returns a maximum of 50 items in each response, even if
+    // you set the number higher." Sending the documented 10,000 maximum would
+    // get 50 back and look like a complete answer.
+    insertScope({ ...lambdaScope });
+    const lambda = stubLambda({ functionPages: [{ Functions: [] }] });
+
+    await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(lambda.listCalls[0]!.input.MaxItems).toBe(50);
+  });
+
+  it('counts a function it cannot key rather than writing a row without an account', async () => {
+    insertScope({ ...lambdaScope });
+    const lambda = stubLambda({
+      functionPages: [
+        {
+          Functions: [
+            { FunctionName: 'no-arn', State: 'Active' },
+            { FunctionArn: 'arn:aws:lambda:us-east-1:111122223333:function:no-name' },
+          ],
+        },
+      ],
+    });
+
+    const result = await runInfraInventorySync({ nowMs: T0, lambdaClientFactory: () => lambda });
+
+    expect(result).toMatchObject({ upserted: 0, skipped: 2, failed: 0 });
   });
 });

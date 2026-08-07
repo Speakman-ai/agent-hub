@@ -69,6 +69,18 @@ import {
   type TargetGroup,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import {
+  ListFunctionsCommand,
+  ListTagsCommand,
+  type FunctionConfiguration,
+  type ListFunctionsCommandOutput,
+  type ListTagsCommandOutput,
+} from '@aws-sdk/client-lambda';
+import {
+  DescribeDBInstancesCommand,
+  type DBInstance,
+  type DescribeDBInstancesCommandOutput,
+} from '@aws-sdk/client-rds';
+import {
   GetBucketLocationCommand,
   GetBucketTaggingCommand,
   ListBucketMetricsConfigurationsCommand,
@@ -86,6 +98,8 @@ import {
   getProjectEc2Client,
   getProjectEcsClient,
   getProjectElbV2Client,
+  getProjectLambdaClient,
+  getProjectRdsClient,
   getProjectS3Client,
 } from './aws-clients.js';
 import {
@@ -118,6 +132,8 @@ const ALB_SERVICE = 'alb';
 const NLB_SERVICE = 'nlb';
 const NATGW_SERVICE = 'natgw';
 const S3_SERVICE = 's3';
+const RDS_SERVICE = 'rds';
+const LAMBDA_SERVICE = 'lambda';
 export const INFRA_SYNCABLE_SERVICES: readonly string[] = Object.freeze([
   EC2_SERVICE,
   ECS_SERVICE,
@@ -125,6 +141,8 @@ export const INFRA_SYNCABLE_SERVICES: readonly string[] = Object.freeze([
   NLB_SERVICE,
   NATGW_SERVICE,
   S3_SERVICE,
+  RDS_SERVICE,
+  LAMBDA_SERVICE,
 ]);
 
 /**
@@ -164,6 +182,27 @@ const NATGW_PAGE_SIZE = 1000;
  * quota keeps working.
  */
 const S3_LIST_BUCKETS_PAGE_SIZE = 10_000;
+
+/**
+ * `DescribeDBInstances` `MaxRecords`: "Constraints: Minimum 20, maximum 100."
+ *
+ * Sent at the maximum rather than left to the default, which happens to be the
+ * same 100 today. Stating it makes the page size a property of this file rather
+ * than of an AWS default that could move.
+ */
+const RDS_PAGE_SIZE = 100;
+
+/**
+ * `ListFunctions` `MaxItems`, set to the page size AWS will actually honour.
+ *
+ * The parameter's documented range is 1 to 10,000, and the number is a lie in
+ * the useful direction: "Lambda returns up to 50 functions per call" and
+ * "`ListFunctions` returns a maximum of 50 items in each response, even if you
+ * set the number higher." Asking for 10,000 therefore gets 50 and looks like a
+ * complete answer. Sending 50 makes the cap explicit, so the 100-page ceiling
+ * below reads as 5,000 functions rather than as an unknown.
+ */
+const LAMBDA_PAGE_SIZE = 50;
 
 /** `ListClusters` and `ListServices` both cap a page at 100. */
 const ECS_LIST_PAGE_SIZE = 100;
@@ -219,6 +258,22 @@ export interface EcsDescribeClient {
   send(command: ListAccountSettingsCommand): Promise<ListAccountSettingsCommandOutput>;
 }
 
+/** Just enough of an `RDSClient` for the DB instance walk. */
+export interface RdsDescribeClient {
+  send(command: DescribeDBInstancesCommand): Promise<DescribeDBInstancesCommandOutput>;
+}
+
+/**
+ * Just enough of a `LambdaClient` for the two-call function walk.
+ *
+ * Two calls rather than one because `ListFunctions` returns no tags at all —
+ * see {@link fetchLambdaTags}.
+ */
+export interface LambdaDescribeClient {
+  send(command: ListFunctionsCommand): Promise<ListFunctionsCommandOutput>;
+  send(command: ListTagsCommand): Promise<ListTagsCommandOutput>;
+}
+
 /** Just enough of an `S3Client` for the bucket walk. */
 export interface S3DescribeClient {
   send(command: ListBucketsCommand): Promise<ListBucketsCommandOutput>;
@@ -252,6 +307,10 @@ export interface InfraInventorySyncOptions {
   ecsClientFactory?: (scope: InfraScopeRow) => EcsDescribeClient;
   /** Test seam: build the ELBv2 client for a scope. */
   elbClientFactory?: (scope: InfraScopeRow) => ElbDescribeClient;
+  /** Test seam: build the RDS client for a scope. */
+  rdsClientFactory?: (scope: InfraScopeRow) => RdsDescribeClient;
+  /** Test seam: build the Lambda client for a scope. */
+  lambdaClientFactory?: (scope: InfraScopeRow) => LambdaDescribeClient;
   /** Test seam: build the S3 client for a scope. */
   s3ClientFactory?: (scope: InfraScopeRow) => S3DescribeClient;
   /** Test seam: build the CloudWatch client the S3 walk discovers storage classes with. */
@@ -1281,6 +1340,335 @@ async function describeNatGatewayScope(
   return { resources, skipped };
 }
 
+// ─── Per-resource metadata reads (S3 buckets, Lambda functions) ─────────────
+
+/**
+ * Running tally for one kind of per-resource metadata read across a scope.
+ *
+ * The counts exist to separate the two failures that look identical one resource
+ * at a time: *the role has no grant* (every resource denies) and *this one
+ * resource's policy denies us* (one does). See
+ * {@link assertMetadataReadNotSystemicallyDenied}.
+ *
+ * Shared by the S3 bucket walk and the Lambda function walk, because both pay a
+ * per-resource metadata call that the list call does not answer and both have
+ * the same pair of indistinguishable failures.
+ */
+interface MetadataReadTally {
+  /** Resources this read was attempted on. */
+  attempted: number;
+  /** Attempts that came back as an authorization failure. */
+  denied: number;
+}
+
+const freshMetadataReadTally = (): MetadataReadTally => ({ attempted: 0, denied: 0 });
+
+/**
+ * Record a per-resource metadata failure and warn. Never throws.
+ *
+ * Per-resource rather than per-scope, which is a correction of the obvious first
+ * design. Re-throwing an `AccessDenied` here would be loud, but a single bucket
+ * whose *bucket policy* denies the monitoring role would then permanently break
+ * S3 inventory for the whole region, and there is no per-resource exclusion an
+ * operator could use to get out of it. The systemic case that genuinely warrants
+ * failing the scope — the role has no `s3:GetBucketTagging`,
+ * `s3:GetMetricsConfiguration` or `lambda:ListTags` grant at all — is caught
+ * after the walk instead, by {@link assertMetadataReadNotSystemicallyDenied},
+ * where the tally can tell the two apart.
+ *
+ * The caller treats an unreadable resource as skipped rather than as an empty
+ * answer, so a failure never gets written down as a fact. Rows are never
+ * deleted, so the resource keeps its previous values until the next hourly
+ * sweep.
+ */
+function recordMetadataReadFailure(
+  scope: InfraScopeRow,
+  resource: string,
+  what: string,
+  err: unknown,
+  tally: MetadataReadTally,
+): void {
+  if (isAwsAuthorizationError(err)) tally.denied += 1;
+  console.warn(
+    `[infra-inventory-sync] ${describeScope(scope)}: could not read ${what} for ${resource} —`,
+    err instanceof Error ? err.message : String(err),
+  );
+}
+
+/**
+ * Fail the scope when *every* resource denied a read, which is a missing grant.
+ *
+ * This is the half that must stay loud, and each read fails differently:
+ *
+ *   - without `s3:GetBucketTagging` or `lambda:ListTags` every resource reads as
+ *     untagged, so a tag-filtered scope matches nothing and nothing carries the
+ *     `environment` label that joins it to logs and deployments;
+ *   - without `s3:GetMetricsConfiguration` every bucket reads as having no
+ *     metrics configuration, so the paid request metrics stop being collected
+ *     and the UI cheerfully explains that none are configured;
+ *   - without `cloudwatch:ListMetrics` every bucket reads as holding no storage
+ *     classes, so no `BucketSizeBytes` row is written at all and every storage
+ *     chart in the project quietly empties.
+ *
+ * All of them are complete-looking inventories that are wrong, and the ELBv2 tag
+ * path has been bitten by that exact shape twice.
+ *
+ * **Every read this guards must therefore increment `attempted`**, including the
+ * ones that degrade to an empty answer rather than skipping the resource. A
+ * reader that only counted its denials would leave `attempted` at zero, take the
+ * early return below, and turn this guard into decoration — which is precisely
+ * what happened to the storage-class read before review caught it.
+ *
+ * A partial denial is not this. It is one resource's policy, it is already
+ * warned about, and it must not cost every other resource in the region its
+ * inventory.
+ */
+function assertMetadataReadNotSystemicallyDenied(
+  scope: InfraScopeRow,
+  what: string,
+  action: string,
+  tally: MetadataReadTally,
+): void {
+  if (tally.attempted === 0 || tally.denied < tally.attempted) return;
+  throw new Error(
+    `every resource denied ${what} (${tally.denied}/${tally.attempted}); grant ${action} to the monitoring role`,
+  );
+}
+
+// ─── RDS ────────────────────────────────────────────────────────────────────
+
+/**
+ * One DB instance row, keyed on the CloudWatch `DBInstanceIdentifier` dimension.
+ *
+ * Returns `null` when the instance has no identifier or no resolvable account,
+ * which the caller counts as skipped rather than writing a row it cannot key.
+ */
+function toDbInstanceResource(
+  instance: DBInstance,
+  scope: InfraScopeRow,
+): DiscoveredResource | null {
+  const resourceId = instance.DBInstanceIdentifier;
+  if (!resourceId) return null;
+
+  // The instance ARN carries the account in field 4 and comes back free with the
+  // describe call, exactly as the ECS cluster ARN does. The scope's own
+  // `account_id` is the fallback, and it stays NULL until something has run
+  // sts:GetCallerIdentity for the profile.
+  const accountId = accountIdFromArn(instance.DBInstanceArn) ?? scope.account_id;
+  if (!accountId) return null;
+
+  // RDS is the only service here whose describe response carries tags inline
+  // under a name other than `Tags`. Same `[{Key, Value}]` shape as EC2.
+  const tags = (instance.TagList ?? [])
+    .filter((t): t is { Key: string; Value?: string } => typeof t.Key === 'string')
+    .map((t) => ({ Key: t.Key, Value: t.Value ?? '' }));
+
+  return {
+    accountId,
+    resourceId,
+    // Falls back to the identifier rather than to null: unlike an EC2 instance,
+    // a DB instance's identifier is operator-chosen and already the name people
+    // use for it, so an untagged instance is not nameless.
+    name: tagValue(tags, 'Name') ?? resourceId,
+    tagsJson: tags.length > 0 ? JSON.stringify(tags) : null,
+    environment: tagValue(tags, 'Environment'),
+    // available / creating / backing-up / modifying / stopped / storage-full …
+    // Recorded as AWS reports it: `storage-full` in this column is the same
+    // outage the FreeStorageSpace rule exists to predict.
+    state: instance.DBInstanceStatus ?? null,
+    metricDimensions: { DBInstanceIdentifier: resourceId },
+    features: {},
+  };
+}
+
+/**
+ * Describe every in-scope DB instance, following `Marker` pagination.
+ *
+ * The scope's tag filter is applied **client-side**, unlike the EC2 walks.
+ * `DescribeDBInstances` does take a `Filters` parameter, but its documented
+ * filter names are `db-cluster-id`, `db-instance-id`, `dbi-resource-id`,
+ * `domain` and `engine` — there is no `tag:<key>` among them, so pushing the
+ * predicate into the API is not on offer here. Same trade the ELBv2 and S3 walks
+ * make, and `tag-filter.ts` is the single parser either way.
+ *
+ * Aurora cluster members come back from this call alongside provisioned
+ * instances and are kept. They publish a real, if different, subset of `AWS/RDS`
+ * — see the RDS pack's `appliesTo` conditions — and dropping them would make an
+ * Aurora fleet invisible to the resource browser rather than merely partially
+ * charted.
+ */
+async function describeRdsScope(
+  client: RdsDescribeClient,
+  scope: InfraScopeRow,
+): Promise<{ resources: DiscoveredResource[]; skipped: number }> {
+  const tagFilter = compileInfraTagFilter(scope.tag_filter_json);
+  const filtered = !isEmptyInfraTagFilter(tagFilter);
+  const resources: DiscoveredResource[] = [];
+  let skipped = 0;
+  let marker: string | undefined;
+  let pages = 0;
+
+  do {
+    const out = await client.send(
+      new DescribeDBInstancesCommand({
+        MaxRecords: RDS_PAGE_SIZE,
+        ...(marker ? { Marker: marker } : {}),
+      }),
+    );
+    for (const instance of out.DBInstances ?? []) {
+      const resource = toDbInstanceResource(instance, scope);
+      if (!resource) {
+        skipped += 1;
+        continue;
+      }
+      // Not counted as skipped: a filtered-out instance is the filter working,
+      // not inventory failing.
+      if (filtered && !matchesInfraTagFilter(resource.tagsJson, tagFilter)) continue;
+      resources.push(resource);
+    }
+    marker = out.Marker ?? undefined;
+    pages += 1;
+  } while (marker && pages < MAX_PAGES_PER_SCOPE);
+
+  if (marker) {
+    console.warn(
+      `[infra-inventory-sync] ${describeScope(scope)}: stopped at the ${MAX_PAGES_PER_SCOPE}-page cap; inventory may be incomplete`,
+    );
+  }
+  return { resources, skipped };
+}
+
+// ─── Lambda ─────────────────────────────────────────────────────────────────
+
+/**
+ * Every function in the region, following `ListFunctions`' `NextMarker`.
+ *
+ * Note the asymmetric token names: the request field is `Marker` and the
+ * response field is `NextMarker`, unlike RDS where both are `Marker`. Reading
+ * `out.Marker` here would be `undefined` on every page and the walk would stop
+ * after the first fifty functions with no warning.
+ */
+async function listLambdaFunctions(
+  client: LambdaDescribeClient,
+  scope: InfraScopeRow,
+): Promise<FunctionConfiguration[]> {
+  const functions: FunctionConfiguration[] = [];
+  let marker: string | undefined;
+  let pages = 0;
+  do {
+    const out = await client.send(
+      new ListFunctionsCommand({
+        MaxItems: LAMBDA_PAGE_SIZE,
+        ...(marker ? { Marker: marker } : {}),
+      }),
+    );
+    functions.push(...(out.Functions ?? []));
+    marker = out.NextMarker ?? undefined;
+    pages += 1;
+  } while (marker && pages < MAX_PAGES_PER_SCOPE);
+
+  if (marker) {
+    console.warn(
+      `[infra-inventory-sync] ${describeScope(scope)}: stopped at the ${MAX_PAGES_PER_SCOPE}-page cap; inventory may be incomplete`,
+    );
+  }
+  return functions;
+}
+
+/**
+ * One function's tags, or `null` when they could not be read.
+ *
+ * `null` is not "no tags", and the distinction is the whole reason this returns
+ * a nullable. Treating an unreadable response as an empty tag set would drop the
+ * function from a tag-filtered scope and strip its `environment` label, both
+ * silently — the ELBv2 tag path has been bitten by exactly that shape twice.
+ *
+ * Lambda hands tags back as a `{key: value}` map rather than the `[{Key, Value}]`
+ * array every other service here uses, so they are normalised on the way out:
+ * `matchesInfraTagFilter` and the stored `tags_json` both speak the array shape.
+ */
+async function fetchLambdaTags(
+  client: LambdaDescribeClient,
+  scope: InfraScopeRow,
+  fn: { name: string; arn: string },
+  tally: MetadataReadTally,
+): Promise<Array<{ Key: string; Value: string }> | null> {
+  tally.attempted += 1;
+  try {
+    const out = await client.send(new ListTagsCommand({ Resource: fn.arn }));
+    return Object.entries(out.Tags ?? {}).map(([Key, Value]) => ({ Key, Value: Value ?? '' }));
+  } catch (err) {
+    recordMetadataReadFailure(scope, `function ${fn.name}`, 'tags', err, tally);
+    return null;
+  }
+}
+
+/**
+ * Describe every in-scope Lambda function, then read each one's tags.
+ *
+ * The per-function second call is unavoidable: `ListFunctions` returns a
+ * `FunctionConfiguration`, which carries no tags. So the cost of a Lambda scope
+ * is one paginated walk plus one `ListTags` per function, per hourly sweep. That
+ * is the same per-resource metadata shape the S3 bucket walk already pays, so it
+ * shares the same tally and the two failures that look identical one function at
+ * a time stay distinguishable: a missing `lambda:ListTags` grant denies every
+ * function and fails the scope loudly, while one function's resource policy
+ * denying us costs that function and no other.
+ */
+async function describeLambdaScope(
+  client: LambdaDescribeClient,
+  scope: InfraScopeRow,
+): Promise<{ resources: DiscoveredResource[]; skipped: number }> {
+  const tagFilter = compileInfraTagFilter(scope.tag_filter_json);
+  const filtered = !isEmptyInfraTagFilter(tagFilter);
+  const resources: DiscoveredResource[] = [];
+  const tagReads = freshMetadataReadTally();
+  let skipped = 0;
+
+  for (const fn of await listLambdaFunctions(client, scope)) {
+    const resourceId = fn.FunctionName;
+    const arn = fn.FunctionArn;
+    if (!resourceId || !arn) {
+      skipped += 1;
+      continue;
+    }
+    const accountId = accountIdFromArn(arn) ?? scope.account_id;
+    if (!accountId) {
+      skipped += 1;
+      continue;
+    }
+
+    const tags = await fetchLambdaTags(client, scope, { name: resourceId, arn }, tagReads);
+    if (tags === null) {
+      skipped += 1;
+      continue;
+    }
+    const tagsJson = tags.length > 0 ? JSON.stringify(tags) : null;
+    if (filtered && !matchesInfraTagFilter(tagsJson, tagFilter)) continue;
+
+    resources.push({
+      accountId,
+      resourceId,
+      // The function name is the name. A `Name` tag on a Lambda function is
+      // unusual and, where it exists, is usually a copy of the function name
+      // anyway — but it wins if set, matching every other service here.
+      name: tagValue(tags, 'Name') ?? resourceId,
+      tagsJson,
+      environment: tagValue(tags, 'Environment'),
+      // Pending / Active / Inactive / Failed. `Inactive` is the interesting one:
+      // AWS idles a function that has gone unused, and an idled function is
+      // exactly the one whose ProvisionedConcurrencyUtilization series is absent.
+      state: fn.State ?? null,
+      metricDimensions: { FunctionName: resourceId },
+      features: {},
+    });
+  }
+
+  assertMetadataReadNotSystemicallyDenied(scope, 'its tags', 'lambda:ListTags', tagReads);
+
+  return { resources, skipped };
+}
+
 // ─── S3 ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -1302,91 +1690,6 @@ const S3_LEGACY_LOCATIONS: Readonly<Record<string, string>> = Object.freeze({ EU
 /** `NoSuchTagSet` is S3's way of saying "this bucket has no tags", not an error. */
 function isS3NoSuchTagSetError(err: unknown): boolean {
   return awsErrorName(err) === 'NoSuchTagSet';
-}
-
-/**
- * Running tally for one kind of per-bucket metadata read across a scope.
- *
- * The counts exist to separate the two failures that look identical one bucket
- * at a time: *the role has no grant* (every bucket denies) and *this one bucket's
- * policy denies us* (one does). See {@link assertS3ReadNotSystemicallyDenied}.
- */
-interface S3ReadTally {
-  /** Buckets this read was attempted on. */
-  attempted: number;
-  /** Attempts that came back as an authorization failure. */
-  denied: number;
-}
-
-const freshS3ReadTally = (): S3ReadTally => ({ attempted: 0, denied: 0 });
-
-/**
- * Record a per-bucket metadata failure and warn. Never throws.
- *
- * Per-bucket rather than per-scope, which is a correction of the obvious first
- * design. Re-throwing an `AccessDenied` here would be loud, but a single bucket
- * whose *bucket policy* denies the monitoring role would then permanently break
- * S3 inventory for the whole region, and there is no per-bucket exclusion an
- * operator could use to get out of it. The systemic case that genuinely warrants
- * failing the scope — the role has no `s3:GetBucketTagging` or
- * `s3:GetMetricsConfiguration` grant at all — is caught after the walk instead,
- * by {@link assertS3ReadNotSystemicallyDenied}, where the tally can tell the two
- * apart.
- *
- * The caller treats an unreadable bucket as skipped rather than as an empty
- * answer, so a failure never gets written down as a fact. Rows are never
- * deleted, so the bucket keeps its previous values until the next hourly sweep.
- */
-function recordS3MetadataFailure(
-  scope: InfraScopeRow,
-  bucket: string,
-  what: string,
-  err: unknown,
-  tally: S3ReadTally,
-): void {
-  if (isAwsAuthorizationError(err)) tally.denied += 1;
-  console.warn(
-    `[infra-inventory-sync] ${describeScope(scope)}: could not read ${what} for bucket ${bucket} —`,
-    err instanceof Error ? err.message : String(err),
-  );
-}
-
-/**
- * Fail the scope when *every* bucket denied a read, which is a missing grant.
- *
- * This is the half that must stay loud, and each read fails differently:
- *
- *   - without `s3:GetBucketTagging` every bucket reads as untagged, so a
- *     tag-filtered scope matches nothing;
- *   - without `s3:GetMetricsConfiguration` every bucket reads as having no
- *     metrics configuration, so the paid request metrics stop being collected
- *     and the UI cheerfully explains that none are configured;
- *   - without `cloudwatch:ListMetrics` every bucket reads as holding no storage
- *     classes, so no `BucketSizeBytes` row is written at all and every storage
- *     chart in the project quietly empties.
- *
- * All three are complete-looking inventories that are wrong, and the ELBv2 tag
- * path has been bitten by that exact shape twice.
- *
- * **Every read this guards must therefore increment `attempted`**, including the
- * ones that degrade to an empty answer rather than skipping the bucket. A reader
- * that only counted its denials would leave `attempted` at zero, take the
- * early return below, and turn this guard into decoration — which is precisely
- * what happened to the storage-class read before review caught it.
- *
- * A partial denial is not this. It is one bucket's policy, it is already warned
- * about, and it must not cost every other bucket in the region its inventory.
- */
-function assertS3ReadNotSystemicallyDenied(
-  scope: InfraScopeRow,
-  what: string,
-  action: string,
-  tally: S3ReadTally,
-): void {
-  if (tally.attempted === 0 || tally.denied < tally.attempted) return;
-  throw new Error(
-    `every bucket denied ${what} (${tally.denied}/${tally.attempted}); grant ${action} to the monitoring role`,
-  );
 }
 
 /**
@@ -1443,7 +1746,7 @@ async function resolveBucketRegion(
   client: S3DescribeClient,
   bucket: Bucket,
   scope: InfraScopeRow,
-  tally: S3ReadTally,
+  tally: MetadataReadTally,
 ): Promise<string | null> {
   if (bucket.BucketRegion) return bucket.BucketRegion;
   const name = bucket.Name;
@@ -1455,7 +1758,7 @@ async function resolveBucketRegion(
     if (constraint === '') return S3_DEFAULT_LOCATION;
     return S3_LEGACY_LOCATIONS[constraint] ?? constraint;
   } catch (err) {
-    recordS3MetadataFailure(scope, name, 'the bucket location', err, tally);
+    recordMetadataReadFailure(scope, `bucket ${name}`, 'the bucket location', err, tally);
     return null;
   }
 }
@@ -1474,7 +1777,7 @@ async function fetchBucketTags(
   client: S3DescribeClient,
   scope: InfraScopeRow,
   bucket: string,
-  tally: S3ReadTally,
+  tally: MetadataReadTally,
 ): Promise<Array<{ Key: string; Value: string }> | null> {
   tally.attempted += 1;
   try {
@@ -1487,7 +1790,7 @@ async function fetchBucketTags(
   } catch (err) {
     // An untagged bucket is the common case, not a failure.
     if (isS3NoSuchTagSetError(err)) return [];
-    recordS3MetadataFailure(scope, bucket, 'tags', err, tally);
+    recordMetadataReadFailure(scope, `bucket ${bucket}`, 'tags', err, tally);
     return null;
   }
 }
@@ -1512,7 +1815,7 @@ async function listBucketMetricFilterIds(
   client: S3DescribeClient,
   scope: InfraScopeRow,
   bucket: string,
-  tally: S3ReadTally,
+  tally: MetadataReadTally,
 ): Promise<string[] | null> {
   const ids: string[] = [];
   let continuationToken: string | undefined;
@@ -1534,7 +1837,7 @@ async function listBucketMetricFilterIds(
       pages += 1;
     } while (continuationToken && pages < MAX_PAGES_PER_SCOPE);
   } catch (err) {
-    recordS3MetadataFailure(scope, bucket, 'metrics configurations', err, tally);
+    recordMetadataReadFailure(scope, `bucket ${bucket}`, 'metrics configurations', err, tally);
     // Not `[]`: an empty list is the claim "this bucket has no request metrics",
     // which the UI renders as a positive statement and the collector acts on.
     // Making that claim from a failed read is how a paid feature goes silently
@@ -1565,7 +1868,7 @@ async function listBucketStorageTypes(
   cloudWatch: CloudWatchListMetricsClient,
   scope: InfraScopeRow,
   bucket: string,
-  tally: S3ReadTally,
+  tally: MetadataReadTally,
 ): Promise<string[]> {
   const storageTypes = new Set<string>();
   let nextToken: string | undefined;
@@ -1594,7 +1897,7 @@ async function listBucketStorageTypes(
       pages += 1;
     } while (nextToken && pages < MAX_PAGES_PER_SCOPE);
   } catch (err) {
-    recordS3MetadataFailure(scope, bucket, 'storage classes', err, tally);
+    recordMetadataReadFailure(scope, `bucket ${bucket}`, 'storage classes', err, tally);
     // `[]` is safe *for one bucket* where it is not for the other two reads: a
     // missing storage class costs that bucket some BucketSizeBytes rows and
     // claims nothing, and the rows are additive so they reappear next sweep.
@@ -1602,7 +1905,7 @@ async function listBucketStorageTypes(
     // It is not safe for *every* bucket, which is why the attempt above is
     // tallied. Degrading silently across the whole scope is how a role missing
     // `cloudwatch:ListMetrics` turns into "every storage chart quietly
-    // disappeared and the sync said OK" — see assertS3ReadNotSystemicallyDenied.
+    // disappeared and the sync said OK" — see assertMetadataReadNotSystemicallyDenied.
     return [];
   }
   return [...storageTypes].sort();
@@ -1650,10 +1953,10 @@ async function describeS3Scope(
 
   const resources: DiscoveredResource[] = [];
   let skipped = 0;
-  const locationReads = freshS3ReadTally();
-  const tagReads = freshS3ReadTally();
-  const filterReads = freshS3ReadTally();
-  const storageReads = freshS3ReadTally();
+  const locationReads = freshMetadataReadTally();
+  const tagReads = freshMetadataReadTally();
+  const filterReads = freshMetadataReadTally();
+  const storageReads = freshMetadataReadTally();
 
   for (const bucket of await listS3Buckets(client, scope)) {
     const name = bucket.Name;
@@ -1738,15 +2041,20 @@ async function describeS3Scope(
     }
   }
 
-  assertS3ReadNotSystemicallyDenied(scope, 'its location', 's3:GetBucketLocation', locationReads);
-  assertS3ReadNotSystemicallyDenied(scope, 'its tags', 's3:GetBucketTagging', tagReads);
-  assertS3ReadNotSystemicallyDenied(
+  assertMetadataReadNotSystemicallyDenied(
+    scope,
+    'its location',
+    's3:GetBucketLocation',
+    locationReads,
+  );
+  assertMetadataReadNotSystemicallyDenied(scope, 'its tags', 's3:GetBucketTagging', tagReads);
+  assertMetadataReadNotSystemicallyDenied(
     scope,
     'its metrics configurations',
     's3:GetMetricsConfiguration',
     filterReads,
   );
-  assertS3ReadNotSystemicallyDenied(
+  assertMetadataReadNotSystemicallyDenied(
     scope,
     'its storage classes',
     'cloudwatch:ListMetrics',
@@ -1864,6 +2172,16 @@ async function syncScope(
       ? opts.ec2ClientFactory(scope)
       : getProjectEc2Client(scope.project_id, clientOpts);
     discovered = await describeNatGatewayScope(client, scope);
+  } else if (scope.service === RDS_SERVICE) {
+    const client = opts.rdsClientFactory
+      ? opts.rdsClientFactory(scope)
+      : getProjectRdsClient(scope.project_id, clientOpts);
+    discovered = await describeRdsScope(client, scope);
+  } else if (scope.service === LAMBDA_SERVICE) {
+    const client = opts.lambdaClientFactory
+      ? opts.lambdaClientFactory(scope)
+      : getProjectLambdaClient(scope.project_id, clientOpts);
+    discovered = await describeLambdaScope(client, scope);
   } else if (scope.service === S3_SERVICE) {
     const client = opts.s3ClientFactory
       ? opts.s3ClientFactory(scope)

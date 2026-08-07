@@ -315,7 +315,7 @@ describe('projectMonthlyApiCost', () => {
   it('charges nothing for a service with no metric pack', () => {
     // A scope on an uncollectable service is inert; quoting a price for it
     // would imply the collector is going to query it.
-    const p = projectMonthlyApiCost([{ service: 'rds', resourceCount: 500 }]);
+    const p = projectMonthlyApiCost([{ service: 'dynamodb', resourceCount: 500 }]);
     expect(p.metricsRequestedPerMonth).toBe(0);
     expect(p.estimatedMonthlyCostUsd).toBe(0);
     expect(p.perScope[0].metricsPerResource).toBe(0);

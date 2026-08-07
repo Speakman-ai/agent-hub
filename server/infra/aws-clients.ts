@@ -28,6 +28,8 @@ import { CloudWatchClient, DescribeAlarmsCommand } from '@aws-sdk/client-cloudwa
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { ECSClient } from '@aws-sdk/client-ecs';
 import { ElasticLoadBalancingV2Client } from '@aws-sdk/client-elastic-load-balancing-v2';
+import { LambdaClient } from '@aws-sdk/client-lambda';
+import { RDSClient } from '@aws-sdk/client-rds';
 import { S3Client } from '@aws-sdk/client-s3';
 import { findProject } from '../project-model.js';
 import { getProjectAwsMonitoringProfile, getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
@@ -101,6 +103,8 @@ const cloudWatchClients = new Map<string, CloudWatchClient>();
 const ec2Clients = new Map<string, EC2Client>();
 const ecsClients = new Map<string, ECSClient>();
 const elbClients = new Map<string, ElasticLoadBalancingV2Client>();
+const rdsClients = new Map<string, RDSClient>();
+const lambdaClients = new Map<string, LambdaClient>();
 const s3Clients = new Map<string, S3Client>();
 
 /**
@@ -114,6 +118,8 @@ const clientCaches: Array<Map<string, DestroyableClient>> = [
   ec2Clients,
   ecsClients,
   elbClients,
+  rdsClients,
+  lambdaClients,
   s3Clients,
 ];
 
@@ -246,6 +252,61 @@ export function getProjectElbV2Client(
     credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
   });
   elbClients.set(key, client);
+  return client;
+}
+
+/**
+ * An RDS client bound to one project profile and region.
+ *
+ * Inventory sync calls `DescribeDBInstances` through it, and nothing else.
+ * Instance tags come back inline on that response as `TagList`, so unlike ELBv2
+ * there is no second tag call to make — and unlike S3 there is no per-resource
+ * metadata read at all, which keeps an RDS scope to one paginated walk per
+ * sweep.
+ *
+ * Nothing on this path touches data or logs. `rds:DownloadDBLogFilePortion` and
+ * `rds:DownloadCompleteDBLogFile` are on `INFRA_IAM_FORBIDDEN_ACTIONS` and are
+ * a named reason `ReadOnlyAccess` is the wrong grant for this integration.
+ */
+export function getProjectRdsClient(projectId: string, opts: ProjectAwsClientOpts = {}): RDSClient {
+  const { profileName, region, use } = resolveTarget(projectId, opts);
+  const key = clientKey(projectId, profileName, region, use);
+  const existing = rdsClients.get(key);
+  if (existing) return existing;
+
+  const client = new RDSClient({
+    region,
+    credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
+  });
+  rdsClients.set(key, client);
+  return client;
+}
+
+/**
+ * A Lambda client bound to one project profile and region.
+ *
+ * Inventory sync calls `ListFunctions` and, per function, `ListTags`. The second
+ * call is not optional bookkeeping: `ListFunctions` returns a
+ * `FunctionConfiguration` with no tags on it at all, so without `ListTags` every
+ * function reads as untagged — a tag-filtered scope would match nothing and no
+ * function could ever carry the `environment` label that joins it to logs and
+ * deployments. It is the same shape as the ELBv2 tag call, and the same class of
+ * silent-empty-inventory bug if it is skipped.
+ */
+export function getProjectLambdaClient(
+  projectId: string,
+  opts: ProjectAwsClientOpts = {},
+): LambdaClient {
+  const { profileName, region, use } = resolveTarget(projectId, opts);
+  const key = clientKey(projectId, profileName, region, use);
+  const existing = lambdaClients.get(key);
+  if (existing) return existing;
+
+  const client = new LambdaClient({
+    region,
+    credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
+  });
+  lambdaClients.set(key, client);
   return client;
 }
 

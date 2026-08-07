@@ -443,7 +443,7 @@ describe('planQueries', () => {
   });
 
   it('skips a service with no metric pack rather than guessing at one', () => {
-    expect(planQueries([resource('db-1', 'rds')], NOW - 900_000, NOW)).toEqual([]);
+    expect(planQueries([resource('t-1', 'dynamodb')], NOW - 900_000, NOW)).toEqual([]);
   });
 
   it('applies each metric emission floor, so status checks and CPU land on different tiers', () => {

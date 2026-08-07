@@ -33,7 +33,16 @@ describe('service pack registry', () => {
   it('resolves a pack by token and reports the packed services', () => {
     expect(getInfraServicePack('ec2')).toBe(EC2_PACK);
     expect(getInfraServicePack('nope')).toBeNull();
-    expect(infraPackedServices()).toEqual(['alb', 'ec2', 'ecs', 'natgw', 'nlb', 's3']);
+    expect(infraPackedServices()).toEqual([
+      'alb',
+      'ec2',
+      'ecs',
+      'lambda',
+      'natgw',
+      'nlb',
+      'rds',
+      's3',
+    ]);
   });
 
   it('projects every pack metric into the collector query list', () => {
@@ -206,19 +215,27 @@ describe.each(ALL_PACKS.map((pack) => [pack.service, pack] as const))(
       // A rule on an uncollected metric sits in INSUFFICIENT_DATA forever, which
       // is worse than no rule: it teaches operators that the state column lies.
       for (const rule of pack.defaultAlertRules) {
-        // Matched on the full series identity, dimensions included. A pack may
-        // declare one metric at two levels, and a rule that resolved to the
-        // wrong one would be validated against a threshold that means nothing
-        // for the series it actually evaluates.
+        // Matched on the full series identity: namespace, metric name,
+        // dimension set *and* statistic. All four are load-bearing, and the
+        // codebase has an example of each mattering. A pack may declare one
+        // metric at two dimension levels — `AWS/ECS` `CPUUtilization` is one
+        // number for a cluster and another for a service — and it may declare
+        // one metric at several statistics, which `AWS/Lambda` `Duration` does
+        // on Average, Maximum and p90. A lookup that ignored either field would
+        // silently resolve to a sibling series and validate the rule's
+        // threshold and period against a number it never evaluates.
         const metric = pack.metrics.find(
           (m) =>
             m.namespace === rule.namespace &&
             m.metricName === rule.metricName &&
+            m.stat === rule.stat &&
             m.dimensions.length === rule.dimensions.length &&
             rule.dimensions.every((d) => m.dimensions.includes(d)),
         );
-        expect(metric, `${rule.name} targets an undeclared series`).toBeDefined();
-        expect(rule.stat).toBe(metric!.stat);
+        expect(
+          metric,
+          `${rule.name} targets a series the pack does not collect: ${rule.namespace}/${rule.metricName} (${rule.stat}) by ${[...rule.dimensions].join('+')}`,
+        ).toBeDefined();
         expect(rule.periodS).toBeGreaterThanOrEqual(metric!.minPeriodSeconds);
         // A gated rule is fine — it simply does not fire until the feature is
         // on — but it must be gated on a feature the pack explains.

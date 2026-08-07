@@ -27,7 +27,7 @@
  */
 
 /** Bumped whenever the published policy document changes. */
-export const INFRA_IAM_POLICY_VERSION = 2;
+export const INFRA_IAM_POLICY_VERSION = 3;
 
 /**
  * Statement `Sid` per capability in the published policy. Every capability gets
@@ -196,6 +196,11 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     action: 'lambda:GetFunctionConfiguration',
     capability: 'inventory',
     why: 'Per-function memory, timeout and reserved concurrency, needed to turn raw Duration into a headroom percentage.',
+  },
+  {
+    action: 'lambda:ListTags',
+    capability: 'inventory',
+    why: 'Function tags. Separate from ListFunctions because that call returns a FunctionConfiguration carrying no tags at all — so without this every function reads as untagged, a tag-filtered scope matches nothing, and no function can carry the environment label that joins it to logs and deployments.',
   },
   {
     action: 's3:ListAllMyBuckets',
