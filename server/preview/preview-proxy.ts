@@ -111,6 +111,14 @@ function copyHeaders(src: IncomingMessage): Record<string, string | string[]> {
  * of the proxy mount; the browser then receives the Hub SPA fallback
  * HTML in place of each asset and the preview iframe goes white with
  * "Manifest: Line 1, column 1, Syntax error" in the console.
+ *
+ * Bodies that are not HTML *documents* are returned byte-identical.
+ * `content-type: text/html` is not a promise of a document: Survey
+ * Tracker's `/health` answers `text/html` with the body `OK`, and an
+ * unconditionally-compressing upstream delivers a document as binary.
+ * Prepending a tag to either corrupts the response, and now that API
+ * traffic flows through the `/p/<port>` sub-mount those bodies are
+ * routine rather than hypothetical.
  */
 export function injectHtmlPreviewBaseHref(
   html: string,
@@ -129,16 +137,47 @@ export function injectHtmlPreviewBaseHref(
   if (/<head[\s>]/i.test(html)) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
   }
-  return `${baseTag}${html}`;
+  // A document may omit `<head>` entirely (it is an optional tag). The parser
+  // opens an implied head, so a `<base>` placed directly after `<html>` still
+  // lands there and asset resolution is fixed as intended.
+  if (/<html[\s>]/i.test(html)) {
+    return html.replace(/<html([^>]*)>/i, `<html$1>${baseTag}`);
+  }
+  return html;
 }
 
-function upstreamRequestHeaders(
+/**
+ * Should this upstream response body be buffered and rewritten?
+ *
+ * Only an HTML content type qualifies, and only when the body is not
+ * compressed — `injectHtmlPreviewBaseHref` edits text, and editing a gzip
+ * stream as text corrupts it. Whether the body is really a *document* is
+ * decided later by the injector, which leaves non-documents untouched.
+ */
+export function shouldRewriteHtmlResponse(
+  contentType: string | string[] | undefined,
+  contentEncoding: string | string[] | undefined,
+): boolean {
+  if (!String(contentType ?? '').includes('text/html')) return false;
+  const encoding = String(contentEncoding ?? '')
+    .trim()
+    .toLowerCase();
+  return encoding === '' || encoding === 'identity';
+}
+
+export function upstreamRequestHeaders(
   req: IncomingMessage,
   host: string,
   port: number,
 ): Record<string, string | string[]> {
   const headers = copyHeaders(req);
   headers.host = `${host}:${port}`;
+  // Ask the upstream for an identity encoding. We rewrite `<base href>` into
+  // HTML documents, which requires reading the body as text — a gzipped body
+  // would be edited as binary garbage. The upstream is a dev server one hop
+  // away over a container-local network, so giving up wire compression on that
+  // hop costs nothing; the Hub still compresses its own response to the client.
+  delete headers['accept-encoding'];
   return headers;
 }
 
@@ -225,8 +264,10 @@ function proxyHttp(
     },
     (proxyRes) => {
       const responseHeaders = copyHeaders(proxyRes);
-      const contentType = String(proxyRes.headers['content-type'] ?? '');
-      const shouldRewriteHtml = contentType.includes('text/html');
+      const shouldRewriteHtml = shouldRewriteHtmlResponse(
+        proxyRes.headers['content-type'],
+        proxyRes.headers['content-encoding'],
+      );
 
       // CSP frame-ancestors so the iframe is embeddable by the Hub UI.
       // Applied to ALL response types (HTML, JS, CSS, images) so the
@@ -247,10 +288,13 @@ function proxyHttp(
       const chunks: Buffer[] = [];
       proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
       proxyRes.on('end', () => {
-        let body = Buffer.concat(chunks);
-        const text = body.toString('utf8');
+        const original = Buffer.concat(chunks);
+        const text = original.toString('utf8');
         const rewritten = injectHtmlPreviewBaseHref(text, sessionId, internalPort);
-        body = Buffer.from(rewritten, 'utf8');
+        // On a no-op, forward the original bytes rather than the re-encoded
+        // string: a body in any non-UTF-8 charset would not survive the
+        // round-trip, and a non-document has no reason to be touched at all.
+        const body = rewritten === text ? original : Buffer.from(rewritten, 'utf8');
         delete responseHeaders['content-length'];
         responseHeaders['content-length'] = String(body.length);
         if (!res.headersSent) {
