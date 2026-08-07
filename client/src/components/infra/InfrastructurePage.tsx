@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Activity, BellRing, Boxes, Cloud, Gauge, Server } from 'lucide-react';
 import InfraScopeEditor from './InfraScopeEditor';
 import InfraSpendPanel from './InfraSpendPanel';
+import InfraQuotaHeadroomPanel from './InfraQuotaHeadroomPanel';
 import InfraResourceBrowser, { type InfraResourceWire } from './InfraResourceBrowser';
 import InfraMetricChart from './InfraMetricChart';
 import InfraServiceNotes from './InfraServiceNotes';
@@ -235,6 +236,10 @@ export default function InfrastructurePage({
                 the operator is about to make, this one reports the bill that
                 decision lands on. */}
             <InfraSpendPanel projectId={projectId} showToast={showToast} />
+            {/* Last on the tab on purpose: the panels above price and report the
+            money a scope costs, while this one answers a capacity question
+            those cannot — nothing is down and you still cannot launch. */}
+            <InfraQuotaHeadroomPanel projectId={projectId} />
           </div>
         ) : tab === 'resources' ? (
           hasScope ? (

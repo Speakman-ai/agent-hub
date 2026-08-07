@@ -342,6 +342,7 @@ export const api = {
     // because `GetCostAndUsage` bills $0.01 per paginated request with no free
     // tier and a read-through cache would charge a cent per screen open.
     getInfraSpend: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/spend${infraQuery(params)}`),
+    getInfraQuotas: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/quotas${infraQuery(params)}`),
     // Opts the project in or out of the billed Cost Explorer poll. Returns the
     // same spend body, so the screen repaints from the response.
     updateInfraSpendConfig: (projectId: any, data: { enabled: boolean }) => fetchJSON(`/projects/${projectId}/infra/spend/config`, {

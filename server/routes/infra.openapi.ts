@@ -618,6 +618,147 @@ const SpendResponse = registerComponent(
     }),
 );
 
+// ─── Service quota headroom ─────────────────────────────────────────────────
+
+const QuotaHeadroom = registerComponent(
+  'InfraQuotaHeadroom',
+  z
+    .object({
+      resourceKey: z.string().openapi({
+        description: 'Inventory key for the quota, joining it to its metric series.',
+      }),
+      accountId: z.string().openapi({ description: 'AWS account the quota applies to.' }),
+      region: z.string().openapi({
+        description:
+          'Region the applied value was read from. A quota is per-region, so the same quota code can have different limits in different regions.',
+        example: 'us-east-1',
+      }),
+      serviceCode: z.string().openapi({
+        description:
+          'Service Quotas ServiceCode, which is frequently not the marketing name — CloudWatch is `monitoring`, Location Service is `geo`.',
+        example: 'ec2',
+      }),
+      quotaCode: z.string().openapi({ example: 'L-1216C47A' }),
+      quotaName: z.string().openapi({ example: 'Running On-Demand Standard instances' }),
+      limit: z.number().nullable().openapi({
+        description:
+          'The *applied* quota, reflecting increases AWS granted this account rather than the published default. Null when AWS returned no applied value — documented as possible, and deliberately distinct from zero.',
+        example: 640,
+      }),
+      unit: z.string().nullable().openapi({
+        description:
+          'Unit as Service Quotas reports it, so headroom can be labelled without inferring one from the quota name.',
+        example: 'None',
+      }),
+      adjustable: z.boolean().openapi({
+        description:
+          'Whether an increase can be requested at all. It changes what an operator can do about a full quota, so it travels beside the number saying it is full.',
+      }),
+      usage: z.number().nullable().openapi({
+        description:
+          'Most recent AWS/Usage reading, or null when nothing has been collected or the newest point is older than `staleAfterMs`. Null is not zero: a stopped collector must not leave a reassuring number pinned to the panel.',
+        example: 512,
+      }),
+      usageAtMs: z.number().nullable().openapi({
+        description: 'Epoch milliseconds of that reading.',
+      }),
+      metricName: z.string().openapi({
+        description: 'Which AWS/Usage metric measures this quota. Each quota names exactly one.',
+        example: 'ResourceCount',
+      }),
+      utilizationPercent: z.number().nullable().openapi({
+        description:
+          'Usage as a percentage of the applied quota. Null when undefined — never zero, which would read as full headroom. Not clamped at 100: usage above an applied quota is real and observable after a quota decrease.',
+        example: 80,
+      }),
+      headroom: z.number().nullable().openapi({
+        description:
+          'Absolute remaining capacity (`limit - usage`), floored at zero. The number the percentage cannot give: 82% of 40 leaves 7, 82% of 5,000 leaves 900.',
+        example: 128,
+      }),
+      band: z.enum(['critical', 'warning', 'ok', 'unknown']).openapi({
+        description:
+          'Severity band. `unknown` is distinct from `ok` so an unmeasurable quota never counts toward "everything is fine".',
+      }),
+    })
+    .openapi({ description: 'One service quota with its latest usage resolved into headroom.' }),
+);
+
+const QuotaHeadroomResponse = registerComponent(
+  'InfraQuotaHeadroomResponse',
+  z
+    .object({
+      quotas: z.array(QuotaHeadroom).openapi({
+        description: 'Tightest quota first; unmeasurable ones last.',
+      }),
+      summary: z
+        .object({
+          critical: z.number().int(),
+          warning: z.number().int(),
+          ok: z.number().int(),
+          unknown: z.number().int(),
+          total: z.number().int(),
+        })
+        .openapi({ description: 'Counts per band, for the panel headline.' }),
+      thresholds: z
+        .object({
+          warning: z.number().openapi({ example: 80 }),
+          critical: z.number().openapi({ example: 100 }),
+        })
+        .openapi({
+          description:
+            'Band edges, sent so web and mobile cannot disagree with the server about where "warning" starts. The warning edge is the same 80 AWS\'s console walkthrough alarms on.',
+        }),
+      expression: z.string().openapi({
+        description:
+          'The AWS metric-math expression this reproduces, so an operator diffing our percentage against the console can see what we claim to compute.',
+        example: 'm1/SERVICE_QUOTA(m1)*100',
+      }),
+      staleAfterMs: z.number().openapi({
+        description: 'How old a usage reading may be and still be reported.',
+      }),
+    })
+    .openapi({
+      description:
+        'Service quota headroom. Read entirely from local SQLite; limits come from the hourly ListServiceQuotas sync and usage from the metric collector, so this never calls AWS.',
+    }),
+);
+
+export const QuotaHeadroomParamsSchema = z.object({
+  staleAfterMinutes: coercedInt.min(1).max(1440).default(30).openapi({
+    type: 'integer',
+    description:
+      'How many minutes old the newest usage reading may be before a quota reports unknown usage instead. Defaults to 30, comfortably more than the 5-minute collector tick so an ordinary skipped tick does not blank the panel.',
+    example: 30,
+  }),
+});
+
+// GET /api/projects/{projectId}/infra/quotas
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/infra/quotas',
+  tags: ['Projects'],
+  summary: 'Service quota headroom from AWS/Usage metrics',
+  description:
+    "Returns each inventoried service quota with its applied limit, its latest usage reading, and the resulting utilization and absolute headroom.\n\nThis catches the failure where nothing is down and you still cannot launch anything: no per-service alarm fires because no service is unhealthy, the account has simply run out of a quota.\n\n**Cost: free.** This endpoint never calls AWS. Limits come from the hourly `ListServiceQuotas` inventory sweep and usage from the metric collector; both are already stored locally.\n\nUtilization reproduces AWS's documented `m1/SERVICE_QUOTA(m1)*100`, substituting the applied value from `ListServiceQuotas` for `SERVICE_QUOTA(m1)`. Only quotas carrying a `UsageMetric` are inventoried at all — that field is absent for the large majority of quotas, and only around 17 AWS services publish usage metrics.",
+  request: { params: ProjectIdParam, query: QuotaHeadroomParamsSchema },
+  responses: {
+    200: {
+      description:
+        'Quota headroom. An empty array when no quota scope is configured or nothing has been synced yet — not an error.',
+      content: { 'application/json': { schema: QuotaHeadroomResponse } },
+    },
+    400: {
+      description: 'Malformed query params.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});
+
 export const SpendTrendParamsSchema = z.object({
   days: coercedInt.min(1).max(400).default(COST_EXPLORER_LOOKBACK_DAYS).openapi({
     type: 'integer',

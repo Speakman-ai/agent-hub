@@ -33,6 +33,8 @@ import {
 } from './infra-cost-store.js';
 import { COLLECTOR_TICK_INTERVAL_S } from './infra-cost.js';
 import { getServiceMetricPack } from './service-metric-packs.js';
+import { QUOTA_SERVICE_TOKEN } from './quota-catalog.js';
+import { QUOTA_DERIVED_NAMESPACE, QUOTA_UTILIZATION_METRIC_NAME } from './packs/quota.js';
 import {
   runInfraMetricCollection,
   resolvePeriod,
@@ -1753,5 +1755,173 @@ describe('incremental spend accounting', () => {
     expect(row.estimated_cost_usd).toBeCloseTo(FIRST_GROUP * USD_PER_METRIC, 12);
     expect(row.status).toBe('failed');
     expect(row.errors).toBe(1);
+  });
+});
+
+// ─── Derived quota utilization ──────────────────────────────────────────────
+
+describe('quota utilization is stored as a real series', () => {
+  const QUOTA_DIMENSIONS = {
+    Class: 'Standard/OnDemand',
+    Resource: 'vCPU',
+    Service: 'EC2',
+    Type: 'Resource',
+  };
+
+  /** A quota resource, which needs both a dimension set and a usage-metric flag. */
+  function insertQuotaResource(resourceId: string): string {
+    const identity = {
+      projectId: 'proj',
+      accountId: '111122223333',
+      region: 'us-east-1',
+      service: QUOTA_SERVICE_TOKEN,
+      resourceId,
+    };
+    const key = infraResourceKey(identity);
+    getInfraDb()
+      .prepare(
+        `INSERT INTO infra_resources
+           (resource_key, project_id, account_id, region, service, resource_id,
+            name, tags_json, environment, state, metric_dimensions_json,
+            features_json, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?)`,
+      )
+      .run(
+        key,
+        identity.projectId,
+        identity.accountId,
+        identity.region,
+        identity.service,
+        resourceId,
+        JSON.stringify(QUOTA_DIMENSIONS),
+        JSON.stringify({ 'usage:ResourceCount': true }),
+        NOW,
+        NOW,
+      );
+    return key;
+  }
+
+  /** Return a fixed usage value for every query in the batch. */
+  function usageValue(command: GetMetricDataCommand, value: number) {
+    return {
+      MetricDataResults: (command.input.MetricDataQueries ?? []).map((q) => ({
+        Id: q.Id,
+        StatusCode: 'Complete' as const,
+        Timestamps: [new Date(NOW)],
+        Values: [value],
+      })),
+    };
+  }
+
+  it('enqueues a utilization point alongside the usage point it derives from', async () => {
+    insertScope({ id: 'q1', service: QUOTA_SERVICE_TOKEN });
+    const key = insertQuotaResource('ec2/L-1216C47A');
+
+    const enqueued: InfraMetricPointInput[] = [];
+    await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => ({
+        async send(command: GetMetricDataCommand) {
+          return usageValue(command, 512) as GetMetricDataCommandOutput;
+        },
+      }),
+      enqueue: (points) => {
+        enqueued.push(...points);
+        return { enqueued: points.length, dropped: 0 };
+      },
+      quotaLimitLookup: () => 640,
+      sleep: async () => {},
+      random: () => 0,
+    });
+
+    const usage = enqueued.filter((p) => p.namespace === 'AWS/Usage');
+    const derived = enqueued.filter((p) => p.namespace === QUOTA_DERIVED_NAMESPACE);
+
+    // Only ResourceCount is queried: the feature gate keeps CallCount and
+    // ThrottleCount from binding to a quota that publishes neither.
+    expect(usage.map((p) => p.metricName)).toEqual(['ResourceCount']);
+    expect(derived).toHaveLength(1);
+    expect(derived[0]!.value).toBe(80); // 512/640*100
+    expect(derived[0]!.resourceKey).toBe(key);
+    expect(derived[0]!.metricName).toBe(QUOTA_UTILIZATION_METRIC_NAME);
+  });
+
+  it('writes no utilization point when the applied quota is unknown', async () => {
+    insertScope({ id: 'q1', service: QUOTA_SERVICE_TOKEN });
+    insertQuotaResource('ec2/L-1216C47A');
+
+    const enqueued: InfraMetricPointInput[] = [];
+    await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => ({
+        async send(command: GetMetricDataCommand) {
+          return usageValue(command, 512) as GetMetricDataCommandOutput;
+        },
+      }),
+      enqueue: (points) => {
+        enqueued.push(...points);
+        return { enqueued: points.length, dropped: 0 };
+      },
+      // The default when a quota's limit has not been synced yet.
+      quotaLimitLookup: () => null,
+      sleep: async () => {},
+      random: () => 0,
+    });
+
+    // The usage half still lands; only the percentage is withheld, so the
+    // default rule sees a genuine gap rather than an invented value.
+    expect(enqueued.filter((p) => p.namespace === 'AWS/Usage')).toHaveLength(1);
+    expect(enqueued.filter((p) => p.namespace === QUOTA_DERIVED_NAMESPACE)).toHaveLength(0);
+  });
+
+  it('never asks CloudWatch for the derived namespace', async () => {
+    insertScope({ id: 'q1', service: QUOTA_SERVICE_TOKEN });
+    insertQuotaResource('ec2/L-1216C47A');
+
+    const calls: GetMetricDataCommand[] = [];
+    await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => ({
+        async send(command: GetMetricDataCommand) {
+          calls.push(command);
+          return usageValue(command, 512) as GetMetricDataCommandOutput;
+        },
+      }),
+      enqueue: (points) => ({ enqueued: points.length, dropped: 0 }),
+      quotaLimitLookup: () => 640,
+      sleep: async () => {},
+      random: () => 0,
+    });
+
+    // A billed query against a namespace AWS does not publish would return
+    // nothing, every tick, forever.
+    const namespaces = calls
+      .flatMap((c) => c.input.MetricDataQueries ?? [])
+      .map((q) => q.MetricStat?.Metric?.Namespace);
+    expect(namespaces).toEqual(['AWS/Usage']);
+  });
+
+  it('counts derived points as enqueued but not as datapoints AWS returned', async () => {
+    // datapointsReturned feeds the cost audit, which must measure what AWS
+    // actually sent. Folding our own arithmetic into it would overstate the
+    // value received for the money spent.
+    insertScope({ id: 'q1', service: QUOTA_SERVICE_TOKEN });
+    insertQuotaResource('ec2/L-1216C47A');
+
+    const r = await runInfraMetricCollection({
+      nowMs: NOW,
+      cloudWatchClientFactory: () => ({
+        async send(command: GetMetricDataCommand) {
+          return usageValue(command, 512) as GetMetricDataCommandOutput;
+        },
+      }),
+      enqueue: (points) => ({ enqueued: points.length, dropped: 0 }),
+      quotaLimitLookup: () => 640,
+      sleep: async () => {},
+      random: () => 0,
+    });
+
+    expect(r.datapointsReturned).toBe(1);
+    expect(r.pointsEnqueued).toBe(2);
   });
 });

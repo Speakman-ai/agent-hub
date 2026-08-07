@@ -101,7 +101,10 @@ import {
   getProjectLambdaClient,
   getProjectRdsClient,
   getProjectS3Client,
+  getProjectServiceQuotasClient,
 } from './aws-clients.js';
+import { QUOTA_SERVICE_TOKEN } from './quota-catalog.js';
+import { describeQuotaScope, type ServiceQuotasDescribeClient } from './quota-sync.js';
 import {
   compileInfraTagFilter,
   isEmptyInfraTagFilter,
@@ -134,6 +137,11 @@ const NATGW_SERVICE = 'natgw';
 const S3_SERVICE = 's3';
 const RDS_SERVICE = 'rds';
 const LAMBDA_SERVICE = 'lambda';
+// Not an AWS resource type: a "quota" row is one service quota that carries an
+// AWS/Usage metric, discovered from ListServiceQuotas rather than a describe
+// call. It is inventoried like everything else so it inherits scoping,
+// retention, charting and alert evaluation.
+const QUOTA_SERVICE = QUOTA_SERVICE_TOKEN;
 export const INFRA_SYNCABLE_SERVICES: readonly string[] = Object.freeze([
   EC2_SERVICE,
   ECS_SERVICE,
@@ -143,6 +151,7 @@ export const INFRA_SYNCABLE_SERVICES: readonly string[] = Object.freeze([
   S3_SERVICE,
   RDS_SERVICE,
   LAMBDA_SERVICE,
+  QUOTA_SERVICE,
 ]);
 
 /**
@@ -315,6 +324,10 @@ export interface InfraInventorySyncOptions {
   s3ClientFactory?: (scope: InfraScopeRow) => S3DescribeClient;
   /** Test seam: build the CloudWatch client the S3 walk discovers storage classes with. */
   cloudWatchClientFactory?: (scope: InfraScopeRow) => CloudWatchListMetricsClient;
+  /** Test seam: build the Service Quotas client for a scope. */
+  serviceQuotasClientFactory?: (scope: InfraScopeRow) => ServiceQuotasDescribeClient;
+  /** Test seam: restrict which service codes a quota sweep lists. */
+  quotaServiceCodes?: readonly string[];
 }
 
 export interface InfraInventorySyncResult {
@@ -2192,6 +2205,20 @@ async function syncScope(
       ? opts.cloudWatchClientFactory(scope)
       : getProjectCloudWatchClient(scope.project_id, clientOpts);
     discovered = await describeS3Scope(client, cloudWatch, scope);
+  } else if (scope.service === QUOTA_SERVICE) {
+    const client = opts.serviceQuotasClientFactory
+      ? opts.serviceQuotasClientFactory(scope)
+      : getProjectServiceQuotasClient(scope.project_id, clientOpts);
+    // Quota discovery also persists the applied limits, because the inventory
+    // row and its limit have to come from the same pass over the same response.
+    // Split across two passes, a sweep could write resources whose limits are an
+    // hour stale, and the resulting utilization would be wrong in a way nothing
+    // downstream could detect.
+    discovered = await describeQuotaScope(client, scope, {
+      serviceCodes: opts.quotaServiceCodes,
+      maxPagesPerService: MAX_PAGES_PER_SCOPE,
+      nowMs,
+    });
   } else {
     throw new Error(`no inventory describer for service '${scope.service}'`);
   }

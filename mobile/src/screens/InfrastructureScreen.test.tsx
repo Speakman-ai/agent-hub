@@ -29,6 +29,15 @@ vi.mock('../utils/api', () => ({
     setInfraAlertStatus: vi.fn(() => Promise.resolve({})),
     getInfraMetricPacks: vi.fn(() => Promise.resolve({ packs: [] })),
     getInfraSpend: vi.fn(() => Promise.resolve({ enabled: false, days: [] })),
+    getInfraQuotas: vi.fn(() =>
+      Promise.resolve({
+        quotas: [],
+        summary: { critical: 0, warning: 0, ok: 0, unknown: 0, total: 0 },
+        thresholds: { warning: 80, critical: 100 },
+        expression: 'm1/SERVICE_QUOTA(m1)*100',
+        staleAfterMs: 0,
+      }),
+    ),
     updateInfraSpendConfig: vi.fn(() => Promise.resolve({ enabled: false, days: [] })),
   },
 }));
@@ -55,7 +64,11 @@ import {
   createRequestGeneration,
   runSpendToggle,
   stampMatchesProject,
+  QUOTA_VISIBLE_ROWS,
+  QUOTA_TONE_COLOR,
+  quotaTruncationNote,
 } from './InfrastructureScreen';
+import { quotaRefreshFailureNote } from '@shared/utils/quotaHeadroom';
 import { EMPTY_FILTERS } from '../utils/infraResources';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import { joinAlertsToRules } from '@shared/utils/infraAlerts';
@@ -893,5 +906,53 @@ describe('runSpendToggle', () => {
 
     await freshDone;
     expect(fresh.calls.saving).toEqual([false]);
+  });
+});
+
+describe('quota headroom section', () => {
+  it('says what it hid rather than truncating silently', () => {
+    // The list is sorted tightest-first, so an operator who cannot see it was
+    // cut would read the last visible row as the healthiest in the account.
+    expect(quotaTruncationNote(QUOTA_VISIBLE_ROWS)).toBeNull();
+    expect(quotaTruncationNote(QUOTA_VISIBLE_ROWS - 1)).toBeNull();
+    expect(quotaTruncationNote(QUOTA_VISIBLE_ROWS + 1)).toMatch(/^1 more quota not shown\./);
+    expect(quotaTruncationNote(QUOTA_VISIBLE_ROWS + 3)).toMatch(/^3 more quotas not shown\./);
+  });
+
+  it('explains that the hidden rows are the healthy ones', () => {
+    expect(quotaTruncationNote(QUOTA_VISIBLE_ROWS + 2)).toMatch(/tightest-first/);
+    expect(quotaTruncationNote(QUOTA_VISIBLE_ROWS + 2)).toMatch(/most headroom/);
+  });
+
+  it('shows fewer rows than web, because the phone rows are taller', () => {
+    // Web shows 8. Both cut the same sorted list, so the shorter phone cut
+    // still shows everything that needs action.
+    expect(QUOTA_VISIBLE_ROWS).toBeLessThan(8);
+    expect(QUOTA_VISIBLE_ROWS).toBeGreaterThan(0);
+  });
+
+  it('gives each band a distinct colour, with unknown visibly muted', () => {
+    // An unmeasured quota must not look like a healthy one.
+    const tones = Object.values(QUOTA_TONE_COLOR);
+    expect(new Set(tones).size).toBe(tones.length);
+    expect(QUOTA_TONE_COLOR.muted).not.toBe(QUOTA_TONE_COLOR.good);
+  });
+});
+
+describe('quota refresh failures on mobile', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('labels retained readings as stale rather than dropping or silently keeping them', () => {
+    // Mobile previously cleared `data` on any failed poll, blanking the panel
+    // on a transient blip; web previously kept it with no indication at all.
+    // Both are wrong in opposite directions, and both platforms now use this
+    // one helper so they cannot diverge again.
+    const note = quotaRefreshFailureNote('timeout', NOW - 5 * 60_000, NOW)!;
+    expect(note).toContain('Refresh failed: timeout');
+    expect(note).toContain('5m ago');
+  });
+
+  it('says nothing when the last poll succeeded', () => {
+    expect(quotaRefreshFailureNote(null, NOW, NOW)).toBeNull();
   });
 });

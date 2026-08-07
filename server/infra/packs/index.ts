@@ -12,6 +12,7 @@ import { EC2_PACK } from './ec2.js';
 import { ECS_PACK } from './ecs.js';
 import { LAMBDA_PACK } from './lambda.js';
 import { NATGW_PACK } from './natgw.js';
+import { QUOTA_PACK } from './quota.js';
 import { NLB_PACK } from './nlb.js';
 import { RDS_PACK } from './rds.js';
 import { S3_PACK } from './s3.js';
@@ -23,6 +24,13 @@ export { EC2_PACK } from './ec2.js';
 export { ECS_PACK, ECS_CONTAINER_INSIGHTS_FEATURE } from './ecs.js';
 export { LAMBDA_PACK } from './lambda.js';
 export { NATGW_PACK } from './natgw.js';
+export {
+  QUOTA_PACK,
+  QUOTA_DERIVED_NAMESPACE,
+  QUOTA_UTILIZATION_METRIC_NAME,
+  QUOTA_UTILIZATION_STAT,
+  quotaUsageFeatureKey,
+} from './quota.js';
 export { NLB_PACK } from './nlb.js';
 export { RDS_PACK } from './rds.js';
 export { S3_PACK, S3_REQUEST_METRICS_FEATURE, S3_ALL_STORAGE_TYPES } from './s3.js';
@@ -43,6 +51,7 @@ export const INFRA_SERVICE_PACKS: Readonly<Record<string, InfraServicePack>> = O
   [ALB_PACK.service]: ALB_PACK,
   [NLB_PACK.service]: NLB_PACK,
   [NATGW_PACK.service]: NATGW_PACK,
+  [QUOTA_PACK.service]: QUOTA_PACK,
   [S3_PACK.service]: S3_PACK,
   [RDS_PACK.service]: RDS_PACK,
   [LAMBDA_PACK.service]: LAMBDA_PACK,

@@ -32,6 +32,7 @@ import { ElasticLoadBalancingV2Client } from '@aws-sdk/client-elastic-load-balan
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { RDSClient } from '@aws-sdk/client-rds';
 import { S3Client } from '@aws-sdk/client-s3';
+import { ServiceQuotasClient } from '@aws-sdk/client-service-quotas';
 import { findProject } from '../project-model.js';
 import { getProjectAwsMonitoringProfile, getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
 import {
@@ -108,6 +109,7 @@ const rdsClients = new Map<string, RDSClient>();
 const lambdaClients = new Map<string, LambdaClient>();
 const s3Clients = new Map<string, S3Client>();
 const costExplorerClients = new Map<string, CostExplorerClient>();
+const serviceQuotasClients = new Map<string, ServiceQuotasClient>();
 
 /**
  * Every client cache, so adding a service means adding one map here rather than
@@ -124,6 +126,7 @@ const clientCaches: Array<Map<string, DestroyableClient>> = [
   lambdaClients,
   s3Clients,
   costExplorerClients,
+  serviceQuotasClients,
 ];
 
 /**
@@ -282,6 +285,35 @@ export function getProjectRdsClient(projectId: string, opts: ProjectAwsClientOpt
     credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
   });
   rdsClients.set(key, client);
+  return client;
+}
+
+/**
+ * A Service Quotas client bound to one project profile and region.
+ *
+ * Regional, unlike Cost Explorer: a quota's applied value differs per region,
+ * and reading `us-east-1` while collecting usage in `eu-west-1` would compute
+ * headroom against the wrong limit. So this deliberately honours `opts.region`.
+ *
+ * Only `ListServiceQuotas` is called through it. The per-quota `GetServiceQuota`
+ * is granted in the published policy but unused here: listing is throttled at
+ * 10 requests/second against `GetServiceQuota`'s 5, and returns up to 100 quotas
+ * per page rather than one, so it wins on both axes by two orders of magnitude.
+ */
+export function getProjectServiceQuotasClient(
+  projectId: string,
+  opts: ProjectAwsClientOpts = {},
+): ServiceQuotasClient {
+  const { profileName, region, use } = resolveTarget(projectId, opts);
+  const key = clientKey(projectId, profileName, region, use);
+  const existing = serviceQuotasClients.get(key);
+  if (existing) return existing;
+
+  const client = new ServiceQuotasClient({
+    region,
+    credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
+  });
+  serviceQuotasClients.set(key, client);
   return client;
 }
 

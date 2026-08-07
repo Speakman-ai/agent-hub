@@ -7944,6 +7944,145 @@ components:
         - fetchedAt
         - lastRun
       description: Cached daily AWS spend. Read entirely from local SQLite — this never calls AWS, which is the caching layer AWS’s own best-practices page asks for.
+    InfraQuotaHeadroom:
+      type: object
+      properties:
+        resourceKey:
+          type: string
+          description: Inventory key for the quota, joining it to its metric series.
+        accountId:
+          type: string
+          description: AWS account the quota applies to.
+        region:
+          type: string
+          description: Region the applied value was read from. A quota is per-region, so the same quota code can have different limits in different regions.
+          example: us-east-1
+        serviceCode:
+          type: string
+          description: Service Quotas ServiceCode, which is frequently not the marketing name — CloudWatch is `monitoring`, Location Service is `geo`.
+          example: ec2
+        quotaCode:
+          type: string
+          example: L-1216C47A
+        quotaName:
+          type: string
+          example: Running On-Demand Standard instances
+        limit:
+          type: number
+          nullable: true
+          description: The *applied* quota, reflecting increases AWS granted this account rather than the published default. Null when AWS returned no applied value — documented as possible, and deliberately distinct from zero.
+          example: 640
+        unit:
+          type: string
+          nullable: true
+          description: Unit as Service Quotas reports it, so headroom can be labelled without inferring one from the quota name.
+          example: None
+        adjustable:
+          type: boolean
+          description: Whether an increase can be requested at all. It changes what an operator can do about a full quota, so it travels beside the number saying it is full.
+        usage:
+          type: number
+          nullable: true
+          description: "Most recent AWS/Usage reading, or null when nothing has been collected or the newest point is older than `staleAfterMs`. Null is not zero: a stopped collector must not leave a reassuring number pinned to the panel."
+          example: 512
+        usageAtMs:
+          type: number
+          nullable: true
+          description: Epoch milliseconds of that reading.
+        metricName:
+          type: string
+          description: Which AWS/Usage metric measures this quota. Each quota names exactly one.
+          example: ResourceCount
+        utilizationPercent:
+          type: number
+          nullable: true
+          description: "Usage as a percentage of the applied quota. Null when undefined — never zero, which would read as full headroom. Not clamped at 100: usage above an applied quota is real and observable after a quota decrease."
+          example: 80
+        headroom:
+          type: number
+          nullable: true
+          description: "Absolute remaining capacity (`limit - usage`), floored at zero. The number the percentage cannot give: 82% of 40 leaves 7, 82% of 5,000 leaves 900."
+          example: 128
+        band:
+          type: string
+          enum:
+            - critical
+            - warning
+            - ok
+            - unknown
+          description: Severity band. `unknown` is distinct from `ok` so an unmeasurable quota never counts toward "everything is fine".
+      required:
+        - resourceKey
+        - accountId
+        - region
+        - serviceCode
+        - quotaCode
+        - quotaName
+        - limit
+        - unit
+        - adjustable
+        - usage
+        - usageAtMs
+        - metricName
+        - utilizationPercent
+        - headroom
+        - band
+      description: One service quota with its latest usage resolved into headroom.
+    InfraQuotaHeadroomResponse:
+      type: object
+      properties:
+        quotas:
+          type: array
+          items:
+            $ref: "#/components/schemas/InfraQuotaHeadroom"
+          description: Tightest quota first; unmeasurable ones last.
+        summary:
+          type: object
+          properties:
+            critical:
+              type: integer
+            warning:
+              type: integer
+            ok:
+              type: integer
+            unknown:
+              type: integer
+            total:
+              type: integer
+          required:
+            - critical
+            - warning
+            - ok
+            - unknown
+            - total
+          description: Counts per band, for the panel headline.
+        thresholds:
+          type: object
+          properties:
+            warning:
+              type: number
+              example: 80
+            critical:
+              type: number
+              example: 100
+          required:
+            - warning
+            - critical
+          description: Band edges, sent so web and mobile cannot disagree with the server about where "warning" starts. The warning edge is the same 80 AWS's console walkthrough alarms on.
+        expression:
+          type: string
+          description: The AWS metric-math expression this reproduces, so an operator diffing our percentage against the console can see what we claim to compute.
+          example: m1/SERVICE_QUOTA(m1)*100
+        staleAfterMs:
+          type: number
+          description: How old a usage reading may be and still be reported.
+      required:
+        - quotas
+        - summary
+        - thresholds
+        - expression
+        - staleAfterMs
+      description: Service quota headroom. Read entirely from local SQLite; limits come from the hourly ListServiceQuotas sync and usage from the metric collector, so this never calls AWS.
     InfraSpendConfigRequest:
       type: object
       properties:
@@ -30372,6 +30511,66 @@ paths:
                 $ref: "#/components/schemas/InfraCostStatus"
         "400":
           description: Malformed body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/quotas:
+    get:
+      tags:
+        - Projects
+      summary: Service quota headroom from AWS/Usage metrics
+      description: |-
+        Returns each inventoried service quota with its applied limit, its latest usage reading, and the resulting utilization and absolute headroom.
+
+        This catches the failure where nothing is down and you still cannot launch anything: no per-service alarm fires because no service is unhealthy, the account has simply run out of a quota.
+
+        **Cost: free.** This endpoint never calls AWS. Limits come from the hourly `ListServiceQuotas` inventory sweep and usage from the metric collector; both are already stored locally.
+
+        Utilization reproduces AWS's documented `m1/SERVICE_QUOTA(m1)*100`, substituting the applied value from `ListServiceQuotas` for `SERVICE_QUOTA(m1)`. Only quotas carrying a `UsageMetric` are inventoried at all — that field is absent for the large majority of quotas, and only around 17 AWS services publish usage metrics.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: integer
+            description: How many minutes old the newest usage reading may be before a quota reports unknown usage instead. Defaults to 30, comfortably more than the 5-minute collector tick so an ordinary skipped tick does not blank the panel.
+            example: 30
+          required: false
+          description: How many minutes old the newest usage reading may be before a quota reports unknown usage instead. Defaults to 30, comfortably more than the 5-minute collector tick so an ordinary skipped tick does not blank the panel.
+          name: staleAfterMinutes
+          in: query
+      responses:
+        "200":
+          description: Quota headroom. An empty array when no quota scope is configured or nothing has been synced yet — not an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraQuotaHeadroomResponse"
+        "400":
+          description: Malformed query params.
           content:
             application/json:
               schema:

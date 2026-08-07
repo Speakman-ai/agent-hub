@@ -6,6 +6,7 @@ import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } f
 import type { DeployTriggerEvent } from './deployTriggers';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import type { InfraSpendTrendWire } from '@shared/utils/infraSpend';
+import type { QuotaHeadroomResponse } from '@shared/utils/quotaHeadroom';
 
 interface CreateDeployTriggerBody {
   event: DeployTriggerEvent;
@@ -419,6 +420,11 @@ export const api = {
   // read-through cache would charge a cent per page view.
   getInfraSpend: (projectId: string, params: Record<string, unknown> = {}) =>
     fetchJSON<InfraSpendTrendWire>(`/projects/${projectId}/infra/spend${infraQuery(params)}`),
+  // Service quota headroom for the Overview tab. Free to call: the server joins
+  // limits from the hourly ListServiceQuotas sweep to usage the metric
+  // collector already stored, and never touches AWS on this path.
+  getInfraQuotas: (projectId: string, params: Record<string, unknown> = {}) =>
+    fetchJSON<QuotaHeadroomResponse>(`/projects/${projectId}/infra/quotas${infraQuery(params)}`),
   // Opts the project in or out of the billed Cost Explorer poll. Returns the
   // same spend body, so the panel repaints from the response rather than
   // refetching.

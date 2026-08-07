@@ -44,6 +44,17 @@ import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import { useApp } from '../context/AppContext';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import {
+  formatQuotaHeadroom,
+  formatQuotaUtilization,
+  quotaBandTone,
+  quotaBarPercent,
+  quotaRefreshFailureNote,
+  quotaSummaryLine,
+  quotaUnknownReason,
+  type QuotaBandTone,
+  type QuotaHeadroomResponse,
+} from '@shared/utils/quotaHeadroom';
+import {
   EMPTY_FILTERS,
   formatAge,
   hasActiveFilters,
@@ -561,6 +572,177 @@ export interface SpendSectionState {
   error: string | null;
 }
 
+
+/**
+ * How many quotas the phone lists. Lower than web's 8: the rows are taller and
+ * the list is sorted tightest-first, so a shorter cut still shows everything
+ * that needs action. What is dropped is stated rather than silently truncated.
+ */
+export const QUOTA_VISIBLE_ROWS = 5;
+
+/** Web parity: `client/src/components/infra/InfraQuotaHeadroomPanel.tsx`. */
+interface QuotaSectionState {
+  projectId: string;
+  data: QuotaHeadroomResponse | null;
+  error: string | null;
+  /** When `data` was fetched, so a failed refresh can say how old it is. */
+  loadedAtMs: number | null;
+}
+
+/** Bar/text colour per band, the RN peer of the web panel's Tailwind tokens. */
+export const QUOTA_TONE_COLOR: Record<QuotaBandTone, string> = {
+  danger: colors.red400,
+  warn: colors.amber400,
+  good: colors.gray300,
+  muted: colors.gray500,
+};
+
+/**
+ * What the phone says about the quotas it did not draw, or null when it drew
+ * them all.
+ *
+ * Extracted so the sentence is testable without a native renderer, and because
+ * a silent cut is the failure being avoided: the list is sorted tightest-first,
+ * so an operator who cannot see it was truncated would reasonably read the last
+ * visible row as the healthiest quota in the account.
+ */
+export function quotaTruncationNote(total: number): string | null {
+  const hidden = total - QUOTA_VISIBLE_ROWS;
+  if (hidden <= 0) return null;
+  return `${hidden} more quota${hidden === 1 ? '' : 's'} not shown. The list is sorted tightest-first, so the hidden rows have the most headroom.`;
+}
+
+/**
+ * Service quota headroom.
+ *
+ * Read-only on both platforms, so unlike `SpendSection` there is no `saving`
+ * flag to own or hand off across a project switch — the whole class of bug that
+ * `savingOwner` exists for cannot arise here.
+ */
+function QuotaSection({ projectId }: { projectId: string }) {
+  const [state, setState] = useState<QuotaSectionState | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const forProject = stampMatchesProject(state, projectId) ? state : null;
+  const data = forProject?.data ?? null;
+  const error = forProject?.error ?? null;
+  const staleNote = quotaRefreshFailureNote(error, forProject?.loadedAtMs ?? null, nowMs);
+
+  const generation = useRef(createRequestGeneration()).current;
+
+  const load = useCallback(() => {
+    if (!projectId) return;
+    const token = generation.begin();
+    api
+      .getInfraQuotas(projectId)
+      .then((response: any) => {
+        if (!generation.isCurrent(token)) return;
+        setState({
+          projectId,
+          data: response ?? null,
+          error: null,
+          loadedAtMs: Date.now(),
+        });
+        setNowMs(Date.now());
+      })
+      .catch((err: any) => {
+        if (!generation.isCurrent(token)) return;
+        // Web parity: the readings are kept and labelled stale rather than
+        // cleared. Blanking on a transient blip throws away a still-useful
+        // last-known value, and silently keeping them would be worse than
+        // either — this feature never shows a number it did not measure.
+        setState((prev) => ({
+          projectId,
+          data: stampMatchesProject(prev, projectId) ? (prev?.data ?? null) : null,
+          error: err?.message ?? 'Failed to load quota headroom',
+          loadedAtMs: stampMatchesProject(prev, projectId) ? (prev?.loadedAtMs ?? null) : null,
+        }));
+        setNowMs(Date.now());
+      });
+  }, [projectId, generation]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useVisibleIntervalRefresh(load, POLL_MS);
+
+  return (
+    <>
+      <Text style={styles.sectionTitle}>Service quota headroom</Text>
+      {error && !data ? (
+        <Text style={styles.error} testID="infra-quota-error">
+          {error}
+        </Text>
+      ) : null}
+      {staleNote && data ? (
+        <Text style={styles.staleBanner} testID="infra-quota-stale">
+          {staleNote}
+        </Text>
+      ) : null}
+      {!data && !error ? <Text style={styles.hint}>Loading quota headroom…</Text> : null}
+      {data ? (
+        <>
+          <Text style={styles.hint} testID="infra-quota-summary">
+            {quotaSummaryLine(data.summary)}
+          </Text>
+          {data.quotas.length === 0 ? (
+            <Empty
+              text="No service quotas are being watched yet. Add a quota scope on the web Infrastructure module. Only quotas AWS publishes a usage metric for can be measured, which is a minority of them."
+              testID="infra-quota-empty"
+            />
+          ) : (
+            data.quotas.slice(0, QUOTA_VISIBLE_ROWS).map((quota) => (
+              <View key={quota.resourceKey} style={styles.card} testID="infra-quota-row">
+                <View style={styles.rowHead}>
+                  <Text style={styles.rowTitle} numberOfLines={1}>
+                    {quota.quotaName}
+                  </Text>
+                  <Text
+                    style={[styles.quotaPercent, { color: QUOTA_TONE_COLOR[quotaBandTone(quota.band)] }]}
+                    testID="infra-quota-utilization"
+                  >
+                    {formatQuotaUtilization(quota.utilizationPercent)}
+                  </Text>
+                </View>
+                <View style={styles.quotaTrack}>
+                  <View
+                    style={[
+                      styles.quotaFill,
+                      {
+                        width: `${quotaBarPercent(quota.utilizationPercent)}%`,
+                        backgroundColor: QUOTA_TONE_COLOR[quotaBandTone(quota.band)],
+                      },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.rowMeta}>
+                  {quota.serviceCode} · {quota.region}
+                  {quota.adjustable ? '' : ' · not adjustable'}
+                </Text>
+                {quotaUnknownReason(quota) ? (
+                  <Text style={styles.rowMeta} testID="infra-quota-unknown-reason">
+                    {quotaUnknownReason(quota)}
+                  </Text>
+                ) : (
+                  <Text style={styles.rowMeta} testID="infra-quota-remaining">
+                    {formatQuotaHeadroom(quota.headroom, quota.unit)} left
+                  </Text>
+                )}
+              </View>
+            ))
+          )}
+          {quotaTruncationNote(data.quotas.length) ? (
+            <Text style={styles.hint} testID="infra-quota-truncated">
+              {quotaTruncationNote(data.quotas.length)}
+            </Text>
+          ) : null}
+        </>
+      ) : null}
+    </>
+  );
+}
+
 /**
  * The state a failed spend refresh should leave behind.
  *
@@ -884,6 +1066,9 @@ function OverviewTab({
       {/* Below the scope, mirroring web: that block prices a decision the
           operator is about to make, this one reports the bill it lands on. */}
       {projectId ? <SpendSection projectId={projectId} /> : null}
+      {/* Last, mirroring web: the panels above are about money, this one about
+          capacity — nothing is down and you still cannot launch. */}
+      {projectId ? <QuotaSection projectId={projectId} /> : null}
     </ScrollView>
   );
 }
@@ -1843,6 +2028,15 @@ const styles = StyleSheet.create({
     borderColor: colors.gray800,
     marginBottom: 8,
   },
+  quotaPercent: { fontSize: 14, fontWeight: '600', marginLeft: 'auto' },
+  quotaTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.gray800,
+    overflow: 'hidden',
+    marginTop: 6,
+  },
+  quotaFill: { height: '100%', borderRadius: 3 },
   cardStale: { opacity: 0.55 },
   cardSelected: { borderColor: colors.blue500 },
   rowHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },

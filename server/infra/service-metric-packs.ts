@@ -79,13 +79,22 @@ function toMetricSpec(metric: InfraPackMetric): InfraMetricSpec {
   };
 }
 
-/** Service token → the metrics the collector requests for each of its resources. */
+/**
+ * Service token → the metrics the collector requests for each of its resources.
+ *
+ * Derived metrics are filtered out here, and this is the only place that
+ * filtering happens. A derived series (see {@link InfraPackMetric.derived}) is a
+ * real series that the Hub computes — quota utilization is the case in hand —
+ * so it belongs in the pack catalog the Metrics tab and rule editor read, but
+ * asking CloudWatch for it would bill a `GetMetricData` entry against a
+ * namespace AWS does not publish and return nothing, every tick, forever.
+ */
 export const INFRA_SERVICE_METRIC_PACKS: Readonly<Record<string, readonly InfraMetricSpec[]>> =
   Object.freeze(
     Object.fromEntries(
       Object.entries(INFRA_SERVICE_PACKS).map(([service, pack]) => [
         service,
-        Object.freeze(pack.metrics.map(toMetricSpec)),
+        Object.freeze(pack.metrics.filter((m) => !m.derived).map(toMetricSpec)),
       ]),
     ),
   );
@@ -165,6 +174,22 @@ export const INFRA_SERVICE_POLL_TIERS: Readonly<Record<string, number>> = Object
   // request metrics publish every minute and are polled every tick. A single
   // service tier could serve neither.
   s3: 300,
+  // AWS/Usage is published at 1-minute resolution for every service that
+  // publishes it at all, so 60 is both the tier and every metric's floor.
+  //
+  // Worth being explicit about the cost, because "quotas" sounds like something
+  // that changes slowly and therefore could be polled rarely. The two things
+  // being watched here do not: a ThrottleCount is a rate that is only visible
+  // in the minute it happened, and the resource counts this catches are the
+  // ones that move fast enough to surprise you — an autoscaling group climbing
+  // toward a vCPU quota gets there in minutes, and a 5-minute poll would find
+  // out about it up to four minutes after the launches started failing.
+  //
+  // The bill is small and bounded because the population is: one billed metric
+  // per quota per tick, and only quotas that carry a UsageMetric are ever
+  // inventoried, which is a few dozen rather than the thousands of rows a
+  // resource-bearing service produces.
+  quota: 60,
 });
 
 /** The tier for a service, or the default when it has none. */

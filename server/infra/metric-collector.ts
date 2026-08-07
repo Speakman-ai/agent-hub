@@ -50,6 +50,11 @@ import {
   type InfraMetricSpec,
 } from './service-metric-packs.js';
 import {
+  defaultQuotaLimitLookup,
+  deriveQuotaUtilizationPoints,
+  type QuotaLimitLookup,
+} from './quota-utilization.js';
+import {
   estimateGetMetricDataCostUsd,
   effectivePollIntervalSeconds,
   isMetricDue,
@@ -658,6 +663,8 @@ export interface InfraMetricCollectionOptions {
   cloudWatchClientFactory?: (target: CollectTarget) => CloudWatchMetricDataClient;
   /** Test seam: where committed points go. Defaults to the shared write queue. */
   enqueue?: (points: InfraMetricPointInput[]) => { enqueued: number; dropped: number };
+  /** Test seam: resolve a quota's applied value without a database. */
+  quotaLimitLookup?: QuotaLimitLookup;
   /** Test seam: backoff sleep. Defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>;
   /** Test seam: jitter source. */
@@ -951,8 +958,18 @@ async function collectBatch(
 
     counters.datapointsReturned += points.length;
     if (points.length > 0) {
+      // Utilization is derived here rather than at read time so it becomes an
+      // ordinary stored series: the alert evaluator then gets CloudWatch-parity
+      // M-of-N and missing-data handling for the default "above 80%" rule with
+      // no special-casing, and the percentage is chartable over time. Counted in
+      // pointsEnqueued but not in datapointsReturned, which measures what AWS
+      // actually sent back and is what the cost audit reads.
+      const derived = deriveQuotaUtilizationPoints(
+        points,
+        opts.quotaLimitLookup ?? defaultQuotaLimitLookup,
+      );
       const enqueue = opts.enqueue ?? enqueueInfraMetricPoints;
-      const { enqueued, dropped } = enqueue(points);
+      const { enqueued, dropped } = enqueue(derived.length > 0 ? [...points, ...derived] : points);
       counters.pointsEnqueued += enqueued;
       counters.pointsDropped += dropped;
     }

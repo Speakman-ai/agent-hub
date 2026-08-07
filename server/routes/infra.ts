@@ -67,6 +67,13 @@ import {
   getLatestInfraCollectRun,
 } from '../infra/infra-cost-store.js';
 import { queryInfraSpendTrend } from '../infra/cost-explorer-store.js';
+import { listInfraQuotaHeadroom, sortQuotaHeadroom } from '../infra/quota-store.js';
+import {
+  DEFAULT_QUOTA_UTILIZATION_THRESHOLD,
+  QUOTA_CRITICAL_UTILIZATION_THRESHOLD,
+  QUOTA_UTILIZATION_EXPRESSION,
+  type QuotaHeadroomBand,
+} from '../infra/quota-catalog.js';
 import { costExplorerWindow } from '../infra/cost-explorer-sync.js';
 import { MAX_RESOURCE_STALENESS_MS } from '../infra/metric-collector.js';
 import {
@@ -121,6 +128,7 @@ import {
   MetricSeriesParamsSchema,
   MetricRangeParamsSchema,
   SpendTrendParamsSchema,
+  QuotaHeadroomParamsSchema,
   SpendConfigRequestSchema,
 } from './infra.openapi.js';
 
@@ -223,6 +231,61 @@ interface SpendParams {
  * and `lastRun` carries the failure reason so an operator who opted in and sees
  * an empty chart can find out why without reading server logs.
  */
+/**
+ * Quota headroom for the Overview panel.
+ *
+ * The thresholds and the expression travel with the payload rather than being
+ * hard-coded in the client, for two reasons: the web and mobile panels then
+ * cannot disagree with the server about where "warning" starts, and an operator
+ * diffing our percentage against the CloudWatch console can read the exact
+ * expression we claim to reproduce without leaving the page.
+ */
+function buildQuotaBody(
+  projectId: string,
+  staleAfterMinutes: number,
+  nowMs: number,
+): Record<string, unknown> {
+  const quotas = sortQuotaHeadroom(
+    listInfraQuotaHeadroom(projectId, { staleBeforeMs: nowMs - staleAfterMinutes * 60_000 }),
+  );
+  const summary: Record<QuotaHeadroomBand, number> = {
+    critical: 0,
+    warning: 0,
+    ok: 0,
+    unknown: 0,
+  };
+  for (const quota of quotas) summary[quota.band] += 1;
+
+  return {
+    quotas,
+    summary: { ...summary, total: quotas.length },
+    thresholds: {
+      warning: DEFAULT_QUOTA_UTILIZATION_THRESHOLD,
+      critical: QUOTA_CRITICAL_UTILIZATION_THRESHOLD,
+    },
+    expression: QUOTA_UTILIZATION_EXPRESSION,
+    staleAfterMs: staleAfterMinutes * 60_000,
+  };
+}
+
+/**
+ * The shape a project with no infra store returns: no quotas, not an error.
+ * A missing infra.db means nothing has been collected, which the panel renders
+ * as an empty state rather than as a failure.
+ */
+function emptyQuotaBody(): Record<string, unknown> {
+  return {
+    quotas: [],
+    summary: { critical: 0, warning: 0, ok: 0, unknown: 0, total: 0 },
+    thresholds: {
+      warning: DEFAULT_QUOTA_UTILIZATION_THRESHOLD,
+      critical: QUOTA_CRITICAL_UTILIZATION_THRESHOLD,
+    },
+    expression: QUOTA_UTILIZATION_EXPRESSION,
+    staleAfterMs: 0,
+  };
+}
+
 function buildSpendBody(
   projectId: string,
   params: SpendParams,
@@ -546,6 +609,25 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
         isInfraDbInitialized()
           ? buildSpendBody(projectId, parsed.data, nowMs)
           : emptySpendBody(parsed.data, nowMs),
+      );
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/infra/quotas',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(QuotaHeadroomParamsSchema, req.query ?? {}, res);
+      if (!parsed.ok) return;
+      res.json(
+        isInfraDbInitialized()
+          ? buildQuotaBody(projectId, parsed.data.staleAfterMinutes, Date.now())
+          : emptyQuotaBody(),
       );
     },
   );

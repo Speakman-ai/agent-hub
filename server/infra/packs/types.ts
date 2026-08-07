@@ -250,6 +250,31 @@ export interface InfraPackMetric {
    * `GetMetricData` entry is billed whether or not the series exists.
    */
   requiresFeature: string | null;
+  /**
+   * True when this series is computed by the Hub rather than fetched from
+   * CloudWatch. Absent means false, which is the case for every metric AWS
+   * actually publishes.
+   *
+   * A pack is the catalog of every series that exists for a service — that is
+   * what the Metrics tab and the alert rule editor read — but not every such
+   * series is something to ask CloudWatch for. Service quota utilization is the
+   * case that forces the distinction: AWS documents it as the metric-math
+   * expression `m1/SERVICE_QUOTA(m1)*100`, and our collector emits
+   * `MetricStat`-only queries, so the percentage is derived Hub-side from a
+   * collected usage metric and a quota limit read from Service Quotas.
+   *
+   * Declaring it here rather than inventing a parallel catalog is what lets a
+   * derived series be charted and alarmed on by the existing machinery. The one
+   * thing it must not do is reach the collector: a `GetMetricData` entry for a
+   * namespace AWS does not publish is billed and returns nothing forever, so
+   * {@link INFRA_SERVICE_METRIC_PACKS} filters these out.
+   *
+   * Whoever writes the derived points owns keeping them consistent with the
+   * declaration here — same namespace, metric name, stat and dimension set —
+   * because nothing downstream can tell a Hub-written point from a collected
+   * one, which is exactly what makes charts and alerts work unchanged.
+   */
+  derived?: boolean;
   /** One line, operator-facing. Rendered beside the metric in the chart picker. */
   description: string;
 }

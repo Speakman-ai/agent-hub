@@ -548,6 +548,53 @@ export const INFRA_TABLES_SCHEMA = `
     updated_at     INTEGER NOT NULL
   );
 
+  -- The applied quota values behind service quota headroom, read from
+  -- ListServiceQuotas. One row per inventoried quota, keyed by the same
+  -- resource_key as its infra_resources row.
+  --
+  -- A separate table rather than columns on infra_resources because these are
+  -- Service Quotas facts about a quota, not CloudWatch facts about a resource,
+  -- and every other service's rows would carry six permanently-NULL columns to
+  -- accommodate them. The 1:1 key means the join is free either way.
+  --
+  -- Deliberately NOT a foreign key to infra_resources, matching the convention
+  -- infra_metric_points already sets: the inventory sync rewrites resource rows
+  -- and a cascade would silently drop the limits mid-sweep.
+  --
+  -- value is the *applied* quota, which is the number that matters: it
+  -- reflects increases AWS granted this account and differs from the published
+  -- default. It is nullable because ListServiceQuotas documents that "for some
+  -- quotas, only the default values are available" — a quota whose applied value
+  -- AWS did not return has an unknown limit, and unknown must be storable as
+  -- distinct from zero. Utilization against it is null, never 0%, because 0%
+  -- reads as "plenty of headroom" and would be the opposite of what we know.
+  --
+  -- unit is retained verbatim ('Count', 'None', …) so the panel can label a
+  -- headroom figure without inferring a unit from the quota name.
+  --
+  -- adjustable records whether a quota increase can even be requested. It
+  -- changes what an operator can do about a full quota, so it belongs beside
+  -- the number that tells them it is full.
+  CREATE TABLE IF NOT EXISTS infra_service_quotas (
+    resource_key  TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL,
+    account_id    TEXT NOT NULL,
+    region        TEXT NOT NULL,
+    service_code  TEXT NOT NULL,
+    quota_code    TEXT NOT NULL,
+    quota_name    TEXT NOT NULL,
+    -- The applied quota value; NULL when AWS returned no applied value.
+    value         REAL,
+    unit          TEXT,
+    adjustable    INTEGER NOT NULL DEFAULT 0,
+    global_quota  INTEGER NOT NULL DEFAULT 0,
+    -- Which AWS/Usage metric measures this quota, as a JSON pointer. Never a
+    -- usage value: ServiceQuota.UsageMetric names a metric and carries no
+    -- reading, so the number still has to come from CloudWatch.
+    usage_metric_json TEXT NOT NULL,
+    synced_at     INTEGER NOT NULL
+  );
+
   -- Threshold rules we evaluate in our own poller (decision INFRA-ALERT: do
   -- NOT provision real CloudWatch alarms + SNS in the monitored account).
   --
@@ -763,6 +810,12 @@ export const INFRA_INDEXES_SCHEMA = `
   -- projects rather than within one.
   CREATE INDEX IF NOT EXISTS idx_infra_resources_last_seen
     ON infra_resources(last_seen);
+
+  -- The headroom panel reads every quota for a project at once, so project_id
+  -- alone serves it; region trails for the per-region breakdown. The primary
+  -- key already covers the per-resource_key lookup the collector does.
+  CREATE INDEX IF NOT EXISTS idx_infra_service_quotas_project
+    ON infra_service_quotas(project_id, region, service_code);
 
   -- Upsert target and the guarantee behind overlap idempotence: re-collecting a
   -- window that was already stored updates the existing point instead of

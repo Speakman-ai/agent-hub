@@ -1250,3 +1250,150 @@ describe('infra spend routes (Cost Explorer)', () => {
     expect(res.body.monthToDateUsd).toBeCloseTo(0.53, 10);
   });
 });
+
+describe('infra quota headroom route', () => {
+  const QUOTA_DIMENSIONS = {
+    Class: 'Standard/OnDemand',
+    Resource: 'vCPU',
+    Service: 'EC2',
+    Type: 'Resource',
+  };
+
+  function seedQuota(
+    projectId: string,
+    opts: { quotaCode: string; limit: number | null; usage?: number; usageAtMs?: number },
+  ): string {
+    const resourceKey = infraResourceKey({
+      projectId,
+      accountId: '123456789012',
+      region: 'us-east-1',
+      service: 'quota',
+      resourceId: `ec2/${opts.quotaCode}`,
+    });
+    getInfraDb()
+      .prepare(
+        `INSERT INTO infra_service_quotas
+           (resource_key, project_id, account_id, region, service_code, quota_code,
+            quota_name, value, unit, adjustable, global_quota, usage_metric_json, synced_at)
+         VALUES (?, ?, ?, ?, 'ec2', ?, ?, ?, 'None', 1, 0, ?, ?)`,
+      )
+      .run(
+        resourceKey,
+        projectId,
+        '123456789012',
+        'us-east-1',
+        opts.quotaCode,
+        `Quota ${opts.quotaCode}`,
+        opts.limit,
+        JSON.stringify({
+          namespace: 'AWS/Usage',
+          metricName: 'ResourceCount',
+          dimensions: QUOTA_DIMENSIONS,
+          statisticRecommendation: 'Maximum',
+        }),
+        Date.now(),
+      );
+
+    if (typeof opts.usage === 'number') {
+      insertInfraMetricPoints([
+        {
+          projectId,
+          resourceKey,
+          namespace: 'AWS/Usage',
+          metricName: 'ResourceCount',
+          dimensions: QUOTA_DIMENSIONS,
+          stat: 'Maximum',
+          periodSeconds: 60,
+          tsMs: opts.usageAtMs ?? Date.now(),
+          value: opts.usage,
+        },
+      ]);
+    }
+    return resourceKey;
+  }
+
+  it('reports an empty, non-error body for a project with no quotas', async () => {
+    const projectId = await freshProject();
+    const res = await request.get(`/api/projects/${projectId}/infra/quotas`).expect(200);
+
+    expect(res.body.quotas).toEqual([]);
+    expect(res.body.summary).toEqual({ critical: 0, warning: 0, ok: 0, unknown: 0, total: 0 });
+    // The thresholds and expression ship even when empty, so the panel can
+    // explain what it would show rather than rendering an unlabelled void.
+    expect(res.body.thresholds).toEqual({ warning: 80, critical: 100 });
+    expect(res.body.expression).toBe('m1/SERVICE_QUOTA(m1)*100');
+  });
+
+  it('returns headroom with utilization computed against the applied quota', async () => {
+    const projectId = await freshProject();
+    seedQuota(projectId, { quotaCode: 'L-VCPU', limit: 640, usage: 512 });
+
+    const res = await request.get(`/api/projects/${projectId}/infra/quotas`).expect(200);
+    expect(res.body.quotas).toHaveLength(1);
+    expect(res.body.quotas[0]).toMatchObject({
+      quotaCode: 'L-VCPU',
+      limit: 640,
+      usage: 512,
+      utilizationPercent: 80,
+      headroom: 128,
+      // Exactly 80 is still ok: AWS alarms on Greater than 80.
+      band: 'ok',
+      adjustable: true,
+      metricName: 'ResourceCount',
+    });
+    expect(res.body.summary).toMatchObject({ ok: 1, total: 1 });
+  });
+
+  it('orders the tightest quota first and unmeasurable ones last', async () => {
+    const projectId = await freshProject();
+    seedQuota(projectId, { quotaCode: 'L-OK', limit: 100, usage: 10 });
+    seedQuota(projectId, { quotaCode: 'L-CRIT', limit: 100, usage: 120 });
+    seedQuota(projectId, { quotaCode: 'L-WARN', limit: 100, usage: 90 });
+    // No applied value: measurable usage, unknowable headroom.
+    seedQuota(projectId, { quotaCode: 'L-UNK', limit: null, usage: 5 });
+
+    const res = await request.get(`/api/projects/${projectId}/infra/quotas`).expect(200);
+    expect(res.body.quotas.map((q: { quotaCode: string }) => q.quotaCode)).toEqual([
+      'L-CRIT',
+      'L-WARN',
+      'L-OK',
+      'L-UNK',
+    ]);
+    expect(res.body.summary).toEqual({
+      critical: 1,
+      warning: 1,
+      ok: 1,
+      unknown: 1,
+      total: 4,
+    });
+  });
+
+  it('reports unknown usage rather than a stale reading', async () => {
+    // A collector that stopped must not leave a reassuring number on the panel.
+    const projectId = await freshProject();
+    seedQuota(projectId, {
+      quotaCode: 'L-OLD',
+      limit: 100,
+      usage: 10,
+      usageAtMs: Date.now() - 6 * 60 * 60_000,
+    });
+
+    const res = await request
+      .get(`/api/projects/${projectId}/infra/quotas?staleAfterMinutes=30`)
+      .expect(200);
+    expect(res.body.quotas[0]).toMatchObject({ usage: null, band: 'unknown' });
+    expect(res.body.staleAfterMs).toBe(30 * 60_000);
+  });
+
+  it('rejects a malformed staleness window', async () => {
+    const projectId = await freshProject();
+    await request.get(`/api/projects/${projectId}/infra/quotas?staleAfterMinutes=0`).expect(400);
+    await request
+      .get(`/api/projects/${projectId}/infra/quotas?staleAfterMinutes=nonsense`)
+      .expect(400);
+  });
+
+  it('404s an unknown project', async () => {
+    await request.get('/api/projects/does-not-exist/infra/quotas').expect(404);
+  });
+});

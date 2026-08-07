@@ -12,6 +12,7 @@ import { api } from '../../utils/api';
     // The Overview tab also embeds the spend panel, which reads the cached
     // Cost Explorer trend on mount and polls it.
     getInfraSpend: vi.fn(),
+    getInfraQuotas: vi.fn(),
     updateInfraSpendConfig: vi.fn(),
     // The Resources tab embeds the inventory browser, which polls on mount.
     listInfraResources: vi.fn(),
@@ -25,6 +26,7 @@ const getInfraScopes = vi.mocked(api.getInfraScopes);
 const listInfraResources = vi.mocked(api.listInfraResources);
 const getInfraMetricPacks = vi.mocked(api.getInfraMetricPacks);
 const getInfraSpend = vi.mocked(api.getInfraSpend);
+const getInfraQuotas = vi.mocked(api.getInfraQuotas);
 
 const ec2Pack = {
   service: 'ec2',
@@ -142,6 +144,13 @@ describe('InfrastructurePage', () => {
     listInfraResources.mockResolvedValue(emptyResources as any);
     getInfraMetricPacks.mockResolvedValue({ packs: [ec2Pack] } as any);
     getInfraSpend.mockResolvedValue(optedOutSpend as any);
+    getInfraQuotas.mockResolvedValue({
+      quotas: [],
+      summary: { critical: 0, warning: 0, ok: 0, unknown: 0, total: 0 },
+      thresholds: { warning: 80, critical: 100 },
+      expression: 'm1/SERVICE_QUOTA(m1)*100',
+      staleAfterMs: 0,
+    } as any);
   });
   const readyStatus = { profile: 'monitoring', region: 'us-east-1', reachable: true };
 

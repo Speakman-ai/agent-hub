@@ -40,21 +40,27 @@ describe('service pack registry', () => {
       'lambda',
       'natgw',
       'nlb',
+      'quota',
       'rds',
       's3',
     ]);
   });
 
-  it('projects every pack metric into the collector query list', () => {
+  it('projects every fetched pack metric into the collector query list', () => {
     // The whole point of deriving the collector view: a metric declared in a
     // pack is a metric that gets polled. A pack entry that never reaches the
-    // collector is documentation of a series that will never exist.
+    // collector is documentation of a series that will never exist —
+    // *unless* it is derived, in which case the Hub writes the series itself
+    // and asking CloudWatch for it would bill a query against a namespace AWS
+    // does not publish. Those are excluded below, and the next test pins that
+    // the exclusion is exactly the derived ones and nothing else.
     for (const pack of ALL_PACKS) {
       const specs = getServiceMetricPack(pack.service);
-      expect(specs).toHaveLength(pack.metrics.length);
-      expect(specs.map((s) => s.metricName)).toEqual(pack.metrics.map((m) => m.metricName));
+      const fetched = pack.metrics.filter((m) => !m.derived);
+      expect(specs).toHaveLength(fetched.length);
+      expect(specs.map((s) => s.metricName)).toEqual(fetched.map((m) => m.metricName));
       for (const [i, spec] of specs.entries()) {
-        const metric = pack.metrics[i]!;
+        const metric = fetched[i]!;
         expect(spec).toEqual({
           namespace: metric.namespace,
           metricName: metric.metricName,
@@ -69,6 +75,32 @@ describe('service pack registry', () => {
       }
     }
     expect(collectableServices()).toEqual(infraPackedServices());
+  });
+
+  it('keeps derived metrics out of the collector view and nothing else', () => {
+    // The exclusion has a real cost if it is wrong in either direction: a
+    // derived metric that leaks into the collector is a billed GetMetricData
+    // entry against a namespace AWS does not publish, returning nothing every
+    // tick forever; a fetched metric wrongly excluded is a series that silently
+    // stops being collected. So assert the split by name rather than by count.
+    for (const pack of ALL_PACKS) {
+      const collected = new Set(getServiceMetricPack(pack.service).map((s) => s.metricName));
+      for (const metric of pack.metrics) {
+        expect(collected.has(metric.metricName)).toBe(!metric.derived);
+      }
+    }
+  });
+
+  it('never asks CloudWatch for a Hub-owned namespace', () => {
+    // Collected namespaces are not all `AWS/` — ECS Container Insights
+    // genuinely publishes to `ECS/ContainerInsights` — so the invariant is not
+    // "AWS-prefixed", it is "not ours". A Hub-owned namespace reaching
+    // GetMetricData is billed and returns nothing, forever.
+    for (const service of infraPackedServices()) {
+      for (const spec of getServiceMetricPack(service)) {
+        expect(spec.namespace.startsWith('AgentHub/')).toBe(false);
+      }
+    }
   });
 });
 

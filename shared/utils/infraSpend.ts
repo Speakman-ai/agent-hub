@@ -19,6 +19,8 @@
  * value to render, not a fault to report.
  */
 
+import { formatAgo } from './relativeTime.js';
+
 /** One day of the trend window. `estimated` is AWS's own flag, not ours. */
 export interface InfraSpendDay {
   day: string;
@@ -77,10 +79,6 @@ export const COST_EXPLORER_OPT_IN_COPY = {
     'Agent Hub polls it at most 3 times a day, because AWS refreshes billing data at most three times daily. Polling harder would cost more and show the same numbers.',
   estimates: 'The most recent day is always an AWS estimate and will move as charges settle.',
 } as const;
-
-const MINUTE = 60 * 1000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
 
 /**
  * Money, never rounded down to "free".
@@ -274,14 +272,6 @@ export function spendTrendSummary(
 }
 
 /** How long ago, in the few words a status line has room for. */
-function formatAgo(deltaMs: number): string {
-  // A negative delta is clock skew between the server's timestamp and the
-  // device's clock, not a cache from the future.
-  if (!Number.isFinite(deltaMs) || deltaMs < MINUTE) return 'just now';
-  if (deltaMs < HOUR) return `${Math.floor(deltaMs / MINUTE)}m ago`;
-  if (deltaMs < 2 * DAY) return `${Math.floor(deltaMs / HOUR)}h ago`;
-  return `${Math.floor(deltaMs / DAY)}d ago`;
-}
 
 /**
  * How fresh the cached spend is, in words.

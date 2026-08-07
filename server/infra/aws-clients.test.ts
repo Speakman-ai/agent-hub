@@ -28,6 +28,7 @@ import {
   getProjectLambdaClient,
   getProjectRdsClient,
   getProjectS3Client,
+  getProjectServiceQuotasClient,
   getProjectCostExplorerClient,
   COST_EXPLORER_REGION,
   destroyProjectAwsClients,
@@ -84,6 +85,7 @@ vi.mock('@aws-sdk/client-lambda', () => mockServiceClient('LambdaClient'));
 vi.mock('@aws-sdk/client-rds', () => mockServiceClient('RDSClient'));
 vi.mock('@aws-sdk/client-s3', () => mockServiceClient('S3Client'));
 vi.mock('@aws-sdk/client-cost-explorer', () => mockServiceClient('CostExplorerClient'));
+vi.mock('@aws-sdk/client-service-quotas', () => mockServiceClient('ServiceQuotasClient'));
 
 vi.mock('../project-model.js', () => ({ findProject: vi.fn() }));
 
@@ -175,6 +177,10 @@ const SERVICE_CLIENT_GETTERS = [
   ['RDS', getProjectRdsClient],
   ['Lambda', getProjectLambdaClient],
   ['S3', getProjectS3Client],
+  // Regional on purpose: a quota's applied value differs per region, so reading
+  // one region's limit while collecting another's usage would compute headroom
+  // against the wrong number. Hence it belongs here and not beside Cost Explorer.
+  ['ServiceQuotas', getProjectServiceQuotasClient],
 ] as const;
 
 /** Regional getters plus the global ones, for the teardown invariant. */
