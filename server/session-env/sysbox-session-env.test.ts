@@ -115,6 +115,10 @@ function makeEnv(
     },
     openPty: async () => pty,
     isDirectory: async () => true,
+    // Stubbed, not left to the real fs: the default hits disk, and that extra
+    // I/O turn lands after the fake-clock tests' `setTimeout(0)` yield, so the
+    // clock advances past the readiness sleep before it is even scheduled.
+    statWorkspaceOwner: async () => ({ uid: 1000, gid: 1000 }),
     baseEnv: { NODE_ENV: 'development' },
     dockerClientEnv: { PATH: '/usr/bin' },
     clock,
@@ -205,6 +209,24 @@ describe('SysboxSessionEnv container start', () => {
     const run = runCalls.find(isRunArgv)!.join(' ');
     expect(run).toContain('-p 127.0.0.1:4100:3000');
     expect(run).toContain('-p 127.0.0.1:4173:5173');
+  });
+
+  it('passes the worktree owner so the container can match its uid', async () => {
+    // Without these the bind mount is read-only to the session user and git
+    // refuses the checkout as "dubious ownership" — the session looks up but
+    // cannot edit, build, or commit anything.
+    const { runCalls } = await startedEnv({
+      statWorkspaceOwner: async () => ({ uid: 1000, gid: 1000 }),
+    });
+    const run = runCalls.find(isRunArgv)!.join(' ');
+    expect(run).toContain('-e AGENT_HUB_WORKSPACE_UID=1000');
+    expect(run).toContain('-e AGENT_HUB_WORKSPACE_GID=1000');
+  });
+
+  it('starts without owner env when the worktree owner cannot be read', async () => {
+    const { runCalls } = await startedEnv({ statWorkspaceOwner: async () => null });
+    const run = runCalls.find(isRunArgv)!.join(' ');
+    expect(run).not.toContain('AGENT_HUB_WORKSPACE_UID');
   });
 
   it('rejects mapPort for a new port once the container is running', async () => {

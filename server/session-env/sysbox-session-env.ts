@@ -53,6 +53,8 @@ import {
   buildInspectContainerIpArgv,
   buildRemoveSysboxGraphVolumeArgv,
   buildStartSysboxContainerArgv,
+  workspaceOwnerEnv,
+  type WorkspaceOwner,
   buildStopSysboxContainerArgv,
   buildSysboxKillArgv,
   parseContainerIp,
@@ -118,6 +120,18 @@ async function defaultIsDirectory(path: string): Promise<boolean> {
   }
 }
 
+async function defaultStatWorkspaceOwner(path: string): Promise<WorkspaceOwner | null> {
+  try {
+    const info = await stat(path);
+    return { uid: info.uid, gid: info.gid };
+  } catch {
+    // Unreadable ownership is not fatal: the container still starts, it just
+    // keeps the image's default ids. The mount may then be read-only, which
+    // surfaces as a normal permission error rather than a failed start.
+    return null;
+  }
+}
+
 export interface SysboxSessionEnvDeps {
   sessionId: string;
   /** The session worktree checkout as the Hub sees it (bind-mounted in). */
@@ -160,6 +174,8 @@ export interface SysboxSessionEnvDeps {
   dockerClientEnv?: Record<string, string | undefined>;
   clock?: SessionEnvClock;
   isDirectory?: (path: string) => Promise<boolean>;
+  /** Reads the worktree's numeric owner so the container can match it. */
+  statWorkspaceOwner?: (path: string) => Promise<WorkspaceOwner | null>;
   /** Inner-dockerd readiness poll bounds. */
   readyTimeoutMs?: number;
   readyPollMs?: number;
@@ -207,6 +223,7 @@ export class SysboxSessionEnv implements SessionEnv {
   private readonly dockerClientEnv: Record<string, string | undefined>;
   private readonly clock: SessionEnvClock;
   private readonly isDirectory: (path: string) => Promise<boolean>;
+  private readonly statWorkspaceOwner: (path: string) => Promise<WorkspaceOwner | null>;
   private readonly readyTimeoutMs: number;
   private readonly readyPollMs: number;
   private readonly logger: { warn: (msg: string) => void };
@@ -241,6 +258,7 @@ export class SysboxSessionEnv implements SessionEnv {
     this.dockerClientEnv = deps.dockerClientEnv ?? process.env;
     this.clock = deps.clock ?? systemSessionEnvClock;
     this.isDirectory = deps.isDirectory ?? defaultIsDirectory;
+    this.statWorkspaceOwner = deps.statWorkspaceOwner ?? defaultStatWorkspaceOwner;
     this.readyTimeoutMs = deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     this.readyPollMs = deps.readyPollMs ?? DEFAULT_READY_POLL_MS;
     this.logger = deps.logger ?? { warn: (msg) => console.warn(msg) };
@@ -329,6 +347,8 @@ export class SysboxSessionEnv implements SessionEnv {
       );
     }
 
+    const owner = await this.statWorkspaceOwner(this.worktreePath);
+
     const run = await this.runDocker(
       buildStartSysboxContainerArgv({
         sessionId: this.sessionId,
@@ -337,7 +357,7 @@ export class SysboxSessionEnv implements SessionEnv {
         worktreePath: this.worktreePath,
         ports,
         isolation: this.isolation,
-        env: this.containerEnv,
+        env: { ...this.containerEnv, ...workspaceOwnerEnv(owner) },
       }),
     );
     if (!run.ok) {
