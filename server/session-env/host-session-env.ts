@@ -148,6 +148,12 @@ interface LivePty {
 
 export class HostSessionEnv implements SessionEnv {
   readonly kind = 'host' as const;
+  /**
+   * There is no boundary to cross, so a port is reached on the host directly.
+   * That is the same contract as publishing — the Hub dials a host port the
+   * process is expected to bind — which keeps pool allocation in play here.
+   */
+  readonly portRouting = 'published-ports' as const;
   readonly sessionId: string;
   readonly createdAtMs: number;
 

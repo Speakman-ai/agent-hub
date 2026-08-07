@@ -9,6 +9,7 @@ import {
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
   MIGRATE_LEGACY_PREVIEWS_SQL,
   ensureDevServerPreviewColumns,
+  ensureHostScopedPreviewPortUniqueness,
   deleteOrphanedNonDevServerPreviewRows,
   dropComposePreviewColumns,
 } from './preview/preview-schema.js';
@@ -3179,10 +3180,13 @@ function initDb(dataDir: string): void {
   db.exec(WORKTREE_PREVIEW_GROUPS_SCHEMA);
   db.exec(MIGRATE_LEGACY_PREVIEWS_SQL);
   ensureDevServerPreviewColumns(db);
+  // Rebuilds the process table on databases predating dial_scope, so it must
+  // follow the column backfill above (the rebuild copies those columns).
+  ensureHostScopedPreviewPortUniqueness(db);
 
   // Compose / legacy-spawn preview removal. The dev server is the only
   // preview runtime now, so rows those runtimes owned are unstoppable and
-  // would pin their ports against `worktree_preview_processes.port UNIQUE`
+  // would pin their host ports against the preview port pool
   // forever. Sweep the rows first, then drop the columns only they wrote —
   // the column drop has to come second because the sweep reads `runtime`,
   // and a legacy row folded in by MIGRATE_LEGACY_PREVIEWS_SQL above lands

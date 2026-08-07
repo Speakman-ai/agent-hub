@@ -22,6 +22,8 @@
  * container kinds — they differ only in the isolation runtime).
  */
 
+import type { SessionEnvPortRouting } from './container-routing.js';
+
 export type SessionEnvKind = 'host' | 'sysbox' | 'container';
 
 /** `sessionEnvAdapter` config values. `auto` = sysbox when available, else host. */
@@ -169,6 +171,17 @@ export interface SessionEnv {
   readonly sessionId: string;
   readonly disposed: boolean;
   readonly createdAtMs: number;
+  /**
+   * How the Hub reaches ports inside this env. See
+   * {@link SessionEnvPortRouting}.
+   *
+   * Callers that draw from a host-wide port pool must consult this *before*
+   * allocating. Under `container-ip` nothing is published, so a pooled host
+   * port is not merely wasted — it is the wrong number to dial: the process
+   * binds its internal port inside the env, and that is the only port that
+   * ever answers.
+   */
+  readonly portRouting: SessionEnvPortRouting;
   /**
    * Last observed activity (spawn, pty open, pty I/O, process output, or an
    * explicit {@link touch}). The reaper uses this for idle teardown.

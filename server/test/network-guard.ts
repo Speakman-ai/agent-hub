@@ -21,17 +21,8 @@
  * explicit; nothing in the repo sets it.
  */
 
-const LOOPBACK_LITERALS = new Set(['localhost', '0.0.0.0', '::1', '0:0:0:0:0:0:0:1', '']);
-
-/** Is this hostname a loopback / local target that tests may reach? */
-export function isLoopbackHost(hostname: string): boolean {
-  // URL host for IPv6 arrives bracketed ("[::1]"); strip the brackets.
-  const h = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
-  if (LOOPBACK_LITERALS.has(h)) return true;
-  // Entire 127.0.0.0/8 block (the preview health tests use 127.0.0.2).
-  if (/^127(?:\.\d{1,3}){3}$/.test(h)) return true;
-  return false;
-}
+export { isLoopbackHost } from '../loopback-host.js';
+import { isLoopbackHost } from '../loopback-host.js';
 
 /** Pull a URL string out of the many shapes `fetch()` accepts. */
 function extractUrl(input: unknown): string | null {

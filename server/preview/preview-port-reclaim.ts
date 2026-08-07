@@ -1,11 +1,17 @@
 /**
  * Reclaim host ports held by `failed` preview process rows.
  *
- * `worktree_preview_processes.port` is globally UNIQUE. The allocators in
- * both runtimes only treat `pending`/`starting`/`ready` as "taken", so
- * a leftover `failed` row makes `allocatePort()` return that port while
- * the INSERT still hits SQLITE_CONSTRAINT_UNIQUE — the error users see
- * after a failed boot or server rebuild with a stale DB.
+ * Host-dialed preview ports are unique across the pool. The allocator only
+ * treats `pending`/`starting`/`ready` as "taken", so a leftover `failed` row
+ * makes `allocatePort()` return that port while the INSERT still hits
+ * SQLITE_CONSTRAINT_UNIQUE — the error users see after a failed boot or server
+ * rebuild with a stale DB.
+ *
+ * Everything here is scoped to `dial_scope = 'host'`. An env-scoped row's port
+ * is namespaced inside a session container: it holds no host port to reclaim,
+ * the same number legitimately recurs across sessions (so a lookup by port
+ * alone is ambiguous), and its pid belongs to another session's environment —
+ * killing it would tear down an unrelated, healthy preview.
  */
 import type { Database } from 'better-sqlite3';
 
@@ -46,7 +52,7 @@ export function reclaimFailedPortHolder(
     .prepare(
       `SELECT id, status, group_id, pid
          FROM worktree_preview_processes
-        WHERE port = ?`,
+        WHERE port = ? AND dial_scope = 'host'`,
     )
     .get(port) as { id: string; status: string; group_id: string; pid: number | null } | undefined;
 
@@ -79,7 +85,8 @@ export function reclaimFailedPortsInRange(
       `SELECT DISTINCT port
          FROM worktree_preview_processes
         WHERE port BETWEEN ? AND ?
-          AND status = 'failed'`,
+          AND status = 'failed'
+          AND dial_scope = 'host'`,
     )
     .all(min, max) as Array<{ port: number }>;
 
