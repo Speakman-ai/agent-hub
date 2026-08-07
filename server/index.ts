@@ -147,6 +147,7 @@ import createInfraHealthIngestRoutes from './routes/infra-health-ingest.js';
 import createDevServerWizardRoutes from './routes/dev-server-wizard.js';
 import createRumWizardRoutes from './routes/rum-wizard.js';
 import createLogsWizardRoutes from './routes/logs-wizard.js';
+import createInfraWizardRoutes from './routes/infra-wizard.js';
 import createRumClientRoutes from './routes/rum-clients.js';
 import createPreviewInstancesRoutes from './routes/preview-instances.js';
 import createProvisioningRoutes from './routes/provisioning.js';
@@ -1599,6 +1600,7 @@ app.use(createInfraHealthRoutes(routeDeps));
 app.use(createDevServerWizardRoutes(routeDeps));
 app.use(createRumWizardRoutes(routeDeps));
 app.use(createLogsWizardRoutes(routeDeps));
+app.use(createInfraWizardRoutes(routeDeps));
 app.use(createRumClientRoutes(routeDeps));
 app.use(
   createPreviewInstancesRoutes({
