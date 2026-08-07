@@ -280,6 +280,7 @@ import { initInfraDb } from './infra/infra-db.js';
 import { startInfraWriteQueue, flushInfraWriteQueue } from './infra/infra-write-queue.js';
 import { runInfraInventorySync, INFRA_INVENTORY_SYNC_CRON } from './infra/inventory-sync.js';
 import { runInfraMetricCollection, INFRA_COLLECT_CRON } from './infra/metric-collector.js';
+import { runInfraCostExplorerSync, INFRA_COST_EXPLORER_CRON } from './infra/cost-explorer-sync.js';
 import { runInfraAlertEvaluation } from './infra/alert-runner.js';
 import {
   runInfraRetentionReaper,
@@ -1350,6 +1351,24 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     defaultTickOptions({
       intervalSeconds: estimateIntervalSeconds(INFRA_COLLECT_CRON),
       name: 'infra-metric-collector',
+    }),
+  );
+
+  // Cost Explorer spend sync (decision INFRA-COST mechanism 5) — three times a
+  // day, and no more. AWS updates billing data at most three times daily, so a
+  // tighter cadence buys no fresher numbers and costs $0.01 per paginated
+  // request with no free tier. The module enforces the same floor against a
+  // persisted timestamp, so editing this cron string cannot buy a fourth charge.
+  //
+  // Deliberately not chained onto the metric collector's tick the way alert
+  // evaluation is: that tick runs every five minutes, and anything sharing it
+  // would have to re-derive this cadence from scratch.
+  cron.schedule(
+    INFRA_COST_EXPLORER_CRON,
+    wrapCronTick(() => runInfraCostExplorerSync(), 'infra-cost-explorer'),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(INFRA_COST_EXPLORER_CRON),
+      name: 'infra-cost-explorer',
     }),
   );
 

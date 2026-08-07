@@ -18,6 +18,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2, Plus, Trash2 } from 'lucide-react';
+// One money formatter for the whole product. The rule that a sub-cent charge
+// must never print as "$0.00" was written here first and then retyped on
+// mobile; it lives in shared/ so the two cannot drift on what a bill says.
+import { formatUsd } from '@shared/utils/infraSpend';
 import { api } from '../../utils/api';
 
 export interface ScopeDraftRow {
@@ -172,15 +176,6 @@ export function toSavePayload(rows: readonly ScopeDraftRow[]): Array<Record<stri
     enabled: r.enabled,
     tagFilter: toTagFilter(r.tagClauses),
   }));
-}
-
-function formatUsd(value: number): string {
-  if (!Number.isFinite(value)) return '$0.00';
-  // Sub-cent totals are real and common on a small allowlist. Rounding them to
-  // $0.00 would read as "free", which is the one thing this number must never
-  // imply about a billed API.
-  if (value > 0 && value < 0.01) return '<$0.01';
-  return `$${value.toFixed(2)}`;
 }
 
 export interface InfraScopeEditorProps {

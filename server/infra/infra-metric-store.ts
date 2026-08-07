@@ -534,12 +534,24 @@ export function countInfraMetricPoints(projectId: string): number {
 
 // ─── Collect-run audit (decision INFRA-COST) ────────────────────────────────
 
+/**
+ * Which billed AWS API a run row accounts for.
+ *
+ * The ceiling guards total AWS API spend, so both kinds share one table and one
+ * `SUM(estimated_cost_usd)`. The discriminator exists so a reader can *attribute*
+ * spend — "we are paying for Cost Explorer, not for metrics" is the answer that
+ * changes what an operator does next — not so the two can be budgeted apart.
+ */
+export type InfraCollectRunKind = 'metrics' | 'cost_explorer';
+
 export interface InfraCollectRunStart {
   id: string;
   projectId: string;
   accountId?: string | null;
   region?: string | null;
   startedAt: number;
+  /** Defaults to `metrics`, which is what every row predating the column is. */
+  kind?: InfraCollectRunKind;
 }
 
 /**
@@ -574,10 +586,17 @@ export interface InfraCollectRunFinish {
 export function startInfraCollectRun(run: InfraCollectRunStart): void {
   getInfraDb()
     .prepare(
-      `INSERT INTO infra_collect_runs (id, project_id, account_id, region, started_at, status)
-       VALUES (?, ?, ?, ?, ?, 'running')`,
+      `INSERT INTO infra_collect_runs (id, project_id, account_id, region, started_at, kind, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'running')`,
     )
-    .run(run.id, run.projectId, run.accountId ?? null, run.region ?? null, run.startedAt);
+    .run(
+      run.id,
+      run.projectId,
+      run.accountId ?? null,
+      run.region ?? null,
+      run.startedAt,
+      run.kind ?? 'metrics',
+    );
 }
 
 /**

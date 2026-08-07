@@ -7654,6 +7654,17 @@ components:
         runs:
           type: number
           description: Collector ticks recorded this month.
+        byKind:
+          type: object
+          properties:
+            metrics:
+              type: number
+            cost_explorer:
+              type: number
+          required:
+            - metrics
+            - cost_explorer
+          description: "`monthToDateUsd` split by which billed AWS API spent it. The total stays the ceiling’s input — both APIs draw on one budget — but the split is what an operator can act on: “$4 of your $5 went to Cost Explorer” leads somewhere that “$5” does not. A `kind` this build does not recognise still counts in the total and is simply absent here."
         futureDatedRuns:
           type: number
           description: Runs stamped beyond the end of this month, excluded from the totals above. Only reachable through host clock skew, since a run row is written with the wall clock at tick start. Reported rather than silently dropped — their spend is real but cannot be attributed to this month without double-counting it when that month arrives. Non-zero means the host clock needs looking at.
@@ -7672,6 +7683,13 @@ components:
           type: number
           nullable: true
           description: Epoch ms the level last changed; null while it has never left `normal`.
+        costExplorerEnabled:
+          type: boolean
+          description: "Whether the operator opted this project into billed Cost Explorer polling. Off by default and never inferred: `GetCostAndUsage` charges $0.01 per paginated request with no free tier, so it takes an explicit yes."
+        costExplorerSyncedAt:
+          type: number
+          nullable: true
+          description: Epoch ms the last Cost Explorer sync **started**; null if one never has. Stamped before the first billed request rather than after the last, so a sweep that crashed partway still counts against the cadence guard.
         configured:
           type: boolean
           description: False when the project has no cost-config row and every setting above is a default — the UI needs this to distinguish “never opened” from “deliberately uncapped”.
@@ -7692,6 +7710,12 @@ components:
                 nullable: true
               startedAt:
                 type: number
+              kind:
+                type: string
+                enum:
+                  - metrics
+                  - cost_explorer
+                description: Which billed AWS API this run spent on.
               finishedAt:
                 type: number
                 nullable: true
@@ -7723,6 +7747,7 @@ components:
               - accountId
               - region
               - startedAt
+              - kind
               - finishedAt
               - durationMs
               - queriesIssued
@@ -7744,10 +7769,13 @@ components:
         - throttles
         - errors
         - runs
+        - byKind
         - futureDatedRuns
         - monthlyCeilingUsd
         - degradation
         - degradedAt
+        - costExplorerEnabled
+        - costExplorerSyncedAt
         - configured
         - projection
         - recentRuns
@@ -7801,6 +7829,131 @@ components:
       required:
         - monthlyCeilingUsd
       description: Set or clear a project’s monthly AWS API spend ceiling.
+    InfraSpendTrend:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Whether billed Cost Explorer polling is on for this project. When false the arrays below are whatever was last cached before it was turned off — the cache is spend already paid for and is not discarded on disable.
+        syncedAt:
+          type: number
+          nullable: true
+          description: "Epoch ms the last sync started. Differs from `fetchedAt` when that sync failed: one says when we tried, the other when we last succeeded."
+        windowStartDay:
+          type: string
+          description: Inclusive `YYYY-MM-DD` (UTC) lower bound of the window queried.
+          example: 2026-07-08
+        windowEndDay:
+          type: string
+          description: Exclusive `YYYY-MM-DD` (UTC) upper bound, matching Cost Explorer’s own half-open `TimePeriod`. This is **tomorrow**, so today’s partial spend is included.
+          example: 2026-08-08
+        days:
+          type: array
+          items:
+            type: object
+            properties:
+              day:
+                type: string
+                example: 2026-08-06
+              amountUsd:
+                type: number
+              estimated:
+                type: boolean
+                description: Cost Explorer has not finalized this day and the figure will move. The most recent day is always estimated.
+            required:
+              - day
+              - amountUsd
+              - estimated
+          description: Daily totals, oldest first — already in plot order.
+        topServices:
+          type: array
+          items:
+            type: object
+            properties:
+              service:
+                type: string
+              amountUsd:
+                type: number
+            required:
+              - service
+              - amountUsd
+          description: Most expensive services over the whole window, descending. Truncated to the requested `topServices`; `totalUsd` still includes the tail this omits.
+        accounts:
+          type: array
+          items:
+            type: object
+            properties:
+              linkedAccount:
+                type: string
+              amountUsd:
+                type: number
+            required:
+              - linkedAccount
+              - amountUsd
+          description: Member accounts under a payer, descending. Empty for a standalone account, which Cost Explorer does not attribute.
+        totalUsd:
+          type: number
+          description: Window total, summed independently of `topServices` so a truncated panel cannot understate the bill.
+        unit:
+          type: string
+          nullable: true
+          description: Currency Cost Explorer reported, carried verbatim. Almost always `USD`, but an account with a non-USD billing currency reports its own. Null when nothing is cached.
+          example: USD
+        fetchedAt:
+          type: number
+          nullable: true
+          description: Epoch ms the cached rows were written; null when the cache is empty.
+        lastRun:
+          type: object
+          nullable: true
+          properties:
+            startedAt:
+              type: number
+            finishedAt:
+              type: number
+              nullable: true
+            status:
+              type: string
+              example: ok
+            pages:
+              type: number
+              description: "Paginated requests issued, which is exactly what AWS billed: every page is its own $0.01 request."
+            estimatedCostUsd:
+              type: number
+            errorMessage:
+              type: string
+              nullable: true
+          required:
+            - startedAt
+            - finishedAt
+            - status
+            - pages
+            - estimatedCostUsd
+            - errorMessage
+          description: The most recent Cost Explorer sync. Carries the failure reason so an operator who opted in and sees an empty chart can find out why without reading server logs — `DataUnavailableException` here usually means Cost Explorer was never enabled in the account, which no IAM grant can fix.
+      required:
+        - enabled
+        - syncedAt
+        - windowStartDay
+        - windowEndDay
+        - days
+        - topServices
+        - accounts
+        - totalUsd
+        - unit
+        - fetchedAt
+        - lastRun
+      description: Cached daily AWS spend. Read entirely from local SQLite — this never calls AWS, which is the caching layer AWS’s own best-practices page asks for.
+    InfraSpendConfigRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Turn billed Cost Explorer polling on or off for this project.
+          example: true
+      required:
+        - enabled
+      description: The explicit per-project opt-in that decision INFRA-COST requires, because Cost Explorer is unavoidably billable.
     InfraRetentionConfig:
       type: object
       properties:
@@ -30231,6 +30384,147 @@ paths:
                   - error
         "404":
           description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/spend:
+    get:
+      tags:
+        - Projects
+      summary: Cached daily AWS spend trend and top services
+      description: |-
+        Returns the daily spend trend and top-N services from the `infra_cost_daily` cache that the three-times-daily Cost Explorer poller fills.
+
+        **Cost: free.** This endpoint never calls AWS. `GetCostAndUsage` is billed $0.01 per paginated request with no free tier, so refreshing on demand would charge a cent every time an operator opened the page. AWS’s own best-practices guidance asks for precisely this split: *"we recommend architecting the application so that it has a caching layer… but doesn't trigger queries every time that an individual in your organization accesses it."*
+
+        The cache is filled at most three times a day because *"AWS billing information is updated up to three times daily"* — polling faster produces no fresher data, only a larger bill.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: integer
+            description: Days of history to return, ending today. Bounded at 400 because Cost Explorer itself serves at most 13 months plus the current one, so a wider ask could only ever return a window the cache never filled.
+            example: 30
+          required: false
+          description: Days of history to return, ending today. Bounded at 400 because Cost Explorer itself serves at most 13 months plus the current one, so a wider ask could only ever return a window the cache never filled.
+          name: days
+          in: query
+        - schema:
+            type: integer
+            description: How many services the top-N panel returns.
+            example: 5
+          required: false
+          description: How many services the top-N panel returns.
+          name: topServices
+          in: query
+      responses:
+        "200":
+          description: Cached spend trend. Empty arrays when nothing has been synced yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraSpendTrend"
+        "400":
+          description: Malformed query params.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/spend/config:
+    put:
+      tags:
+        - Projects
+      summary: Opt a project into (or out of) billed Cost Explorer polling
+      description: |-
+        Every other collector reads a signal that costs nothing until a scope row exists. `GetCostAndUsage` charges from the first request with no free tier at all, so this one takes a deliberate opt-in with a name.
+
+        Enabling does **not** trigger an immediate sync: charging a cent inside the request that saved the checkbox would make the toggle itself cost money. The next scheduled sweep fills the cache.
+
+        Disabling keeps the cached rows. They are spend already paid for, and discarding them would mean an operator toggling the feature off and on re-bought the same history.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                  description: Turn billed Cost Explorer polling on or off for this project.
+                  example: true
+              required:
+                - enabled
+              description: The explicit per-project opt-in that decision INFRA-COST requires, because Cost Explorer is unavoidably billable.
+      responses:
+        "200":
+          description: Opt-in saved; the full spend body is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraSpendTrend"
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "503":
+          description: The infrastructure store is unavailable.
           content:
             application/json:
               schema:

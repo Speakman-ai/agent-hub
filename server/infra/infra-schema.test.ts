@@ -327,6 +327,7 @@ describe('infra_collect_runs', () => {
       'estimated_cost_usd',
       'finished_at',
       'id',
+      'kind',
       'metrics_requested',
       'points_written',
       'project_id',
@@ -336,6 +337,31 @@ describe('infra_collect_runs', () => {
       'status',
       'throttles',
     ]);
+  });
+
+  it('defaults kind to metrics, which is what every row predating the column is', () => {
+    db.prepare(
+      `INSERT INTO infra_collect_runs (id, project_id, started_at)
+       VALUES ('run-kind-default', 'proj-a', 1)`,
+    ).run();
+    const row = db
+      .prepare('SELECT kind FROM infra_collect_runs WHERE id = ?')
+      .get('run-kind-default') as { kind: string };
+    expect(row.kind).toBe('metrics');
+  });
+
+  it('accepts an unrecognised kind, because the column deliberately carries no CHECK', () => {
+    // A CHECK on a column that schema-reconcile.ts adds cannot be widened later
+    // without rebuilding the table, and this enum grows every time a ticket adds
+    // a billed API. Readers normalize instead.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO infra_collect_runs (id, project_id, started_at, kind)
+           VALUES ('run-kind-future', 'proj-a', 1, 'some_future_api')`,
+        )
+        .run(),
+    ).not.toThrow();
   });
 
   it('opens as running with zeroed counters and constrains status', () => {

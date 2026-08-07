@@ -25,6 +25,7 @@
  */
 
 import { CloudWatchClient, DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
+import { CostExplorerClient } from '@aws-sdk/client-cost-explorer';
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { ECSClient } from '@aws-sdk/client-ecs';
 import { ElasticLoadBalancingV2Client } from '@aws-sdk/client-elastic-load-balancing-v2';
@@ -106,6 +107,7 @@ const elbClients = new Map<string, ElasticLoadBalancingV2Client>();
 const rdsClients = new Map<string, RDSClient>();
 const lambdaClients = new Map<string, LambdaClient>();
 const s3Clients = new Map<string, S3Client>();
+const costExplorerClients = new Map<string, CostExplorerClient>();
 
 /**
  * Every client cache, so adding a service means adding one map here rather than
@@ -121,6 +123,7 @@ const clientCaches: Array<Map<string, DestroyableClient>> = [
   rdsClients,
   lambdaClients,
   s3Clients,
+  costExplorerClients,
 ];
 
 /**
@@ -338,6 +341,47 @@ export function getProjectS3Client(projectId: string, opts: ProjectAwsClientOpts
     credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
   });
   s3Clients.set(key, client);
+  return client;
+}
+
+/**
+ * The single region every Cost Explorer request is signed for.
+ *
+ * Cost Explorer is not a regional service. AWS publishes exactly one endpoint
+ * for it — `https://ce.us-east-1.amazonaws.com` — and billing data is
+ * account-global, so there is nothing a second region could return. Signing for
+ * anything else fails to resolve.
+ */
+export const COST_EXPLORER_REGION = 'us-east-1';
+
+/**
+ * A Cost Explorer client bound to one project profile.
+ *
+ * The profile's region is deliberately **ignored**, unlike every other factory
+ * in this file. A monitoring profile configured for `eu-west-1` still reads its
+ * spend from `us-east-1` because that is the only endpoint the service has —
+ * see {@link COST_EXPLORER_REGION}. Honouring `opts.region` here would produce a
+ * client that cannot resolve, and the failure would land in a background poller
+ * where nobody is watching.
+ *
+ * The cache is still keyed on the pinned region rather than the requested one,
+ * so callers asking for different regions share the one client they would have
+ * been given anyway instead of accumulating identical connection pools.
+ */
+export function getProjectCostExplorerClient(
+  projectId: string,
+  opts: ProjectAwsClientOpts = {},
+): CostExplorerClient {
+  const { profileName, use } = resolveTarget(projectId, opts);
+  const key = clientKey(projectId, profileName, COST_EXPLORER_REGION, use);
+  const existing = costExplorerClients.get(key);
+  if (existing) return existing;
+
+  const client = new CostExplorerClient({
+    region: COST_EXPLORER_REGION,
+    credentials: resolveProjectAwsCredentials(projectId, profileName, { use }),
+  });
+  costExplorerClients.set(key, client);
   return client;
 }
 

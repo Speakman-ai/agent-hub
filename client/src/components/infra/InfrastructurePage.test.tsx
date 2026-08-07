@@ -9,6 +9,10 @@ import { api } from '../../utils/api';
     getInfraScopes: vi.fn(),
     updateInfraScopes: vi.fn(),
     projectInfraCost: vi.fn(),
+    // The Overview tab also embeds the spend panel, which reads the cached
+    // Cost Explorer trend on mount and polls it.
+    getInfraSpend: vi.fn(),
+    updateInfraSpendConfig: vi.fn(),
     // The Resources tab embeds the inventory browser, which polls on mount.
     listInfraResources: vi.fn(),
     listInfraMetricSeries: vi.fn(),
@@ -20,6 +24,7 @@ import { api } from '../../utils/api';
 const getInfraScopes = vi.mocked(api.getInfraScopes);
 const listInfraResources = vi.mocked(api.listInfraResources);
 const getInfraMetricPacks = vi.mocked(api.getInfraMetricPacks);
+const getInfraSpend = vi.mocked(api.getInfraSpend);
 
 const ec2Pack = {
   service: 'ec2',
@@ -102,6 +107,21 @@ const emptyResources = {
   staleAfterMs: 24 * 60 * 60 * 1000,
 };
 
+/** A project that never opted into the billed Cost Explorer poll. */
+const optedOutSpend = {
+  enabled: false,
+  syncedAt: null,
+  windowStartDay: '2026-07-09',
+  windowEndDay: '2026-08-08',
+  days: [],
+  topServices: [],
+  accounts: [],
+  totalUsd: 0,
+  unit: null,
+  fetchedAt: null,
+  lastRun: null,
+};
+
 const emptyScopes = {
   scopes: [],
   projection: { metricsRequestedPerMonth: 0, estimatedMonthlyCostUsd: 0, perScope: [] },
@@ -121,6 +141,7 @@ describe('InfrastructurePage', () => {
     getInfraScopes.mockResolvedValue(emptyScopes as any);
     listInfraResources.mockResolvedValue(emptyResources as any);
     getInfraMetricPacks.mockResolvedValue({ packs: [ec2Pack] } as any);
+    getInfraSpend.mockResolvedValue(optedOutSpend as any);
   });
   const readyStatus = { profile: 'monitoring', region: 'us-east-1', reachable: true };
 

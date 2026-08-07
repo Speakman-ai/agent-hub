@@ -395,6 +395,19 @@ export const INFRA_TABLES_SCHEMA = `
     account_id          TEXT,
     region              TEXT,
     started_at          INTEGER NOT NULL,
+    -- Which billed API the run spent on. Both land here rather than in separate
+    -- tables because the cost ceiling guards *AWS API spend*, not one API: a
+    -- Cost Explorer poll and a GetMetricData tick draw on the same budget, and
+    -- getInfraSpendToDate() has to sum them together or the ceiling only ever
+    -- guards half the bill.
+    --
+    -- No CHECK constraint, deliberately. A CHECK on a column added by
+    -- schema-reconcile.ts cannot be widened later without rebuilding the table
+    -- (the reconciler is additive-only and never rewrites constraints), and this
+    -- enum grows every time a ticket adds a billed API. The default keeps every
+    -- row that predates the column correct: before there was a Cost Explorer
+    -- poller, every run in the table was a metric tick.
+    kind                TEXT NOT NULL DEFAULT 'metrics',
     -- NULL while the tick is still running; a row that never gets one is a
     -- crashed tick, which is itself the signal.
     finished_at         INTEGER,
@@ -444,7 +457,77 @@ export const INFRA_TABLES_SCHEMA = `
       CHECK (degradation_level IN ('normal', 'widened', 'paused')),
     -- Epoch ms the level last changed. NULL while it has never left 'normal'.
     degraded_at         INTEGER,
+    -- Cost Explorer opt-in (decision INFRA-COST mechanism 5). Off by default and
+    -- stored as an explicit flag rather than inferred from anything, because
+    -- GetCostAndUsage is unavoidably billable: $0.01 per paginated request with
+    -- no free tier at all. Every other collector reads a signal that is free
+    -- until an operator scopes it; this one charges from the first call, so the
+    -- operator has to say yes to it by name.
+    --
+    -- It lives on the cost table rather than in projects.json next to
+    -- infraEnabled because it is a *spend* decision that the same ceiling
+    -- governs, and because a runtime toggle should not need a commit.
+    cost_explorer_enabled INTEGER NOT NULL DEFAULT 0,
+    -- Epoch ms the last Cost Explorer sync started. This is the cache-staleness
+    -- gate, and it is what makes "at most 3x/day" a property of the module
+    -- rather than of a cron string in index.ts — a second invocation inside the
+    -- minimum interval is refused before it can spend anything.
+    cost_explorer_synced_at INTEGER,
     updated_at          INTEGER NOT NULL
+  );
+
+  -- Cached daily spend from Cost Explorer \`GetCostAndUsage\` (decision
+  -- INFRA-COST mechanism 5: "Cost Explorer is polled at most 3x/day with a cache
+  -- layer, because AWS states billing data updates at most three times daily").
+  --
+  -- This table *is* the caching layer AWS's own best-practices page asks for:
+  -- "we recommend architecting the application so that it has a caching layer.
+  -- This enables you to regularly update the underlying data for your end users,
+  -- but doesn't trigger queries every time that an individual in your
+  -- organization accesses it." The read endpoint therefore never calls AWS — it
+  -- only ever selects from here. Ten operators opening the Overview tab cost
+  -- nothing; the poller is the only writer and the only spender.
+  --
+  -- One row per (day, service, linked account), which is exactly the grain
+  -- GetCostAndUsage returns for a DAILY query grouped on SERVICE and
+  -- LINKED_ACCOUNT. Two groups is the documented maximum ("You can group AWS
+  -- costs using up to two different groups"), so this grain cannot be widened
+  -- without a second billed request.
+  --
+  -- Keyed on profile_name, not account_id, for the same reason infra_scopes is:
+  -- the profile is what the operator picked and what INFRA-CRED resolves
+  -- credentials from. \`linked_account\` is the *member* account inside the
+  -- payer's organization, which is a different thing entirely — a management
+  -- account sees many of them through one profile.
+  CREATE TABLE IF NOT EXISTS infra_cost_daily (
+    project_id     TEXT NOT NULL,
+    profile_name   TEXT NOT NULL,
+    -- 'YYYY-MM-DD', the UTC day CE reports the bucket under. Stored as the text
+    -- AWS returned rather than an epoch, because that string is the identity of
+    -- the bucket: re-deriving it through a local timezone is how a day silently
+    -- shifts by one and a re-sync writes a duplicate instead of an update.
+    day            TEXT NOT NULL,
+    -- CE's own service display name ("Amazon Elastic Compute Cloud - Compute"),
+    -- not our lowercase service token. They are different vocabularies and
+    -- mapping between them here would quietly drop spend for every service the
+    -- monitoring packs do not cover — which is most of the bill.
+    service        TEXT NOT NULL,
+    -- Member account id. Empty string, never NULL, so it can sit in the primary
+    -- key: SQLite treats NULLs as distinct in a UNIQUE index, so a NULL here
+    -- would let the same bucket be inserted twice.
+    linked_account TEXT NOT NULL,
+    amount_usd     REAL NOT NULL,
+    -- CE's Unit, carried verbatim. Almost always 'USD', but an account with a
+    -- non-USD billing currency reports its own, and a chart that assumed dollars
+    -- would be off by an exchange rate with no way to tell.
+    unit           TEXT NOT NULL,
+    -- CE's ResultByTime.Estimated: the day is not finalized and its number will
+    -- move. Surfaced rather than hidden, because the most recent day is always
+    -- estimated and an operator comparing us to the console needs to know which
+    -- bars are still settling.
+    estimated      INTEGER NOT NULL DEFAULT 0,
+    fetched_at     INTEGER NOT NULL,
+    PRIMARY KEY (project_id, profile_name, day, service, linked_account)
   );
 
   -- Per-project retention / quota overrides for the reaper (decision
@@ -713,6 +796,18 @@ export const INFRA_INDEXES_SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_infra_collect_runs_project
     ON infra_collect_runs(project_id, started_at DESC);
+  -- Deliberately NOT indexed on \`kind\`. It was added to an existing table, and
+  -- an index over a freshly added column is the one gap schema-reconcile.ts
+  -- documents as still needing a hand-written migration — it would throw here on
+  -- any install older than the column. The composite above already seeks the
+  -- project's month, and \`kind\` filters a handful of rows out of that slice.
+
+  -- The trend read: one project's window, oldest-first, so the chart gets its
+  -- buckets in plot order without a temp b-tree sort. profile_name trails
+  -- project_id because a project has exactly one monitoring profile at a time,
+  -- so it is a filter rather than a selective prefix.
+  CREATE INDEX IF NOT EXISTS idx_infra_cost_daily_project_day
+    ON infra_cost_daily(project_id, day);
 
   -- The rule editor lists a project's rules; the evaluator loads only the
   -- enabled ones. enabled trails project_id so one composite serves both.

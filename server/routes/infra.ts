@@ -5,6 +5,8 @@
  *   GET  /api/projects/:projectId/infra/cost
  *   POST /api/projects/:projectId/infra/cost/projection
  *   PUT  /api/projects/:projectId/infra/cost/config
+ *   GET  /api/projects/:projectId/infra/spend
+ *   PUT  /api/projects/:projectId/infra/spend/config
  *   GET  /api/projects/:projectId/infra/scopes
  *   PUT  /api/projects/:projectId/infra/scopes
  *   GET  /api/projects/:projectId/infra/retention
@@ -22,6 +24,13 @@
  * degrades against. None of them call AWS — every figure is local SQLite or
  * pure arithmetic over the service metric packs, so the scope editor can price
  * a keystroke without spending anything to do it.
+ *
+ * The `spend` routes are the one place AWS's *actual* bill shows up rather than
+ * our estimate of what we cost it. They too call nothing: they read the
+ * `infra_cost_daily` cache the three-times-daily Cost Explorer poller fills.
+ * That split is required, not incidental — `GetCostAndUsage` bills $0.01 per
+ * paginated request with no free tier, so a read path that refreshed on demand
+ * would charge a cent per page view.
  *
  * The `scopes` routes are decision INFRA-SCOPE's operator surface: the opt-in
  * allowlist that gates every billed request. `PUT` is a whole-list replace and
@@ -43,14 +52,22 @@ import type { RouteDeps } from '../types.js';
 import { ProjectAwsProfileValidationError } from '../project-aws-profiles.js';
 import { probeProjectMonitoringAccess } from '../infra/aws-clients.js';
 import { isInfraDbInitialized } from '../infra/infra-db.js';
-import { projectMonthlyApiCost, type MonthlyCostProjection } from '../infra/infra-cost.js';
+import {
+  projectMonthlyApiCost,
+  COST_EXPLORER_LOOKBACK_DAYS,
+  type MonthlyCostProjection,
+} from '../infra/infra-cost.js';
 import {
   getInfraCostConfig,
   getInfraSpendToDate,
   listInfraCollectRuns,
   listScopeResourceCounts,
   setInfraCostCeiling,
+  setInfraCostExplorerEnabled,
+  getLatestInfraCollectRun,
 } from '../infra/infra-cost-store.js';
+import { queryInfraSpendTrend } from '../infra/cost-explorer-store.js';
+import { costExplorerWindow } from '../infra/cost-explorer-sync.js';
 import { MAX_RESOURCE_STALENESS_MS } from '../infra/metric-collector.js';
 import {
   getInfraRetentionConfig,
@@ -103,6 +120,8 @@ import {
   ResourceListParamsSchema,
   MetricSeriesParamsSchema,
   MetricRangeParamsSchema,
+  SpendTrendParamsSchema,
+  SpendConfigRequestSchema,
 } from './infra.openapi.js';
 
 function validate<T extends z.ZodTypeAny>(
@@ -143,9 +162,12 @@ function emptyCostBody(nowMs: number): Record<string, unknown> {
     errors: 0,
     runs: 0,
     futureDatedRuns: 0,
+    byKind: { metrics: 0, cost_explorer: 0 },
     monthlyCeilingUsd: null,
     degradation: 'normal',
     degradedAt: null,
+    costExplorerEnabled: false,
+    costExplorerSyncedAt: null,
     configured: false,
     projection: { metricsRequestedPerMonth: 0, estimatedMonthlyCostUsd: 0, perScope: [] },
     recentRuns: [],
@@ -169,9 +191,91 @@ function buildCostBody(projectId: string, nowMs: number): Record<string, unknown
     monthlyCeilingUsd: config.monthlyCeilingUsd,
     degradation: config.degradationLevel,
     degradedAt: config.degradedAt,
+    costExplorerEnabled: config.costExplorerEnabled,
+    costExplorerSyncedAt: config.costExplorerSyncedAt,
     configured: config.configured,
     projection,
     recentRuns: listInfraCollectRuns(projectId, 20).map(({ projectId: _pid, ...run }) => run),
+  };
+}
+
+/** Default trend window, matching what one Cost Explorer sync fetches. */
+const DEFAULT_SPEND_DAYS = COST_EXPLORER_LOOKBACK_DAYS;
+
+interface SpendParams {
+  days: number;
+  topServices: number;
+}
+
+/**
+ * Cached AWS spend for a project, read from `infra_cost_daily` and nothing else.
+ *
+ * **This handler never calls AWS.** That is the whole point of the cache table:
+ * `GetCostAndUsage` bills $0.01 per paginated request with no free tier, so a
+ * read path that refreshed on demand would charge a cent every time an operator
+ * opened the Overview tab or a poll interval fired. AWS's own best-practices
+ * page asks for exactly this split — a caching layer that "doesn't trigger
+ * queries every time that an individual in your organization accesses it".
+ *
+ * The staleness of what is returned is therefore a first-class part of the
+ * response, not an omission: `fetchedAt` says when the cache was filled,
+ * `syncedAt` when a sync last started (they differ when the last sync failed),
+ * and `lastRun` carries the failure reason so an operator who opted in and sees
+ * an empty chart can find out why without reading server logs.
+ */
+function buildSpendBody(
+  projectId: string,
+  params: SpendParams,
+  nowMs: number,
+): Record<string, unknown> {
+  const config = getInfraCostConfig(projectId);
+  const window = costExplorerWindow(nowMs, params.days);
+  const trend = queryInfraSpendTrend({
+    projectId,
+    startDay: window.startDay,
+    endDay: window.endDay,
+    topServices: params.topServices,
+  });
+  // Looked up by kind over a time-bounded window rather than by filtering a
+  // page of recent runs. Metric ticks outnumber Cost Explorer sweeps roughly
+  // 100:1 per scoped region, so any row-count window large enough to be cheap is
+  // too small to reliably contain a sync that ran perfectly well this morning.
+  const lastRun = getLatestInfraCollectRun(projectId, 'cost_explorer', nowMs);
+
+  return {
+    enabled: config.costExplorerEnabled,
+    syncedAt: config.costExplorerSyncedAt,
+    windowStartDay: window.startDay,
+    windowEndDay: window.endDay,
+    ...trend,
+    lastRun: lastRun
+      ? {
+          startedAt: lastRun.startedAt,
+          finishedAt: lastRun.finishedAt,
+          status: lastRun.status,
+          pages: lastRun.queriesIssued,
+          estimatedCostUsd: lastRun.estimatedCostUsd,
+          errorMessage: lastRun.errorMessage,
+        }
+      : null,
+  };
+}
+
+/** Same shape with nothing in it, for a Hub whose infra store never opened. */
+function emptySpendBody(params: SpendParams, nowMs: number): Record<string, unknown> {
+  const window = costExplorerWindow(nowMs, params.days);
+  return {
+    enabled: false,
+    syncedAt: null,
+    windowStartDay: window.startDay,
+    windowEndDay: window.endDay,
+    days: [],
+    topServices: [],
+    accounts: [],
+    totalUsd: 0,
+    unit: null,
+    fetchedAt: null,
+    lastRun: null,
   };
 }
 
@@ -423,6 +527,51 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
       const nowMs = Date.now();
       setInfraCostCeiling(projectId, parsed.data.monthlyCeilingUsd, nowMs);
       res.json(buildCostBody(projectId, nowMs));
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/infra/spend',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(SpendTrendParamsSchema, req.query ?? {}, res);
+      if (!parsed.ok) return;
+      const nowMs = Date.now();
+      res.json(
+        isInfraDbInitialized()
+          ? buildSpendBody(projectId, parsed.data, nowMs)
+          : emptySpendBody(parsed.data, nowMs),
+      );
+    },
+  );
+
+  router.put(
+    '/api/projects/:projectId/infra/spend/config',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(SpendConfigRequestSchema, req.body ?? {}, res);
+      if (!parsed.ok) return;
+      if (!isInfraDbInitialized()) {
+        res.status(503).json({ error: 'Infrastructure store is unavailable' });
+        return;
+      }
+      const nowMs = Date.now();
+      setInfraCostExplorerEnabled(projectId, parsed.data.enabled, nowMs);
+      // No AWS call and no immediate sync on enable. The operator has just opted
+      // into a billed API; charging them a cent inside the same request that
+      // saved the checkbox would make the toggle itself cost money, and the
+      // three-times-daily cron is the cadence AWS's own guidance describes.
+      res.json(buildSpendBody(projectId, { days: DEFAULT_SPEND_DAYS, topServices: 5 }, nowMs));
     },
   );
 

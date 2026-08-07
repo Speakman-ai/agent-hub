@@ -5,6 +5,7 @@ import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } from '@shared/types';
 import type { DeployTriggerEvent } from './deployTriggers';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
+import type { InfraSpendTrendWire } from '@shared/utils/infraSpend';
 
 interface CreateDeployTriggerBody {
   event: DeployTriggerEvent;
@@ -410,6 +411,20 @@ export const api = {
   projectInfraCost: (projectId: string, data: Record<string, unknown>) =>
     fetchJSON(`/projects/${projectId}/infra/cost/projection`, {
       method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  // Cached AWS spend for the Overview tab. This read never calls AWS: the
+  // server answers from a table a cron fills at most three times a day, because
+  // `GetCostAndUsage` bills $0.01 per paginated request with no free tier and a
+  // read-through cache would charge a cent per page view.
+  getInfraSpend: (projectId: string, params: Record<string, unknown> = {}) =>
+    fetchJSON<InfraSpendTrendWire>(`/projects/${projectId}/infra/spend${infraQuery(params)}`),
+  // Opts the project in or out of the billed Cost Explorer poll. Returns the
+  // same spend body, so the panel repaints from the response rather than
+  // refetching.
+  updateInfraSpendConfig: (projectId: string, data: { enabled: boolean }) =>
+    fetchJSON<InfraSpendTrendWire>(`/projects/${projectId}/infra/spend/config`, {
+      method: 'PUT',
       body: JSON.stringify(data),
     }),
   // Read surface for the Resources and Metrics tabs. Polled on an interval —

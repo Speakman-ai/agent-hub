@@ -337,6 +337,17 @@ export const api = {
     // (decision INFRA-UI). All Admin-gated server-side.
     getInfraMetricPacks: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/metric-packs`),
     getInfraScopes: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/scopes`),
+    // Cached AWS spend for the Overview tab. This read never calls AWS: the
+    // server answers from a table a cron fills at most three times a day,
+    // because `GetCostAndUsage` bills $0.01 per paginated request with no free
+    // tier and a read-through cache would charge a cent per screen open.
+    getInfraSpend: (projectId: any, params: Record<string, any> = {}) => fetchJSON(`/projects/${projectId}/infra/spend${infraQuery(params)}`),
+    // Opts the project in or out of the billed Cost Explorer poll. Returns the
+    // same spend body, so the screen repaints from the response.
+    updateInfraSpendConfig: (projectId: any, data: { enabled: boolean }) => fetchJSON(`/projects/${projectId}/infra/spend/config`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+    }),
     // Live reachability probe for the designated monitoring profile. Issues one
     // `DescribeAlarms` against AWS, so call it when the view opens — never on a
     // poll timer (the constraint documented on `probeProjectMonitoringAccess`).

@@ -14,7 +14,10 @@
  *     committing an allowlist that bills against someone's AWS account is not a
  *     thing to do on a phone by accident, and the projected cost that is
  *     supposed to change the operator's mind (decision INFRA-COST) needs the
- *     room web has. Mobile shows what is configured and what it costs.
+ *     room web has. Mobile shows what is configured and what it costs. The one
+ *     billed setting the phone can change is the Cost Explorer switch, because
+ *     that is a single toggle whose entire price fits in a confirm dialog, and
+ *     stopping a recurring charge should not require a desktop.
  *   - **Alerts are live.** The list refetches on the `infra_alert_transition`
  *     broadcast rather than only on the poll, because this is the surface a push
  *     notification drops the operator onto.
@@ -81,6 +84,21 @@ import {
   type InfraPackResource,
   type InfraServicePackWire,
 } from '@shared/utils/infraPacks';
+import {
+  COST_EXPLORER_OPT_IN_COPY,
+  buildSpendBars,
+  formatMoney,
+  formatUsd,
+  spendFailureHint,
+  spendStalenessLabel,
+  spendTrendSummary,
+  type InfraSpendTrendWire,
+} from '@shared/utils/infraSpend';
+
+// Re-exported so this module stays the import site callers and tests already
+// use. The formatter itself moved to shared/ when the web scope editor became a
+// second consumer of the same rounding rule.
+export { formatUsd };
 
 export type InfrastructureTab = 'overview' | 'resources' | 'metrics' | 'alerts';
 
@@ -286,13 +304,6 @@ export async function runLoadMorePage(deps: LoadMorePageDeps): Promise<void> {
   }
 }
 
-/** Money, never rounded down to "free". Mirrors the web scope editor's rule. */
-export function formatUsd(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  if (value > 0 && value < 0.01) return '<$0.01';
-  return `$${value.toFixed(2)}`;
-}
-
 /** Empty-state copy for the resource list, chosen by cause rather than count. */
 export function resourcesEmptyCopy(filters: ResourceFilterState): string {
   return hasActiveFilters(filters)
@@ -333,6 +344,75 @@ export function buildAlertActionConfirm(opts: {
   };
 }
 
+/**
+ * Empty-state copy for the spend section, chosen by cause rather than count.
+ *
+ * "Nothing has been cached yet" and "AWS says you were charged nothing" look
+ * identical on screen and mean opposite things, and only the first one is worth
+ * waiting out. The sync runs a few times a day at most, so a freshly enabled
+ * project sits in the first state for hours by design.
+ */
+export function spendEmptyCopy(trend: { fetchedAt?: number | null } | null | undefined): string {
+  if (!trend || trend.fetchedAt === null || trend.fetchedAt === undefined) {
+    return 'No spend cached yet. The sync runs a few times a day, and an account that just enabled Cost Explorer can take up to 24 hours to report anything.';
+  }
+  return 'AWS reported no charges in this window.';
+}
+
+/**
+ * The ranked service list, with the truncated tail as its own row.
+ *
+ * The server returns the top N services and a window total that includes
+ * everything else, so a list rendered from `topServices` alone sums to less
+ * than the bill printed above it. Building the rows here rather than in the
+ * view keeps that arithmetic testable without a native runtime, which is the
+ * point: a ranked list that silently understates a bill is the failure this
+ * section most has to avoid.
+ */
+export function spendServiceRows(
+  trend: InfraSpendTrendWire | null | undefined,
+): Array<{ key: string; label: string; amountUsd: number }> {
+  const services = Array.isArray(trend?.topServices) ? trend.topServices : [];
+  const rows = services.map((service) => ({
+    key: service.service,
+    label: service.service,
+    amountUsd: service.amountUsd,
+  }));
+  const { otherUsd } = spendTrendSummary(trend);
+  if (otherUsd > 0) {
+    rows.push({ key: '__other__', label: 'Other services', amountUsd: otherUsd });
+  }
+  return rows;
+}
+
+/**
+ * Confirmation dialog for the Cost Explorer opt-in.
+ *
+ * Enabling starts a recurring charge against someone's AWS account, so the
+ * price is in the dialog rather than only in the panel copy the operator may
+ * have scrolled past. Disabling needs no such warning: stopping a billed poll
+ * is never the surprising direction.
+ *
+ * Pure for the same reason `buildAlertActionConfirm` is: the contract that
+ * nothing bills without an explicit confirm tap has to be testable without a
+ * native Alert runtime.
+ */
+export function buildSpendOptInConfirm(opts: {
+  enabling: boolean;
+  onConfirm: () => void;
+}): { title: string; message: string; buttons: any[] } {
+  return {
+    title: opts.enabling ? 'Turn on Cost Explorer polling?' : 'Turn off Cost Explorer polling?',
+    message: opts.enabling
+      ? `${COST_EXPLORER_OPT_IN_COPY.price} ${COST_EXPLORER_OPT_IN_COPY.cadence}`
+      : 'Spend charts stop updating. Cached figures stay until they age out.',
+    buttons: [
+      { text: 'Cancel', style: 'cancel' },
+      { text: opts.enabling ? 'Turn on' : 'Turn off', onPress: opts.onConfirm },
+    ],
+  };
+}
+
 function Empty({ text, testID }: { text: string; testID?: string }) {
   return (
     <View style={styles.emptyCard} testID={testID}>
@@ -365,7 +445,380 @@ function Chip({
 
 // ── Overview ────────────────────────────────────────────────────────────────
 
-function OverviewTab({ project, monitoringStatus, scopes, loading, error, openAlertCount }: any) {
+/** Columns in the spend plot. A 30 day window draws one bar per day inside this. */
+const SPEND_BAR_COUNT = 30;
+
+/** Trend window and ranked-list depth, matching the web panel. */
+const SPEND_DAYS = 30;
+const SPEND_TOP_SERVICES = 5;
+
+/**
+ * What AWS actually billed, beside what collection is projected to cost.
+ *
+ * Unlike the scope editor above it, this one *is* editable on the phone. The
+ * scope stays web-only because committing an allowlist is a multi-field form
+ * whose projected cost needs room to be read; this is a single switch whose
+ * whole price fits in a confirmation dialog, and an operator who wants to stop
+ * a billed poll from a phone should be able to.
+ *
+ * The read itself is free: `GET /infra/spend` serves a cache a cron fills at
+ * most three times a day and never calls AWS, so polling it on the ordinary
+ * interval costs nothing.
+ */
+/**
+ * A monotonic request counter: `begin()` starts a request and invalidates every
+ * earlier one, `isCurrent(token)` says whether a settled response may still be
+ * applied.
+ *
+ * `ResourcesTab` and `MetricsTab` below carry the same guard written inline as
+ * `++generation.current`. This one is extracted because it is the only one with
+ * a regression test behind it, and the race it prevents cannot be reached from
+ * a test any other way: this suite runs in a node environment with no renderer,
+ * so the component's own async settle order is not observable. Hoisting the
+ * decision out is the same move the rest of this file already makes for exactly
+ * that reason. The two older tabs could adopt it; that is not this card's scope.
+ *
+ * The guard is required even though the state carries a project stamp. Two
+ * requests can settle out of order, and a slow read for the previous project
+ * landing after the new project's would stamp the state with the old id, which
+ * `stampMatchesProject` then treats as "not mine" and renders as a spinner.
+ * Nothing retriggers a fetch at that point, so the section stays stuck until
+ * the next poll happens to fix it, or forever if the screen went to the
+ * background and paused the interval.
+ */
+export function createRequestGeneration(): {
+  begin: () => number;
+  isCurrent: (token: number) => boolean;
+} {
+  let current = 0;
+  return {
+    begin: () => (current += 1),
+    isCurrent: (token: number) => current === token,
+  };
+}
+
+export interface SpendToggleDeps {
+  /** Writes the new opt-in value and returns the refreshed spend body. */
+  save: () => Promise<any>;
+  /**
+   * May this response still write spend state? False once the section moved on,
+   * which for this screen means a project switch or a newer read.
+   */
+  isCurrent: () => boolean;
+  /**
+   * May this response release the saving flag, and speak to the operator? True
+   * while this is the newest toggle; false once a project change or a later
+   * toggle has taken the flag over.
+   */
+  ownsSaving: () => boolean;
+  applyResponse: (response: any) => void;
+  notifyError: (message: string) => void;
+  setSaving: (value: boolean) => void;
+}
+
+/**
+ * Write the Cost Explorer opt-in and settle the section around it.
+ *
+ * Two guards, for the same reason {@link runLoadMorePage} needs two: "may I
+ * write state?" and "may I release the flag?" are different questions with
+ * different owners, and collapsing them breaks whichever case the single
+ * predicate does not describe.
+ *
+ *   - Releasing on the request generation would strand the toggle disabled,
+ *     because the generation also advances on every 60-second poll: a refresh
+ *     landing mid-save would take the save's token away and nothing would ever
+ *     clear `saving`.
+ *   - Releasing unconditionally lets a superseded save clear a *newer* one's
+ *     flag. Switch project while a save is pending, toggle on the new project,
+ *     and the old response re-enables the switch under an in-flight write, so a
+ *     second tap fires a duplicate concurrent request.
+ *
+ * Ownership is therefore tracked per toggle, not per request generation, and
+ * the project-change effect hands it off so a save that never settles cannot
+ * strand the next project's switch.
+ *
+ * The error alert is on the ownership guard rather than the state guard on
+ * purpose: a modal about a project the operator has already left is noise about
+ * a decision they have moved on from.
+ */
+export async function runSpendToggle(deps: SpendToggleDeps): Promise<void> {
+  const { save, isCurrent, ownsSaving, applyResponse, notifyError, setSaving } = deps;
+  try {
+    const response = await save();
+    if (isCurrent()) applyResponse(response);
+  } catch (err: any) {
+    if (ownsSaving()) {
+      notifyError(err?.message || 'The Cost Explorer setting could not be saved.');
+    }
+  } finally {
+    if (ownsSaving()) setSaving(false);
+  }
+}
+
+export interface SpendSectionState {
+  projectId: string;
+  data: InfraSpendTrendWire | null;
+  error: string | null;
+}
+
+/**
+ * The state a failed spend refresh should leave behind.
+ *
+ * It keeps the last confirmed figures rather than blanking them. This is a
+ * cache the server fills at most three times a day, so what is already on
+ * screen is hours old by design and is exactly as true after a dropped request
+ * as it was before one. Discarding it turns a moment of bad signal into a lost
+ * answer, on the one surface most likely to have bad signal, and it also makes
+ * the section's own "showing the last confirmed figures" banner unreachable.
+ *
+ * Figures are carried forward only within the same project. Another project's
+ * bill is not a stale version of this one, it is the wrong number.
+ */
+export function spendStateAfterFailure(
+  previous: SpendSectionState | null | undefined,
+  projectId: string,
+  message?: string | null,
+): SpendSectionState {
+  return {
+    projectId,
+    data: stampMatchesProject(previous, projectId) ? (previous?.data ?? null) : null,
+    error: message || 'Spend could not be loaded.',
+  };
+}
+
+function SpendSection({ projectId }: { projectId: string }) {
+  const [state, setState] = useState<SpendSectionState | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const forProject = stampMatchesProject(state, projectId) ? state : null;
+  const trend = forProject?.data ?? null;
+  const error = forProject?.error ?? null;
+  const loading = !!projectId && forProject === null;
+
+  // Advancing inside `load` rather than in the project-change effect also
+  // covers two polls of the *same* project overlapping on a slow connection.
+  const generation = useRef(createRequestGeneration()).current;
+  // Who currently owns `saving`. Tracked separately from `generation` because
+  // that counter advances on every poll, and a poll must not be able to take a
+  // save's flag away. Same split, and the same reason, as `loadMoreToken`.
+  const savingOwner = useRef(0);
+
+  const load = useCallback(() => {
+    if (!projectId) return;
+    const token = generation.begin();
+    api
+      .getInfraSpend(projectId, { days: SPEND_DAYS, topServices: SPEND_TOP_SERVICES })
+      .then((response: any) => {
+        if (!generation.isCurrent(token)) return;
+        setState({ projectId, data: response ?? null, error: null });
+        setNowMs(Date.now());
+      })
+      .catch((err: any) => {
+        if (!generation.isCurrent(token)) return;
+        setState((prev) => spendStateAfterFailure(prev, projectId, err?.message));
+      });
+  }, [projectId, generation]);
+
+  useEffect(() => {
+    // The switch starts clean rather than inheriting the previous project's
+    // pending save. Handing ownership off in the same step is what stops that
+    // save, whenever it settles, from clearing a flag it no longer owns; a save
+    // that never settles at all can then no longer strand this project's toggle.
+    savingOwner.current += 1;
+    setSaving(false);
+    load();
+  }, [load]);
+
+  useVisibleIntervalRefresh(load, POLL_MS);
+
+  const setEnabled = useCallback(
+    (enabled: boolean) => {
+      if (!projectId || saving) return;
+      setSaving(true);
+      // The save advances the read generation so an older in-flight poll cannot
+      // repaint the section with the value it just replaced.
+      const token = generation.begin();
+      const owner = ++savingOwner.current;
+      void runSpendToggle({
+        save: () => api.updateInfraSpendConfig(projectId, { enabled }),
+        isCurrent: () => generation.isCurrent(token),
+        ownsSaving: () => savingOwner.current === owner,
+        // The endpoint answers with the same spend body, so the section
+        // repaints from the response rather than issuing a second read.
+        applyResponse: (response: any) => {
+          setState({ projectId, data: response ?? null, error: null });
+          setNowMs(Date.now());
+        },
+        notifyError: (message: string) => Alert.alert('AWS spend', message),
+        setSaving,
+      });
+    },
+    [projectId, saving, generation],
+  );
+
+  const confirmToggle = (enabling: boolean) => {
+    const { title, message, buttons } = buildSpendOptInConfirm({
+      enabling,
+      onConfirm: () => setEnabled(enabling),
+    });
+    Alert.alert(title, message, buttons);
+  };
+
+  if (loading && !trend) {
+    return (
+      <>
+        <Text style={styles.sectionTitle}>AWS spend</Text>
+        <ActivityIndicator color={colors.gray400} />
+      </>
+    );
+  }
+
+  if (error && !trend) {
+    return (
+      <>
+        <Text style={styles.sectionTitle}>AWS spend</Text>
+        <Text style={styles.error} testID="infra-spend-error">
+          {error}
+        </Text>
+      </>
+    );
+  }
+
+  if (!trend || !trend.enabled) {
+    return (
+      <>
+        <Text style={styles.sectionTitle}>AWS spend</Text>
+        <View style={styles.card} testID="infra-spend-optin">
+          <Text style={styles.rowMeta}>
+            Chart what AWS actually billed this account, per day and per service.
+          </Text>
+          <Text style={styles.staleBanner}>{COST_EXPLORER_OPT_IN_COPY.price}</Text>
+          <Text style={styles.hint}>{COST_EXPLORER_OPT_IN_COPY.cadence}</Text>
+          <Text style={styles.hint}>{COST_EXPLORER_OPT_IN_COPY.estimates}</Text>
+          <TouchableOpacity
+            style={[styles.secondaryButton, saving && styles.disabled]}
+            disabled={saving}
+            onPress={() => confirmToggle(true)}
+            testID="infra-spend-enable"
+          >
+            <Text style={styles.secondaryButtonText}>Turn on Cost Explorer polling</Text>
+          </TouchableOpacity>
+        </View>
+      </>
+    );
+  }
+
+  const summary = spendTrendSummary(trend);
+  const plot = buildSpendBars(trend.days, SPEND_BAR_COUNT);
+  const rows = spendServiceRows(trend);
+  const money = (value: number | null | undefined) => formatMoney(value, trend.unit);
+  const failed = trend.lastRun?.status === 'failed';
+  const hint = failed ? spendFailureHint(trend.lastRun?.errorMessage) : null;
+
+  return (
+    <>
+      <Text style={styles.sectionTitle}>AWS spend</Text>
+      <View style={styles.card} testID="infra-spend-summary">
+        <Text style={styles.bigNumber} testID="infra-spend-total">
+          {money(summary.totalUsd)}
+        </Text>
+        <Text style={styles.rowMeta}>
+          {trend.windowStartDay} to {trend.windowEndDay}
+        </Text>
+        <Text style={styles.hint} testID="infra-spend-staleness">
+          {spendStalenessLabel(trend.syncedAt, trend.fetchedAt, nowMs)}
+        </Text>
+      </View>
+
+      {error ? (
+        <Text style={styles.staleBanner} testID="infra-spend-stale">
+          ⚠ Showing the last confirmed figures; the newest refresh failed.
+        </Text>
+      ) : null}
+
+      {failed ? (
+        <View style={styles.warnBox} testID="infra-spend-failed">
+          <Text style={styles.warnTitle}>The last Cost Explorer sync failed</Text>
+          <Text style={styles.warnBody}>
+            {trend.lastRun?.errorMessage || 'AWS returned no reason.'}
+          </Text>
+          {hint ? (
+            <Text style={styles.warnBody} testID="infra-spend-data-unavailable">
+              {hint}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
+      {plot.hasData ? (
+        <View style={styles.chartCard} testID="infra-spend-chart">
+          <View style={styles.chartPlot}>
+            {plot.bars.map((bar, index) => (
+              <View key={`${bar.day}-${index}`} style={styles.barTrack}>
+                <View
+                  style={[
+                    styles.bar,
+                    bar.estimated && styles.barEstimated,
+                    // Floored above zero so a day with a real but tiny charge
+                    // still draws: a zero-height bar is indistinguishable from a
+                    // day that was never billed.
+                    { height: `${Math.max(bar.amountUsd > 0 ? 2 : 0, bar.height * 100)}%` },
+                  ]}
+                  testID={bar.estimated ? 'infra-spend-bar-estimated' : 'infra-spend-bar'}
+                />
+              </View>
+            ))}
+          </View>
+          <View style={styles.chartAxis}>
+            <Text style={styles.axisLabel}>{plot.bars[0]?.day}</Text>
+            <Text style={styles.axisLabel}>{plot.bars[plot.bars.length - 1]?.day}</Text>
+          </View>
+          <Text style={styles.hint} testID="infra-spend-legend">
+            Peak day {money(plot.maxUsd)}. Paler columns are AWS estimates rather than settled
+            charges and will still move.
+            {summary.latestEstimated ? ' The most recent day is always an estimate.' : ''}
+          </Text>
+        </View>
+      ) : (
+        <Empty testID="infra-spend-empty" text={spendEmptyCopy(trend)} />
+      )}
+
+      {rows.length > 0 ? (
+        <View style={styles.card} testID="infra-spend-services">
+          <Text style={styles.notesLabel}>Top services</Text>
+          {rows.map((row) => (
+            <View key={row.key} style={styles.rowHead} testID={`infra-spend-row-${row.key}`}>
+              <Text style={styles.rowMeta} numberOfLines={1}>
+                {row.label}
+              </Text>
+              <Text style={[styles.rowMeta, styles.rowAmount]}>{money(row.amountUsd)}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      <TouchableOpacity
+        style={[styles.secondaryButton, saving && styles.disabled]}
+        disabled={saving}
+        onPress={() => confirmToggle(false)}
+        testID="infra-spend-disable"
+      >
+        <Text style={styles.secondaryButtonText}>Turn off Cost Explorer polling</Text>
+      </TouchableOpacity>
+    </>
+  );
+}
+
+function OverviewTab({
+  projectId,
+  project,
+  monitoringStatus,
+  scopes,
+  loading,
+  error,
+  openAlertCount,
+}: any) {
   const monitoringState = monitoringCardState(project, monitoringStatus);
   const projection = scopes?.projection ?? null;
   const rows: any[] = Array.isArray(scopes?.scopes) ? scopes.scopes : [];
@@ -427,6 +880,10 @@ function OverviewTab({ project, monitoringStatus, scopes, loading, error, openAl
         </Text>
       ) : null}
       <Text style={styles.hint}>Scope is edited on the web Infrastructure module.</Text>
+
+      {/* Below the scope, mirroring web: that block prices a decision the
+          operator is about to make, this one reports the bill it lands on. */}
+      {projectId ? <SpendSection projectId={projectId} /> : null}
     </ScrollView>
   );
 }
@@ -1327,6 +1784,7 @@ export default function InfrastructureScreen({ route, navigation }: any) {
 
       {tab === 'overview' ? (
         <OverviewTab
+          projectId={projectId}
           project={project}
           monitoringStatus={monitoringStatus}
           scopes={scopes}
@@ -1479,6 +1937,11 @@ const styles = StyleSheet.create({
   barBandAlarm: { backgroundColor: 'rgba(239,68,68,0.18)' },
   barBandUnknown: { backgroundColor: 'rgba(234,179,8,0.14)' },
   bar: { width: '100%', backgroundColor: colors.sky400, borderRadius: 1 },
+  // An estimated day is drawn paler, and the caption under the plot says so in
+  // words: colour alone cannot carry "this number will still move", and a phone
+  // is exactly where it gets read in bad light.
+  barEstimated: { opacity: 0.45 },
+  rowAmount: { marginLeft: 'auto' },
   chartAxis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
   axisLabel: { fontSize: 10, color: colors.gray500 },
 });

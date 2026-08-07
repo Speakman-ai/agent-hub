@@ -43,6 +43,30 @@ beforeEach(() => {
   probeMock.mockResolvedValue({ profile: 'monitoring', region: 'us-east-2', reachable: true });
 });
 
+/** Seed the Cost Explorer cache directly, bypassing the billed poller. */
+function seedSpend(
+  projectId: string,
+  rows: Array<{ day: string; service: string; amountUsd: number; estimated?: boolean }>,
+  profileName = 'monitoring',
+): void {
+  const stmt = getInfraDb().prepare(
+    `INSERT INTO infra_cost_daily
+       (project_id, profile_name, day, service, linked_account, amount_usd, unit, estimated, fetched_at)
+     VALUES (?, ?, ?, ?, '', ?, 'USD', ?, ?)`,
+  );
+  for (const row of rows) {
+    stmt.run(
+      projectId,
+      profileName,
+      row.day,
+      row.service,
+      row.amountUsd,
+      row.estimated ? 1 : 0,
+      Date.now(),
+    );
+  }
+}
+
 async function freshProject(): Promise<string> {
   const id = `infra-status-${uuidv4().slice(0, 8)}`;
   await request
@@ -1022,5 +1046,207 @@ describe('GET /api/projects/:projectId/infra/metrics', () => {
         `/api/projects/does-not-exist/infra/metrics?resource=x&metric=y&from=${CHART_NOW - CHART_HOUR}&to=${CHART_NOW}`,
       )
       .expect(404);
+  });
+});
+
+describe('infra spend routes (Cost Explorer)', () => {
+  it('reports an opted-out, empty spend body for a fresh project', async () => {
+    const projectId = await freshProject();
+    const res = await request.get(`/api/projects/${projectId}/infra/spend`).expect(200);
+
+    expect(res.body).toMatchObject({
+      enabled: false,
+      syncedAt: null,
+      days: [],
+      topServices: [],
+      accounts: [],
+      totalUsd: 0,
+      unit: null,
+      fetchedAt: null,
+      lastRun: null,
+    });
+    // The window is always reported, even with nothing cached, so the panel can
+    // say what range it is showing rather than rendering an unlabelled void.
+    expect(res.body.windowStartDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(res.body.windowEndDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(res.body.windowEndDay > res.body.windowStartDay).toBe(true);
+  });
+
+  it('404s the spend endpoint for an unknown project', async () => {
+    await request.get('/api/projects/does-not-exist/infra/spend').expect(404);
+    await request
+      .put('/api/projects/does-not-exist/infra/spend/config')
+      .send({ enabled: true })
+      .expect(404);
+  });
+
+  it('saves the opt-in and reads it back', async () => {
+    const projectId = await freshProject();
+    const saved = await request
+      .put(`/api/projects/${projectId}/infra/spend/config`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(saved.body.enabled).toBe(true);
+
+    const read = await request.get(`/api/projects/${projectId}/infra/spend`).expect(200);
+    expect(read.body.enabled).toBe(true);
+  });
+
+  it('does not sync on enable, so the toggle itself costs nothing', async () => {
+    // Charging a cent inside the request that saved the checkbox would make
+    // opting in a billable action.
+    const projectId = await freshProject();
+    const res = await request
+      .put(`/api/projects/${projectId}/infra/spend/config`)
+      .send({ enabled: true })
+      .expect(200);
+
+    expect(res.body.syncedAt).toBeNull();
+    expect(res.body.lastRun).toBeNull();
+    expect(res.body.days).toEqual([]);
+  });
+
+  it('keeps the cached rows when the opt-in is turned back off', async () => {
+    const projectId = await freshProject();
+    await request
+      .put(`/api/projects/${projectId}/infra/spend/config`)
+      .send({ enabled: true })
+      .expect(200);
+    seedSpend(projectId, [{ day: '2026-08-01', service: 'Amazon EC2', amountUsd: 4 }]);
+
+    const off = await request
+      .put(`/api/projects/${projectId}/infra/spend/config`)
+      .send({ enabled: false })
+      .expect(200);
+    // The cache is spend already paid for. Discarding it would mean toggling
+    // off and on again re-bought the same history.
+    expect(off.body.enabled).toBe(false);
+    expect(off.body.totalUsd).toBe(4);
+  });
+
+  it('rejects a malformed opt-in body', async () => {
+    const projectId = await freshProject();
+    await request.put(`/api/projects/${projectId}/infra/spend/config`).send({}).expect(400);
+    await request
+      .put(`/api/projects/${projectId}/infra/spend/config`)
+      .send({ enabled: 'yes' })
+      .expect(400);
+  });
+
+  it('returns the cached trend, top services and window total', async () => {
+    const projectId = await freshProject();
+    const today = new Date().toISOString().slice(0, 10);
+    seedSpend(projectId, [
+      { day: today, service: 'Amazon EC2', amountUsd: 10, estimated: true },
+      { day: today, service: 'Amazon S3', amountUsd: 3 },
+      { day: today, service: 'AWS Lambda', amountUsd: 1 },
+    ]);
+
+    const res = await request
+      .get(`/api/projects/${projectId}/infra/spend`)
+      .query({ topServices: 2 })
+      .expect(200);
+
+    expect(res.body.days).toEqual([{ day: today, amountUsd: 14, estimated: true }]);
+    expect(res.body.topServices).toEqual([
+      { service: 'Amazon EC2', amountUsd: 10 },
+      { service: 'Amazon S3', amountUsd: 3 },
+    ]);
+    // The total includes the tail the top-N omits, or a truncated panel would
+    // understate the bill.
+    expect(res.body.totalUsd).toBe(14);
+    expect(res.body.unit).toBe('USD');
+  });
+
+  it('includes today, because the window end is exclusive and set to tomorrow', async () => {
+    const projectId = await freshProject();
+    const today = new Date().toISOString().slice(0, 10);
+    seedSpend(projectId, [{ day: today, service: 'Amazon EC2', amountUsd: 2 }]);
+
+    const res = await request.get(`/api/projects/${projectId}/infra/spend`).expect(200);
+    expect(res.body.days.map((d: { day: string }) => d.day)).toContain(today);
+  });
+
+  it('honours the days window', async () => {
+    const projectId = await freshProject();
+    const today = new Date();
+    const old = new Date(today.getTime() - 20 * 86_400_000).toISOString().slice(0, 10);
+    seedSpend(projectId, [{ day: old, service: 'Amazon EC2', amountUsd: 5 }]);
+
+    const wide = await request
+      .get(`/api/projects/${projectId}/infra/spend`)
+      .query({ days: 30 })
+      .expect(200);
+    expect(wide.body.totalUsd).toBe(5);
+
+    const narrow = await request
+      .get(`/api/projects/${projectId}/infra/spend`)
+      .query({ days: 3 })
+      .expect(200);
+    expect(narrow.body.totalUsd).toBe(0);
+  });
+
+  it('rejects out-of-range query params', async () => {
+    const projectId = await freshProject();
+    await request.get(`/api/projects/${projectId}/infra/spend`).query({ days: 0 }).expect(400);
+    await request.get(`/api/projects/${projectId}/infra/spend`).query({ days: 5000 }).expect(400);
+    await request
+      .get(`/api/projects/${projectId}/infra/spend`)
+      .query({ topServices: 99 })
+      .expect(400);
+  });
+
+  it('surfaces the last failed sync so an operator can see why the chart is empty', async () => {
+    const projectId = await freshProject();
+    const db = getInfraDb();
+    db.prepare(
+      `INSERT INTO infra_collect_runs
+         (id, project_id, started_at, kind, queries_issued, errors, estimated_cost_usd, status, error_message)
+       VALUES (?, ?, ?, 'cost_explorer', 1, 1, 0.01, 'failed', ?)`,
+    ).run(uuidv4(), projectId, Date.now() - 1000, 'DataUnavailableException: no data');
+
+    const res = await request.get(`/api/projects/${projectId}/infra/spend`).expect(200);
+    expect(res.body.lastRun).toMatchObject({
+      status: 'failed',
+      pages: 1,
+      estimatedCostUsd: 0.01,
+      errorMessage: 'DataUnavailableException: no data',
+    });
+  });
+
+  it('reports the Cost Explorer run, not a metric tick that happens to be newer', async () => {
+    const projectId = await freshProject();
+    const db = getInfraDb();
+    db.prepare(
+      `INSERT INTO infra_collect_runs (id, project_id, started_at, kind, queries_issued, status)
+       VALUES (?, ?, ?, 'cost_explorer', 3, 'ok')`,
+    ).run(uuidv4(), projectId, Date.now() - 10_000);
+    db.prepare(
+      `INSERT INTO infra_collect_runs (id, project_id, started_at, kind, queries_issued, status)
+       VALUES (?, ?, ?, 'metrics', 99, 'ok')`,
+    ).run(uuidv4(), projectId, Date.now());
+
+    const res = await request.get(`/api/projects/${projectId}/infra/spend`).expect(200);
+    expect(res.body.lastRun.pages).toBe(3);
+  });
+
+  it('splits month-to-date spend by billed API on the cost endpoint', async () => {
+    const projectId = await freshProject();
+    const db = getInfraDb();
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO infra_collect_runs (id, project_id, started_at, kind, estimated_cost_usd, status)
+       VALUES (?, ?, ?, 'cost_explorer', 0.03, 'ok')`,
+    ).run(uuidv4(), projectId, now);
+    db.prepare(
+      `INSERT INTO infra_collect_runs (id, project_id, started_at, kind, estimated_cost_usd, status)
+       VALUES (?, ?, ?, 'metrics', 0.5, 'ok')`,
+    ).run(uuidv4(), projectId, now);
+
+    const res = await request.get(`/api/projects/${projectId}/infra/cost`).expect(200);
+    expect(res.body.byKind.cost_explorer).toBeCloseTo(0.03, 10);
+    expect(res.body.byKind.metrics).toBeCloseTo(0.5, 10);
+    // Both draw on one budget, so the total the ceiling reads covers both.
+    expect(res.body.monthToDateUsd).toBeCloseTo(0.53, 10);
   });
 });

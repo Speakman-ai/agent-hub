@@ -189,6 +189,90 @@ export function estimateGetMetricDataCostUsd(
   return (metricsRequested / 1000) * getMetricDataPricePer1000(region);
 }
 
+// ─── Cost Explorer ──────────────────────────────────────────────────────────
+
+/**
+ * `GetCostAndUsage` list price, per **paginated request**.
+ *
+ * Not per call, not per day, not per 1,000 of anything: AWS charges "$0.01 per
+ * paginated request", and every page of a paginated response is its own billed
+ * request. A loop that follows `NextPageToken` five times has spent five cents,
+ * not one — verified against the Cost Explorer pricing page, August 2026. This
+ * is why {@link estimateCostExplorerCostUsd} takes a page count and why the
+ * poller flushes a cent onto its run row as each page returns rather than once
+ * at the end.
+ *
+ * There is **no free tier**. Unlike the CloudWatch API, where a million calls a
+ * month are free and only three operations are carved out of it, Cost Explorer
+ * bills from the first request. That asymmetry is the whole reason this feature
+ * is behind an explicit per-project opt-in while metric collection is not.
+ *
+ * Region does not apply — Cost Explorer is a single global endpoint
+ * (`ce.us-east-1.amazonaws.com`), so unlike `GetMetricData` there is no
+ * per-region rate table to consult.
+ *
+ * Custom billing views are the one documented multiplier: a request against a
+ * view combining N sources is billed $0.01 *per source*. We never construct one
+ * (no `BillingViewArn` is ever sent, so every request runs against the primary
+ * view at exactly one source), which is worth stating because adding that
+ * parameter later would silently multiply this constant.
+ */
+export const COST_EXPLORER_USD_PER_REQUEST = 0.01;
+
+/**
+ * Dollars for a number of `GetCostAndUsage` pages.
+ *
+ * Takes pages rather than logical queries so the caller cannot accidentally
+ * under-report a paginated sweep — the mistake this signature exists to make
+ * impossible.
+ */
+export function estimateCostExplorerCostUsd(pages: number): number {
+  if (!Number.isFinite(pages) || pages <= 0) return 0;
+  return pages * COST_EXPLORER_USD_PER_REQUEST;
+}
+
+/**
+ * Most often a project's Cost Explorer cache may be refreshed, in seconds.
+ *
+ * Eight hours, which is three times a day — the exact cadence AWS's own
+ * best-practices page describes: *"AWS billing information is updated up to
+ * three times daily. Typical workloads and use cases for the Cost Explorer API
+ * anticipate a call pattern cadence ranging from daily to several times per
+ * day."* Polling faster does not produce fresher numbers, it only produces a
+ * bigger bill, which is the exact failure mode decision INFRA-COST exists to
+ * prevent.
+ */
+export const COST_EXPLORER_SYNC_INTERVAL_S = 8 * 60 * 60;
+
+/**
+ * Days of history one sync fetches, and the default window the spend endpoint
+ * reports.
+ *
+ * Thirty, matching the default metric retention in decision INFRA-STORE, so the
+ * spend chart and the metric charts span the same window and can be read side by
+ * side. Cost Explorer can serve 13 months, and a wider window costs no more in
+ * *requests* — but it does return more groups, more groups is more pages, and
+ * pages are what is billed.
+ *
+ * It lives in this module rather than in the poller because three places have to
+ * agree on it: the poller that fills the cache, the REST schema that defaults
+ * the query param, and the handler that computes the window. Declaring it three
+ * times is how a read window quietly stops matching the written one, and the
+ * symptom is a chart that is simply missing its oldest days.
+ */
+export const COST_EXPLORER_LOOKBACK_DAYS = 30;
+
+/**
+ * Floor the sync enforces between two runs, in milliseconds.
+ *
+ * Seven hours against an eight-hour cadence. The hour of slack is for cron
+ * jitter and for a Hub that restarted a few minutes before its scheduled tick;
+ * without it a legitimate run drifting early would be refused and the cache
+ * would skip a whole third of the day. The gap is still far too small for a
+ * fourth run to fit inside a day, which is the property being defended.
+ */
+export const MIN_COST_EXPLORER_SYNC_INTERVAL_MS = 7 * 60 * 60 * 1000;
+
 // ─── Poll interval resolution ───────────────────────────────────────────────
 
 /**

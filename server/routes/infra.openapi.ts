@@ -10,6 +10,7 @@
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { MAX_INFRA_RESOURCE_LIMIT } from '../infra/infra-resource-store.js';
 import { MAX_METRIC_WINDOW_MS } from '../infra/infra-metric-read.js';
+import { COST_EXPLORER_LOOKBACK_DAYS } from '../infra/infra-cost.js';
 
 /** Query params arrive as strings; coerced once so every numeric filter agrees. */
 const coercedInt = z.coerce.number().int().finite();
@@ -361,6 +362,15 @@ const CostResponse = registerComponent(
       throttles: z.number(),
       errors: z.number(),
       runs: z.number().openapi({ description: 'Collector ticks recorded this month.' }),
+      byKind: z
+        .object({
+          metrics: z.number(),
+          cost_explorer: z.number(),
+        })
+        .openapi({
+          description:
+            '`monthToDateUsd` split by which billed AWS API spent it. The total stays the ceiling’s input — both APIs draw on one budget — but the split is what an operator can act on: “$4 of your $5 went to Cost Explorer” leads somewhere that “$5” does not. A `kind` this build does not recognise still counts in the total and is simply absent here.',
+        }),
       futureDatedRuns: z.number().openapi({
         description:
           'Runs stamped beyond the end of this month, excluded from the totals above. Only reachable through host clock skew, since a run row is written with the wall clock at tick start. Reported rather than silently dropped — their spend is real but cannot be attributed to this month without double-counting it when that month arrives. Non-zero means the host clock needs looking at.',
@@ -373,6 +383,14 @@ const CostResponse = registerComponent(
       degradedAt: z.number().nullable().openapi({
         description: 'Epoch ms the level last changed; null while it has never left `normal`.',
       }),
+      costExplorerEnabled: z.boolean().openapi({
+        description:
+          'Whether the operator opted this project into billed Cost Explorer polling. Off by default and never inferred: `GetCostAndUsage` charges $0.01 per paginated request with no free tier, so it takes an explicit yes.',
+      }),
+      costExplorerSyncedAt: z.number().nullable().openapi({
+        description:
+          'Epoch ms the last Cost Explorer sync **started**; null if one never has. Stamped before the first billed request rather than after the last, so a sweep that crashed partway still counts against the cadence guard.',
+      }),
       configured: z.boolean().openapi({
         description:
           'False when the project has no cost-config row and every setting above is a default — the UI needs this to distinguish “never opened” from “deliberately uncapped”.',
@@ -384,6 +402,9 @@ const CostResponse = registerComponent(
           accountId: z.string().nullable(),
           region: z.string().nullable(),
           startedAt: z.number(),
+          kind: z.enum(['metrics', 'cost_explorer']).openapi({
+            description: 'Which billed AWS API this run spent on.',
+          }),
           finishedAt: z.number().nullable(),
           durationMs: z.number().nullable(),
           queriesIssued: z.number(),
@@ -513,6 +534,170 @@ registerPath({
     },
     404: {
       description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});
+
+// ─── Cost Explorer spend trends (decision INFRA-COST mechanism 5) ───────────
+
+const SpendResponse = registerComponent(
+  'InfraSpendTrend',
+  z
+    .object({
+      enabled: z.boolean().openapi({
+        description:
+          'Whether billed Cost Explorer polling is on for this project. When false the arrays below are whatever was last cached before it was turned off — the cache is spend already paid for and is not discarded on disable.',
+      }),
+      syncedAt: z.number().nullable().openapi({
+        description:
+          'Epoch ms the last sync started. Differs from `fetchedAt` when that sync failed: one says when we tried, the other when we last succeeded.',
+      }),
+      windowStartDay: z.string().openapi({
+        description: 'Inclusive `YYYY-MM-DD` (UTC) lower bound of the window queried.',
+        example: '2026-07-08',
+      }),
+      windowEndDay: z.string().openapi({
+        description:
+          'Exclusive `YYYY-MM-DD` (UTC) upper bound, matching Cost Explorer’s own half-open `TimePeriod`. This is **tomorrow**, so today’s partial spend is included.',
+        example: '2026-08-08',
+      }),
+      days: z
+        .array(
+          z.object({
+            day: z.string().openapi({ example: '2026-08-06' }),
+            amountUsd: z.number(),
+            estimated: z.boolean().openapi({
+              description:
+                'Cost Explorer has not finalized this day and the figure will move. The most recent day is always estimated.',
+            }),
+          }),
+        )
+        .openapi({ description: 'Daily totals, oldest first — already in plot order.' }),
+      topServices: z.array(z.object({ service: z.string(), amountUsd: z.number() })).openapi({
+        description:
+          'Most expensive services over the whole window, descending. Truncated to the requested `topServices`; `totalUsd` still includes the tail this omits.',
+      }),
+      accounts: z.array(z.object({ linkedAccount: z.string(), amountUsd: z.number() })).openapi({
+        description:
+          'Member accounts under a payer, descending. Empty for a standalone account, which Cost Explorer does not attribute.',
+      }),
+      totalUsd: z.number().openapi({
+        description:
+          'Window total, summed independently of `topServices` so a truncated panel cannot understate the bill.',
+      }),
+      unit: z.string().nullable().openapi({
+        description:
+          'Currency Cost Explorer reported, carried verbatim. Almost always `USD`, but an account with a non-USD billing currency reports its own. Null when nothing is cached.',
+        example: 'USD',
+      }),
+      fetchedAt: z.number().nullable().openapi({
+        description: 'Epoch ms the cached rows were written; null when the cache is empty.',
+      }),
+      lastRun: z
+        .object({
+          startedAt: z.number(),
+          finishedAt: z.number().nullable(),
+          status: z.string().openapi({ example: 'ok' }),
+          pages: z.number().openapi({
+            description:
+              'Paginated requests issued, which is exactly what AWS billed: every page is its own $0.01 request.',
+          }),
+          estimatedCostUsd: z.number(),
+          errorMessage: z.string().nullable(),
+        })
+        .nullable()
+        .openapi({
+          description:
+            'The most recent Cost Explorer sync. Carries the failure reason so an operator who opted in and sees an empty chart can find out why without reading server logs — `DataUnavailableException` here usually means Cost Explorer was never enabled in the account, which no IAM grant can fix.',
+        }),
+    })
+    .openapi({
+      description:
+        'Cached daily AWS spend. Read entirely from local SQLite — this never calls AWS, which is the caching layer AWS’s own best-practices page asks for.',
+    }),
+);
+
+export const SpendTrendParamsSchema = z.object({
+  days: coercedInt.min(1).max(400).default(COST_EXPLORER_LOOKBACK_DAYS).openapi({
+    type: 'integer',
+    description:
+      'Days of history to return, ending today. Bounded at 400 because Cost Explorer itself serves at most 13 months plus the current one, so a wider ask could only ever return a window the cache never filled.',
+    example: 30,
+  }),
+  topServices: coercedInt.min(1).max(25).default(5).openapi({
+    type: 'integer',
+    description: 'How many services the top-N panel returns.',
+    example: 5,
+  }),
+});
+
+// GET /api/projects/{projectId}/infra/spend
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/infra/spend',
+  tags: ['Projects'],
+  summary: 'Cached daily AWS spend trend and top services',
+  description:
+    'Returns the daily spend trend and top-N services from the `infra_cost_daily` cache that the three-times-daily Cost Explorer poller fills.\n\n**Cost: free.** This endpoint never calls AWS. `GetCostAndUsage` is billed $0.01 per paginated request with no free tier, so refreshing on demand would charge a cent every time an operator opened the page. AWS’s own best-practices guidance asks for precisely this split: *"we recommend architecting the application so that it has a caching layer… but doesn\'t trigger queries every time that an individual in your organization accesses it."*\n\nThe cache is filled at most three times a day because *"AWS billing information is updated up to three times daily"* — polling faster produces no fresher data, only a larger bill.',
+  request: { params: ProjectIdParam, query: SpendTrendParamsSchema },
+  responses: {
+    200: {
+      description: 'Cached spend trend. Empty arrays when nothing has been synced yet.',
+      content: { 'application/json': { schema: SpendResponse } },
+    },
+    400: {
+      description: 'Malformed query params.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});
+
+export const SpendConfigRequestSchema = z
+  .object({
+    enabled: z.boolean().openapi({
+      description: 'Turn billed Cost Explorer polling on or off for this project.',
+      example: true,
+    }),
+  })
+  .openapi({
+    description:
+      'The explicit per-project opt-in that decision INFRA-COST requires, because Cost Explorer is unavoidably billable.',
+  });
+
+registerComponent('InfraSpendConfigRequest', SpendConfigRequestSchema);
+
+// PUT /api/projects/{projectId}/infra/spend/config
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/infra/spend/config',
+  tags: ['Projects'],
+  summary: 'Opt a project into (or out of) billed Cost Explorer polling',
+  description:
+    'Every other collector reads a signal that costs nothing until a scope row exists. `GetCostAndUsage` charges from the first request with no free tier at all, so this one takes a deliberate opt-in with a name.\n\nEnabling does **not** trigger an immediate sync: charging a cent inside the request that saved the checkbox would make the toggle itself cost money. The next scheduled sweep fills the cache.\n\nDisabling keeps the cached rows. They are spend already paid for, and discarding them would mean an operator toggling the feature off and on re-bought the same history.',
+  request: {
+    params: ProjectIdParam,
+    body: { content: { 'application/json': { schema: SpendConfigRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Opt-in saved; the full spend body is returned.',
+      content: { 'application/json': { schema: SpendResponse } },
+    },
+    400: {
+      description: 'Malformed body.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    503: {
+      description: 'The infrastructure store is unavailable.',
       content: { 'application/json': { schema: ErrorEnvelope } },
     },
   },

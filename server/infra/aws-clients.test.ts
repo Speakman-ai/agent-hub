@@ -28,6 +28,8 @@ import {
   getProjectLambdaClient,
   getProjectRdsClient,
   getProjectS3Client,
+  getProjectCostExplorerClient,
+  COST_EXPLORER_REGION,
   destroyProjectAwsClients,
   invalidateProjectAwsAccess,
   probeProjectMonitoringAccess,
@@ -81,6 +83,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', () =>
 vi.mock('@aws-sdk/client-lambda', () => mockServiceClient('LambdaClient'));
 vi.mock('@aws-sdk/client-rds', () => mockServiceClient('RDSClient'));
 vi.mock('@aws-sdk/client-s3', () => mockServiceClient('S3Client'));
+vi.mock('@aws-sdk/client-cost-explorer', () => mockServiceClient('CostExplorerClient'));
 
 vi.mock('../project-model.js', () => ({ findProject: vi.fn() }));
 
@@ -155,8 +158,14 @@ beforeEach(() => {
 });
 
 /**
- * Every per-service getter, so a new service is added here or the teardown and
- * caching invariants below silently stop covering it.
+ * Every **regional** per-service getter, so a new service is added here or the
+ * teardown and caching invariants below silently stop covering it.
+ *
+ * Cost Explorer is deliberately absent: it is a single global endpoint and
+ * ignores the requested region, so the region-parameterized cases below would
+ * assert the opposite of its contract. It gets its own describe block, and it is
+ * still covered by the teardown invariant through
+ * {@link ALL_CLIENT_GETTERS}.
  */
 const SERVICE_CLIENT_GETTERS = [
   ['CloudWatch', getProjectCloudWatchClient],
@@ -166,6 +175,12 @@ const SERVICE_CLIENT_GETTERS = [
   ['RDS', getProjectRdsClient],
   ['Lambda', getProjectLambdaClient],
   ['S3', getProjectS3Client],
+] as const;
+
+/** Regional getters plus the global ones, for the teardown invariant. */
+const ALL_CLIENT_GETTERS = [
+  ...SERVICE_CLIENT_GETTERS,
+  ['CostExplorer', getProjectCostExplorerClient],
 ] as const;
 
 describe('per-service client cache', () => {
@@ -200,21 +215,21 @@ describe('per-service client cache', () => {
     // missing from that list leaks sockets and survives a profile edit still
     // pinned to its old region, which is invisible until a collector reads the
     // wrong account's metrics.
-    for (const [, get] of SERVICE_CLIENT_GETTERS) get(PROJECT_ID);
-    expect(clients).toHaveLength(SERVICE_CLIENT_GETTERS.length);
+    for (const [, get] of ALL_CLIENT_GETTERS) get(PROJECT_ID);
+    expect(clients).toHaveLength(ALL_CLIENT_GETTERS.length);
 
     destroyProjectAwsClients(PROJECT_ID);
 
     for (const client of clients) expect(client.destroy).toHaveBeenCalled();
     // Dropped from the cache too, so the next call builds fresh.
     const before = clients.length;
-    for (const [, get] of SERVICE_CLIENT_GETTERS) get(PROJECT_ID);
-    expect(clients).toHaveLength(before + SERVICE_CLIENT_GETTERS.length);
+    for (const [, get] of ALL_CLIENT_GETTERS) get(PROJECT_ID);
+    expect(clients).toHaveLength(before + ALL_CLIENT_GETTERS.length);
   });
 
   it('scopes teardown to one project', () => {
     setProject({ monitoring: STATIC_PROFILE }, 'monitoring', PROJECT_ID);
-    for (const [, get] of SERVICE_CLIENT_GETTERS) get(PROJECT_ID);
+    for (const [, get] of ALL_CLIENT_GETTERS) get(PROJECT_ID);
     const mine = [...clients];
 
     destroyProjectAwsClients('some-other-project');
@@ -442,5 +457,42 @@ describe('probeProjectMonitoringAccess', () => {
     const probe = await probeProjectMonitoringAccess(PROJECT_ID);
     expect(JSON.stringify(probe)).not.toContain(STATIC_PROFILE.aws_secret_access_key);
     expect(JSON.stringify(probe)).not.toContain(STATIC_PROFILE.aws_access_key_id);
+  });
+});
+
+describe('getProjectCostExplorerClient', () => {
+  it('pins to the one region Cost Explorer publishes an endpoint for', () => {
+    getProjectCostExplorerClient(PROJECT_ID);
+    expect(clients[0]!.config.region).toBe(COST_EXPLORER_REGION);
+    expect(COST_EXPLORER_REGION).toBe('us-east-1');
+  });
+
+  it('ignores the profile’s region, unlike every other factory', () => {
+    // Cost Explorer is not a regional service. Honouring a monitoring profile
+    // configured for eu-west-1 would build a client that cannot resolve, and the
+    // failure would land in a background poller nobody is watching.
+    regionMock.mockReturnValue('eu-west-1');
+    getProjectCostExplorerClient(PROJECT_ID);
+    expect(clients[0]!.config.region).toBe(COST_EXPLORER_REGION);
+  });
+
+  it('hands the same client back for different requested regions', () => {
+    // They would all be the same client anyway; keying on the requested region
+    // would just accumulate identical connection pools.
+    const a = getProjectCostExplorerClient(PROJECT_ID);
+    const b = getProjectCostExplorerClient(PROJECT_ID, { region: 'ap-south-1' });
+    expect(a).toBe(b);
+    expect(clients).toHaveLength(1);
+  });
+
+  it('carries the credential facade rather than a snapshot', () => {
+    getProjectCostExplorerClient(PROJECT_ID);
+    expect(typeof clients[0]!.config.credentials).toBe('function');
+  });
+
+  it('refuses to build with no monitoring profile', () => {
+    setProject({ monitoring: STATIC_PROFILE }, null);
+    expect(() => getProjectCostExplorerClient(PROJECT_ID)).toThrow(MonitoringProfileRequiredError);
+    expect(clients).toHaveLength(0);
   });
 });

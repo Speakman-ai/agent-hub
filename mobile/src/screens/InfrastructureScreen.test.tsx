@@ -28,6 +28,8 @@ vi.mock('../utils/api', () => ({
     listInfraAlertRules: vi.fn(() => Promise.resolve({ rules: [] })),
     setInfraAlertStatus: vi.fn(() => Promise.resolve({})),
     getInfraMetricPacks: vi.fn(() => Promise.resolve({ packs: [] })),
+    getInfraSpend: vi.fn(() => Promise.resolve({ enabled: false, days: [] })),
+    updateInfraSpendConfig: vi.fn(() => Promise.resolve({ enabled: false, days: [] })),
   },
 }));
 
@@ -36,6 +38,7 @@ import {
   TABS,
   alertsEmptyCopy,
   buildAlertActionConfirm,
+  buildSpendOptInConfirm,
   formatUsd,
   hasConfiguredScope,
   initialAlertStatusFilter,
@@ -46,6 +49,11 @@ import {
   openAlertCountFrom,
   resourcesEmptyCopy,
   runLoadMorePage,
+  spendEmptyCopy,
+  spendServiceRows,
+  spendStateAfterFailure,
+  createRequestGeneration,
+  runSpendToggle,
   stampMatchesProject,
 } from './InfrastructureScreen';
 import { EMPTY_FILTERS } from '../utils/infraResources';
@@ -338,6 +346,85 @@ describe('formatUsd', () => {
   });
 });
 
+describe('spendEmptyCopy', () => {
+  it('distinguishes a cache that has never been filled from a genuinely free window', () => {
+    // These look identical on screen and mean opposite things: only the first
+    // one is worth waiting out.
+    expect(spendEmptyCopy(null)).toContain('No spend cached yet');
+    expect(spendEmptyCopy({ fetchedAt: null })).toContain('No spend cached yet');
+    expect(spendEmptyCopy({ fetchedAt: 1 })).toBe('AWS reported no charges in this window.');
+  });
+
+  it('says how long the first sync can take, because it is hours not seconds', () => {
+    expect(spendEmptyCopy(null)).toContain('24 hours');
+  });
+});
+
+describe('spendServiceRows', () => {
+  const trend = {
+    topServices: [
+      { service: 'AmazonEC2', amountUsd: 18 },
+      { service: 'AmazonRDS', amountUsd: 9 },
+    ],
+    totalUsd: 30,
+  } as any;
+
+  it('appends the truncated tail so the list cannot understate the bill', () => {
+    const rows = spendServiceRows(trend);
+    expect(rows.map((r) => r.label)).toEqual(['AmazonEC2', 'AmazonRDS', 'Other services']);
+    expect(rows[2].amountUsd).toBeCloseTo(3);
+  });
+
+  it('omits the tail when the ranked list is the whole bill', () => {
+    expect(spendServiceRows({ ...trend, totalUsd: 27 }).map((r) => r.key)).toEqual([
+      'AmazonEC2',
+      'AmazonRDS',
+    ]);
+  });
+
+  it('never invents a tail from float drift', () => {
+    const drifting = {
+      topServices: [
+        { service: 'a', amountUsd: 0.1 },
+        { service: 'b', amountUsd: 0.2 },
+      ],
+      totalUsd: 0.3,
+    } as any;
+    expect(spendServiceRows(drifting)).toHaveLength(2);
+  });
+
+  it('returns nothing for an absent or empty response', () => {
+    expect(spendServiceRows(null)).toEqual([]);
+    expect(spendServiceRows({ topServices: [], totalUsd: 0 } as any)).toEqual([]);
+  });
+});
+
+describe('buildSpendOptInConfirm', () => {
+  it('puts the price in the dialog, not only in the copy behind it', () => {
+    const confirm = buildSpendOptInConfirm({ enabling: true, onConfirm: () => {} });
+    expect(confirm.title).toContain('Turn on');
+    expect(confirm.message).toContain('$0.01 per paginated request');
+    expect(confirm.message).toContain('no free tier');
+    expect(confirm.message).toContain('at most 3 times a day');
+  });
+
+  it('does not warn about cost when the operator is stopping the spend', () => {
+    const confirm = buildSpendOptInConfirm({ enabling: false, onConfirm: () => {} });
+    expect(confirm.title).toContain('Turn off');
+    expect(confirm.message).not.toContain('$0.01');
+    expect(confirm.message).toContain('Cached figures stay');
+  });
+
+  it('bills nothing without an explicit confirm tap', () => {
+    const onConfirm = vi.fn();
+    const confirm = buildSpendOptInConfirm({ enabling: true, onConfirm });
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(confirm.buttons[0]).toMatchObject({ text: 'Cancel', style: 'cancel' });
+    confirm.buttons[1].onPress();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('empty-state copy', () => {
   it('blames the filters only when a narrowing filter is set', () => {
     expect(resourcesEmptyCopy(EMPTY_FILTERS)).toContain('Inventory sync');
@@ -587,5 +674,224 @@ describe('ServiceNotes', () => {
     it('claims nothing with no resource selected', () => {
       expect(ServiceNotes({ pack: ecsPack })).toBeNull();
     });
+  });
+});
+
+describe('spendStateAfterFailure', () => {
+  const trend = {
+    enabled: true,
+    syncedAt: 1,
+    windowStartDay: '2026-07-09',
+    windowEndDay: '2026-08-08',
+    days: [{ day: '2026-08-01', amountUsd: 4, estimated: false }],
+    topServices: [{ service: 'Amazon EC2', amountUsd: 4 }],
+    accounts: [],
+    totalUsd: 4,
+    unit: 'USD',
+    fetchedAt: 2,
+    lastRun: null,
+  };
+
+  it('keeps the last confirmed figures when a refresh fails', () => {
+    // The regression this pins. The section polls every 60s over a mobile
+    // connection, and the numbers are a cache the server refreshes at most
+    // three times a day: one dropped request must not blank a bill that is
+    // still exactly as true as it was a second earlier.
+    const next = spendStateAfterFailure({ projectId: 'p1', data: trend, error: null }, 'p1', 'off');
+    expect(next.data).toBe(trend);
+    expect(next.error).toBe('off');
+  });
+
+  it('leaves the stale banner reachable, which blanking the data would not', () => {
+    // The section renders "showing the last confirmed figures" only when an
+    // error and data coexist. Nulling the data made that branch dead code.
+    const next = spendStateAfterFailure({ projectId: 'p1', data: trend, error: null }, 'p1', 'off');
+    expect(next.data && next.error).toBeTruthy();
+  });
+
+  it('does not carry another project’s bill forward as if it were stale', () => {
+    const next = spendStateAfterFailure({ projectId: 'other', data: trend, error: null }, 'p1', 'x');
+    expect(next.data).toBeNull();
+    expect(next.projectId).toBe('p1');
+  });
+
+  it('reports the error alone when nothing was ever loaded', () => {
+    expect(spendStateAfterFailure(null, 'p1', 'boom')).toEqual({
+      projectId: 'p1',
+      data: null,
+      error: 'boom',
+    });
+  });
+
+  it('falls back to a readable message when the error carries none', () => {
+    expect(spendStateAfterFailure(null, 'p1', undefined).error).toBe('Spend could not be loaded.');
+    expect(spendStateAfterFailure(null, 'p1', '').error).toBe('Spend could not be loaded.');
+  });
+
+  it('keeps figures across repeated failures rather than losing them on the second', () => {
+    let state = spendStateAfterFailure({ projectId: 'p1', data: trend, error: null }, 'p1', 'a');
+    state = spendStateAfterFailure(state, 'p1', 'b');
+    state = spendStateAfterFailure(state, 'p1', 'c');
+    expect(state.data).toBe(trend);
+    expect(state.error).toBe('c');
+  });
+});
+
+describe('createRequestGeneration', () => {
+  it('applies a response when nothing newer has started', () => {
+    const gen = createRequestGeneration();
+    const token = gen.begin();
+    expect(gen.isCurrent(token)).toBe(true);
+  });
+
+  it('discards a response that a later request has superseded', () => {
+    // The regression this pins. Two reads settle out of order across a project
+    // switch: without the guard the slow first response stamps the state with
+    // the previous project's id, `stampMatchesProject` reads it as "not mine",
+    // and the section renders a spinner that nothing retriggers a fetch to
+    // clear.
+    const gen = createRequestGeneration();
+    const first = gen.begin();
+    const second = gen.begin();
+
+    // The newer request settles first, then the older one.
+    expect(gen.isCurrent(second)).toBe(true);
+    expect(gen.isCurrent(first)).toBe(false);
+  });
+
+  it('keeps only the newest of several overlapping requests', () => {
+    const gen = createRequestGeneration();
+    const tokens = [gen.begin(), gen.begin(), gen.begin(), gen.begin()];
+    expect(tokens.filter((t) => gen.isCurrent(t))).toEqual([tokens[tokens.length - 1]]);
+  });
+
+  it('never treats a token it did not issue as current', () => {
+    const gen = createRequestGeneration();
+    gen.begin();
+    expect(gen.isCurrent(0)).toBe(false);
+    expect(gen.isCurrent(99)).toBe(false);
+  });
+
+  it('gives two sections independent counters', () => {
+    // Each SpendSection instance owns its own, so one project's poll cannot
+    // invalidate another mounted section's in-flight read.
+    const a = createRequestGeneration();
+    const b = createRequestGeneration();
+    const tokenA = a.begin();
+    b.begin();
+    expect(a.isCurrent(tokenA)).toBe(true);
+  });
+
+  it('composes with spendStateAfterFailure to keep the old project out of the state', () => {
+    // The two halves of the same invariant: the guard drops a superseded
+    // response, and the failure merge refuses to carry another project's
+    // figures forward. Neither alone keeps the section honest across a switch.
+    const gen = createRequestGeneration();
+    const stale = gen.begin();
+    gen.begin();
+
+    expect(gen.isCurrent(stale)).toBe(false);
+    const merged = spendStateAfterFailure({ projectId: 'p1', data: null, error: null }, 'p2', 'x');
+    expect(merged.projectId).toBe('p2');
+    expect(merged.data).toBeNull();
+  });
+});
+
+describe('runSpendToggle', () => {
+  /** A toggle harness with both guards wired to mutable owners, like the component. */
+  function harness() {
+    const calls = { applied: [] as any[], errors: [] as string[], saving: [] as boolean[] };
+    let current = true;
+    let owns = true;
+    return {
+      calls,
+      supersedeState: () => {
+        current = false;
+      },
+      takeOverSaving: () => {
+        owns = false;
+      },
+      run: (save: () => Promise<any>) =>
+        runSpendToggle({
+          save,
+          isCurrent: () => current,
+          ownsSaving: () => owns,
+          applyResponse: (r) => calls.applied.push(r),
+          notifyError: (m) => calls.errors.push(m),
+          setSaving: (v) => calls.saving.push(v),
+        }),
+    };
+  }
+
+  it('applies the response and releases the flag on a clean save', async () => {
+    const h = harness();
+    await h.run(() => Promise.resolve({ enabled: true }));
+    expect(h.calls.applied).toEqual([{ enabled: true }]);
+    expect(h.calls.saving).toEqual([false]);
+  });
+
+  it('releases the flag even when a poll superseded the state write', async () => {
+    // The stranding case. The read generation advances on every 60s poll, so
+    // guarding the release on it would leave the switch disabled for the life
+    // of the screen whenever a refresh landed mid-save.
+    const h = harness();
+    h.supersedeState();
+    await h.run(() => Promise.resolve({ enabled: true }));
+    expect(h.calls.applied).toEqual([]);
+    expect(h.calls.saving).toEqual([false]);
+  });
+
+  it('does not clear a flag another toggle has taken over', async () => {
+    // The clobber case. Switch project mid-save, toggle on the new project, and
+    // an unconditional release re-enables the switch under an in-flight write,
+    // so a second tap fires a duplicate concurrent request.
+    const h = harness();
+    h.takeOverSaving();
+    await h.run(() => Promise.resolve({ enabled: true }));
+    expect(h.calls.saving).toEqual([]);
+  });
+
+  it('releases the flag when the save fails', async () => {
+    const h = harness();
+    await h.run(() => Promise.reject(new Error('nope')));
+    expect(h.calls.errors).toEqual(['nope']);
+    expect(h.calls.saving).toEqual([false]);
+  });
+
+  it('stays silent about a failure on a project the operator already left', async () => {
+    // A modal about a decision they have moved on from is noise.
+    const h = harness();
+    h.takeOverSaving();
+    await h.run(() => Promise.reject(new Error('nope')));
+    expect(h.calls.errors).toEqual([]);
+    expect(h.calls.saving).toEqual([]);
+  });
+
+  it('falls back to a readable message when the failure carries none', async () => {
+    const h = harness();
+    await h.run(() => Promise.reject(new Error('')));
+    expect(h.calls.errors).toEqual(['The Cost Explorer setting could not be saved.']);
+  });
+
+  it('never rejects, so no caller needs its own catch', async () => {
+    const h = harness();
+    await expect(h.run(() => Promise.reject(new Error('boom')))).resolves.toBeUndefined();
+  });
+
+  it('lets a superseded save settle without disturbing the newer one', async () => {
+    // The full sequence the reviewer described: A pending, switch to B, B saves,
+    // then A settles. B must still be saving afterwards.
+    const stale = harness();
+    stale.supersedeState();
+    stale.takeOverSaving();
+    const fresh = harness();
+
+    const freshDone = fresh.run(() => Promise.resolve({ enabled: true }));
+    await stale.run(() => Promise.resolve({ enabled: false }));
+    expect(stale.calls.saving).toEqual([]);
+    expect(stale.calls.applied).toEqual([]);
+
+    await freshDone;
+    expect(fresh.calls.saving).toEqual([false]);
   });
 });

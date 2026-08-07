@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Activity, BellRing, Boxes, Cloud, Gauge, Server } from 'lucide-react';
 import InfraScopeEditor from './InfraScopeEditor';
+import InfraSpendPanel from './InfraSpendPanel';
 import InfraResourceBrowser, { type InfraResourceWire } from './InfraResourceBrowser';
 import InfraMetricChart from './InfraMetricChart';
 import InfraServiceNotes from './InfraServiceNotes';
@@ -230,6 +231,10 @@ export default function InfrastructurePage({
               showToast={showToast}
               onScopesChange={handleScopesChange}
             />
+            {/* Below the scope editor on purpose: that panel prices a decision
+                the operator is about to make, this one reports the bill that
+                decision lands on. */}
+            <InfraSpendPanel projectId={projectId} showToast={showToast} />
           </div>
         ) : tab === 'resources' ? (
           hasScope ? (

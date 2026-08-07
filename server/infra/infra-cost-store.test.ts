@@ -21,6 +21,11 @@ import {
   resolveProjectDegradation,
   listInfraCollectRuns,
   listScopeResourceCounts,
+  setInfraCostExplorerEnabled,
+  recordCostExplorerSyncStart,
+  listCostExplorerEnabledProjects,
+  getLatestInfraCollectRun,
+  LATEST_RUN_LOOKBACK_MS,
   MAX_COLLECT_RUNS_PER_QUERY,
 } from './infra-cost-store.js';
 
@@ -179,6 +184,8 @@ describe('getInfraCostConfig', () => {
       monthlyCeilingUsd: null,
       degradationLevel: 'normal',
       degradedAt: null,
+      costExplorerEnabled: false,
+      costExplorerSyncedAt: null,
       updatedAt: null,
       configured: false,
     });
@@ -393,5 +400,172 @@ describe('listScopeResourceCounts', () => {
     scope();
     const counts = listScopeResourceCounts('proj-a', STALE_MS, NOW);
     expect(counts[0].resourceCount).toBe(0);
+  });
+});
+
+describe('Cost Explorer opt-in', () => {
+  it('is off by default, because GetCostAndUsage bills from the first request', () => {
+    expect(getInfraCostConfig('proj-a').costExplorerEnabled).toBe(false);
+  });
+
+  it('round-trips the flag', () => {
+    expect(setInfraCostExplorerEnabled('proj-a', true, NOW).costExplorerEnabled).toBe(true);
+    expect(getInfraCostConfig('proj-a').costExplorerEnabled).toBe(true);
+    expect(setInfraCostExplorerEnabled('proj-a', false, NOW).costExplorerEnabled).toBe(false);
+  });
+
+  it('does not disturb a ceiling already set on the same row', () => {
+    setInfraCostCeiling('proj-a', 25, NOW);
+    setInfraCostExplorerEnabled('proj-a', true, NOW + 1);
+    const config = getInfraCostConfig('proj-a');
+    expect(config.monthlyCeilingUsd).toBe(25);
+    expect(config.costExplorerEnabled).toBe(true);
+  });
+
+  it('does not disturb the opt-in when a ceiling is written afterwards', () => {
+    setInfraCostExplorerEnabled('proj-a', true, NOW);
+    setInfraCostCeiling('proj-a', 10, NOW + 1);
+    expect(getInfraCostConfig('proj-a').costExplorerEnabled).toBe(true);
+  });
+
+  it('keeps the sync stamp across a disable, because the cache is spend already paid for', () => {
+    setInfraCostExplorerEnabled('proj-a', true, NOW);
+    recordCostExplorerSyncStart('proj-a', NOW);
+    setInfraCostExplorerEnabled('proj-a', false, NOW + 1);
+    expect(getInfraCostConfig('proj-a').costExplorerSyncedAt).toBe(NOW);
+  });
+
+  it('lists only the projects that opted in', () => {
+    setInfraCostExplorerEnabled('proj-a', true, NOW);
+    setInfraCostExplorerEnabled('proj-b', false, NOW);
+    setInfraCostCeiling('proj-c', 5, NOW);
+    expect(listCostExplorerEnabledProjects()).toEqual(['proj-a']);
+  });
+
+  it('records the sync stamp without creating a ceiling', () => {
+    recordCostExplorerSyncStart('proj-a', NOW);
+    const config = getInfraCostConfig('proj-a');
+    expect(config.costExplorerSyncedAt).toBe(NOW);
+    expect(config.monthlyCeilingUsd).toBeNull();
+  });
+});
+
+describe('spend attribution by kind', () => {
+  /** A finished Cost Explorer run costing `pages` cents. */
+  function cePages(projectId: string, startedAt: number, pages: number): void {
+    const id = `ce-${projectId}-${startedAt}`;
+    startInfraCollectRun({ id, projectId, startedAt, kind: 'cost_explorer' });
+    for (let i = 0; i < pages; i += 1) {
+      recordInfraCollectRunProgress(id, { queriesIssued: 1, estimatedCostUsd: 0.01 });
+    }
+    finishInfraCollectRun(id, { finishedAt: startedAt + 100, status: 'ok' });
+  }
+
+  it('splits the month total by which billed API spent it', () => {
+    run('proj-a', MONTH_START + 1000, 0.5);
+    cePages('proj-a', MONTH_START + 2000, 3);
+
+    const spend = getInfraSpendToDate('proj-a', NOW);
+    expect(spend.monthToDateUsd).toBeCloseTo(0.53, 10);
+    expect(spend.byKind.metrics).toBeCloseTo(0.5, 10);
+    expect(spend.byKind.cost_explorer).toBeCloseTo(0.03, 10);
+  });
+
+  it('defaults a run with no kind to metrics', () => {
+    run('proj-a', MONTH_START + 1000, 0.4);
+    const spend = getInfraSpendToDate('proj-a', NOW);
+    expect(spend.byKind).toEqual({ metrics: 0.4, cost_explorer: 0 });
+  });
+
+  it('reports zeroes for both kinds when nothing was spent', () => {
+    expect(getInfraSpendToDate('proj-a', NOW).byKind).toEqual({ metrics: 0, cost_explorer: 0 });
+  });
+
+  it('still counts an unrecognised kind in the total, only omitting it from the split', () => {
+    // The ceiling guards total AWS API spend. A row written by a newer build
+    // must not vanish from the number the brake reads, or spend leaks silently.
+    getInfraDb()
+      .prepare(
+        `INSERT INTO infra_collect_runs (id, project_id, started_at, kind, estimated_cost_usd, status)
+         VALUES ('future', 'proj-a', ?, 'some_future_api', 1.25, 'ok')`,
+      )
+      .run(MONTH_START + 3000);
+
+    const spend = getInfraSpendToDate('proj-a', NOW);
+    expect(spend.monthToDateUsd).toBeCloseTo(1.25, 10);
+    expect(spend.byKind).toEqual({ metrics: 0, cost_explorer: 0 });
+  });
+
+  it('normalizes an unrecognised kind to metrics when listing runs', () => {
+    getInfraDb()
+      .prepare(
+        `INSERT INTO infra_collect_runs (id, project_id, started_at, kind, status)
+         VALUES ('future', 'proj-a', ?, 'some_future_api', 'ok')`,
+      )
+      .run(MONTH_START + 3000);
+    expect(listInfraCollectRuns('proj-a')[0].kind).toBe('metrics');
+  });
+
+  it('reports the kind on a run row', () => {
+    cePages('proj-a', MONTH_START + 2000, 1);
+    expect(listInfraCollectRuns('proj-a')[0].kind).toBe('cost_explorer');
+  });
+});
+
+describe('getLatestInfraCollectRun', () => {
+  /** A finished run of a given kind at a given time. */
+  function runOfKind(id: string, kind: 'metrics' | 'cost_explorer', startedAt: number): void {
+    startInfraCollectRun({ id, projectId: 'proj-a', startedAt, kind });
+    finishInfraCollectRun(id, { finishedAt: startedAt + 10, status: 'ok' });
+  }
+
+  it('finds a Cost Explorer run buried under hundreds of newer metric ticks', () => {
+    // The regression this pins. Metric ticks are written every five minutes per
+    // scoped region and Cost Explorer sweeps three times a day, so scanning a
+    // fixed page of recent runs reports "never synced" for a project that synced
+    // this morning. 400 ticks is well past the 200-row page the cost view uses.
+    runOfKind('ce-1', 'cost_explorer', NOW - 6 * 60 * 60 * 1000);
+    for (let i = 0; i < 400; i += 1) {
+      runOfKind(`m-${i}`, 'metrics', NOW - 5 * 60 * 60 * 1000 + i * 1000);
+    }
+
+    const found = getLatestInfraCollectRun('proj-a', 'cost_explorer', NOW);
+    expect(found?.id).toBe('ce-1');
+  });
+
+  it('returns the newest run of the requested kind', () => {
+    runOfKind('ce-old', 'cost_explorer', NOW - 20 * 60 * 60 * 1000);
+    runOfKind('ce-new', 'cost_explorer', NOW - 2 * 60 * 60 * 1000);
+    expect(getLatestInfraCollectRun('proj-a', 'cost_explorer', NOW)?.id).toBe('ce-new');
+  });
+
+  it('ignores a newer run of the other kind', () => {
+    runOfKind('ce-1', 'cost_explorer', NOW - 3 * 60 * 60 * 1000);
+    runOfKind('m-1', 'metrics', NOW - 60_000);
+    expect(getLatestInfraCollectRun('proj-a', 'cost_explorer', NOW)?.id).toBe('ce-1');
+    expect(getLatestInfraCollectRun('proj-a', 'metrics', NOW)?.id).toBe('m-1');
+  });
+
+  it('returns null when nothing of that kind has run', () => {
+    runOfKind('m-1', 'metrics', NOW - 60_000);
+    expect(getLatestInfraCollectRun('proj-a', 'cost_explorer', NOW)).toBeNull();
+  });
+
+  it('does not surface a run older than the lookback window', () => {
+    // A project that genuinely stopped must read as stopped, not show a stale
+    // success from last month.
+    runOfKind('ce-ancient', 'cost_explorer', NOW - LATEST_RUN_LOOKBACK_MS - 1000);
+    expect(getLatestInfraCollectRun('proj-a', 'cost_explorer', NOW)).toBeNull();
+  });
+
+  it('spans several sync cadences, so a healthy project always has one in window', () => {
+    // Eight hours between syncs; the window has to hold more than one or a
+    // single missed sweep would read as "never synced".
+    expect(LATEST_RUN_LOOKBACK_MS).toBeGreaterThan(3 * 8 * 60 * 60 * 1000);
+  });
+
+  it('does not cross projects', () => {
+    runOfKind('ce-1', 'cost_explorer', NOW - 1000);
+    expect(getLatestInfraCollectRun('proj-b', 'cost_explorer', NOW)).toBeNull();
   });
 });

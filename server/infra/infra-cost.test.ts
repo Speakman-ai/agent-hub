@@ -28,7 +28,14 @@ import {
   resolveCostDegradation,
   monthStartMs,
   extrapolateMonthlySpendUsd,
+  COST_EXPLORER_USD_PER_REQUEST,
+  COST_EXPLORER_SYNC_INTERVAL_S,
+  MIN_COST_EXPLORER_SYNC_INTERVAL_MS,
+  estimateCostExplorerCostUsd,
+  COST_EXPLORER_LOOKBACK_DAYS,
 } from './infra-cost.js';
+import { COST_EXPLORER_LOOKBACK_DAYS as SyncModuleLookbackDays } from './cost-explorer-sync.js';
+import { DEFAULT_INFRA_RETENTION_DAYS } from './infra-schema.js';
 import { getServiceMetricPack, type InfraMetricSpec } from './service-metric-packs.js';
 
 const spec = (over: Partial<InfraMetricSpec> = {}): InfraMetricSpec => ({
@@ -427,5 +434,53 @@ describe('extrapolateMonthlySpendUsd', () => {
   it('is zero when nothing has been spent', () => {
     const start = Date.UTC(2026, 7, 1);
     expect(extrapolateMonthlySpendUsd(0, start + 86_400_000, start)).toBe(0);
+  });
+});
+
+describe('Cost Explorer pricing', () => {
+  it('is a cent per paginated request, not per call', () => {
+    // Every page of a paginated response is its own billed request. A loop that
+    // follows NextPageToken five times has spent five cents, not one.
+    expect(COST_EXPLORER_USD_PER_REQUEST).toBe(0.01);
+    expect(estimateCostExplorerCostUsd(1)).toBeCloseTo(0.01, 10);
+    expect(estimateCostExplorerCostUsd(5)).toBeCloseTo(0.05, 10);
+  });
+
+  it('is free for zero or nonsense page counts', () => {
+    expect(estimateCostExplorerCostUsd(0)).toBe(0);
+    expect(estimateCostExplorerCostUsd(-3)).toBe(0);
+    expect(estimateCostExplorerCostUsd(Number.NaN)).toBe(0);
+    expect(estimateCostExplorerCostUsd(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+
+  it('sets the cadence floor below the eight-hour interval, with room for cron jitter', () => {
+    // A legitimate run drifting a few minutes early must not be refused, or the
+    // cache skips a whole third of the day.
+    expect(MIN_COST_EXPLORER_SYNC_INTERVAL_MS).toBeLessThan(COST_EXPLORER_SYNC_INTERVAL_S * 1000);
+    // But the gap must stay far too small for a fourth run to fit into a day.
+    expect(MIN_COST_EXPLORER_SYNC_INTERVAL_MS * 4).toBeGreaterThan(24 * 60 * 60 * 1000);
+  });
+
+  it('polls three times a day, the rate AWS refreshes billing data at', () => {
+    expect((24 * 60 * 60) / COST_EXPLORER_SYNC_INTERVAL_S).toBe(3);
+  });
+});
+
+describe('the Cost Explorer window', () => {
+  it('is declared once, so the read window cannot drift from the written one', () => {
+    // Three places have to agree: the poller that fills the cache, the REST
+    // schema that defaults the query param, and the handler that computes the
+    // window. The symptom of disagreement is a chart quietly missing its oldest
+    // days, which looks like an AWS problem rather than ours.
+    expect(COST_EXPLORER_LOOKBACK_DAYS).toBe(30);
+    expect(SyncModuleLookbackDays).toBe(COST_EXPLORER_LOOKBACK_DAYS);
+  });
+
+  it('matches the default metric retention, so both charts span the same window', () => {
+    expect(COST_EXPLORER_LOOKBACK_DAYS).toBe(DEFAULT_INFRA_RETENTION_DAYS);
+  });
+
+  it('stays inside the 13 months plus current month Cost Explorer can serve', () => {
+    expect(COST_EXPLORER_LOOKBACK_DAYS).toBeLessThan(14 * 31);
   });
 });

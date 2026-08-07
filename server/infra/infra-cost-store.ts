@@ -16,6 +16,7 @@
  */
 
 import { getInfraDb } from './infra-db.js';
+import type { InfraCollectRunKind } from './infra-metric-store.js';
 import {
   monthStartMs,
   nextMonthStartMs,
@@ -31,6 +32,17 @@ export interface InfraCostConfig {
   monthlyCeilingUsd: number | null;
   degradationLevel: InfraCostDegradation;
   degradedAt: number | null;
+  /**
+   * Whether the operator opted this project into billed Cost Explorer polling.
+   *
+   * Off by default and never inferred. Every other collector reads a signal that
+   * costs nothing until a scope row exists; `GetCostAndUsage` bills $0.01 from
+   * the first paginated request with no free tier, so turning it on is an
+   * explicit act with a name.
+   */
+  costExplorerEnabled: boolean;
+  /** Epoch ms the last Cost Explorer sync started; `null` if it never has. */
+  costExplorerSyncedAt: number | null;
   updatedAt: number | null;
   /** False when no row exists and every field above is a default. */
   configured: boolean;
@@ -41,6 +53,8 @@ interface InfraCostConfigDbRow {
   monthly_ceiling_usd: number | null;
   degradation_level: InfraCostDegradation;
   degraded_at: number | null;
+  cost_explorer_enabled: number;
+  cost_explorer_synced_at: number | null;
   updated_at: number;
 }
 
@@ -56,7 +70,8 @@ interface InfraCostConfigDbRow {
 export function getInfraCostConfig(projectId: string): InfraCostConfig {
   const row = getInfraDb()
     .prepare(
-      `SELECT project_id, monthly_ceiling_usd, degradation_level, degraded_at, updated_at
+      `SELECT project_id, monthly_ceiling_usd, degradation_level, degraded_at,
+              cost_explorer_enabled, cost_explorer_synced_at, updated_at
          FROM infra_cost_config
         WHERE project_id = ?`,
     )
@@ -68,6 +83,8 @@ export function getInfraCostConfig(projectId: string): InfraCostConfig {
       monthlyCeilingUsd: null,
       degradationLevel: 'normal',
       degradedAt: null,
+      costExplorerEnabled: false,
+      costExplorerSyncedAt: null,
       updatedAt: null,
       configured: false,
     };
@@ -77,9 +94,69 @@ export function getInfraCostConfig(projectId: string): InfraCostConfig {
     monthlyCeilingUsd: row.monthly_ceiling_usd,
     degradationLevel: row.degradation_level,
     degradedAt: row.degraded_at,
+    costExplorerEnabled: row.cost_explorer_enabled === 1,
+    costExplorerSyncedAt: row.cost_explorer_synced_at,
     updatedAt: row.updated_at,
     configured: true,
   };
+}
+
+/**
+ * Turn billed Cost Explorer polling on or off for a project.
+ *
+ * Disabling deliberately leaves `cost_explorer_synced_at` and the cached
+ * `infra_cost_daily` rows alone. The cache is spend that has already been paid
+ * for, and discarding it would mean an operator who toggled the feature off and
+ * on again re-bought the same 30 days of history. The read endpoint keeps
+ * serving that cache while the flag is off — it just goes stale, which the
+ * `syncedAt` timestamp already tells the UI.
+ */
+export function setInfraCostExplorerEnabled(
+  projectId: string,
+  enabled: boolean,
+  nowMs: number = Date.now(),
+): InfraCostConfig {
+  getInfraDb()
+    .prepare(
+      `INSERT INTO infra_cost_config (project_id, cost_explorer_enabled, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT (project_id) DO UPDATE SET
+         cost_explorer_enabled = excluded.cost_explorer_enabled,
+         updated_at = excluded.updated_at`,
+    )
+    .run(projectId, enabled ? 1 : 0, nowMs);
+  return getInfraCostConfig(projectId);
+}
+
+/**
+ * Stamp the start of a Cost Explorer sync.
+ *
+ * Written **before** the first billed request, not after the last one. A sync
+ * that dies mid-sweep has still spent money, and a timestamp only written on
+ * success would let a crash loop re-issue the whole paginated sweep on the very
+ * next tick — the failure mode where the cadence guard costs the most and
+ * protects the least.
+ */
+export function recordCostExplorerSyncStart(projectId: string, nowMs: number = Date.now()): void {
+  getInfraDb()
+    .prepare(
+      `INSERT INTO infra_cost_config (project_id, cost_explorer_synced_at, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT (project_id) DO UPDATE SET
+         cost_explorer_synced_at = excluded.cost_explorer_synced_at,
+         updated_at = excluded.updated_at`,
+    )
+    .run(projectId, nowMs, nowMs);
+}
+
+/** Every project that opted into Cost Explorer polling. */
+export function listCostExplorerEnabledProjects(): string[] {
+  const rows = getInfraDb()
+    .prepare(
+      'SELECT project_id FROM infra_cost_config WHERE cost_explorer_enabled = 1 ORDER BY project_id',
+    )
+    .all() as Array<{ project_id: string }>;
+  return rows.map((r) => r.project_id);
 }
 
 /**
@@ -154,6 +231,15 @@ export interface InfraSpendToDate {
   throttles: number;
   errors: number;
   runs: number;
+  /**
+   * The month-to-date figure split by which billed API spent it.
+   *
+   * `monthToDateUsd` stays the total, because that total is what the ceiling
+   * compares against — the two APIs draw on one budget. This breakdown exists so
+   * the operator can act on the number: "$4 of your $5 went to Cost Explorer" is
+   * a sentence that leads somewhere, where "$5" alone is not.
+   */
+  byKind: Record<InfraCollectRunKind, number>;
   /** Straight-line extrapolation of the month-to-date figure to month end. */
   extrapolatedMonthUsd: number;
   /**
@@ -233,10 +319,32 @@ export function getInfraSpendToDate(
     )
     .get(projectId, end) as { n: number };
 
+  // Same index, same window, one extra grouped pass. Kept separate from the
+  // aggregate above rather than folded into it because the total must stay
+  // correct for a `kind` value this build has never heard of: a row written by a
+  // newer process, or by a ticket that adds a third billed API, still lands in
+  // `monthToDateUsd` and still counts against the ceiling. Only the attribution
+  // breakdown ignores it.
+  const kindRows = getInfraDb()
+    .prepare(
+      `SELECT kind, COALESCE(SUM(estimated_cost_usd), 0) AS cost
+         FROM infra_collect_runs
+        WHERE project_id = ? AND started_at >= ? AND started_at < ?
+        GROUP BY kind`,
+    )
+    .all(projectId, start, end) as Array<{ kind: string; cost: number | null }>;
+  const byKind: Record<InfraCollectRunKind, number> = { metrics: 0, cost_explorer: 0 };
+  for (const kindRow of kindRows) {
+    if (kindRow.kind === 'metrics' || kindRow.kind === 'cost_explorer') {
+      byKind[kindRow.kind] = kindRow.cost ?? 0;
+    }
+  }
+
   const monthToDateUsd = row.cost ?? 0;
   return {
     monthStartMs: start,
     monthToDateUsd,
+    byKind,
     metricsRequested: row.metrics ?? 0,
     queriesIssued: row.queries ?? 0,
     datapointsReturned: row.datapoints ?? 0,
@@ -274,6 +382,7 @@ export interface InfraCollectRunRow {
   accountId: string | null;
   region: string | null;
   startedAt: number;
+  kind: InfraCollectRunKind;
   finishedAt: number | null;
   durationMs: number | null;
   queriesIssued: number;
@@ -290,23 +399,32 @@ export interface InfraCollectRunRow {
 /** Upper bound on a run-history page; the cost view shows a recent tail, not an archive. */
 export const MAX_COLLECT_RUNS_PER_QUERY = 200;
 
-/** Most recent collector ticks for a project, newest first. */
-export function listInfraCollectRuns(projectId: string, limit = 20): InfraCollectRunRow[] {
-  const capped =
-    Number.isFinite(limit) && limit > 0
-      ? Math.min(Math.floor(limit), MAX_COLLECT_RUNS_PER_QUERY)
-      : 20;
+/**
+ * How far back {@link getLatestInfraCollectRun} looks, in milliseconds.
+ *
+ * Bounding that lookup by *time* rather than by a row count is what makes it
+ * correct, not merely cheap. The two kinds of run are written at wildly
+ * different rates: a metric tick every five minutes per (account, region), a
+ * Cost Explorer sweep three times a day. On a project with a handful of scoped
+ * regions the newest few hundred rows are therefore all metric ticks, and a
+ * row-count window would report "never synced" for a project syncing perfectly
+ * well.
+ *
+ * Seven days comfortably spans the eight-hour sync cadence, so a project that is
+ * running at all always has a run inside the window, while one that genuinely
+ * stopped reads as stopped instead of showing a stale success from last month.
+ */
+export const LATEST_RUN_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Column list shared by every `infra_collect_runs` read. */
+const COLLECT_RUN_COLUMNS = `id, project_id, account_id, region, started_at, kind, finished_at,
+        duration_ms, queries_issued, metrics_requested, datapoints_returned, points_written,
+        throttles, errors, estimated_cost_usd, status, error_message`;
+
+function queryCollectRuns(tail: string, params: unknown[]): InfraCollectRunRow[] {
   const rows = getInfraDb()
-    .prepare(
-      `SELECT id, project_id, account_id, region, started_at, finished_at, duration_ms,
-              queries_issued, metrics_requested, datapoints_returned, points_written,
-              throttles, errors, estimated_cost_usd, status, error_message
-         FROM infra_collect_runs
-        WHERE project_id = ?
-        ORDER BY started_at DESC
-        LIMIT ?`,
-    )
-    .all(projectId, capped) as Record<string, never>[];
+    .prepare(`SELECT ${COLLECT_RUN_COLUMNS} FROM infra_collect_runs ${tail}`)
+    .all(...params) as Record<string, never>[];
 
   return rows.map((r) => {
     const row = r as unknown as {
@@ -315,6 +433,7 @@ export function listInfraCollectRuns(projectId: string, limit = 20): InfraCollec
       account_id: string | null;
       region: string | null;
       started_at: number;
+      kind: string;
       finished_at: number | null;
       duration_ms: number | null;
       queries_issued: number;
@@ -333,6 +452,11 @@ export function listInfraCollectRuns(projectId: string, limit = 20): InfraCollec
       accountId: row.account_id,
       region: row.region,
       startedAt: row.started_at,
+      // Normalized on read, not trusted from the column. The column has no CHECK
+      // constraint (it was added by the additive reconciler, which cannot carry
+      // one), so an unrecognised value reads back as what it functionally is on
+      // an older row: a metric tick.
+      kind: row.kind === 'cost_explorer' ? 'cost_explorer' : 'metrics',
       finishedAt: row.finished_at,
       durationMs: row.duration_ms,
       queriesIssued: row.queries_issued,
@@ -346,6 +470,41 @@ export function listInfraCollectRuns(projectId: string, limit = 20): InfraCollec
       errorMessage: row.error_message,
     };
   });
+}
+
+/** Most recent collector ticks for a project, newest first. */
+export function listInfraCollectRuns(projectId: string, limit = 20): InfraCollectRunRow[] {
+  const capped =
+    Number.isFinite(limit) && limit > 0
+      ? Math.min(Math.floor(limit), MAX_COLLECT_RUNS_PER_QUERY)
+      : 20;
+  return queryCollectRuns('WHERE project_id = ? ORDER BY started_at DESC LIMIT ?', [
+    projectId,
+    capped,
+  ]);
+}
+
+/**
+ * The most recent run of one kind, or null if there is none in the lookback
+ * window.
+ *
+ * Filtered on `kind`, which is deliberately unindexed (see `infra-schema.ts`:
+ * an index over a column the additive reconciler added would throw on any
+ * install older than that column). SQLite therefore walks the
+ * `(project_id, started_at DESC)` index newest-first and discards non-matching
+ * rows, which is the right plan here provided the walk terminates.
+ * {@link LATEST_RUN_LOOKBACK_MS} is what terminates it.
+ */
+export function getLatestInfraCollectRun(
+  projectId: string,
+  kind: InfraCollectRunKind,
+  nowMs: number = Date.now(),
+): InfraCollectRunRow | null {
+  const rows = queryCollectRuns(
+    'WHERE project_id = ? AND kind = ? AND started_at >= ? ORDER BY started_at DESC LIMIT 1',
+    [projectId, kind, nowMs - LATEST_RUN_LOOKBACK_MS],
+  );
+  return rows[0] ?? null;
 }
 
 /** Enabled scope rows for a project, with the resource count each currently matches. */
