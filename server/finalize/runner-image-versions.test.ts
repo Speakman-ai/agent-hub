@@ -31,6 +31,7 @@ describe('runner image versions — recorded targets', () => {
       compose: '2.38.2',
       buildx: '0.34.1',
       githubCli: '2.95.0',
+      awsCli: '2.36.8',
     });
     expect(MANIFEST_SNAPSHOT.image).toBe('ubuntu-24.04');
     expect(MANIFEST_SNAPSHOT.reconciledOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -70,6 +71,20 @@ describe('runner image versions — Dockerfile drift guard', () => {
     expect(argDefault(df, 'RUNNER_GH_VERSION'), 'RUNNER_GH_VERSION').toBe(
       RUNNER_IMAGE_VERSIONS.githubCli,
     );
+    expect(argDefault(df, 'RUNNER_AWSCLI_VERSION'), 'RUNNER_AWSCLI_VERSION').toBe(
+      RUNNER_IMAGE_VERSIONS.awsCli,
+    );
+  });
+
+  // Ubuntu 24.04 has no `awscli` apt package, so a project cannot get `aws`
+  // through `prEnv.devServer.aptPackages` — it has to be in the image.
+  it('installs AWS CLI v2 from the official installer, per-arch', () => {
+    const df = readDockerfile();
+    expect(df).toContain('awscli-exe-linux-${AWS_ARCH}-${RUNNER_AWSCLI_VERSION}.zip');
+    expect(df).toContain('AWS_ARCH=aarch64');
+    expect(df).toContain('AWS_ARCH=x86_64');
+    expect(df).toContain('./aws/install');
+    expect(df).toContain('aws --version');
   });
 
   it('NodeSource setup script selects the pinned Node major line', () => {
