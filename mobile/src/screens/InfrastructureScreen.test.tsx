@@ -59,6 +59,7 @@ import {
   alertsEmptyCopy,
   buildAlertActionConfirm,
   buildSpendOptInConfirm,
+  describeInfraBlocker,
   formatUsd,
   hasConfiguredScope,
   initialAlertStatusFilter,
@@ -94,6 +95,28 @@ import { joinAlertsToRules } from '@shared/utils/infraAlerts';
 describe('TABS', () => {
   it('matches the web module tab set and order', () => {
     expect(TABS.map((t) => t.key)).toEqual(['overview', 'resources', 'metrics', 'alerts']);
+  });
+});
+
+describe('describeInfraBlocker', () => {
+  it('names every blocker code the setup draft can emit', () => {
+    const codes = [
+      'infra-disabled',
+      'no-profiles',
+      'only-sso-profiles',
+      'no-monitoring-profile',
+      'storage-unavailable',
+      'no-scope',
+    ];
+    for (const code of codes) {
+      const copy = describeInfraBlocker(code);
+      expect(copy).not.toBe(code);
+      expect(copy.length).toBeGreaterThan(20);
+    }
+  });
+
+  it('falls back to the raw code so a newer server blocker is still searchable', () => {
+    expect(describeInfraBlocker('some-future-blocker')).toBe('some-future-blocker');
   });
 });
 

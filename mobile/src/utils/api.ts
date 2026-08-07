@@ -378,6 +378,18 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ status }),
     }),
+    // ── AI infrastructure setup wizard ──
+    // Hub-side readiness only: which profiles exist and their types, whether a
+    // monitoring profile is designated, whether scopes exist. Calls AWS zero
+    // times (decision INFRA-WIZARD), so it is safe to fetch on screen open even
+    // for a project whose only credentials are interactive SSO. `{ projectId, draft }`.
+    getInfraSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/setup-draft`),
+    // Spawns the worktree-backed `[Infra Setup]` session that probes the account
+    // read-only and proposes an allowlist. Returns `{ sessionId, agentId, draft }`.
+    startInfraWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/infra/setup-wizard`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    }),
     // ── Application log sources (write-only `ahlog_` ingest creds) ──
     // Mirrors client/src/utils/api.ts. List/create/rotate/revoke/delete sources;
     // create + rotate return the plaintext `token` exactly once.

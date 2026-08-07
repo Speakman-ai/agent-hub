@@ -173,6 +173,35 @@ export function stampMatchesProject(
 }
 
 /**
+ * The operator-facing meaning of one setup-draft blocker code.
+ *
+ * Duplicated from the web `describeInfraBlocker` rather than shared: it is
+ * copy, and the two surfaces are free to word the same code differently for a
+ * phone. The unknown-code fallback returns the raw code instead of a generic
+ * "unknown problem", because a server that grows a blocker mobile has not
+ * learned yet should still name it — a code the operator can search beats a
+ * sentence that says nothing.
+ */
+export function describeInfraBlocker(blocker: string): string {
+  switch (blocker) {
+    case 'infra-disabled':
+      return 'The Infrastructure module is off for this project.';
+    case 'no-profiles':
+      return 'No AWS profiles are configured for this project.';
+    case 'only-sso-profiles':
+      return 'Every configured profile is interactive SSO, which cannot run unattended.';
+    case 'no-monitoring-profile':
+      return 'No usable monitoring profile is designated.';
+    case 'storage-unavailable':
+      return 'The infrastructure database is not open, so stored scopes could not be read.';
+    case 'no-scope':
+      return 'No collection scope is enabled, so nothing is polled.';
+    default:
+      return blocker;
+  }
+}
+
+/**
  * Whether the project has a designated monitoring profile.
  *
  * Mirrors `monitoringMissing` on web. An SSO-only project cannot collect
@@ -456,6 +485,82 @@ function Empty({ text, testID }: { text: string; testID?: string }) {
   return (
     <View style={styles.emptyCard} testID={testID}>
       <Text style={styles.emptyText}>{text}</Text>
+    </View>
+  );
+}
+
+/**
+ * The "Set up with AI" entry point, peer of the web header button.
+ *
+ * Renders nothing without `onOpenSession`: the wizard's whole product is a
+ * session the operator then talks to, so spawning one the host cannot navigate
+ * to would strand a worktree-backed session nobody ever sees. The failure is
+ * shown inline rather than through `Alert.alert` because it is a state of this
+ * panel, not an interruption — the operator can read it while deciding whether
+ * to retry, and a modal that has been dismissed leaves no trace of why nothing
+ * happened.
+ */
+export function InfraSetupWizardButton({
+  projectId,
+  onOpenSession,
+}: {
+  projectId: string | null | undefined;
+  onOpenSession?: (target: { sessionId: string; agentId: string }) => void;
+}) {
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Guards a stale response from committing to the project the operator just
+  // left — without it, switching mid-request navigates to a session belonging
+  // to the previous project.
+  const activePidRef = useRef(projectId);
+  useEffect(() => {
+    activePidRef.current = projectId;
+    setError(null);
+    // Reset the pending flag too: an in-flight start from the previous project
+    // keeps its pid-guarded `finally` from clearing it (the check skips), so
+    // without this the new project inherits a permanently disabled button.
+    setStarting(false);
+  }, [projectId]);
+
+  const handleStart = useCallback(async () => {
+    if (!projectId || starting) return;
+    const pid = projectId;
+    setStarting(true);
+    setError(null);
+    try {
+      const res: any = await api.startInfraWizard(pid);
+      if (activePidRef.current !== pid) return; // switched projects — drop it
+      if (!res?.sessionId) {
+        setError('Server did not return a wizard session id');
+        return;
+      }
+      onOpenSession?.({ sessionId: res.sessionId, agentId: res.agentId });
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return;
+      setError(err?.message || 'Failed to start the infrastructure setup wizard');
+    } finally {
+      if (activePidRef.current === pid) setStarting(false);
+    }
+  }, [projectId, starting, onOpenSession]);
+
+  if (!onOpenSession) return null;
+
+  return (
+    <View style={styles.wizardRow}>
+      <TouchableOpacity
+        onPress={handleStart}
+        disabled={!projectId || starting}
+        style={[styles.wizardBtn, (!projectId || starting) && styles.disabled]}
+        testID="infra-setup-wizard-button"
+      >
+        <Text style={styles.wizardBtnText}>{starting ? 'Starting…' : 'Set up with AI'}</Text>
+      </TouchableOpacity>
+      {error ? (
+        <Text style={styles.error} testID="infra-setup-wizard-error">
+          {error}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -1503,13 +1608,45 @@ function OverviewTab({
   loading,
   error,
   openAlertCount,
+  blockers,
+  notes,
 }: any) {
   const monitoringState = monitoringCardState(project, monitoringStatus);
   const projection = scopes?.projection ?? null;
   const rows: any[] = Array.isArray(scopes?.scopes) ? scopes.scopes : [];
+  const blockerCodes: string[] = Array.isArray(blockers) ? blockers : [];
+  const draftNotes: string[] = Array.isArray(notes) ? notes : [];
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
+      {/* First on the tab, mirroring web: every panel below reports on a
+          collection pipeline that is not running yet, and this is the only one
+          that says why. The draft calls AWS zero times, so an unconfigured
+          project reads the specific reason rather than a wall of generic empty
+          states. */}
+      {blockerCodes.length > 0 ? (
+        <View style={[styles.warnBox, styles.blockerBox]} testID="infra-setup-blockers">
+          <Text style={styles.warnTitle}>Infrastructure monitoring is not collecting yet</Text>
+          {blockerCodes.map((blocker) => (
+            <Text key={blocker} style={styles.warnBody} testID={`infra-blocker-${blocker}`}>
+              {describeInfraBlocker(blocker)}
+            </Text>
+          ))}
+          {/* The server's notes carry detail no enum can — which designation
+              stopped resolving, which profiles are eligible — so they render
+              verbatim beneath the codes rather than being restated here. */}
+          {draftNotes.map((note, i) => (
+            <Text key={i} style={styles.hint}>
+              {note}
+            </Text>
+          ))}
+          <Text style={styles.hint}>
+            Use Set up with AI above to walk through this with an agent: it probes the account
+            read-only, prices the scope, and saves the allowlist.
+          </Text>
+        </View>
+      ) : null}
+
       {monitoringState === 'missing' ? (
         <View style={styles.warnBox} testID="infra-empty-monitoring-profile">
           <Text style={styles.warnTitle}>No monitoring profile designated</Text>
@@ -2269,7 +2406,7 @@ function AlertsTab({ projectId, focusAlertId, pack }: any) {
 // ── Screen ──────────────────────────────────────────────────────────────────
 
 export default function InfrastructureScreen({ route, navigation }: any) {
-  const { projects, lastInfraAlertEvent } = useApp();
+  const { projects, lastInfraAlertEvent, setActiveAgentId, setActiveSessionId } = useApp();
   const projectId = route?.params?.projectId || projects?.[0]?.id;
   const project =
     route?.params?.project || projects?.find((p: any) => p.id === projectId) || null;
@@ -2338,6 +2475,41 @@ export default function InfrastructureScreen({ route, navigation }: any) {
     packs: InfraServicePackWire[];
   } | null>(null);
   const packs = stampMatchesProject(packState, projectId) ? packState!.packs : [];
+
+  // The setup draft: Hub-side readiness only, zero AWS calls (decision
+  // INFRA-WIZARD), so it is free to fetch on open even for a project whose only
+  // credentials are interactive SSO — which is exactly the project that most
+  // needs to be told why nothing is collecting. Stamped like everything else
+  // here so one project's blockers never render under another's header.
+  const [draftState, setDraftState] = useState<{ projectId: string; draft: any } | null>(null);
+  const draft = stampMatchesProject(draftState, projectId) ? draftState!.draft : null;
+
+  const openSession = useCallback(
+    ({ sessionId, agentId }: { sessionId: string; agentId: string }) => {
+      setActiveAgentId(agentId);
+      setActiveSessionId(sessionId);
+      navigation.navigate('Chat');
+    },
+    [navigation, setActiveAgentId, setActiveSessionId],
+  );
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    api
+      .getInfraSetupDraft(projectId)
+      .then((response: any) => {
+        if (!cancelled && response?.draft) setDraftState({ projectId, draft: response.draft });
+      })
+      // A readiness report the operator cannot see is a worse empty state, not
+      // a broken module: the tabs below stand on their own data.
+      .catch(() => {
+        if (!cancelled) setDraftState(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -2460,6 +2632,11 @@ export default function InfrastructureScreen({ route, navigation }: any) {
         testID="infrastructure-screen"
       />
 
+      {/* Above the tabs, mirroring web: the wizard is how an unconfigured
+          project gets configured, so it must not be reachable only from the tab
+          whose emptiness is the reason to press it. */}
+      <InfraSetupWizardButton projectId={projectId} onOpenSession={openSession} />
+
       <View style={styles.tabBar} testID="infra-tab-bar">
         {TABS.map((item) => (
           <TouchableOpacity
@@ -2484,6 +2661,8 @@ export default function InfrastructureScreen({ route, navigation }: any) {
           loading={scopesLoading}
           error={scopesError}
           openAlertCount={openAlertCount}
+          blockers={draft?.blockers}
+          notes={draft?.notes}
         />
       ) : !hasScope ? (
         <ScrollView contentContainerStyle={styles.content}>
@@ -2611,7 +2790,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.amber900_40,
   },
+  blockerBox: { marginBottom: 12 },
   warnTitle: { fontSize: 13, color: colors.amber400, fontWeight: '600', marginBottom: 4 },
+  wizardRow: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  wizardBtn: {
+    backgroundColor: colors.blue600,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  wizardBtnText: { fontSize: 13, fontWeight: '600', color: colors.white },
   warnBody: { fontSize: 12, color: colors.gray300 },
   okBox: {
     backgroundColor: colors.emerald900_50,
