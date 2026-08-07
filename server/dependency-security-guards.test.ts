@@ -160,7 +160,14 @@ describe('dependency security guards (high-severity advisory floors)', () => {
   const FLOORS: Array<{
     pkg: string;
     min: string;
-    advisory: string;
+    /**
+     * Every advisory this floor enforces. When several advisories share one
+     * patched version a single assertion covers them all, but they are still
+     * listed individually so the test name and the failure message name each
+     * one -- otherwise a failure points at one GHSA and silently drops the
+     * others, leaving no trail back to what the floor is actually holding.
+     */
+    advisory: string | readonly string[];
     line?: string;
     only?: ReadonlyArray<(typeof LOCKFILES)[number]['name']>;
   }> = [
@@ -273,10 +280,53 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // parent's range, so this is a plain re-resolve with no override.
     { pkg: 'undici', min: '6.28.0', advisory: 'GHSA-8xcm-r25x-g524', line: '6.x' },
     { pkg: 'undici', min: '7.29.0', advisory: 'GHSA-4cwx-7wf7-3272', line: '7.x' },
+
+    // --- 10-finding audit (js-yaml / mermaid) ---
+
+    // GHSA-5p4m-2wfm-xmqj (CVE-2026-59870): quadratic CPU consumption resolving
+    // `!!omap`. The advisory patches each live line separately -- `>=3.0.0
+    // <3.15.1` and `>=4.0.0 <4.3.1` -- because the 4.x fix was not backported,
+    // so neither floor covers the other and both lines are in the tree. Every
+    // declared parent range already admits its patched version (@eslint/eslintrc
+    // and electron-builder want `^4.1.x`, gray-matter and
+    // @istanbuljs/load-nyc-config want `^3.13.1`), so this is a plain
+    // re-resolve with no override. Re-resolving also hoisted mobile's 4.x copy
+    // out of @expo/xcpretty to the root, which the coherence check below
+    // validates.
+    { pkg: 'js-yaml', min: '3.15.1', advisory: 'GHSA-5p4m-2wfm-xmqj', line: '3.x' },
+    { pkg: 'js-yaml', min: '4.3.1', advisory: 'GHSA-5p4m-2wfm-xmqj', line: '4.x' },
+    // Five advisories against mermaid:
+    //   GHSA-2v8p-3f2j-5mp7  infinite-loop DoS in XY charts
+    //   GHSA-6x64-9x62-f2gx  CSS injection reaching the diagram's siblings
+    //   GHSA-3rrr-jr9j-h3q3  prototype pollution in architecture diagrams
+    //   GHSA-rhh3-jpg6-66xh  DoS in radar diagrams
+    //   GHSA-c4c3-pg64-4m4v  prototype pollution via the configuration APIs
+    // All five report the same `first_patched_version` on the 11.x line, so one
+    // floor at 11.16.1 enforces every one of them -- any downgrade that
+    // reintroduces any single advisory drops below 11.16.1 and fails here. They
+    // are enumerated rather than collapsed to a representative ID so a failure
+    // names the full set instead of stranding the other four.
+    // (Three of them also have a 10.9.8 fix on the 10.x line, which is
+    // unreachable here: client declares `mermaid: ^11.14.0`.)
+    // Scoped to `client` -- it is the only surface that renders diagrams.
+    {
+      pkg: 'mermaid',
+      min: '11.16.1',
+      advisory: [
+        'GHSA-2v8p-3f2j-5mp7',
+        'GHSA-6x64-9x62-f2gx',
+        'GHSA-3rrr-jr9j-h3q3',
+        'GHSA-rhh3-jpg6-66xh',
+        'GHSA-c4c3-pg64-4m4v',
+      ],
+      only: ['client'],
+    },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
-    it(`resolves every ${line ? `${line} ` : ''}${pkg} copy at or above ${min} (${advisory})`, () => {
+    const advisories = typeof advisory === 'string' ? [advisory] : advisory;
+    const label = advisories.join(', ');
+    it(`resolves every ${line ? `${line} ` : ''}${pkg} copy at or above ${min} (${label})`, () => {
       let checked = 0;
       for (const { name, lock } of LOCKFILES) {
         if (only && !only.includes(name)) continue;
@@ -286,7 +336,7 @@ describe('dependency security guards (high-severity advisory floors)', () => {
           checked++;
           expect(
             compareSemver(meta.version, min) >= 0,
-            `${name}: ${key}@${meta.version} is below the ${advisory} floor ${min}`,
+            `${name}: ${key}@${meta.version} is below the ${min} floor shared by ${advisories.length > 1 ? `${advisories.length} advisories: ` : ''}${label}`,
           ).toBe(true);
         }
       }
