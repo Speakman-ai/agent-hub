@@ -63,14 +63,17 @@ describe('kernelAtLeast', () => {
 });
 
 describe('coerceSessionEnvAdapterMode', () => {
-  it('accepts the three valid modes case-insensitively', () => {
+  it('accepts every valid mode case-insensitively', () => {
     expect(coerceSessionEnvAdapterMode('auto')).toBe('auto');
     expect(coerceSessionEnvAdapterMode(' HOST ')).toBe('host');
     expect(coerceSessionEnvAdapterMode('Sysbox')).toBe('sysbox');
+    expect(coerceSessionEnvAdapterMode('container')).toBe('container');
+    expect(coerceSessionEnvAdapterMode('FireCracker')).toBe('firecracker');
   });
 
   it('falls back to auto on unknown values — a typo never forces a backend', () => {
-    expect(coerceSessionEnvAdapterMode('firecracker')).toBe('auto');
+    expect(coerceSessionEnvAdapterMode('firecraker')).toBe('auto');
+    expect(coerceSessionEnvAdapterMode('vm')).toBe('auto');
     expect(coerceSessionEnvAdapterMode(undefined)).toBe('auto');
     expect(coerceSessionEnvAdapterMode(null)).toBe('auto');
     expect(coerceSessionEnvAdapterMode(42)).toBe('auto');

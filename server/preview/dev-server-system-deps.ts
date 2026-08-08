@@ -68,6 +68,7 @@ function canInstallSystemDeps(kind: SessionEnvKind): boolean {
   switch (kind) {
     case 'sysbox':
     case 'container':
+    case 'firecracker':
       return true;
     case 'host':
       return false;
