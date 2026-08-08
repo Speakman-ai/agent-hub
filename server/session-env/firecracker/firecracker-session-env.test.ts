@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   FirecrackerSessionEnv,
+  VmAgentProtocolMismatchError,
   defaultPrepareDisks,
   type FirecrackerHostIo,
   type FirecrackerSlotPool,
@@ -8,10 +9,12 @@ import {
 import type { VsockDuplex } from './vm-agent-client.js';
 import {
   VmAgentFrameDecoder,
+  VM_AGENT_PROTOCOL_VERSION,
   encodeFrame,
   encodeJsonFrame,
   decodeJsonPayload,
   type VmAgentFrame,
+  type VmAgentReply,
   type VmAgentRequest,
 } from './vm-agent-protocol.js';
 import { SessionEnvDisposedError } from '../session-env.js';
@@ -41,7 +44,15 @@ class FakeGuestConnection implements VsockDuplex {
   #close: (() => void)[] = [];
   #error: ((err: Error) => void)[] = [];
 
-  constructor(private readonly accept: boolean) {}
+  constructor(
+    private readonly accept: boolean,
+    /** Reply sent for a `ping`; null to model an agent that never answers. */
+    readonly pong: VmAgentReply | null = {
+      kind: 'pong',
+      protocolVersion: VM_AGENT_PROTOCOL_VERSION,
+      bootId: 'boot-1',
+    },
+  ) {}
 
   write(data: Buffer): void {
     if (!this.#handshakeDone) {
@@ -54,6 +65,12 @@ class FakeGuestConnection implements VsockDuplex {
       this.sentFrames.push(frame);
       if (frame.type === 'request') {
         this.request = decodeJsonPayload<VmAgentRequest>(frame.payload);
+        // Boot blocks on a real pong, so a fake guest that never answers would
+        // stall every test at the readiness gate.
+        if (this.request.kind === 'ping' && this.pong) {
+          const pong = this.pong;
+          setImmediate(() => this.replyJson('reply', pong));
+        }
       }
     }
   }
@@ -91,9 +108,15 @@ class FakeGuestConnection implements VsockDuplex {
 class FakeGuest {
   readonly connections: FakeGuestConnection[] = [];
   accept = true;
+  /** Overridden to model a stale guest image or an agent that never answers. */
+  pong: VmAgentReply | null = {
+    kind: 'pong',
+    protocolVersion: VM_AGENT_PROTOCOL_VERSION,
+    bootId: 'boot-1',
+  };
 
   connect = async (): Promise<VsockDuplex> => {
-    const conn = new FakeGuestConnection(this.accept);
+    const conn = new FakeGuestConnection(this.accept, this.pong);
     this.connections.push(conn);
     return conn;
   };
@@ -423,6 +446,45 @@ describe('FirecrackerSessionEnv dispose', () => {
     await env.dispose();
     await env.dispose();
     expect(hook).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('FirecrackerSessionEnv readiness', () => {
+  it('waits for the pong, not just an open connection', async () => {
+    // socat in the guest accepts before the agent behind it is listening, so a
+    // connection alone declared the VM ready and the first real spawn died on
+    // socat's reset. Modelled here by a guest that connects but never answers.
+    const { env, guest } = makeEnv({ readyTimeoutMs: 30, readyPollMs: 1 });
+    guest.pong = null;
+    await expect(env.ensureStarted()).rejects.toThrow(/did not answer within/);
+  });
+
+  it('refuses a guest image speaking a different protocol version', async () => {
+    // Retrying cannot fix a stale rootfs, so this fails immediately and names
+    // both versions instead of surfacing as a decode error on a later request.
+    const { env, guest } = makeEnv({ readyTimeoutMs: 5000, readyPollMs: 1 });
+    guest.pong = {
+      kind: 'pong',
+      protocolVersion: VM_AGENT_PROTOCOL_VERSION + 1,
+      bootId: 'boot-1',
+    };
+    await expect(env.ensureStarted()).rejects.toThrow(
+      new RegExp(`protocol v${VM_AGENT_PROTOCOL_VERSION + 1}.*v${VM_AGENT_PROTOCOL_VERSION}`),
+    );
+  });
+
+  it('gives up on a mismatch instead of burning the whole boot deadline', async () => {
+    // A generous timeout would mask a retry loop, so the rejection must arrive
+    // long before the deadline could have expired.
+    const { env, guest } = makeEnv({ readyTimeoutMs: 60_000, readyPollMs: 1 });
+    guest.pong = {
+      kind: 'pong',
+      protocolVersion: VM_AGENT_PROTOCOL_VERSION + 1,
+      bootId: 'boot-1',
+    };
+    const startedAt = Date.now();
+    await expect(env.ensureStarted()).rejects.toThrow(VmAgentProtocolMismatchError);
+    expect(Date.now() - startedAt).toBeLessThan(5000);
   });
 });
 
