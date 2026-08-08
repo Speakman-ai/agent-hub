@@ -40,6 +40,9 @@ VM_AGENT_BUNDLE=""
 # Sized for a full node_modules plus a build cache; the image is sparse, so
 # this costs only what is written.
 ROOTFS_SIZE_MIB="${ROOTFS_SIZE_MIB:-12288}"
+# Asserted after assembly. The runner-derived image is itself ~3.5GiB, so the
+# built size alone says nothing about how much room a session actually gets.
+MIN_FREE_MIB="${MIN_FREE_MIB:-6144}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -227,10 +230,26 @@ sudo ln -sf ../workspace.mount \
 sudo sync
 sudo umount "${MOUNT_DIR}"
 
-# Shrink to what is actually used: the image ships as a base every VM clones,
-# so the difference is multiplied by every concurrent session.
 e2fsck -y -f "${ROOTFS_IMG}" >/dev/null 2>&1 || true
-resize2fs -M "${ROOTFS_IMG}" >/dev/null 2>&1 || true
+
+# This image used to be shrunk to its minimum size (`resize2fs -M`) on the
+# theory that a base every VM clones multiplies any slack per session. It does
+# not: the clone is `cp --reflink=auto` onto a reflink filesystem (xfs/btrfs —
+# setup-firecracker-host.sh warns when it is missing), so clones share blocks
+# and cost only what they subsequently write, and the image is sparse besides.
+# What the shrink actually multiplied was a guest with ~0 bytes free, where the
+# first `npm ci` filled the root filesystem and hung with no error — the
+# process just stopped making progress. Leave the filesystem at its built size.
+FREE_MIB=$(( $(dumpe2fs -h "${ROOTFS_IMG}" 2>/dev/null | awk '/Free blocks:/ {print $3}') \
+  * $(dumpe2fs -h "${ROOTFS_IMG}" 2>/dev/null | awk '/Block size:/ {print $3}') / 1048576 ))
+if [[ "${FREE_MIB}" -lt "${MIN_FREE_MIB}" ]]; then
+  echo "error: guest rootfs has only ${FREE_MIB}MiB free, need >= ${MIN_FREE_MIB}MiB." >&2
+  echo "       A dev environment installs npm/pip packages and pulls container" >&2
+  echo "       images into this filesystem; too little room hangs the first build." >&2
+  echo "       Raise ROOTFS_SIZE_MIB (currently ${ROOTFS_SIZE_MIB})." >&2
+  exit 1
+fi
+echo "==> Guest rootfs has ${FREE_MIB}MiB free"
 
 install -m 0644 "${ROOTFS_IMG}" "${OUT_DIR}/rootfs.ext4"
 
