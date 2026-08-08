@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+#
+# Prepare an Agent Hub host to run session microVMs.
+#
+# Run once per host, after nested virtualization is on (see
+# enable-nested-virtualization.sh) and before restarting the Hub. Everything
+# here is idempotent, so re-running after an upgrade is safe.
+#
+# What it sets up:
+#   1. firecracker + jailer binaries
+#   2. /dev/kvm access for the Hub user
+#   3. the shared bridge session taps attach to, with NAT for guest egress
+#   4. a narrow sudoers rule for the two privileged operations the Hub needs
+#   5. the VM scratch directory, on XFS so rootfs clones are copy-on-write
+#
+# It deliberately does NOT build the guest kernel/rootfs — that is
+# server/session-env/firecracker/build/build-guest-artifacts.sh, which takes
+# ~10 minutes and is usually run once and copied to hosts.
+#
+# Usage: sudo ops/scripts/setup-firecracker-host.sh [--hub-user ubuntu]
+#                                                   [--version 1.16.0]
+
+set -euo pipefail
+
+HUB_USER="${SUDO_USER:-ubuntu}"
+FIRECRACKER_VERSION="1.16.0"
+ARTIFACT_DIR="/var/lib/agent-hub/firecracker"
+RUN_DIR="/run/agent-hub/vms"
+VM_SCRATCH="/var/lib/agent-hub/firecracker/vms"
+BRIDGE="ahfc0"
+BRIDGE_CIDR="172.30.0.1/16"
+SUBNET="172.30.0.0/16"
+HELPER_SRC=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --hub-user) HUB_USER="$2"; shift 2 ;;
+    --version) FIRECRACKER_VERSION="$2"; shift 2 ;;
+    --helper) HELPER_SRC="$2"; shift 2 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "error: run with sudo" >&2; exit 1; }
+[[ "$(uname -s)" == "Linux" ]] || { echo "error: Linux only" >&2; exit 1; }
+
+ARCH="$(uname -m)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+[[ -n "${HELPER_SRC}" ]] || \
+  HELPER_SRC="${REPO_ROOT}/server/session-env/firecracker/build/fc-prepare-disks.sh"
+
+echo "==> Host: $(hostname), arch ${ARCH}, hub user ${HUB_USER}"
+
+# ── 1. KVM ────────────────────────────────────────────────────────
+if [[ ! -c /dev/kvm ]]; then
+  echo "error: /dev/kvm is missing." >&2
+  echo "       On EC2 this means nested virtualization is not enabled on this" >&2
+  echo "       instance. Run ops/scripts/enable-nested-virtualization.sh first" >&2
+  echo "       (it requires a stop/start), then re-run this script." >&2
+  exit 1
+fi
+
+# The Hub opens /dev/kvm indirectly through firecracker, which runs as the Hub
+# user; without group membership every VM boot fails with EACCES.
+groupadd -f kvm
+usermod -aG kvm "${HUB_USER}"
+cat >/etc/udev/rules.d/99-agent-hub-kvm.rules <<'RULES'
+# Keep /dev/kvm group-writable across reboots. Without this the node is
+# usable until the next reboot and then silently stops booting VMs.
+KERNEL=="kvm", GROUP="kvm", MODE="0660"
+RULES
+udevadm control --reload-rules 2>/dev/null || true
+udevadm trigger --name-match=kvm 2>/dev/null || true
+chgrp kvm /dev/kvm && chmod 0660 /dev/kvm
+
+# ── 2. Packages ───────────────────────────────────────────────────
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+# socat is not needed on the host (it runs in the guest), but iproute2,
+# e2fsprogs, and xfsprogs are: taps, workspace images, and the CoW scratch
+# filesystem respectively.
+apt-get install -y --no-install-recommends \
+  iproute2 iptables e2fsprogs xfsprogs curl ca-certificates >/dev/null
+
+# ── 3. firecracker + jailer ───────────────────────────────────────
+case "${ARCH}" in
+  x86_64) FC_ARCH="x86_64" ;;
+  aarch64) FC_ARCH="aarch64" ;;
+  *) echo "error: unsupported architecture ${ARCH}" >&2; exit 1 ;;
+esac
+
+INSTALLED_VERSION="$(firecracker --version 2>/dev/null | head -1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' || true)"
+if [[ "${INSTALLED_VERSION#v}" != "${FIRECRACKER_VERSION}" ]]; then
+  echo "==> Installing firecracker ${FIRECRACKER_VERSION} (found: ${INSTALLED_VERSION:-none})"
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "${TMP}"' EXIT
+  curl -fsSL -o "${TMP}/fc.tgz" \
+    "https://github.com/firecracker-microvm/firecracker/releases/download/v${FIRECRACKER_VERSION}/firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}.tgz"
+  tar -xzf "${TMP}/fc.tgz" -C "${TMP}"
+  install -m 0755 "${TMP}/release-v${FIRECRACKER_VERSION}-${FC_ARCH}/firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}" /usr/bin/firecracker
+  install -m 0755 "${TMP}/release-v${FIRECRACKER_VERSION}-${FC_ARCH}/jailer-v${FIRECRACKER_VERSION}-${FC_ARCH}" /usr/bin/jailer
+  rm -rf "${TMP}"
+  trap - EXIT
+else
+  echo "==> firecracker ${FIRECRACKER_VERSION} already installed"
+fi
+
+# ── 4. Bridge + NAT ───────────────────────────────────────────────
+# One bridge for every session tap. This is what lets the Hub dial a guest IP
+# directly and reuse container-IP port routing instead of publishing ports.
+if ! ip link show "${BRIDGE}" >/dev/null 2>&1; then
+  ip link add "${BRIDGE}" type bridge
+fi
+ip addr replace "${BRIDGE_CIDR}" dev "${BRIDGE}"
+ip link set "${BRIDGE}" up
+
+# Guests need outbound access (npm install, docker pull, pip). Masquerade
+# their subnet behind the host's primary interface.
+UPLINK="$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)"
+if [[ -n "${UPLINK}" ]]; then
+  sysctl -qw net.ipv4.ip_forward=1
+  printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-agent-hub-firecracker.conf
+  # -C tests for the rule first so re-running does not stack duplicates that
+  # would survive as a growing NAT table across upgrades.
+  iptables -t nat -C POSTROUTING -s "${SUBNET}" -o "${UPLINK}" -j MASQUERADE 2>/dev/null \
+    || iptables -t nat -A POSTROUTING -s "${SUBNET}" -o "${UPLINK}" -j MASQUERADE
+  iptables -C FORWARD -i "${BRIDGE}" -o "${UPLINK}" -j ACCEPT 2>/dev/null \
+    || iptables -A FORWARD -i "${BRIDGE}" -o "${UPLINK}" -j ACCEPT
+  iptables -C FORWARD -i "${UPLINK}" -o "${BRIDGE}" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
+    || iptables -A FORWARD -i "${UPLINK}" -o "${BRIDGE}" -m state --state RELATED,ESTABLISHED -j ACCEPT
+  echo "==> NAT configured: ${SUBNET} -> ${UPLINK}"
+else
+  echo "warning: no default route found; guests will have no outbound network" >&2
+fi
+
+# ── 5. Directories ────────────────────────────────────────────────
+mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+chown -R "${HUB_USER}:${HUB_USER}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+
+# The rootfs clone uses `cp --reflink=auto`. On ext4 that degrades to a full
+# multi-GB copy on every VM boot; on XFS it is a near-instant CoW clone. The
+# difference is seconds per session start, so warn loudly when it is missing.
+SCRATCH_FSTYPE="$(stat -f -c %T "${VM_SCRATCH}" 2>/dev/null || echo unknown)"
+if [[ "${SCRATCH_FSTYPE}" != "xfs" && "${SCRATCH_FSTYPE}" != "btrfs" ]]; then
+  echo "warning: ${VM_SCRATCH} is on ${SCRATCH_FSTYPE}, which has no reflink support." >&2
+  echo "         Every VM boot will fully copy the base rootfs instead of cloning it." >&2
+  echo "         Consider mounting an XFS volume there." >&2
+fi
+
+# ── 6. Disk helper + sudoers ──────────────────────────────────────
+if [[ -f "${HELPER_SRC}" ]]; then
+  install -D -m 0755 "${HELPER_SRC}" /usr/local/lib/agent-hub/fc-prepare-disks.sh
+  echo "==> Installed fc-prepare-disks.sh"
+else
+  echo "warning: disk helper not found at ${HELPER_SRC}; pass --helper PATH" >&2
+fi
+
+# Exactly two privileged operations, named explicitly. A blanket NOPASSWD:ALL
+# would make the microVM boundary pointless — the Hub could simply become root
+# on the host it is trying to isolate sessions from.
+cat >/etc/sudoers.d/agent-hub-firecracker <<SUDOERS
+# Managed by ops/scripts/setup-firecracker-host.sh
+${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-prepare-disks.sh
+${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/ip, /sbin/ip, /usr/bin/ip
+SUDOERS
+chmod 0440 /etc/sudoers.d/agent-hub-firecracker
+visudo -cf /etc/sudoers.d/agent-hub-firecracker >/dev/null
+
+# ── Summary ───────────────────────────────────────────────────────
+echo
+echo "==> Firecracker host ready"
+firecracker --version | head -1
+echo "    bridge:    ${BRIDGE} (${BRIDGE_CIDR})"
+echo "    artifacts: ${ARTIFACT_DIR}"
+echo
+if [[ ! -f "${ARTIFACT_DIR}/vmlinux" || ! -f "${ARTIFACT_DIR}/rootfs.ext4" ]]; then
+  echo "    STILL NEEDED: guest artifacts are not staged. Build them with"
+  echo "      server/session-env/firecracker/build/build-guest-artifacts.sh --out ${ARTIFACT_DIR}"
+  echo "    Until then the capability probe will decline and the Hub falls back"
+  echo "    to the container backend."
+else
+  echo "    Guest artifacts present. Restart the Hub to pick up the backend."
+fi
+echo
+echo "    ${HUB_USER} was added to the kvm group — that only takes effect in a"
+echo "    new login session, so restart the Hub process (not just the shell)."
