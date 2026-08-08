@@ -32,15 +32,16 @@ import { readFile } from 'fs/promises';
 import os from 'os';
 import type { SessionEnvPortRouting } from './container-routing.js';
 
-export type SessionEnvAdapterKind = 'host' | 'sysbox' | 'container';
+export type SessionEnvAdapterKind = 'host' | 'sysbox' | 'container' | 'firecracker';
 /** Operator intent: `auto` probes, the rest force a backend. */
-export type SessionEnvAdapterMode = 'auto' | 'host' | 'sysbox' | 'container';
+export type SessionEnvAdapterMode = 'auto' | 'host' | 'sysbox' | 'container' | 'firecracker';
 
 export const SESSION_ENV_ADAPTER_MODES: readonly SessionEnvAdapterMode[] = [
   'auto',
   'host',
   'sysbox',
   'container',
+  'firecracker',
 ];
 
 export function coerceSessionEnvAdapterMode(raw: unknown): SessionEnvAdapterMode {

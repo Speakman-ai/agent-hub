@@ -16,17 +16,26 @@
  *                   the default rather than an opt-in for specially prepared
  *                   hosts. Finalize CI already runs privileged DinD on these
  *                   same machines.
+ *   - `firecracker` — per-session microVM. The session gets its own kernel
+ *                   behind a hardware virtualization boundary rather than a
+ *                   namespaced view of the host's. Needs KVM (`/dev/kvm`),
+ *                   which on EC2 means a bare-metal or nested-virtualization
+ *                   instance type.
  *
  * Backend selection lives in `select-session-env.ts`; adapters live in
- * `host-session-env.ts` and `sysbox-session-env.ts` (which serves both
- * container kinds — they differ only in the isolation runtime).
+ * `host-session-env.ts`, `sysbox-session-env.ts` (which serves both container
+ * kinds — they differ only in the isolation runtime), and
+ * `firecracker/firecracker-session-env.ts`.
  */
 
 import type { SessionEnvPortRouting } from './container-routing.js';
 
-export type SessionEnvKind = 'host' | 'sysbox' | 'container';
+export type SessionEnvKind = 'host' | 'sysbox' | 'container' | 'firecracker';
 
-/** `sessionEnvAdapter` config values. `auto` = sysbox when available, else host. */
+/**
+ * `sessionEnvAdapter` config values. `auto` picks the strongest boundary the
+ * host can actually provide, in descending order of isolation.
+ */
 export type SessionEnvBackendChoice = 'auto' | SessionEnvKind;
 
 export interface SessionEnvSpawnOpts {

@@ -3592,13 +3592,16 @@ export interface AppConfig {
    * takes the strongest boundary available: `sysbox` when sysbox-runc is
    * installed and registered with Docker, else `container` (privileged DinD)
    * when docker is usable and container IPs are routable, else `host`.
-   * `host` / `sysbox` / `container` force a backend; a forced backend that
-   * fails its probe falls back with a logged warning. Configure via
-   * `sessionEnvAdapter` in config.json or env `AGENT_HUB_SESSION_ENV_ADAPTER`.
-   * Probe + selection logic: server/session-env/sysbox-capability.ts; host
-   * install: docs/deployment/SYSBOX-HOST-SETUP.md.
+   * `firecracker` leads the `auto` order where the host can boot microVMs
+   * (`/dev/kvm` plus staged guest artifacts). `host` / `sysbox` / `container`
+   * / `firecracker` force a backend; a forced backend that fails its probe
+   * falls back with a logged warning. Configure via `sessionEnvAdapter` in
+   * config.json or env `AGENT_HUB_SESSION_ENV_ADAPTER`. Probe + selection
+   * logic: server/session-env/sysbox-capability.ts and
+   * server/session-env/firecracker/firecracker-capability.ts; host install:
+   * docs/deployment/SYSBOX-HOST-SETUP.md.
    */
-  sessionEnvAdapter: 'auto' | 'host' | 'sysbox' | 'container';
+  sessionEnvAdapter: 'auto' | 'host' | 'sysbox' | 'container' | 'firecracker';
   /**
    * When false (the default), a successful push to GitHub parks the linked
    * kanban card in **Review**; only the PR-merge moves it to **Done**. This is
