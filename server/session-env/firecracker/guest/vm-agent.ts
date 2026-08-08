@@ -26,7 +26,6 @@ import { readFile, writeFile, chmod } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { userInfo } from 'os';
 import { pathToFileURL } from 'url';
-import * as pty from 'node-pty';
 import {
   VmAgentFrameDecoder,
   encodeFrame,
@@ -42,6 +41,38 @@ import {
   VM_AGENT_PROTOCOL_VERSION,
 } from '../vm-agent-protocol.js';
 import { parseListeningPorts } from './proc-net-tcp.js';
+
+/**
+ * node-pty is loaded on first use rather than imported at the top.
+ *
+ * It is a native addon, so it is the one dependency that can be absent from
+ * an otherwise healthy guest — a rootfs built without it, or built for a
+ * different Node ABI. A top-level import turns that into an unhandled
+ * ERR_MODULE_NOT_FOUND before the socket is even created, systemd restarts
+ * the agent five times in as many seconds, hits the start limit, and gives
+ * up. The VM then boots, pings, routes traffic, and answers nothing, with the
+ * only evidence inside a guest the Hub can no longer reach.
+ *
+ * Deferring it means a missing addon costs exactly what it should: terminals
+ * fail with a clear message, and every other operation keeps working.
+ */
+type PtyModule = typeof import('node-pty');
+let ptyModule: PtyModule | null = null;
+let ptyLoadFailure: string | null = null;
+
+async function loadPty(): Promise<PtyModule> {
+  if (ptyModule) return ptyModule;
+  if (ptyLoadFailure !== null) throw new Error(ptyLoadFailure);
+  try {
+    ptyModule = await import('node-pty');
+    return ptyModule;
+  } catch (err) {
+    ptyLoadFailure =
+      'node-pty is not available in this guest, so terminals cannot be opened: ' +
+      (err instanceof Error ? err.message : String(err));
+    throw new Error(ptyLoadFailure);
+  }
+}
 
 /** Distinguishes a fresh VM from one the Hub reconnected to after a restart. */
 const BOOT_ID = randomUUID();
@@ -81,6 +112,55 @@ export function resolveWorkspaceUser(
     }
   }
   throw new Error(`vm-agent: workspace user "${name}" does not exist in this guest`);
+}
+
+/**
+ * Drop from the agent's root to the workspace user via `setpriv`.
+ *
+ * `spawn`'s `uid`/`gid` options change only the primary ids — Node never
+ * calls `initgroups`, so the child keeps *root's* supplementary groups and
+ * silently belongs to none of the workspace user's. In this image that means
+ * no `docker` group, and every `docker` command in a session fails with
+ * "permission denied ... /var/run/docker.sock" despite `id runner` listing
+ * the group. `--init-groups` reads /etc/group and applies the real set.
+ */
+export const SETPRIV_BIN = '/usr/bin/setpriv';
+
+export interface ChildLaunch {
+  file: string;
+  args: string[];
+}
+
+/**
+ * Build the argv for a child process, dropping to `user` when the agent is
+ * running as root.
+ *
+ * When the agent is *not* root there is nothing to drop: `setpriv --reuid`
+ * would fail outright, and the child already has exactly the identity and
+ * groups it should. That is the case under test and when the agent is run
+ * unprivileged, so the choice is behavioural, not a test accommodation.
+ */
+export function buildChildLaunch(
+  user: ResolvedUser,
+  command: string,
+  args: string[],
+  currentUid: number | undefined = process.getuid?.(),
+): ChildLaunch {
+  if (currentUid !== 0 || currentUid === user.uid) return { file: command, args };
+  return {
+    file: SETPRIV_BIN,
+    args: [
+      `--reuid=${String(user.uid)}`,
+      `--regid=${String(user.gid)}`,
+      '--init-groups',
+      // Without this the child keeps the agent's bounding set; a session
+      // process has no business inheriting root capabilities.
+      '--inh-caps=-all',
+      '--',
+      command,
+      ...args,
+    ],
+  };
 }
 
 export function buildChildEnv(
@@ -198,7 +278,7 @@ class Connection {
           this.#exec(request);
           return;
         case 'pty':
-          this.#pty(request);
+          await this.#pty(request);
           return;
         case 'list-ports':
           await this.#listPorts();
@@ -220,11 +300,10 @@ class Connection {
   }
 
   #exec(request: VmAgentExecRequest): void {
-    const child = spawn('/bin/sh', ['-c', request.command], {
+    const launch = buildChildLaunch(this.workspaceUser, '/bin/sh', ['-c', request.command]);
+    const child = spawn(launch.file, launch.args, {
       cwd: request.cwd,
       env: buildChildEnv(this.workspaceUser, request.env),
-      uid: this.workspaceUser.uid,
-      gid: this.workspaceUser.gid,
       // Its own process group, so a signal reaches the whole job tree rather
       // than just the shell that forked it.
       detached: true,
@@ -256,16 +335,16 @@ class Connection {
     });
   }
 
-  #pty(request: VmAgentPtyRequest): void {
+  async #pty(request: VmAgentPtyRequest): Promise<void> {
+    const pty = await loadPty();
     const env = buildChildEnv(this.workspaceUser, { ...request.env, TERM: request.term });
-    const term = pty.spawn(request.command, request.args, {
+    const launch = buildChildLaunch(this.workspaceUser, request.command, request.args);
+    const term = pty.spawn(launch.file, launch.args, {
       name: request.term,
       cols: request.cols,
       rows: request.rows,
       cwd: request.cwd,
       env,
-      uid: this.workspaceUser.uid,
-      gid: this.workspaceUser.gid,
     });
 
     this.sendJson('started', { pid: term.pid });

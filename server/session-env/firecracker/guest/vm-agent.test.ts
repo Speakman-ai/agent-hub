@@ -3,7 +3,13 @@ import { connect, type Server, type Socket } from 'net';
 import { mkdtemp, readFile, rm } from 'fs/promises';
 import { tmpdir, userInfo } from 'os';
 import { join } from 'path';
-import { createVmAgentServer, buildChildEnv, resolveWorkspaceUser } from './vm-agent.js';
+import {
+  createVmAgentServer,
+  buildChildEnv,
+  buildChildLaunch,
+  resolveWorkspaceUser,
+  SETPRIV_BIN,
+} from './vm-agent.js';
 import {
   VmAgentFrameDecoder,
   encodeJsonFrame,
@@ -318,5 +324,44 @@ describe('resolveWorkspaceUser', () => {
     expect(() => resolveWorkspaceUser('nope', () => 'root:x:0:0:root:/root:/bin/bash')).toThrow(
       /does not exist in this guest/,
     );
+  });
+});
+
+describe('buildChildLaunch', () => {
+  const user = { uid: 1000, gid: 1000, home: '/home/runner', name: 'runner' };
+
+  it('drops root to the workspace user with its real supplementary groups', () => {
+    const launch = buildChildLaunch(user, '/bin/sh', ['-c', 'docker ps'], 0);
+    expect(launch.file).toBe(SETPRIV_BIN);
+    // --init-groups is the whole point: spawn's uid/gid options leave the
+    // child in root's groups, so it is not in `docker` and every docker
+    // command fails on the socket despite the user being a member.
+    expect(launch.args).toEqual([
+      '--reuid=1000',
+      '--regid=1000',
+      '--init-groups',
+      '--inh-caps=-all',
+      '--',
+      '/bin/sh',
+      '-c',
+      'docker ps',
+    ]);
+  });
+
+  it('runs directly when the agent is already unprivileged', () => {
+    // setpriv --reuid would simply fail here, and there is nothing to drop.
+    expect(buildChildLaunch(user, '/bin/sh', ['-c', 'true'], 1000)).toEqual({
+      file: '/bin/sh',
+      args: ['-c', 'true'],
+    });
+  });
+
+  it('runs directly when root is also the workspace user', () => {
+    const root = { uid: 0, gid: 0, home: '/root', name: 'root' };
+    expect(buildChildLaunch(root, '/bin/sh', [], 0).file).toBe('/bin/sh');
+  });
+
+  it('runs directly when the uid cannot be determined (non-POSIX host)', () => {
+    expect(buildChildLaunch(user, '/bin/sh', [], undefined).file).toBe('/bin/sh');
   });
 });
