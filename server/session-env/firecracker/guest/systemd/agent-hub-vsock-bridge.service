@@ -1,0 +1,25 @@
+[Unit]
+Description=Agent Hub vsock bridge (host <-> vm-agent)
+# Node has no AF_VSOCK support, so socat terminates the vsock connection and
+# hands each one to the agent's Unix socket. `fork` means one bridge process
+# per connection, which is what keeps a wedged PTY from stalling an unrelated
+# command — the protocol assumes one logical stream per connection.
+DefaultDependencies=no
+After=agent-hub-vm-agent.service
+Requires=agent-hub-vm-agent.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/socat VSOCK-LISTEN:1024,fork,reuseaddr,backlog=64 UNIX-CONNECT:/run/agent-hub/vm-agent.sock
+# Until this is up the VM is unreachable from the Hub, and the Hub's readiness
+# probe is what gates the whole session on it.
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
