@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildVmmLaunchArgv,
+  VMM_LAUNCH_SCRIPT,
   buildPrivilegedArgv,
   buildStopVmmArgv,
   resolveFirecrackerExecConfig,
@@ -77,6 +79,41 @@ describe('buildPrivilegedArgv', () => {
       containerName: vmmContainerName('ahvm-sess-1'),
     });
     expect(argv.slice(0, 5)).toEqual(['docker', 'run', '--rm', '--name', 'ah-vmm-ahvm-sess-1']);
+  });
+
+  it('hands the vsock socket to the Hub uid once firecracker creates it', () => {
+    // The VMM runs as root in both exec modes, so the Hub — which is not root —
+    // cannot connect to the socket it just asked for unless ownership moves.
+    const argv = buildVmmLaunchArgv({
+      vmId: 'ahvm-s1',
+      cwd: '/vms/ahvm-s1',
+      argv: ['firecracker', '--api-sock', '/vms/ahvm-s1/api.sock'],
+      vsockPath: '/vms/ahvm-s1/vsock.sock',
+      ownerUid: 1000,
+      ownerGid: 1000,
+    });
+    // Positional, never interpolated: no value can be parsed as shell.
+    expect(argv.slice(0, 3)).toEqual(['sh', '-c', VMM_LAUNCH_SCRIPT]);
+    expect(argv.slice(3)).toEqual([
+      'sh',
+      '/vms/ahvm-s1/vsock.sock',
+      '1000:1000',
+      'firecracker',
+      '--api-sock',
+      '/vms/ahvm-s1/api.sock',
+    ]);
+    expect(VMM_LAUNCH_SCRIPT).toContain('chown "$owner" "$sock"');
+    // The container must live as long as the VMM, not as long as the chown.
+    expect(VMM_LAUNCH_SCRIPT.trimEnd().endsWith('wait $vmm')).toBe(true);
+  });
+
+  it('leaves the argv alone when no ownership handoff is needed', () => {
+    const argv = buildVmmLaunchArgv({
+      vmId: 'ahvm-s1',
+      cwd: '/vms/ahvm-s1',
+      argv: ['firecracker', '--api-sock', '/vms/ahvm-s1/api.sock'],
+    });
+    expect(argv).toEqual(['firecracker', '--api-sock', '/vms/ahvm-s1/api.sock']);
   });
 
   it('rejects an empty argv instead of building a container with no command', () => {

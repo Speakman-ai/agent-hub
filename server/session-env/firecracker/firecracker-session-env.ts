@@ -94,6 +94,15 @@ export interface VmmLaunchSpec {
   vmId: string;
   argv: string[];
   cwd: string;
+  /**
+   * Where Firecracker will create the vsock socket, plus the uid/gid to hand
+   * it to once it exists. The VMM runs as root in both exec modes, so without
+   * this the Hub cannot connect to the guest it just booted. Optional so a
+   * launcher that needs no handoff (a Hub already running as root) can omit it.
+   */
+  vsockPath?: string;
+  ownerUid?: number;
+  ownerGid?: number;
 }
 
 /**
@@ -328,6 +337,17 @@ export class FirecrackerSessionEnv implements SessionEnv {
     return `${this.vmDir}/vsock.sock`;
   }
 
+  /**
+   * The uid/gid the vsock socket must end up owned by — this process. Omitted
+   * on platforms without `getuid` (never the VM host, but the type is
+   * optional there) so the launcher simply skips the handoff.
+   */
+  private hubOwner(): { ownerUid?: number; ownerGid?: number } {
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+    return uid === undefined || gid === undefined ? {} : { ownerUid: uid, ownerGid: gid };
+  }
+
   touch(): void {
     this.#lastActivityAtMs = this.clock.nowMs();
   }
@@ -417,7 +437,13 @@ export class FirecrackerSessionEnv implements SessionEnv {
             logPath: `${this.vmDir}/firecracker.log`,
           });
 
-      const vmm = this.spawnVmm({ vmId: this.vmId, argv, cwd: this.vmDir });
+      const vmm = this.spawnVmm({
+        vmId: this.vmId,
+        argv,
+        cwd: this.vmDir,
+        vsockPath: this.vsockPath,
+        ...this.hubOwner(),
+      });
       this.#vmProcess = vmm;
       vmm.stderr?.on('data', (chunk: string | Buffer) => {
         this.logger.warn(`[fc ${this.vmId}] ${chunk.toString().trimEnd()}`);
