@@ -34,6 +34,16 @@ RUN printf '/dev/vda / ext4 rw,relatime 0 1\n' > /etc/fstab \
     && mkdir -p /workspace \
     && chown 1000:1000 /workspace
 
+# node-pty for the agent's terminal support. Native addons cannot be bundled,
+# so it is installed here against the guest's own Node — an addon built for a
+# different ABI fails at load, not at build. It goes in the same directory the
+# agent bundle lands in (/usr/local/lib/agent-hub/vm-agent.mjs) because that is
+# where Node's resolver looks first when the bundle imports `node-pty`.
+RUN mkdir -p /usr/local/lib/agent-hub \
+    && cd /usr/local/lib/agent-hub \
+    && npm install --no-package-lock --no-audit --no-fund node-pty \
+    && npm cache clean --force
+
 # A baked-in machine-id would make every session VM identical to systemd and
 # to anything that keys off it. Empty means "generate on first boot".
 RUN rm -f /etc/machine-id /var/lib/dbus/machine-id \
@@ -42,10 +52,15 @@ RUN rm -f /etc/machine-id /var/lib/dbus/machine-id \
 # Units that only make sense on real hardware or a cloud instance. Left
 # enabled they add seconds of boot time waiting on devices and metadata
 # endpoints that do not exist in a Firecracker guest.
+#
+# systemd-udev-trigger.service is emphatically NOT in this list. It replays
+# `add` uevents for devices that already existed when udevd started, which is
+# every device in a microVM. Masking it means no `.device` units are ever
+# created, so workspace.mount waits the full DefaultDeviceTimeoutSec on
+# /dev/vdb and then fails — taking the agent and the vsock bridge with it and
+# leaving a VM that boots, pings, and answers nothing.
 RUN systemctl mask \
-      systemd-udev-trigger.service \
       systemd-random-seed.service \
-      systemd-timesyncd.service \
       e2scrub_reap.service \
       apt-daily.timer \
       apt-daily-upgrade.timer \
@@ -53,9 +68,24 @@ RUN systemctl mask \
       motd-news.timer \
     || true
 
+# Firecracker exposes no RTC — the `IO write @ 0x70` errors on the console are
+# the guest failing to read a CMOS clock that is not there. Without NTP the
+# clock starts at whatever timestamp systemd finds on disk and never advances
+# to real time, which breaks TLS certificate validation for every `npm
+# install` and `docker pull` a session makes.
+RUN systemctl unmask systemd-timesyncd.service 2>/dev/null || true
+RUN systemctl enable systemd-timesyncd.service 2>/dev/null || true
+
 # eth0 is configured statically from the kernel cmdline (`ip=`), so no
 # DHCP client should race it.
 RUN systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
+
+# NOTE: /etc/resolv.conf is deliberately *not* written here. Docker bind-mounts
+# it over during build, so a RUN cannot modify it and the export drops it as an
+# empty file — which reads as "no DNS" rather than as an error, leaving a guest
+# that routes fine and resolves nothing. build-guest-artifacts.sh writes the
+# default into the assembled rootfs instead, and agent-hub-resolv.service
+# overrides it at boot from the host-supplied cmdline.
 
 # Serial console: this is the only way to see a guest that fails before the
 # agent starts, which is precisely when you need it most.
