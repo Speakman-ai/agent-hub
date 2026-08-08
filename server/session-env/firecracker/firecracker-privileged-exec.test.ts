@@ -49,6 +49,9 @@ describe('buildPrivilegedArgv', () => {
       'docker',
       'run',
       '--rm',
+      // Bypasses the CI runner entrypoint; the command becomes the entrypoint.
+      '--entrypoint',
+      'ip',
       '--privileged',
       '--user',
       '0:0',
@@ -61,7 +64,6 @@ describe('buildPrivilegedArgv', () => {
       '-w',
       '/',
       'runner:latest',
-      'ip',
       'tuntap',
       'add',
       'ahfct3',
@@ -75,6 +77,10 @@ describe('buildPrivilegedArgv', () => {
       containerName: vmmContainerName('ahvm-sess-1'),
     });
     expect(argv.slice(0, 5)).toEqual(['docker', 'run', '--rm', '--name', 'ah-vmm-ahvm-sess-1']);
+  });
+
+  it('rejects an empty argv instead of building a container with no command', () => {
+    expect(() => buildPrivilegedArgv(dockerCfg(), [])).toThrow(/requires a command/);
   });
 
   it('refuses docker mode without an image rather than shelling out to a bare argv', () => {

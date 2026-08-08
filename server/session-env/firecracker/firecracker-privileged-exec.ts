@@ -86,11 +86,21 @@ export function buildPrivilegedArgv(
         '(set AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE).',
     );
   }
+  const [executable, ...args] = argv;
+  if (executable === undefined) {
+    throw new Error('buildPrivilegedArgv requires a command to run.');
+  }
   return [
     cfg.dockerBin,
     'run',
     '--rm',
     ...(opts.containerName ? ['--name', opts.containerName] : []),
+    // The helper image is the Finalize CI runner, whose entrypoint bootstraps
+    // an inner dockerd. None of that belongs in a one-shot `ip` or `firecracker`
+    // invocation, and routing through it turns a missing binary into a shell
+    // error attributed to the entrypoint's line number.
+    '--entrypoint',
+    executable,
     '--privileged',
     // The helper image defaults to an unprivileged user, and --privileged does
     // not change *who* the process is. /dev/kvm is crw-rw---- root:kvm, so a
@@ -106,7 +116,7 @@ export function buildPrivilegedArgv(
     '-w',
     '/',
     cfg.image,
-    ...argv,
+    ...args,
   ];
 }
 
