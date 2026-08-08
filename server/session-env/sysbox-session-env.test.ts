@@ -176,7 +176,11 @@ describe('SysboxSessionEnv container start', () => {
   it('starts once on mountWorktree: labeled graph volume, sysbox run, dockerd probe', async () => {
     const { env, runCalls } = makeEnv();
     const mount = await env.mountWorktree();
-    expect(mount).toEqual({ hostPath: '/wt/session-1', envPath: SYSBOX_SESSION_WORKSPACE });
+    expect(mount).toEqual({
+      hostPath: '/wt/session-1',
+      envPath: SYSBOX_SESSION_WORKSPACE,
+      sharing: 'host-shared',
+    });
     expect(env.containerStarted).toBe(true);
 
     expect(runCalls[0].slice(0, 3)).toEqual(['docker', 'volume', 'create']);

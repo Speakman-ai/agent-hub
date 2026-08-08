@@ -29,6 +29,7 @@ import {
   resolveEnvRelativeCwd,
   systemSessionEnvClock,
 } from './session-env.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from './worktree-io.js';
 
 /**
  * Minimal `child_process.spawn`-shaped child. Keeps the adapter decoupled
@@ -429,8 +430,21 @@ export class HostSessionEnv implements SessionEnv {
       );
     }
     // Host adapter uses the worktree in place — no bind mount needed.
-    return { hostPath: this.worktreePath, envPath: this.worktreePath };
+    return {
+      hostPath: this.worktreePath,
+      envPath: this.worktreePath,
+      sharing: this.worktreeSharing,
+    };
   }
+
+  readonly worktreeSharing = 'host-shared' as const;
+
+  get worktreeIo(): SessionWorktreeIo {
+    this.#worktreeIo ??= new HostWorktreeIo(this.worktreePath);
+    return this.#worktreeIo;
+  }
+
+  #worktreeIo: SessionWorktreeIo | undefined;
 
   dispose(opts: SessionEnvDisposeOpts = {}): Promise<void> {
     if (this.#disposePromise) return this.#disposePromise;

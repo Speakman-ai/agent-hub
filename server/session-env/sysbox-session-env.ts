@@ -44,6 +44,7 @@ import {
   resolveEnvRelativeCwd,
   systemSessionEnvClock,
 } from './session-env.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from './worktree-io.js';
 import {
   SYSBOX_EXEC_USER,
   SYSBOX_SESSION_WORKSPACE,
@@ -725,8 +726,22 @@ export class SysboxSessionEnv implements SessionEnv {
     // The bind mount happens at container start; ensureStarted is idempotent.
     await this.ensureStarted();
     this.#assertLive('mountWorktree');
-    return { hostPath: this.worktreePath, envPath: SYSBOX_SESSION_WORKSPACE };
+    return {
+      hostPath: this.worktreePath,
+      envPath: SYSBOX_SESSION_WORKSPACE,
+      sharing: this.worktreeSharing,
+    };
   }
+
+  /** Bind mount, so the container and the Hub write the same bytes. */
+  readonly worktreeSharing = 'host-shared' as const;
+
+  get worktreeIo(): SessionWorktreeIo {
+    this.#worktreeIo ??= new HostWorktreeIo(this.worktreePath);
+    return this.#worktreeIo;
+  }
+
+  #worktreeIo: SessionWorktreeIo | undefined;
 
   dispose(opts: SessionEnvDisposeOpts = {}): Promise<void> {
     if (this.#disposePromise) return this.#disposePromise;

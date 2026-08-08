@@ -29,6 +29,7 @@
  */
 
 import type { SessionEnvPortRouting } from './container-routing.js';
+import type { SessionWorktreeIo } from './worktree-io.js';
 
 export type SessionEnvKind = 'host' | 'sysbox' | 'container' | 'firecracker';
 
@@ -155,11 +156,35 @@ export interface SessionEnvDialTarget {
   url: string;
 }
 
+/**
+ * Whether the Hub can reach the session worktree through its own filesystem.
+ *
+ *   - **host-shared** — the env sees the very bytes `worktree.ts` wrote, via a
+ *     bind mount (or, for the host adapter, no boundary at all). Host `git`
+ *     and `fs` against the worktree path are authoritative.
+ *   - **env-owned** — the env holds the only live copy. Firecracker has no
+ *     virtio-fs or 9p, so the worktree is *seeded onto* a block device at boot
+ *     and diverges from the host directory the moment anything writes to it.
+ *     The host path is a stale snapshot, and reading it is a correctness bug,
+ *     not a slow path: a Finalize that committed from it would ship the seed
+ *     and silently drop the session's work.
+ *
+ * Anything that reads or writes worktree contents must route through
+ * {@link SessionEnv.worktreeIo} rather than assuming the first case.
+ */
+export type SessionEnvWorktreeSharing = 'host-shared' | 'env-owned';
+
 export interface SessionEnvWorktreeMount {
-  /** Worktree path on the Hub host (what `worktree.ts` created). */
-  hostPath: string;
+  /**
+   * Worktree path on the Hub host (what `worktree.ts` created), or `null`
+   * under `env-owned` sharing, where no host path holds current contents.
+   * Nullable on purpose: it makes the stale-snapshot case unignorable at the
+   * type level instead of handing out a path that silently lies.
+   */
+  hostPath: string | null;
   /** The same tree as seen from inside the env (== hostPath on `host`). */
   envPath: string;
+  sharing: SessionEnvWorktreeSharing;
 }
 
 /** Thrown by every op after {@link SessionEnv.dispose} settles the env. */
@@ -226,6 +251,18 @@ export interface SessionEnv {
   resolveDialTarget(internalPort: number): Promise<SessionEnvDialTarget>;
   /** Ensure the session worktree is visible inside the env. Idempotent. */
   mountWorktree(): Promise<SessionEnvWorktreeMount>;
+  /**
+   * How this env shares the worktree with the Hub. Readable without starting
+   * the env, unlike {@link mountWorktree} — callers deciding *how* to reach
+   * the worktree should not have to boot a VM to find out.
+   */
+  readonly worktreeSharing: SessionEnvWorktreeSharing;
+  /**
+   * Read/write the worktree from the Hub process. The only correct way to
+   * touch worktree contents: under `env-owned` sharing the host directory is
+   * a boot-time snapshot, so `fs` and `git` against it read stale bytes.
+   */
+  readonly worktreeIo: SessionWorktreeIo;
 
   // ── Lifecycle / reap hooks ─────────────────────────────────────
   /** Processes + PTYs currently alive inside the env. */

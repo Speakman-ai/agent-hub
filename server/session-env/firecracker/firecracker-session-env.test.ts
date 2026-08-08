@@ -136,9 +136,14 @@ function makeSlots(): FirecrackerSlotPool & { released: number[] } {
 }
 
 function makeVmm() {
-  const spawned: { file: string; args: string[] }[] = [];
-  const spawnVmm = ((file: string, args: string[]) => {
-    spawned.push({ file, args });
+  const spawned: { file: string; args: string[]; vmId: string; cwd: string }[] = [];
+  const spawnVmm = ((spec: { vmId: string; argv: string[]; cwd: string }) => {
+    spawned.push({
+      file: spec.argv[0],
+      args: spec.argv.slice(1),
+      vmId: spec.vmId,
+      cwd: spec.cwd,
+    });
     return {
       pid: 4242,
       stdout: { on: () => undefined },
@@ -156,7 +161,7 @@ function makeEnv(overrides: Record<string, unknown> = {}) {
   const slots = makeSlots();
   const guest = new FakeGuest();
   const { spawnVmm, spawned } = makeVmm();
-  const killVmm = vi.fn();
+  const stopVmm = vi.fn();
   const env = new FirecrackerSessionEnv({
     sessionId: 'sess-1',
     worktreePath: '/wt/sess-1',
@@ -169,14 +174,14 @@ function makeEnv(overrides: Record<string, unknown> = {}) {
     io,
     slotsOverride: undefined,
     spawnVmm,
-    killVmm,
+    stopVmm,
     connect: guest.connect,
     readyTimeoutMs: 2000,
     readyPollMs: 1,
     logger: { warn: () => undefined },
     ...overrides,
   } as never);
-  return { env, io, runs, written, removed, slots, guest, spawned, killVmm };
+  return { env, io, runs, written, removed, slots, guest, spawned, stopVmm };
 }
 
 describe('FirecrackerSessionEnv start', () => {
@@ -352,22 +357,25 @@ describe('FirecrackerSessionEnv ports', () => {
     expect(env.listPortMappings()).toHaveLength(2);
   });
 
-  it('reports the worktree mount point inside the guest', async () => {
+  it('reports the guest mount point and withholds the stale host path', async () => {
     const { env } = makeEnv();
+    // The host worktree only seeded the disk; the guest has owned the tree
+    // since boot, so handing back a host path would invite stale reads.
     expect(await env.mountWorktree()).toEqual({
-      hostPath: '/wt/sess-1',
+      hostPath: null,
       envPath: '/workspace',
+      sharing: 'env-owned',
     });
   });
 });
 
 describe('FirecrackerSessionEnv dispose', () => {
   it('kills the VMM, drops the tap, releases the slot, and clears the run dir', async () => {
-    const { env, runs, slots, removed, killVmm } = makeEnv();
+    const { env, runs, slots, removed, stopVmm } = makeEnv();
     await env.ensureStarted();
     await env.dispose();
 
-    expect(killVmm).toHaveBeenCalledWith(4242);
+    expect(stopVmm).toHaveBeenCalledWith({ vmId: 'ahvm-sess-1', pid: 4242 });
     expect(runs.at(-1)).toEqual(['ip', 'link', 'del', 'ahfct3']);
     expect(slots.released).toEqual([3]);
     expect(removed).toEqual(['/run/agent-hub/vms/ahvm-sess-1']);
@@ -395,10 +403,10 @@ describe('FirecrackerSessionEnv dispose', () => {
   });
 
   it('is idempotent and rejects every op afterwards', async () => {
-    const { env, killVmm } = makeEnv();
+    const { env, stopVmm } = makeEnv();
     await env.ensureStarted();
     await Promise.all([env.dispose(), env.dispose()]);
-    expect(killVmm).toHaveBeenCalledTimes(1);
+    expect(stopVmm).toHaveBeenCalledTimes(1);
 
     expect(() => env.spawn('ls')).toThrow(SessionEnvDisposedError);
     await expect(env.openPty()).rejects.toThrow(SessionEnvDisposedError);
