@@ -261,34 +261,19 @@ export function selectSessionEnvAdapter(
         probe,
       };
     }
-    // Same principle as a forced sysbox: the operator asked for isolation, so
-    // degrade to the next-strongest boundary rather than all the way to host.
-    if (probe.available) {
-      return {
-        adapter: 'sysbox',
-        mode,
-        forced: false,
-        fellBack: true,
-        reason: `microVM backend forced by config but unavailable — using sysbox instead: ${firecracker.reason}`,
-        probe,
-      };
-    }
-    if (containerUsable) {
-      return {
-        adapter: 'container',
-        mode,
-        forced: false,
-        fellBack: true,
-        reason: `microVM backend forced by config but unavailable — using the container backend instead: ${firecracker.reason}`,
-        probe,
-      };
-    }
+    // No fallback, unlike a forced sysbox. `resolveSessionEnvBackend` throws
+    // for this exact case, so reporting a container or host fallback here
+    // would describe a run that never happens — and an operator who wrote
+    // "firecracker" asked for a hardware boundary, which a container does not
+    // provide. `auto` is the mode that degrades; this one is a demand.
     return {
-      adapter: 'host',
+      adapter: 'firecracker',
       mode,
-      forced: false,
-      fellBack: true,
-      reason: `microVM backend forced by config but unavailable — falling back to host adapter: ${firecracker.reason}`,
+      forced: true,
+      fellBack: false,
+      reason:
+        `microVM backend forced by config but unavailable — sessions will fail until ` +
+        `this is fixed (set sessionEnvAdapter=auto to degrade instead): ${firecracker.reason}`,
       probe,
     };
   }

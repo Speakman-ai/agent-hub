@@ -92,6 +92,14 @@ export function buildPrivilegedArgv(
     '--rm',
     ...(opts.containerName ? ['--name', opts.containerName] : []),
     '--privileged',
+    // The helper image defaults to an unprivileged user, and --privileged does
+    // not change *who* the process is. /dev/kvm is crw-rw---- root:kvm, so a
+    // uid-1000 process sees the device node and cannot open it — which the
+    // capability probe reports as "KVM not readable/writable" on a host that
+    // boots VMs perfectly well. Everything this helper exists to do (create
+    // taps, loop-mount images, open /dev/kvm) requires root anyway.
+    '--user',
+    '0:0',
     '--network',
     'host',
     ...mountFlags(cfg.mounts),

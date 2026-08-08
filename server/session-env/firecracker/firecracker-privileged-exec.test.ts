@@ -50,6 +50,8 @@ describe('buildPrivilegedArgv', () => {
       'run',
       '--rm',
       '--privileged',
+      '--user',
+      '0:0',
       '--network',
       'host',
       '-v',
