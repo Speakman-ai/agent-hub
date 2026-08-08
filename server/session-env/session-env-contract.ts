@@ -90,11 +90,24 @@ export function describeSessionEnvContract(
       expect(await env.mapPortsOut()).toEqual(env.listPortMappings());
     });
 
-    it('mountWorktree returns host and in-env paths', async () => {
+    it('mountWorktree reports an in-env path and a host path only when shared', async () => {
       const env = await harness.createEnv();
       const mount = await env.mountWorktree();
-      expect(mount.hostPath.length).toBeGreaterThan(0);
       expect(mount.envPath.length).toBeGreaterThan(0);
+      expect(mount.sharing).toBe(env.worktreeSharing);
+      // A host path must be offered exactly when it is authoritative.
+      // Advertising one under env-owned sharing is how stale reads start.
+      if (mount.sharing === 'host-shared') {
+        expect(mount.hostPath?.length ?? 0).toBeGreaterThan(0);
+      } else {
+        expect(mount.hostPath).toBeNull();
+      }
+    });
+
+    it('worktreeIo agrees with the env about how the worktree is shared', async () => {
+      const env = await harness.createEnv();
+      expect(env.worktreeIo.sharing).toBe(env.worktreeSharing);
+      expect(env.worktreeIo.hostPath === null).toBe(env.worktreeSharing === 'env-owned');
     });
 
     it('touch bumps lastActivityAtMs', async () => {

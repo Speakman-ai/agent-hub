@@ -22,6 +22,7 @@ import type {
   SessionEnvWorktreeMount,
 } from '../session-env/session-env.js';
 import type { SessionEnvPortRouting } from '../session-env/container-routing.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from '../session-env/worktree-io.js';
 import type { Clock } from './preview-runtime-primitives.js';
 import { resolveDevServerPortClientUrl } from './preview-public-url.js';
 import {
@@ -121,6 +122,8 @@ class FakeSessionEnv implements SessionEnv {
   throwOnSpawn: Error | null = null;
   /** When set, the NEXT spawned proc is created already-exited with this result. */
   preExitNextSpawn: SessionEnvExit | null = null;
+  readonly worktreeSharing = 'host-shared' as const;
+  readonly worktreeIo: SessionWorktreeIo = new HostWorktreeIo('/fake/worktree');
   private readonly mappings = new Map<number, SessionEnvPortMapping>();
   private readonly disposeHooks = new Set<() => void>();
 
@@ -185,7 +188,7 @@ class FakeSessionEnv implements SessionEnv {
 
   async mountWorktree(): Promise<SessionEnvWorktreeMount> {
     this.mountCalls++;
-    return { hostPath: '/worktree', envPath: '/worktree' };
+    return { hostPath: '/worktree', envPath: '/worktree', sharing: this.worktreeSharing };
   }
 
   liveProcessCount(): number {

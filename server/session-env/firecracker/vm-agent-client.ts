@@ -20,6 +20,7 @@ import {
   vsockConnectCommand,
   type VmAgentFrame,
   type VmAgentFrameType,
+  type VmAgentReply,
   type VmAgentRequest,
 } from './vm-agent-protocol.js';
 
@@ -291,6 +292,44 @@ export function deferStream(pending: Promise<VmAgentStream>): VmAgentStream {
       return closed;
     },
   };
+}
+
+/**
+ * Resolve the single `reply` frame of a one-shot request (ping, list-ports,
+ * read-file, write-file) and close the stream. Unlike the streaming requests,
+ * these have exactly one answer and no useful lifetime past it.
+ */
+export function awaitReply(stream: VmAgentStream, timeoutMs = 30_000): Promise<VmAgentReply> {
+  return new Promise<VmAgentReply>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`guest agent did not reply within ${timeoutMs}ms`));
+    }, timeoutMs);
+    (timer as { unref?: () => void }).unref?.();
+
+    const offFrame = stream.onFrame((frame) => {
+      if (frame.type === 'reply') {
+        cleanup();
+        resolve(JSON.parse(frame.payload.toString('utf8')) as VmAgentReply);
+        return;
+      }
+      if (frame.type === 'error') {
+        const { message } = JSON.parse(frame.payload.toString('utf8')) as { message: string };
+        cleanup();
+        reject(new Error(message));
+      }
+    });
+    const offClose = stream.onClose((err) => {
+      cleanup();
+      reject(err ?? new Error('vm-agent stream closed before replying'));
+    });
+
+    function cleanup(): void {
+      clearTimeout(timer);
+      offFrame();
+      offClose();
+    }
+  }).finally(() => stream.close());
 }
 
 /**

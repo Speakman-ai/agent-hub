@@ -447,6 +447,7 @@ describe('HostSessionEnv.mountWorktree', () => {
     await expect(env.mountWorktree()).resolves.toEqual({
       hostPath: '/wt/session-1',
       envPath: '/wt/session-1',
+      sharing: 'host-shared',
     });
   });
 

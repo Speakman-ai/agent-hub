@@ -39,11 +39,15 @@ import {
   SessionEnvPty,
   SessionEnvPtyOpts,
   SessionEnvSpawnOpts,
+  SessionEnvExit,
   SessionEnvWorktreeMount,
   resolveEnvRelativeCwd,
   systemSessionEnvClock,
 } from '../session-env.js';
 import type { SessionEnvPortRouting } from '../container-routing.js';
+import type { SessionWorktreeIo } from '../worktree-io.js';
+import { GuestWorktreeIo } from './guest-worktree-io.js';
+import { resolveGuestNameservers } from './guest-nameservers.js';
 import {
   FIRECRACKER_GUEST_WORKSPACE,
   buildCreateTapArgv,
@@ -56,6 +60,7 @@ import {
   type VmNetworkPlan,
 } from './firecracker-vm-args.js';
 import {
+  awaitReply,
   awaitStarted,
   deferStream,
   defaultVsockConnect,
@@ -76,6 +81,43 @@ export interface FirecrackerRunResult {
   stdout: string;
   stderr: string;
 }
+
+/** What the adapter needs back from whatever launched the VMM. */
+export interface VmmHandle {
+  pid?: number;
+  stderr?: { on(event: 'data', cb: (chunk: string | Buffer) => void): unknown } | null;
+}
+
+export interface VmmLaunchSpec {
+  /** Stable per-VM identity, so a launcher can name the thing it started. */
+  vmId: string;
+  argv: string[];
+  cwd: string;
+}
+
+/**
+ * Launching and stopping the VMM are named by `vmId` rather than by pid
+ * because the process the Hub can see is not always the process that must
+ * die. When the Hub runs in a container the VMM lives in a sibling container,
+ * and the local pid belongs to the `docker run` client — signalling it leaves
+ * the VM running.
+ */
+export type SpawnVmmFn = (spec: VmmLaunchSpec) => VmmHandle;
+export type StopVmmFn = (spec: { vmId: string; pid?: number }) => void | Promise<void>;
+
+export const defaultSpawnVmm: SpawnVmmFn = ({ argv, cwd }) =>
+  (nodeSpawn as unknown as HostSpawnFn)(argv[0], argv.slice(1), {
+    cwd,
+    env: process.env as Record<string, string>,
+    // Its own process group, so a stuck VMM and any helper it forks are
+    // reaped together at dispose.
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }) as VmmHandle;
+
+export const defaultStopVmm: StopVmmFn = ({ pid }) => {
+  if (pid !== undefined) process.kill(-pid, 'SIGKILL');
+};
 
 /** Host-side IO the adapter needs. Injected so tests touch no real host. */
 export interface FirecrackerHostIo {
@@ -147,19 +189,21 @@ export interface FirecrackerSessionEnvDeps {
   memSizeMib?: number;
   /** Workspace disk size in MiB. Must exceed the worktree plus build output. */
   workspaceSizeMib?: number;
+  /** Override guest DNS discovery. Defaults to the host's own resolvers. */
+  resolveNameservers?: () => Promise<string[]>;
   /** Run the VMM under the jailer (chroot + uid drop + cgroups). */
   useJailer?: boolean;
   jailerUid?: number;
   jailerGid?: number;
   baseEnv?: Record<string, string>;
   io?: FirecrackerHostIo;
-  spawnVmm?: HostSpawnFn;
+  spawnVmm?: SpawnVmmFn;
   /**
-   * Kills the VMM's whole process group. Injectable because the default
-   * signals a *negative* pid — a test that ran the real thing against a fake
-   * pid could take out an unrelated process group on the developer's machine.
+   * Stops the VMM. Injectable because the local default signals a *negative*
+   * pid — a test that ran the real thing against a fake pid could take out an
+   * unrelated process group on the developer's machine.
    */
-  killVmm?: (pid: number) => void;
+  stopVmm?: StopVmmFn;
   connect?: VsockConnectFn;
   prepareDisks?: (ctx: {
     vmDir: string;
@@ -204,7 +248,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
   #startPromise: Promise<void> | null = null;
   #started = false;
   #network: VmNetworkPlan | null = null;
-  #vmProcess: ReturnType<HostSpawnFn> | null = null;
+  #vmProcess: VmmHandle | null = null;
 
   private readonly worktreePath: string;
   private readonly slots: FirecrackerSlotPool;
@@ -217,12 +261,17 @@ export class FirecrackerSessionEnv implements SessionEnv {
   private readonly jailerGid: number;
   private readonly baseEnv: Record<string, string>;
   private readonly io: FirecrackerHostIo;
-  private readonly spawnVmm: HostSpawnFn;
-  private readonly killVmm: (pid: number) => void;
+  private readonly spawnVmm: SpawnVmmFn;
+  private readonly stopVmm: StopVmmFn;
   private readonly connect: VsockConnectFn;
   private readonly prepareDisks: NonNullable<FirecrackerSessionEnvDeps['prepareDisks']>;
   private readonly clock: SessionEnvClock;
   private readonly readyTimeoutMs: number;
+  /**
+   * Resolvers for the guest. Injectable so tests get a deterministic list
+   * instead of whichever DNS the machine running them happens to use.
+   */
+  private readonly resolveNameservers: () => Promise<string[]>;
   private readonly readyPollMs: number;
   private readonly logger: { warn: (msg: string) => void };
 
@@ -244,12 +293,13 @@ export class FirecrackerSessionEnv implements SessionEnv {
     this.jailerGid = deps.jailerGid ?? 1000;
     this.baseEnv = deps.baseEnv ?? {};
     this.io = deps.io ?? defaultFirecrackerHostIo;
-    this.spawnVmm = deps.spawnVmm ?? (nodeSpawn as unknown as HostSpawnFn);
-    this.killVmm = deps.killVmm ?? ((pid) => process.kill(-pid, 'SIGKILL'));
+    this.spawnVmm = deps.spawnVmm ?? defaultSpawnVmm;
+    this.stopVmm = deps.stopVmm ?? defaultStopVmm;
     this.connect = deps.connect ?? defaultVsockConnect;
     this.prepareDisks = deps.prepareDisks ?? ((ctx) => defaultPrepareDisks(this.io, ctx));
     this.clock = deps.clock ?? systemSessionEnvClock;
     this.readyTimeoutMs = deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+    this.resolveNameservers = deps.resolveNameservers ?? (() => resolveGuestNameservers());
     this.readyPollMs = deps.readyPollMs ?? DEFAULT_READY_POLL_MS;
     this.logger = deps.logger ?? { warn: (msg) => console.warn(msg) };
     this.createdAtMs = this.clock.nowMs();
@@ -344,6 +394,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
         vsockUdsPath: this.vsockPath,
         vcpuCount: this.vcpuCount,
         memSizeMib: this.memSizeMib,
+        nameservers: await this.resolveNameservers(),
         bootArgsExtra: [`ahvm.session=${this.sessionId}`],
       });
       await this.io.writeFile(configPath, JSON.stringify(config, null, 2));
@@ -365,14 +416,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
             logPath: `${this.vmDir}/firecracker.log`,
           });
 
-      const vmm = this.spawnVmm(argv[0], argv.slice(1), {
-        cwd: this.vmDir,
-        env: process.env as Record<string, string>,
-        // Its own process group, so a stuck VMM and any helper it forks are
-        // reaped together at dispose.
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      const vmm = this.spawnVmm({ vmId: this.vmId, argv, cwd: this.vmDir });
       this.#vmProcess = vmm;
       vmm.stderr?.on('data', (chunk: string | Buffer) => {
         this.logger.warn(`[fc ${this.vmId}] ${chunk.toString().trimEnd()}`);
@@ -410,6 +454,31 @@ export class FirecrackerSessionEnv implements SessionEnv {
         );
       }
       await this.clock.sleep(this.readyPollMs);
+    }
+  }
+
+  /** Read a file by absolute guest path via the agent. */
+  async readGuestFile(guestPath: string): Promise<Buffer> {
+    await this.ensureStarted();
+    const stream = await this.#open({ kind: 'read-file', path: guestPath });
+    const reply = await awaitReply(stream);
+    if (reply.kind !== 'file') {
+      throw new Error(`Unexpected guest reply reading ${guestPath}: ${reply.kind}`);
+    }
+    return Buffer.from(reply.contentBase64, 'base64');
+  }
+
+  /** Write a file by absolute guest path via the agent. */
+  async writeGuestFile(guestPath: string, contents: Buffer): Promise<void> {
+    await this.ensureStarted();
+    const stream = await this.#open({
+      kind: 'write-file',
+      path: guestPath,
+      contentBase64: contents.toString('base64'),
+    });
+    const reply = await awaitReply(stream);
+    if (reply.kind !== 'written') {
+      throw new Error(`Unexpected guest reply writing ${guestPath}: ${reply.kind}`);
     }
   }
 
@@ -535,7 +604,65 @@ export class FirecrackerSessionEnv implements SessionEnv {
     this.#assertLive('mountWorktree');
     await this.ensureStarted();
     this.#assertLive('mountWorktree');
-    return { hostPath: this.worktreePath, envPath: FIRECRACKER_GUEST_WORKSPACE };
+    // No hostPath: `this.worktreePath` seeded the workspace disk at boot and
+    // has been stale ever since. Callers that need contents use worktreeIo.
+    return { hostPath: null, envPath: FIRECRACKER_GUEST_WORKSPACE, sharing: this.worktreeSharing };
+  }
+
+  readonly worktreeSharing = 'env-owned' as const;
+
+  get worktreeIo(): SessionWorktreeIo {
+    this.#worktreeIo ??= new GuestWorktreeIo(
+      {
+        exec: (command, opts) => this.#execCapture(command, opts),
+        readFile: (guestPath) => this.readGuestFile(guestPath),
+        writeFile: (guestPath, contents) => this.writeGuestFile(guestPath, contents),
+      },
+      FIRECRACKER_GUEST_WORKSPACE,
+    );
+    return this.#worktreeIo;
+  }
+
+  #worktreeIo: SessionWorktreeIo | undefined;
+
+  /**
+   * Run a command in the guest and collect its output. Distinct from
+   * {@link spawn}, which hands back a live stream: worktree IO wants the
+   * whole answer, and wants a timeout that fires rather than a probe that
+   * wedges the Changes pane behind an unresponsive guest.
+   */
+  async #execCapture(
+    command: string,
+    opts: { cwd: string; timeoutMs: number },
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+    await this.ensureStarted();
+    const proc = this.spawn(command, { cwd: opts.cwd, name: 'worktree-io' });
+    let stdout = '';
+    let stderr = '';
+    proc.onStdout((chunk) => {
+      stdout += chunk;
+    });
+    proc.onStderr((chunk) => {
+      stderr += chunk;
+    });
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const exit = await new Promise<SessionEnvExit>((resolve, reject) => {
+        timer = setTimeout(() => {
+          proc.kill('SIGKILL');
+          reject(new Error(`Guest command timed out after ${opts.timeoutMs}ms: ${command}`));
+        }, opts.timeoutMs);
+        timer.unref?.();
+        // Fires synchronously if the process already exited, so a fast
+        // command that finished during setup is not waited on forever.
+        proc.onExit(resolve);
+      });
+      if (exit.error) throw exit.error;
+      return { stdout, stderr, exitCode: exit.code };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // ── Teardown ───────────────────────────────────────────────────
@@ -581,11 +708,13 @@ export class FirecrackerSessionEnv implements SessionEnv {
   async #teardownVm(): Promise<void> {
     const vmm = this.#vmProcess;
     this.#vmProcess = null;
-    if (vmm?.pid) {
+    if (vmm) {
       try {
-        this.killVmm(vmm.pid);
-      } catch {
-        // Already gone.
+        await this.stopVmm({ vmId: this.vmId, pid: vmm.pid });
+      } catch (err) {
+        this.logger.warn(
+          `SessionEnv[${this.sessionId}] failed to stop VMM ${this.vmId}: ${String(err)}`,
+        );
       }
     }
 
