@@ -22,6 +22,24 @@ import {
 } from './firecracker-session-env.js';
 import { InMemorySlotPool } from './firecracker-slots.js';
 
+/**
+ * Where the host keeps guest artifacts and per-VM scratch. Defaults match
+ * `ops/scripts/setup-firecracker-host.sh`; the env overrides exist so a
+ * developer can stage artifacts somewhere else without editing the setup
+ * script and drifting from what the host actually has.
+ */
+export function firecrackerHostPaths(env: NodeJS.ProcessEnv = process.env): FirecrackerPaths {
+  const artifactDir = env.AGENT_HUB_FIRECRACKER_DIR ?? '/var/lib/agent-hub/firecracker';
+  return {
+    kernelPath: env.AGENT_HUB_FIRECRACKER_KERNEL ?? `${artifactDir}/vmlinux`,
+    baseRootfsPath: env.AGENT_HUB_FIRECRACKER_ROOTFS ?? `${artifactDir}/rootfs.ext4`,
+    runDir: env.AGENT_HUB_FIRECRACKER_RUN_DIR ?? `${artifactDir}/vms`,
+    jailerChrootBase: env.AGENT_HUB_FIRECRACKER_JAILER_DIR ?? `${artifactDir}/jailer`,
+    diskHelper:
+      env.AGENT_HUB_FIRECRACKER_DISK_HELPER ?? '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
+  };
+}
+
 export type FirecrackerBackendDefaults = Omit<
   FirecrackerSessionEnvDeps,
   'sessionId' | 'worktreePath' | 'slots' | 'paths'

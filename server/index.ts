@@ -88,6 +88,13 @@ import {
   logSessionEnvSelection,
 } from './session-env/sysbox-capability.js';
 import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
+import { probeFirecrackerCapability } from './session-env/firecracker/firecracker-capability.js';
+import { reconcileFirecrackerHost } from './session-env/firecracker/firecracker-slots.js';
+import { defaultFirecrackerHostIo } from './session-env/firecracker/firecracker-session-env.js';
+import {
+  firecrackerHostPaths,
+  registerFirecrackerBackend,
+} from './session-env/firecracker/register-firecracker-backend.js';
 import { SessionEnvManager } from './session-env/session-env-manager.js';
 import {
   describeSessionEnvPortRouting,
@@ -2132,11 +2139,29 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     const previewRouting = resolveSessionEnvPortRouting();
     const sessionDocker = resolveDockerAvailability();
     console.log(`[session-env] port routing: ${describeSessionEnvPortRouting()}`);
-    void initSessionEnvSelection(config.sessionEnvAdapter, undefined, {
-      dockerAvailable: sessionDocker.enabled,
-      routing: previewRouting,
-      detail: sessionDocker.enabled ? describeSessionEnvPortRouting() : sessionDocker.reason,
-    })
+
+    // The microVM backend is registered only when the host can actually boot
+    // one, so `registeredBackends.has('firecracker')` stays a truthful answer
+    // to "would a VM start here" rather than "was this build compiled with
+    // the adapter".
+    const firecrackerPaths = firecrackerHostPaths();
+    const firecrackerProbe = probeFirecrackerCapability({
+      artifactPaths: [firecrackerPaths.kernelPath, firecrackerPaths.baseRootfsPath],
+    });
+    if (firecrackerProbe.available) {
+      registerFirecrackerBackend({ paths: firecrackerPaths });
+    }
+
+    void initSessionEnvSelection(
+      config.sessionEnvAdapter,
+      undefined,
+      {
+        dockerAvailable: sessionDocker.enabled,
+        routing: previewRouting,
+        detail: sessionDocker.enabled ? describeSessionEnvPortRouting() : sessionDocker.reason,
+      },
+      firecrackerProbe,
+    )
       .then((selection) => {
         logSessionEnvSelection(selection);
         // Boot GC sweep: session envs live only in Hub memory, so every
@@ -2144,6 +2169,20 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         // Both container backends label identically, so one sweep covers them.
         if (selection.adapter === 'sysbox' || selection.adapter === 'container') {
           return reconcileSysboxSessionEnvs().then(() => undefined);
+        }
+        if (selection.adapter === 'firecracker') {
+          // The VM equivalent: a tap left behind by a previous process keeps
+          // its name occupied, and the first session after a restart then
+          // fails to create it.
+          return reconcileFirecrackerHost({
+            run: (argv) => defaultFirecrackerHostIo.run(argv),
+          }).then((result) => {
+            if (result.deletedTaps.length > 0) {
+              console.log(
+                `[session-env] swept ${result.deletedTaps.length} stale microVM tap(s): ${result.deletedTaps.join(', ')}`,
+              );
+            }
+          });
         }
         return undefined;
       })
