@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   FirecrackerSessionEnv,
+  defaultPrepareDisks,
   type FirecrackerHostIo,
   type FirecrackerSlotPool,
 } from './firecracker-session-env.js';
@@ -422,5 +423,57 @@ describe('FirecrackerSessionEnv dispose', () => {
     await env.dispose();
     await env.dispose();
     expect(hook).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('defaultPrepareDisks — worktree path handed to the privileged helper', () => {
+  const paths = {
+    kernelPath: '/var/lib/agent-hub/firecracker/vmlinux',
+    baseRootfsPath: '/var/lib/agent-hub/firecracker/rootfs.ext4',
+    runDir: '/var/lib/agent-hub/firecracker/vms',
+    diskHelper: '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
+  };
+  const ctx = {
+    vmDir: '/var/lib/agent-hub/firecracker/vms/ahvm-s1',
+    sessionId: 's1',
+    worktreePath: '/home/node/.agent-hub/workspaces/proj/session-s1',
+    paths,
+    workspaceSizeMib: 1024,
+  };
+  const okIo = (): { io: FirecrackerHostIo; calls: string[][] } => {
+    const calls: string[][] = [];
+    return {
+      calls,
+      io: {
+        run: async (argv: string[]) => {
+          calls.push(argv);
+          return { ok: true, stdout: '', stderr: '', code: 0 };
+        },
+      } as unknown as FirecrackerHostIo,
+    };
+  };
+  const worktreeArg = (argv: string[]): string => argv[argv.indexOf('--worktree') + 1] as string;
+
+  it('translates the container path to the host path the helper has mounted', async () => {
+    // The helper container mounts the host workspaces dir, so the Hub's own
+    // /home/node/... view means nothing inside it.
+    const { io, calls } = okIo();
+    await defaultPrepareDisks(io, {
+      ...ctx,
+      hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
+      containerWorkspacesDir: '/home/node/.agent-hub/workspaces',
+    });
+    expect(worktreeArg(calls[0] as string[])).toBe('/var/lib/agent-hub/workspaces/proj/session-s1');
+  });
+
+  it('passes the path through when the Hub and helper already agree', async () => {
+    // A Hub installed directly on the host configures no translation roots.
+    const { io, calls } = okIo();
+    await defaultPrepareDisks(io, {
+      ...ctx,
+      hostWorkspacesDir: null,
+      containerWorkspacesDir: null,
+    });
+    expect(worktreeArg(calls[0] as string[])).toBe(ctx.worktreePath);
   });
 });

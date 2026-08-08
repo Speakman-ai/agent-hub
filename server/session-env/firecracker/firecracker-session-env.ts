@@ -48,6 +48,7 @@ import type { SessionEnvPortRouting } from '../container-routing.js';
 import type { SessionWorktreeIo } from '../worktree-io.js';
 import { GuestWorktreeIo } from './guest-worktree-io.js';
 import { resolveGuestNameservers } from './guest-nameservers.js';
+import { translateContainerPathToHost } from '../../preview/host-path-translation.js';
 import {
   FIRECRACKER_GUEST_WORKSPACE,
   buildCreateTapArgv,
@@ -767,7 +768,40 @@ function normalizePtyEnv(env: Record<string, string | undefined>): Record<string
  * (installed by the host setup) means the capability is granted once, in a
  * place a reviewer can read, instead of spread across the runtime.
  */
-async function defaultPrepareDisks(
+/**
+ * The worktree path as the *privileged helper* sees it.
+ *
+ * Every other path handed to the helper (the per-VM dir, the base rootfs)
+ * lives under the firecracker data dir, which is deliberately bind-mounted at
+ * the identical path inside and outside the Hub container so no translation is
+ * needed. The worktree is the exception: the Hub knows it as
+ * `/home/node/.agent-hub/workspaces/...` while the helper only has the host
+ * mount. Passing the container path through produced
+ * "fc-prepare-disks: worktree not found".
+ *
+ * Returns the input unchanged when no translation applies — a Hub installed
+ * directly on the host already agrees with the helper.
+ */
+function hostVisibleWorktreePath(worktreePath: string, roots: TranslationRoots): string {
+  return (
+    translateContainerPathToHost(worktreePath, {
+      hostWorkspacesDir: roots.hostWorkspacesDir,
+      containerWorkspacesDir: roots.containerWorkspacesDir,
+    }).hostPath ?? worktreePath
+  );
+}
+
+/**
+ * Bind-mount roots for the translation above. `undefined` means "read the
+ * ambient env", which is what production does; a test passes them explicitly
+ * so it does not depend on how the machine running it is configured.
+ */
+interface TranslationRoots {
+  hostWorkspacesDir?: string | null;
+  containerWorkspacesDir?: string | null;
+}
+
+export async function defaultPrepareDisks(
   io: FirecrackerHostIo,
   ctx: {
     vmDir: string;
@@ -775,7 +809,7 @@ async function defaultPrepareDisks(
     worktreePath: string;
     paths: FirecrackerPaths;
     workspaceSizeMib: number;
-  },
+  } & TranslationRoots,
 ): Promise<PreparedDisks> {
   const helper = ctx.paths.diskHelper ?? DEFAULT_DISK_HELPER;
   const rootfsPath = `${ctx.vmDir}/rootfs.ext4`;
@@ -791,7 +825,7 @@ async function defaultPrepareDisks(
     '--workspace-size-mib',
     String(ctx.workspaceSizeMib),
     '--worktree',
-    ctx.worktreePath,
+    hostVisibleWorktreePath(ctx.worktreePath, ctx),
   ]);
   if (!res.ok) {
     throw new Error(
