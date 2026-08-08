@@ -192,11 +192,17 @@ else
 fi
 
 # ── 5. Directories ────────────────────────────────────────────────
+# Recursive in both branches. The Hub creates a directory per VM under
+# VM_SCRATCH, so it needs write access to the tree, not just the top level —
+# and guest artifacts are usually staged into ARTIFACT_DIR as root before or
+# after this script runs, which leaves them unreadable to a Hub that is not
+# root. A non-recursive chown here fails later as an EACCES on `mkdir` at the
+# first session start, far from the cause.
 mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
 if id -u "${HUB_USER}" >/dev/null 2>&1; then
   chown -R "${HUB_USER}:${HUB_USER}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
 else
-  chown "${HUB_UID}:${HUB_GID}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+  chown -R "${HUB_UID}:${HUB_GID}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
   echo "==> Scratch owned by uid ${HUB_UID}:${HUB_GID} (containerized Hub)"
 fi
 
