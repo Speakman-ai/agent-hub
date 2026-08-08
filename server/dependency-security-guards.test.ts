@@ -329,6 +329,23 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       ],
       only: ['client'],
     },
+
+    // --- 8-finding audit (nanoid / image-size / @ai-sdk/provider-utils) ---
+
+    // GHSA-2v37-7h3g-55p8: a custom generator called with size 0 never
+    // terminates. The sync generator appends a character and then tests
+    // `id.length === size`, so the equality can never hold and the `while
+    // (true)` loop spins forever on a live thread. Present in every workspace
+    // via postcss (`nanoid: ^3.3.16`), and in mobile additionally via
+    // @react-navigation (`^3.3.11`); every declared range already admits the
+    // patch, so this is a plain re-resolve with no override.
+    //
+    // The floor names 3.3.17, the version the advisory patches. The lockfiles
+    // actually resolved to 3.3.18, which additionally guards
+    // `async/index.native.js` -- Metro reaches that file by platform extension
+    // on mobile, and 3.3.17 left it returning a one-character id for size 0.
+    // That is a correctness bug, not the DoS, so it does not raise the floor.
+    { pkg: 'nanoid', min: '3.3.17', advisory: 'GHSA-2v37-7h3g-55p8', line: '3.x' },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -769,6 +786,115 @@ describe('dompurify neutralizes hook-detached IN_PLACE subtrees (GHSA-55q2-fjhq-
           'GHSA-55q2-fjhq-7xh7 fix.',
       ).toBeNull();
     });
+  }
+});
+
+/**
+ * GHSA-2v37-7h3g-55p8: `customAlphabet(alphabet, n)(0)` never returns. The
+ * generator appends a character to `id` before testing `id.length === size`,
+ * so with `size === 0` the equality is unreachable and the enclosing
+ * `while (true)` spins forever. It is a synchronous loop on whatever thread
+ * called it, so one such call wedges a whole event loop -- there is no partial
+ * result and no recovery short of killing the process. 3.3.17 short-circuits
+ * with `if (size <= 0) return ''`.
+ *
+ * A size that reaches a generator from request data is the reachable shape
+ * here, and 0 is exactly what an absent or coerced field lands on.
+ *
+ * The floor above proves a version string; this proves the installed code
+ * terminates. Measured in a child process under a hard timeout rather than
+ * in-process: a vulnerable copy never yields, so an in-process call would hang
+ * the vitest worker itself and report as a bare suite timeout with no pointer
+ * to the advisory.
+ *
+ * Both live entry points are exercised. `index.cjs` is what server-side
+ * requires resolve, and `index.browser.js` is what the `browser` (client) and
+ * `react-native` (mobile) export conditions resolve -- they carry separate
+ * copies of the loop. Mutation-checked: on 3.3.16 both hang until the timeout
+ * kills the child; on 3.3.18 both return `''` in ~50 ms.
+ */
+describe('nanoid terminates on a zero-size custom generator (GHSA-2v37-7h3g-55p8)', () => {
+  const CHILD_TIMEOUT_MS = 10_000;
+  const ALPHABET = 'abcdef';
+  const DEFAULT_SIZE = 10;
+
+  /**
+   * Every `nanoid` copy installed at the version its lockfile resolved. A
+   * mismatch means the tree predates the lock, so the code on disk says
+   * nothing about what a fresh `npm ci` would install.
+   *
+   * Scoped to the 3.x line: 4.x/5.x drop the `async/` subpath and ship a
+   * different file layout, so the entry points probed below would not exist.
+   */
+  const copies: Array<{ workspace: string; key: string; dir: string; version: string }> = [];
+  for (const { name, lock } of LOCKFILES) {
+    const root = dirname(join(here, lock));
+    for (const [key, meta] of Object.entries(lockPackages(lock))) {
+      if (packageNameOf(key) !== 'nanoid' || !meta.version) continue;
+      if (!satisfies(meta.version, '3.x')) continue;
+      const manifest = join(root, key, 'package.json');
+      if (!existsSync(manifest)) continue;
+      const installed = (JSON.parse(readFileSync(manifest, 'utf8')) as { version?: string })
+        .version;
+      if (installed !== meta.version) continue;
+      copies.push({ workspace: name, key, dir: join(root, key), version: meta.version });
+    }
+  }
+
+  if (copies.length === 0) {
+    it.skip('no nanoid 3.x copy is installed at its lockfile version (run npm ci --include=dev)', () => {});
+  }
+
+  /** One representative copy per distinct version -- each run boots a node. */
+  const byVersion = new Map<string, (typeof copies)[number]>();
+  for (const copy of copies) if (!byVersion.has(copy.version)) byVersion.set(copy.version, copy);
+
+  for (const { workspace, key, dir, version } of byVersion.values()) {
+    // Above the suite-wide 15 s testTimeout: a patched copy answers in ~50 ms,
+    // but a vulnerable one has to be allowed to reach CHILD_TIMEOUT_MS so the
+    // failure reads as "the generator never returned" and not as a bare vitest
+    // timeout.
+    it(`${workspace}: ${key}@${version} returns from a zero-size custom generator`, () => {
+      const child = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `const { join } = require('node:path');
+           const { pathToFileURL } = require('node:url');
+           const dir = ${JSON.stringify(dir)};
+           const alphabet = ${JSON.stringify(ALPHABET)};
+           const size = ${DEFAULT_SIZE};
+           (async () => {
+             const cjs = require(join(dir, 'index.cjs'));
+             const browser = await import(pathToFileURL(join(dir, 'index.browser.js')).href);
+             process.stdout.write('RESULT=' + JSON.stringify({
+               cjsZero: cjs.customAlphabet(alphabet, size)(0),
+               cjsNormal: cjs.customAlphabet(alphabet, size)().length,
+               browserZero: browser.customAlphabet(alphabet, size)(0),
+               browserNormal: browser.customAlphabet(alphabet, size)().length,
+             }));
+           })();`,
+        ],
+        { encoding: 'utf8', timeout: CHILD_TIMEOUT_MS },
+      );
+
+      const detail =
+        `${workspace}: ${key}@${version} did not return from ` +
+        `customAlphabet(${JSON.stringify(ALPHABET)}, ${DEFAULT_SIZE})(0) within ` +
+        `${CHILD_TIMEOUT_MS} ms; it is missing the GHSA-2v37-7h3g-55p8 zero-size guard. ` +
+        `exit=${child.status} signal=${child.signal} stderr=${(child.stderr || '').slice(-400)}`;
+
+      expect(child.status, detail).toBe(0);
+      expect(child.stdout.startsWith('RESULT='), detail).toBe(true);
+
+      const result = JSON.parse(child.stdout.slice('RESULT='.length)) as Record<string, unknown>;
+      expect(result.cjsZero, detail).toBe('');
+      expect(result.browserZero, detail).toBe('');
+      // Guards the other direction: a generator neutered to always return ''
+      // would satisfy the assertions above, so it still has to produce ids.
+      expect(result.cjsNormal, `${key}@${version} no longer generates ids`).toBe(DEFAULT_SIZE);
+      expect(result.browserNormal, `${key}@${version} no longer generates ids`).toBe(DEFAULT_SIZE);
+    }, 60_000);
   }
 });
 
