@@ -18,12 +18,23 @@
 # ~10 minutes and is usually run once and copied to hosts.
 #
 # Usage: sudo ops/scripts/setup-firecracker-host.sh [--hub-user ubuntu]
-#                                                   [--version 1.16.0]
+#                                                   [--version 1.16.1]
+#                                                   [--tarball PATH]
+#
+# --tarball installs from an already-downloaded release archive instead of
+# fetching from GitHub, for hosts with restricted egress.
 
 set -euo pipefail
 
 HUB_USER="${SUDO_USER:-ubuntu}"
-FIRECRACKER_VERSION="1.16.0"
+# The Hub writes the per-VM config and dials the vsock socket itself, so it
+# needs the scratch tree writable. When it runs as a container there is no
+# matching host account — only a uid — so ownership is set numerically. 1000 is
+# the `node` user the server image runs as.
+HUB_UID="1000"
+HUB_GID="1000"
+FIRECRACKER_VERSION="1.16.1"
+FIRECRACKER_TARBALL=""
 ARTIFACT_DIR="/var/lib/agent-hub/firecracker"
 RUN_DIR="/run/agent-hub/vms"
 VM_SCRATCH="/var/lib/agent-hub/firecracker/vms"
@@ -35,9 +46,12 @@ HELPER_SRC=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --hub-user) HUB_USER="$2"; shift 2 ;;
+    --hub-uid) HUB_UID="$2"; shift 2 ;;
+    --hub-gid) HUB_GID="$2"; shift 2 ;;
     --version) FIRECRACKER_VERSION="$2"; shift 2 ;;
+    --tarball) FIRECRACKER_TARBALL="$2"; shift 2 ;;
     --helper) HELPER_SRC="$2"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -62,9 +76,17 @@ if [[ ! -c /dev/kvm ]]; then
 fi
 
 # The Hub opens /dev/kvm indirectly through firecracker, which runs as the Hub
-# user; without group membership every VM boot fails with EACCES.
+# user; without group membership every VM boot fails with EACCES. When the Hub
+# runs as a container the VMM is launched root-in-container with --device
+# /dev/kvm instead, so a missing account here is not fatal — only the
+# bare-metal deployment depends on the membership.
 groupadd -f kvm
-usermod -aG kvm "${HUB_USER}"
+if id -u "${HUB_USER}" >/dev/null 2>&1; then
+  usermod -aG kvm "${HUB_USER}"
+else
+  echo "note: no local user '${HUB_USER}'; skipping kvm group membership."
+  echo "      Fine for a containerized Hub; pass --hub-user if it runs on the host."
+fi
 cat >/etc/udev/rules.d/99-agent-hub-kvm.rules <<'RULES'
 # Keep /dev/kvm group-writable across reboots. Without this the node is
 # usable until the next reboot and then silently stops booting VMs.
@@ -75,13 +97,28 @@ udevadm trigger --name-match=kvm 2>/dev/null || true
 chgrp kvm /dev/kvm && chmod 0660 /dev/kvm
 
 # ── 2. Packages ───────────────────────────────────────────────────
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-# socat is not needed on the host (it runs in the guest), but iproute2,
+# socat is not needed on the host (it runs in the guest), but the ip tooling,
 # e2fsprogs, and xfsprogs are: taps, workspace images, and the CoW scratch
-# filesystem respectively.
-apt-get install -y --no-install-recommends \
-  iproute2 iptables e2fsprogs xfsprogs curl ca-certificates >/dev/null
+# filesystem respectively. Amazon Linux 2023 is the deployed host OS and Ubuntu
+# is what most developer boxes run, so support both rather than assuming.
+if command -v dnf >/dev/null 2>&1; then
+  # AL2023 calls the package `iproute`, and `curl-minimal` is preinstalled and
+  # conflicts with `curl` — asking for it would fail the whole transaction.
+  dnf install -y -q iproute iptables-nft e2fsprogs xfsprogs ca-certificates >/dev/null
+elif command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y --no-install-recommends \
+    iproute2 iptables e2fsprogs xfsprogs curl ca-certificates >/dev/null
+else
+  echo "error: neither dnf nor apt-get found; install iproute/e2fsprogs/xfsprogs manually" >&2
+  exit 1
+fi
+
+for tool in ip mkfs.ext4 iptables; do
+  command -v "${tool}" >/dev/null \
+    || { echo "error: ${tool} still missing after package install" >&2; exit 1; }
+done
 
 # ── 3. firecracker + jailer ───────────────────────────────────────
 case "${ARCH}" in
@@ -95,8 +132,28 @@ if [[ "${INSTALLED_VERSION#v}" != "${FIRECRACKER_VERSION}" ]]; then
   echo "==> Installing firecracker ${FIRECRACKER_VERSION} (found: ${INSTALLED_VERSION:-none})"
   TMP="$(mktemp -d)"
   trap 'rm -rf "${TMP}"' EXIT
-  curl -fsSL -o "${TMP}/fc.tgz" \
-    "https://github.com/firecracker-microvm/firecracker/releases/download/v${FIRECRACKER_VERSION}/firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}.tgz"
+  if [[ -n "${FIRECRACKER_TARBALL}" ]]; then
+    [[ -f "${FIRECRACKER_TARBALL}" ]] \
+      || { echo "error: no tarball at ${FIRECRACKER_TARBALL}" >&2; exit 1; }
+    cp "${FIRECRACKER_TARBALL}" "${TMP}/fc.tgz"
+  else
+    # GitHub redirects release assets to a separate CDN host, so a network that
+    # allows github.com can still fail here. Retry before giving up.
+    for attempt in 1 2 3; do
+      if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 \
+        -o "${TMP}/fc.tgz" \
+        "https://github.com/firecracker-microvm/firecracker/releases/download/v${FIRECRACKER_VERSION}/firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}.tgz"; then
+        break
+      fi
+      echo "   download attempt ${attempt} failed" >&2
+      [[ "${attempt}" -lt 3 ]] || {
+        echo "error: could not download firecracker. On a restricted-egress host," >&2
+        echo "       stage the release archive and pass --tarball PATH." >&2
+        exit 1
+      }
+      sleep 5
+    done
+  fi
   tar -xzf "${TMP}/fc.tgz" -C "${TMP}"
   install -m 0755 "${TMP}/release-v${FIRECRACKER_VERSION}-${FC_ARCH}/firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}" /usr/bin/firecracker
   install -m 0755 "${TMP}/release-v${FIRECRACKER_VERSION}-${FC_ARCH}/jailer-v${FIRECRACKER_VERSION}-${FC_ARCH}" /usr/bin/jailer
@@ -136,7 +193,12 @@ fi
 
 # ── 5. Directories ────────────────────────────────────────────────
 mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
-chown -R "${HUB_USER}:${HUB_USER}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+if id -u "${HUB_USER}" >/dev/null 2>&1; then
+  chown -R "${HUB_USER}:${HUB_USER}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+else
+  chown "${HUB_UID}:${HUB_GID}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+  echo "==> Scratch owned by uid ${HUB_UID}:${HUB_GID} (containerized Hub)"
+fi
 
 # The rootfs clone uses `cp --reflink=auto`. On ext4 that degrades to a full
 # multi-GB copy on every VM boot; on XFS it is a near-instant CoW clone. The
@@ -159,13 +221,19 @@ fi
 # Exactly two privileged operations, named explicitly. A blanket NOPASSWD:ALL
 # would make the microVM boundary pointless — the Hub could simply become root
 # on the host it is trying to isolate sessions from.
-cat >/etc/sudoers.d/agent-hub-firecracker <<SUDOERS
+#
+# Only meaningful for a Hub running directly on the host. A containerized Hub
+# has no account here and reaches these operations through a privileged helper
+# container instead (AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE).
+if id -u "${HUB_USER}" >/dev/null 2>&1; then
+  cat >/etc/sudoers.d/agent-hub-firecracker <<SUDOERS
 # Managed by ops/scripts/setup-firecracker-host.sh
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-prepare-disks.sh
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/ip, /sbin/ip, /usr/bin/ip
 SUDOERS
-chmod 0440 /etc/sudoers.d/agent-hub-firecracker
-visudo -cf /etc/sudoers.d/agent-hub-firecracker >/dev/null
+  chmod 0440 /etc/sudoers.d/agent-hub-firecracker
+  visudo -cf /etc/sudoers.d/agent-hub-firecracker >/dev/null
+fi
 
 # ── Summary ───────────────────────────────────────────────────────
 echo
@@ -183,5 +251,7 @@ else
   echo "    Guest artifacts present. Restart the Hub to pick up the backend."
 fi
 echo
-echo "    ${HUB_USER} was added to the kvm group — that only takes effect in a"
-echo "    new login session, so restart the Hub process (not just the shell)."
+if id -u "${HUB_USER}" >/dev/null 2>&1; then
+  echo "    ${HUB_USER} was added to the kvm group — that only takes effect in a"
+  echo "    new login session, so restart the Hub process (not just the shell)."
+fi

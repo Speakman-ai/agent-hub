@@ -183,7 +183,8 @@ RUNNER_IMAGE_URI="${finalize_runner_image_uri}"
 # project checkouts) lives under `data`/`projects` which are bind-mounted
 # already and are NOT affected.
 install -d -m 0755 -o 1000 -g 1000 \
-  "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects" "$DATA_ROOT/workspaces"
+  "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects" "$DATA_ROOT/workspaces" \
+  "$DATA_ROOT/firecracker"
 
 # Write the .env file — same contract as the docker-build path, same server
 # reads it, so switching bootstrap modes is transparent to the app.
@@ -323,6 +324,13 @@ fi
 # the daemon (the host) but not in the container's filesystem namespace.
 # Two -v flags for the same source are aliases for one inode; agents
 # keep using /home/node/... unchanged.
+#
+# \$DATA_ROOT/firecracker is mounted at the identical path on both sides for
+# the same reason: the Hub writes each microVM's config there and then dials
+# the vsock socket the VMM creates in that directory, so both must agree on
+# the absolute path. The VMM runs in a privileged sibling container (see
+# server/session-env/firecracker/firecracker-privileged-exec.ts); this
+# container stays unprivileged and gets no device access.
 exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
@@ -330,6 +338,7 @@ exec docker run --rm --name agenthub-server \
   -v "\$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
   -v "\$DATA_ROOT/projects:\$DATA_ROOT/projects" \
   -v "\$DATA_ROOT/workspaces:\$DATA_ROOT/workspaces" \
+  -v "\$DATA_ROOT/firecracker:\$DATA_ROOT/firecracker" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --add-host=host.docker.internal:host-gateway \
   \$DOCKER_GROUP_ARG \
@@ -338,7 +347,9 @@ exec docker run --rm --name agenthub-server \
   -e "AGENT_HUB_CONTAINER_PROJECTS_DIR=/home/node/projects" \
   -e "AGENT_HUB_CONTAINER_WORKSPACES_DIR=/home/node/.agent-hub/workspaces" \
   -e "AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal" \
+  -e "AGENT_HUB_FIRECRACKER_DIR=\$DATA_ROOT/firecracker" \
   \$${RUNNER_IMAGE_URI:+-e "FINALIZE_RUNNER_IMAGE_UBUNTU_24_04=\$RUNNER_IMAGE_URI"} \
+  \$${RUNNER_IMAGE_URI:+-e "AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE=\$RUNNER_IMAGE_URI"} \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
 RUNSCRIPT
@@ -452,7 +463,8 @@ fi
 # the daemon resolves the bind mount against an empty dir on the host.
 # Card 9b868252; see the ECR-pull branch comment for the upgrade note.
 install -d -m 0755 -o 1000 -g 1000 \
-  "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects" "$DATA_ROOT/workspaces"
+  "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects" "$DATA_ROOT/workspaces" \
+  "$DATA_ROOT/firecracker"
 if [ -n "${docker_env_b64}" ]; then
   umask 077
   printf '%s' "${docker_env_b64}" | base64 -d > $REPO_DIR/.env

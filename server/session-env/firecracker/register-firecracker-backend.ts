@@ -20,6 +20,12 @@ import {
   type FirecrackerPaths,
   type FirecrackerSlotPool,
 } from './firecracker-session-env.js';
+import {
+  createFirecrackerHostIo,
+  createSpawnVmm,
+  createStopVmm,
+  type FirecrackerExecConfig,
+} from './firecracker-privileged-exec.js';
 import { InMemorySlotPool } from './firecracker-slots.js';
 
 /**
@@ -62,6 +68,24 @@ export function registerFirecrackerBackend(defaults: FirecrackerBackendDefaults)
         ...(opts.firecrackerDeps as Partial<FirecrackerSessionEnvDeps> | undefined),
       }),
   );
+}
+
+/**
+ * Bind the three privileged seams to one exec mode.
+ *
+ * They travel together on purpose: creating a tap locally and then launching
+ * the VMM in a container would put the interface in a namespace the VM cannot
+ * reach, and the failure surfaces as a guest with no network rather than as
+ * anything that points at the mismatch.
+ */
+export function firecrackerExecDefaults(
+  cfg: FirecrackerExecConfig,
+): Pick<FirecrackerSessionEnvDeps, 'io' | 'spawnVmm' | 'stopVmm'> {
+  return {
+    io: createFirecrackerHostIo(cfg),
+    spawnVmm: createSpawnVmm(cfg),
+    stopVmm: createStopVmm(cfg),
+  };
 }
 
 /** Test-only: drop the backend so `auto` stops considering it. */
