@@ -15,9 +15,11 @@ Type=simple
 User=root
 ExecStart=/usr/bin/socat VSOCK-LISTEN:1024,fork,reuseaddr,backlog=64 UNIX-CONNECT:/run/agent-hub/vm-agent.sock
 # Until this is up the VM is unreachable from the Hub, and the Hub's readiness
-# probe is what gates the whole session on it.
+# probe is what gates the whole session on it. No start rate limit, for the
+# same reason as the agent: giving up means an unreachable VM.
 Restart=always
 RestartSec=1
+StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 

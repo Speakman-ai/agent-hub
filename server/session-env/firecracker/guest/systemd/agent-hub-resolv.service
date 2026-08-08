@@ -1,0 +1,17 @@
+[Unit]
+Description=Agent Hub guest resolver setup (from kernel cmdline)
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=network-pre.target agent-hub-vm-agent.service docker.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Rewrite /etc/resolv.conf from `agenthub.dns=<ip>[,<ip>...]` on the kernel
+# cmdline. The host knows which resolvers actually work on its network, which
+# the image cannot; when the parameter is absent the image default stands.
+ExecStart=/usr/local/bin/agent-hub-write-resolv
+
+[Install]
+WantedBy=sysinit.target

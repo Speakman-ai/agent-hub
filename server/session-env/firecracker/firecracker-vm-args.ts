@@ -91,6 +91,12 @@ export function sessionVmId(sessionId: string): string {
 
 export interface VmBootArgsOpts {
   network: VmNetworkPlan;
+  /**
+   * Resolvers for the guest. The static `ip=` option assigns an address but
+   * writes no resolver, so without these the guest routes fine and resolves
+   * nothing. Empty leaves the image default in place.
+   */
+  nameservers?: string[];
   /** Appended verbatim; used to hand the guest agent its identity. */
   extra?: string[];
 }
@@ -117,6 +123,10 @@ export function vmBootArgs(opts: VmBootArgsOpts): string {
     'root=/dev/vda',
     'rw',
   ];
+  // Only emitted when the host has resolvers to offer; otherwise the guest
+  // image's baked-in default applies. See agent-hub-write-resolv.
+  const nameservers = (opts.nameservers ?? []).filter((entry) => entry.trim() !== '');
+  if (nameservers.length > 0) base.push(`agenthub.dns=${nameservers.join(',')}`);
   return [...base, ...(opts.extra ?? [])].join(' ');
 }
 
@@ -152,6 +162,8 @@ export interface BuildVmConfigOpts {
   vcpuCount: number;
   memSizeMib: number;
   bootArgsExtra?: string[];
+  /** See {@link VmBootArgsOpts.nameservers}. */
+  nameservers?: string[];
 }
 
 export function buildFirecrackerVmConfig(opts: BuildVmConfigOpts): FirecrackerVmConfig {
@@ -162,7 +174,11 @@ export function buildFirecrackerVmConfig(opts: BuildVmConfigOpts): FirecrackerVm
   return {
     'boot-source': {
       kernel_image_path: opts.kernelPath,
-      boot_args: vmBootArgs({ network: opts.network, extra: opts.bootArgsExtra }),
+      boot_args: vmBootArgs({
+        network: opts.network,
+        nameservers: opts.nameservers,
+        extra: opts.bootArgsExtra,
+      }),
     },
     drives: [
       {

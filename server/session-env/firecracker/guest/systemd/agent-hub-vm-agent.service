@@ -4,7 +4,11 @@ Description=Agent Hub vm-agent (guest control plane)
 # anything that depends on it and must not be stopped by a failing workload.
 DefaultDependencies=no
 After=local-fs.target workspace.mount
-Requires=workspace.mount
+# Wants, not Requires: if the workspace disk fails to mount, the agent is the
+# only thing that can tell anyone *why*. Binding it to the mount turns a bad
+# disk into a VM that boots and then answers nothing, which is the hardest
+# possible failure to diagnose from the host.
+Wants=workspace.mount
 Before=agent-hub-vsock-bridge.service
 Conflicts=shutdown.target
 Before=shutdown.target
@@ -24,6 +28,11 @@ ExecStart=/usr/bin/node /usr/local/lib/agent-hub/vm-agent.mjs
 # reach it. Restart aggressively rather than leaving an unreachable VM alive.
 Restart=always
 RestartSec=1
+# No start rate limit. The default (5 starts / 10s) is meant to stop a broken
+# service from burning a machine down, but here "give up" means the Hub
+# permanently loses its only channel into a VM that is otherwise healthy —
+# strictly worse than retrying forever.
+StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 
