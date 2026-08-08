@@ -88,29 +88,29 @@ describe('selectSessionEnvAdapter — microVM tier', () => {
     expect(selection.reason).toContain('/dev/kvm is missing');
   });
 
-  it('degrades a forced microVM to the next-strongest boundary, not to host', () => {
-    // The operator asked for isolation; sysbox is closer to that intent than
-    // running sessions directly on the Hub machine.
-    expect(selectSessionEnvAdapter('firecracker', withSysbox, noContainer, noVm).adapter).toBe(
-      'sysbox',
-    );
-    expect(
-      selectSessionEnvAdapter(
+  it('does not silently degrade a forced microVM to a weaker boundary', () => {
+    // resolveSessionEnvBackend throws for this case, so reporting a sysbox /
+    // container / host fallback would describe a run that never happens. An
+    // operator who wrote "firecracker" asked for a hardware boundary, and a
+    // container is not one.
+    for (const [sysbox, container] of [
+      [withSysbox, noContainer],
+      [noSysbox, { dockerAvailable: true, routing: 'container-ip' } as const],
+      [noSysbox, noContainer],
+    ] as const) {
+      expect(selectSessionEnvAdapter('firecracker', sysbox, container, noVm).adapter).toBe(
         'firecracker',
-        noSysbox,
-        { dockerAvailable: true, routing: 'container-ip' },
-        noVm,
-      ).adapter,
-    ).toBe('container');
-    expect(selectSessionEnvAdapter('firecracker', noSysbox, noContainer, noVm).adapter).toBe(
-      'host',
-    );
+      );
+    }
   });
 
-  it('marks a degraded forced microVM as a fallback so the log warns', () => {
+  it('says sessions will fail rather than claiming a fallback', () => {
     const selection = selectSessionEnvAdapter('firecracker', withSysbox, noContainer, noVm);
-    expect(selection.fellBack).toBe(true);
-    expect(selection.forced).toBe(false);
+    expect(selection.fellBack).toBe(false);
+    expect(selection.forced).toBe(true);
+    expect(selection.reason).toMatch(/sessions will fail/);
+    // Points at the mode that does degrade, so the operator has a next step.
+    expect(selection.reason).toMatch(/sessionEnvAdapter=auto/);
   });
 
   it('honors a forced microVM when the probe passes', () => {
