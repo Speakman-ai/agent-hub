@@ -172,6 +172,28 @@ export interface FirecrackerSlotPool {
   release(slot: number): void;
 }
 
+/**
+ * The guest image speaks a different protocol version than this Hub.
+ *
+ * Distinct from the transient boot errors around it because retrying cannot
+ * help: the staged rootfs is what it is until someone rebuilds it. Carries
+ * both versions so the operator knows which side to update.
+ */
+export class VmAgentProtocolMismatchError extends Error {
+  constructor(
+    readonly vmId: string,
+    readonly guestVersion: number,
+    readonly hostVersion: number,
+  ) {
+    super(
+      `Guest agent in ${vmId} speaks protocol v${guestVersion} but this Hub speaks ` +
+        `v${hostVersion}. Rebuild the guest artifacts (build-guest-artifacts.sh) ` +
+        `so the rootfs matches this build.`,
+    );
+    this.name = 'VmAgentProtocolMismatchError';
+  }
+}
+
 export interface FirecrackerPaths {
   /** Uncompressed guest kernel shared by every VM. */
   kernelPath: string;
@@ -460,7 +482,17 @@ export class FirecrackerSessionEnv implements SessionEnv {
     }
   }
 
-  /** Poll the guest agent until it answers a ping. */
+  /**
+   * Poll the guest agent until it answers a ping.
+   *
+   * The reply has to be read, not just the connection opened. Two hops stand
+   * between the Hub and the agent — Firecracker's vsock, then the socat bridge
+   * in the guest — and the bridge comes up first. Accepting a connection as
+   * proof of readiness declared the VM ready while the agent was still
+   * starting, and the first real spawn then died on the reset socat sends when
+   * nothing is listening behind it. That surfaced as `read ECONNRESET` from a
+   * guest that was about to be perfectly healthy.
+   */
   async #waitForAgent(): Promise<void> {
     const deadline = this.clock.nowMs() + this.readyTimeoutMs;
     let lastError = 'no attempt made';
@@ -470,9 +502,23 @@ export class FirecrackerSessionEnv implements SessionEnv {
           kind: 'ping',
           protocolVersion: VM_AGENT_PROTOCOL_VERSION,
         });
-        stream.close();
+        // Bounded by the boot deadline: a stuck reply must not outlast it.
+        const reply = await awaitReply(stream, Math.max(1, deadline - this.clock.nowMs()));
+        if (reply.kind !== 'pong') {
+          throw new Error(`expected a pong from the guest agent, got "${reply.kind}"`);
+        }
+        if (reply.protocolVersion !== VM_AGENT_PROTOCOL_VERSION) {
+          // Not retryable: a stale guest image never becomes the right one.
+          // Failing here beats a confusing decode error on some later request.
+          throw new VmAgentProtocolMismatchError(
+            this.vmId,
+            reply.protocolVersion,
+            VM_AGENT_PROTOCOL_VERSION,
+          );
+        }
         return;
       } catch (err) {
+        if (err instanceof VmAgentProtocolMismatchError) throw err;
         lastError = err instanceof Error ? err.message : String(err);
       }
       if (this.clock.nowMs() >= deadline) {
