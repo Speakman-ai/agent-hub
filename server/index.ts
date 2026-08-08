@@ -90,8 +90,13 @@ import {
 import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
 import { probeFirecrackerCapability } from './session-env/firecracker/firecracker-capability.js';
 import { reconcileFirecrackerHost } from './session-env/firecracker/firecracker-slots.js';
-import { defaultFirecrackerHostIo } from './session-env/firecracker/firecracker-session-env.js';
 import {
+  createFirecrackerHostIo,
+  createHelperCapabilityDeps,
+  resolveFirecrackerExecConfig,
+} from './session-env/firecracker/firecracker-privileged-exec.js';
+import {
+  firecrackerExecDefaults,
   firecrackerHostPaths,
   registerFirecrackerBackend,
 } from './session-env/firecracker/register-firecracker-backend.js';
@@ -2145,11 +2150,24 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     // to "would a VM start here" rather than "was this build compiled with
     // the adapter".
     const firecrackerPaths = firecrackerHostPaths();
+    const firecrackerExec = resolveFirecrackerExecConfig(firecrackerPaths);
     const firecrackerProbe = probeFirecrackerCapability({
       artifactPaths: [firecrackerPaths.kernelPath, firecrackerPaths.baseRootfsPath],
+      // In docker mode the Hub container has neither /dev/kvm nor the VMM
+      // binary, so ask the helper what *it* can see.
+      ...(firecrackerExec.mode === 'docker' ? createHelperCapabilityDeps(firecrackerExec) : {}),
     });
+    console.log(
+      `[session-env] microVM probe (${firecrackerExec.mode}): ` +
+        (firecrackerProbe.available
+          ? `available, ${firecrackerProbe.version}`
+          : `unavailable — ${firecrackerProbe.reason}`),
+    );
     if (firecrackerProbe.available) {
-      registerFirecrackerBackend({ paths: firecrackerPaths });
+      registerFirecrackerBackend({
+        paths: firecrackerPaths,
+        ...firecrackerExecDefaults(firecrackerExec),
+      });
     }
 
     void initSessionEnvSelection(
@@ -2175,7 +2193,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
           // its name occupied, and the first session after a restart then
           // fails to create it.
           return reconcileFirecrackerHost({
-            run: (argv) => defaultFirecrackerHostIo.run(argv),
+            run: (argv) => createFirecrackerHostIo(firecrackerExec).run(argv),
           }).then((result) => {
             if (result.deletedTaps.length > 0) {
               console.log(

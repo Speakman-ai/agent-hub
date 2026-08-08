@@ -54,6 +54,20 @@ aws_cli() {
   fi
 }
 
+# `--nested-virtualization` only exists in AWS CLI builds newer than roughly
+# v2.32. Probe for it up front: discovering the gap after the stop/start has
+# already begun leaves the host powered off with nothing changed.
+if ! PAGER=cat MANPAGER=cat aws ec2 modify-instance-cpu-options help 2>/dev/null \
+  | grep -q -- '--nested-virtualization'; then
+  cat >&2 <<EOF
+error: this AWS CLI ($(aws --version 2>&1)) does not support
+       'ec2 modify-instance-cpu-options --nested-virtualization'.
+       Upgrade to a build that does (v2.34+ is known good):
+         https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+EOF
+  exit 1
+fi
+
 if [[ -z "${INSTANCE_ID}" ]]; then
   [[ -n "${NAME}" ]] || { echo "error: pass --instance-id or --name" >&2; exit 2; }
   INSTANCE_ID="$(aws_cli ec2 describe-instances \
@@ -69,15 +83,16 @@ if [[ -z "${INSTANCE_ID}" ]]; then
   fi
 fi
 
-read -r INSTANCE_TYPE STATE CURRENT <<<"$(aws_cli ec2 describe-instances \
+read -r INSTANCE_TYPE STATE CURRENT CORE_COUNT THREADS_PER_CORE <<<"$(aws_cli ec2 describe-instances \
   --instance-ids "${INSTANCE_ID}" \
-  --query 'Reservations[0].Instances[0].[InstanceType,State.Name,CpuOptions.NestedVirtualization]' \
+  --query 'Reservations[0].Instances[0].[InstanceType,State.Name,CpuOptions.NestedVirtualization,CpuOptions.CoreCount,CpuOptions.ThreadsPerCore]' \
   --output text)"
 
 echo "instance:      ${INSTANCE_ID}"
 echo "type:          ${INSTANCE_TYPE}"
 echo "state:         ${STATE}"
 echo "nested virt:   ${CURRENT}"
+echo "cpu:           ${CORE_COUNT} core(s) x ${THREADS_PER_CORE} thread(s)"
 
 if [[ "${CURRENT}" == "enabled" ]]; then
   echo "==> Already enabled; nothing to do."
@@ -99,8 +114,14 @@ if [[ "${STATE}" == "running" ]]; then
 fi
 
 echo "==> Enabling nested virtualization"
+# --core-count and --threads-per-core are mandatory on this API even when only
+# the nested-virtualization flag is changing, so echo the instance's current
+# values back. Passing anything else here would silently resize the host's CPU
+# allocation as a side effect of enabling a feature flag.
 aws_cli ec2 modify-instance-cpu-options \
   --instance-id "${INSTANCE_ID}" \
+  --core-count "${CORE_COUNT}" \
+  --threads-per-core "${THREADS_PER_CORE}" \
   --nested-virtualization enabled >/dev/null
 
 echo "==> Starting ${INSTANCE_ID}"
