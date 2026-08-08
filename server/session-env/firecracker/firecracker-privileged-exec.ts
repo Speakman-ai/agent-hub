@@ -36,6 +36,7 @@ import {
   type SpawnVmmFn,
   type StopVmmFn,
   type VmmHandle,
+  type VmmLaunchSpec,
 } from './firecracker-session-env.js';
 
 export type FirecrackerExecMode = 'local' | 'docker';
@@ -152,9 +153,49 @@ export function createFirecrackerHostIo(cfg: FirecrackerExecConfig): Firecracker
   };
 }
 
+/**
+ * Runs the VMM, then hands its vsock socket to the Hub.
+ *
+ * Firecracker creates the vsock UDS itself, as whatever user the VMM runs as
+ * — root, in both exec modes (a sudo'd binary locally, a privileged container
+ * otherwise). The Hub is not root, so it could see the socket appear and got
+ * EACCES on connect, which surfaced only as "guest agent did not answer within
+ * 120s": a boot that looked like a guest hang but was a host permission
+ * problem. chown'ing to the Hub's own uid grants exactly the one process that
+ * needs it, where a permissive mode would open the guest's control channel to
+ * every local user.
+ *
+ * The socket path and owner arrive as positional arguments rather than
+ * interpolated into the script, so no value here is ever parsed as shell.
+ * Failing to appear is not fatal — the Hub's own readiness wait still reports
+ * the timeout, exactly as it did before.
+ */
+export const VMM_LAUNCH_SCRIPT = [
+  'sock=$1; owner=$2; shift 2',
+  '"$@" &',
+  'vmm=$!',
+  'i=0',
+  'while [ $i -lt 200 ]; do',
+  '  if [ -S "$sock" ]; then chown "$owner" "$sock"; break; fi',
+  '  i=$((i+1)); sleep 0.1',
+  'done',
+  'wait $vmm',
+].join('\n');
+
+export function buildVmmLaunchArgv(spec: VmmLaunchSpec): string[] {
+  const { vsockPath, ownerUid, ownerGid, argv } = spec;
+  if (vsockPath === undefined || ownerUid === undefined || ownerGid === undefined) {
+    return argv;
+  }
+  return ['sh', '-c', VMM_LAUNCH_SCRIPT, 'sh', vsockPath, `${ownerUid}:${ownerGid}`, ...argv];
+}
+
 export function createSpawnVmm(cfg: FirecrackerExecConfig): SpawnVmmFn {
-  return ({ vmId, argv, cwd }) => {
-    const wrapped = buildPrivilegedArgv(cfg, argv, { containerName: vmmContainerName(vmId) });
+  return (spec) => {
+    const { vmId, cwd } = spec;
+    const wrapped = buildPrivilegedArgv(cfg, buildVmmLaunchArgv(spec), {
+      containerName: vmmContainerName(vmId),
+    });
     return nodeSpawn(wrapped[0], wrapped.slice(1), {
       cwd,
       env: process.env,
