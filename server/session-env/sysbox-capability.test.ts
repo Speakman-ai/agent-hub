@@ -62,6 +62,69 @@ describe('kernelAtLeast', () => {
   });
 });
 
+describe('selectSessionEnvAdapter — microVM tier', () => {
+  const noSysbox = { available: false, checks: [], missing: ['binary: not found'] };
+  const withSysbox = { available: true, checks: [], missing: [] };
+  const noContainer = { dockerAvailable: false, routing: 'published-ports' as const };
+  const vmReady = { available: true, reason: '' };
+  const noVm = { available: false, reason: '/dev/kvm is missing' };
+
+  it('auto picks the microVM over sysbox and container', () => {
+    const selection = selectSessionEnvAdapter(
+      'auto',
+      withSysbox,
+      { dockerAvailable: true, routing: 'container-ip' },
+      vmReady,
+    );
+    expect(selection.adapter).toBe('firecracker');
+    expect(selection.fellBack).toBe(false);
+  });
+
+  it('explains in the boot log why the microVM was skipped', () => {
+    // Otherwise an operator who enabled nested virtualization has no way to
+    // tell a failed probe from a config that never asked for it.
+    const selection = selectSessionEnvAdapter('auto', withSysbox, noContainer, noVm);
+    expect(selection.adapter).toBe('sysbox');
+    expect(selection.reason).toContain('/dev/kvm is missing');
+  });
+
+  it('degrades a forced microVM to the next-strongest boundary, not to host', () => {
+    // The operator asked for isolation; sysbox is closer to that intent than
+    // running sessions directly on the Hub machine.
+    expect(selectSessionEnvAdapter('firecracker', withSysbox, noContainer, noVm).adapter).toBe(
+      'sysbox',
+    );
+    expect(
+      selectSessionEnvAdapter(
+        'firecracker',
+        noSysbox,
+        { dockerAvailable: true, routing: 'container-ip' },
+        noVm,
+      ).adapter,
+    ).toBe('container');
+    expect(selectSessionEnvAdapter('firecracker', noSysbox, noContainer, noVm).adapter).toBe(
+      'host',
+    );
+  });
+
+  it('marks a degraded forced microVM as a fallback so the log warns', () => {
+    const selection = selectSessionEnvAdapter('firecracker', withSysbox, noContainer, noVm);
+    expect(selection.fellBack).toBe(true);
+    expect(selection.forced).toBe(false);
+  });
+
+  it('honors a forced microVM when the probe passes', () => {
+    const selection = selectSessionEnvAdapter('firecracker', noSysbox, noContainer, vmReady);
+    expect(selection).toMatchObject({ adapter: 'firecracker', forced: true, fellBack: false });
+  });
+
+  it('leaves existing selections unchanged when nothing probed the VM tier', () => {
+    // The default summary keeps every pre-existing caller on its old path.
+    expect(selectSessionEnvAdapter('auto', withSysbox).adapter).toBe('sysbox');
+    expect(selectSessionEnvAdapter('host', withSysbox).adapter).toBe('host');
+  });
+});
+
 describe('coerceSessionEnvAdapterMode', () => {
   it('accepts every valid mode case-insensitively', () => {
     expect(coerceSessionEnvAdapterMode('auto')).toBe('auto');

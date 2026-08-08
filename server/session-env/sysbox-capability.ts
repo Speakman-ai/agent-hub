@@ -226,10 +226,22 @@ export interface ContainerCapability {
   detail?: string;
 }
 
+/**
+ * What the `firecracker` backend needs, as reported by
+ * `firecracker/firecracker-capability.ts`: KVM, the VMM binary, and staged
+ * guest artifacts.
+ */
+export interface FirecrackerCapabilitySummary {
+  available: boolean;
+  /** Why it is unavailable, for the boot log. Empty when available. */
+  reason: string;
+}
+
 export function selectSessionEnvAdapter(
   mode: SessionEnvAdapterMode,
   probe: SysboxProbeResult,
   container: ContainerCapability = { dockerAvailable: false, routing: 'published-ports' },
+  firecracker: FirecrackerCapabilitySummary = { available: false, reason: 'not probed' },
 ): SessionEnvSelection {
   const containerUsable = container.dockerAvailable && container.routing === 'container-ip';
   const containerDetail =
@@ -237,6 +249,49 @@ export function selectSessionEnvAdapter(
     (!container.dockerAvailable
       ? 'no usable docker daemon'
       : 'container IPs are not routable from the Hub');
+
+  if (mode === 'firecracker') {
+    if (firecracker.available) {
+      return {
+        adapter: 'firecracker',
+        mode,
+        forced: true,
+        fellBack: false,
+        reason: 'forced by config (sessionEnvAdapter=firecracker); probe passed',
+        probe,
+      };
+    }
+    // Same principle as a forced sysbox: the operator asked for isolation, so
+    // degrade to the next-strongest boundary rather than all the way to host.
+    if (probe.available) {
+      return {
+        adapter: 'sysbox',
+        mode,
+        forced: false,
+        fellBack: true,
+        reason: `microVM backend forced by config but unavailable — using sysbox instead: ${firecracker.reason}`,
+        probe,
+      };
+    }
+    if (containerUsable) {
+      return {
+        adapter: 'container',
+        mode,
+        forced: false,
+        fellBack: true,
+        reason: `microVM backend forced by config but unavailable — using the container backend instead: ${firecracker.reason}`,
+        probe,
+      };
+    }
+    return {
+      adapter: 'host',
+      mode,
+      forced: false,
+      fellBack: true,
+      reason: `microVM backend forced by config but unavailable — falling back to host adapter: ${firecracker.reason}`,
+      probe,
+    };
+  }
 
   if (mode === 'container') {
     if (container.dockerAvailable) {
@@ -301,13 +356,26 @@ export function selectSessionEnvAdapter(
       probe,
     };
   }
+  // `auto`, strongest boundary first. A microVM leads because it is the only
+  // tier where the session gets its own kernel rather than a namespaced view
+  // of the host's.
+  if (firecracker.available) {
+    return {
+      adapter: 'firecracker',
+      mode,
+      forced: false,
+      fellBack: false,
+      reason: 'microVM backend available (auto)',
+      probe,
+    };
+  }
   if (probe.available) {
     return {
       adapter: 'sysbox',
       mode,
       forced: false,
       fellBack: false,
-      reason: 'sysbox available (auto)',
+      reason: `sysbox available (auto); microVM backend skipped: ${firecracker.reason}`,
       probe,
     };
   }
@@ -364,9 +432,10 @@ export async function initSessionEnvSelection(
   mode: SessionEnvAdapterMode,
   deps?: SysboxProbeDeps,
   container?: ContainerCapability,
+  firecracker?: FirecrackerCapabilitySummary,
 ): Promise<SessionEnvSelection> {
   const probe = await probeSysboxCapability(deps);
-  cachedSelection = selectSessionEnvAdapter(mode, probe, container);
+  cachedSelection = selectSessionEnvAdapter(mode, probe, container, firecracker);
   return cachedSelection;
 }
 
