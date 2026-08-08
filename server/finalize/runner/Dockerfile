@@ -36,12 +36,16 @@ ARG RUNNER_ENFORCE_VERSION_PINS=0
 # already runs as root. Must precede the first apt-get update.
 RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/00no-sandbox
 
+# iproute2 is not for CI: this image doubles as the privileged helper that
+# creates each microVM's tap device in the host network namespace, and `ip` is
+# the only tool that does it. See firecracker-privileged-exec.ts.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
     gnupg \
     iptables \
+    iproute2 \
     jq \
     lsb-release \
     python3 \
