@@ -414,6 +414,15 @@ export class FirecrackerSessionEnv implements SessionEnv {
 
     try {
       await this.io.mkdirp(this.vmDir);
+      // Firecracker *binds* these two paths and refuses to start if either
+      // already exists. A vm id is derived from the session id, so a session
+      // whose VMM died without unlinking them — a host reboot, an OOM kill —
+      // boots straight back onto its own leftovers and fails with
+      // FailedToBindSocket every time, permanently. Nothing can be listening:
+      // the process that owned them is gone by definition, since we are about
+      // to spawn its replacement.
+      await this.io.rmrf(`${this.vmDir}/api.sock`);
+      await this.io.rmrf(this.vsockPath);
 
       for (const argv of buildCreateTapArgv(network)) {
         const res = await this.io.run(argv);

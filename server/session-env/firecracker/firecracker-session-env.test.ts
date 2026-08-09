@@ -226,6 +226,19 @@ describe('FirecrackerSessionEnv start', () => {
     expect(env.guestIp).toBe('172.30.0.3');
   });
 
+  it('clears leftover sockets before binding them', async () => {
+    // Firecracker binds api.sock and vsock.sock and refuses to start when
+    // either exists. The vm id is derived from the session id, so a session
+    // whose VMM died without unlinking them (host reboot, OOM kill) reboots
+    // onto its own leftovers and fails with FailedToBindSocket forever — the
+    // session can never get an environment again.
+    const { env, removed } = makeEnv();
+    await env.ensureStarted();
+
+    expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/api.sock');
+    expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/vsock.sock');
+  });
+
   it('boots under the jailer when asked', async () => {
     const { env, spawned } = makeEnv({ useJailer: true, jailerUid: 1001, jailerGid: 1001 });
     await env.ensureStarted();
@@ -402,7 +415,9 @@ describe('FirecrackerSessionEnv dispose', () => {
     expect(stopVmm).toHaveBeenCalledWith({ vmId: 'ahvm-sess-1', pid: 4242 });
     expect(runs.at(-1)).toEqual(['ip', 'link', 'del', 'ahfct3']);
     expect(slots.released).toEqual([3]);
-    expect(removed).toEqual(['/run/agent-hub/vms/ahvm-sess-1']);
+    // The whole directory goes, not just the sockets start cleared out of the
+    // way — leaving the disks behind would grow the run dir without bound.
+    expect(removed.at(-1)).toBe('/run/agent-hub/vms/ahvm-sess-1');
   });
 
   it('signals live processes before tearing the VM down', async () => {
