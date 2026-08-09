@@ -174,7 +174,7 @@ describe('parseUplinkDev', () => {
 
 describe('buildEnsureGuestNatArgv', () => {
   it('NATs the guest subnet behind the uplink and opens FORWARD', () => {
-    const { required } = buildEnsureGuestNatArgv('enp39s0');
+    const { required, optional } = buildEnsureGuestNatArgv('enp39s0');
     expect(required[0]).toEqual(['sysctl', '-qw', 'net.ipv4.ip_forward=1']);
     expect(required).toContainEqual([
       'iptables',
@@ -200,6 +200,19 @@ describe('buildEnsureGuestNatArgv', () => {
       '-j',
       'ACCEPT',
     ]);
+    // DOCKER-USER accepts must name both interfaces — never bare `-i ahfc0`.
+    expect(optional).toContainEqual([
+      'iptables',
+      '-I',
+      'DOCKER-USER',
+      '-i',
+      'ahfc0',
+      '-o',
+      'enp39s0',
+      '-j',
+      'ACCEPT',
+    ]);
+    expect(optional.some((argv) => argv.includes('-i') && !argv.includes('-o'))).toBe(false);
   });
 });
 

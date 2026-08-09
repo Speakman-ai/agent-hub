@@ -132,17 +132,40 @@ export class GuestWorktreeIo implements SessionWorktreeIo {
     // `exists` reports as "not there" — a Finalize-gated project read as
     // having no ci.yaml, and the Changes pane read a live guest as empty.
     const command = `stat --printf '%F\\0%s\\0%.9Y' ${shellQuote(target)}`;
-    const { stdout, exitCode } = await this.channel.exec(command, {
+    const { stdout, stderr, exitCode } = await this.channel.exec(command, {
       cwd: '.',
       timeoutMs: 30_000,
     });
-    if (exitCode !== 0) return null;
-    return parseStatOutput(stdout);
+    if (exitCode !== 0) {
+      // Only a recognized missing path is a definite negative. Permission
+      // errors, killed agents, and other failures must throw — otherwise the
+      // Finalize ship gate treats them as "no ci.yaml" and opens the push.
+      if (isMissingPathStatFailure(stderr)) return null;
+      throw new Error(
+        `stat(${relPath}) failed in guest: ${stderr.trim() || `exit ${exitCode ?? 'unknown'}`}`,
+      );
+    }
+    const parsed = parseStatOutput(stdout);
+    if (!parsed) {
+      throw new Error(`stat(${relPath}) returned unparseable output from guest`);
+    }
+    return parsed;
   }
 
   async exists(relPath: string): Promise<boolean> {
     return (await this.stat(relPath)) !== null;
   }
+}
+
+/** GNU / BusyBox `stat` wording for a path that is not there. */
+export function isMissingPathStatFailure(stderr: string): boolean {
+  const text = stderr.toLowerCase();
+  return (
+    text.includes('no such file or directory') ||
+    text.includes('cannot statx') ||
+    text.includes('cannot stat ') ||
+    text.includes('does not exist')
+  );
 }
 
 /** `%y` type letters from `find -printf`. */

@@ -51,6 +51,7 @@ import type { SessionEnvPortRouting } from '../container-routing.js';
 import type { SessionWorktreeIo } from '../worktree-io.js';
 import { GuestWorktreeIo } from './guest-worktree-io.js';
 import { resolveGuestNameservers } from './guest-nameservers.js';
+import { ensureFirecrackerGuestNat } from './firecracker-slots.js';
 import { translateContainerPathToHost } from '../../preview/host-path-translation.js';
 import {
   FIRECRACKER_GUEST_WORKSPACE,
@@ -405,6 +406,19 @@ export class FirecrackerSessionEnv implements SessionEnv {
     if (!(await this.io.isDirectory(this.worktreePath))) {
       throw new Error(
         `Session worktree not found at ${this.worktreePath} (session ${this.sessionId})`,
+      );
+    }
+
+    // Re-apply MASQUERADE/FORWARD even when the boot sweep already did — a
+    // Docker restart between Hub boot and this session can drop the rules
+    // while leaving the bridge up.
+    const natReady = await ensureFirecrackerGuestNat({
+      run: (argv) => this.io.run(argv),
+    });
+    if (!natReady) {
+      throw new Error(
+        `Firecracker guest NAT is not ready (session ${this.sessionId}); ` +
+          `guests would have no outbound network`,
       );
     }
 

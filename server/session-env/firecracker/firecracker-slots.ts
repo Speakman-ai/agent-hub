@@ -185,15 +185,18 @@ export function buildEnsureGuestNatArgv(uplink: string): GuestNatArgv {
       'ACCEPT',
     ],
   ];
-  // DOCKER-USER is evaluated before Docker's isolation drops; ACCEPT here
-  // keeps guest traffic from being collateral damage of docker0 rules.
+  // DOCKER-USER runs before Docker's bridge-isolation chains. ACCEPT must be
+  // scoped to the uplink — a bare `-i ahfc0 -j ACCEPT` would let an untrusted
+  // guest route onto docker0 / other containers, not just the internet.
   const optional: string[][] = [
-    ['iptables', '-C', 'DOCKER-USER', '-i', bridge, '-j', 'ACCEPT'],
-    ['iptables', '-I', 'DOCKER-USER', '-i', bridge, '-j', 'ACCEPT'],
+    ['iptables', '-C', 'DOCKER-USER', '-i', bridge, '-o', uplink, '-j', 'ACCEPT'],
+    ['iptables', '-I', 'DOCKER-USER', '-i', bridge, '-o', uplink, '-j', 'ACCEPT'],
     [
       'iptables',
       '-C',
       'DOCKER-USER',
+      '-i',
+      uplink,
       '-o',
       bridge,
       '-m',
@@ -207,6 +210,8 @@ export function buildEnsureGuestNatArgv(uplink: string): GuestNatArgv {
       'iptables',
       '-I',
       'DOCKER-USER',
+      '-i',
+      uplink,
       '-o',
       bridge,
       '-m',
@@ -277,12 +282,13 @@ export async function ensureFirecrackerGuestNat(
     logger.warn(`[firecracker] failed to enable ip_forward: ${sysctl.stderr.trim()}`);
   }
 
-  const requiredOk = await ensureIptablesRulePairs(deps.run, required.slice(1), logger, {
+  const iptablesOk = await ensureIptablesRulePairs(deps.run, required.slice(1), logger, {
     warnOnFailure: true,
   });
   // Optional DOCKER-USER rules: chain may not exist when Docker is absent.
   await ensureIptablesRulePairs(deps.run, optional, logger, { warnOnFailure: false });
-  return requiredOk;
+  // Forwarding must actually be on — MASQUERADE alone does not move packets.
+  return sysctl.ok && iptablesOk;
 }
 
 /**

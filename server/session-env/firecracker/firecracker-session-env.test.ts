@@ -134,6 +134,17 @@ function makeIo(overrides: Partial<FirecrackerHostIo> = {}) {
   const io: FirecrackerHostIo = {
     run: async (argv) => {
       runs.push(argv);
+      // ensureFirecrackerGuestNat runs before tap create; give it a usable uplink.
+      if (argv[0] === 'ip' && argv.includes('route')) {
+        return {
+          ok: true,
+          stdout: '1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5\n',
+          stderr: '',
+        };
+      }
+      if (argv[0] === 'iptables' && argv.includes('-C')) {
+        return { ok: false, stdout: '', stderr: 'No chain/target/match by that name' };
+      }
       return { ok: true, stdout: '', stderr: '' };
     },
     writeFile: async (path, contents) => {
@@ -213,8 +224,10 @@ describe('FirecrackerSessionEnv start', () => {
     const { env, runs, written, spawned } = makeEnv();
     await env.ensureStarted();
 
-    expect(runs[0]).toEqual(['ip', 'tuntap', 'add', 'ahfct3', 'mode', 'tap']);
+    expect(runs.some((a) => a[0] === 'ip' && a[1] === 'tuntap' && a.includes('ahfct3'))).toBe(true);
     expect(runs.some((a) => a[0].endsWith('fc-prepare-disks.sh'))).toBe(true);
+    // Guest NAT is ensured before the tap is created.
+    expect(runs.some((a) => a[0] === 'sysctl' && a.includes('net.ipv4.ip_forward=1'))).toBe(true);
 
     const config = JSON.parse([...written.values()][0]);
     expect(config['machine-config'].vcpu_count).toBeGreaterThan(0);
