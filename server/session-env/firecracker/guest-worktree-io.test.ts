@@ -174,6 +174,41 @@ describe('parseFindEntries', () => {
   });
 });
 
+describe('GuestWorktreeIo.stat', () => {
+  it('asks stat for escape-interpreted output so the fields are NUL-delimited', async () => {
+    // `-c` does not interpret backslash escapes — coreutils prints a literal
+    // backslash and zero, the NUL split finds one field, and every stat in a
+    // microVM session comes back unparseable. `exists` reports that as "not
+    // there": a Finalize-gated project looked unconfigured to the ship gate,
+    // and a live guest looked empty to the Changes pane. Only `--printf`
+    // emits the real NUL the parser is written against.
+    const { io, execCalls } = makeIo(() => ({
+      stdout: 'regular file\x00128\x001700000000.0',
+      stderr: '',
+      exitCode: 0,
+    }));
+    await io.stat('.agent-hub/ci.yaml');
+
+    expect(execCalls[0]?.command).toContain('--printf');
+    expect(execCalls[0]?.command).not.toMatch(/stat\s+-c\b/);
+  });
+
+  it('reports a missing path as absent rather than throwing', async () => {
+    const { io } = makeIo(() => ({ stdout: '', stderr: 'No such file', exitCode: 1 }));
+    await expect(io.stat('nope.yaml')).resolves.toBeNull();
+    await expect(io.exists('nope.yaml')).resolves.toBe(false);
+  });
+
+  it('reports a present path as existing', async () => {
+    const { io } = makeIo(() => ({
+      stdout: 'regular file\x005588\x001700000000.0',
+      stderr: '',
+      exitCode: 0,
+    }));
+    await expect(io.exists('.agent-hub/ci.yaml')).resolves.toBe(true);
+  });
+});
+
 describe('parseStatOutput', () => {
   it('parses kind, size, and fractional mtime', () => {
     expect(parseStatOutput('regular file\x00128\x001700000000.500000000')).toEqual({

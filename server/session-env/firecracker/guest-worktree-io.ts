@@ -126,7 +126,12 @@ export class GuestWorktreeIo implements SessionWorktreeIo {
 
   async stat(relPath: string): Promise<WorktreeStat | null> {
     const target = toPosixRelative(relPath) || '.';
-    const command = `stat -c '%F\\0%s\\0%.9Y' ${shellQuote(target)}`;
+    // `--printf`, not `-c`: only the former interprets backslash escapes, so
+    // `-c` emitted a literal backslash-zero and the NUL-delimited parse below
+    // found a single field. Every stat then came back unparseable, which
+    // `exists` reports as "not there" — a Finalize-gated project read as
+    // having no ci.yaml, and the Changes pane read a live guest as empty.
+    const command = `stat --printf '%F\\0%s\\0%.9Y' ${shellQuote(target)}`;
     const { stdout, exitCode } = await this.channel.exec(command, {
       cwd: '.',
       timeoutMs: 30_000,
