@@ -12,12 +12,13 @@
  * calls as before; `env-owned` envs get one that forwards to the guest agent.
  * Callers work in worktree-relative paths and never learn which they hold.
  */
-import { execFile } from 'child_process';
-import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
+import { exec, execFile } from 'child_process';
+import { readFile, writeFile, readdir, stat, mkdir, copyFile } from 'fs/promises';
 import path from 'path';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 
 /** Default cap on captured git output. Diffs of generated files get large. */
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
@@ -44,6 +45,21 @@ export interface WorktreeGitOpts {
    */
   throwOnNonZero?: boolean;
 }
+
+/**
+ * Options for {@link SessionWorktreeIo.exec}. Same shape as the git options
+ * minus `throwOnNonZero`: a general command's exit code is the caller's to
+ * interpret, so there is no default worth throwing on.
+ */
+export interface WorktreeExecOpts {
+  /** Directory to run in, relative to the worktree root. Default the root. */
+  cwd?: string;
+  timeoutMs?: number;
+  maxBuffer?: number;
+  env?: Record<string, string>;
+}
+
+export type WorktreeExecResult = WorktreeGitResult;
 
 export interface WorktreeDirEntry {
   name: string;
@@ -86,8 +102,25 @@ export interface SessionWorktreeIo {
   readonly hostPath: string | null;
 
   git(args: string[], opts?: WorktreeGitOpts): Promise<WorktreeGitResult>;
+  /**
+   * Run a shell command where the worktree lives.
+   *
+   * The general form of {@link git}, for the handful of pipeline steps that
+   * shell out to something else against the tree (regenerating a lockfile,
+   * removing a scratch file). Output is captured, so this is for commands that
+   * finish; anything whose output has to stream belongs on `SessionEnv.spawn`.
+   */
+  exec(command: string, opts?: WorktreeExecOpts): Promise<WorktreeExecResult>;
   readFile(relPath: string): Promise<Buffer>;
   writeFile(relPath: string, contents: Buffer | string): Promise<void>;
+  /**
+   * Copy a worktree file out to a host path without buffering it whole.
+   *
+   * {@link readFile} materialises the entire file in Hub memory, which is fine
+   * for a config file and not for a repo bundle. Callers moving bulk bytes to
+   * the host (the CI source hand-off) use this instead.
+   */
+  downloadFile(relPath: string, destHostPath: string): Promise<void>;
   listDir(relPath?: string): Promise<WorktreeDirEntry[]>;
   /** `null` when the path does not exist, rather than throwing ENOENT. */
   stat(relPath: string): Promise<WorktreeStat | null>;
@@ -174,8 +207,34 @@ export class HostWorktreeIo implements SessionWorktreeIo {
     return result;
   }
 
+  async exec(command: string, opts: WorktreeExecOpts = {}): Promise<WorktreeExecResult> {
+    const cwd = opts.cwd ? resolveWorktreeRelative(this.hostPath, opts.cwd) : this.hostPath;
+    try {
+      const { stdout, stderr } = await execAsync(command, {
+        cwd,
+        timeout: opts.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+        maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
+        env: opts.env ? { ...process.env, ...opts.env } : process.env,
+      });
+      return { stdout, stderr, exitCode: 0 };
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException & {
+        stdout?: string;
+        stderr?: string;
+        code?: number | string;
+      };
+      if (typeof e.code !== 'number') throw err;
+      return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', exitCode: e.code };
+    }
+  }
+
   async readFile(relPath: string): Promise<Buffer> {
     return readFile(resolveWorktreeRelative(this.hostPath, relPath));
+  }
+
+  async downloadFile(relPath: string, destHostPath: string): Promise<void> {
+    await mkdir(path.dirname(destHostPath), { recursive: true });
+    await copyFile(resolveWorktreeRelative(this.hostPath, relPath), destHostPath);
   }
 
   async writeFile(relPath: string, contents: Buffer | string): Promise<void> {

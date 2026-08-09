@@ -11,6 +11,8 @@ import path from 'path';
 import type {
   SessionWorktreeIo,
   WorktreeDirEntry,
+  WorktreeExecOpts,
+  WorktreeExecResult,
   WorktreeGitOpts,
   WorktreeGitResult,
   WorktreeStat,
@@ -43,6 +45,8 @@ export interface GuestWorktreeChannel {
   exec(command: string, opts: { cwd: string; timeoutMs: number }): Promise<GuestExecResult>;
   readFile(guestPath: string): Promise<Buffer>;
   writeFile(guestPath: string, contents: Buffer): Promise<void>;
+  /** Stream a guest file to a host path without buffering it whole. */
+  downloadFile(guestPath: string, destHostPath: string): Promise<void>;
 }
 
 export class GuestWorktreeIo implements SessionWorktreeIo {
@@ -79,8 +83,23 @@ export class GuestWorktreeIo implements SessionWorktreeIo {
     return result;
   }
 
+  async exec(command: string, opts: WorktreeExecOpts = {}): Promise<WorktreeExecResult> {
+    const cwd = toPosixRelative(opts.cwd ?? '.');
+    const assignments = Object.entries(opts.env ?? {})
+      .map(([key, value]) => `${key}=${shellQuote(value)} `)
+      .join('');
+    return this.channel.exec(`${assignments}${command}`, {
+      cwd,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+    });
+  }
+
   async readFile(relPath: string): Promise<Buffer> {
     return this.channel.readFile(this.#guestPath(relPath));
+  }
+
+  async downloadFile(relPath: string, destHostPath: string): Promise<void> {
+    await this.channel.downloadFile(this.#guestPath(relPath), destHostPath);
   }
 
   async writeFile(relPath: string, contents: Buffer | string): Promise<void> {

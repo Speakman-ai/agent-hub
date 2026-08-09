@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { evaluateFinalizeShipGate, findLatestFinalizeRunForHead } from './ship-gate.js';
 import { computeIdempotencyKey } from './finalize-keys.js';
+import { setSessionWorktreeIoResolver } from '../session-worktree-io.js';
+import { fakeEnvOwnedIo } from '../test/fake-worktree-io.js';
 import type { FinalizeRunRow, SessionRow } from '../types.js';
+
+afterEach(() => setSessionWorktreeIoResolver(null));
 
 function session(overrides: Partial<SessionRow> = {}): SessionRow {
   return {
@@ -25,6 +29,46 @@ describe('evaluateFinalizeShipGate', () => {
       },
       { session: session(), projectId: 'proj', headSha: 'abc' },
     );
+    expect(gate.allowed).toBe(true);
+    expect(gate.code).toBe('no_finalize_config');
+  });
+
+  it('finds ci.yaml in a guest worktree and still gates', async () => {
+    // The default lookup used to stat the host path. A microVM session keeps
+    // the repo in the guest, so that stat missed and the gate reported the
+    // project as unconfigured — letting the agent push straight past Finalize
+    // on exactly the projects that require it. No `ciConfigExists` override
+    // here on purpose: the default path is what regressed.
+    const io = fakeEnvOwnedIo({ files: { '.agent-hub/ci.yaml': 'jobs: {}\n' } });
+    setSessionWorktreeIoResolver(async () => io);
+
+    const gate = await evaluateFinalizeShipGate(
+      {
+        stmts: {
+          getActiveFinalizeRunForSession: { get: vi.fn(() => undefined) },
+          getFinalizeRunByIdempotencyKey: { get: vi.fn(() => undefined) },
+        } as never,
+      },
+      { session: session(), projectId: 'proj', headSha: 'abc123' },
+    );
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.code).toBe('must_use_finalize');
+  });
+
+  it('opens the gate when the worktree genuinely has no ci.yaml', async () => {
+    setSessionWorktreeIoResolver(async () => fakeEnvOwnedIo({ files: {} }));
+
+    const gate = await evaluateFinalizeShipGate(
+      {
+        stmts: {
+          getActiveFinalizeRunForSession: { get: vi.fn() },
+          getFinalizeRunByIdempotencyKey: { get: vi.fn() },
+        } as never,
+      },
+      { session: session(), projectId: 'proj', headSha: 'abc123' },
+    );
+
     expect(gate.allowed).toBe(true);
     expect(gate.code).toBe('no_finalize_config');
   });

@@ -26,7 +26,10 @@
  */
 
 import { execFile, spawn as nodeSpawn } from 'child_process';
+import { createWriteStream } from 'fs';
 import { mkdir, rm, stat, writeFile } from 'fs/promises';
+import { once } from 'events';
+import path from 'path';
 import type { HostSpawnFn } from '../host-session-env.js';
 import {
   SessionEnv,
@@ -71,6 +74,7 @@ import {
 } from './vm-agent-client.js';
 import { createVmAgentProcess, createVmAgentPty } from './vm-agent-process.js';
 import {
+  READ_FILE_CHUNK_BYTES,
   VM_AGENT_PROTOCOL_VERSION,
   VM_AGENT_VSOCK_PORT,
   type VmAgentPtyRequest,
@@ -530,15 +534,66 @@ export class FirecrackerSessionEnv implements SessionEnv {
     }
   }
 
-  /** Read a file by absolute guest path via the agent. */
-  async readGuestFile(guestPath: string): Promise<Buffer> {
-    await this.ensureStarted();
-    const stream = await this.#open({ kind: 'read-file', path: guestPath });
+  /** Read one byte range of a guest file. */
+  async #readGuestChunk(
+    guestPath: string,
+    offset: number,
+  ): Promise<{ chunk: Buffer; eof: boolean }> {
+    const stream = await this.#open({
+      kind: 'read-file',
+      path: guestPath,
+      offset,
+      length: READ_FILE_CHUNK_BYTES,
+    });
     const reply = await awaitReply(stream);
     if (reply.kind !== 'file') {
       throw new Error(`Unexpected guest reply reading ${guestPath}: ${reply.kind}`);
     }
-    return Buffer.from(reply.contentBase64, 'base64');
+    return { chunk: Buffer.from(reply.contentBase64, 'base64'), eof: reply.eof };
+  }
+
+  /** Read a file by absolute guest path via the agent. */
+  async readGuestFile(guestPath: string): Promise<Buffer> {
+    await this.ensureStarted();
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    for (;;) {
+      const { chunk, eof } = await this.#readGuestChunk(guestPath, offset);
+      chunks.push(chunk);
+      offset += chunk.length;
+      // A zero-length non-eof read would spin forever; treat it as the end,
+      // which is what a file truncated underneath us actually means.
+      if (eof || chunk.length === 0) break;
+    }
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * Stream a guest file to a host path.
+   *
+   * Same transport as {@link readGuestFile}, but the bytes go straight to disk
+   * — the caller is moving a repo bundle, which has no business sitting in the
+   * Hub's heap.
+   */
+  async downloadGuestFile(guestPath: string, destHostPath: string): Promise<void> {
+    await this.ensureStarted();
+    await mkdir(path.dirname(destHostPath), { recursive: true });
+    const sink = createWriteStream(destHostPath);
+    try {
+      let offset = 0;
+      for (;;) {
+        const { chunk, eof } = await this.#readGuestChunk(guestPath, offset);
+        if (chunk.length > 0) {
+          if (!sink.write(chunk)) await once(sink, 'drain');
+          offset += chunk.length;
+        }
+        if (eof || chunk.length === 0) break;
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        sink.end((err?: Error | null) => (err ? reject(err) : resolve()));
+      });
+    }
   }
 
   /** Write a file by absolute guest path via the agent. */
@@ -690,6 +745,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
         exec: (command, opts) => this.#execCapture(command, opts),
         readFile: (guestPath) => this.readGuestFile(guestPath),
         writeFile: (guestPath, contents) => this.writeGuestFile(guestPath, contents),
+        downloadFile: (guestPath, destHostPath) => this.downloadGuestFile(guestPath, destHostPath),
       },
       FIRECRACKER_GUEST_WORKSPACE,
     );

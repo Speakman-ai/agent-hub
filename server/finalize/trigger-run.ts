@@ -179,22 +179,20 @@ async function kickoffFinalizeRunBody(
     worktreePath: session.worktree_path,
     getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
-  const committable = await getSessionCommittableChanges(
-    await sessionWorktreeIoFor(session.id, session.worktree_path),
-    { base: gateBase },
-  );
+  const io = await sessionWorktreeIoFor(session.id, session.worktree_path);
+  const committable = await getSessionCommittableChanges(io, { base: gateBase });
   if (!committable.ok) {
     return { kind: 'error', error: committable.error, message: committable.message };
   }
 
+  // Read from the session, not its recorded path: the head this resolves
+  // becomes the run's idempotency key and the sha the gates are judged
+  // against, so a stale read here mislabels the entire run.
   let headSha: string;
   try {
-    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
-      cwd: session.worktree_path,
-      timeout: 30_000,
-      maxBuffer: 1 * 1024 * 1024,
-    });
-    headSha = stdout.trim();
+    const head = await io.git(['rev-parse', 'HEAD'], { timeoutMs: 30_000 });
+    if (head.exitCode !== 0) throw new Error(head.stderr.trim() || 'git rev-parse HEAD failed');
+    headSha = head.stdout.trim();
     if (!headSha) throw new Error('empty rev-parse output');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

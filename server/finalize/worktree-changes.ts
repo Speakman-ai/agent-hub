@@ -87,24 +87,6 @@ export async function getSessionCommittableChanges(
       message: 'Session has no worktree.',
     };
   }
-  // Detection below is worktree-agnostic, but everything this gate opens the
-  // door to — rebase, the CI step runner, push — still drives git against a
-  // host path. Under `env-owned` sharing that path is the boot-time seed, so
-  // letting a run start would rebase and push a branch that has none of the
-  // session's work: a silent, irreversible drop. Refuse until those phases go
-  // through the worktree seam too.
-  if (io.sharing === 'env-owned') {
-    return {
-      ok: false,
-      error: 'worktree_not_on_host',
-      message:
-        'This session runs in a microVM, where the worktree lives inside the ' +
-        'guest. Finalize still commits and pushes from the host copy, which ' +
-        'holds only the state the VM booted from — running it would ship an ' +
-        'empty or stale branch. Commit and push from inside the session ' +
-        'instead.',
-    };
-  }
   const base: FinalizeGateBase = opts.base ?? { kind: 'default' };
   const changes = await checkWorktreeChanges(io);
   if (!opts.requirePushableHead) {

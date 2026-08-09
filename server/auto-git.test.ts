@@ -54,6 +54,7 @@ import {
   normalizeCommitInputs,
   pickPrTitleFromCommits,
   resolveUserGithubToken,
+  guestCheckCommandTarget,
 } from './auto-git.js';
 import { HostWorktreeIo } from './session-env/worktree-io.js';
 import { fakeEnvOwnedIo } from './test/fake-worktree-io.js';
@@ -419,6 +420,67 @@ describe('check auto-heal project fields', () => {
     const err = new CheckCommandFailedError('msg', { exitCode: 7, logKind: 'pre_commit' });
     expect(err.agentHubErrorCode).toBe(CHECK_COMMAND_NONZERO_EXIT_CODE);
     expect(err.exitCode).toBe(7);
+  });
+});
+
+describe('guestCheckCommandTarget', () => {
+  it('runs the command in the session env, not on this filesystem', async () => {
+    // Pre-commit commands are formatters and linters: they need the project's
+    // toolchain and they rewrite the tree they check. Both are in the guest.
+    const io = fakeEnvOwnedIo();
+    await guestCheckCommandTarget(io).runCommand('npm run lint', 'pre_commit');
+    expect(io.execCalls.map((c) => c.command)).toEqual(['npm run lint']);
+  });
+
+  it('forwards output to the log even though it cannot stream', async () => {
+    const io = fakeEnvOwnedIo({
+      exec: () => ({ stdout: 'checked 12 files\n', stderr: 'one warning\n' }),
+    });
+    const chunks: string[] = [];
+    await guestCheckCommandTarget(io).runCommand('npm run lint', 'pre_commit', (c) =>
+      chunks.push(c),
+    );
+    expect(chunks.join('')).toBe('checked 12 files\none warning\n');
+  });
+
+  it('reports a failing check as auto-heal eligible', async () => {
+    const io = fakeEnvOwnedIo({ exec: () => ({ exitCode: 1, stderr: 'lint error\n' }) });
+    const err = await guestCheckCommandTarget(io)
+      .runCommand('npm run lint', 'pre_commit')
+      .catch((e: unknown) => e as Error);
+
+    expect(err).toBeInstanceOf(CheckCommandFailedError);
+    expect((err as CheckCommandFailedError).agentHubErrorCode).toBe(
+      CHECK_COMMAND_NONZERO_EXIT_CODE,
+    );
+    expect(isEligibleCheckFailureForAutoHeal(err as Error)).toBe(true);
+  });
+
+  it('does not let a failing heal command license another heal round', async () => {
+    const io = fakeEnvOwnedIo({ exec: () => ({ exitCode: 1 }) });
+    const err = await guestCheckCommandTarget(io)
+      .runCommand('npm run format', 'check_heal')
+      .catch((e: unknown) => e as Error);
+
+    expect(err).not.toBeInstanceOf(CheckCommandFailedError);
+    expect(isEligibleCheckFailureForAutoHeal(err as Error)).toBe(false);
+  });
+
+  it('treats a signal kill as unfixable rather than retrying it', async () => {
+    // A null exit code is a timeout or a reap, not a lint a formatter can fix.
+    const io = fakeEnvOwnedIo({ exec: () => ({ exitCode: null }) });
+    const err = await guestCheckCommandTarget(io)
+      .runCommand('npm run lint', 'pre_commit')
+      .catch((e: unknown) => e as Error);
+
+    expect(err).not.toBeInstanceOf(CheckCommandFailedError);
+    expect(isEligibleCheckFailureForAutoHeal(err as Error)).toBe(false);
+  });
+
+  it('stages inside the session env after a heal rewrites the tree', async () => {
+    const io = fakeEnvOwnedIo();
+    await guestCheckCommandTarget(io).stageAll();
+    expect(io.gitCalls.map((c) => c.args)).toEqual([['add', '-A']]);
   });
 });
 

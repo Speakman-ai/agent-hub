@@ -22,14 +22,17 @@ function makeChannel(
   execCalls: ExecCall[];
   reads: string[];
   writes: Array<{ path: string; contents: Buffer }>;
+  downloads: Array<{ path: string; destHostPath: string }>;
 } {
   const execCalls: ExecCall[] = [];
   const reads: string[] = [];
   const writes: Array<{ path: string; contents: Buffer }> = [];
+  const downloads: Array<{ path: string; destHostPath: string }> = [];
   return {
     execCalls,
     reads,
     writes,
+    downloads,
     channel: {
       exec: async (command, opts) => {
         execCalls.push({ command, ...opts });
@@ -41,6 +44,9 @@ function makeChannel(
       },
       writeFile: async (guestPath, contents) => {
         writes.push({ path: guestPath, contents });
+      },
+      downloadFile: async (guestPath, destHostPath) => {
+        downloads.push({ path: guestPath, destHostPath });
       },
     },
   };
