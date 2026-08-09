@@ -283,6 +283,7 @@ import { previewSubdomainRewrittenUrl } from './preview/preview-public-url.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { PREVIEW_REAPER_CRON } from './preview/preview-runtime-primitives.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
+import { reapFinalizeSourceCheckouts } from './finalize/session-source.js';
 import { runStuckRunReaper, STUCK_RUN_REAPER_CRON } from './finalize/stuck-run-reaper.js';
 import {
   runRunnerJobLogReaper,
@@ -1300,6 +1301,33 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       { name: 'finalize-reaper' },
     );
   }
+
+  // Staging checkouts for sessions whose worktree lives in their own env. Kept
+  // separate from the container reaper above because the retention rule is
+  // different: a run parked at `ready_to_push` has `ended_at` set but still
+  // holds the only copy of the commits it validated, so it must survive until
+  // the push lands. Not docker-gated — staging is plain git on disk.
+  cron.schedule(
+    FINALIZE_REAPER_CRON,
+    () => {
+      void reapFinalizeSourceCheckouts({
+        retainRunIds: () =>
+          new Set(
+            (
+              getDb()
+                .prepare(
+                  `SELECT id FROM finalize_runs
+                    WHERE ended_at IS NULL OR status IN ('ready_to_push', 'pushing')`,
+                )
+                .all() as Array<{ id: string }>
+            ).map((r) => r.id),
+          ),
+      }).catch((err) => {
+        console.warn('[finalize-source] reap tick failed:', (err as Error).message);
+      });
+    },
+    { name: 'finalize-source-reaper' },
+  );
 
   // Runtime stuck-run reaper — steady-state analog to boot-recovery. boot only
   // fails stuck run ROWS on Hub start; an autonomous (`agent_block`) run whose

@@ -58,6 +58,8 @@ import { getActiveOrgId } from '../orgs.js';
 import { mergeFinalizeGitSpawnEnv } from './finalize-git-env.js';
 import { FINALIZE_BUDGET_SECONDS, runRebasePhase } from './rebase.js';
 import type { RebasePhaseOutcome } from './rebase.js';
+import { acquireFinalizeSource } from './session-source.js';
+import type { AcquireFinalizeSourceArgs, FinalizeSource } from './session-source.js';
 import { loadCiConfigFromFile } from './ci-config.js';
 import type { CiConfig, CiConfigParseResult } from './ci-config.js';
 import { resolveCiConfig, type CiConfigSource } from './ci-config-source.js';
@@ -349,6 +351,12 @@ export interface OrchestratorDeps {
    * push (the session committed an extra fix mid-window).
    */
   resolveHeadSha?: (worktreePath: string, env?: NodeJS.ProcessEnv) => Promise<string>;
+  /**
+   * Resolve the host directory this run validates. Defaults to
+   * {@link acquireFinalizeSource}, which is a no-op passthrough for every
+   * backend that shares the worktree with the Hub; tests inject a stub.
+   */
+  acquireSource?: (args: AcquireFinalizeSourceArgs) => Promise<FinalizeSource>;
   /**
    * The conflict-resolution dispatcher the rebase phase uses when a
    * non-trivial conflict appears. Production wires the live
@@ -823,6 +831,35 @@ export async function runFinalize(
       );
     }
 
+    // Everything below this point drives git and docker against a host
+    // directory. When the session's worktree lives inside its own env, that
+    // directory has to be materialised first — see session-source.ts.
+    let source: FinalizeSource;
+    try {
+      source = await (deps.acquireSource ?? acquireFinalizeSource)({
+        runId,
+        sessionId,
+        worktreePath,
+        branch: opts.branch,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return terminate(
+        deps,
+        runId,
+        'infra_error',
+        'worktree_create_failed',
+        `could not materialize the session's code for this run: ${msg}`,
+        log,
+      );
+    }
+    if (source.staged) {
+      worktreePath = source.path;
+      // Recorded so the push step, which runs after this function returns,
+      // finds the validated tree rather than the session's own path.
+      deps.stmts.updateFinalizeRunWorktreePath.run(worktreePath, runId);
+    }
+
     writeFinalizeRunStartedTimeline(orchestratorTimelineDeps(deps), {
       sessionId,
       runId,
@@ -912,6 +949,26 @@ export async function runFinalize(
       if (budgetExhausted(deps, runId, budgetSeconds, log)) {
         trace('timeout', { round: loopCount, at: 'loop_top', budgetSeconds });
         return timeoutTerminal(deps, runId, opts, sessionId, budgetSeconds, lastStepOutcome, log);
+      }
+
+      // A fix round lands its commit in the session's own worktree, so a
+      // staged copy is a round out of date by the time we re-enter here.
+      // Re-materializing is also what makes the no-progress guard below
+      // meaningful: it compares HEADs, and a stale copy never moves.
+      if (loopCount > 1 && source.staged) {
+        try {
+          await source.refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return terminate(
+            deps,
+            runId,
+            'infra_error',
+            'worktree_create_failed',
+            `could not re-read the session's code after the fix round: ${msg}`,
+            log,
+          );
+        }
       }
 
       // ── Phase 1: rebase ─────────────────────────────────────────────

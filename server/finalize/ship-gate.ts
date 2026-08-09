@@ -5,9 +5,8 @@
  * ship through **Finalize Code Changes** instead of the direct
  * `create-ticket-and-pr` skill push path.
  */
-import { access } from 'fs/promises';
-import path from 'path';
 import type { FinalizeRunRow, SessionRow, Stmts } from '../types.js';
+import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
 
 const TERMINAL_STATUSES = new Set([
@@ -73,13 +72,24 @@ export interface EvaluateFinalizeShipGateArgs {
 
 export interface EvaluateFinalizeShipGateDeps {
   stmts: Pick<Stmts, 'getActiveFinalizeRunForSession' | 'getFinalizeRunByIdempotencyKey'>;
-  ciConfigExists?: (worktreePath: string) => Promise<boolean>;
+  ciConfigExists?: (session: SessionRow) => Promise<boolean>;
 }
 
-async function defaultCiConfigExists(worktreePath: string): Promise<boolean> {
+/**
+ * Whether this session's checkout carries `.agent-hub/ci.yaml`.
+ *
+ * Asked through the worktree seam rather than `fs.access`, because "no
+ * ci.yaml" is the answer that *opens* this gate. A microVM session keeps the
+ * only current copy of the repo inside the guest, so a host stat finds nothing
+ * and reports a Finalize-gated project as ungated — letting the agent push and
+ * open a PR with none of the checks the project requires. Failing the stat has
+ * to mean "not configured", so the lookup must be pointed somewhere the file
+ * can actually be.
+ */
+async function defaultCiConfigExists(session: SessionRow): Promise<boolean> {
   try {
-    await access(path.join(worktreePath, DEFAULT_CI_CONFIG_RELATIVE_PATH));
-    return true;
+    const io = await sessionWorktreeIoFor(session.id, session.worktree_path!);
+    return await io.exists(DEFAULT_CI_CONFIG_RELATIVE_PATH);
   } catch {
     return false;
   }
@@ -144,7 +154,7 @@ export async function evaluateFinalizeShipGate(
     };
   }
 
-  const hasCi = await ciExists(session.worktree_path);
+  const hasCi = await ciExists(session);
   if (!hasCi) {
     return {
       allowed: true,

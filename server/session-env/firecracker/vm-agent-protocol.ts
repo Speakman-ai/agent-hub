@@ -34,7 +34,7 @@
 export const VM_AGENT_VSOCK_PORT = 1024;
 
 /** Bumped only on breaking frame/JSON changes; checked during the handshake. */
-export const VM_AGENT_PROTOCOL_VERSION = 1;
+export const VM_AGENT_PROTOCOL_VERSION = 2;
 
 /**
  * Hard cap on a single frame. Guards the guest against a host bug (and vice
@@ -42,6 +42,12 @@ export const VM_AGENT_PROTOCOL_VERSION = 1;
  * chunks are far smaller; file reads above this stream as multiple frames.
  */
 export const MAX_FRAME_PAYLOAD_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Bytes per `read-file` range. base64 costs 4/3, so this leaves room for the
+ * JSON envelope under {@link MAX_FRAME_PAYLOAD_BYTES} with margin to spare.
+ */
+export const READ_FILE_CHUNK_BYTES = 4 * 1024 * 1024;
 
 export const FRAME_HEADER_BYTES = 5;
 
@@ -129,6 +135,14 @@ export interface VmAgentListPortsRequest {
 export interface VmAgentReadFileRequest {
   kind: 'read-file';
   path: string;
+  /**
+   * Byte range to return. A whole-file read of anything sizeable would exceed
+   * {@link MAX_FRAME_PAYLOAD_BYTES} once base64-expanded, so bulk transfers
+   * (a repo bundle on its way to a CI runner) page through the file instead.
+   * Omitting both reads from the start to the frame limit.
+   */
+  offset?: number;
+  length?: number;
 }
 
 export interface VmAgentWriteFileRequest {
@@ -178,7 +192,12 @@ export interface VmAgentListeningPort {
 export type VmAgentReply =
   | { kind: 'pong'; protocolVersion: number; bootId: string }
   | { kind: 'ports'; ports: VmAgentListeningPort[] }
-  | { kind: 'file'; contentBase64: string }
+  /**
+   * `eof` reports whether the range reached the end of the file, so a paging
+   * reader knows to stop without a separate stat round trip — and, more
+   * importantly, without inferring it from a short read, which is ambiguous.
+   */
+  | { kind: 'file'; contentBase64: string; eof: boolean }
   | { kind: 'written' };
 
 export type VmAgentControl =

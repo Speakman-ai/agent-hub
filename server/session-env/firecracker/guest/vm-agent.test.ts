@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { connect, type Server, type Socket } from 'net';
-import { mkdtemp, readFile, rm } from 'fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir, userInfo } from 'os';
 import { join } from 'path';
 import {
@@ -19,6 +19,8 @@ import {
   type VmAgentFrame,
   type VmAgentReply,
   type VmAgentRequest,
+  READ_FILE_CHUNK_BYTES,
+  VM_AGENT_PROTOCOL_VERSION,
 } from '../vm-agent-protocol.js';
 
 /**
@@ -109,9 +111,12 @@ describe('vm-agent over a real socket', () => {
     // This is the exact exchange the Hub's readiness probe makes, so a
     // regression here strands every VM at boot.
     const { socketPath } = await startAgent();
-    const stream = await openStream(socketPath, { kind: 'ping', protocolVersion: 1 });
+    const stream = await openStream(socketPath, {
+      kind: 'ping',
+      protocolVersion: VM_AGENT_PROTOCOL_VERSION,
+    });
     const reply = decodeJsonPayload<VmAgentReply>((await stream.waitFor('reply')).payload);
-    expect(reply).toMatchObject({ kind: 'pong', protocolVersion: 1 });
+    expect(reply).toMatchObject({ kind: 'pong', protocolVersion: VM_AGENT_PROTOCOL_VERSION });
     expect((reply as { bootId: string }).bootId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
@@ -230,8 +235,72 @@ describe('vm-agent over a real socket', () => {
     const read = await openStream(socketPath, { kind: 'read-file', path: target });
     const reply = decodeJsonPayload<VmAgentReply>((await read.waitFor('reply')).payload) as {
       contentBase64: string;
+      eof: boolean;
     };
     expect(Buffer.from(reply.contentBase64, 'base64').toString()).toBe('hello vm');
+    expect(reply.eof).toBe(true);
+  });
+
+  it('serves a byte range so a large file can be paged out of the guest', async () => {
+    // A whole-file read of a repo bundle would blow the frame cap once
+    // base64-expanded, so the Hub pages through it. `eof` is what tells the
+    // reader to stop; inferring it from a short read cannot distinguish "end
+    // of file" from "chunk boundary landed exactly on the last byte".
+    const dir = await mkdtemp(join(tmpdir(), 'vm-agent-range-'));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const target = join(dir, 'blob.bin');
+    await writeFile(target, 'abcdefghij');
+    const { socketPath } = await startAgent();
+
+    const readRange = async (offset: number, length: number) => {
+      const stream = await openStream(socketPath, {
+        kind: 'read-file',
+        path: target,
+        offset,
+        length,
+      });
+      return decodeJsonPayload<VmAgentReply>((await stream.waitFor('reply')).payload) as {
+        contentBase64: string;
+        eof: boolean;
+      };
+    };
+
+    const head = await readRange(0, 4);
+    expect(Buffer.from(head.contentBase64, 'base64').toString()).toBe('abcd');
+    expect(head.eof).toBe(false);
+
+    const tail = await readRange(4, 6);
+    expect(Buffer.from(tail.contentBase64, 'base64').toString()).toBe('efghij');
+    expect(tail.eof).toBe(true);
+
+    // Past the end: empty and terminal, so a paging loop cannot spin.
+    const past = await readRange(10, 4);
+    expect(past.contentBase64).toBe('');
+    expect(past.eof).toBe(true);
+  });
+
+  it('caps an oversized range request at the chunk size', async () => {
+    // The cap is what keeps a caller-supplied length from producing a frame
+    // above MAX_FRAME_PAYLOAD_BYTES, which the encoder refuses to send — the
+    // guest would fail the read rather than truncate it.
+    const dir = await mkdtemp(join(tmpdir(), 'vm-agent-cap-'));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const target = join(dir, 'blob.bin');
+    await writeFile(target, 'xyz');
+    const { socketPath } = await startAgent();
+
+    const stream = await openStream(socketPath, {
+      kind: 'read-file',
+      path: target,
+      offset: 0,
+      length: READ_FILE_CHUNK_BYTES * 4,
+    });
+    const reply = decodeJsonPayload<VmAgentReply>((await stream.waitFor('reply')).payload) as {
+      contentBase64: string;
+      eof: boolean;
+    };
+    expect(Buffer.from(reply.contentBase64, 'base64').toString()).toBe('xyz');
+    expect(reply.eof).toBe(true);
   });
 
   it('reports a missing file as an error instead of a silent empty read', async () => {
@@ -261,8 +330,13 @@ describe('vm-agent over a real socket', () => {
     // One connection is one logical stream; allowing a second request would
     // interleave two children's output on the same frames.
     const { socketPath } = await startAgent();
-    const stream = await openStream(socketPath, { kind: 'ping', protocolVersion: 1 });
-    stream.send(encodeJsonFrame('request', { kind: 'ping', protocolVersion: 1 }));
+    const stream = await openStream(socketPath, {
+      kind: 'ping',
+      protocolVersion: VM_AGENT_PROTOCOL_VERSION,
+    });
+    stream.send(
+      encodeJsonFrame('request', { kind: 'ping', protocolVersion: VM_AGENT_PROTOCOL_VERSION }),
+    );
     const frames = await stream.done;
     const error = frames.find((f) => f.type === 'error');
     if (error) {

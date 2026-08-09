@@ -22,7 +22,7 @@
 import { spawn } from 'child_process';
 import { createServer, type Server, type Socket } from 'net';
 import { readFileSync } from 'fs';
-import { readFile, writeFile, chmod } from 'fs/promises';
+import { open, readFile, writeFile, chmod } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { userInfo } from 'os';
 import { pathToFileURL } from 'url';
@@ -38,6 +38,7 @@ import {
   type VmAgentReadFileRequest,
   type VmAgentRequest,
   type VmAgentWriteFileRequest,
+  READ_FILE_CHUNK_BYTES,
   VM_AGENT_PROTOCOL_VERSION,
 } from '../vm-agent-protocol.js';
 import { parseListeningPorts } from './proc-net-tcp.js';
@@ -392,8 +393,21 @@ class Connection {
   }
 
   async #readFile(request: VmAgentReadFileRequest): Promise<void> {
-    const contents = await readFile(request.path);
-    this.sendJson('reply', { kind: 'file', contentBase64: contents.toString('base64') });
+    const offset = Math.max(0, request.offset ?? 0);
+    const length = Math.min(request.length ?? READ_FILE_CHUNK_BYTES, READ_FILE_CHUNK_BYTES);
+    const handle = await open(request.path, 'r');
+    try {
+      const buffer = Buffer.allocUnsafe(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, offset);
+      const { size } = await handle.stat();
+      this.sendJson('reply', {
+        kind: 'file',
+        contentBase64: buffer.subarray(0, bytesRead).toString('base64'),
+        eof: offset + bytesRead >= size,
+      });
+    } finally {
+      await handle.close();
+    }
     this.finish();
   }
 

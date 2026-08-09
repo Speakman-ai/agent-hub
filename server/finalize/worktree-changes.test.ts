@@ -18,26 +18,23 @@ describe('getSessionCommittableChanges', () => {
     if (!out.ok) expect(out.error).toBe('no_worktree');
   });
 
-  // Finalize's later phases (rebase, the CI step runner, push) still drive git
-  // against a host path. Under `env-owned` sharing that path holds only what
-  // the VM booted from, so a run started here would rebase and push a branch
-  // with none of the session's work — a silent, irreversible drop. Refuse.
-  it('refuses an env-owned worktree rather than shipping the boot-time seed', async () => {
+  // The gate used to refuse an env-owned worktree outright, because the phases
+  // it opens the door to drove git against a host path that held only the boot
+  // seed. Those phases now run against a materialized copy of the session's
+  // real history, so the gate judges the session on the same footing as any
+  // other backend — the io it is handed is the only thing that differs.
+  it('judges an env-owned worktree from the session, not its host path', async () => {
     vi.mocked(checkWorktreeChanges).mockResolvedValue({
-      hasUncommitted: true,
+      hasUncommitted: false,
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
     });
+    const io = fakeEnvOwnedIo();
     const probe = vi.fn(async () => true);
-    const out = await getSessionCommittableChanges(fakeEnvOwnedIo(), { probe });
-    expect(out.ok).toBe(false);
-    if (!out.ok) {
-      expect(out.error).toBe('worktree_not_on_host');
-      expect(out.message).toContain('microVM');
-    }
-    // It must refuse before probing, so no host git runs on a stale tree.
-    expect(probe).not.toHaveBeenCalled();
+    const out = await getSessionCommittableChanges(io, { probe });
+    expect(out.ok).toBe(true);
+    expect(probe).toHaveBeenCalledWith(io);
   });
 
   it('returns no_committable_changes when worktree is clean', async () => {
