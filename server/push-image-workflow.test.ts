@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import { readdirSync, readFileSync } from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
@@ -110,6 +111,44 @@ describe('ECR publish + push-image deploy contract', () => {
     expect(yml, 'the digest lookup must use the tag, not a literal').not.toMatch(
       /docker image inspect \$\{ECR_PUBLIC_URI\}:main/,
     );
+  });
+
+  /**
+   * Runs the workflow's own BRANCH line, so this cannot drift from what CI does.
+   */
+  function computeBranchTag(refName: string): string {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    const line = yml.match(/^\s*(BRANCH=.*)$/m);
+    expect(line?.[1], 'BRANCH assignment in the Compute tags step').toBeTruthy();
+    return execFileSync('bash', ['-c', `${line![1]}\nprintf '%s' "$BRANCH"`], {
+      env: { ...process.env, GITHUB_REF_NAME: refName },
+      encoding: 'utf8',
+    });
+  }
+
+  it('turns a slashed branch into a usable docker tag', () => {
+    // A docker tag admits only [A-Za-z0-9_.-]. Publishing `<branch>` verbatim
+    // meant a `preview/...` ref failed the whole build on "invalid reference
+    // format" before a single layer ran — invisible for as long as every deploy
+    // branch happened to be flat.
+    expect(computeBranchTag('preview/session-owned-environment')).toBe(
+      'preview-session-owned-environment',
+    );
+  });
+
+  it('leaves an already-valid branch name alone', () => {
+    // The moving tag doubles as the rollout's digest assertion target, so
+    // rewriting a name that was already fine would point deploys at a tag that
+    // was never pushed.
+    expect(computeBranchTag('main')).toBe('main');
+    expect(computeBranchTag('devenv-session-owned')).toBe('devenv-session-owned');
+  });
+
+  it('produces a tag docker will accept for any ref name', () => {
+    const dockerTag = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+    for (const ref of ['feat/a b', 'release/v1.2.3', 'user@host/fix', 'main']) {
+      expect(computeBranchTag(ref), ref).toMatch(dockerTag);
+    }
   });
 
   it('prints the tag it rolled out in the run summary', () => {

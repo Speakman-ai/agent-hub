@@ -140,7 +140,12 @@ jobs:
         run: |
           set -euo pipefail
           SHA_SHORT="$(git rev-parse --short=12 HEAD)"
-          BRANCH="${GITHUB_REF_NAME:-main}"
+          # A docker tag admits only [A-Za-z0-9_.-], so a branch like
+          # `preview/foo` cannot be one verbatim — buildx rejects the whole
+          # build with "invalid reference format" before a layer is built.
+          # Slashless branches hid this for as long as every deploy branch
+          # happened to be flat.
+          BRANCH="$(printf '%s' "${GITHUB_REF_NAME:-main}" | tr -c 'A-Za-z0-9_.-' '-')"
           EXTRA_TAG=""
           if [[ -n "$INPUT_VERSION_TAG" ]]; then
             if [[ "$INPUT_VERSION_TAG" == refs/tags/* ]]; then
