@@ -20,6 +20,7 @@ import {
   releaseSessionWorktreeLock,
   tryAcquireSessionWorktreeLock,
 } from '../session-worktree-lock.js';
+import type { SessionWorktreeIo } from '../session-env/worktree-io.js';
 
 const checkWorktreeChangesMock = vi.hoisted(() => vi.fn());
 vi.mock('../auto-git.js', async () => {
@@ -179,8 +180,8 @@ describe('PUT /api/sessions/:sessionId/worktree-branch', () => {
       resolveCheckStarted = resolve;
     });
     const defaultCheckWorktreeChanges = checkWorktreeChangesMock.getMockImplementation()!;
-    checkWorktreeChangesMock.mockImplementation(async (cwd: string) => {
-      if (cwd !== worktreePath) return defaultCheckWorktreeChanges(cwd);
+    checkWorktreeChangesMock.mockImplementation(async (io: SessionWorktreeIo) => {
+      if (io.hostPath !== worktreePath) return defaultCheckWorktreeChanges(io);
       resolveCheckStarted();
       await new Promise<void>((resolveRelease) => {
         releaseCheck = resolveRelease;

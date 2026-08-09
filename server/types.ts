@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction, Router } from 'express';
 import type Database from 'better-sqlite3';
 import type { DevServerConfig } from './dev-server-config.js';
+import type { SessionWorktreeIo } from './session-env/worktree-io.js';
 
 export type { DevServerConfig, DevServerPortMapEntry } from './dev-server-config.js';
 
@@ -4100,6 +4101,14 @@ export interface RouteDeps {
    * or terminal exiting, so this is the only place it gets released.
    */
   disposeSessionEnv?: (sessionId: string) => Promise<void>;
+  /**
+   * Read/write the session's worktree, wherever it physically lives. The only
+   * correct way to reach worktree contents: under a microVM env the worktree is
+   * on the guest's disk and `session.worktree_path` is the boot-time seed, so
+   * host `fs` / `git` would describe a session that has been committing all day
+   * as empty. Resolves to null when the session has no worktree.
+   */
+  getSessionWorktreeIo?: (sessionId: string) => Promise<SessionWorktreeIo | null>;
   /**
    * Clone or attach the session git worktree before the first chat turn.
    * Wired from `index.ts` (`ensureWorktree`). Used by

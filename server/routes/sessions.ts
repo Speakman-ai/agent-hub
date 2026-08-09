@@ -97,6 +97,7 @@ import {
   listSessionChangedPaths,
   resolveWorktreeRelativePath,
 } from '../session-changes.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from '../session-env/worktree-io.js';
 import { closeBrowserSession } from '../browser.js';
 import {
   normalizeOrchestrationMetaInput,
@@ -1042,7 +1043,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
     }
     try {
-      const changes = await checkWorktreeChanges(session.worktree_path);
+      const io = await sessionWorktreeIo(session);
+      if (!io) return res.status(404).json({ error: 'Session has no worktree' });
+      const changes = await checkWorktreeChanges(io);
       // `committable` gates the Finalize/Push buttons. Refine bare unpushed
       // reachability with a net-diff probe so a branch that adds nothing to base
       // (already integrated / net-zero commits) doesn't offer Finalize for an
@@ -1064,7 +1067,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       } else {
         const explicitBase = gateBase.kind === 'explicit';
         committable = await hasPublishableChanges(
-          session.worktree_path,
+          io,
           changes,
           makeNetDiffProbe(explicitBase ? gateBase.baseBranch : null),
           { explicitBase },
@@ -1086,6 +1089,18 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // ── Session code-diff pane ────────────────────────────────────────
   // Total session delta (committed + uncommitted + untracked) vs the
   // merge-base with the base branch. Powers the web "Changes" pane.
+
+  /**
+   * The session's worktree, wherever it lives. Falls back to the host path for
+   * embedders whose wiring predates the seam (tests mount this router with a
+   * partial `deps`); that fallback is correct for every `host-shared` backend
+   * and is exactly what this code did before.
+   */
+  async function sessionWorktreeIo(session: SessionRow): Promise<SessionWorktreeIo | null> {
+    if (!session.worktree_path) return null;
+    if (deps.getSessionWorktreeIo) return await deps.getSessionWorktreeIo(session.id);
+    return new HostWorktreeIo(session.worktree_path);
+  }
 
   // Resolve the branch a session should be diffed against. Uses the same
   // card → epic → repo-default chain as Finalize / auto-git so the Changes
@@ -1127,11 +1142,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
     }
     try {
+      const io = await sessionWorktreeIo(session);
+      if (!io) return res.status(404).json({ error: 'Session has no worktree' });
       const baseBranch = await resolveSessionDiffBase(session);
-      const summary = await computeSessionChanges({
-        worktreePath: session.worktree_path,
-        baseBranch,
-      });
+      const summary = await computeSessionChanges({ io, baseBranch });
       res.json(summary);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1153,25 +1167,24 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     // Reject absolute / out-of-worktree paths up front with a clear 400 — the
     // `git diff --no-index` path would otherwise be a server file-read oracle.
-    const safeFile = resolveWorktreeRelativePath(session.worktree_path, file);
+    const safeFile = resolveWorktreeRelativePath(file);
     if (!safeFile) return res.status(400).json({ error: 'invalid file path' });
     try {
+      const io = await sessionWorktreeIo(session);
+      if (!io) return res.status(404).json({ error: 'Session has no worktree' });
       const baseBranch = await resolveSessionDiffBase(session);
       // Authorization is membership-based: only diff a path git itself reports
       // as changed for this session. We gate against the UNTRUNCATED change set
       // (not the capped UI list) so a file past MAX_CHANGED_FILES is still
       // diffable. The `untracked` flag is derived server-side here — never
       // trusted from the client query string.
-      const membership = await listSessionChangedPaths({
-        worktreePath: session.worktree_path,
-        baseBranch,
-      });
+      const membership = await listSessionChangedPaths({ io, baseBranch });
       const entry = membership.get(safeFile);
       if (!entry) {
         return res.status(404).json({ error: 'file is not part of this session’s changes' });
       }
       const result = await computeFileDiff({
-        worktreePath: session.worktree_path,
+        io,
         baseBranch,
         file: safeFile,
         untracked: entry.untracked,
@@ -1605,7 +1618,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
           let changes;
           try {
-            changes = await checkWorktreeChanges(current.worktree_path);
+            const io = await sessionWorktreeIo(current);
+            if (!io) throw new Error('Session has no worktree');
+            changes = await checkWorktreeChanges(io);
           } catch (err: unknown) {
             return res.status(409).json({
               error: 'Unable to verify that the session worktree is clean',

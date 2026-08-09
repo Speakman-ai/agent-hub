@@ -25,6 +25,7 @@ import type { CardLifecycle } from './card-lifecycle.js';
 import { NOOP_CARD_LIFECYCLE } from './card-lifecycle.js';
 import { createPushAndCreatePr } from './push-and-create-pr.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import {
   resolveFinalizeBaseBranchForCard,
   resolveFinalizeGateBase,
@@ -416,10 +417,10 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
   // worktree and an empty HEAD; without this the dirty-worktree shortcut passes
   // the gate and pushes a branch identical to base (zero-diff PR, then a
   // zero-diff merge under auto-merge automation).
-  const committable = await getSessionCommittableChanges(session.worktree_path, {
-    base: gateBase,
-    requirePushableHead: true,
-  });
+  const committable = await getSessionCommittableChanges(
+    await sessionWorktreeIoFor(session.id, session.worktree_path),
+    { base: gateBase, requirePushableHead: true },
+  );
   if (!committable.ok) {
     return {
       ok: false,
@@ -610,10 +611,10 @@ export async function runSessionPushToGithub(
   // worktree and an empty HEAD; without this the dirty-worktree shortcut passes
   // the gate and pushes a branch identical to base (zero-diff PR, then a
   // zero-diff merge under auto-merge automation).
-  const committable = await getSessionCommittableChanges(session.worktree_path, {
-    base: gateBase,
-    requirePushableHead: true,
-  });
+  const committable = await getSessionCommittableChanges(
+    await sessionWorktreeIoFor(session.id, session.worktree_path),
+    { base: gateBase, requirePushableHead: true },
+  );
   if (!committable.ok) {
     return {
       ok: false,

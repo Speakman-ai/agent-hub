@@ -55,6 +55,8 @@ import {
   pickPrTitleFromCommits,
   resolveUserGithubToken,
 } from './auto-git.js';
+import { HostWorktreeIo } from './session-env/worktree-io.js';
+import { fakeEnvOwnedIo } from './test/fake-worktree-io.js';
 import path from 'path';
 import type { MessageRow } from './types.js';
 import { maybeAutoStartFinalizeForSession } from './finalize/automation-runner.js';
@@ -85,7 +87,13 @@ function mockExec(results: Record<string, { stdout?: string; stderr?: string; er
       if (cmd.includes(pattern)) {
         if (callback) {
           if (result.error) {
-            callback(result.error, { stdout: '', stderr: '' });
+            // Real `git` failures are non-zero exits, which Node reports with a
+            // numeric `code`. Callers distinguish that from a string `code`
+            // (ENOENT — git missing), so an error without one is not a shape
+            // git can actually produce.
+            const err = result.error as Error & { code?: number | string };
+            if (err.code === undefined) err.code = 1;
+            callback(err, { stdout: '', stderr: '' });
           } else {
             callback(null, { stdout: result.stdout || '', stderr: result.stderr || '' });
           }
@@ -216,7 +224,28 @@ function installExecAndGhMock(
   ) => void,
 ) {
   wireSpawnToExecMocks();
-  (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(impl);
+  // Real `git` failures are non-zero exits, which Node reports with a numeric
+  // `code`. Callers distinguish that from a string `code` (ENOENT — git
+  // missing) and rethrow the latter, so hand every error a shape git can
+  // actually produce rather than a bare `new Error(msg)`.
+  const withExitCode =
+    (
+      callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+    ): typeof callback =>
+    (err, result) => {
+      const e = err as (Error & { code?: number | string }) | null;
+      if (e && e.code === undefined) e.code = 1;
+      callback?.(e, result);
+    };
+  (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    (
+      cmd: string,
+      opts: Record<string, unknown>,
+      callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+    ) => {
+      impl(cmd, opts, withExitCode(callback));
+    },
+  );
   (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     (
       file: string,
@@ -224,7 +253,7 @@ function installExecAndGhMock(
       opts: Record<string, unknown>,
       callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
     ) => {
-      impl([file, ...args].join(' '), opts, callback);
+      impl([file, ...args].join(' '), opts, withExitCode(callback));
     },
   );
 }
@@ -406,7 +435,7 @@ describe('checkWorktreeChanges', () => {
       'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/test\n' },
     });
 
-    const result = await checkWorktreeChanges('/tmp/test');
+    const result = await checkWorktreeChanges(new HostWorktreeIo('/tmp/test'));
     expect(result.hasUncommitted).toBe(true);
     expect(result.branch).toBe('feature/test');
   });
@@ -418,7 +447,7 @@ describe('checkWorktreeChanges', () => {
       'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/test\n' },
     });
 
-    const result = await checkWorktreeChanges('/tmp/test');
+    const result = await checkWorktreeChanges(new HostWorktreeIo('/tmp/test'));
     expect(result.hasUncommitted).toBe(false);
     expect(result.hasUnpushed).toBe(true);
   });
@@ -430,7 +459,7 @@ describe('checkWorktreeChanges', () => {
       'git rev-parse --abbrev-ref HEAD': { stdout: 'main\n' },
     });
 
-    const result = await checkWorktreeChanges('/tmp/test');
+    const result = await checkWorktreeChanges(new HostWorktreeIo('/tmp/test'));
     expect(result.hasUncommitted).toBe(false);
     expect(result.hasUnpushed).toBe(false);
     expect(result.branch).toBe('main');
@@ -454,7 +483,7 @@ describe('checkWorktreeChanges', () => {
       'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/fix-docs\n' },
     });
 
-    const result = await checkWorktreeChanges('/tmp/test');
+    const result = await checkWorktreeChanges(new HostWorktreeIo('/tmp/test'));
     expect(result.hasUnpushed).toBe(true);
     expect(result.branch).toBe('feature/fix-docs');
   });
@@ -470,7 +499,7 @@ describe('checkWorktreeChanges', () => {
       'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/thing\n' },
     });
 
-    const result = await checkWorktreeChanges('/tmp/test');
+    const result = await checkWorktreeChanges(new HostWorktreeIo('/tmp/test'));
     expect(result.hasUnpushed).toBe(true);
   });
 
@@ -484,10 +513,58 @@ describe('checkWorktreeChanges', () => {
       'git rev-parse --abbrev-ref HEAD': { stdout: 'solo-branch\n' },
     });
 
-    const result = await checkWorktreeChanges('/tmp/test');
+    const result = await checkWorktreeChanges(new HostWorktreeIo('/tmp/test'));
     expect(result.hasUncommitted).toBe(false);
     expect(result.hasUnpushed).toBe(false);
     expect(result.branch).toBe('solo-branch');
+  });
+
+  // The microVM case: the host directory is the tree the VM booted from, so a
+  // host-side `git status` would call a session that has been committing all
+  // day clean — and the Finalize/Create-PR affordance would never appear.
+  it('reads an env-owned worktree from the guest, not the host seed', async () => {
+    // Host git would answer "clean" for every command; if any answer leaks in
+    // from here the assertions below fail.
+    mockExec({
+      'git status --porcelain': { stdout: '' },
+      'git log': { stdout: '' },
+      'git rev-parse': { stdout: 'hostsha\n' },
+    });
+    const guest = fakeEnvOwnedIo({
+      git: (args) => {
+        if (args[0] === 'status') return { stdout: ' M src/a.ts\n' };
+        if (args[0] === 'log') return { stdout: 'abc123 work done in the VM\n' };
+        if (args.includes('--abbrev-ref')) return { stdout: 'feature/in-vm\n' };
+        if (args[0] === 'rev-parse') return { stdout: 'guestsha\n' };
+        return { stdout: '' };
+      },
+    });
+
+    const result = await checkWorktreeChanges(guest);
+
+    expect(result.hasUncommitted).toBe(true);
+    expect(result.hasUnpushed).toBe(true);
+    expect(result.branch).toBe('feature/in-vm');
+    expect(result.headSha).toBe('guestsha');
+  });
+
+  it('falls back to the default branch when the guest branch has no upstream', async () => {
+    const guest = fakeEnvOwnedIo({
+      git: (args) => {
+        if (args[0] === 'log' && args[1] === '@{upstream}..HEAD') return { exitCode: 128 };
+        if (args[0] === 'symbolic-ref') return { stdout: 'refs/remotes/origin/develop\n' };
+        if (args[0] === 'log' && args[1] === 'origin/develop..HEAD') {
+          return { stdout: 'abc123 first commit\n' };
+        }
+        if (args.includes('--abbrev-ref')) return { stdout: 'feature/fresh\n' };
+        return { stdout: 'guestsha\n' };
+      },
+    });
+
+    const result = await checkWorktreeChanges(guest);
+
+    expect(result.hasUnpushed).toBe(true);
+    expect(result.branch).toBe('feature/fresh');
   });
 });
 

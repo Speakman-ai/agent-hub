@@ -19,6 +19,7 @@ import {
   computeFileDiff,
   listSessionChangedPaths,
 } from './session-changes.js';
+import { HostWorktreeIo } from './session-env/worktree-io.js';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, {
@@ -73,7 +74,10 @@ describe('session-changes (real git)', () => {
   });
 
   it('reports committed + deleted + untracked files with real counts', async () => {
-    const summary = await computeSessionChanges({ worktreePath: repo, baseBranch: baseSha });
+    const summary = await computeSessionChanges({
+      io: new HostWorktreeIo(repo),
+      baseBranch: baseSha,
+    });
 
     expect(summary.baseSha).toBeTruthy();
     expect(summary.headSha).toBeTruthy();
@@ -107,7 +111,7 @@ describe('session-changes (real git)', () => {
 
   it('produces an all-add unified diff for a nested untracked file', async () => {
     const res = await computeFileDiff({
-      worktreePath: repo,
+      io: new HostWorktreeIo(repo),
       baseBranch: baseSha,
       file: 'src/new.ts',
       untracked: true,
@@ -120,7 +124,10 @@ describe('session-changes (real git)', () => {
   });
 
   it('lists the untruncated membership set with tracked/untracked flags', async () => {
-    const membership = await listSessionChangedPaths({ worktreePath: repo, baseBranch: baseSha });
+    const membership = await listSessionChangedPaths({
+      io: new HostWorktreeIo(repo),
+      baseBranch: baseSha,
+    });
     expect(membership.get('a.txt')).toEqual({ untracked: false });
     expect(membership.get('gone.txt')).toEqual({ untracked: false });
     expect(membership.get('src/new.ts')).toEqual({ untracked: true });
@@ -129,7 +136,7 @@ describe('session-changes (real git)', () => {
 
   it('produces a real diff for a tracked modified file', async () => {
     const res = await computeFileDiff({
-      worktreePath: repo,
+      io: new HostWorktreeIo(repo),
       baseBranch: baseSha,
       file: 'a.txt',
     });
@@ -142,7 +149,7 @@ describe('session-changes (real git)', () => {
     const notRepo = mkdtempSync(path.join(tmpdir(), 'agenthub-notrepo-'));
     try {
       await expect(
-        computeSessionChanges({ worktreePath: notRepo, baseBranch: 'main' }),
+        computeSessionChanges({ io: new HostWorktreeIo(notRepo), baseBranch: 'main' }),
       ).rejects.toThrow();
     } finally {
       rmSync(notRepo, { recursive: true, force: true });

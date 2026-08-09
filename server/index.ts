@@ -101,6 +101,9 @@ import {
   registerFirecrackerBackend,
 } from './session-env/firecracker/register-firecracker-backend.js';
 import { SessionEnvManager } from './session-env/session-env-manager.js';
+import { worktreeSharingForKind } from './session-env/session-env.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
+import { setSessionWorktreeIoResolver } from './session-worktree-io.js';
 import {
   describeSessionEnvPortRouting,
   resolveSessionEnvPortRouting,
@@ -1176,6 +1179,43 @@ const sessionEnvManager = new SessionEnvManager({
   },
 });
 
+/**
+ * Read/write access to a session's worktree, wherever it lives.
+ *
+ * Under a `host-shared` backend the host directory is authoritative, so this
+ * answers from it directly — reading the Changes pane must not boot a
+ * container. Under `env-owned` (microVM) the guest holds the only current copy,
+ * so the env has to be running and we `ensure` it.
+ *
+ * `ensure` can therefore boot a VM to answer a read. That is deliberate: the
+ * alternative is reporting a session as having no changes because its env is
+ * idle, which is the stale-read bug this seam exists to remove. The cost is
+ * bounded because the read surfaces are session-scoped — the Changes badge
+ * refreshes on activation and on this session's own turn events, not on a
+ * background sweep — so an actively-running session already has a live env and
+ * this is a no-op for it.
+ *
+ * Returns null when the session has no worktree at all.
+ */
+async function resolveSessionWorktreeIo(sessionId: string): Promise<SessionWorktreeIo | null> {
+  const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+  if (!session || session.deleted_at) return null;
+  const worktreePath =
+    session.worktree_path ??
+    (Number(session.use_worktree) === 1
+      ? null
+      : (findAgent(session.agent_id)?.project.cwd ?? null));
+  if (!worktreePath) return null;
+  if (worktreeSharingForKind(getSessionEnvSelection().adapter) === 'host-shared') {
+    return new HostWorktreeIo(worktreePath);
+  }
+  return (await sessionEnvManager.ensure(sessionId)).worktreeIo;
+}
+
+// Modules below the route layer (chat-turn hooks, auto-commit) reach the
+// worktree through this registry rather than a threaded dependency.
+setSessionWorktreeIoResolver(resolveSessionWorktreeIo);
+
 // One persistent terminal shell per Agent Hub session, in the session's own
 // environment. It no longer depends on a dev server having been started:
 // under container-IP routing a port can be published at any time, so there is
@@ -1438,6 +1478,7 @@ export const routeDeps: RouteDeps = {
   getBackgroundShellRuntime: () => backgroundShellRuntime,
   getBackgroundShellWatcher: () => backgroundShellWatcher,
   disposeSessionEnv: (sessionId: string) => sessionEnvManager.dispose(sessionId),
+  getSessionWorktreeIo: resolveSessionWorktreeIo,
   provisionSessionWorkspace: async (sessionId: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {

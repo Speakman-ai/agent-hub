@@ -26,6 +26,21 @@ const { userCanReadSession, userOwnsSession } = vi.hoisted(() => ({
 
 const execFileAsyncMock = vi.hoisted(() => vi.fn());
 
+/**
+ * Worktree git now runs through `HostWorktreeIo`, i.e. `promisify(execFile)`
+ * with an argv array — so fakes receive `(file, args)`, not a command string.
+ */
+function gitArgv(args: unknown): string[] {
+  return Array.isArray(args) ? (args as string[]) : [];
+}
+
+/** A non-zero git exit, in the shape `execFile` actually rejects with. */
+function gitExit(code: number, stdout = ''): Promise<never> {
+  return Promise.reject(
+    Object.assign(new Error(`git exited ${code}`), { code, stdout, stderr: '' }),
+  );
+}
+
 // The Finalize gate's net-diff probe calls `execFile` with a callback (it does
 // not go through the promisified path below), so the fake has to invoke it or
 // the kickoff hangs. Canned answers: the base ref resolves, and HEAD differs
@@ -147,7 +162,13 @@ beforeEach(() => {
   userOwnsSession.mockReturnValue(true);
   cancelSessionChatRun.mockReset();
   execFileAsyncMock.mockReset();
-  execFileAsyncMock.mockResolvedValue({ stdout: 'deadbeef\n', stderr: '' });
+  // Default: every ref resolves, and `diff --quiet` exits 1 — the branch has a
+  // real net diff against its base, so the Finalize gate has something to ship.
+  execFileAsyncMock.mockImplementation(async (_file: unknown, args: unknown) => {
+    const argv = gitArgv(args);
+    if (argv[0] === 'diff' && argv.includes('--quiet')) return gitExit(1);
+    return { stdout: 'deadbeef\n', stderr: '' };
+  });
   dbGetSession.mockReset();
 });
 
@@ -264,8 +285,8 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       worktree_branch: 'feature/x',
     });
     // `git status --porcelain` reports edits; `git log <upstream>..HEAD` is empty.
-    execFileAsyncMock.mockImplementation(async (cmd: string) =>
-      typeof cmd === 'string' && cmd.includes('git log')
+    execFileAsyncMock.mockImplementation(async (_file: unknown, args: unknown) =>
+      gitArgv(args)[0] === 'log'
         ? { stdout: '', stderr: '' }
         : { stdout: ' M server/index.ts\n', stderr: '' },
     );

@@ -22,7 +22,9 @@ import { resolveShouldAutoMerge } from './auto-merge.js';
 import { mergeOrEnableGithubAutoMerge } from './github-auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
-import { resolveDefaultBranch } from './git-default-branch.js';
+import { resolveDefaultBranch, resolveDefaultBranchIn } from './git-default-branch.js';
+import type { SessionWorktreeIo } from './session-env/worktree-io.js';
+import { sessionWorktreeIoFor } from './session-worktree-io.js';
 import {
   applyGithubSpawnCredentials,
   resolveOAuthAppCredentials,
@@ -1321,55 +1323,49 @@ export interface WorktreeChanges {
   headSha: string;
 }
 
-export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges> {
-  const { stdout: status } = await execAsync('git status --porcelain', { cwd });
-  const hasUncommitted = !!status.trim();
+/**
+ * Detect uncommitted / unpushed work in a session worktree.
+ *
+ * Takes a {@link SessionWorktreeIo} rather than a path because under an
+ * `env-owned` env the worktree lives inside the session's microVM: the host
+ * directory is the boot-time seed, so host-side git would report a session
+ * that has been committing all day as clean. Callers holding only a host path
+ * (a project checkout, say) can wrap it in `new HostWorktreeIo(cwd)`.
+ */
+export async function checkWorktreeChanges(io: SessionWorktreeIo): Promise<WorktreeChanges> {
+  const status = await io.git(['status', '--porcelain'], { throwOnNonZero: true });
+  const hasUncommitted = !!status.stdout.trim();
 
   let hasUnpushed = false;
-  let hasUpstream = false;
-  try {
-    const { stdout: logOut } = await execAsync('git log @{upstream}..HEAD --oneline', {
-      cwd,
-    });
-    hasUpstream = true;
-    hasUnpushed = !!logOut.trim();
-  } catch {
-    // No upstream configured for this branch — fall through to default-branch
+  const upstreamLog = await io.git(['log', '@{upstream}..HEAD', '--oneline']);
+  const hasUpstream = upstreamLog.exitCode === 0;
+  if (hasUpstream) {
+    hasUnpushed = !!upstreamLog.stdout.trim();
+  } else {
+    // No upstream configured for this branch — fall back to default-branch
     // comparison so a fresh, never-pushed branch with local commits still
     // surfaces the "Create PR" banner.
-  }
-
-  if (!hasUpstream) {
-    const defaultBranch = await resolveDefaultBranch(cwd);
+    const defaultBranch = await resolveDefaultBranchIn(io);
     if (defaultBranch) {
       // Try both the local ref and the remote-tracking ref. Prefer
       // `origin/<default>` when available because the local default branch
       // may be stale or absent in a linked worktree.
       for (const ref of [`origin/${defaultBranch}`, defaultBranch]) {
-        try {
-          const { stdout: logOut2 } = await execAsync(`git log ${ref}..HEAD --oneline`, {
-            cwd,
-          });
-          hasUnpushed = !!logOut2.trim();
-          break;
-        } catch {
-          // ref not available — try next candidate
-        }
+        const log = await io.git(['log', `${ref}..HEAD`, '--oneline']);
+        if (log.exitCode !== 0) continue; // ref not available — try next candidate
+        hasUnpushed = !!log.stdout.trim();
+        break;
       }
     }
   }
 
-  const { stdout: branchOut } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd });
+  const branchOut = await io.git(['rev-parse', '--abbrev-ref', 'HEAD'], { throwOnNonZero: true });
 
-  let headSha = '';
-  try {
-    const { stdout: headOut } = await execAsync('git rev-parse HEAD', { cwd });
-    headSha = headOut.trim();
-  } catch {
-    // Brand-new branch with no commits yet — leave headSha empty.
-  }
+  // Brand-new branch with no commits yet — leave headSha empty.
+  const headOut = await io.git(['rev-parse', 'HEAD']);
+  const headSha = headOut.exitCode === 0 ? headOut.stdout.trim() : '';
 
-  return { hasUncommitted, hasUnpushed, branch: branchOut.trim(), headSha };
+  return { hasUncommitted, hasUnpushed, branch: branchOut.stdout.trim(), headSha };
 }
 
 // ─── Core commit + PR + review pipeline ─────────────────────────────
@@ -1648,7 +1644,7 @@ async function commitPushAndCreatePR(
     );
   }
 
-  const changes = await checkWorktreeChanges(effectiveCwd);
+  const changes = await checkWorktreeChanges(await sessionWorktreeIoFor(sessionId, effectiveCwd));
 
   if (!changes.hasUncommitted && !changes.hasUnpushed) {
     console.log(
@@ -2527,7 +2523,9 @@ export async function autoCommitAndPR(
         );
         return;
       }
-      const changes = await checkWorktreeChanges(effectiveCwd);
+      const changes = await checkWorktreeChanges(
+        await sessionWorktreeIoFor(sessionId, effectiveCwd),
+      );
       if (!changes.hasUncommitted && !changes.hasUnpushed) {
         return;
       }
