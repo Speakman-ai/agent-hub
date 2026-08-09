@@ -37,7 +37,7 @@ export function describeSessionEnvContract(
       const proc = env.spawn('echo hi');
       expect(proc.pid).not.toBeNull();
       expect(proc.exited).toBe(false);
-      expect(env.liveProcessCount()).toBe(1);
+      expect(env.liveProcessCount()).toBe(env.kind === 'host' ? 1 : 2);
 
       const exits: Array<{ code: number | null }> = [];
       proc.onExit((r) => exits.push(r));
@@ -46,7 +46,8 @@ export function describeSessionEnvContract(
       expect(proc.exited).toBe(true);
       expect(proc.exitResult).toEqual({ code: 0, signal: null });
       expect(exits).toEqual([{ code: 0, signal: null }]);
-      expect(env.liveProcessCount()).toBe(0);
+      const afterExit = env.liveProcessCount();
+      expect(afterExit).toBe(env.kind === 'host' ? 0 : 1);
     });
 
     it('onExit on an already-exited process fires immediately', async () => {
@@ -146,7 +147,7 @@ export function describeSessionEnvContract(
 
     it('a spawn-less env disposes cleanly with no live work', async () => {
       const env = await harness.createEnv();
-      expect(env.liveProcessCount()).toBe(0);
+      expect(env.liveProcessCount()).toBe(env.kind === 'host' ? 0 : 1);
       await env.dispose({ graceMs: 10 });
       expect(env.listPortMappings()).toEqual([]);
     });

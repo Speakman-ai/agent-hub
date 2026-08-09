@@ -190,10 +190,61 @@ export function buildVmmLaunchArgv(spec: VmmLaunchSpec): string[] {
   return ['sh', '-c', VMM_LAUNCH_SCRIPT, 'sh', vsockPath, `${ownerUid}:${ownerGid}`, ...argv];
 }
 
+/**
+ * Long-lived VMM container: KVM + tun devices and NET_ADMIN only.
+ *
+ * One-shot helpers (`ip`, disk prepare) still use {@link buildPrivilegedArgv}
+ * because losetup/mount need broader capabilities. A VMM escape must not
+ * inherit full `--privileged` host device access — see Firecracker prod host
+ * setup and Docker runtime privilege docs.
+ */
+export function buildVmmDockerArgv(
+  cfg: FirecrackerExecConfig,
+  argv: string[],
+  opts: { containerName?: string } = {},
+): string[] {
+  if (cfg.mode === 'local') return [cfg.sudoBin, '-n', ...argv];
+  if (!cfg.image) {
+    throw new Error(
+      'Firecracker exec mode is "docker" but no helper image is configured ' +
+        '(set AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE).',
+    );
+  }
+  const [executable, ...args] = argv;
+  if (executable === undefined) {
+    throw new Error('buildVmmDockerArgv requires a command to run.');
+  }
+  return [
+    cfg.dockerBin,
+    'run',
+    '--rm',
+    ...(opts.containerName ? ['--name', opts.containerName] : []),
+    '--entrypoint',
+    executable,
+    '--user',
+    '0:0',
+    '--network',
+    'host',
+    '--device',
+    '/dev/kvm',
+    '--device',
+    '/dev/net/tun',
+    '--cap-add',
+    'NET_ADMIN',
+    '--security-opt',
+    'no-new-privileges:true',
+    ...mountFlags(cfg.mounts),
+    '-w',
+    '/',
+    cfg.image,
+    ...args,
+  ];
+}
+
 export function createSpawnVmm(cfg: FirecrackerExecConfig): SpawnVmmFn {
   return (spec) => {
     const { vmId, cwd } = spec;
-    const wrapped = buildPrivilegedArgv(cfg, buildVmmLaunchArgv(spec), {
+    const wrapped = buildVmmDockerArgv(cfg, buildVmmLaunchArgv(spec), {
       containerName: vmmContainerName(vmId),
     });
     return nodeSpawn(wrapped[0], wrapped.slice(1), {
@@ -220,6 +271,31 @@ export function createStopVmm(cfg: FirecrackerExecConfig): StopVmmFn {
       throw new Error(`docker rm -f ${vmmContainerName(vmId)} failed: ${res.stderr.trim()}`);
     }
   };
+}
+
+/** Remove every orphaned ah-vmm-* container before a boot tap sweep. */
+export async function stopStaleFirecrackerVmms(cfg: FirecrackerExecConfig): Promise<void> {
+  if (cfg.mode !== 'docker') return;
+  const listed = await execArgv(
+    [cfg.dockerBin, 'ps', '-aq', '--filter', 'name=^ah-vmm-'],
+    STOP_TIMEOUT_MS,
+  );
+  if (!listed.ok) {
+    throw new Error(`docker ps for stale VMM containers failed: ${listed.stderr.trim()}`);
+  }
+  const ids = listed.stdout
+    .trim()
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  await Promise.all(
+    ids.map(async (id) => {
+      const res = await execArgv([cfg.dockerBin, 'rm', '-f', id], STOP_TIMEOUT_MS);
+      if (!res.ok && !/No such container/i.test(res.stderr)) {
+        throw new Error(`docker rm -f ${id} failed: ${res.stderr.trim()}`);
+      }
+    }),
+  );
 }
 
 /**

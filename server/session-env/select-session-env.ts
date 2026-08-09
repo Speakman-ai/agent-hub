@@ -49,11 +49,6 @@ export function resolveSessionEnvBackend(opts: {
 }): SessionEnvKind {
   const registered = opts.registeredBackends ?? registeredSessionEnvBackends();
   const sysboxUsable = opts.sysboxAvailable && registered.has('sysbox');
-  const firecrackerUsable = opts.firecrackerAvailable === true && registered.has('firecracker');
-  const containerUsable =
-    opts.dockerAvailable === true &&
-    opts.containerRoutingUsable === true &&
-    registered.has('container');
   if (opts.configured === 'host') return 'host';
   if (opts.configured === 'firecracker') {
     if (opts.firecrackerAvailable !== true) {
@@ -99,14 +94,11 @@ export function resolveSessionEnvBackend(opts: {
     }
     return 'sysbox';
   }
-  // `auto`, in descending order of isolation strength. A microVM leads
-  // because it is the only tier where the session gets its own kernel rather
-  // than a namespaced view of the host's. Falling to `host` means sessions
-  // share the Hub machine, so it is the last resort rather than the default
-  // it used to be on any box without sysbox.
-  if (firecrackerUsable) return 'firecracker';
+  // `auto` picks sysbox when available, else host. MicroVM and privileged
+  // container tiers require an explicit operator choice — agent CLIs still
+  // run host-side for auto, and a privileged DinD fallback is not safe to
+  // select implicitly.
   if (sysboxUsable) return 'sysbox';
-  if (containerUsable) return 'container';
   return 'host';
 }
 

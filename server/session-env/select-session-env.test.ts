@@ -101,9 +101,8 @@ describe('resolveSessionEnvBackend', () => {
 
   const withFirecracker = (kinds: SessionEnvKind[]): ReadonlySet<SessionEnvKind> => new Set(kinds);
 
-  it('auto prefers a microVM over every container tier', () => {
-    // Ordering is the whole point: a microVM is the only tier where the
-    // session gets its own kernel instead of a namespaced view of the host's.
+  it('auto skips microVM even when every tier is available', () => {
+    // MicroVM requires an explicit operator choice — auto never picks it.
     expect(
       resolveSessionEnvBackend({
         configured: 'auto',
@@ -113,7 +112,7 @@ describe('resolveSessionEnvBackend', () => {
         firecrackerAvailable: true,
         registeredBackends: withFirecracker(['host', 'sysbox', 'container', 'firecracker']),
       }),
-    ).toBe('firecracker');
+    ).toBe('sysbox');
   });
 
   it('auto falls through to sysbox when the host cannot boot VMs', () => {

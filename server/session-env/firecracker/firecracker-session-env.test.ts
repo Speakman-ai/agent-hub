@@ -245,9 +245,10 @@ describe('FirecrackerSessionEnv start', () => {
     // whose VMM died without unlinking them (host reboot, OOM kill) reboots
     // onto its own leftovers and fails with FailedToBindSocket forever — the
     // session can never get an environment again.
-    const { env, removed } = makeEnv();
+    const { env, removed, stopVmm } = makeEnv();
     await env.ensureStarted();
 
+    expect(stopVmm).toHaveBeenCalledWith({ vmId: 'ahvm-sess-1', pid: undefined });
     expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/api.sock');
     expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/vsock.sock');
   });
@@ -335,7 +336,7 @@ describe('FirecrackerSessionEnv processes', () => {
     expect(proc.pid).toBe(91);
     expect(out).toEqual(['compiling']);
     expect(onExit).toHaveBeenCalledWith({ code: 2, signal: null });
-    expect(env.liveProcessCount()).toBe(0);
+    expect(env.liveProcessCount()).toBe(1);
   });
 
   it('rejects a cwd that escapes the worktree', async () => {
@@ -357,7 +358,7 @@ describe('FirecrackerSessionEnv processes', () => {
     conn.replyJson('started', { pid: 55 });
     const pty = await opening;
     expect(pty.pid).toBe(55);
-    expect(env.liveProcessCount()).toBe(1);
+    expect(env.liveProcessCount()).toBe(2);
   });
 
   it('carries an unset variable as an explicit null', async () => {
@@ -458,7 +459,7 @@ describe('FirecrackerSessionEnv dispose', () => {
     const { env, stopVmm } = makeEnv();
     await env.ensureStarted();
     await Promise.all([env.dispose(), env.dispose()]);
-    expect(stopVmm).toHaveBeenCalledTimes(1);
+    expect(stopVmm).toHaveBeenCalledTimes(2);
 
     expect(() => env.spawn('ls')).toThrow(SessionEnvDisposedError);
     await expect(env.openPty()).rejects.toThrow(SessionEnvDisposedError);

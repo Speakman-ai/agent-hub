@@ -332,6 +332,22 @@ function proxyHttp(
     req.method !== 'HEAD'
   ) {
     const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    const bodyBytes = Buffer.byteLength(bodyStr);
+    delete headers['transfer-encoding'];
+    delete headers['Transfer-Encoding'];
+    if (typeof req.body === 'string') {
+      const contentType = req.headers['content-type'];
+      if (contentType !== undefined) {
+        headers['content-type'] = contentType;
+      }
+    } else {
+      headers['content-type'] = 'application/json';
+    }
+    headers['content-length'] = String(bodyBytes);
+    proxyReq.setHeader('content-length', String(bodyBytes));
+    if (headers['content-type']) {
+      proxyReq.setHeader('content-type', headers['content-type'] as string);
+    }
     proxyReq.end(bodyStr);
   } else {
     req.pipe(proxyReq);

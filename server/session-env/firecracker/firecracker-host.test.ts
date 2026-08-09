@@ -47,6 +47,7 @@ const okProbe = {
   platform: 'linux' as NodeJS.Platform,
   isCharacterDevice: () => true,
   access: () => undefined,
+  openKvm: () => undefined,
   firecrackerVersion: () => 'Firecracker v1.16.0\n',
   fileExists: () => true,
 };
@@ -83,6 +84,18 @@ describe('probeFirecrackerCapability', () => {
     expect(result.available).toBe(false);
     expect(result.reason).toContain('kvm` group');
     expect(result.reason).toContain(KVM_DEVICE);
+  });
+
+  it('declines when KVM cannot be opened read/write even after access succeeds', () => {
+    const result = probeFirecrackerCapability({
+      ...okProbe,
+      openKvm: () => {
+        throw new Error('EBUSY');
+      },
+    });
+    expect(result.available).toBe(false);
+    expect(result.reason).toMatch(/could not be opened read\/write/);
+    expect(result.reason).toContain('EBUSY');
   });
 
   it('declines when the VMM binary is missing', () => {
@@ -178,6 +191,17 @@ describe('buildEnsureGuestNatArgv', () => {
     expect(required[0]).toEqual(['sysctl', '-qw', 'net.ipv4.ip_forward=1']);
     expect(required).toContainEqual([
       'iptables',
+      '-I',
+      'FORWARD',
+      '-i',
+      'ahfc0',
+      '-o',
+      'ahfc0',
+      '-j',
+      'DROP',
+    ]);
+    expect(required).toContainEqual([
+      'iptables',
       '-t',
       'nat',
       '-A',
@@ -217,6 +241,20 @@ describe('buildEnsureGuestNatArgv', () => {
 });
 
 describe('reconcileFirecrackerHost', () => {
+  it('stops stale VMM containers before deleting taps', async () => {
+    const events: string[] = [];
+    const stopStaleVmms = vi.fn(async () => {
+      events.push('stop');
+    });
+    const run = vi.fn(async (argv: string[]) => {
+      if (argv[0] === 'ip' && argv[2] === 'del') events.push('del');
+      return mockReconcileRun()(argv);
+    });
+    await reconcileFirecrackerHost({ run, stopStaleVmms });
+    expect(stopStaleVmms).toHaveBeenCalledTimes(1);
+    expect(events.indexOf('stop')).toBeLessThan(events.indexOf('del'));
+  });
+
   it('creates the bridge, installs guest NAT, and deletes stale taps', async () => {
     const run = mockReconcileRun();
     const result = await reconcileFirecrackerHost({ run });

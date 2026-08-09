@@ -28,7 +28,7 @@
 
 import type { SessionEnv, SessionEnvKind } from './session-env.js';
 import { createSessionEnv, type CreateSessionEnvOpts } from './select-session-env.js';
-import { getSessionEnvSelection } from './sysbox-capability.js';
+import { getSessionEnvSelection, whenSessionEnvSelectionReady } from './sysbox-capability.js';
 
 export interface SessionEnvManagerDeps {
   /**
@@ -112,8 +112,8 @@ export class SessionEnvManager {
       promise: Promise.resolve() as unknown as Promise<SessionEnv>,
       env: null,
     };
-    entry.promise = this.#create(sessionId, entry);
     this.entries.set(sessionId, entry);
+    entry.promise = this.#create(sessionId, entry);
     entry.promise.catch(() => {
       // A failed creation must not wedge the session — allow a retry.
       if (this.entries.get(sessionId) === entry) this.entries.delete(sessionId);
@@ -122,12 +122,23 @@ export class SessionEnvManager {
   }
 
   async #create(sessionId: string, entry: Entry): Promise<SessionEnv> {
+    // Capture before awaiting anything dispose can race with — see
+    // dispose-during-bootSweep. A teardown registered *after* we enter must
+    // not be awaited here (that deadlocks with teardown awaiting us).
+    const priorTeardown = this.teardowns.get(sessionId);
+    await whenSessionEnvSelectionReady();
+    if (this.entries.get(sessionId) !== entry) {
+      throw new Error(`Session ${sessionId} environment creation was superseded during boot`);
+    }
     if (this.deps.bootSweep) await this.deps.bootSweep.catch(() => undefined);
-    // A failed teardown must not wedge the session: the name may well be free
-    // anyway, and refusing to build leaves the session with no environment at
-    // all. Waiting is what matters, not the outcome.
-    const teardown = this.teardowns.get(sessionId);
-    if (teardown) await teardown.catch(() => undefined);
+    // Only wait on a teardown that was already registered when we entered
+    // create. A dispose that starts while we are blocked on bootSweep registers
+    // a *new* teardown — awaiting that here would deadlock with #teardown
+    // waiting on this same entry.promise.
+    if (priorTeardown) await priorTeardown.catch(() => undefined);
+    if (this.entries.get(sessionId) !== entry) {
+      throw new Error(`Session ${sessionId} environment creation was superseded during boot`);
+    }
     const worktreePath = this.deps.resolveWorktree(sessionId);
     if (!worktreePath) {
       throw new Error(

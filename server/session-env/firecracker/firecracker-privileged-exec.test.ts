@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildVmmLaunchArgv,
+  buildVmmDockerArgv,
   VMM_LAUNCH_SCRIPT,
   buildPrivilegedArgv,
   buildStopVmmArgv,
@@ -80,7 +81,23 @@ describe('buildPrivilegedArgv', () => {
     });
     expect(argv.slice(0, 5)).toEqual(['docker', 'run', '--rm', '--name', 'ah-vmm-ahvm-sess-1']);
   });
+});
 
+describe('buildVmmDockerArgv', () => {
+  it('does not launch the long-lived VMM with --privileged', () => {
+    const argv = buildVmmDockerArgv(dockerCfg(), ['firecracker', '--api-sock', '/x'], {
+      containerName: vmmContainerName('ahvm-sess-1'),
+    });
+    expect(argv).toContain('--device');
+    expect(argv).toContain('/dev/kvm');
+    expect(argv).toContain('/dev/net/tun');
+    expect(argv).toContain('NET_ADMIN');
+    expect(argv).not.toContain('--privileged');
+    expect(argv.slice(0, 5)).toEqual(['docker', 'run', '--rm', '--name', 'ah-vmm-ahvm-sess-1']);
+  });
+});
+
+describe('buildVmmLaunchArgv', () => {
   it('hands the vsock socket to the Hub uid once firecracker creates it', () => {
     // The VMM runs as root in both exec modes, so the Hub — which is not root —
     // cannot connect to the socket it just asked for unless ownership moves.
@@ -115,7 +132,9 @@ describe('buildPrivilegedArgv', () => {
     });
     expect(argv).toEqual(['firecracker', '--api-sock', '/vms/ahvm-s1/api.sock']);
   });
+});
 
+describe('buildPrivilegedArgv validation', () => {
   it('rejects an empty argv instead of building a container with no command', () => {
     expect(() => buildPrivilegedArgv(dockerCfg(), [])).toThrow(/requires a command/);
   });

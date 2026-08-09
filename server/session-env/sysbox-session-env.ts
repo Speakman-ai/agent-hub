@@ -286,7 +286,7 @@ export class SysboxSessionEnv implements SessionEnv {
   }
 
   liveProcessCount(): number {
-    return this.liveProcesses.size + this.livePtys.size;
+    return this.liveProcesses.size + this.livePtys.size + (this.#started ? 1 : 0);
   }
 
   onDispose(cb: () => void): () => void {
@@ -723,9 +723,19 @@ export class SysboxSessionEnv implements SessionEnv {
 
   async mountWorktree(): Promise<SessionEnvWorktreeMount> {
     this.#assertLive('mountWorktree');
-    // The bind mount happens at container start; ensureStarted is idempotent.
-    await this.ensureStarted();
-    this.#assertLive('mountWorktree');
+    // Under published-ports, `-p` mappings are fixed at `docker run`. Starting
+    // here (from SessionEnvManager.ensure / terminal attach) with an empty
+    // publish set makes a later preview `mapPortsOut` impossible. Defer the
+    // start until ports are declared or spawn/ensureStarted runs explicitly.
+    const deferStart =
+      this.portRouting === 'published-ports' &&
+      this.declaredPorts.size === 0 &&
+      !this.#started &&
+      !this.#startPromise;
+    if (!deferStart) {
+      await this.ensureStarted();
+      this.#assertLive('mountWorktree');
+    }
     return {
       hostPath: this.worktreePath,
       envPath: SYSBOX_SESSION_WORKSPACE,

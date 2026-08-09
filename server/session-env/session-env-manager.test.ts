@@ -260,7 +260,10 @@ describe('SessionEnvManager teardown', () => {
     };
 
     await manager.dispose('s1');
-    await expect(manager.ensure('s1')).resolves.toBe(created[1] as unknown as SessionEnv);
+    expect(manager.listSessions()).toEqual([]);
+    const next = await manager.ensure('s1');
+    expect(created).toHaveLength(2);
+    expect(next).toBe(created[1] as unknown as SessionEnv);
   });
 
   it('disposes every env on shutdown', async () => {
@@ -276,6 +279,8 @@ describe('SessionEnvManager teardown', () => {
 });
 
 describe('SessionEnvManager.reap', () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
   it('disposes an idle env with nothing running', async () => {
     const { manager, created } = makeManager({ idleTtlMs: 1000 });
     await manager.ensure('s1');
@@ -292,6 +297,42 @@ describe('SessionEnvManager.reap', () => {
     await manager.ensure('s1');
     created[0].lastActivityAtMs = 0;
     created[0].live = 1;
+
+    await expect(manager.reap(5000)).resolves.toEqual({ scanned: 1, reaped: 0 });
+    expect(created[0].disposeCalls).toBe(0);
+  });
+
+  it('does not deadlock when dispose runs during the boot sweep', async () => {
+    let sweepDone!: () => void;
+    const bootSweep = new Promise<void>((resolve) => {
+      sweepDone = resolve;
+    });
+    const { manager } = makeManager({ bootSweep });
+
+    const pendingEnsure = manager.ensure('s1');
+    await settle();
+    const pendingDispose = manager.dispose('s1');
+    await settle();
+
+    sweepDone();
+    const results = await Promise.race([
+      Promise.allSettled([pendingEnsure, pendingDispose]),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('deadlock')), 500),
+      ),
+    ]);
+    expect(results).toHaveLength(2);
+    expect(results[1].status).toBe('fulfilled');
+  });
+
+  it('spares an env whose boundary is started but idle', async () => {
+    const { manager, created } = makeManager({ idleTtlMs: 1000 });
+    await manager.ensure('s1');
+    created[0].lastActivityAtMs = 0;
+    created[0].live = 0;
+    (created[0] as FakeEnv & { started?: boolean }).started = true;
+    const original = created[0].liveProcessCount.bind(created[0]);
+    created[0].liveProcessCount = () => original() + 1;
 
     await expect(manager.reap(5000)).resolves.toEqual({ scanned: 1, reaped: 0 });
     expect(created[0].disposeCalls).toBe(0);

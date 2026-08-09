@@ -107,6 +107,8 @@ export function parseSessionTapNames(ipLinkOutput: string): string[] {
 export interface ReconcileFirecrackerHostDeps {
   run(argv: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }>;
   logger?: { warn: (msg: string) => void };
+  /** Best-effort stop of orphaned VMM containers before deleting taps. */
+  stopStaleVmms?: () => Promise<void>;
 }
 
 export interface ReconcileFirecrackerHostResult {
@@ -150,6 +152,10 @@ export function buildEnsureGuestNatArgv(uplink: string): GuestNatArgv {
   const bridge = FIRECRACKER_BRIDGE_NAME;
   const required: string[][] = [
     ['sysctl', '-qw', 'net.ipv4.ip_forward=1'],
+    // Block guest-to-guest forwarding on the shared bridge before any ACCEPT
+    // rules — without this, sessions on different taps can reach each other.
+    ['iptables', '-C', 'FORWARD', '-i', bridge, '-o', bridge, '-j', 'DROP'],
+    ['iptables', '-I', 'FORWARD', '-i', bridge, '-o', bridge, '-j', 'DROP'],
     ['iptables', '-t', 'nat', '-C', 'POSTROUTING', '-s', subnet, '-o', uplink, '-j', 'MASQUERADE'],
     ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-s', subnet, '-o', uplink, '-j', 'MASQUERADE'],
     ['iptables', '-C', 'FORWARD', '-i', bridge, '-o', uplink, '-j', 'ACCEPT'],
@@ -323,6 +329,16 @@ export async function reconcileFirecrackerHost(
   }
 
   const natReady = await ensureFirecrackerGuestNat(deps);
+
+  if (deps.stopStaleVmms) {
+    try {
+      await deps.stopStaleVmms();
+    } catch (err) {
+      logger.warn(
+        `[firecracker] failed to stop stale VMM containers: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   const listed = await deps.run(['ip', '-o', 'link', 'show']);
   if (!listed.ok) {

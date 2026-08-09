@@ -140,12 +140,32 @@ jobs:
         run: |
           set -euo pipefail
           SHA_SHORT="$(git rev-parse --short=12 HEAD)"
+          sanitize_docker_tag() {
+            local raw="$1"
+            local s
+            s="$(printf '%s' "$raw" | tr -c 'A-Za-z0-9_.-' '-')"
+            s="$(printf '%s' "$s" | sed -e 's/^[^A-Za-z0-9]*//' -e 's/[^A-Za-z0-9]*$//')"
+            while [[ "$s" == *--* ]]; do s="${s//--/-}"; done
+            if [[ -z "$s" ]]; then s="branch"; fi
+            printf '%s' "$s"
+          }
+          # Append a short SHA so feature/a and feature-a cannot collide after
+          # sanitization, and truncate to Docker's 128-char tag limit.
+          unique_docker_tag() {
+            local base suffix out
+            base="$(sanitize_docker_tag "$1")"
+            suffix="$2"
+            out="${base}-${suffix}"
+            out="${out:0:128}"
+            # Re-trim ends in case truncation left a trailing dash.
+            out="$(printf '%s' "$out" | sed -e 's/^[^A-Za-z0-9]*//' -e 's/[^A-Za-z0-9]*$//')"
+            if [[ -z "$out" ]]; then out="branch-${suffix}"; fi
+            printf '%s' "$out"
+          }
           # A docker tag admits only [A-Za-z0-9_.-], so a branch like
           # `preview/foo` cannot be one verbatim — buildx rejects the whole
           # build with "invalid reference format" before a layer is built.
-          # Slashless branches hid this for as long as every deploy branch
-          # happened to be flat.
-          BRANCH="$(printf '%s' "${GITHUB_REF_NAME:-main}" | tr -c 'A-Za-z0-9_.-' '-')"
+          BRANCH="$(unique_docker_tag "${GITHUB_REF_NAME:-main}" "$SHA_SHORT")"
           EXTRA_TAG=""
           if [[ -n "$INPUT_VERSION_TAG" ]]; then
             if [[ "$INPUT_VERSION_TAG" == refs/tags/* ]]; then
@@ -153,6 +173,7 @@ jobs:
             else
               EXTRA_TAG="$INPUT_VERSION_TAG"
             fi
+            EXTRA_TAG="$(unique_docker_tag "$EXTRA_TAG" "$SHA_SHORT")"
           fi
 
           echo "sha_short=$SHA_SHORT" >> "$GITHUB_OUTPUT"
@@ -329,6 +350,8 @@ jobs:
           set -euo pipefail
           EXPECTED_DIGEST="$EXPECTED_DIGEST"
           DEPLOY_TAG="$DEPLOY_TAG"
+          sudo install -d -m 0755 /etc/agent-hub
+          printf '%s\n' "\$DEPLOY_TAG" | sudo tee /etc/agent-hub/image-tag >/dev/null
           sudo systemctl restart agenthub-server
           sudo systemctl is-active agenthub-server
 

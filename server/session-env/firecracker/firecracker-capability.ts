@@ -13,7 +13,7 @@
  * log is otherwise indistinguishable from a config typo.
  */
 
-import { accessSync, constants, statSync } from 'fs';
+import { accessSync, closeSync, constants, openSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 
 export interface FirecrackerCapability {
@@ -27,6 +27,8 @@ export interface FirecrackerCapability {
 export interface FirecrackerCapabilityProbeDeps {
   /** Throws when the path is not accessible with the requested mode. */
   access?: (path: string, mode: number) => void;
+  /** Opens KVM read/write to confirm the device is usable, not just present. */
+  openKvm?: () => void;
   isCharacterDevice?: (path: string) => boolean;
   /** Returns version output, or throws when the binary is missing. */
   firecrackerVersion?: () => string;
@@ -53,6 +55,11 @@ function defaultFileExists(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function defaultOpenKvm(): void {
+  const fd = openSync(KVM_DEVICE, constants.O_RDWR);
+  closeSync(fd);
 }
 
 export function probeFirecrackerCapability(
@@ -86,6 +93,18 @@ export function probeFirecrackerCapability(
       reason:
         `${KVM_DEVICE} exists but is not readable/writable by this process. ` +
         'Add the Hub user to the `kvm` group (or adjust the device mode) and restart.',
+    };
+  }
+
+  const openKvm = deps.openKvm ?? defaultOpenKvm;
+  try {
+    openKvm();
+  } catch (err) {
+    return {
+      available: false,
+      reason:
+        `${KVM_DEVICE} exists but could not be opened read/write: ` +
+        (err instanceof Error ? err.message : String(err)),
     };
   }
 

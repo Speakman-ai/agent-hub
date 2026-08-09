@@ -315,6 +315,43 @@ describe('preview proxy routing (end-to-end)', () => {
     const res = await request(app).get('/api/sessions/sess-1/preview/proxy/p/9999/');
     expect(res.status).toBe(503);
   });
+
+  it('forwards a parsed JSON POST body with content-length and content-type', async () => {
+    let seenLength: string | undefined;
+    let seenType: string | undefined;
+    let seenBody = '';
+    const server = http.createServer((req, res) => {
+      seenLength = req.headers['content-length'];
+      seenType = req.headers['content-type'];
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        seenBody = Buffer.concat(chunks).toString('utf8');
+        res.setHeader('content-type', 'text/plain');
+        res.end('ok');
+      });
+    });
+    upstreams.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+
+    const app = express();
+    app.use(express.json());
+    const handler = createPreviewProxyHandler({
+      getSessionPreviewPort: () => port,
+      userOwnsSession: () => true,
+    });
+    app.post('/api/sessions/:sessionId/preview/proxy/*', handler);
+
+    const payload = { hello: 'world', n: 3 };
+    const res = await request(app)
+      .post('/api/sessions/sess-1/preview/proxy/api/save')
+      .send(payload);
+    expect(res.status).toBe(200);
+    expect(seenLength).toBe(String(Buffer.byteLength(JSON.stringify(payload))));
+    expect(seenType).toBe('application/json');
+    expect(seenBody).toBe(JSON.stringify(payload));
+  });
 });
 
 describe('buildFrameAncestorsCsp', () => {
