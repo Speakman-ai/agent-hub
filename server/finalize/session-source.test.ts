@@ -47,6 +47,11 @@ async function makeSessionRepo(branch = 'feature/x'): Promise<{ repo: string; or
   await writeFile(path.join(repo, 'README.md'), 'base\n');
   await git(repo, 'add', '.');
   await git(repo, 'commit', '-m', 'base');
+  // A second commit so a depth-1 clone is missing a parent — the condition
+  // that makes a full-branch bundle uncloneable.
+  await writeFile(path.join(repo, 'README.md'), 'base\nmore\n');
+  await git(repo, 'add', '.');
+  await git(repo, 'commit', '-m', 'more');
   await git(repo, 'remote', 'add', 'origin', origin);
   await git(repo, 'push', '-q', 'origin', 'main');
   await git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
@@ -55,6 +60,38 @@ async function makeSessionRepo(branch = 'feature/x'): Promise<{ repo: string; or
   await git(repo, 'add', '.');
   await git(repo, 'commit', '-m', 'session work');
   return { repo, origin };
+}
+
+/**
+ * The shape every Firecracker session actually has on this host: a depth-1
+ * clone of origin, with the session's commits on top. A full-branch
+ * `git bundle create` of that tree is not self-contained — cloning it fails
+ * with "remote did not send all necessary objects".
+ */
+async function makeShallowSessionRepo(
+  branch = 'feature/x',
+): Promise<{ repo: string; origin: string; seed: string }> {
+  const { origin } = await makeSessionRepo(branch);
+  // Rebuild from origin rather than reuse the deep worktree above: the
+  // production path seeds the guest from a shallow clone of origin.
+  const root = await tmpDir('shallow');
+  const seed = path.join(root, 'seed');
+  // Local path clones silently ignore `--depth`; the file:// form is what
+  // actually produces a shallow repository (and what the Hub uses for
+  // network-backed origins in production).
+  await execFileAsync('git', ['clone', '--depth', '1', `file://${origin}`, seed]);
+  await git(seed, 'config', 'user.email', 'test@example.com');
+  await git(seed, 'config', 'user.name', 'Test');
+  // Point origin back at the real path so deepen/unshallow in the staging
+  // checkout talks to the bare repo, not a file:// URL git may refuse to
+  // deepen from in some versions.
+  await git(seed, 'remote', 'set-url', 'origin', origin);
+  await git(seed, 'checkout', '-q', '-b', branch);
+  await writeFile(path.join(seed, 'feature.txt'), 'session work\n');
+  await git(seed, 'add', '.');
+  await git(seed, 'commit', '-m', 'session work');
+  expect(await git(seed, 'rev-parse', '--is-shallow-repository')).toBe('true');
+  return { repo: seed, origin, seed };
 }
 
 describe('acquireFinalizeSource', () => {
@@ -103,6 +140,35 @@ describe('acquireFinalizeSource', () => {
       'refs/remotes/origin/main',
     );
     await expect(source.sessionHeadAtMaterialize()).resolves.toBe(sessionHead);
+  });
+
+  it('materializes a shallow session without needing its missing parents', async () => {
+    // Observed on the Firecracker dev sandbox: session clones are depth-1, so
+    // a full-branch bundle's pack is missing the shallow boundary's parents
+    // and `git clone` of it fails with "remote did not send all necessary
+    // objects". The thin-bundle path seeds from the host checkout (which has
+    // the boundary commit) and only ships the session's own commits.
+    const { repo, origin } = await makeShallowSessionRepo();
+    const root = await tmpDir('root');
+    const sessionHead = await git(repo, 'rev-parse', 'HEAD');
+
+    const source = await acquireFinalizeSource({
+      runId: 'run-shallow',
+      sessionId: 'sess-shallow',
+      worktreePath: repo,
+      branch: 'feature/x',
+      io: envOwnedOverHostDir(repo),
+      root,
+    });
+
+    expect(source.staged).toBe(true);
+    expect(await git(source.path, 'rev-parse', 'HEAD')).toBe(sessionHead);
+    expect(await git(source.path, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature/x');
+    expect(await readFile(path.join(source.path, 'feature.txt'), 'utf8')).toBe('session work\n');
+    expect(await git(source.path, 'remote', 'get-url', 'origin')).toBe(origin);
+    // The staging checkout must be able to walk history past the shallow
+    // boundary — rebase onto origin/main needs those parents.
+    expect(await git(source.path, 'rev-list', '--count', 'HEAD')).toBe('3');
   });
 
   it('leaves no bundle behind in the session', async () => {

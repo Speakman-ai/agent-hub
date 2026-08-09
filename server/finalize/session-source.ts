@@ -22,7 +22,7 @@
  */
 import { execFile } from 'child_process';
 import type { Dirent } from 'fs';
-import { mkdir, readdir, rm, stat } from 'fs/promises';
+import { access, mkdir, readdir, rm, stat } from 'fs/promises';
 import path from 'path';
 import { promisify } from 'util';
 import { WORKSPACES_ROOT } from '../worktree.js';
@@ -41,6 +41,15 @@ const GUEST_BUNDLE_RELATIVE_PATH = '.git/agent-hub-finalize-source.bundle';
 
 /** Local git config key recording the session HEAD a staging clone came from. */
 const SOURCE_HEAD_CONFIG_KEY = 'agentHub.sourceHead';
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface FinalizeSyncBackResult {
   /** Whether the session worktree now points at the shipped commits. */
@@ -115,6 +124,13 @@ class StagedSource implements FinalizeSource {
     readonly path: string,
     private readonly io: SessionWorktreeIo,
     private readonly branch: string,
+    /**
+     * Host directory that seeded the guest disk. Stale for working-tree
+     * contents once the session starts writing, but its `.git` still holds
+     * every object the guest inherited at boot — enough to satisfy the
+     * prerequisites of a thin bundle of the session's own commits.
+     */
+    private readonly hostSeedPath: string | null,
   ) {}
 
   async refresh(): Promise<void> {
@@ -122,36 +138,41 @@ class StagedSource implements FinalizeSource {
     const bundlePath = path.join(path.dirname(this.path), `${path.basename(this.path)}.bundle`);
     await mkdir(path.dirname(bundlePath), { recursive: true });
     try {
-      // Bundle the branch ref rather than a bare SHA: a bundle with no ref is
-      // one git refuses to create, and the ref is also what lets the clone
-      // below check the branch out by name.
-      const bundle = await this.io.git([
-        'bundle',
-        'create',
-        GUEST_BUNDLE_RELATIVE_PATH,
-        this.branch,
-      ]);
-      if (bundle.exitCode !== 0) {
-        throw new Error(
-          `could not bundle ${this.branch} from the session worktree: ` +
-            (bundle.stderr.trim() || bundle.stdout.trim() || 'unknown error'),
-        );
+      // Prefer a thin bundle applied onto the host seed (or origin). A
+      // full-branch bundle from a shallow session is not self-contained —
+      // `git clone` of it fails with "remote did not send all necessary
+      // objects" because the shallow boundary's parents are absent. Session
+      // clones on this host are shallow by default, so that path is the one
+      // Finalize actually hits.
+      const base = await this.#resolveThinBundleBase();
+      const seed = await this.#resolveCloneSeed(originUrl);
+      if (base && seed) {
+        try {
+          await this.#materializeFromThinBundle(base, seed, bundlePath);
+        } catch (err) {
+          console.warn(
+            `[finalize-source] thin materialize of ${this.branch} failed ` +
+              `(${err instanceof Error ? err.message : String(err)}); ` +
+              `falling back to a full-branch bundle`,
+          );
+          await this.#materializeFromFullBundle(bundlePath);
+        }
+      } else {
+        await this.#materializeFromFullBundle(bundlePath);
       }
-      await this.io.downloadFile(GUEST_BUNDLE_RELATIVE_PATH, bundlePath);
 
-      await rm(this.path, { recursive: true, force: true });
-      await mkdir(path.dirname(this.path), { recursive: true });
-      await execFileAsync(
-        'git',
-        ['clone', '--quiet', '--branch', this.branch, bundlePath, this.path],
-        {
-          timeout: GIT_TIMEOUT_MS,
-        },
-      );
-      // The clone's origin is the bundle file. Point it at the real remote so
-      // the rebase can fetch the base branch and the push has somewhere to go.
+      // Point origin at the real remote so the rebase can fetch the base
+      // branch and the push has somewhere to go. A clone from the host seed
+      // already has this; a clone from a bundle file does not.
       if (originUrl) await hostGit(this.path, ['remote', 'set-url', 'origin', originUrl]);
-      else await hostGit(this.path, ['remote', 'remove', 'origin']);
+      else {
+        await hostGit(this.path, ['remote', 'remove', 'origin']).catch(() => {});
+      }
+
+      // A thin materialize clones the (shallow) host seed, so the staging
+      // checkout inherits that shallow boundary. Deepen it from origin before
+      // the rebase walks parents the seed never had.
+      if (originUrl) await this.#deepenStagingFromOrigin();
 
       // A bundle carries one branch and no remote HEAD, so default-branch
       // detection in the clone would find nothing and fall back to `main` —
@@ -181,6 +202,151 @@ class StagedSource implements FinalizeSource {
     } finally {
       await rm(bundlePath, { force: true });
       await this.io.exec(`rm -f ${GUEST_BUNDLE_RELATIVE_PATH}`).catch(() => {});
+    }
+  }
+
+  /**
+   * Cut the thin bundle at the fork point with origin's default branch, or at
+   * the shallow boundary when that merge-base is unavailable.
+   *
+   * Either value is an object the host seed (and a fresh origin clone) already
+   * has, so it can stand as the bundle's only prerequisite.
+   */
+  async #resolveThinBundleBase(): Promise<string | null> {
+    const upstream = await this.#resolveUpstreamRef();
+    if (upstream) {
+      const mb = await this.io.git(['merge-base', 'HEAD', upstream]);
+      if (mb.exitCode === 0 && mb.stdout.trim()) return mb.stdout.trim();
+    }
+
+    const shallow = await this.io.git(['rev-parse', '--is-shallow-repository']);
+    if (shallow.exitCode !== 0 || shallow.stdout.trim() !== 'true') return null;
+
+    // Every SHA in `.git/shallow` is present and its parents are not. Bundling
+    // from one that is an ancestor of HEAD makes that SHA the prerequisite.
+    const listed = await this.io.exec('cat .git/shallow');
+    if (listed.exitCode !== 0) return null;
+    for (const sha of listed.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)) {
+      const anc = await this.io.git(['merge-base', '--is-ancestor', sha, 'HEAD']);
+      if (anc.exitCode === 0) return sha;
+    }
+    return null;
+  }
+
+  async #resolveUpstreamRef(): Promise<string | null> {
+    const originHead = await this.io.git(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+    if (originHead.exitCode === 0 && originHead.stdout.trim()) {
+      return originHead.stdout.trim();
+    }
+    for (const candidate of ['refs/remotes/origin/main', 'refs/remotes/origin/master']) {
+      const ok = await this.io.git(['rev-parse', '--verify', candidate]);
+      if (ok.exitCode === 0) return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * Where to clone the shared history from. Prefer the host seed (local path,
+   * no credentials) over origin; either already has the thin-bundle base.
+   */
+  async #resolveCloneSeed(originUrl: string | null): Promise<string | null> {
+    if (this.hostSeedPath && (await pathExists(path.join(this.hostSeedPath, '.git')))) {
+      return this.hostSeedPath;
+    }
+    return originUrl;
+  }
+
+  async #materializeFromThinBundle(base: string, seed: string, bundlePath: string): Promise<void> {
+    // `^base branch` packages objects reachable from the branch excluding
+    // those reachable from base, and records `branch` as a named ref so the
+    // fetch below can land it by name.
+    const bundle = await this.io.git(
+      ['bundle', 'create', GUEST_BUNDLE_RELATIVE_PATH, `^${base}`, this.branch],
+      { timeoutMs: GIT_TIMEOUT_MS },
+    );
+    if (bundle.exitCode !== 0) {
+      throw new Error(
+        `could not thin-bundle ${this.branch} from ${base}: ` +
+          (bundle.stderr.trim() || bundle.stdout.trim() || 'unknown error'),
+      );
+    }
+    await this.io.downloadFile(GUEST_BUNDLE_RELATIVE_PATH, bundlePath);
+
+    await rm(this.path, { recursive: true, force: true });
+    await mkdir(path.dirname(this.path), { recursive: true });
+    await execFileAsync('git', ['clone', '--quiet', seed, this.path], {
+      timeout: GIT_TIMEOUT_MS,
+    });
+    // Clone may check out `branch` (when the seed already has it) or the
+    // default branch. Detach so the fetch can update the branch tip either way.
+    await hostGit(this.path, ['checkout', '--detach']).catch(() => {});
+    await hostGit(this.path, ['fetch', bundlePath, `${this.branch}:${this.branch}`]);
+    await hostGit(this.path, ['checkout', '-f', this.branch]);
+  }
+
+  async #materializeFromFullBundle(bundlePath: string): Promise<void> {
+    // A full-branch bundle is only cloneable when every parent is present. A
+    // shallow session's isn't — unshallow first so the pack stands alone.
+    if (await this.#isShallow()) await this.#unshallow();
+
+    const bundle = await this.io.git(
+      ['bundle', 'create', GUEST_BUNDLE_RELATIVE_PATH, this.branch],
+      { timeoutMs: GIT_TIMEOUT_MS },
+    );
+    if (bundle.exitCode !== 0) {
+      throw new Error(
+        `could not bundle ${this.branch} from the session worktree: ` +
+          (bundle.stderr.trim() || bundle.stdout.trim() || 'unknown error'),
+      );
+    }
+    await this.io.downloadFile(GUEST_BUNDLE_RELATIVE_PATH, bundlePath);
+
+    await rm(this.path, { recursive: true, force: true });
+    await mkdir(path.dirname(this.path), { recursive: true });
+    await execFileAsync(
+      'git',
+      ['clone', '--quiet', '--branch', this.branch, bundlePath, this.path],
+      { timeout: GIT_TIMEOUT_MS },
+    );
+  }
+
+  async #isShallow(): Promise<boolean> {
+    const res = await this.io.git(['rev-parse', '--is-shallow-repository']);
+    return res.exitCode === 0 && res.stdout.trim() === 'true';
+  }
+
+  async #unshallow(): Promise<void> {
+    const unshallow = await this.io.git(['fetch', '--unshallow'], { timeoutMs: GIT_TIMEOUT_MS });
+    if (unshallow.exitCode === 0) return;
+    // Some remotes reject `--unshallow` once the client already has enough
+    // history; deepen to the practical maximum instead.
+    const deepen = await this.io.git(['fetch', '--deepen=2147483647'], {
+      timeoutMs: GIT_TIMEOUT_MS,
+    });
+    if (deepen.exitCode === 0) return;
+    throw new Error(
+      `could not unshallow the session worktree before bundling: ` +
+        (deepen.stderr.trim() || unshallow.stderr.trim() || 'unknown error'),
+    );
+  }
+
+  async #deepenStagingFromOrigin(): Promise<void> {
+    try {
+      if ((await hostGit(this.path, ['rev-parse', '--is-shallow-repository'])) !== 'true') {
+        return;
+      }
+      await hostGit(this.path, ['fetch', '--unshallow']);
+    } catch (err) {
+      // Best-effort: the rebase's own fetch can deepen as it needs parents.
+      // Failing hard here would turn a reachable origin into a hard Finalize
+      // outage when the seed was already deep enough for the run.
+      console.warn(
+        `[finalize-source] could not deepen staging checkout from origin: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -370,7 +536,11 @@ export async function acquireFinalizeSource(
     return new SharedSource(io.hostPath ?? args.worktreePath);
   }
   const root = args.root ?? finalizeSourceRoot();
-  const source = new StagedSource(path.join(root, args.runId), io, args.branch);
+  // The recorded worktree path is the seed the guest was built from. Under
+  // env-owned sharing it is no longer the live tree, but its object store is
+  // still the right base for a thin bundle of the session's commits.
+  const hostSeedPath = args.worktreePath || null;
+  const source = new StagedSource(path.join(root, args.runId), io, args.branch, hostSeedPath);
   // Reuse an existing checkout rather than rebuilding it. This is not an
   // optimisation: by push time the checkout holds the rebased commits the run
   // validated, and they exist nowhere else yet. Re-materialising from the
