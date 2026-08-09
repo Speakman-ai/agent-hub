@@ -6,12 +6,38 @@ vi.mock('../auto-git.js', () => ({
 }));
 
 import { checkWorktreeChanges } from '../auto-git.js';
+import { fakeEnvOwnedIo, fakeHostSharedIo } from '../test/fake-worktree-io.js';
+
+/** `checkWorktreeChanges` is mocked here, so the seam is an opaque handle. */
+const io = fakeHostSharedIo();
 
 describe('getSessionCommittableChanges', () => {
   it('returns no_worktree when path is missing', async () => {
     const out = await getSessionCommittableChanges(null);
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.error).toBe('no_worktree');
+  });
+
+  // Finalize's later phases (rebase, the CI step runner, push) still drive git
+  // against a host path. Under `env-owned` sharing that path holds only what
+  // the VM booted from, so a run started here would rebase and push a branch
+  // with none of the session's work — a silent, irreversible drop. Refuse.
+  it('refuses an env-owned worktree rather than shipping the boot-time seed', async () => {
+    vi.mocked(checkWorktreeChanges).mockResolvedValue({
+      hasUncommitted: true,
+      hasUnpushed: true,
+      branch: 'feature/x',
+      headSha: 'abc123',
+    });
+    const probe = vi.fn(async () => true);
+    const out = await getSessionCommittableChanges(fakeEnvOwnedIo(), { probe });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error).toBe('worktree_not_on_host');
+      expect(out.message).toContain('microVM');
+    }
+    // It must refuse before probing, so no host git runs on a stale tree.
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it('returns no_committable_changes when worktree is clean', async () => {
@@ -21,7 +47,7 @@ describe('getSessionCommittableChanges', () => {
       branch: 'feature/x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt');
+    const out = await getSessionCommittableChanges(io);
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.error).toBe('no_committable_changes');
   });
@@ -34,7 +60,7 @@ describe('getSessionCommittableChanges', () => {
       headSha: 'abc123',
     });
     // Probe reports a net diff → publishable.
-    const out = await getSessionCommittableChanges('/tmp/wt', { probe: async () => true });
+    const out = await getSessionCommittableChanges(io, { probe: async () => true });
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.changes.hasUnpushed).toBe(true);
   });
@@ -49,7 +75,7 @@ describe('getSessionCommittableChanges', () => {
     // Probe reports no net diff → nothing would land → not committable. The
     // session is not empty (it has commits), so the reason names what is wrong
     // rather than claiming there is nothing here.
-    const out = await getSessionCommittableChanges('/tmp/wt', { probe: async () => false });
+    const out = await getSessionCommittableChanges(io, { probe: async () => false });
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.error).toBe('no_pushable_commits');
   });
@@ -62,7 +88,7 @@ describe('getSessionCommittableChanges', () => {
       headSha: 'abc123',
     });
     // Probe undeterminable (null) → never worse than reachability-only behavior.
-    const out = await getSessionCommittableChanges('/tmp/wt', { probe: async () => null });
+    const out = await getSessionCommittableChanges(io, { probe: async () => null });
     expect(out.ok).toBe(true);
   });
 
@@ -80,7 +106,7 @@ describe('getSessionCommittableChanges', () => {
       headSha: 'abc123',
     });
     const probe = vi.fn(async () => true);
-    const out = await getSessionCommittableChanges('/tmp/wt', { probe });
+    const out = await getSessionCommittableChanges(io, { probe });
     expect(out.ok).toBe(false);
     if (!out.ok) {
       expect(out.error).toBe('no_pushable_commits');
@@ -99,7 +125,7 @@ describe('getSessionCommittableChanges', () => {
       branch: 'feature/x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt');
+    const out = await getSessionCommittableChanges(io);
     expect(out.ok).toBe(false);
     if (!out.ok) {
       expect(out.error).toBe('no_committable_changes');
@@ -114,7 +140,7 @@ describe('getSessionCommittableChanges', () => {
       branch: 'feature/x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', { probe: async () => true });
+    const out = await getSessionCommittableChanges(io, { probe: async () => true });
     expect(out.ok).toBe(true);
   });
 
@@ -128,7 +154,7 @@ describe('getSessionCommittableChanges', () => {
     // Explicit base + undeterminable probe (null) → fail closed with a distinct,
     // actionable reason (NOT "no changes"). This is the stale/missing feature-
     // base fetch case the guard is meant to catch.
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       base: { kind: 'explicit', baseBranch: 'feature/epic' },
       probe: async () => null,
     });
@@ -150,7 +176,7 @@ describe('getSessionCommittableChanges', () => {
     // path for an unresolved base. Even a probe that reports a real net diff is
     // ignored — the base short-circuits before any probing.
     const probe = vi.fn(async () => true);
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       base: { kind: 'unresolved' },
       probe,
     });
@@ -166,7 +192,7 @@ describe('getSessionCommittableChanges', () => {
       branch: 'feature/x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', { base: { kind: 'unresolved' } });
+    const out = await getSessionCommittableChanges(io, { base: { kind: 'unresolved' } });
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.error).toBe('base_unresolved');
   });
@@ -178,7 +204,7 @@ describe('getSessionCommittableChanges', () => {
       branch: 'feature/x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       base: { kind: 'explicit', baseBranch: 'feature/epic' },
       probe: async () => true,
     });
@@ -192,7 +218,7 @@ describe('getSessionCommittableChanges', () => {
       branch: 'feature/x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', { base: { kind: 'unresolved' } });
+    const out = await getSessionCommittableChanges(io, { base: { kind: 'unresolved' } });
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.error).toBe('no_pushable_commits');
   });
@@ -211,7 +237,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
       probe: async () => false,
     });
@@ -233,8 +259,8 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       headSha: 'abc123',
     });
     const probe = vi.fn(async () => false);
-    await getSessionCommittableChanges('/tmp/wt', { requirePushableHead: true, probe });
-    expect(probe).toHaveBeenCalledWith('/tmp/wt');
+    await getSessionCommittableChanges(io, { requirePushableHead: true, probe });
+    expect(probe).toHaveBeenCalledWith(io);
   });
 
   it('allows a dirty worktree whose HEAD still carries a real diff vs base', async () => {
@@ -244,7 +270,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
       probe: async () => true,
     });
@@ -261,7 +287,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
       probe: async () => true,
     });
@@ -278,7 +304,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
       probe: async () => null,
     });
@@ -295,7 +321,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
       probe: async () => null,
     });
@@ -313,7 +339,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', { probe: async () => null });
+    const out = await getSessionCommittableChanges(io, { probe: async () => null });
     expect(out.ok).toBe(true);
   });
 
@@ -324,7 +350,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
     });
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
       base: { kind: 'explicit', baseBranch: 'feature/epic' },
       probe: async () => null,
@@ -341,7 +367,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       headSha: 'abc123',
     });
     const probe = vi.fn(async () => true);
-    const out = await getSessionCommittableChanges('/tmp/wt', {
+    const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
       base: { kind: 'unresolved' },
       probe,

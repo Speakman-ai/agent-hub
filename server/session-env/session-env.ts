@@ -174,6 +174,26 @@ export interface SessionEnvDialTarget {
  */
 export type SessionEnvWorktreeSharing = 'host-shared' | 'env-owned';
 
+/**
+ * How a backend shares the worktree, without building (let alone starting) an
+ * env. Lets a caller that only wants to read the worktree skip booting a VM or
+ * container when the host copy is already authoritative.
+ */
+export function worktreeSharingForKind(kind: SessionEnvKind): SessionEnvWorktreeSharing {
+  switch (kind) {
+    case 'host':
+    case 'sysbox':
+    case 'container':
+      return 'host-shared';
+    case 'firecracker':
+      return 'env-owned';
+    default: {
+      const exhaustive: never = kind;
+      return exhaustive;
+    }
+  }
+}
+
 export interface SessionEnvWorktreeMount {
   /**
    * Worktree path on the Hub host (what `worktree.ts` created), or `null`

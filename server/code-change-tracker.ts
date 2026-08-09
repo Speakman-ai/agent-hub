@@ -15,6 +15,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { BroadcastFn, Project, Stmts } from './types.js';
 import { checkWorktreeChanges } from './auto-git.js';
+import { sessionWorktreeIoFor } from './session-worktree-io.js';
 import {
   broadcastPreviewRefreshIfReady,
   type PreviewWorktreeSyncDeps,
@@ -66,14 +67,23 @@ export interface CodeChangeTrackerDeps {
   checkDirty?: (cwd: string) => Promise<boolean>;
 }
 
+/**
+ * Does the session have uncommitted or unpushed work?
+ *
+ * Needs `sessionId`, not just a path: under a microVM env the worktree lives
+ * on the guest's disk and the host directory is the boot-time seed, so a
+ * host-side `git status` would call an active session clean and the
+ * "changes ready" indicator would never fire.
+ */
 export async function isWorktreeDirty(
+  sessionId: string,
   worktreePath: string,
   deps: CodeChangeTrackerDeps,
 ): Promise<boolean> {
   const checkDirty =
     deps.checkDirty ??
     (async (cwd: string) => {
-      const changes = await checkWorktreeChanges(cwd);
+      const changes = await checkWorktreeChanges(await sessionWorktreeIoFor(sessionId, cwd));
       return changes.hasUncommitted || changes.hasUnpushed;
     });
   try {
@@ -97,7 +107,7 @@ export async function markCodeChangedIfDirty(
 
   let dirty = false;
   try {
-    dirty = await isWorktreeDirty(worktreePath, deps);
+    dirty = await isWorktreeDirty(sessionId, worktreePath, deps);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[code-change] git status failed for ${sessionId.slice(0, 8)}: ${msg}`);
@@ -158,7 +168,7 @@ export async function syncPreviewAfterWorktreeTurnIfDirty(
   worktreePath: string,
   deps: CodeChangePreviewSyncDeps,
 ): Promise<void> {
-  if (!(await isWorktreeDirty(worktreePath, deps))) return;
+  if (!(await isWorktreeDirty(sessionId, worktreePath, deps))) return;
   broadcastPreviewRefreshIfReady(sessionId, deps, {
     force: true,
     reason: 'Turn finished — reloading preview',
@@ -203,7 +213,7 @@ export async function sessionHasNoPublishableWork(
     // Missing stmt in tests or legacy wiring — fall through to git probe.
   }
   try {
-    const changes = await checkWorktreeChanges(worktreePath);
+    const changes = await checkWorktreeChanges(await sessionWorktreeIoFor(sessionId, worktreePath));
     return !changes.hasUncommitted && !changes.hasUnpushed;
   } catch {
     return false;
@@ -212,12 +222,12 @@ export async function sessionHasNoPublishableWork(
 
 /** Card-assignment / autonomous sessions: auto-ship only when git still has work to publish. */
 export async function shouldTriggerAutoShipAtSessionEnd(
-  _sessionId: string,
+  sessionId: string,
   worktreePath: string,
   _stmts: Pick<Stmts, 'getSession'>,
 ): Promise<boolean> {
   try {
-    const changes = await checkWorktreeChanges(worktreePath);
+    const changes = await checkWorktreeChanges(await sessionWorktreeIoFor(sessionId, worktreePath));
     return changes.hasUncommitted || changes.hasUnpushed;
   } catch {
     return false;

@@ -18,6 +18,7 @@ import type {
 import { computeIdempotencyKey, runFinalize } from './orchestrator.js';
 import { buildOrchestratorDeps } from './orchestrator-deps.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import {
   resolveFinalizeBaseBranchForCard,
   resolveFinalizeGateBase,
@@ -178,9 +179,10 @@ async function kickoffFinalizeRunBody(
     worktreePath: session.worktree_path,
     getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
-  const committable = await getSessionCommittableChanges(session.worktree_path, {
-    base: gateBase,
-  });
+  const committable = await getSessionCommittableChanges(
+    await sessionWorktreeIoFor(session.id, session.worktree_path),
+    { base: gateBase },
+  );
   if (!committable.ok) {
     return { kind: 'error', error: committable.error, message: committable.message };
   }

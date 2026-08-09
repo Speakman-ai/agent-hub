@@ -14,8 +14,26 @@ import {
   type GitExec,
   type GitExecResult,
 } from './session-changes.js';
+import type { SessionWorktreeIo } from './session-env/worktree-io.js';
+import { fakeEnvOwnedIo } from './test/fake-worktree-io.js';
 
 const NUL = '\0';
+
+/**
+ * A worktree double. These tests inject `exec`, so the only call that ever
+ * reaches the seam is the default base-branch resolution — answer "no such
+ * ref" so it resolves to null, matching a checkout with no origin/HEAD.
+ */
+const io: SessionWorktreeIo = {
+  sharing: 'host-shared',
+  hostPath: '/wt',
+  git: async () => ({ stdout: '', stderr: '', exitCode: 1 }),
+  readFile: async () => Buffer.alloc(0),
+  writeFile: async () => {},
+  listDir: async () => [],
+  stat: async () => null,
+  exists: async () => false,
+};
 
 function ok(stdout: string, code = 0): GitExecResult {
   return { stdout, stderr: '', code };
@@ -72,6 +90,59 @@ describe('parseNumstatZ', () => {
   });
 });
 
+// The Changes pane for a microVM session is exactly the case that used to
+// render empty: git ran on the host, which holds only the tree the VM booted
+// from. These assert the summary is built from the seam, whose `hostPath` is
+// null, so nothing can quietly reach for a host directory again.
+describe('computeSessionChanges — env-owned worktree', () => {
+  it('runs every git command through the worktree seam, not a host path', async () => {
+    const guest = fakeEnvOwnedIo({
+      git: (args) => {
+        if (args[0] === 'status') return { stdout: ' M src/a.ts\n' };
+        if (args.includes('--name-status')) return { stdout: `M${NUL}src/a.ts${NUL}` };
+        if (args.includes('--numstat')) return { stdout: `3\t1\tsrc/a.ts${NUL}` };
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') return { stdout: 'guesthead\n' };
+        if (args.includes('--abbrev-ref')) return { stdout: 'feature/in-vm\n' };
+        return { stdout: '' };
+      },
+    });
+
+    const summary = await computeSessionChanges({ io: guest, baseBranch: 'main' });
+
+    expect(summary.headSha).toBe('guesthead');
+    expect(summary.branch).toBe('feature/in-vm');
+    expect(summary.files).toEqual([
+      {
+        path: 'src/a.ts',
+        oldPath: undefined,
+        status: 'modified',
+        additions: 3,
+        deletions: 1,
+        binary: false,
+        untracked: false,
+      },
+    ]);
+    expect(guest.gitCalls.length).toBeGreaterThan(0);
+  });
+
+  it('diffs a single file through the seam', async () => {
+    const patch = 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    const guest = fakeEnvOwnedIo({
+      git: (args) => {
+        if (args[0] === 'rev-parse') return { stdout: 'basesha\n' };
+        if (args[0] === 'merge-base') return { stdout: 'mergebase\n' };
+        if (args[0] === 'diff') return { stdout: patch };
+        return { stdout: '' };
+      },
+    });
+
+    const res = await computeFileDiff({ io: guest, baseBranch: 'main', file: 'src/a.ts' });
+
+    expect(res.unifiedDiff).toBe(patch);
+    expect(res.status).toBe('modified');
+  });
+});
+
 describe('computeSessionChanges', () => {
   const baseRoutes: Array<[(args: string[]) => boolean, GitExecResult]> = [
     [has('rev-parse', '--verify', 'origin/main'), ok('basesha111\n')],
@@ -105,7 +176,7 @@ describe('computeSessionChanges', () => {
 
   it('merges tracked + untracked into a sorted file list with counts', async () => {
     const summary = await computeSessionChanges({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       exec: fakeExec(baseRoutes),
     });
@@ -148,7 +219,7 @@ describe('computeSessionChanges', () => {
       [has('ls-files', '--others'), ok('', 128)],
     ];
     await expect(
-      computeSessionChanges({ worktreePath: '/wt', baseBranch: 'main', exec: fakeExec(routes) }),
+      computeSessionChanges({ io, baseBranch: 'main', exec: fakeExec(routes) }),
     ).rejects.toThrow(GitCommandError);
   });
 
@@ -166,7 +237,7 @@ describe('computeSessionChanges', () => {
       [has('--no-index', '--numstat'), ok('-\t-\tlogo.png\n', 1)],
     ];
     const summary = await computeSessionChanges({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       exec: fakeExec(routes),
     });
@@ -195,7 +266,7 @@ describe('computeSessionChanges', () => {
       [has('--no-index', '--numstat'), ok('2\t0\tsafe.ts\n', 1)],
     ];
     const summary = await computeSessionChanges({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       exec: fakeExec(routes),
     });
@@ -230,7 +301,7 @@ describe('computeSessionChanges', () => {
       if (has('ls-files', '--others')(args)) return ok(untracked);
       return ok('');
     };
-    const summary = await computeSessionChanges({ worktreePath: '/wt', baseBranch: 'main', exec });
+    const summary = await computeSessionChanges({ io, baseBranch: 'main', exec });
     // Every file is still processed...
     expect(completed).toBe(N);
     expect(summary.files.filter((f) => f.untracked)).toHaveLength(N);
@@ -247,7 +318,7 @@ describe('computeSessionChanges', () => {
       [has('ls-files', '--others'), ok('src/a.ts' + NUL)], // already tracked-modified
     ];
     const summary = await computeSessionChanges({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       exec: fakeExec(routes),
     });
@@ -265,7 +336,7 @@ describe('computeSessionChanges', () => {
       [has('ls-files', '--others'), ok('')],
     ];
     const summary = await computeSessionChanges({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       exec: fakeExec(routes),
     });
@@ -288,7 +359,7 @@ describe('computeSessionChanges', () => {
       [has('ls-files', '--others'), ok('')],
     ];
     const summary = await computeSessionChanges({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       exec: fakeExec(routes),
     });
@@ -306,7 +377,7 @@ describe('computeFileDiff', () => {
       [has('diff', '-M', '--', 'x.ts'), ok(patch)],
     ]);
     const res = await computeFileDiff({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       file: 'x.ts',
       exec,
@@ -320,7 +391,7 @@ describe('computeFileDiff', () => {
     const patch = 'diff --git a/new.ts b/new.ts\nnew file mode 100644\n@@ -0,0 +1 @@\n+hello\n';
     const exec = fakeExec([[has('--no-index'), ok(patch, 1)]]);
     const res = await computeFileDiff({
-      worktreePath: '/wt',
+      io,
       file: 'new.ts',
       untracked: true,
       exec,
@@ -339,7 +410,7 @@ describe('computeFileDiff', () => {
       ],
     ]);
     const res = await computeFileDiff({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       file: 'logo.png',
       exec,
@@ -356,7 +427,7 @@ describe('computeFileDiff', () => {
       [has('diff', '-M'), ok(huge)],
     ]);
     const res = await computeFileDiff({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       file: 'big.ts',
       exec,
@@ -371,23 +442,23 @@ describe('computeFileDiff', () => {
       [has('merge-base'), ok('mb\n')],
       [has('diff', '-M'), ok('fatal: bad object\n', 128)],
     ]);
-    await expect(
-      computeFileDiff({ worktreePath: '/wt', baseBranch: 'main', file: 'x.ts', exec }),
-    ).rejects.toThrow(GitCommandError);
+    await expect(computeFileDiff({ io, baseBranch: 'main', file: 'x.ts', exec })).rejects.toThrow(
+      GitCommandError,
+    );
   });
 
   it('throws on a fatal --no-index exit but tolerates the diff-found exit', async () => {
     // 128 = fatal (e.g. the file vanished after the membership check) → throw.
     const fatal = fakeExec([[has('--no-index'), ok('fatal: could not read\n', 128)]]);
     await expect(
-      computeFileDiff({ worktreePath: '/wt', file: 'new.ts', untracked: true, exec: fatal }),
+      computeFileDiff({ io, file: 'new.ts', untracked: true, exec: fatal }),
     ).rejects.toThrow(GitCommandError);
     // 1 = differences found → the expected, tolerated case.
     const found = fakeExec([
       [has('--no-index'), ok('diff --git a/new.ts b/new.ts\n@@ -0,0 +1 @@\n+x\n', 1)],
     ]);
     const res = await computeFileDiff({
-      worktreePath: '/wt',
+      io,
       file: 'new.ts',
       untracked: true,
       exec: found,
@@ -407,7 +478,7 @@ describe('computeFileDiff', () => {
   ])('rejects unsafe path %s without spawning git', async (file, untracked) => {
     const exec = vi.fn(async () => ok('should not run', 0));
     await expect(
-      computeFileDiff({ worktreePath: '/wt', baseBranch: 'main', file, untracked, exec }),
+      computeFileDiff({ io, baseBranch: 'main', file, untracked, exec }),
     ).rejects.toThrow(UnsafePathError);
     expect(exec).not.toHaveBeenCalled();
   });
@@ -420,7 +491,7 @@ describe('computeFileDiff', () => {
       [has('diff', '-M', '--', 'src/x.ts'), ok(patch)],
     ]);
     const res = await computeFileDiff({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       file: './src/x.ts',
       exec,
@@ -432,17 +503,17 @@ describe('computeFileDiff', () => {
 
 describe('resolveWorktreeRelativePath', () => {
   it('returns the normalized relative path for in-worktree files', () => {
-    expect(resolveWorktreeRelativePath('/wt', 'src/a.ts')).toBe('src/a.ts');
-    expect(resolveWorktreeRelativePath('/wt', './src/a.ts')).toBe('src/a.ts');
-    expect(resolveWorktreeRelativePath('/wt', 'src/sub/../a.ts')).toBe('src/a.ts');
+    expect(resolveWorktreeRelativePath('src/a.ts')).toBe('src/a.ts');
+    expect(resolveWorktreeRelativePath('./src/a.ts')).toBe('src/a.ts');
+    expect(resolveWorktreeRelativePath('src/sub/../a.ts')).toBe('src/a.ts');
   });
 
   it('rejects absolute paths and traversal that escapes the worktree', () => {
-    expect(resolveWorktreeRelativePath('/wt', '/etc/passwd')).toBeNull();
-    expect(resolveWorktreeRelativePath('/wt', '../outside')).toBeNull();
-    expect(resolveWorktreeRelativePath('/wt', '../../etc/passwd')).toBeNull();
-    expect(resolveWorktreeRelativePath('/wt', 'src/../../escape')).toBeNull();
-    expect(resolveWorktreeRelativePath('/wt', '')).toBeNull();
+    expect(resolveWorktreeRelativePath('/etc/passwd')).toBeNull();
+    expect(resolveWorktreeRelativePath('../outside')).toBeNull();
+    expect(resolveWorktreeRelativePath('../../etc/passwd')).toBeNull();
+    expect(resolveWorktreeRelativePath('src/../../escape')).toBeNull();
+    expect(resolveWorktreeRelativePath('')).toBeNull();
   });
 });
 
@@ -462,7 +533,7 @@ describe('listSessionChangedPaths', () => {
       [has('ls-files', '--others'), ok('untracked-new.ts' + NUL)],
     ];
     const membership = await listSessionChangedPaths({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       exec: fakeExec(routes),
     });
@@ -484,7 +555,7 @@ describe('listSessionChangedPaths', () => {
       [has('ls-files', '--others'), ok('./safe.ts' + NUL + '../escape.ts' + NUL)],
     ];
     const membership = await listSessionChangedPaths({
-      worktreePath: '/wt',
+      io,
       baseBranch: 'main',
       exec: fakeExec(routes),
     });
@@ -501,7 +572,7 @@ describe('listSessionChangedPaths', () => {
       [has('ls-files', '--others'), ok('')],
     ];
     await expect(
-      listSessionChangedPaths({ worktreePath: '/wt', baseBranch: 'main', exec: fakeExec(routes) }),
+      listSessionChangedPaths({ io, baseBranch: 'main', exec: fakeExec(routes) }),
     ).rejects.toThrow(GitCommandError);
   });
 });

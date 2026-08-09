@@ -32,6 +32,7 @@ import {
   shouldEnableAutoMergeForAutomation,
 } from './automation.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import { resolveFinalizeGateBase } from './resolve-base-branch.js';
 import { flakeGateBlocksAutoPush, parseFlakeGate } from './flake-recovery.js';
 import { sessionBlocksFinalize } from '../project-mode-guards.js';
@@ -243,9 +244,10 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
   });
   // Fail closed for auto-start: an unresolved authoritative base or an empty
   // net diff vs the real target must not silently kick off Finalize.
-  const committable = await getSessionCommittableChanges(ctx.session.worktree_path!, {
-    base: gateBase,
-  });
+  const committable = await getSessionCommittableChanges(
+    await sessionWorktreeIoFor(sessionId, ctx.session.worktree_path!),
+    { base: gateBase },
+  );
   if (!committable.ok) return;
 
   const latest = routeDeps.stmts.getLatestFinalizeRunForSession.get(sessionId) as
