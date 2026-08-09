@@ -188,6 +188,8 @@ if [[ -n "${UPLINK}" ]]; then
   # would survive as a growing NAT table across upgrades.
   iptables -t nat -C POSTROUTING -s "${SUBNET}" -o "${UPLINK}" -j MASQUERADE 2>/dev/null \
     || iptables -t nat -A POSTROUTING -s "${SUBNET}" -o "${UPLINK}" -j MASQUERADE
+  iptables -C FORWARD -i "${BRIDGE}" -o "${BRIDGE}" -j DROP 2>/dev/null \
+    || iptables -I FORWARD -i "${BRIDGE}" -o "${BRIDGE}" -j DROP
   iptables -C FORWARD -i "${BRIDGE}" -o "${UPLINK}" -j ACCEPT 2>/dev/null \
     || iptables -A FORWARD -i "${BRIDGE}" -o "${UPLINK}" -j ACCEPT
   iptables -C FORWARD -i "${UPLINK}" -o "${BRIDGE}" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \

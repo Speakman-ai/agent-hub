@@ -83,15 +83,18 @@ import {
 } from './replays/rum-lifecycle-reconciler.js';
 import config, { refreshShellPath } from './config.js';
 import {
+  beginSessionEnvSelection,
   getSessionEnvSelection,
   initSessionEnvSelection,
   logSessionEnvSelection,
+  whenSessionEnvSelectionReady,
 } from './session-env/sysbox-capability.js';
 import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
 import { probeFirecrackerCapability } from './session-env/firecracker/firecracker-capability.js';
 import { reconcileFirecrackerHost } from './session-env/firecracker/firecracker-slots.js';
 import {
   createFirecrackerHostIo,
+  stopStaleFirecrackerVmms,
   createHelperCapabilityDeps,
   resolveFirecrackerExecConfig,
 } from './session-env/firecracker/firecracker-privileged-exec.js';
@@ -1000,16 +1003,31 @@ const { devServerRuntime } = createPreviewRuntimes({
   // session already owns; on the host adapter there is no boundary, so the
   // runtime keeps its own env and its reserved-port allocator.
   resolveSharedEnv: async (sessionId) => {
+    await whenSessionEnvSelectionReady();
     if (getSessionEnvSelection().adapter === 'host') return null;
     return sessionEnvManager.ensure(sessionId);
   },
   devServerConfig: {
     urlBase: previewUrlBase,
-    // Per-entry proxy URL: primary keeps the root mount, extra ports
-    // resolve to their `/p/<internalPort>` sub-mount (path mode in prod;
-    // direct loopback host port locally).
-    portClientUrl: ({ sessionId, hostPort, internalPort, primary }) =>
-      resolveDevServerPortClientUrl(config.publicUrl, sessionId, hostPort, internalPort, primary),
+    // Per-entry proxy URL: primary keeps the root mount, extra ports resolve to
+    // their `/p/<internalPort>` sub-mount. Env-scoped dial targets never use
+    // localhost — the Hub proxy reaches container / guest IPs instead.
+    portClientUrl: ({ sessionId, hostPort, internalPort, primary }) => {
+      const selection = getSessionEnvSelection();
+      const routing = resolveSessionEnvPortRouting();
+      const useProxy =
+        selection.adapter === 'firecracker' ||
+        selection.adapter === 'sysbox' ||
+        (selection.adapter === 'container' && routing === 'container-ip');
+      return resolveDevServerPortClientUrl(
+        config.publicUrl,
+        sessionId,
+        hostPort,
+        internalPort,
+        primary,
+        { useProxy },
+      );
+    },
     ...(previewHealthHost
       ? { healthUrlBase: (port: number) => `http://${previewHealthHost}:${port}` }
       : {}),
@@ -1200,6 +1218,7 @@ const sessionEnvManager = new SessionEnvManager({
  * Returns null when the session has no worktree at all.
  */
 async function resolveSessionWorktreeIo(sessionId: string): Promise<SessionWorktreeIo | null> {
+  await whenSessionEnvSelectionReady();
   const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
   if (!session || session.deleted_at) return null;
   const worktreePath =
@@ -2202,6 +2221,9 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
   process.on('SIGHUP', () => markActiveSessionsForShutdown('SIGHUP'));
   installShutdownHandlers();
 
+  // Close the adapter-selection gate before accept() — early HTTP must wait
+  // for the probe rather than caching the host fallback.
+  beginSessionEnvSelection();
   server.listen(PORT, '0.0.0.0', () => {
     const actualPort = (server.address() as AddressInfo).port;
     setActualPort(actualPort);
@@ -2264,6 +2286,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
           // fails to create it.
           return reconcileFirecrackerHost({
             run: (argv) => createFirecrackerHostIo(firecrackerExec).run(argv),
+            stopStaleVmms: () => stopStaleFirecrackerVmms(firecrackerExec),
           }).then((result) => {
             if (result.deletedTaps.length > 0) {
               console.log(

@@ -14,8 +14,9 @@
  *      the Docker daemon.
  *   2. `selectSessionEnvAdapter()` maps the probes + the `sessionEnvAdapter`
  *      config (`auto` | `host` | `sysbox` | `container`) to a selection.
- *      `auto` walks the backends strongest-first: sysbox, then container,
- *      then host. A forced backend the probe rejects falls back to host with
+ *      `auto` walks sysbox, then host (microVM and privileged container
+ *      require an explicit config choice). A forced backend the probe rejects
+ *      falls back to host with
  *      a loud warning rather than producing a runtime that cannot spawn.
  *
  * Ordering matters because falling through to `host` means sessions have no
@@ -341,36 +342,19 @@ export function selectSessionEnvAdapter(
       probe,
     };
   }
-  // `auto`, strongest boundary first. A microVM leads because it is the only
-  // tier where the session gets its own kernel rather than a namespaced view
-  // of the host's.
-  if (firecracker.available) {
-    return {
-      adapter: 'firecracker',
-      mode,
-      forced: false,
-      fellBack: false,
-      reason: 'microVM backend available (auto)',
-      probe,
-    };
-  }
+  // `auto`: sysbox when the probe passes, else host. MicroVM and privileged
+  // container are never picked implicitly — agent CLIs still run host-side
+  // for auto, and privileged DinD is not a safe automatic fallback.
   if (probe.available) {
     return {
       adapter: 'sysbox',
       mode,
       forced: false,
       fellBack: false,
-      reason: `sysbox available (auto); microVM backend skipped: ${firecracker.reason}`,
-      probe,
-    };
-  }
-  if (containerUsable) {
-    return {
-      adapter: 'container',
-      mode,
-      forced: false,
-      fellBack: false,
-      reason: `sysbox unavailable (auto) — using the container backend: ${probe.missing.join('; ')}`,
+      reason:
+        `sysbox available (auto); microVM and privileged container skipped for safety ` +
+        `(microVM: ${firecracker.available ? 'available but not auto-selected' : firecracker.reason}; ` +
+        `container: ${containerUsable ? 'available but not auto-selected' : containerDetail})`,
       probe,
     };
   }
@@ -379,7 +363,9 @@ export function selectSessionEnvAdapter(
     mode,
     forced: false,
     fellBack: false,
-    reason: `sysbox unavailable (${probe.missing.join('; ')}) and container backend unusable (${containerDetail}) — using host adapter`,
+    reason:
+      `sysbox unavailable (${probe.missing.join('; ')}); microVM and privileged container ` +
+      `skipped for safety (microVM: ${firecracker.reason}; container: ${containerDetail}) — using host adapter`,
     probe,
   };
 }
@@ -412,6 +398,32 @@ export function logSessionEnvSelection(
 
 let cachedSelection: SessionEnvSelection | null = null;
 
+let selectionReadyResolve: (() => void) | null = null;
+/** Open until {@link beginSessionEnvSelection} closes the gate for a real boot. */
+let selectionReady: Promise<void> = Promise.resolve();
+
+function armSelectionReadyGate(): void {
+  selectionReady = new Promise<void>((resolve) => {
+    selectionReadyResolve = resolve;
+  });
+}
+
+function releaseSelectionReadyGate(): void {
+  selectionReadyResolve?.();
+  selectionReadyResolve = null;
+}
+
+/**
+ * Close the selection gate before the HTTP server accepts traffic. Pair with
+ * {@link initSessionEnvSelection} so early preview/worktree resolvers cannot
+ * observe the host fallback while the probe is still running.
+ */
+export function beginSessionEnvSelection(): void {
+  if (cachedSelection !== null) return;
+  if (selectionReadyResolve !== null) return;
+  armSelectionReadyGate();
+}
+
 /** Probe the host and cache the adapter selection. Called once at boot. */
 export async function initSessionEnvSelection(
   mode: SessionEnvAdapterMode,
@@ -419,9 +431,23 @@ export async function initSessionEnvSelection(
   container?: ContainerCapability,
   firecracker?: FirecrackerCapabilitySummary,
 ): Promise<SessionEnvSelection> {
-  const probe = await probeSysboxCapability(deps);
-  cachedSelection = selectSessionEnvAdapter(mode, probe, container, firecracker);
-  return cachedSelection;
+  try {
+    const probe = await probeSysboxCapability(deps);
+    cachedSelection = selectSessionEnvAdapter(mode, probe, container, firecracker);
+    return cachedSelection;
+  } finally {
+    releaseSelectionReadyGate();
+  }
+}
+
+/**
+ * Resolves once {@link initSessionEnvSelection} has cached a decision (or
+ * failed). Callers that choose a backend from {@link getSessionEnvSelection}
+ * must await this first on the boot path.
+ */
+export function whenSessionEnvSelectionReady(): Promise<void> {
+  if (cachedSelection !== null) return Promise.resolve();
+  return selectionReady;
 }
 
 /**
@@ -445,4 +471,7 @@ export function getSessionEnvSelection(): SessionEnvSelection {
 /** Test-only: clear the cached boot selection. */
 export function resetSessionEnvSelectionForTest(): void {
   cachedSelection = null;
+  // Leave the gate open — most unit tests never call begin/init.
+  releaseSelectionReadyGate();
+  selectionReady = Promise.resolve();
 }

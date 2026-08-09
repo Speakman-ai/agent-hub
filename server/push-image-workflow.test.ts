@@ -114,41 +114,64 @@ describe('ECR publish + push-image deploy contract', () => {
   });
 
   /**
-   * Runs the workflow's own BRANCH line, so this cannot drift from what CI does.
+   * Runs the workflow's tag sanitizer + BRANCH assignment, so this cannot drift
+   * from what CI does.
    */
-  function computeBranchTag(refName: string): string {
+  function computeBranchTag(refName: string, shaShort = 'abc123def456'): string {
     const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
-    const line = yml.match(/^\s*(BRANCH=.*)$/m);
-    expect(line?.[1], 'BRANCH assignment in the Compute tags step').toBeTruthy();
-    return execFileSync('bash', ['-c', `${line![1]}\nprintf '%s' "$BRANCH"`], {
+    const start = yml.indexOf('sanitize_docker_tag() {');
+    const branchLine = yml.indexOf('BRANCH="$(unique_docker_tag', start);
+    expect(start, 'sanitize_docker_tag in Compute tags step').toBeGreaterThan(-1);
+    expect(branchLine, 'BRANCH assignment in Compute tags step').toBeGreaterThan(-1);
+    const script = `${yml.slice(start, branchLine)}SHA_SHORT="${shaShort}"\nBRANCH="$(unique_docker_tag "\${GITHUB_REF_NAME:-main}" "$SHA_SHORT")"\nprintf '%s' "$BRANCH"`;
+    return execFileSync('bash', ['-c', script], {
       env: { ...process.env, GITHUB_REF_NAME: refName },
       encoding: 'utf8',
     });
   }
 
-  it('turns a slashed branch into a usable docker tag', () => {
+  it('turns a slashed branch into a usable docker tag with a SHA suffix', () => {
     // A docker tag admits only [A-Za-z0-9_.-]. Publishing `<branch>` verbatim
     // meant a `preview/...` ref failed the whole build on "invalid reference
     // format" before a single layer ran — invisible for as long as every deploy
     // branch happened to be flat.
     expect(computeBranchTag('preview/session-owned-environment')).toBe(
-      'preview-session-owned-environment',
+      'preview-session-owned-environment-abc123def456',
     );
   });
 
-  it('leaves an already-valid branch name alone', () => {
-    // The moving tag doubles as the rollout's digest assertion target, so
-    // rewriting a name that was already fine would point deploys at a tag that
-    // was never pushed.
-    expect(computeBranchTag('main')).toBe('main');
-    expect(computeBranchTag('devenv-session-owned')).toBe('devenv-session-owned');
+  it('suffixes already-valid branch names so sanitize collisions cannot collide', () => {
+    // feature/a and feature-a both sanitize to feature-a; the SHA keeps
+    // concurrent branch tags distinct.
+    expect(computeBranchTag('main')).toBe('main-abc123def456');
+    expect(computeBranchTag('feature/a')).toBe('feature-a-abc123def456');
+    expect(computeBranchTag('feature-a', 'deadbeef0001')).toBe('feature-a-deadbeef0001');
   });
 
   it('produces a tag docker will accept for any ref name', () => {
     const dockerTag = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
-    for (const ref of ['feat/a b', 'release/v1.2.3', 'user@host/fix', 'main']) {
+    for (const ref of ['feat/a b', 'release/v1.2.3', 'user@host/test', 'main']) {
       expect(computeBranchTag(ref), ref).toMatch(dockerTag);
     }
+  });
+
+  it('sanitizes invalid characters and collapses repeated dashes', () => {
+    expect(computeBranchTag('feat/@foo--bar')).toBe('feat-foo-bar-abc123def456');
+  });
+
+  it('truncates overlong ref names to 128 characters', () => {
+    const longRef = `release/${'a'.repeat(200)}`;
+    expect(computeBranchTag(longRef)).toHaveLength(128);
+  });
+
+  it('falls back to branch when sanitization leaves nothing usable', () => {
+    expect(computeBranchTag('@@@')).toBe('branch-abc123def456');
+  });
+
+  it('writes the deploy tag before restarting systemd', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toContain('/etc/agent-hub/image-tag');
+    expect(yml).toMatch(/tee \/etc\/agent-hub\/image-tag/);
   });
 
   it('prints the tag it rolled out in the run summary', () => {

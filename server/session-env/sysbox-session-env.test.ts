@@ -173,6 +173,21 @@ describeSessionEnvContract('sysbox adapter', {
 // ── Container lifecycle ───────────────────────────────────────────
 
 describe('SysboxSessionEnv container start', () => {
+  it('defers docker run under published-ports until ports are declared', async () => {
+    // SessionEnvManager.ensure → mountWorktree runs before preview mapPortsOut.
+    // Starting with an empty publish set makes later port declarations impossible.
+    const { env, runCalls } = makeEnv({ publishPorts: [] });
+    await env.mountWorktree();
+    expect(env.containerStarted).toBe(false);
+    expect(runCalls.some(isRunArgv)).toBe(false);
+
+    await env.mapPortsOut([5173]);
+    await env.ensureStarted();
+    expect(env.containerStarted).toBe(true);
+    const run = runCalls.find(isRunArgv)!;
+    expect(run.some((a) => a.startsWith('127.0.0.1:') && a.endsWith(':5173'))).toBe(true);
+  });
+
   it('starts once on mountWorktree: labeled graph volume, sysbox run, dockerd probe', async () => {
     const { env, runCalls } = makeEnv();
     const mount = await env.mountWorktree();
@@ -386,11 +401,11 @@ describe('SysboxSessionEnv.openPty', () => {
     expect(calls[0].cols).toBe(120);
     // undefined client env entries are dropped for node-pty.
     expect('SECRET' in calls[0].env).toBe(false);
-    expect(env.liveProcessCount()).toBe(1);
+    expect(env.liveProcessCount()).toBe(2);
     expect(pty.pid).toBe(7777);
 
     fixture.pty.emitExit(0);
-    expect(env.liveProcessCount()).toBe(0);
+    expect(env.liveProcessCount()).toBe(1);
   });
 });
 

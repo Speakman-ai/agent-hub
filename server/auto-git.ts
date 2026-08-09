@@ -521,11 +521,20 @@ export function hostCheckCommandTarget(cwd: string): CheckCommandTarget {
  * request/response, so there is no incremental stdout to forward. The command
  * still reaches the log, just all at once when it finishes.
  */
+export function truncateStreamOutput(output: string, maxBytes: number): string {
+  const buf = Buffer.from(output, 'utf8');
+  if (buf.length <= maxBytes) return output;
+  return buf.subarray(0, maxBytes).toString('utf8');
+}
+
 export function guestCheckCommandTarget(io: SessionWorktreeIo): CheckCommandTarget {
   return {
     runCommand: async (cmd, logKind, onChunk) => {
       const result = await io.exec(cmd, { timeoutMs: PRECOMMIT_CMD_TIMEOUT_MS });
-      const output = `${result.stdout}${result.stderr}`;
+      const output = truncateStreamOutput(
+        `${result.stdout}${result.stderr}`,
+        STREAM_OUTPUT_MAX_BYTES,
+      );
       if (output) onChunk?.(output);
       if (result.exitCode === 0) return;
       const code = result.exitCode;
@@ -1646,7 +1655,10 @@ async function commitDirtyTreeInSessionEnv(args: {
 
   // Pre-commit commands may have rewritten the tree; re-stage as the host path does.
   prLog('$ git add -A\n');
-  await io.git(['add', '-A']);
+  const restaged = await io.git(['add', '-A']);
+  if (restaged.exitCode !== 0) {
+    return { ok: false, error: restaged.stderr.trim() || 'git add -A failed in the session env' };
+  }
 
   prLog('$ git commit\n');
   const committed = await io.git(['commit', '-m', message]);
@@ -1722,7 +1734,7 @@ async function commitPushAndCreatePR(
   }
 
   const source = await acquireFinalizeSource({
-    runId: `autogit-${sessionId}`,
+    runId: `autogit-${sessionId}-${Date.now()}`,
     sessionId,
     worktreePath: effectiveCwd,
     branch: changes.branch,

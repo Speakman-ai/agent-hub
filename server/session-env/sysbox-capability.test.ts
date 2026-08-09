@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
+  beginSessionEnvSelection,
   coerceSessionEnvAdapterMode,
   getSessionEnvSelection,
   initSessionEnvSelection,
@@ -9,6 +10,7 @@ import {
   probeSysboxCapability,
   resetSessionEnvSelectionForTest,
   selectSessionEnvAdapter,
+  whenSessionEnvSelectionReady,
   type SysboxProbeDeps,
   type SysboxProbeResult,
 } from './sysbox-capability.js';
@@ -69,20 +71,19 @@ describe('selectSessionEnvAdapter — microVM tier', () => {
   const vmReady = { available: true, reason: '' };
   const noVm = { available: false, reason: '/dev/kvm is missing' };
 
-  it('auto picks the microVM over sysbox and container', () => {
+  it('auto picks sysbox over microVM and explains why microVM was skipped', () => {
     const selection = selectSessionEnvAdapter(
       'auto',
       withSysbox,
       { dockerAvailable: true, routing: 'container-ip' },
       vmReady,
     );
-    expect(selection.adapter).toBe('firecracker');
+    expect(selection.adapter).toBe('sysbox');
+    expect(selection.reason).toMatch(/skipped for safety/);
     expect(selection.fellBack).toBe(false);
   });
 
   it('explains in the boot log why the microVM was skipped', () => {
-    // Otherwise an operator who enabled nested virtualization has no way to
-    // tell a failed probe from a config that never asked for it.
     const selection = selectSessionEnvAdapter('auto', withSysbox, noContainer, noVm);
     expect(selection.adapter).toBe('sysbox');
     expect(selection.reason).toContain('/dev/kvm is missing');
@@ -298,16 +299,14 @@ describe('selectSessionEnvAdapter', () => {
 const usableContainer = { dockerAvailable: true, routing: 'container-ip' } as const;
 
 describe('selectSessionEnvAdapter — container backend', () => {
-  it('auto prefers the container backend over host when sysbox is missing', () => {
-    // The behavior this replaces: any host without sysbox ran every session
-    // directly on the Hub, sharing its filesystem, ports, and process table.
-    // A weaker boundary beats no boundary.
+  it('auto declines the container backend even when sysbox is missing', () => {
     const sel = selectSessionEnvAdapter(
       'auto',
       probeResult(false, ['binary: sysbox-runc not found']),
       usableContainer,
     );
-    expect(sel.adapter).toBe('container');
+    expect(sel.adapter).toBe('host');
+    expect(sel.reason).toMatch(/skipped for safety/);
     expect(sel.fellBack).toBe(false);
   });
 
@@ -317,15 +316,12 @@ describe('selectSessionEnvAdapter — container backend', () => {
   });
 
   it('auto declines a container that would have to publish ports', () => {
-    // Without container-IP routing the backend reintroduces the shared host
-    // port pool and the declare-before-start rule it exists to remove, so it
-    // is not an automatic upgrade over host.
     const sel = selectSessionEnvAdapter('auto', probeResult(false, ['x']), {
       dockerAvailable: true,
       routing: 'published-ports',
     });
     expect(sel.adapter).toBe('host');
-    expect(sel.reason).toContain('container backend unusable');
+    expect(sel.reason).toMatch(/skipped for safety/);
   });
 
   it('auto falls to host when docker is unusable', () => {
@@ -428,5 +424,18 @@ describe('initSessionEnvSelection / getSessionEnvSelection', () => {
     const sel = await initSessionEnvSelection('auto', makeDeps());
     expect(sel.adapter).toBe('sysbox');
     expect(getSessionEnvSelection()).toBe(sel);
+  });
+
+  it('blocks whenSessionEnvSelectionReady until init finishes after begin', async () => {
+    beginSessionEnvSelection();
+    let ready = false;
+    const waiting = whenSessionEnvSelectionReady().then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    await initSessionEnvSelection('auto', makeDeps());
+    await waiting;
+    expect(ready).toBe(true);
   });
 });

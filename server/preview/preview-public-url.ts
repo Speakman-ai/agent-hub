@@ -59,9 +59,10 @@ export function resolveDevServerPortClientUrl(
   hostPort: number,
   internalPort: number,
   primary: boolean,
+  opts?: { useProxy?: boolean },
 ): string {
   const trimmed = typeof publicUrl === 'string' ? publicUrl.trim() : '';
-  if (!trimmed) return `http://localhost:${hostPort}`;
+  if (!trimmed && !opts?.useProxy) return `http://localhost:${hostPort}`;
   return devServerPortProxyPath(sessionId, internalPort, primary);
 }
 

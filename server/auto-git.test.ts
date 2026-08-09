@@ -51,6 +51,7 @@ import {
   MAX_GIT_COMMIT_MESSAGE_CHARS,
   runShellCommandStreaming,
   STREAM_OUTPUT_MAX_BYTES,
+  truncateStreamOutput,
   normalizeCommitInputs,
   pickPrTitleFromCommits,
   resolveUserGithubToken,
@@ -441,6 +442,17 @@ describe('guestCheckCommandTarget', () => {
       chunks.push(c),
     );
     expect(chunks.join('')).toBe('checked 12 files\none warning\n');
+  });
+
+  it('truncates oversized command output before forwarding to the log', async () => {
+    const io = fakeEnvOwnedIo({
+      exec: () => ({ stdout: 'x'.repeat(STREAM_OUTPUT_MAX_BYTES + 100), stderr: '' }),
+    });
+    const chunks: string[] = [];
+    await guestCheckCommandTarget(io).runCommand('npm run lint', 'pre_commit', (c) =>
+      chunks.push(c),
+    );
+    expect(Buffer.byteLength(chunks.join(''), 'utf8')).toBe(STREAM_OUTPUT_MAX_BYTES);
   });
 
   it('reports a failing check as auto-heal eligible', async () => {

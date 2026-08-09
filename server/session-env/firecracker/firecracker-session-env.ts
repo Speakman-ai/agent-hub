@@ -380,7 +380,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
 
   liveProcessCount(): number {
-    return this.live.size;
+    return this.live.size + (this.#started ? 1 : 0);
   }
 
   onDispose(cb: () => void): () => void {
@@ -428,6 +428,16 @@ export class FirecrackerSessionEnv implements SessionEnv {
 
     try {
       await this.io.mkdirp(this.vmDir);
+      // A previous VMM for this vm id may still hold api.sock / vsock.sock or
+      // the tap even though this process is gone — stop it before unlinking.
+      try {
+        await this.stopVmm({ vmId: this.vmId, pid: this.#vmProcess?.pid });
+      } catch (err) {
+        this.logger.warn(
+          `[firecracker] best-effort stop of stale VMM ${this.vmId} failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       // Firecracker *binds* these two paths and refuses to start if either
       // already exists. A vm id is derived from the session id, so a session
       // whose VMM died without unlinking them — a host reboot, an OOM kill —
