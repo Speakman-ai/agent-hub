@@ -19,6 +19,7 @@ import {
   FIRECRACKER_MAX_SLOT,
   FIRECRACKER_MIN_SLOT,
   FIRECRACKER_SUBNET_PREFIX,
+  firecrackerSubnetCidr,
 } from './firecracker-vm-args.js';
 import type { FirecrackerSlotPool } from './firecracker-session-env.js';
 
@@ -110,17 +111,192 @@ export interface ReconcileFirecrackerHostDeps {
 
 export interface ReconcileFirecrackerHostResult {
   bridgeReady: boolean;
+  /** False when guests would have no outbound path (no uplink / NAT failed). */
+  natReady: boolean;
   deletedTaps: string[];
 }
 
 /**
- * Boot sweep: make the bridge exist and delete every session tap this host
- * still carries.
+ * Pull the egress interface out of `ip route get <addr>` output.
+ * Returns null when the host has no usable default route.
+ */
+export function parseUplinkDev(ipRouteGetOutput: string): string | null {
+  const match = /\bdev\s+(\S+)/.exec(ipRouteGetOutput);
+  const dev = match?.[1];
+  return dev && dev.length > 0 ? dev : null;
+}
+
+export interface GuestNatArgv {
+  /** Always run (sysctl + MASQUERADE + FORWARD). Failures mark NAT not ready. */
+  required: string[][];
+  /**
+   * Best-effort DOCKER-USER accepts. Absent when Docker is not installed
+   * (no DOCKER-USER chain); failures are logged but do not fail NAT.
+   */
+  optional: string[][];
+}
+
+/**
+ * iptables `-C` / `-A` (or `-I`) pairs that NAT the guest subnet behind the
+ * host uplink and allow FORWARD both ways. Without these, guests resolve
+ * nothing and `apt-get` / `npm` / `pip` die with "Temporary failure resolving …".
+ *
+ * The one-time host setup script installs the same rules, but Docker restarts
+ * and image rollouts routinely leave the bridge up with no MASQUERADE — so the
+ * Hub boot sweep re-applies them every start.
+ */
+export function buildEnsureGuestNatArgv(uplink: string): GuestNatArgv {
+  const subnet = firecrackerSubnetCidr();
+  const bridge = FIRECRACKER_BRIDGE_NAME;
+  const required: string[][] = [
+    ['sysctl', '-qw', 'net.ipv4.ip_forward=1'],
+    ['iptables', '-t', 'nat', '-C', 'POSTROUTING', '-s', subnet, '-o', uplink, '-j', 'MASQUERADE'],
+    ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-s', subnet, '-o', uplink, '-j', 'MASQUERADE'],
+    ['iptables', '-C', 'FORWARD', '-i', bridge, '-o', uplink, '-j', 'ACCEPT'],
+    ['iptables', '-A', 'FORWARD', '-i', bridge, '-o', uplink, '-j', 'ACCEPT'],
+    [
+      'iptables',
+      '-C',
+      'FORWARD',
+      '-i',
+      uplink,
+      '-o',
+      bridge,
+      '-m',
+      'state',
+      '--state',
+      'RELATED,ESTABLISHED',
+      '-j',
+      'ACCEPT',
+    ],
+    [
+      'iptables',
+      '-A',
+      'FORWARD',
+      '-i',
+      uplink,
+      '-o',
+      bridge,
+      '-m',
+      'state',
+      '--state',
+      'RELATED,ESTABLISHED',
+      '-j',
+      'ACCEPT',
+    ],
+  ];
+  // DOCKER-USER is evaluated before Docker's isolation drops; ACCEPT here
+  // keeps guest traffic from being collateral damage of docker0 rules.
+  const optional: string[][] = [
+    ['iptables', '-C', 'DOCKER-USER', '-i', bridge, '-j', 'ACCEPT'],
+    ['iptables', '-I', 'DOCKER-USER', '-i', bridge, '-j', 'ACCEPT'],
+    [
+      'iptables',
+      '-C',
+      'DOCKER-USER',
+      '-o',
+      bridge,
+      '-m',
+      'conntrack',
+      '--ctstate',
+      'RELATED,ESTABLISHED',
+      '-j',
+      'ACCEPT',
+    ],
+    [
+      'iptables',
+      '-I',
+      'DOCKER-USER',
+      '-o',
+      bridge,
+      '-m',
+      'conntrack',
+      '--ctstate',
+      'RELATED,ESTABLISHED',
+      '-j',
+      'ACCEPT',
+    ],
+  ];
+  return { required, optional };
+}
+
+async function ensureIptablesRule(
+  run: ReconcileFirecrackerHostDeps['run'],
+  checkArgv: string[],
+  addArgv: string[],
+  logger: { warn: (msg: string) => void },
+  opts: { warnOnFailure: boolean },
+): Promise<boolean> {
+  const check = await run(checkArgv);
+  if (check.ok) return true;
+  const add = await run(addArgv);
+  if (add.ok) return true;
+  if (opts.warnOnFailure) {
+    logger.warn(
+      `[firecracker] failed to install NAT rule via \`${addArgv.join(' ')}\`: ${add.stderr.trim()}`,
+    );
+  }
+  return false;
+}
+
+async function ensureIptablesRulePairs(
+  run: ReconcileFirecrackerHostDeps['run'],
+  pairs: string[][],
+  logger: { warn: (msg: string) => void },
+  opts: { warnOnFailure: boolean },
+): Promise<boolean> {
+  let ok = true;
+  for (let i = 0; i + 1 < pairs.length; i += 2) {
+    const installed = await ensureIptablesRule(run, pairs[i]!, pairs[i + 1]!, logger, opts);
+    if (!installed) ok = false;
+  }
+  return ok;
+}
+
+/**
+ * Enable ip_forward + MASQUERADE/FORWARD for the guest subnet.
+ * Idempotent: each iptables rule is `-C`'d before `-A`/`-I`.
+ */
+export async function ensureFirecrackerGuestNat(
+  deps: ReconcileFirecrackerHostDeps,
+): Promise<boolean> {
+  const logger = deps.logger ?? { warn: (msg: string) => console.warn(msg) };
+  const route = await deps.run(['ip', '-o', 'route', 'get', '1.1.1.1']);
+  const uplink = parseUplinkDev(route.ok ? route.stdout : '');
+  if (!uplink) {
+    logger.warn(
+      '[firecracker] no default uplink — guests will have no outbound network ' +
+        `(ip route get 1.1.1.1: ${(route.stderr || route.stdout).trim() || 'empty'})`,
+    );
+    return false;
+  }
+
+  const { required, optional } = buildEnsureGuestNatArgv(uplink);
+  const sysctl = await deps.run(required[0]!);
+  if (!sysctl.ok) {
+    logger.warn(`[firecracker] failed to enable ip_forward: ${sysctl.stderr.trim()}`);
+  }
+
+  const requiredOk = await ensureIptablesRulePairs(deps.run, required.slice(1), logger, {
+    warnOnFailure: true,
+  });
+  // Optional DOCKER-USER rules: chain may not exist when Docker is absent.
+  await ensureIptablesRulePairs(deps.run, optional, logger, { warnOnFailure: false });
+  return requiredOk;
+}
+
+/**
+ * Boot sweep: make the bridge exist, NAT the guest subnet for egress, and
+ * delete every session tap this host still carries.
  *
  * Leftover taps are not cosmetic. A tap whose VM is gone keeps its name
  * occupied, so the first session after a restart fails to create `ahfct3` and
  * the whole backend looks broken. Deleting them here is what makes a restart
  * a clean slate — the same role `sysbox-reconcile.ts` plays for containers.
+ *
+ * NAT is re-applied every boot for the same reason: Docker / host rollouts
+ * leave `ahfc0` up while dropping the MASQUERADE rule, which surfaces as
+ * `apt-get` exit 100 ("Temporary failure resolving …") on the first preview.
  */
 export async function reconcileFirecrackerHost(
   deps: ReconcileFirecrackerHostDeps,
@@ -140,10 +316,12 @@ export async function reconcileFirecrackerHost(
     }
   }
 
+  const natReady = await ensureFirecrackerGuestNat(deps);
+
   const listed = await deps.run(['ip', '-o', 'link', 'show']);
   if (!listed.ok) {
     logger.warn(`[firecracker] could not list host interfaces: ${listed.stderr.trim()}`);
-    return { bridgeReady, deletedTaps: [] };
+    return { bridgeReady, natReady, deletedTaps: [] };
   }
 
   const deletedTaps: string[] = [];
@@ -152,5 +330,5 @@ export async function reconcileFirecrackerHost(
     if (res.ok) deletedTaps.push(tap);
     else logger.warn(`[firecracker] failed to delete stale tap ${tap}: ${res.stderr.trim()}`);
   }
-  return { bridgeReady, deletedTaps };
+  return { bridgeReady, natReady, deletedTaps };
 }

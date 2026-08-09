@@ -30,6 +30,12 @@ export const FIRECRACKER_SUBNET_PREFIX = 16;
 export const FIRECRACKER_SUBNET_BASE = [172, 30, 0, 0] as const;
 export const FIRECRACKER_GATEWAY_IP = '172.30.0.1';
 
+/** Guest subnet CIDR used for NAT masquerade and FORWARD rules. */
+export function firecrackerSubnetCidr(): string {
+  const [a, b, c, d] = FIRECRACKER_SUBNET_BASE;
+  return `${a}.${b}.${c}.${d}/${FIRECRACKER_SUBNET_PREFIX}`;
+}
+
 /**
  * Slots below this are reserved: 0/1 collide with the network address and the
  * gateway, and vsock reserves CIDs 0-2 (2 is the host). Starting at 3 keeps

@@ -172,9 +172,15 @@ fi
 ip addr replace "${BRIDGE_CIDR}" dev "${BRIDGE}"
 ip link set "${BRIDGE}" up
 
-# Guests need outbound access (npm install, docker pull, pip). Masquerade
+# Guests need outbound access (npm install, docker pull, pip, apt). Masquerade
 # their subnet behind the host's primary interface.
-UPLINK="$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)"
+#
+# The Hub also re-applies these rules on every boot sweep
+# (`reconcileFirecrackerHost` → `ensureFirecrackerGuestNat`). That matters
+# because Docker restarts and AMI rollouts often leave `ahfc0` up while
+# dropping the MASQUERADE rule — the failure mode is preview
+# `apt-get exited with code 100` / "Temporary failure resolving …".
+UPLINK="$(ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
 if [[ -n "${UPLINK}" ]]; then
   sysctl -qw net.ipv4.ip_forward=1
   printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-agent-hub-firecracker.conf
@@ -186,11 +192,18 @@ if [[ -n "${UPLINK}" ]]; then
     || iptables -A FORWARD -i "${BRIDGE}" -o "${UPLINK}" -j ACCEPT
   iptables -C FORWARD -i "${UPLINK}" -o "${BRIDGE}" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
     || iptables -A FORWARD -i "${UPLINK}" -o "${BRIDGE}" -m state --state RELATED,ESTABLISHED -j ACCEPT
+  # Prefer DOCKER-USER when present so Docker's isolation chains cannot drop
+  # guest egress as collateral of docker0 rules.
+  if iptables -nL DOCKER-USER >/dev/null 2>&1; then
+    iptables -C DOCKER-USER -i "${BRIDGE}" -j ACCEPT 2>/dev/null \
+      || iptables -I DOCKER-USER -i "${BRIDGE}" -j ACCEPT
+    iptables -C DOCKER-USER -o "${BRIDGE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
+      || iptables -I DOCKER-USER -o "${BRIDGE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  fi
   echo "==> NAT configured: ${SUBNET} -> ${UPLINK}"
 else
   echo "warning: no default route found; guests will have no outbound network" >&2
 fi
-
 # ── 5. Directories ────────────────────────────────────────────────
 # Recursive in both branches. The Hub creates a directory per VM under
 # VM_SCRATCH, so it needs write access to the tree, not just the top level —
