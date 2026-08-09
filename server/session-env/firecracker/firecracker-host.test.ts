@@ -4,11 +4,45 @@ import {
   InMemorySlotPool,
   SlotPoolExhaustedError,
   buildEnsureBridgeArgv,
+  buildEnsureGuestNatArgv,
   parseSessionTapNames,
+  parseUplinkDev,
   reconcileFirecrackerHost,
 } from './firecracker-slots.js';
-import { FIRECRACKER_MIN_SLOT } from './firecracker-vm-args.js';
+import { FIRECRACKER_MIN_SLOT, firecrackerSubnetCidr } from './firecracker-vm-args.js';
 
+function mockReconcileRun(
+  opts: {
+    linkStdout?: string;
+    routeStdout?: string;
+    /** Argv prefixes that should fail (e.g. bridge add). */
+    failWhen?: (argv: string[]) => { ok: false; stderr: string } | null;
+  } = {},
+) {
+  return vi.fn(async (argv: string[]) => {
+    const fail = opts.failWhen?.(argv);
+    if (fail) return { ...fail, stdout: '' };
+    if (argv[0] === 'ip' && argv[1] === '-o' && argv[2] === 'route') {
+      return {
+        ok: true,
+        stdout: opts.routeStdout ?? '1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5\n',
+        stderr: '',
+      };
+    }
+    if (argv[0] === 'ip' && argv[1] === '-o' && argv[2] === 'link') {
+      return {
+        ok: true,
+        stdout: opts.linkStdout ?? '5: ahfct3: <UP>\n6: ahfct9: <UP>',
+        stderr: '',
+      };
+    }
+    // iptables -C "rule missing" → not ok, so the -A/-I path runs.
+    if (argv[0] === 'iptables' && argv.includes('-C')) {
+      return { ok: false, stdout: '', stderr: 'No chain/target/match by that name' };
+    }
+    return { ok: true, stdout: '', stderr: '' };
+  });
+}
 const okProbe = {
   platform: 'linux' as NodeJS.Platform,
   isCharacterDevice: () => true,
@@ -125,32 +159,86 @@ describe('parseSessionTapNames', () => {
   });
 });
 
+describe('parseUplinkDev', () => {
+  it('reads the egress interface from ip route get output', () => {
+    expect(parseUplinkDev('1.1.1.1 via 10.20.150.1 dev enp39s0 src 10.20.150.182 uid 0')).toBe(
+      'enp39s0',
+    );
+  });
+
+  it('returns null when there is no uplink', () => {
+    expect(parseUplinkDev('')).toBeNull();
+    expect(parseUplinkDev('RTNETLINK answers: Network is unreachable')).toBeNull();
+  });
+});
+
+describe('buildEnsureGuestNatArgv', () => {
+  it('NATs the guest subnet behind the uplink and opens FORWARD', () => {
+    const { required } = buildEnsureGuestNatArgv('enp39s0');
+    expect(required[0]).toEqual(['sysctl', '-qw', 'net.ipv4.ip_forward=1']);
+    expect(required).toContainEqual([
+      'iptables',
+      '-t',
+      'nat',
+      '-A',
+      'POSTROUTING',
+      '-s',
+      firecrackerSubnetCidr(),
+      '-o',
+      'enp39s0',
+      '-j',
+      'MASQUERADE',
+    ]);
+    expect(required).toContainEqual([
+      'iptables',
+      '-A',
+      'FORWARD',
+      '-i',
+      'ahfc0',
+      '-o',
+      'enp39s0',
+      '-j',
+      'ACCEPT',
+    ]);
+  });
+});
+
 describe('reconcileFirecrackerHost', () => {
-  it('creates the bridge and deletes stale taps', async () => {
-    const run = vi.fn(async (argv: string[]) => {
-      if (argv[1] === '-o') {
-        return { ok: true, stdout: '5: ahfct3: <UP>\n6: ahfct9: <UP>', stderr: '' };
-      }
-      return { ok: true, stdout: '', stderr: '' };
-    });
+  it('creates the bridge, installs guest NAT, and deletes stale taps', async () => {
+    const run = mockReconcileRun();
     const result = await reconcileFirecrackerHost({ run });
     expect(result.bridgeReady).toBe(true);
+    expect(result.natReady).toBe(true);
     expect(result.deletedTaps).toEqual(['ahfct3', 'ahfct9']);
     expect(run).toHaveBeenCalledWith(['ip', 'link', 'del', 'ahfct3']);
+    expect(run).toHaveBeenCalledWith([
+      'iptables',
+      '-t',
+      'nat',
+      '-A',
+      'POSTROUTING',
+      '-s',
+      '172.30.0.0/16',
+      '-o',
+      'eth0',
+      '-j',
+      'MASQUERADE',
+    ]);
   });
 
   it('treats an already-existing bridge as success', async () => {
     // Every boot after the first hits this path; warning on it would train
     // operators to ignore the log line that matters.
-    const run = vi.fn(async (argv: string[]) => {
-      if (argv[1] === 'link' && argv[2] === 'add') {
-        return { ok: false, stdout: '', stderr: 'RTNETLINK answers: File exists' };
-      }
-      return { ok: true, stdout: '', stderr: '' };
+    const run = mockReconcileRun({
+      failWhen: (argv) =>
+        argv[1] === 'link' && argv[2] === 'add'
+          ? { ok: false, stderr: 'RTNETLINK answers: File exists' }
+          : null,
     });
     const warn = vi.fn();
     const result = await reconcileFirecrackerHost({ run, logger: { warn } });
     expect(result.bridgeReady).toBe(true);
+    expect(result.natReady).toBe(true);
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -159,7 +247,29 @@ describe('reconcileFirecrackerHost', () => {
     const warn = vi.fn();
     const result = await reconcileFirecrackerHost({ run, logger: { warn } });
     expect(result.bridgeReady).toBe(false);
+    expect(result.natReady).toBe(false);
     expect(warn).toHaveBeenCalled();
+  });
+
+  it('marks NAT not ready when the host has no default uplink', async () => {
+    const run = mockReconcileRun({ routeStdout: '' });
+    // Force route get to fail so parseUplinkDev sees nothing usable.
+    run.mockImplementation(async (argv: string[]) => {
+      if (argv[0] === 'ip' && argv[2] === 'route') {
+        return { ok: false, stdout: '', stderr: 'Network is unreachable' };
+      }
+      if (argv[0] === 'ip' && argv[2] === 'link') {
+        return { ok: true, stdout: '', stderr: '' };
+      }
+      if (argv[0] === 'iptables' && argv.includes('-C')) {
+        return { ok: false, stdout: '', stderr: 'missing' };
+      }
+      return { ok: true, stdout: '', stderr: '' };
+    });
+    const warn = vi.fn();
+    const result = await reconcileFirecrackerHost({ run, logger: { warn } });
+    expect(result.natReady).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no default uplink'));
   });
 
   it('builds the bridge with the gateway address the guests are told to use', () => {
