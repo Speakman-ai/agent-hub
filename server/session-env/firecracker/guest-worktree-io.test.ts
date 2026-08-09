@@ -194,9 +194,22 @@ describe('GuestWorktreeIo.stat', () => {
   });
 
   it('reports a missing path as absent rather than throwing', async () => {
-    const { io } = makeIo(() => ({ stdout: '', stderr: 'No such file', exitCode: 1 }));
+    const { io } = makeIo(() => ({
+      stdout: '',
+      stderr: "stat: cannot statx 'nope.yaml': No such file or directory",
+      exitCode: 1,
+    }));
     await expect(io.stat('nope.yaml')).resolves.toBeNull();
     await expect(io.exists('nope.yaml')).resolves.toBe(false);
+  });
+
+  it('throws when stat fails for a reason other than a missing path', async () => {
+    const { io } = makeIo(() => ({
+      stdout: '',
+      stderr: 'stat: permission denied',
+      exitCode: 1,
+    }));
+    await expect(io.stat('secret.yaml')).rejects.toThrow(/permission denied/);
   });
 
   it('reports a present path as existing', async () => {
@@ -238,8 +251,12 @@ describe('parseStatOutput', () => {
 });
 
 describe('GuestWorktreeIo.stat / exists', () => {
-  it('returns null rather than throwing when stat fails', async () => {
-    const { io } = makeIo(() => ({ stdout: '', stderr: 'No such file', exitCode: 1 }));
+  it('returns null rather than throwing when the path is missing', async () => {
+    const { io } = makeIo(() => ({
+      stdout: '',
+      stderr: 'No such file or directory',
+      exitCode: 1,
+    }));
     await expect(io.stat('missing.txt')).resolves.toBeNull();
     await expect(io.exists('missing.txt')).resolves.toBe(false);
   });

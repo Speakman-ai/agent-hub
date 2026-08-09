@@ -174,21 +174,31 @@ function runSourcePath(run: FinalizeRunRow, session: SessionRow): string | null 
   return run.worktree_path ?? session.worktree_path ?? null;
 }
 
+type SessionMoveCheck =
+  | { status: 'shared' }
+  | { status: 'ok'; moved: boolean }
+  | { status: 'unverified'; reason: string };
+
 /**
  * Did the session commit more work after this run materialized its source?
  *
  * The plain head comparison the push gate makes cannot answer this for a
  * staged run: the staging copy is frozen at the validated commit, so it always
  * matches. Ask the session directly instead, against the head recorded when
- * the copy was taken. Only meaningful for a staged run; a shared one returns
- * false and keeps the existing gate as the sole check.
+ * the copy was taken.
+ *
+ * Fail closed: an unreadable materialization marker, guest HEAD failure, or
+ * thrown source lookup is not proof the session stood still — treating it as
+ * "ok to push" can ship a stale staging checkout.
  */
 async function sessionMovedSinceMaterialize(
   run: FinalizeRunRow,
   session: SessionRow,
   sourcePath: string,
-): Promise<boolean> {
-  if (!session.worktree_path || sourcePath === session.worktree_path) return false;
+): Promise<SessionMoveCheck> {
+  if (!session.worktree_path || sourcePath === session.worktree_path) {
+    return { status: 'shared' };
+  }
   try {
     const source = await acquireFinalizeSource({
       runId: run.id,
@@ -197,15 +207,28 @@ async function sessionMovedSinceMaterialize(
       branch: session.worktree_branch ?? 'HEAD',
     });
     const materializedFrom = await source.sessionHeadAtMaterialize();
-    if (!materializedFrom) return false;
+    if (!materializedFrom) {
+      return {
+        status: 'unverified',
+        reason: 'staging checkout has no recorded session HEAD from materialize',
+      };
+    }
     const io = await sessionWorktreeIoFor(session.id, session.worktree_path);
     const head = await io.git(['rev-parse', 'HEAD']);
-    if (head.exitCode !== 0) return false;
-    return head.stdout.trim() !== materializedFrom;
-  } catch {
-    // A source we cannot inspect is not evidence the session moved; the
-    // regular gate and the force-with-lease on push still stand behind us.
-    return false;
+    if (head.exitCode !== 0) {
+      return {
+        status: 'unverified',
+        reason:
+          `could not read current session HEAD: ` +
+          (head.stderr.trim() || head.stdout.trim() || `exit ${head.exitCode}`),
+      };
+    }
+    return { status: 'ok', moved: head.stdout.trim() !== materializedFrom };
+  } catch (err) {
+    return {
+      status: 'unverified',
+      reason: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -592,15 +615,34 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
   }
 
   if (!force) {
-    const moved = await sessionMovedSinceMaterialize(run, session, sourcePath);
-    if (moved) {
-      return {
-        ok: false,
-        httpStatus: 409,
-        error: 'head_sha_moved',
-        message:
-          'HEAD changed since checks passed. Click Finalize Code Changes again to re-run review and tests.',
-      };
+    const moveCheck = await sessionMovedSinceMaterialize(run, session, sourcePath);
+    switch (moveCheck.status) {
+      case 'shared':
+        break;
+      case 'ok':
+        if (moveCheck.moved) {
+          return {
+            ok: false,
+            httpStatus: 409,
+            error: 'head_sha_moved',
+            message:
+              'HEAD changed since checks passed. Click Finalize Code Changes again to re-run review and tests.',
+          };
+        }
+        break;
+      case 'unverified':
+        return {
+          ok: false,
+          httpStatus: 409,
+          error: 'session_head_unverified',
+          message:
+            `Could not verify the session still matches the materialized checkout ` +
+            `(${moveCheck.reason}). Click Finalize Code Changes again.`,
+        };
+      default: {
+        const _exhaustive: never = moveCheck;
+        return _exhaustive;
+      }
     }
   }
 

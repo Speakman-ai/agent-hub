@@ -42,6 +42,13 @@ const GUEST_BUNDLE_RELATIVE_PATH = '.git/agent-hub-finalize-source.bundle';
 /** Local git config key recording the session HEAD a staging clone came from. */
 const SOURCE_HEAD_CONFIG_KEY = 'agentHub.sourceHead';
 
+/**
+ * Temporary ref naming the pinned commit we bundle. A bare SHA tip makes some
+ * git versions refuse with "empty bundle"; a named ref is unambiguous for both
+ * `bundle create` and the host-side `fetch`.
+ */
+const PINNED_TIP_REF = 'refs/agent-hub/finalize-tip';
+
 async function pathExists(p: string): Promise<boolean> {
   try {
     await access(p);
@@ -138,6 +145,11 @@ class StagedSource implements FinalizeSource {
     const bundlePath = path.join(path.dirname(this.path), `${path.basename(this.path)}.bundle`);
     await mkdir(path.dirname(bundlePath), { recursive: true });
     try {
+      // Pin the tip *before* bundling. A concurrent guest commit after the
+      // bundle is cut but before we record sourceHead would otherwise mark
+      // the newer SHA as validated while staging still holds the older pack.
+      const pinnedHead = await this.#requireSessionHead();
+
       // Prefer a thin bundle applied onto the host seed (or origin). A
       // full-branch bundle from a shallow session is not self-contained —
       // `git clone` of it fails with "remote did not send all necessary
@@ -148,17 +160,17 @@ class StagedSource implements FinalizeSource {
       const seed = await this.#resolveCloneSeed(originUrl);
       if (base && seed) {
         try {
-          await this.#materializeFromThinBundle(base, seed, bundlePath);
+          await this.#materializeFromThinBundle(base, seed, bundlePath, pinnedHead);
         } catch (err) {
           console.warn(
             `[finalize-source] thin materialize of ${this.branch} failed ` +
               `(${err instanceof Error ? err.message : String(err)}); ` +
               `falling back to a full-branch bundle`,
           );
-          await this.#materializeFromFullBundle(bundlePath);
+          await this.#materializeFromFullBundle(bundlePath, pinnedHead);
         }
       } else {
-        await this.#materializeFromFullBundle(bundlePath);
+        await this.#materializeFromFullBundle(bundlePath, pinnedHead);
       }
 
       // Point origin at the real remote so the rebase can fetch the base
@@ -187,22 +199,41 @@ class StagedSource implements FinalizeSource {
         ]).catch(() => {});
       }
 
+      const headAfter = await this.#requireSessionHead();
+      if (headAfter !== pinnedHead) {
+        throw new Error(
+          `session HEAD moved during materialize (${pinnedHead.slice(0, 12)} → ` +
+            `${headAfter.slice(0, 12)}); re-run Finalize`,
+        );
+      }
+      const stagedHead = await hostGit(this.path, ['rev-parse', 'HEAD']);
+      if (stagedHead !== pinnedHead) {
+        throw new Error(
+          `staging HEAD ${stagedHead.slice(0, 12)} does not match pinned session ` +
+            `HEAD ${pinnedHead.slice(0, 12)}`,
+        );
+      }
+
       // Recorded in the clone rather than on the run row so it cannot drift
       // from the checkout it describes, and so a Hub restart during the
       // parked ready-to-push window does not lose it.
-      const sessionHead = await this.io.git(['rev-parse', 'HEAD']);
-      if (sessionHead.exitCode === 0 && sessionHead.stdout.trim()) {
-        await hostGit(this.path, [
-          'config',
-          '--local',
-          SOURCE_HEAD_CONFIG_KEY,
-          sessionHead.stdout.trim(),
-        ]);
-      }
+      await hostGit(this.path, ['config', '--local', SOURCE_HEAD_CONFIG_KEY, pinnedHead]);
     } finally {
       await rm(bundlePath, { force: true });
       await this.io.exec(`rm -f ${GUEST_BUNDLE_RELATIVE_PATH}`).catch(() => {});
     }
+  }
+
+  async #requireSessionHead(): Promise<string> {
+    const head = await this.io.git(['rev-parse', 'HEAD']);
+    const sha = head.exitCode === 0 ? head.stdout.trim() : '';
+    if (!sha) {
+      throw new Error(
+        `could not resolve session HEAD before materialize: ` +
+          (head.stderr.trim() || head.stdout.trim() || 'unknown error'),
+      );
+    }
+    return sha;
   }
 
   /**
@@ -259,17 +290,32 @@ class StagedSource implements FinalizeSource {
     return originUrl;
   }
 
-  async #materializeFromThinBundle(base: string, seed: string, bundlePath: string): Promise<void> {
-    // `^base branch` packages objects reachable from the branch excluding
-    // those reachable from base, and records `branch` as a named ref so the
-    // fetch below can land it by name.
+  async #pinFinalizeTip(pinnedHead: string): Promise<void> {
+    const pinned = await this.io.git(['update-ref', PINNED_TIP_REF, pinnedHead]);
+    if (pinned.exitCode !== 0) {
+      throw new Error(
+        `could not pin ${pinnedHead.slice(0, 12)} at ${PINNED_TIP_REF}: ` +
+          (pinned.stderr.trim() || pinned.stdout.trim() || 'unknown error'),
+      );
+    }
+  }
+
+  async #materializeFromThinBundle(
+    base: string,
+    seed: string,
+    bundlePath: string,
+    pinnedHead: string,
+  ): Promise<void> {
+    // Bundle the pinned tip ref, not the live branch — a commit that lands
+    // mid-create must not change what this pack contains.
+    await this.#pinFinalizeTip(pinnedHead);
     const bundle = await this.io.git(
-      ['bundle', 'create', GUEST_BUNDLE_RELATIVE_PATH, `^${base}`, this.branch],
+      ['bundle', 'create', GUEST_BUNDLE_RELATIVE_PATH, `^${base}`, PINNED_TIP_REF],
       { timeoutMs: GIT_TIMEOUT_MS },
     );
     if (bundle.exitCode !== 0) {
       throw new Error(
-        `could not thin-bundle ${this.branch} from ${base}: ` +
+        `could not thin-bundle ${pinnedHead.slice(0, 12)} from ${base.slice(0, 12)}: ` +
           (bundle.stderr.trim() || bundle.stdout.trim() || 'unknown error'),
       );
     }
@@ -283,22 +329,23 @@ class StagedSource implements FinalizeSource {
     // Clone may check out `branch` (when the seed already has it) or the
     // default branch. Detach so the fetch can update the branch tip either way.
     await hostGit(this.path, ['checkout', '--detach']).catch(() => {});
-    await hostGit(this.path, ['fetch', bundlePath, `${this.branch}:${this.branch}`]);
+    await hostGit(this.path, ['fetch', bundlePath, `${PINNED_TIP_REF}:${this.branch}`]);
     await hostGit(this.path, ['checkout', '-f', this.branch]);
   }
 
-  async #materializeFromFullBundle(bundlePath: string): Promise<void> {
+  async #materializeFromFullBundle(bundlePath: string, pinnedHead: string): Promise<void> {
     // A full-branch bundle is only cloneable when every parent is present. A
     // shallow session's isn't — unshallow first so the pack stands alone.
     if (await this.#isShallow()) await this.#unshallow();
 
+    await this.#pinFinalizeTip(pinnedHead);
     const bundle = await this.io.git(
-      ['bundle', 'create', GUEST_BUNDLE_RELATIVE_PATH, this.branch],
+      ['bundle', 'create', GUEST_BUNDLE_RELATIVE_PATH, PINNED_TIP_REF],
       { timeoutMs: GIT_TIMEOUT_MS },
     );
     if (bundle.exitCode !== 0) {
       throw new Error(
-        `could not bundle ${this.branch} from the session worktree: ` +
+        `could not bundle ${pinnedHead.slice(0, 12)} from the session worktree: ` +
           (bundle.stderr.trim() || bundle.stdout.trim() || 'unknown error'),
       );
     }
@@ -306,11 +353,11 @@ class StagedSource implements FinalizeSource {
 
     await rm(this.path, { recursive: true, force: true });
     await mkdir(path.dirname(this.path), { recursive: true });
-    await execFileAsync(
-      'git',
-      ['clone', '--quiet', '--branch', this.branch, bundlePath, this.path],
-      { timeout: GIT_TIMEOUT_MS },
-    );
+    // Tip-ref bundles have no session branch name for `clone --branch`. Init +
+    // fetch lands the pinned commit on the branch name the pipeline expects.
+    await execFileAsync('git', ['init', '--quiet', this.path], { timeout: GIT_TIMEOUT_MS });
+    await hostGit(this.path, ['fetch', '--quiet', bundlePath, `${PINNED_TIP_REF}:${this.branch}`]);
+    await hostGit(this.path, ['checkout', '-f', this.branch]);
   }
 
   async #isShallow(): Promise<boolean> {

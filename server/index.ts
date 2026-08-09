@@ -99,6 +99,7 @@ import {
   firecrackerExecDefaults,
   firecrackerHostPaths,
   registerFirecrackerBackend,
+  unregisterFirecrackerBackend,
 } from './session-env/firecracker/register-firecracker-backend.js';
 import { SessionEnvManager } from './session-env/session-env-manager.js';
 import { worktreeSharingForKind } from './session-env/session-env.js';
@@ -2345,6 +2346,21 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
               console.log(
                 `[session-env] swept ${result.deletedTaps.length} stale microVM tap(s): ${result.deletedTaps.join(', ')}`,
               );
+            }
+            // Without guest NAT, apt/npm/pip die with "Temporary failure
+            // resolving …". Drop the backend so `auto` cannot select a path
+            // that cannot reach the network; an explicit firecracker force
+            // still fails loud at session start when ensureNat runs again.
+            if (!result.natReady) {
+              console.error(
+                '[session-env] Firecracker guest NAT is not ready — unregistering firecracker backend',
+              );
+              unregisterFirecrackerBackend();
+            } else if (!result.bridgeReady) {
+              console.error(
+                '[session-env] Firecracker bridge is not ready — unregistering firecracker backend',
+              );
+              unregisterFirecrackerBackend();
             }
           });
         }

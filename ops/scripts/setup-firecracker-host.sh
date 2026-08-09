@@ -193,12 +193,13 @@ if [[ -n "${UPLINK}" ]]; then
   iptables -C FORWARD -i "${UPLINK}" -o "${BRIDGE}" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
     || iptables -A FORWARD -i "${UPLINK}" -o "${BRIDGE}" -m state --state RELATED,ESTABLISHED -j ACCEPT
   # Prefer DOCKER-USER when present so Docker's isolation chains cannot drop
-  # guest egress as collateral of docker0 rules.
+  # guest egress as collateral of docker0 rules. Scope to the uplink — a bare
+  # `-i ahfc0 -j ACCEPT` would also open routes onto docker0 / sibling containers.
   if iptables -nL DOCKER-USER >/dev/null 2>&1; then
-    iptables -C DOCKER-USER -i "${BRIDGE}" -j ACCEPT 2>/dev/null \
-      || iptables -I DOCKER-USER -i "${BRIDGE}" -j ACCEPT
-    iptables -C DOCKER-USER -o "${BRIDGE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
-      || iptables -I DOCKER-USER -o "${BRIDGE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    iptables -C DOCKER-USER -i "${BRIDGE}" -o "${UPLINK}" -j ACCEPT 2>/dev/null \
+      || iptables -I DOCKER-USER -i "${BRIDGE}" -o "${UPLINK}" -j ACCEPT
+    iptables -C DOCKER-USER -i "${UPLINK}" -o "${BRIDGE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
+      || iptables -I DOCKER-USER -i "${UPLINK}" -o "${BRIDGE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
   fi
   echo "==> NAT configured: ${SUBNET} -> ${UPLINK}"
 else
