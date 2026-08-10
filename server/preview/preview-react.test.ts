@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { browserScreenshotDirForSession } from '../browser-screenshot-store.js';
 import {
   runPreviewReActStep,
   previewBrowserSessionId,
@@ -95,10 +99,30 @@ function registerPreviewBrowser(page: ReturnType<typeof makeMockPage>) {
   return { stagehand, close };
 }
 
+let screenshotDataDir: string;
+let prevDataDir: string | undefined;
+
 beforeEach(() => {
   __resetBrowserRegistryForTests();
   __resetPreviewDocumentGuardsForTests();
+  // Screenshot captures land on disk — keep them in a throwaway dir.
+  prevDataDir = process.env.AGENT_HUB_DATA_DIR;
+  screenshotDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-pv-shot-'));
+  process.env.AGENT_HUB_DATA_DIR = screenshotDataDir;
 });
+
+afterEach(() => {
+  if (prevDataDir === undefined) delete process.env.AGENT_HUB_DATA_DIR;
+  else process.env.AGENT_HUB_DATA_DIR = prevDataDir;
+  fs.rmSync(screenshotDataDir, { recursive: true, force: true });
+});
+
+/** Files written by the preview screenshot sink for this test's chat session. */
+function savedPreviewScreenshots(): string[] {
+  const dir = browserScreenshotDirForSession(SESSION_ID, screenshotDataDir);
+  if (!dir || !fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir);
+}
 
 /** Attach a fake CDP main session so the persistent document guard installs. */
 function withCdp(page: ReturnType<typeof makeMockPage>) {
@@ -277,7 +301,34 @@ describe('preview-react — drive ops', () => {
     expect(page.goto).toHaveBeenCalledWith(`${ORIGIN}/`, expect.anything());
     expect(page.screenshot).toHaveBeenCalled();
     expect(r.ui?.screenshotCaptured).toBe(true);
-    expect(r.markdown).toContain('data:image/jpeg;base64,');
+    // Path, not inlined bytes — the markdown feeds byte-capped pending context.
+    expect(r.markdown).not.toContain('data:image/jpeg;base64,');
+    expect(r.markdown).toMatch(/Screenshot saved to `.+\.jpg`/);
+    expect(r.ui?.screenshotWsUrl).toContain('data:image/jpeg;base64,');
+  });
+
+  it('saves a large preview screenshot even though it exceeds the live-thumbnail cap', async () => {
+    // The WS cap is a transport limit for the chat thumbnail. Gating the disk
+    // write on it discarded exactly the big captures agents most need to read.
+    const page = makeMockPage(`${ORIGIN}/`);
+    registerPreviewBrowser(page);
+    const runtime = makeRuntime();
+    page.screenshot.mockResolvedValueOnce(Buffer.alloc(600_000, 3));
+
+    const r = await runPreviewReActStep(SESSION_ID, { op: 'screenshot' }, { runtime });
+    expect(r.hostExit).toBe(0);
+
+    const files = savedPreviewScreenshots();
+    expect(files).toHaveLength(1);
+    expect(files[0].startsWith('preview-')).toBe(true);
+    const abs = path.join(browserScreenshotDirForSession(SESSION_ID, screenshotDataDir)!, files[0]);
+    expect(fs.statSync(abs).size).toBe(600_000);
+    expect(r.markdown).toContain(abs);
+    expect(r.markdown).toContain('<saved to file>');
+
+    // Too big for the live thumbnail — that is the only thing the cap suppresses.
+    expect(r.ui?.screenshotWsUrl).toBeUndefined();
+    expect(r.ui?.screenshotCaptured).toBe(true);
   });
 
   it('does not re-navigate when already on the preview origin', async () => {
@@ -476,6 +527,8 @@ describe('preview-react — drive ops', () => {
     expect(r.ui?.screenshotCaptured).toBeFalsy();
     expect(r.ui?.screenshotWsUrl).toBeUndefined();
     expect(page.goto).toHaveBeenCalledWith(`${ORIGIN}/`, expect.anything());
+    // The off-origin capture must not reach the disk sink either.
+    expect(savedPreviewScreenshots()).toHaveLength(0);
   });
 
   it('extract after a client-side redirect off-origin drops the extracted data', async () => {

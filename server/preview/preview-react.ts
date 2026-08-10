@@ -41,12 +41,16 @@ import {
   getOrCreateBrowserSessionForChat,
   installPersistentDocumentNavigationGuard,
   shrinkBrowserToolResultForMarkdown,
-  BROWSER_SCREENSHOT_BASE64_MAX_CHARS,
   BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS,
   type BrowserReActStepOutcome,
   type BrowserToolResult,
 } from '../browser-tools.js';
 import type { BrowserNavigationPolicyOpts } from '../browser-navigation-url.js';
+import {
+  resolveScreenshotDataDir,
+  saveBrowserScreenshot,
+  screenshotObservationLines,
+} from '../browser-screenshot-store.js';
 import { clipUtf8StringToMaxBytes } from '../utf8-clip.js';
 
 // ─── Ops ─────────────────────────────────────────────────────────
@@ -600,13 +604,30 @@ export async function runPreviewReActStep(
       // capture; guardEscape's replacement result carries no imageBase64.
       const r = await guardEscape(await browserScreenshot(sh));
       const { imageBase64, ...rest } = r;
-      const lean = { ...rest, imageBase64: imageBase64 ? '<omitted>' : undefined };
+      const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
+      const captured = r.ok && imageBase64 ? imageBase64 : undefined;
+      // Every successful capture is persisted. The WS cap below is a transport
+      // limit for the live thumbnail only — it must never gate what reaches
+      // disk, or a large screenshot would be silently discarded again.
+      const saved = captured
+        ? saveBrowserScreenshot({
+            sessionId: chatSessionId,
+            dataDir: resolveScreenshotDataDir(),
+            imageBase64: captured,
+            mime,
+            label: 'preview',
+          })
+        : null;
+      const lean = {
+        ...rest,
+        data: r.ok ? { ...(r.data as object | undefined), savedPath: saved?.absPath } : r.data,
+        imageBase64: captured ? (saved ? '<saved to file>' : '<capture not persisted>') : undefined,
+      };
       const lines = ['## Preview: screenshot', '', '```json', JSON.stringify(lean, null, 2), '```'];
       let screenshotWsUrl: string | undefined;
-      if (r.ok && imageBase64 && imageBase64.length <= BROWSER_SCREENSHOT_BASE64_MAX_CHARS) {
-        const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
-        lines.push('', `![preview screenshot](data:${mime};base64,${imageBase64})`);
-        const dataUrl = `data:${mime};base64,${imageBase64}`;
+      if (captured) {
+        lines.push(...screenshotObservationLines(saved, mime));
+        const dataUrl = `data:${mime};base64,${captured}`;
         if (dataUrl.length <= BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS) {
           screenshotWsUrl = dataUrl;
         }

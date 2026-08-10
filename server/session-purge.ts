@@ -21,6 +21,13 @@
  *    `isSessionRecoverable` callback so `worktree.ts` stays free of DB
  *    handles.
  *
+ * 3. **Browser-screenshot store sweep.** Captures are written per session by
+ *    `browser-screenshot-store.ts`, which caps files *within* a session but
+ *    not the number of session dirs. The archived-session purge above drops a
+ *    session's dir as part of its hard delete; `sweepBrowserScreenshotStore`
+ *    then enforces an age + total-size bound over the whole store, which is
+ *    the only collector for dirs whose row vanished by another route.
+ *
  * Designed for testability: every external dependency (db handle, statement
  * map, project list, removal helper) is injectable through `PurgeDeps`. The
  * exported convenience entrypoints close over the production `db`/`stmts` /
@@ -35,6 +42,10 @@ import {
 import { getProjects as defaultGetProjects } from './project-model.js';
 import { pruneOrphanSessionEvents } from './session-events-store.js';
 import { cleanupSpawnCredsForSession } from './spawn-creds-mint.js';
+import {
+  removeBrowserScreenshotsForSession,
+  sweepBrowserScreenshotStore,
+} from './browser-screenshot-store.js';
 import config from './config.js';
 import type { Project, Stmts } from './types.js';
 import type Database from 'better-sqlite3';
@@ -113,6 +124,7 @@ export async function purgeExpiredArchivedSessions(
       stmts.deleteSession.run(row.id);
       rowsDeleted++;
       cleanupSpawnCredsForSession(row.id, config.dataDir);
+      removeBrowserScreenshotsForSession(row.id, config.dataDir);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[Purge] deleteSession(${row.id}) failed:`, message);
@@ -225,5 +237,14 @@ export async function runWorkspacePurge(deps: PurgeDeps = defaultDeps()): Promis
   // Run orphan sweep after archived-session purge so any rows freshly
   // orphaned by the cascade in this same tick are reclaimed today.
   pruneOrphanedSessionEvents(deps);
+  // Backstop for browser/preview captures. The per-session removal above is
+  // the normal path; this catches dirs whose session row vanished without it
+  // and enforces the absolute size ceiling.
+  try {
+    sweepBrowserScreenshotStore({ dataDir: config.dataDir });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[Purge] Browser-screenshot sweep threw:', message);
+  }
   return result;
 }

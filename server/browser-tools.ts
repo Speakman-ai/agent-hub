@@ -28,6 +28,11 @@ import {
   redactUrlForBrowserAudit,
   sanitizeBrowserToolAuditDetail,
 } from './browser-tool-audit.js';
+import {
+  resolveScreenshotDataDir,
+  saveBrowserScreenshot,
+  screenshotObservationLines,
+} from './browser-screenshot-store.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -60,8 +65,17 @@ export const BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE = 80;
 export const BROWSER_EXTRACT_SCHEMA_MAX_ARRAY_LENGTH = 96;
 export const BROWSER_EXTRACT_SCHEMA_MAX_NODES = 400;
 
-/** Max base64 length for screenshot data-URL line in continuation markdown (~562 KiB raw). */
-export const BROWSER_SCREENSHOT_BASE64_MAX_CHARS = 750_000;
+/**
+ * Hard ceiling on an encoded capture, purely a memory guard against a
+ * pathological full-page screenshot.
+ *
+ * This used to be a *chat context* limit (750k chars) because the capture was
+ * inlined into continuation markdown as a data URL. It no longer is — captures
+ * go to disk and the observation carries a path — so a large-but-reasonable
+ * screenshot must not be rejected outright. Transport limits live separately in
+ * {@link BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS}; keep them independent.
+ */
+export const BROWSER_SCREENSHOT_BASE64_MAX_CHARS = 12_000_000;
 
 export interface BrowserToolResult {
   ok: boolean;
@@ -532,7 +546,7 @@ export async function browserScreenshot(stagehand: V3): Promise<BrowserToolResul
         'screenshot',
         false,
         undefined,
-        'Screenshot exceeds maximum encoded size for chat context',
+        'Screenshot exceeds the maximum capture size the host will hold in memory',
       );
     }
     return { ok: true, op: 'screenshot', data: { mime: 'image/jpeg' }, imageBase64: b64 };
@@ -854,14 +868,12 @@ export async function runBrowserReActStep(
     return b;
   };
 
+  // Never inline image bytes here: this markdown becomes pending context, which
+  // is byte-capped. Image-bearing ops persist to disk and report a path.
   const fmt = (r: BrowserToolResult, title: string) => {
-    const display = shrinkBrowserToolResultForMarkdown(r);
-    const lines = [`## ${title}`, '', '```json', JSON.stringify(display, null, 2), '```'];
-    if (r.ok && r.imageBase64) {
-      const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
-      lines.push('', `![screenshot](data:${mime};base64,${r.imageBase64})`);
-    }
-    return lines.join('\n');
+    const { imageBase64, ...rest } = shrinkBrowserToolResultForMarkdown(r);
+    const display = { ...rest, imageBase64: imageBase64 ? '<omitted>' : undefined };
+    return [`## ${title}`, '', '```json', JSON.stringify(display, null, 2), '```'].join('\n');
   };
 
   incrementBrowserToolOpEntered(chatSessionId);
@@ -944,8 +956,29 @@ export async function runBrowserReActStep(
       case 'screenshot': {
         const r = await browserScreenshot(sh);
         const { imageBase64, ...rest } = r;
-        // Omit huge base64 from JSON block — attach as image line only
-        const lean = { ...rest, imageBase64: r.imageBase64 ? '<omitted>' : undefined };
+        const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
+        // The image goes to a file, never into continuation markdown — inlined
+        // base64 blew the 128 KiB pending-context cap and evicted every other
+        // observation in the turn.
+        const saved =
+          r.ok && imageBase64
+            ? saveBrowserScreenshot({
+                sessionId: chatSessionId,
+                dataDir: resolveScreenshotDataDir(),
+                imageBase64,
+                mime,
+                label: 'browser',
+              })
+            : null;
+        const lean = {
+          ...rest,
+          data: r.ok ? { ...(r.data as object | undefined), savedPath: saved?.absPath } : r.data,
+          imageBase64: imageBase64
+            ? saved
+              ? '<saved to file>'
+              : '<capture not persisted>'
+            : undefined,
+        };
         const lines = [
           '## Browser: screenshot',
           '',
@@ -955,8 +988,7 @@ export async function runBrowserReActStep(
         ];
         let screenshotWsUrl: string | undefined;
         if (r.ok && imageBase64) {
-          const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
-          lines.push('', `![screenshot](data:${mime};base64,${imageBase64})`);
+          lines.push(...screenshotObservationLines(saved, mime));
           const dataUrl = `data:${mime};base64,${imageBase64}`;
           if (dataUrl.length <= BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS) {
             screenshotWsUrl = dataUrl;

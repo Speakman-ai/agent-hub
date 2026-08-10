@@ -1,5 +1,12 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import type { V3 } from '@browserbasehq/stagehand';
+import { browserScreenshotDirForSession } from './browser-screenshot-store.js';
+import { mergePendingContextWithCap, MAX_PENDING_CONTEXT_BYTES } from './chat.js';
+
+const MAX_PENDING_CONTEXT_BYTES_FOR_TEST = MAX_PENDING_CONTEXT_BYTES;
 import {
   looksLikeSelectorTarget,
   runBrowserReActStep,
@@ -84,8 +91,21 @@ describe('browser-tools — looksLikeSelectorTarget', () => {
 });
 
 describe('browser-tools — runBrowserReActStep', () => {
+  let screenshotDataDir: string;
+  let prevDataDir: string | undefined;
+
   beforeEach(() => {
     __resetBrowserRegistryForTests();
+    // Screenshot captures land on disk — keep them in a throwaway dir.
+    prevDataDir = process.env.AGENT_HUB_DATA_DIR;
+    screenshotDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-bt-shot-'));
+    process.env.AGENT_HUB_DATA_DIR = screenshotDataDir;
+  });
+
+  afterEach(() => {
+    if (prevDataDir === undefined) delete process.env.AGENT_HUB_DATA_DIR;
+    else process.env.AGENT_HUB_DATA_DIR = prevDataDir;
+    fs.rmSync(screenshotDataDir, { recursive: true, force: true });
   });
 
   it('returns error markdown when op is unknown (does not launch Chromium)', async () => {
@@ -201,9 +221,10 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.markdown).toMatch(/too many keys/);
   });
 
-  it('screenshot: success markdown uses JPEG data URL', async () => {
+  it('screenshot: saves the capture to disk and reports its path', async () => {
     const page = makeMockPage();
-    page.screenshot.mockResolvedValueOnce(Buffer.from([0xff, 0xd8, 0xff, 0xdb]));
+    const pixels = Buffer.from([0xff, 0xd8, 0xff, 0xdb]);
+    page.screenshot.mockResolvedValueOnce(pixels);
     __registerBrowserSessionForTests({
       id: 'shot-ok',
       stagehand: makeMockStagehand(page),
@@ -216,9 +237,77 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(page.screenshot).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'jpeg', quality: 72 }),
     );
-    expect(r.markdown).toContain('data:image/jpeg;base64,');
+
+    const dir = browserScreenshotDirForSession('shot-ok', screenshotDataDir)!;
+    const files = fs.readdirSync(dir);
+    expect(files).toHaveLength(1);
+    const abs = path.join(dir, files[0]);
+    expect(fs.readFileSync(abs)).toEqual(pixels);
+
+    // The path is what the agent gets — the bytes never enter the markdown.
+    expect(r.markdown).toContain(abs);
+    expect(r.markdown).toContain('Read that path with your file-reading tool');
+    expect(r.markdown).not.toContain('data:image/jpeg;base64,');
+
+    // The live chat preview still gets a data URL over the WebSocket.
     expect(r.ui?.screenshotCaptured).toBe(true);
     expect(r.ui?.screenshotWsUrl).toBeTruthy();
+    expect(r.ui?.screenshotWsUrl).toContain('data:image/jpeg;base64,');
+  });
+
+  it('screenshot: markdown stays tiny for a large capture (pending-context regression)', async () => {
+    // A 400 KB JPEG encodes to ~547k base64 chars. Inlined as a data URL that
+    // blew the 128 KiB pending-context cap, so the merge clipped the capture to
+    // truncated base64 AND evicted every other observation in the same turn —
+    // the agent saw a "successful" host step that returned nothing usable.
+    const page = makeMockPage();
+    page.screenshot.mockResolvedValueOnce(Buffer.alloc(400_000, 7));
+    __registerBrowserSessionForTests({
+      id: 'shot-large',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('shot-large', { op: 'screenshot' });
+    expect(r.hostExit).toBe(0);
+
+    const markdownBytes = Buffer.byteLength(r.markdown, 'utf-8');
+    expect(markdownBytes).toBeLessThan(4096);
+    expect(markdownBytes).toBeLessThan(MAX_PENDING_CONTEXT_BYTES_FOR_TEST);
+    expect(r.markdown).not.toContain('base64,');
+
+    // The full-resolution bytes are still on disk, unclipped.
+    const dir = browserScreenshotDirForSession('shot-large', screenshotDataDir)!;
+    const files = fs.readdirSync(dir);
+    expect(files).toHaveLength(1);
+    expect(fs.statSync(path.join(dir, files[0])).size).toBe(400_000);
+
+    // Too big for the WS preview, but that must not suppress the saved path.
+    expect(r.ui?.screenshotWsUrl).toBeUndefined();
+    expect(r.ui?.screenshotCaptured).toBe(true);
+    expect(r.markdown).toContain(path.join(dir, files[0]));
+  });
+
+  it('screenshot: a merged turn of observations survives a large capture', async () => {
+    // The old failure mode was collateral: mergePendingContextWithCap takes the
+    // "addition dominates" branch when the addition alone exceeds the cap, and
+    // that branch drops existing context entirely.
+    const page = makeMockPage();
+    page.screenshot.mockResolvedValueOnce(Buffer.alloc(400_000, 7));
+    __registerBrowserSessionForTests({
+      id: 'shot-merge',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('shot-merge', { op: 'screenshot' });
+    const earlierObservation = '## Web search\nresult one\nresult two';
+    const merged = mergePendingContextWithCap(earlierObservation, r.markdown);
+    expect(merged).toContain('result one');
+    expect(merged).toContain('## Browser: screenshot');
+    expect(merged).not.toContain('[Truncated: pending context byte cap reached]');
   });
 
   it('screenshot: succeeds with screenshotCaptured but omits WS URL when data URL exceeds cap', async () => {
@@ -242,7 +331,10 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.ui?.screenshotWsUrl).toBeUndefined();
   });
 
-  it('screenshot: rejects encoded image over markdown cap', async () => {
+  it('screenshot: persists a capture the old chat-context cap would have rejected', async () => {
+    // 600 KB encodes to 800k base64 chars — over the retired 750k "chat
+    // context" cap. Now that captures go to disk rather than into markdown,
+    // rejecting this outright was itself a way to lose a screenshot.
     const page = makeMockPage();
     page.screenshot.mockResolvedValueOnce(Buffer.alloc(600_000, 9));
     __registerBrowserSessionForTests({
@@ -253,8 +345,59 @@ describe('browser-tools — runBrowserReActStep', () => {
       close: async () => {},
     });
     const r = await runBrowserReActStep('shot-big', { op: 'screenshot' });
+    expect(r.hostExit).toBe(0);
+
+    const dir = browserScreenshotDirForSession('shot-big', screenshotDataDir)!;
+    const files = fs.readdirSync(dir);
+    expect(files).toHaveLength(1);
+    expect(fs.statSync(path.join(dir, files[0])).size).toBe(600_000);
+    expect(r.markdown).toContain(path.join(dir, files[0]));
+    expect(r.markdown).toContain('<saved to file>');
+    // Far too large for the live thumbnail, but that must not gate the file.
+    expect(r.ui?.screenshotWsUrl).toBeUndefined();
+    expect(r.ui?.screenshotCaptured).toBe(true);
+  });
+
+  it('screenshot: rejects a capture over the host memory ceiling', async () => {
+    const page = makeMockPage();
+    // Encodes to > BROWSER_SCREENSHOT_BASE64_MAX_CHARS.
+    page.screenshot.mockResolvedValueOnce(Buffer.alloc(9_500_000, 9));
+    __registerBrowserSessionForTests({
+      id: 'shot-huge',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('shot-huge', { op: 'screenshot' });
     expect(r.hostExit).toBe(1);
-    expect(r.markdown).toMatch(/maximum (encoded )?size/i);
+    expect(r.markdown).toMatch(/maximum capture size/i);
+    expect(fs.existsSync(browserScreenshotDirForSession('shot-huge', screenshotDataDir)!)).toBe(
+      false,
+    );
+  });
+
+  it('screenshot: reports honestly when the capture cannot be persisted', async () => {
+    // Point the data dir at a regular file so mkdir fails.
+    const blocker = path.join(screenshotDataDir, 'not-a-dir');
+    fs.writeFileSync(blocker, 'x');
+    process.env.AGENT_HUB_DATA_DIR = blocker;
+
+    const page = makeMockPage();
+    page.screenshot.mockResolvedValueOnce(Buffer.from([0xff, 0xd8, 0xff, 0xdb]));
+    __registerBrowserSessionForTests({
+      id: 'shot-nowrite',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('shot-nowrite', { op: 'screenshot' });
+    expect(r.hostExit).toBe(0);
+    // Must not claim a file exists when none was written.
+    expect(r.markdown).not.toContain('<saved to file>');
+    expect(r.markdown).toContain('<capture not persisted>');
+    expect(r.markdown).toMatch(/could not be written to disk/i);
   });
 
   it('extract: large JSON in result is shrunk in markdown', async () => {
@@ -450,7 +593,7 @@ describe('browser-tools — direct helpers', () => {
     });
   });
 
-  it('browserScreenshot encodes JPEG and rejects oversize base64', async () => {
+  it('browserScreenshot encodes JPEG and only rejects past the memory ceiling', async () => {
     const page = makeMockPage();
     page.screenshot.mockResolvedValueOnce(Buffer.from([0xff, 0xd8, 0xff]));
     const sh = asV3(makeMockStagehand(page));
@@ -460,10 +603,16 @@ describe('browser-tools — direct helpers', () => {
       expect.objectContaining({ type: 'jpeg', quality: 72 }),
     );
 
+    // Comfortably past the retired 750k chat-context cap — still a valid capture.
     page.screenshot.mockResolvedValueOnce(Buffer.alloc(650_000, 1));
+    const large = await browserScreenshot(sh);
+    expect(large.ok).toBe(true);
+    expect(large.imageBase64?.length).toBeGreaterThan(750_000);
+
+    page.screenshot.mockResolvedValueOnce(Buffer.alloc(9_500_000, 1));
     const bad = await browserScreenshot(sh);
     expect(bad.ok).toBe(false);
-    if (!bad.ok) expect(bad.error).toMatch(/maximum encoded size/i);
+    if (!bad.ok) expect(bad.error).toMatch(/maximum capture size/i);
   });
 
   it('browserScroll rejects unknown direction', async () => {

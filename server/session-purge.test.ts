@@ -32,6 +32,8 @@ import {
   runWorkspacePurge,
   type PurgeDeps,
 } from './session-purge.js';
+import { browserScreenshotDirForSession } from './browser-screenshot-store.js';
+import config from './config.js';
 import type { Project } from './types.js';
 
 function projectSlugFor(cwd: string): string {
@@ -169,6 +171,29 @@ describe('purgeExpiredArchivedSessions', () => {
 
     const stillThere = getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id);
     expect(stillThere).toBeUndefined();
+  });
+
+  it('removes the session browser-screenshot directory on hard delete', async () => {
+    const { id } = makeSession(fixture.workspaceDir, {
+      deletedAtSql: "datetime('now', '-25 hours')",
+    });
+    getDb()
+      .prepare("UPDATE sessions SET deleted_at = datetime('now', '-25 hours') WHERE id = ?")
+      .run(id);
+
+    // Captures for this session, and a live sibling that must survive.
+    const shotDir = browserScreenshotDirForSession(id, config.dataDir)!;
+    const siblingDir = browserScreenshotDirForSession('live-sibling', config.dataDir)!;
+    for (const dir of [shotDir, siblingDir]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, 'browser-1.jpg'), Buffer.alloc(64, 1));
+    }
+
+    await purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
+
+    expect(existsSync(shotDir)).toBe(false);
+    expect(existsSync(siblingDir)).toBe(true);
+    rmSync(siblingDir, { recursive: true, force: true });
   });
 
   it('leaves an archived-but-within-24h session untouched', async () => {
@@ -366,6 +391,26 @@ describe('pruneOrphanedSessionEvents', () => {
       .prepare('SELECT COUNT(*) AS n FROM session_events WHERE parent_id = ?')
       .get(archivedMsgId) as { n: number };
     expect(eventRows.n).toBe(0);
+  });
+
+  it('runWorkspacePurge sweeps aged orphan screenshot dirs with no session row', async () => {
+    // A capture dir whose session row vanished without passing through the
+    // hard-delete path has no other collector — the tick's sweep is it.
+    const orphanDir = browserScreenshotDirForSession('orphan-shots', config.dataDir)!;
+    const freshDir = browserScreenshotDirForSession('fresh-shots', config.dataDir)!;
+    for (const dir of [orphanDir, freshDir]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, 'browser-1.jpg'), Buffer.alloc(64, 1));
+    }
+    // Age the orphan past the retention window.
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    utimesSync(path.join(orphanDir, 'browser-1.jpg'), old, old);
+
+    await runWorkspacePurge(depsFor(fixture.projectCwd));
+
+    expect(existsSync(orphanDir)).toBe(false);
+    expect(existsSync(freshDir)).toBe(true);
+    rmSync(freshDir, { recursive: true, force: true });
   });
 });
 
