@@ -200,7 +200,8 @@ function makeEnv(overrides: Record<string, unknown> = {}) {
     paths: {
       kernelPath: '/var/lib/agent-hub/fc/vmlinux',
       baseRootfsPath: '/var/lib/agent-hub/fc/rootfs.ext4',
-      runDir: '/run/agent-hub/vms',
+      runDir: '/var/lib/agent-hub/fc/vms',
+      controlDir: '/run/agent-hub/vm-control',
       jailerChrootBase: '/srv/jailer',
     },
     io,
@@ -252,10 +253,10 @@ describe('FirecrackerSessionEnv start', () => {
     expect(stopVmm).toHaveBeenCalledWith({
       vmId: 'ahvm-sess-1',
       pid: undefined,
-      pidFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.pid',
-      identityFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.identity.json',
+      pidFile: '/run/agent-hub/vm-control/ahvm-sess-1/vmm.pid',
+      identityFile: '/run/agent-hub/vm-control/ahvm-sess-1/vmm.identity.json',
     });
-    expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/api.sock');
+    expect(removed).toContain('/run/agent-hub/vm-control/ahvm-sess-1/api.sock');
     // Jailer creates the vsock inside the chroot; leftovers are cleared there.
     expect(removed).toContain('/srv/jailer/firecracker/ahvm-sess-1/root/vsock.sock');
   });
@@ -455,14 +456,19 @@ describe('FirecrackerSessionEnv dispose', () => {
     expect(stopVmm).toHaveBeenCalledWith({
       vmId: 'ahvm-sess-1',
       pid: 4242,
-      pidFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.pid',
-      identityFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.identity.json',
+      pidFile: '/run/agent-hub/vm-control/ahvm-sess-1/vmm.pid',
+      identityFile: '/run/agent-hub/vm-control/ahvm-sess-1/vmm.identity.json',
     });
-    expect(runs.at(-1)).toEqual(['/usr/local/lib/agent-hub/fc-netctl.sh', 'tap-delete', 'ahfct3']);
+    expect(runs.some((a) => a[0]?.endsWith('fc-netctl.sh') && a[1] === 'tap-delete')).toBe(true);
+    expect(runs.at(-1)).toEqual([
+      '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
+      'clean',
+      '--vm-id',
+      'ahvm-sess-1',
+    ]);
     expect(slots.released).toEqual([3]);
-    // The whole directory goes, not just the sockets start cleared out of the
-    // way — leaving the disks behind would grow the run dir without bound.
-    expect(removed.at(-1)).toBe('/run/agent-hub/vms/ahvm-sess-1');
+    // Control-plane dir is Hub-removable; disk images go through the helper.
+    expect(removed.at(-1)).toBe('/run/agent-hub/vm-control/ahvm-sess-1');
   });
 
   it('signals live processes before tearing the VM down', async () => {
@@ -518,7 +524,7 @@ describe('FirecrackerSessionEnv dispose', () => {
     await expect(env.dispose()).rejects.toThrow(/identity mismatch/);
     expect(env.disposed).toBe(false);
     expect(slots.released).toEqual([]);
-    expect(removed).not.toContain('/run/agent-hub/vms/ahvm-sess-1');
+    expect(removed).not.toContain('/run/agent-hub/vm-control/ahvm-sess-1');
     expect(runs.filter((a) => a[1] === 'link' && a[2] === 'del')).toHaveLength(tapDeletesBefore);
 
     // Retry succeeds after stopVmm recovers.
@@ -573,11 +579,13 @@ describe('defaultPrepareDisks — worktree path handed to the privileged helper'
     kernelPath: '/var/lib/agent-hub/firecracker/vmlinux',
     baseRootfsPath: '/var/lib/agent-hub/firecracker/rootfs.ext4',
     runDir: '/var/lib/agent-hub/firecracker/vms',
+    controlDir: '/run/agent-hub/vm-control',
     diskHelper: '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
   };
   const ctx = {
-    vmDir: '/var/lib/agent-hub/firecracker/vms/ahvm-s1',
+    vmDir: '/run/agent-hub/vm-control/ahvm-s1',
     sessionId: 's1',
+    vmId: 'ahvm-s1',
     worktreePath: '/home/node/.agent-hub/workspaces/proj/session-s1',
     paths,
     workspaceSizeMib: 1024,
@@ -595,6 +603,16 @@ describe('defaultPrepareDisks — worktree path handed to the privileged helper'
     };
   };
   const worktreeArg = (argv: string[]): string => argv[argv.indexOf('--worktree') + 1] as string;
+
+  it('constructs disk paths from --vm-id under the root-owned runDir', async () => {
+    const { io, calls } = okIo();
+    const disks = await defaultPrepareDisks(io, ctx);
+    expect(calls[0]).toContain('--vm-id');
+    expect(calls[0]).toContain('ahvm-s1');
+    expect(calls[0]).not.toContain('--rootfs-out');
+    expect(disks.rootfsPath).toBe('/var/lib/agent-hub/firecracker/vms/ahvm-s1/rootfs.ext4');
+    expect(disks.workspacePath).toBe('/var/lib/agent-hub/firecracker/vms/ahvm-s1/workspace.ext4');
+  });
 
   it('translates the container path to the host path the helper has mounted', async () => {
     // The helper container mounts the host workspaces dir, so the Hub's own

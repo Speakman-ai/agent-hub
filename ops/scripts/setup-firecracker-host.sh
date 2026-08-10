@@ -217,20 +217,42 @@ else
   echo "warning: no default route found; guests will have no outbound network" >&2
 fi
 # ── 5. Directories ────────────────────────────────────────────────
-# Recursive in both branches. The Hub creates a directory per VM under
-# VM_SCRATCH, so it needs write access to the tree, not just the top level —
-# and guest artifacts are usually staged into ARTIFACT_DIR as root before or
-# after this script runs, which leaves them unreadable to a Hub that is not
-# root. A non-recursive chown here fails later as an EACCES on `mkdir` at the
-# first session start, far from the cause.
+# Firecracker requires jailer/disk parent dirs to be non-writable by
+# unprivileged users (prod-host-setup.md). Split ownership:
+#   ARTIFACT_DIR  — kernel/rootfs readable by Hub, not Hub-writable
+#   VM_SCRATCH    — root-owned disk images (prepare-disks constructs paths)
+#   JAILER_DIR    — root-owned jailer chroot base
+#   CONTROL_DIR   — Hub-writable config/pid/socket control plane
 JAILER_DIR="${ARTIFACT_DIR}/jailer"
-mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}"
+CONTROL_DIR="/run/agent-hub/vm-control"
+mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}" "${CONTROL_DIR}"
+
+# Root-owned, Hub-unwritable disk + jail trees.
+chown -R root:root "${VM_SCRATCH}" "${JAILER_DIR}"
+chmod 0750 "${VM_SCRATCH}" "${JAILER_DIR}"
+
+# Artifacts: readable by Hub, not writable (prevents planting symlinks that
+# retarget --base-rootfs). Kernel/rootfs files are world-readable.
+chown root:root "${ARTIFACT_DIR}"
+chmod 0755 "${ARTIFACT_DIR}"
+if [[ -f "${ARTIFACT_DIR}/vmlinux" ]]; then chmod 0644 "${ARTIFACT_DIR}/vmlinux"; fi
+if [[ -f "${ARTIFACT_DIR}/rootfs.ext4" ]]; then chmod 0644 "${ARTIFACT_DIR}/rootfs.ext4"; fi
+
+# Control plane Hub must write.
 if id -u "${HUB_USER}" >/dev/null 2>&1; then
-  chown -R "${HUB_USER}:${HUB_USER}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}"
+  chown -R "${HUB_USER}:${HUB_USER}" "${CONTROL_DIR}"
 else
-  chown -R "${HUB_UID}:${HUB_GID}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}"
-  echo "==> Scratch owned by uid ${HUB_UID}:${HUB_GID} (containerized Hub)"
+  chown -R "${HUB_UID}:${HUB_GID}" "${CONTROL_DIR}"
 fi
+chmod 0750 "${CONTROL_DIR}"
+# /run/agent-hub/vms may still be used as a legacy RUN_DIR mount point for the
+# helper container; keep it Hub-traversable but prefer VM_SCRATCH for disks.
+if [[ -d "${RUN_DIR}" && "${RUN_DIR}" != "${VM_SCRATCH}" ]]; then
+  chown root:root "${RUN_DIR}" 2>/dev/null || true
+  chmod 0755 "${RUN_DIR}" 2>/dev/null || true
+fi
+
+echo "==> Disk/jail roots root-owned; control plane at ${CONTROL_DIR}"
 
 # The rootfs clone uses `cp --reflink=auto`. On ext4 that degrades to a full
 # multi-GB copy on every VM boot; on XFS it is a near-instant CoW clone. The
@@ -292,6 +314,7 @@ cat >/etc/agent-hub/firecracker-roots.conf <<ROOTS
 ARTIFACT_DIR="${ARTIFACT_DIR}"
 RUN_DIR="${VM_SCRATCH}"
 JAILER_DIR="${ARTIFACT_DIR}/jailer"
+CONTROL_DIR="${CONTROL_DIR}"
 WORKTREE_ROOTS="${WORKTREE_ROOTS}"
 BRIDGE="${BRIDGE}"
 BRIDGE_CIDR="${BRIDGE_CIDR}"

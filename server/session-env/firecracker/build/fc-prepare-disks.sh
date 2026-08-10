@@ -7,21 +7,16 @@
 # setup rather than inside the Hub process. The Hub is granted exactly this
 # via a narrow sudoers rule; it never holds CAP_SYS_ADMIN itself.
 #
-# Two disks come out:
-#
-#   rootfs   A copy-on-write clone of the shared base image. `cp --reflink`
-#            makes this near-instant and near-free on a CoW filesystem
-#            (xfs/btrfs); on ext4 it degrades to a full copy, which is correct
-#            but slow — which is why the host setup formats the VM directory
-#            as xfs.
-#   workspace  A fresh ext4 image seeded with the session worktree. Firecracker
-#            has no virtio-fs and no 9p, so a bind mount is not available: the
-#            worktree has to be *in* a block device.
+# Output paths are NEVER taken from the caller. The helper constructs
+# `$RUN_DIR/<vm-id>/{rootfs,workspace}.ext4` under the root-owned RUN_DIR from
+# firecracker-roots.conf, so an unprivileged rename/symlink cannot retarget
+# truncate/mkfs between validation and use (Firecracker prod-host-setup /
+# jailer observations: parent dirs must not be writable by unprivileged users).
 #
 # Usage:
-#   fc-prepare-disks.sh --base-rootfs PATH --rootfs-out PATH
-#                       --workspace-out PATH --workspace-size-mib N
-#                       --worktree PATH
+#   fc-prepare-disks.sh --vm-id ID --base-rootfs PATH --worktree PATH
+#                       [--workspace-size-mib N]
+#   fc-prepare-disks.sh clean --vm-id ID
 
 set -euo pipefail
 
@@ -34,55 +29,99 @@ elif [[ -f "${SCRIPT_DIR}/fc-path-guard.sh" ]]; then
   source "${SCRIPT_DIR}/fc-path-guard.sh"
 fi
 
+CMD="prepare"
 BASE_ROOTFS=""
-ROOTFS_OUT=""
-WORKSPACE_OUT=""
+VM_ID=""
 WORKSPACE_SIZE_MIB="32768"
 WORKTREE=""
-# Must match the uid the guest's workspace user has, or every file in the
-# worktree looks like it belongs to someone else once the VM boots.
 WORKSPACE_UID="${AGENT_HUB_WORKSPACE_UID:-1000}"
 WORKSPACE_GID="${AGENT_HUB_WORKSPACE_GID:-1000}"
 
+if [[ "${1:-}" == "clean" ]]; then
+  CMD="clean"
+  shift
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --vm-id) VM_ID="$2"; shift 2 ;;
     --base-rootfs) BASE_ROOTFS="$2"; shift 2 ;;
-    --rootfs-out) ROOTFS_OUT="$2"; shift 2 ;;
-    --workspace-out) WORKSPACE_OUT="$2"; shift 2 ;;
     --workspace-size-mib) WORKSPACE_SIZE_MIB="$2"; shift 2 ;;
     --worktree) WORKTREE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    # Legacy output flags are refused — outputs are constructed from --vm-id.
+    --rootfs-out|--workspace-out)
+      echo "fc-prepare-disks: refusing caller-supplied output path ($1); use --vm-id" >&2
+      exit 2
+      ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "fc-prepare-disks: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-for required in BASE_ROOTFS ROOTFS_OUT WORKSPACE_OUT WORKTREE; do
+if [[ -z "${VM_ID}" || ! "${VM_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  echo "fc-prepare-disks: --vm-id required (alnum/._-, max 64)" >&2
+  exit 2
+fi
+
+fc_load_roots
+# Canonicalize the root-owned run dir; refuse if missing (must be pre-created
+# by setup as root:root and not Hub-writable).
+if [[ ! -d "${RUN_DIR}" ]]; then
+  echo "fc-prepare-disks: RUN_DIR does not exist: ${RUN_DIR}" >&2
+  exit 1
+fi
+RUN_DIR_REAL=$(fc_canonical_root "${RUN_DIR}")
+VM_DIR="${RUN_DIR_REAL}/${VM_ID}"
+
+if [[ "${CMD}" == "clean" ]]; then
+  # Only remove the leaf under RUN_DIR — never anything else.
+  if [[ -e "${VM_DIR}" || -L "${VM_DIR}" ]]; then
+    if [[ -L "${VM_DIR}" ]]; then
+      echo "fc-prepare-disks: refusing to clean symlink at ${VM_DIR}" >&2
+      exit 2
+    fi
+    rm -rf -- "${VM_DIR}"
+  fi
+  echo "fc-prepare-disks: cleaned ${VM_DIR}"
+  exit 0
+fi
+
+for required in BASE_ROOTFS WORKTREE; do
   if [[ -z "${!required}" ]]; then
     echo "fc-prepare-disks: missing required --${required,,}" | tr '_' '-' >&2
     exit 2
   fi
 done
 
-# Refuse agent-controlled paths outside the host's configured Firecracker roots.
-# Inputs (base image, worktree) vs outputs (per-VM disks) use different root
-# sets so a Hub-writable worktree symlink cannot retarget truncate/mkfs at /dev.
-fc_assert_under_roots 'base-rootfs' "${BASE_ROOTFS}" ARTIFACT_DIR RUN_DIR
-fc_assert_output_under_roots 'rootfs-out' "${ROOTFS_OUT}"
-fc_assert_output_under_roots 'workspace-out' "${WORKSPACE_OUT}"
+fc_assert_under_roots 'base-rootfs' "${BASE_ROOTFS}" ARTIFACT_DIR
 fc_assert_worktree_under_roots 'worktree' "${WORKTREE}"
+fc_assert_no_symlink_components 'base-rootfs' "${BASE_ROOTFS}"
+fc_assert_no_symlink_components 'worktree' "${WORKTREE}"
+
+BASE_ROOTFS=$(fc_canonicalize "${BASE_ROOTFS}")
+WORKTREE=$(fc_canonicalize "${WORKTREE}")
 
 [[ -f "${BASE_ROOTFS}" ]] || { echo "fc-prepare-disks: base rootfs not found: ${BASE_ROOTFS}" >&2; exit 1; }
 [[ -d "${WORKTREE}" ]] || { echo "fc-prepare-disks: worktree not found: ${WORKTREE}" >&2; exit 1; }
 
-mkdir -p "$(dirname "${ROOTFS_OUT}")" "$(dirname "${WORKSPACE_OUT}")"
+# Create the per-VM directory as root under the fixed RUN_DIR. Never follow a
+# pre-existing symlink leaf planted by an unprivileged user.
+if [[ -L "${VM_DIR}" ]]; then
+  echo "fc-prepare-disks: refusing symlink at ${VM_DIR}" >&2
+  exit 2
+fi
+mkdir -m 0700 -p "${VM_DIR}"
+
+ROOTFS_OUT="${VM_DIR}/rootfs.ext4"
+WORKSPACE_OUT="${VM_DIR}/workspace.ext4"
+# Drop any leftover files from a prior boot before recreating.
+rm -f -- "${ROOTFS_OUT}" "${WORKSPACE_OUT}"
 
 # ── rootfs clone ──────────────────────────────────────────────────
-# --reflink=auto: share blocks where the filesystem supports it, fall back to
-# a real copy where it does not, rather than failing.
-cp --reflink=auto "${BASE_ROOTFS}" "${ROOTFS_OUT}"
+cp --reflink=auto -- "${BASE_ROOTFS}" "${ROOTFS_OUT}"
 
 # ── workspace disk ────────────────────────────────────────────────
-truncate -s "${WORKSPACE_SIZE_MIB}M" "${WORKSPACE_OUT}"
+truncate -s "${WORKSPACE_SIZE_MIB}M" -- "${WORKSPACE_OUT}"
 mkfs.ext4 -q -F -L agent-hub-workspace "${WORKSPACE_OUT}"
 
 MOUNT_DIR="$(mktemp -d)"
@@ -92,12 +131,53 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mount -o loop "${WORKSPACE_OUT}" "${MOUNT_DIR}"
+mount -o loop -- "${WORKSPACE_OUT}" "${MOUNT_DIR}"
 
-# Copy the worktree in wholesale, including the .git directory: the session
-# has to be able to commit, and a worktree without its git metadata is not a
-# checkout, it is a pile of files.
-tar -C "${WORKTREE}" -cf - . | tar -C "${MOUNT_DIR}" -xf -
+# Archive the worktree through an O_NOFOLLOW directory walk so a symlink swap
+# after canonicalize cannot retarget the read to another host path.
+python3 - "${WORKTREE}" "${MOUNT_DIR}" <<'PY'
+import os
+import subprocess
+import sys
+
+worktree, dest = sys.argv[1], sys.argv[2]
+flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+
+def open_nofollow_dir(abs_path: str) -> int:
+    if not abs_path.startswith("/"):
+        raise SystemExit("worktree must be absolute")
+    fd = os.open("/", flags)
+    try:
+        for part in abs_path.strip("/").split("/"):
+            if part in ("", ".", ".."):
+                raise SystemExit(f"refusing unclean worktree component: {part!r}")
+            nxt = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        return fd
+    except OSError as e:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise SystemExit(f"worktree open failed (symlink?): {e}") from e
+
+fd = open_nofollow_dir(worktree)
+try:
+    src = f"/proc/self/fd/{fd}"
+    produced = subprocess.run(
+        ["tar", "-C", src, "-cf", "-", "."],
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    subprocess.run(
+        ["tar", "-C", dest, "-xf", "-"],
+        input=produced.stdout,
+        check=True,
+    )
+finally:
+    os.close(fd)
+PY
 
 chown -R "${WORKSPACE_UID}:${WORKSPACE_GID}" "${MOUNT_DIR}"
 

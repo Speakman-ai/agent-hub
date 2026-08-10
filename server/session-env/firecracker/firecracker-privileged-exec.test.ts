@@ -16,6 +16,7 @@ const paths: FirecrackerPaths = {
   kernelPath: '/var/lib/agent-hub/firecracker/vmlinux',
   baseRootfsPath: '/var/lib/agent-hub/firecracker/rootfs.ext4',
   runDir: '/var/lib/agent-hub/firecracker/vms',
+  controlDir: '/run/agent-hub/vm-control',
   diskHelper: '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
 };
 

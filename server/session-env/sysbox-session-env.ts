@@ -79,11 +79,29 @@ export type SysboxRunFn = (argv: string[]) => Promise<SysboxRunResult>;
 export function isSysboxBaselineComm(comm: string): boolean {
   const c = comm.toLowerCase();
   if (!c) return true;
-  // Do NOT treat bash/sh/sleep as baseline — user jobs like `bash worker.sh`
-  // or `sleep 3600` must keep the env alive for the idle reaper.
+  // Do NOT treat bash/sh as baseline — user jobs like `bash worker.sh` must
+  // keep the env alive. `sleep` is handled separately for PID 1 only.
   return /^(pause|dockerd|containerd|containerd-shim|containerd-shim-runc-v2|runc|entrypoint\.sh|docker-init|docker-proxy)$/.test(
     c,
   );
+}
+
+/**
+ * Parse one `docker top -eo pid,comm` body line. Returns true when the process
+ * is detached user work the idle reaper must respect.
+ */
+export function isSysboxDetachedWorkloadLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 2) return false;
+  const pid = parts[0]!;
+  const comm = parts.slice(1).join(' ');
+  if (isSysboxBaselineComm(comm)) return false;
+  // Entrypoint ends with `exec sleep infinity` → PID 1. User `sleep 3600` has
+  // a different pid and must still count as busy.
+  if (/^sleep$/i.test(comm) && pid === '1') return false;
+  return true;
 }
 
 const RUN_TIMEOUT_MS = 120_000;
@@ -315,10 +333,7 @@ export class SysboxSessionEnv implements SessionEnv {
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean);
-      const procs = lines.slice(1).filter((line) => {
-        const comm = line.split(/\s+/).slice(1).join(' ');
-        return !isSysboxBaselineComm(comm);
-      });
+      const procs = lines.slice(1).filter((line) => isSysboxDetachedWorkloadLine(line));
       return procs.length > 0;
     } catch {
       return true;

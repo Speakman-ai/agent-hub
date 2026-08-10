@@ -299,9 +299,29 @@ describe('fc-netctl.sh', () => {
   });
 });
 
+describe('fc-prepare-disks.sh argv', () => {
+  const prepareHelper = path.join(here, 'build/fc-prepare-disks.sh');
+
+  it('refuses caller-supplied --rootfs-out / --workspace-out', () => {
+    const res = run(prepareHelper, [
+      '--vm-id',
+      'ahvm-x',
+      '--base-rootfs',
+      '/tmp/x',
+      '--worktree',
+      '/tmp/y',
+      '--rootfs-out',
+      '/tmp/z',
+    ]);
+    expect(res.status).toBe(2);
+    expect(res.stderr).toMatch(/refusing caller-supplied output path/);
+  });
+});
+
 describe('bash -n helpers', () => {
   it('parses', () => {
-    for (const helper of [jailHelper, launchHelper, netctlHelper, pathGuard]) {
+    const prepareHelper = path.join(here, 'build/fc-prepare-disks.sh');
+    for (const helper of [jailHelper, launchHelper, netctlHelper, pathGuard, prepareHelper]) {
       execFileSync('bash', ['-n', helper]);
     }
   });
