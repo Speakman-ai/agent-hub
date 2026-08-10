@@ -440,6 +440,9 @@ describe('jailer Hub traverse contract', () => {
     () => {
       const base = mkdtempSync(path.join(os.tmpdir(), 'fc-jail-traverse-'));
       try {
+        // mkdtemp is 0700; the distinct test user must be able to walk into
+        // `base` before JAILER_DIR's 0711-vs-0750 behavior is observable.
+        chmodSync(base, 0o755);
         const jailer = path.join(base, 'jailer');
         const sock = path.join(jailer, 'firecracker', 'ahvm-1', 'root', 'vsock.sock');
         mkdirSync(path.dirname(sock), { recursive: true });
