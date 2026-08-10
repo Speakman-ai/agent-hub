@@ -49,7 +49,11 @@ agent_hub_image_uri = "public.ecr.aws/<ECR_PUBLIC_ALIAS>/agent-hub:main"
 manage_github_oidc_role             = true
 create_github_oidc_provider         = true
 enable_ci_ssm_deploy_after_ecr_push = true
-ci_ssm_deploy_instance_id           = "<PROD_HUB_INSTANCE_ID>" # agenthub prod Hub
+# Tag targeting re-resolves on every apply, so a rebuilt box with the same Name
+# tag keeps CI working; the explicit id is unioned in. Whatever resolves must
+# include the DOCKER_DEPLOY_INSTANCE_ID repo Variable.
+ci_ssm_deploy_instance_tags = { Name = "<PROD_HUB_NAME_TAG>" }
+ci_ssm_deploy_instance_id   = "<PROD_HUB_INSTANCE_ID>" # agenthub prod Hub
 
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"

@@ -385,14 +385,27 @@ jobs:
           PARAMS_JSON=$(printf '%s' "$SCRIPT" | jq -Rcs '{commands: split("\n") | map(select(length > 0))}')
           echo "reset_instance=$RESET_INSTANCE"
           echo "ssm-comment=$COMMENT"
-          CMD_ID="$(aws ssm send-command \
+          # The deploy target lives in two places that can drift: this workflow's
+          # DOCKER_DEPLOY_INSTANCE_ID repo Variable, and the Terraform
+          # ci_ssm_deploy_* inputs that scope the CI role's SSM grant. Replacing
+          # the box updates one side and the other keeps naming the dead
+          # instance, which surfaces as a bare AccessDenied + exit 254. Translate
+          # it into the remediation instead of making the next reader decode IAM.
+          SEND_ERR="${RUNNER_TEMP:-/tmp}/ssm-send-command.err"
+          if ! CMD_ID="$(aws ssm send-command \
             --region "$AWS_DEPLOY_REGION" \
             --instance-ids "$DEPLOY_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "$COMMENT" \
             --parameters "$PARAMS_JSON" \
             --output text \
-            --query 'Command.CommandId')"
+            --query 'Command.CommandId' 2>"$SEND_ERR")"; then
+            cat "$SEND_ERR" >&2
+            if grep -q 'AccessDeniedException' "$SEND_ERR"; then
+              echo "::error::ssm:SendCommand denied for $DEPLOY_INSTANCE_ID in $AWS_DEPLOY_REGION. The CI role's SSM grant (Terraform aws_iam_role_policy.github_actions_ecr_push_ssm_dev_deploy) is scoped to different instances. Point ci_ssm_deploy_instance_tags / ci_ssm_deploy_instance_id at the same box as the DOCKER_DEPLOY_INSTANCE_ID repo Variable, re-apply Terraform, then re-run this job."
+            fi
+            exit 1
+          fi
           echo "SSM CommandId=$CMD_ID"
           for i in $(seq 1 90); do
             STATUS="$(aws ssm get-command-invocation \

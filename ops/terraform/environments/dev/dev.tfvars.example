@@ -39,9 +39,15 @@ alb_ingress_cidr_blocks = ["0.0.0.0/0"]
 manage_github_oidc_role = false
 
 # After CI pushes :main to ECR, GitHub Actions restarts the server on this
-# instance (SSM). Instance id must match the sandbox instance id used by the
-# push-image workflow.
+# instance (SSM). The resolved target must include the DOCKER_DEPLOY_INSTANCE_ID
+# repo Variable the push-image workflow sends to.
+#
+# Prefer the tag map: it re-resolves on every apply, so rebuilding the sandbox
+# under the same Name tag keeps CI working instead of failing the rollout with
+# `AccessDeniedException ... ssm:SendCommand`. The raw id still works and is
+# unioned in; set either or both.
 enable_ci_ssm_deploy_after_ecr_push = true
+ci_ssm_deploy_instance_tags         = { Name = "<DEV_SANDBOX_NAME_TAG>" }
 ci_ssm_deploy_instance_id           = "<DEV_SANDBOX_INSTANCE_ID>"
 
 # First-launch admin credentials. The server writes a random password to
