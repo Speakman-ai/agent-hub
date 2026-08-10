@@ -277,10 +277,35 @@ export async function ensureBridgeNetfilter(
   deps: Pick<ReconcileFirecrackerHostDeps, 'run' | 'logger'>,
 ): Promise<boolean> {
   const logger = deps.logger ?? { warn: (msg: string) => console.warn(msg) };
-  const modprobe = await deps.run(['modprobe', 'br_netfilter']);
-  if (!modprobe.ok) {
-    logger.warn(`[firecracker] modprobe br_netfilter failed: ${modprobe.stderr.trim()}`);
-    return false;
+  // Prefer absolute paths: the privileged docker helper uses `--entrypoint`,
+  // and the Finalize runner image often has no `modprobe` on PATH (no kmod).
+  const modprobeBins = ['/usr/sbin/modprobe', '/sbin/modprobe', 'modprobe'];
+  let modprobeOk = false;
+  let lastModprobeErr = '';
+  for (const bin of modprobeBins) {
+    const modprobe = await deps.run([bin, 'br_netfilter']);
+    if (modprobe.ok) {
+      modprobeOk = true;
+      break;
+    }
+    lastModprobeErr = modprobe.stderr.trim() || modprobe.stdout.trim();
+    // Keep trying other paths when the binary is missing; stop on a real load error.
+    if (!/not found|no such file|executable file not found/i.test(lastModprobeErr)) {
+      break;
+    }
+  }
+  if (!modprobeOk) {
+    // Host setup / a prior boot may already have the module. Privileged helpers
+    // share the host's /sys, so this is authoritative without needing kmod.
+    const loaded = await deps.run(['test', '-d', '/sys/module/br_netfilter']);
+    if (!loaded.ok) {
+      logger.warn(`[firecracker] modprobe br_netfilter failed: ${lastModprobeErr}`);
+      return false;
+    }
+    logger.warn(
+      `[firecracker] modprobe unavailable (${lastModprobeErr || 'not in PATH'}); ` +
+        `br_netfilter already loaded — continuing`,
+    );
   }
   const enable = await deps.run(['sysctl', '-qw', 'net.bridge.bridge-nf-call-iptables=1']);
   if (!enable.ok) {

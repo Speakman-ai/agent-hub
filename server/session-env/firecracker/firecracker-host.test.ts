@@ -319,6 +319,41 @@ describe('reconcileFirecrackerHost', () => {
     expect(warn).toHaveBeenCalled();
   });
 
+  it('continues when modprobe is missing but br_netfilter is already loaded', async () => {
+    const run = mockReconcileRun({
+      failWhen: (argv) =>
+        argv.includes('br_netfilter') && argv[0] !== 'test'
+          ? {
+              ok: false,
+              stderr: 'exec: "modprobe": executable file not found in $PATH: unknown',
+            }
+          : null,
+    });
+    // mockReconcileRun returns ok:true for unknown argv — including `test -d`.
+    const warn = vi.fn();
+    const result = await reconcileFirecrackerHost({ run, logger: { warn } });
+    expect(result.natReady).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('already loaded'));
+  });
+
+  it('fails NAT when modprobe is missing and br_netfilter is not loaded', async () => {
+    const run = mockReconcileRun({
+      failWhen: (argv) => {
+        if (argv[0] === 'test' && argv.includes('/sys/module/br_netfilter')) {
+          return { ok: false, stderr: '' };
+        }
+        if (argv.includes('br_netfilter')) {
+          return { ok: false, stderr: 'executable file not found in $PATH' };
+        }
+        return null;
+      },
+    });
+    const warn = vi.fn();
+    const result = await reconcileFirecrackerHost({ run, logger: { warn } });
+    expect(result.natReady).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('modprobe br_netfilter failed'));
+  });
+
   it('marks NAT not ready when the host has no default uplink', async () => {
     const run = mockReconcileRun({ routeStdout: '' });
     // Force route get to fail so parseUplinkDev sees nothing usable.

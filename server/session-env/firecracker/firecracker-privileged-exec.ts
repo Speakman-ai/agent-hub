@@ -27,7 +27,7 @@
  */
 
 import { execFile, execFileSync, spawn as nodeSpawn } from 'child_process';
-import { readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import type { FirecrackerCapabilityProbeDeps } from './firecracker-capability.js';
 import {
   defaultFirecrackerHostIo,
@@ -522,6 +522,16 @@ export function resolveHelperMounts(
     { path: env.AGENT_HUB_FIRECRACKER_BIN?.trim() || '/usr/bin/firecracker', readOnly: true },
     { path: env.AGENT_HUB_JAILER_BIN?.trim() || '/usr/bin/jailer', readOnly: true },
   ];
+  // Finalize-runner helpers often lack kmod/procps; bind the host tools the
+  // NAT reconcile needs so `modprobe` / `sysctl` are not mysterious PATH misses.
+  for (const hostTool of [
+    '/usr/sbin/modprobe',
+    '/sbin/modprobe',
+    '/usr/sbin/sysctl',
+    '/sbin/sysctl',
+  ]) {
+    if (existsSync(hostTool)) mounts.push({ path: hostTool, readOnly: true });
+  }
   if (paths.jailerChrootBase) mounts.push({ path: paths.jailerChrootBase });
   if (paths.diskHelper) mounts.push({ path: paths.diskHelper, readOnly: true });
   const worktrees = env.AGENT_HUB_HOST_WORKSPACES_DIR?.trim();
