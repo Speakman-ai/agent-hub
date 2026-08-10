@@ -22,6 +22,7 @@ fc_load_roots() {
   ARTIFACT_DIR="${ARTIFACT_DIR:-/var/lib/agent-hub/firecracker}"
   RUN_DIR="${RUN_DIR:-/var/lib/agent-hub/firecracker/vms}"
   JAILER_DIR="${JAILER_DIR:-/var/lib/agent-hub/firecracker/jailer}"
+  CONTROL_DIR="${CONTROL_DIR:-/var/lib/agent-hub/firecracker/control}"
   WORKTREE_ROOTS="${WORKTREE_ROOTS:-/home/node/.agent-hub/workspaces:/var/lib/agent-hub/workspaces}"
   if [[ -f "${conf}" ]]; then
     # shellcheck disable=SC1090
@@ -97,7 +98,7 @@ fc_assert_under_roots() {
   if [[ ${#roots[@]} -eq 0 ]]; then
     local IFS=':'
     # shellcheck disable=SC2206
-    roots=(${ARTIFACT_DIR} ${RUN_DIR} ${JAILER_DIR} ${WORKTREE_ROOTS})
+    roots=(${ARTIFACT_DIR} ${RUN_DIR} ${JAILER_DIR} ${CONTROL_DIR} ${WORKTREE_ROOTS})
   fi
 
   local root crootraw croot
@@ -108,6 +109,7 @@ fc_assert_under_roots() {
       ARTIFACT_DIR) crootraw=$ARTIFACT_DIR ;;
       RUN_DIR) crootraw=$RUN_DIR ;;
       JAILER_DIR) crootraw=$JAILER_DIR ;;
+      CONTROL_DIR) crootraw=$CONTROL_DIR ;;
       WORKTREE_ROOTS)
         local wr
         local IFS=':'
@@ -128,15 +130,17 @@ fc_assert_under_roots() {
     fi
   done
   echo "fc-path-guard: $label outside configured Firecracker roots: $path (canonical: $canonical)" >&2
-  echo "fc-path-guard: allowed prefixes: ARTIFACT_DIR=${ARTIFACT_DIR} RUN_DIR=${RUN_DIR} JAILER_DIR=${JAILER_DIR} WORKTREE_ROOTS=${WORKTREE_ROOTS}" >&2
+  echo "fc-path-guard: allowed prefixes: ARTIFACT_DIR=${ARTIFACT_DIR} RUN_DIR=${RUN_DIR} JAILER_DIR=${JAILER_DIR} CONTROL_DIR=${CONTROL_DIR} WORKTREE_ROOTS=${WORKTREE_ROOTS}" >&2
   exit 2
 }
 
-# Reject any symlink in the path components (closes Hub-writable symlink
-# retargets for inputs that will be opened as root).
+# Reject symlink components that retarget away from configured roots.
+# System aliases that *are* ancestors of an allowlisted root (e.g. macOS
+# `/var` → `/private/var`) are permitted; Hub-planted mid-path swaps are not.
 fc_assert_no_symlink_components() {
   local label=$1 path=$2
   fc_assert_safe_abs_path "$label" "$path"
+  fc_load_roots
   local cur="" part
   local IFS='/'
   # shellcheck disable=SC2086
@@ -145,8 +149,31 @@ fc_assert_no_symlink_components() {
     [[ -n "$part" ]] || continue
     cur="${cur}/${part}"
     if [[ -L "$cur" ]]; then
-      echo "fc-path-guard: $label contains symlink component: $cur" >&2
-      exit 2
+      local cur_real ok=0 crootraw croot wr
+      cur_real=$(fc_canonical_root "$cur")
+      for crootraw in "$ARTIFACT_DIR" "$RUN_DIR" "$JAILER_DIR" "$CONTROL_DIR"; do
+        [[ -n "$crootraw" ]] || continue
+        croot=$(fc_canonical_root "$crootraw")
+        if [[ "$croot" == "$cur_real" || "$croot" == "$cur_real"/* ]]; then
+          ok=1
+          break
+        fi
+      done
+      if [[ $ok -eq 0 ]]; then
+        local IFS=':'
+        for wr in ${WORKTREE_ROOTS}; do
+          [[ -n "$wr" ]] || continue
+          croot=$(fc_canonical_root "$wr")
+          if [[ "$croot" == "$cur_real" || "$croot" == "$cur_real"/* ]]; then
+            ok=1
+            break
+          fi
+        done
+      fi
+      if [[ $ok -eq 0 ]]; then
+        echo "fc-path-guard: $label contains symlink component: $cur -> $cur_real" >&2
+        exit 2
+      fi
     fi
   done
 }
@@ -160,6 +187,14 @@ fc_assert_output_under_roots() {
 
 fc_assert_worktree_under_roots() {
   fc_assert_under_roots "$1" "$2" WORKTREE_ROOTS
+}
+
+fc_assert_control_under_roots() {
+  fc_assert_under_roots "$1" "$2" CONTROL_DIR
+}
+
+fc_assert_jailer_under_roots() {
+  fc_assert_under_roots "$1" "$2" JAILER_DIR
 }
 
 

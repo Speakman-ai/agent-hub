@@ -222,9 +222,11 @@ fi
 #   ARTIFACT_DIR  — kernel/rootfs readable by Hub, not Hub-writable
 #   VM_SCRATCH    — root-owned disk images (prepare-disks constructs paths)
 #   JAILER_DIR    — root-owned jailer chroot base
-#   CONTROL_DIR   — Hub-writable config/pid/socket control plane
+#   CONTROL_DIR   — Hub-writable config/pid/socket control plane under the
+#                   shared Firecracker data mount (containerized Hub already
+#                   bind-mounts ARTIFACT_DIR at the identical host path).
 JAILER_DIR="${ARTIFACT_DIR}/jailer"
-CONTROL_DIR="/run/agent-hub/vm-control"
+CONTROL_DIR="${ARTIFACT_DIR}/control"
 mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}" "${CONTROL_DIR}"
 
 # Root-owned, Hub-unwritable disk + jail trees.

@@ -9,6 +9,10 @@
 #     and assign ownership/modes so the jailer UID can read/write RW disks.
 #     See firecracker jailer.md Observations.
 #
+# Destination paths must sit under the root-owned JAILER_DIR. Sources are
+# constrained by class (artifact / run / control) — never under Hub-writable
+# worktree roots — and symlink components are refused before any root write.
+#
 # Authorized via sudoers — do not expand this into a general shell.
 set -euo pipefail
 
@@ -27,7 +31,8 @@ shift
 case "$cmd" in
   clean)
     tree=${1:?jail tree required}
-    fc_assert_under_roots 'jail tree' "$tree"
+    fc_assert_jailer_under_roots 'jail tree' "$tree"
+    fc_assert_no_symlink_components 'jail tree' "$tree"
     if [[ "$tree" != */firecracker/* ]]; then
       echo "fc-jail-manage: clean path must contain /firecracker/: $tree" >&2
       exit 2
@@ -41,6 +46,10 @@ case "$cmd" in
       echo "fc-jail-manage: clean path must be .../firecracker/<vmId>: $tree" >&2
       exit 2
     fi
+    if [[ -L "$tree" ]]; then
+      echo "fc-jail-manage: refusing to clean symlink at $tree" >&2
+      exit 2
+    fi
     rm -rf -- "$tree"
     ;;
   stage)
@@ -51,17 +60,27 @@ case "$cmd" in
     uid=${5:?uid required}
     gid=${6:?gid required}
     config_src=${7:?config source required}
-    fc_assert_under_roots 'chroot root' "$root"
-    fc_assert_under_roots 'kernel' "$kernel"
-    fc_assert_under_roots 'rootfs' "$rootfs"
-    fc_assert_under_roots 'workspace' "$workspace"
-    fc_assert_under_roots 'config source' "$config_src"
+    # Exact root classes — destinations never under WORKTREE_ROOTS.
+    fc_assert_jailer_under_roots 'chroot root' "$root"
+    fc_assert_under_roots 'kernel' "$kernel" ARTIFACT_DIR
+    fc_assert_under_roots 'rootfs' "$rootfs" RUN_DIR
+    fc_assert_under_roots 'workspace' "$workspace" RUN_DIR
+    fc_assert_control_under_roots 'config source' "$config_src"
+    fc_assert_no_symlink_components 'chroot root' "$root"
+    fc_assert_no_symlink_components 'kernel' "$kernel"
+    fc_assert_no_symlink_components 'rootfs' "$rootfs"
+    fc_assert_no_symlink_components 'workspace' "$workspace"
+    fc_assert_no_symlink_components 'config source' "$config_src"
     if [[ ! "$uid" =~ ^[0-9]+$ || ! "$gid" =~ ^[0-9]+$ ]]; then
       echo "fc-jail-manage: uid/gid must be numeric (got uid=$uid gid=$gid)" >&2
       exit 2
     fi
     if [[ "$root" != */firecracker/*/root ]]; then
       echo "fc-jail-manage: stage root must match */firecracker/*/root: $root" >&2
+      exit 2
+    fi
+    if [[ -L "$root" ]]; then
+      echo "fc-jail-manage: refusing symlink chroot root: $root" >&2
       exit 2
     fi
     if [[ ! -f "$kernel" || ! -f "$rootfs" || ! -f "$workspace" || ! -f "$config_src" ]]; then

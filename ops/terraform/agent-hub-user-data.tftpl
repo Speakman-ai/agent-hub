@@ -185,6 +185,10 @@ RUNNER_IMAGE_URI="${finalize_runner_image_uri}"
 install -d -m 0755 -o 1000 -g 1000 \
   "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects" "$DATA_ROOT/workspaces" \
   "$DATA_ROOT/firecracker"
+# Hub-writable control plane for microVM config/pid/sockets. Lives under the
+# shared Firecracker data mount so agenthub-server and the privileged helper
+# see the same files (see AGENT_HUB_FIRECRACKER_CONTROL_DIR default).
+install -d -m 0750 -o 1000 -g 1000 "$DATA_ROOT/firecracker/control"
 
 # Write the .env file — same contract as the docker-build path, same server
 # reads it, so switching bootstrap modes is transparent to the app.
@@ -341,9 +345,10 @@ fi
 # keep using /home/node/... unchanged.
 #
 # \$DATA_ROOT/firecracker is mounted at the identical path on both sides for
-# the same reason: the Hub writes each microVM's config there and then dials
-# the vsock socket the VMM creates in that directory, so both must agree on
-# the absolute path. The VMM runs in a privileged sibling container (see
+# the same reason: the Hub writes each microVM's config under
+# \$DATA_ROOT/firecracker/control and then dials the vsock socket the VMM
+# creates in that directory, so both must agree on the absolute path. The VMM
+# runs in a privileged sibling container (see
 # server/session-env/firecracker/firecracker-privileged-exec.ts); this
 # container stays unprivileged and gets no device access.
 exec docker run --rm --name agenthub-server \
@@ -480,6 +485,10 @@ fi
 install -d -m 0755 -o 1000 -g 1000 \
   "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects" "$DATA_ROOT/workspaces" \
   "$DATA_ROOT/firecracker"
+# Hub-writable control plane for microVM config/pid/sockets. Lives under the
+# shared Firecracker data mount so agenthub-server and the privileged helper
+# see the same files (see AGENT_HUB_FIRECRACKER_CONTROL_DIR default).
+install -d -m 0750 -o 1000 -g 1000 "$DATA_ROOT/firecracker/control"
 if [ -n "${docker_env_b64}" ]; then
   umask 077
   printf '%s' "${docker_env_b64}" | base64 -d > $REPO_DIR/.env
@@ -504,6 +513,7 @@ cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped 
   -v "$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
   -v "$DATA_ROOT/projects:$DATA_ROOT/projects" \
   -v "$DATA_ROOT/workspaces:$DATA_ROOT/workspaces" \
+  -v "$DATA_ROOT/firecracker:$DATA_ROOT/firecracker" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --add-host=host.docker.internal:host-gateway \
   $DOCKER_GROUP_ARG \
@@ -511,6 +521,7 @@ cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped 
   -e "AGENT_HUB_HOST_WORKSPACES_DIR=$DATA_ROOT/workspaces" \
   -e "AGENT_HUB_CONTAINER_PROJECTS_DIR=/home/node/projects" \
   -e "AGENT_HUB_CONTAINER_WORKSPACES_DIR=/home/node/.agent-hub/workspaces" \
+  -e "AGENT_HUB_FIRECRACKER_DIR=$DATA_ROOT/firecracker" \
   --env-file "$REPO_DIR/.env" \
   agenthub:local
 %{ endif ~}

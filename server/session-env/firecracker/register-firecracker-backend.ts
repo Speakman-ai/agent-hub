@@ -41,8 +41,10 @@ export function firecrackerHostPaths(env: NodeJS.ProcessEnv = process.env): Fire
     baseRootfsPath: env.AGENT_HUB_FIRECRACKER_ROOTFS ?? `${artifactDir}/rootfs.ext4`,
     // Root-owned disk scratch — prepare-disks constructs paths under here.
     runDir: env.AGENT_HUB_FIRECRACKER_RUN_DIR ?? `${artifactDir}/vms`,
-    // Hub-writable control plane for config/pid/sockets.
-    controlDir: env.AGENT_HUB_FIRECRACKER_CONTROL_DIR ?? '/run/agent-hub/vm-control',
+    // Hub-writable control plane for config/pid/sockets. Lives under the
+    // shared Firecracker data mount (not /run) so a containerized Hub and
+    // the privileged helper see the same files without an extra bind.
+    controlDir: env.AGENT_HUB_FIRECRACKER_CONTROL_DIR ?? `${artifactDir}/control`,
     jailerChrootBase: env.AGENT_HUB_FIRECRACKER_JAILER_DIR ?? `${artifactDir}/jailer`,
     diskHelper:
       env.AGENT_HUB_FIRECRACKER_DISK_HELPER ?? '/usr/local/lib/agent-hub/fc-prepare-disks.sh',

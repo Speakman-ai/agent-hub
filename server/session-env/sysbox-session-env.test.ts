@@ -611,3 +611,39 @@ describe('SysboxSessionEnv — container-IP routing', () => {
     expect(runCalls.some((a) => a[1] === 'rm')).toBe(true);
   });
 });
+
+describe('SysboxSessionEnv hasDetachedWorkload', () => {
+  it('queries container-ns PIDs via docker exec, not host PIDs from docker top', async () => {
+    const { env, runCalls } = await startedEnv({}, (argv) => {
+      if (argv[1] === 'exec' && argv.includes('ps')) {
+        // Namespace PID 1 sleep = entrypoint idle baseline.
+        return { ok: true, stdout: '1 sleep\n', stderr: '' };
+      }
+      return undefined;
+    });
+    await expect(env.hasDetachedWorkload()).resolves.toBe(false);
+    const probe = runCalls.find((a) => a[1] === 'exec' && a.includes('ps'));
+    expect(probe).toEqual(['docker', 'exec', expect.any(String), 'ps', '-eo', 'pid=,comm=']);
+    expect(runCalls.some((a) => a[1] === 'top')).toBe(false);
+  });
+
+  it('treats non-init sleep and other user processes as busy', async () => {
+    const { env } = await startedEnv({}, (argv) => {
+      if (argv[1] === 'exec' && argv.includes('ps')) {
+        return { ok: true, stdout: '1 sleep\n42 sleep\n7 node\n', stderr: '' };
+      }
+      return undefined;
+    });
+    await expect(env.hasDetachedWorkload()).resolves.toBe(true);
+  });
+
+  it('fails closed when the namespace probe fails', async () => {
+    const { env } = await startedEnv({}, (argv) => {
+      if (argv[1] === 'exec' && argv.includes('ps')) {
+        return { ok: false, stdout: '', stderr: 'no ps' };
+      }
+      return undefined;
+    });
+    await expect(env.hasDetachedWorkload()).resolves.toBe(true);
+  });
+});
