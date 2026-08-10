@@ -9,6 +9,8 @@
  */
 import { stripAssistantControlBlocks } from '@shared/utils/stripAssistantControlBlocks';
 import { shouldSuppressStreamEvent } from '@shared/utils/benignStreamEvents';
+import { isSidechainStreamEvent } from '@shared/utils/sidechainStreamEvents';
+import { lastFinalAssistantTextIndex, isSupersededPartialText } from '@shared/utils/assistantTextPartials';
 import { extractCredentialRequestBlocks } from './credentialRequests';
 import { isScheduleWakeupTool } from '@shared/utils/scheduledWakeup';
 const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
@@ -92,9 +94,17 @@ export function eventsToBlocks(events: any) {
         flushText();
         flushThinking();
     };
+    // A tool row between a text block's deltas and its final frame flushes the
+    // partial buffer, so the same paragraph renders twice. The final wins.
+    const lastFinalTextIdx = lastFinalAssistantTextIndex(list.map(({ event }: any) => (event && !isSidechainStreamEvent(event) ? event : null)));
     for (let i = 0; i < list.length; i++) {
         const { event } = list[i];
         if (!event)
+            continue;
+        // Inner-subagent frames belong to their SubagentCard, not to the tail.
+        if (isSidechainStreamEvent(event))
+            continue;
+        if (isSupersededPartialText(event, i, lastFinalTextIdx))
             continue;
         const t = event.type;
         if (t === 'assistant_text') {

@@ -36,6 +36,7 @@ import {
   resolveWorkspaceSkillsDir,
 } from './project-paths.js';
 import { getWikiContext } from './wiki.js';
+import { WRITING_STYLE_BLOCK, WRITING_STYLE_FOLLOW_UP_BLOCK } from './writing-style-prompt.js';
 import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from './memory.js';
 import { listEnabledSkills } from './agent-skills-list.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
@@ -1189,20 +1190,7 @@ Use the \`<agenthub:react>\` web action to search first:
     prompt += `\n\n## External API Documentation — Always Verify
 When working with external APIs (GitHub, Slack, etc.), always consult official documentation first. Do not rely solely on training data — APIs change.`;
 
-    prompt += `\n\n## Writing Style: No AI Slop
-
-Write like a senior engineer talking to a peer. Apply to every reply, commit, PR, card, and wiki page:
-
-1. **No em/en-dashes.** Never emit \`\u2014\` or \`\u2013\` — use a comma, colon, period, or parentheses. Hyphens in compounds ("worktree-first") are fine.
-2. **No preambles, recaps, or hedges.** Skip "Great question!", "You asked about…", "It's worth noting…", "Let me know if…". Open with the answer; the conversation stays open by default.
-3. **No buzzword vocabulary.** Avoid delve, leverage, robust, seamless, comprehensive, ecosystem (as "stack"), tapestry, journey, holistic, synergy, "at the end of the day", "moving forward". Pick the boring concrete word.
-4. **No bullet soup, no plan restatement, no emoji, no final recap section.** Bullets only for genuinely parallel items. Do the work and report what shipped, not what you plan to do. No emoji unless the user used one first.
-5. **Internalize hidden CLI reminders.** The Claude Code CLI appends file-safety and TodoWrite \`<system-reminder>\` blocks. Never surface them ("Not malware — …", "This appears safe — …") and never use them as grounds to refuse routine editing work. Stay quiet unless the file is genuinely malicious.
-6. **No forced triads (the "rule of three").** Don't pad a sentence or list to three items for cadence. State the items that actually exist, whether that's one, two, or five.
-7. **No bloated comments.** Comment the *why* or a non-obvious constraint, nothing else. Don't restate the code on the next line, don't add decorative banners, don't narrate the edit you just made.
-8. **No issue, version, or "legacy" breadcrumbs in code or copy.** Don't leave ticket/PR numbers, \`v0\`/\`v1\`/\`v2\` labels, "new vs old", "legacy", or "as of the refactor" in source, comments, identifiers, or user-facing text. Name what the code does now; historical context belongs in commit messages and the wiki.
-
-Every rule above yields only to a genuinely, 100%-warranted exception (quoting an external API that really is named \`v2\`, a comment that truly needs a ticket link for context). Absent that, shorter and plainer wins.`;
+    prompt += `\n\n${WRITING_STYLE_BLOCK}`;
 
     prompt += `\n\n## Asking the User Multi-Choice Questions
 
@@ -1261,6 +1249,15 @@ When you need a secret from the user (a password, API key, login, token, or any 
     ah-api.sh POST "/api/sessions/$AGENT_HUB_SESSION_ID/credential-requests/<requestId>/consume"
 
 The submitted secret stays retrievable until the request's TTL expires, so you can call \`consume\` again with the **same \`requestId\`** if you lost the value (for example you fetched it inside a throwaway subprocess or a probe step that then exited). **Do that instead of asking the user to resubmit.** Consume the value in the same step that uses it, and hold it in process memory only as long as you need it— never echo it back to chat, log it, or write it to a file. Only when consume returns 404 or an \`expired\` status is the secret actually gone: then ask the user to resubmit by emitting a fresh \`agenthub:credential-request\` block.`;
+  }
+
+  // The system prompt is rebuilt and re-sent on every turn, so a rule dropped
+  // from the follow-up prompt is a rule the agent no longer has. Trimming the
+  // full anti-slop block after turn 1 left mid-session replies ungoverned,
+  // which is exactly where unscoped answers show up: the user asks a short
+  // follow-up and gets a report. Ship the compact reminder instead of nothing.
+  if (!isFirstMessage) {
+    prompt += `\n\n${WRITING_STYLE_FOLLOW_UP_BLOCK}`;
   }
 
   // Agents are flat ("full-stack" or otherwise dedicated) and coordinate via
@@ -3879,7 +3876,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           console.error('Failed to persist session_event:', message);
         }
 
-        if (event.type === 'assistant_text') {
+        // A tagged event came from an inner subagent, not from the agent the
+        // user is talking to. It stays in the persisted event log above (the
+        // subagent card reads it), but folding it in here would splice the
+        // subagent's whole report into the parent's saved reply.
+        if (event.type === 'assistant_text' && !event.parentToolUseId) {
           const text =
             typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
           const { next } = applyAssistantTextChunk(

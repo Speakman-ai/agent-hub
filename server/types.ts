@@ -3694,6 +3694,17 @@ export type ProgressStepStatus = 'started' | 'completed' | 'failed';
 export interface BaseStreamEvent {
   type: StreamEventType;
   raw?: string;
+  /**
+   * Set when this event came from a sidechain (an inner subagent the CLI
+   * spawned via its own `Task`/`Agent` tool) rather than from the agent the
+   * user is talking to. Claude Code interleaves sidechain frames into the same
+   * stream-json output under `--verbose`, tagged with `parent_tool_use_id`.
+   *
+   * Consumers must treat a tagged event as belonging to the subagent card
+   * identified by this id, not to the parent turn: it is not part of the
+   * parent's reply text and must not be rendered as top-level chat.
+   */
+  parentToolUseId?: string;
 }
 
 export interface SystemEvent extends BaseStreamEvent {

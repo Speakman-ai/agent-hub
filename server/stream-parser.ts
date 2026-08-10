@@ -455,7 +455,25 @@ function parseLine(line: string, normalize: NormalizeFn): StreamEvent[] {
 
 // ─── Claude Code normalizer ────────────────────────────────────────────
 
+/**
+ * Under `--verbose`, Claude Code interleaves frames from sidechains (inner
+ * subagents it spawned through its own `Task`/`Agent` tool) into the same
+ * stream-json output as the parent turn. The only thing distinguishing them is
+ * `parent_tool_use_id`.
+ *
+ * Left untagged, a subagent's narration and final report are indistinguishable
+ * from the parent agent's own reply: they get folded into the parent's message
+ * text and rendered as top-level chat. Tag them here, once, so every downstream
+ * consumer can tell whose output it is holding.
+ */
 function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
+  const events = normalizeClaudeFrame(raw);
+  const parentToolUseId = raw.parent_tool_use_id;
+  if (typeof parentToolUseId !== 'string' || parentToolUseId === '') return events;
+  return events.map((event) => ({ ...event, parentToolUseId }) as StreamEvent);
+}
+
+function normalizeClaudeFrame(raw: Record<string, unknown>): StreamEvent[] {
   switch (raw.type) {
     case 'system':
       if (raw.subtype === 'init') {

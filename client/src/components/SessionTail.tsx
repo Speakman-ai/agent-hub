@@ -30,6 +30,11 @@ import { stripAssistantControlBlocks } from '../utils/controlBlocks';
 import { extractReviewVerdictContent } from '../utils/finalizeTimeline';
 import { extractAskBlocks } from '@shared/utils/extractAskBlocks';
 import { shouldSuppressStreamEvent } from '@shared/utils/benignStreamEvents';
+import { isSidechainStreamEvent } from '@shared/utils/sidechainStreamEvents';
+import {
+  lastFinalAssistantTextIndex,
+  isSupersededPartialText,
+} from '@shared/utils/assistantTextPartials';
 import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
 import { extractCredentialRequestBlocks } from '../utils/credentialRequests';
 import AskUserQuestion from './AskUserQuestion';
@@ -624,9 +629,19 @@ export function eventsToBlocks(events: any) {
     flushThinking();
   };
 
+  // A tool row between a text block's deltas and its final frame flushes the
+  // partial buffer, so the same paragraph renders twice. The final wins.
+  const lastFinalTextIdx = lastFinalAssistantTextIndex(
+    list.map(({ event }: any) => (event && !isSidechainStreamEvent(event) ? event : null)),
+  );
+
   for (let i = 0; i < list.length; i++) {
     const { event } = list[i];
     if (!event) continue;
+    // Inner-subagent frames belong to their SubagentCard, not to the tail. The
+    // parent turn's own Task tool_use/tool_result are untagged and still render.
+    if (isSidechainStreamEvent(event)) continue;
+    if (isSupersededPartialText(event, i, lastFinalTextIdx)) continue;
     const t = event.type;
 
     // Text breaks an explored run (model said something between reads → new
