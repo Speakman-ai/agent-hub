@@ -464,8 +464,13 @@ export class FirecrackerSessionEnv implements SessionEnv {
       await this.io.mkdirp(this.vmDir);
       // Jailer refuses to start when its chroot base is missing — create it
       // on first use so a host that skipped the setup script still boots.
+      // Also drop any leftover `<base>/firecracker/<vmId>` tree: a prior
+      // failed boot leaves `/dev/net/tun` in the jail and the next mknod
+      // fails with EEXIST.
       if (this.useJailer) {
-        await this.io.mkdirp(this.paths.jailerChrootBase ?? '/srv/jailer');
+        const jailerBase = this.paths.jailerChrootBase ?? '/srv/jailer';
+        await this.io.mkdirp(jailerBase);
+        await this.io.rmrf(`${jailerBase}/firecracker/${this.vmId}`);
       }
       // A previous VMM for this vm id may still hold api.sock / vsock.sock or
       // the tap even though this process is gone — stop and confirm exit
