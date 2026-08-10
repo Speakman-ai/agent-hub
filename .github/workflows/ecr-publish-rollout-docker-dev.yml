@@ -149,23 +149,39 @@ jobs:
             if [[ -z "$s" ]]; then s="branch"; fi
             printf '%s' "$s"
           }
-          # Append a short SHA so feature/a and feature-a cannot collide after
-          # sanitization, and truncate to Docker's 128-char tag limit.
+          # Truncate the sanitized *base* first so the full SHA suffix always
+          # remains — truncating the combined string can drop the suffix and
+          # re-introduce collisions for long refs.
           unique_docker_tag() {
-            local base suffix out
+            local base suffix max_base
             base="$(sanitize_docker_tag "$1")"
             suffix="$2"
-            out="${base}-${suffix}"
-            out="${out:0:128}"
-            # Re-trim ends in case truncation left a trailing dash.
-            out="$(printf '%s' "$out" | sed -e 's/^[^A-Za-z0-9]*//' -e 's/[^A-Za-z0-9]*$//')"
-            if [[ -z "$out" ]]; then out="branch-${suffix}"; fi
-            printf '%s' "$out"
+            max_base=$((128 - 1 - ${#suffix}))
+            if (( max_base < 1 )); then max_base=1; fi
+            base="${base:0:max_base}"
+            base="$(printf '%s' "$base" | sed -e 's/[^A-Za-z0-9]*$//')"
+            if [[ -z "$base" ]]; then base="branch"; fi
+            printf '%s' "${base}-${suffix}"
+          }
+          # Preserve stable tags consumed by Terraform / installs (`:main`,
+          # exact semver). Only arbitrary refs get a collision-resistant suffix.
+          is_stable_docker_tag() {
+            local raw="$1"
+            local sanitized
+            sanitized="$(sanitize_docker_tag "$raw")"
+            [[ "$raw" == "$sanitized" ]] || return 1
+            [[ "$raw" == "main" ]] && return 0
+            [[ "$raw" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9_.-]+)?$ ]]
           }
           # A docker tag admits only [A-Za-z0-9_.-], so a branch like
           # `preview/foo` cannot be one verbatim — buildx rejects the whole
           # build with "invalid reference format" before a layer is built.
-          BRANCH="$(unique_docker_tag "${GITHUB_REF_NAME:-main}" "$SHA_SHORT")"
+          REF_NAME="${GITHUB_REF_NAME:-main}"
+          if is_stable_docker_tag "$REF_NAME"; then
+            BRANCH="$REF_NAME"
+          else
+            BRANCH="$(unique_docker_tag "$REF_NAME" "$SHA_SHORT")"
+          fi
           EXTRA_TAG=""
           if [[ -n "$INPUT_VERSION_TAG" ]]; then
             if [[ "$INPUT_VERSION_TAG" == refs/tags/* ]]; then
@@ -173,7 +189,9 @@ jobs:
             else
               EXTRA_TAG="$INPUT_VERSION_TAG"
             fi
-            EXTRA_TAG="$(unique_docker_tag "$EXTRA_TAG" "$SHA_SHORT")"
+            if ! is_stable_docker_tag "$EXTRA_TAG"; then
+              EXTRA_TAG="$(unique_docker_tag "$EXTRA_TAG" "$SHA_SHORT")"
+            fi
           fi
 
           echo "sha_short=$SHA_SHORT" >> "$GITHUB_OUTPUT"
@@ -328,6 +346,8 @@ jobs:
             SCRIPT=$(cat <<EOF
           set -euo pipefail
           DATA_ROOT="$DATA_ROOT"
+          EXPECTED_DIGEST="$EXPECTED_DIGEST"
+          DEPLOY_TAG="$DEPLOY_TAG"
           if [ -f "\$DATA_ROOT/data/config.json" ]; then
             sudo cp -a "\$DATA_ROOT/data/config.json" /tmp/agent-hub-config.json
           fi
@@ -339,9 +359,69 @@ jobs:
             sudo install -m 0600 -o 1000 -g 1000 /tmp/agent-hub-config.json "\$DATA_ROOT/data/config.json"
             sudo rm -f /tmp/agent-hub-config.json
           fi
+          sudo install -d -m 0755 /etc/agent-hub
+          printf '%s\n' "\$DEPLOY_TAG" | sudo tee /etc/agent-hub/image-tag >/dev/null
           sudo systemctl start agenthub-server
-          sleep 5
           sudo systemctl is-active agenthub-server
+
+          POLL_TIMEOUT=240
+          POLL_INTERVAL=5
+          POLL_DEADLINE=\$(( \$(date +%s) + POLL_TIMEOUT ))
+          LOCAL_DIGEST=""
+          CONTAINER_IMAGE_ID=""
+          LOCAL_IMAGE_ID=""
+          attempts=0
+          while :; do
+            attempts=\$(( attempts + 1 ))
+            LOCAL_DIGEST=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:\$DEPLOY_TAG \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
+              | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
+            CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' 2>/dev/null || true)
+            LOCAL_IMAGE_ID=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:\$DEPLOY_TAG --format '{{.Id}}' 2>/dev/null || true)
+
+            digest_ok="false"
+            container_ok="false"
+            if [ -z "\$EXPECTED_DIGEST" ] || [ "\$LOCAL_DIGEST" = "\$EXPECTED_DIGEST" ]; then
+              digest_ok="true"
+            fi
+            if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" = "\$LOCAL_IMAGE_ID" ]; then
+              container_ok="true"
+            fi
+
+            echo "wait_for_deploy attempt=\$attempts digest_ok=\$digest_ok container_ok=\$container_ok local_digest=\$LOCAL_DIGEST"
+
+            if [ "\$digest_ok" = "true" ] && [ "\$container_ok" = "true" ]; then
+              break
+            fi
+            if [ \$(date +%s) -ge \$POLL_DEADLINE ]; then
+              echo "wait_for_deploy: timed out after \${POLL_TIMEOUT}s (\$attempts attempts)" >&2
+              break
+            fi
+            sleep "\$POLL_INTERVAL"
+          done
+
+          if [ -z "\$EXPECTED_DIGEST" ]; then
+            echo "WARN: EXPECTED_DIGEST not provided by workflow; skipping digest assertion." >&2
+            echo "OK: agenthub-server restarted after reset (digest assertion skipped)."
+            exit 0
+          fi
+
+          if [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
+            echo "FATAL: host :\$DEPLOY_TAG digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
+            exit 1
+          fi
+
+          if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" != "\$LOCAL_IMAGE_ID" ]; then
+            echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :\$DEPLOY_TAG image-id (\$LOCAL_IMAGE_ID)" >&2
+            exit 1
+          fi
+
+          if [ -z "\$CONTAINER_IMAGE_ID" ] || [ -z "\$LOCAL_IMAGE_ID" ]; then
+            echo "FATAL: agenthub-server container not running after \${POLL_TIMEOUT}s" >&2
+            exit 1
+          fi
+
+          echo "OK: agenthub-server is running the just-pushed image after reset."
           EOF
           )
             COMMENT="CI fresh-setup reset on dev sandbox ${{ github.sha }}"

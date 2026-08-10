@@ -352,6 +352,43 @@ describe('preview proxy routing (end-to-end)', () => {
     expect(seenType).toBe('application/json');
     expect(seenBody).toBe(JSON.stringify(payload));
   });
+
+  it('strips transfer-encoding when re-serializing a parsed JSON body', async () => {
+    let seenTe: string | string[] | undefined;
+    let seenLength: string | undefined;
+    const server = http.createServer((req, res) => {
+      seenTe = req.headers['transfer-encoding'];
+      seenLength = req.headers['content-length'];
+      req.resume();
+      req.on('end', () => {
+        res.setHeader('content-type', 'text/plain');
+        res.end('ok');
+      });
+    });
+    upstreams.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+
+    const app = express();
+    app.use(express.json());
+    const handler = createPreviewProxyHandler({
+      getSessionPreviewPort: () => port,
+      userOwnsSession: () => true,
+    });
+    app.post('/api/sessions/:sessionId/preview/proxy/*', (req, res, next) => {
+      // Simulate a chunked inbound request that Express already parsed.
+      req.headers['transfer-encoding'] = 'chunked';
+      delete req.headers['content-length'];
+      return handler(req, res, next);
+    });
+
+    const res = await request(app)
+      .post('/api/sessions/sess-1/preview/proxy/api/save')
+      .send({ a: 1 });
+    expect(res.status).toBe(200);
+    expect(seenTe).toBeUndefined();
+    expect(seenLength).toBe(String(Buffer.byteLength(JSON.stringify({ a: 1 }))));
+  });
 });
 
 describe('buildFrameAncestorsCsp', () => {

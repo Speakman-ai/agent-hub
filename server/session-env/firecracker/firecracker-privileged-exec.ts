@@ -27,6 +27,7 @@
  */
 
 import { execFile, execFileSync, spawn as nodeSpawn } from 'child_process';
+import { readdirSync, readFileSync } from 'fs';
 import type { FirecrackerCapabilityProbeDeps } from './firecracker-capability.js';
 import {
   defaultFirecrackerHostIo,
@@ -37,6 +38,7 @@ import {
   type StopVmmFn,
   type VmmHandle,
   type VmmLaunchSpec,
+  vmmPidFilePath,
 } from './firecracker-session-env.js';
 
 export type FirecrackerExecMode = 'local' | 'docker';
@@ -54,6 +56,48 @@ export interface FirecrackerExecConfig {
   dockerBin: string;
   sudoBin: string;
   mounts: FirecrackerMount[];
+  /** Per-VM scratch root — local mode scans this for stale `vmm.pid` files. */
+  runDir?: string;
+}
+
+function readPidFile(path: string): number | undefined {
+  try {
+    const n = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function killLocalVmmProcess(pid: number, vmId: string): Promise<void> {
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ESRCH') {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch (err2) {
+        if ((err2 as NodeJS.ErrnoException).code !== 'ESRCH') throw err2;
+      }
+    }
+  }
+  for (let i = 0; i < 40; i++) {
+    if (!processAlive(pid)) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  if (processAlive(pid)) {
+    throw new Error(`local VMM pid ${pid} (vm ${vmId}) still alive after SIGKILL`);
+  }
 }
 
 const RUN_TIMEOUT_MS = 300_000;
@@ -259,9 +303,11 @@ export function createSpawnVmm(cfg: FirecrackerExecConfig): SpawnVmmFn {
 }
 
 export function createStopVmm(cfg: FirecrackerExecConfig): StopVmmFn {
-  return async ({ vmId, pid }) => {
+  return async ({ vmId, pid, pidFile }) => {
     if (cfg.mode === 'local') {
-      if (pid !== undefined) process.kill(-pid, 'SIGKILL');
+      const target = pid ?? (pidFile ? readPidFile(pidFile) : undefined);
+      if (target === undefined) return;
+      await killLocalVmmProcess(target, vmId);
       return;
     }
     // `docker rm -f` is the authoritative stop; killing the local client would
@@ -273,29 +319,49 @@ export function createStopVmm(cfg: FirecrackerExecConfig): StopVmmFn {
   };
 }
 
-/** Remove every orphaned ah-vmm-* container before a boot tap sweep. */
+/** Remove every orphaned VMM before a boot tap / disk sweep. Fail closed. */
 export async function stopStaleFirecrackerVmms(cfg: FirecrackerExecConfig): Promise<void> {
-  if (cfg.mode !== 'docker') return;
-  const listed = await execArgv(
-    [cfg.dockerBin, 'ps', '-aq', '--filter', 'name=^ah-vmm-'],
-    STOP_TIMEOUT_MS,
-  );
-  if (!listed.ok) {
-    throw new Error(`docker ps for stale VMM containers failed: ${listed.stderr.trim()}`);
+  if (cfg.mode === 'docker') {
+    const listed = await execArgv(
+      [cfg.dockerBin, 'ps', '-aq', '--filter', 'name=^ah-vmm-'],
+      STOP_TIMEOUT_MS,
+    );
+    if (!listed.ok) {
+      throw new Error(`docker ps for stale VMM containers failed: ${listed.stderr.trim()}`);
+    }
+    const ids = listed.stdout
+      .trim()
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    await Promise.all(
+      ids.map(async (id) => {
+        const res = await execArgv([cfg.dockerBin, 'rm', '-f', id], STOP_TIMEOUT_MS);
+        if (!res.ok && !/No such container/i.test(res.stderr)) {
+          throw new Error(`docker rm -f ${id} failed: ${res.stderr.trim()}`);
+        }
+      }),
+    );
+    return;
   }
-  const ids = listed.stdout
-    .trim()
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  await Promise.all(
-    ids.map(async (id) => {
-      const res = await execArgv([cfg.dockerBin, 'rm', '-f', id], STOP_TIMEOUT_MS);
-      if (!res.ok && !/No such container/i.test(res.stderr)) {
-        throw new Error(`docker rm -f ${id} failed: ${res.stderr.trim()}`);
-      }
-    }),
-  );
+
+  const runDir = cfg.runDir;
+  if (!runDir) return;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(runDir);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return;
+    throw err;
+  }
+  const stop = createStopVmm(cfg);
+  for (const name of entries) {
+    const pidFile = vmmPidFilePath(`${runDir}/${name}`);
+    const pid = readPidFile(pidFile);
+    if (pid === undefined) continue;
+    await stop({ vmId: name, pid, pidFile });
+  }
 }
 
 /**
@@ -308,6 +374,9 @@ export async function stopStaleFirecrackerVmms(cfg: FirecrackerExecConfig): Prom
 export const HELPER_PROBE_SCRIPT = [
   'if [ -c /dev/kvm ]; then echo kvm_char=1; else echo kvm_char=0; fi',
   'if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then echo kvm_rw=1; else echo kvm_rw=0; fi',
+  // Actually open the device in the helper — the Hub container has no /dev/kvm,
+  // so a host-side openSync would false-negative a working Firecracker host.
+  'if exec 3<>/dev/kvm 2>/dev/null; then echo kvm_open=1; exec 3>&-; else echo kvm_open=0; fi',
   'echo "version=$(firecracker --version 2>&1 | head -1)"',
 ].join('; ');
 
@@ -348,6 +417,12 @@ export function createHelperCapabilityDeps(
     access: () => {
       if (parsed.kvm_rw !== '1') throw new Error('not readable/writable in the helper container');
     },
+    openKvm: () => {
+      if (failure) throw new Error(`helper container ${cfg.image ?? ''} failed to run: ${failure}`);
+      if (parsed.kvm_open !== '1') {
+        throw new Error('KVM device could not be opened inside the helper container');
+      }
+    },
     firecrackerVersion: () => {
       if (failure) throw new Error(`helper container ${cfg.image ?? ''} failed to run: ${failure}`);
       if (!parsed.version) throw new Error('helper container reported no firecracker version');
@@ -382,9 +457,9 @@ export function resolveFirecrackerExecConfig(
     dockerBin: env.AGENT_HUB_DOCKER_BIN?.trim() || 'docker',
     sudoBin: env.AGENT_HUB_SUDO_BIN?.trim() || 'sudo',
     mounts: resolveHelperMounts(paths, env),
+    runDir: paths.runDir,
   };
 }
-
 /**
  * Everything a helper container must see, at its host path.
  *

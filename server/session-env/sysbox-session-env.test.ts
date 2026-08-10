@@ -182,7 +182,6 @@ describe('SysboxSessionEnv container start', () => {
     expect(runCalls.some(isRunArgv)).toBe(false);
 
     await env.mapPortsOut([5173]);
-    await env.ensureStarted();
     expect(env.containerStarted).toBe(true);
     const run = runCalls.find(isRunArgv)!;
     expect(run.some((a) => a.startsWith('127.0.0.1:') && a.endsWith(':5173'))).toBe(true);
@@ -401,11 +400,11 @@ describe('SysboxSessionEnv.openPty', () => {
     expect(calls[0].cols).toBe(120);
     // undefined client env entries are dropped for node-pty.
     expect('SECRET' in calls[0].env).toBe(false);
-    expect(env.liveProcessCount()).toBe(2);
+    expect(env.liveProcessCount()).toBe(1);
     expect(pty.pid).toBe(7777);
 
     fixture.pty.emitExit(0);
-    expect(env.liveProcessCount()).toBe(1);
+    expect(env.liveProcessCount()).toBe(0);
   });
 });
 

@@ -120,10 +120,18 @@ describe('ECR publish + push-image deploy contract', () => {
   function computeBranchTag(refName: string, shaShort = 'abc123def456'): string {
     const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
     const start = yml.indexOf('sanitize_docker_tag() {');
-    const branchLine = yml.indexOf('BRANCH="$(unique_docker_tag', start);
+    const branchAssign = yml.indexOf('REF_NAME="${GITHUB_REF_NAME:-main}"', start);
     expect(start, 'sanitize_docker_tag in Compute tags step').toBeGreaterThan(-1);
-    expect(branchLine, 'BRANCH assignment in Compute tags step').toBeGreaterThan(-1);
-    const script = `${yml.slice(start, branchLine)}SHA_SHORT="${shaShort}"\nBRANCH="$(unique_docker_tag "\${GITHUB_REF_NAME:-main}" "$SHA_SHORT")"\nprintf '%s' "$BRANCH"`;
+    expect(branchAssign, 'REF_NAME assignment in Compute tags step').toBeGreaterThan(-1);
+    const endHelpers = yml.indexOf('echo "sha_short=', branchAssign);
+    const script = `${yml.slice(start, endHelpers)}SHA_SHORT="${shaShort}"
+REF_NAME="\${GITHUB_REF_NAME:-main}"
+if is_stable_docker_tag "$REF_NAME"; then
+  BRANCH="$REF_NAME"
+else
+  BRANCH="$(unique_docker_tag "$REF_NAME" "$SHA_SHORT")"
+fi
+printf '%s' "$BRANCH"`;
     return execFileSync('bash', ['-c', script], {
       env: { ...process.env, GITHUB_REF_NAME: refName },
       encoding: 'utf8',
@@ -131,19 +139,18 @@ describe('ECR publish + push-image deploy contract', () => {
   }
 
   it('turns a slashed branch into a usable docker tag with a SHA suffix', () => {
-    // A docker tag admits only [A-Za-z0-9_.-]. Publishing `<branch>` verbatim
-    // meant a `preview/...` ref failed the whole build on "invalid reference
-    // format" before a single layer ran — invisible for as long as every deploy
-    // branch happened to be flat.
     expect(computeBranchTag('preview/session-owned-environment')).toBe(
       'preview-session-owned-environment-abc123def456',
     );
   });
 
-  it('suffixes already-valid branch names so sanitize collisions cannot collide', () => {
-    // feature/a and feature-a both sanitize to feature-a; the SHA keeps
-    // concurrent branch tags distinct.
-    expect(computeBranchTag('main')).toBe('main-abc123def456');
+  it('preserves stable main and semver tags without a SHA suffix', () => {
+    expect(computeBranchTag('main')).toBe('main');
+    expect(computeBranchTag('v1.2.3')).toBe('v1.2.3');
+    expect(computeBranchTag('1.2.3')).toBe('1.2.3');
+  });
+
+  it('suffixes non-stable refs so sanitize collisions cannot collide', () => {
     expect(computeBranchTag('feature/a')).toBe('feature-a-abc123def456');
     expect(computeBranchTag('feature-a', 'deadbeef0001')).toBe('feature-a-deadbeef0001');
   });
@@ -159,13 +166,27 @@ describe('ECR publish + push-image deploy contract', () => {
     expect(computeBranchTag('feat/@foo--bar')).toBe('feat-foo-bar-abc123def456');
   });
 
-  it('truncates overlong ref names to 128 characters', () => {
+  it('truncates the base so the full SHA suffix always remains', () => {
     const longRef = `release/${'a'.repeat(200)}`;
-    expect(computeBranchTag(longRef)).toHaveLength(128);
+    const tag = computeBranchTag(longRef);
+    expect(tag).toHaveLength(128);
+    expect(tag.endsWith('-abc123def456')).toBe(true);
   });
 
   it('falls back to branch when sanitization leaves nothing usable', () => {
     expect(computeBranchTag('@@@')).toBe('branch-abc123def456');
+  });
+
+  it('reset path also writes image-tag and verifies digest', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    const resetStart = yml.indexOf('if [[ "$BOOL_RESET" == "true" ]]');
+    const resetEnd = yml.indexOf('CI fresh-setup reset');
+    expect(resetStart).toBeGreaterThan(-1);
+    expect(resetEnd).toBeGreaterThan(resetStart);
+    const resetBlock = yml.slice(resetStart, resetEnd);
+    expect(resetBlock).toContain('/etc/agent-hub/image-tag');
+    expect(resetBlock).toMatch(/LOCAL_DIGEST/);
+    expect(resetBlock).toMatch(/EXPECTED_DIGEST/);
   });
 
   it('writes the deploy tag before restarting systemd', () => {

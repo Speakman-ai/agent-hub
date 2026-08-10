@@ -212,6 +212,15 @@ describe('GuestWorktreeIo.stat', () => {
     await expect(io.stat('secret.yaml')).rejects.toThrow(/permission denied/);
   });
 
+  it('throws on cannot-statx permission denied (not treated as missing)', async () => {
+    const { io } = makeIo(() => ({
+      stdout: '',
+      stderr: "stat: cannot statx '.agent-hub/ci.yaml': Permission denied",
+      exitCode: 1,
+    }));
+    await expect(io.stat('.agent-hub/ci.yaml')).rejects.toThrow(/Permission denied/);
+  });
+
   it('reports a present path as existing', async () => {
     const { io } = makeIo(() => ({
       stdout: 'regular file\x005588\x001700000000.0',

@@ -335,6 +335,10 @@ function proxyHttp(
     const bodyBytes = Buffer.byteLength(bodyStr);
     delete headers['transfer-encoding'];
     delete headers['Transfer-Encoding'];
+    // http.request already applied the original headers (including a possible
+    // Transfer-Encoding: chunked). Mutating the local object is not enough —
+    // clear it on the ClientRequest or compliant upstreams reject dual framing.
+    proxyReq.removeHeader('transfer-encoding');
     if (typeof req.body === 'string') {
       const contentType = req.headers['content-type'];
       if (contentType !== undefined) {

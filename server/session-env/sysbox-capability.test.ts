@@ -288,11 +288,13 @@ describe('selectSessionEnvAdapter', () => {
     expect(sel.forced).toBe(true);
   });
 
-  it('forced sysbox + unavailable → host fallback flagged as fellBack', () => {
+  it('forced sysbox + unavailable → fail closed (no silent degrade)', () => {
     const sel = selectSessionEnvAdapter('sysbox', probeResult(false, ['kernel: too old']));
-    expect(sel.adapter).toBe('host');
-    expect(sel.fellBack).toBe(true);
+    expect(sel.adapter).toBe('sysbox');
+    expect(sel.forced).toBe(true);
+    expect(sel.fellBack).toBe(false);
     expect(sel.reason).toContain('kernel: too old');
+    expect(sel.reason).toContain('sessions will fail');
   });
 });
 
@@ -334,16 +336,14 @@ describe('selectSessionEnvAdapter — container backend', () => {
     expect(sel.reason).toContain('docker socket missing');
   });
 
-  it('a forced sysbox that fails its probe degrades to container, not host', () => {
-    // The operator asked for isolation. Container is closer to that intent
-    // than dropping the boundary altogether.
+  it('a forced sysbox that fails its probe does not degrade to privileged container', () => {
     const sel = selectSessionEnvAdapter(
       'sysbox',
       probeResult(false, ['kernel: too old']),
       usableContainer,
     );
-    expect(sel.adapter).toBe('container');
-    expect(sel.fellBack).toBe(true);
+    expect(sel.adapter).toBe('sysbox');
+    expect(sel.fellBack).toBe(false);
   });
 
   it('forced container is honored even when it must publish ports', () => {
@@ -371,7 +371,7 @@ describe('selectSessionEnvAdapter — container backend', () => {
 });
 
 describe('logSessionEnvSelection', () => {
-  it('warns when a forced sysbox fell back to host', () => {
+  it('warns when forced sysbox is unavailable on Linux (fail-closed selection)', () => {
     const logger = { log: vi.fn(), warn: vi.fn() };
     logSessionEnvSelection(
       selectSessionEnvAdapter('sysbox', probeResult(false, ['x'])),
