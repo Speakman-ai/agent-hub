@@ -103,6 +103,7 @@ describe('fc-jail-manage.sh stage', () => {
       writeFileSync(rootfs, 'r');
       writeFileSync(workspace, 'w');
       writeFileSync(configSrc, '{"ok":true}');
+      const kernelBefore = statSync(kernel);
       const uid = String(process.getuid?.() ?? 1000);
       const gid = String(process.getgid?.() ?? 1000);
       const res = run(jailHelper, ['stage', root, kernel, rootfs, workspace, uid, gid, configSrc], {
@@ -117,6 +118,11 @@ describe('fc-jail-manage.sh stage', () => {
       expect(diskMode).toBe(0o660);
       const kernelMode = statSync(path.join(root, 'vmlinux')).mode & 0o777;
       expect(kernelMode).toBe(0o444);
+      // Copy/reflink — never hard-link — so chown cannot retarget ARTIFACT_DIR.
+      const kernelAfter = statSync(kernel);
+      expect(kernelAfter.ino).not.toBe(statSync(path.join(root, 'vmlinux')).ino);
+      expect(kernelAfter.uid).toBe(kernelBefore.uid);
+      expect(kernelAfter.mode).toBe(kernelBefore.mode);
       // RW disks must be writable by the staging uid (jailer contract).
       chmodSync(path.join(root, 'workspace.ext4'), 0o660);
       writeFileSync(path.join(root, 'workspace.ext4'), 'ww');
@@ -414,6 +420,51 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     expect(src).toMatch(/AGENT_HUB_FC_WORKTREE_TAR_MAX_BYTES|worktree archive exceeded/);
     expect(src).toMatch(/Popen\([\s\S]*tar[\s\S]*-cf[\s\S]*Popen\([\s\S]*tar[\s\S]*-xf/);
   });
+});
+
+describe('jailer Hub traverse contract', () => {
+  it('setup script makes JAILER_DIR execute-only for others (0711), not 0750', () => {
+    const setup = readFileSync(
+      path.join(here, '../../../ops/scripts/setup-firecracker-host.sh'),
+      'utf8',
+    );
+    expect(setup).toMatch(/chmod 0711 "\$\{JAILER_DIR\}"/);
+    expect(setup).not.toMatch(/chmod 0750 "\$\{VM_SCRATCH\}" "\$\{JAILER_DIR\}"/);
+  });
+
+  const canSudoNobody =
+    spawnSync('sudo', ['-n', '-u', 'nobody', 'true'], { encoding: 'utf8' }).status === 0;
+
+  it.skipIf(!canSudoNobody)(
+    'distinct hub uid can traverse 0711 jailer ancestors to the vsock (0750 cannot)',
+    () => {
+      const base = mkdtempSync(path.join(os.tmpdir(), 'fc-jail-traverse-'));
+      try {
+        const jailer = path.join(base, 'jailer');
+        const sock = path.join(jailer, 'firecracker', 'ahvm-1', 'root', 'vsock.sock');
+        mkdirSync(path.dirname(sock), { recursive: true });
+        writeFileSync(sock, '');
+        chmodSync(path.join(jailer, 'firecracker'), 0o755);
+        chmodSync(path.join(jailer, 'firecracker', 'ahvm-1'), 0o755);
+        chmodSync(path.join(jailer, 'firecracker', 'ahvm-1', 'root'), 0o755);
+        chmodSync(sock, 0o666);
+
+        chmodSync(jailer, 0o711);
+        const ok = spawnSync('sudo', ['-n', '-u', 'nobody', 'test', '-r', sock], {
+          encoding: 'utf8',
+        });
+        expect(ok.status, ok.stderr).toBe(0);
+
+        chmodSync(jailer, 0o750);
+        const blocked = spawnSync('sudo', ['-n', '-u', 'nobody', 'test', '-r', sock], {
+          encoding: 'utf8',
+        });
+        expect(blocked.status).not.toBe(0);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('fc-netctl.sh', () => {

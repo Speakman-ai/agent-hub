@@ -31,7 +31,7 @@ export function jailerVmTree(chrootBaseDir: string, vmId: string): string {
 export interface JailerStagePlan {
   /** Host path of the jail root (jailed `/`). */
   chrootRoot: string;
-  /** Host paths of resources to hardlink/copy into the jail. */
+  /** Host paths of resources to copy/reflink into the jail (never hard-link). */
   links: Array<{ hostPath: string; jailName: string }>;
   /** Relative paths passed to Firecracker after `--`. */
   apiSockPath: string;
