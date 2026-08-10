@@ -119,6 +119,7 @@ describe('selectSessionEnvAdapter — microVM tier', () => {
     expect(selection).toMatchObject({ adapter: 'firecracker', forced: true, fellBack: false });
     expect(selection.reason).toMatch(/jailer on by default/);
     expect(selection.reason).not.toMatch(/jailer not default/);
+    expect(selection.reason).toMatch(/local exec/);
   });
 
   it('leaves existing selections unchanged when nothing probed the VM tier', () => {

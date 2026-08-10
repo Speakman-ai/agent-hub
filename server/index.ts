@@ -2350,9 +2350,13 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
           : `unavailable — ${firecrackerProbe.reason}`),
     );
     if (firecrackerProbe.available) {
+      const fcDefaults = firecrackerExecDefaults(firecrackerExec);
+      console.log(
+        `[session-env] firecracker exec=${firecrackerExec.mode} jailer=${fcDefaults.useJailer ? 'on' : 'off'}`,
+      );
       registerFirecrackerBackend({
         paths: firecrackerPaths,
-        ...firecrackerExecDefaults(firecrackerExec),
+        ...fcDefaults,
       });
     }
 
