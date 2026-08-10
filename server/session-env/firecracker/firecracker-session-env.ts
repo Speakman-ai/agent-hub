@@ -467,12 +467,12 @@ export class FirecrackerSessionEnv implements SessionEnv {
         { cwd: '/', timeoutMs: 5_000, maxOutputBytes: 64 * 1024 },
       );
       if (probe.exitCode !== 0) return true;
-      const baseline = new Set(['ps', 'awk', 'bash', 'sh', 'dash', 'sleep', 'systemd', '(sd-pam)']);
+      const baseline = new Set(['ps', 'awk']);
       const procs = probe.stdout
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean)
-        .filter((comm) => !baseline.has(comm) && !comm.startsWith('systemd'));
+        .filter((comm) => !baseline.has(comm));
       return procs.length > 0;
     } catch {
       // Fail closed: an unreachable guest must not be deleted mid-workload.
@@ -810,12 +810,17 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
 
   /** Write a file by absolute guest path via the agent. */
-  async writeGuestFile(guestPath: string, contents: Buffer): Promise<void> {
+  async writeGuestFile(
+    guestPath: string,
+    contents: Buffer,
+    opts: { mode?: string } = {},
+  ): Promise<void> {
     await this.ensureStarted();
     const stream = await this.#open({
       kind: 'write-file',
       path: guestPath,
       contentBase64: contents.toString('base64'),
+      ...(opts.mode ? { mode: opts.mode } : {}),
     });
     const reply = await awaitReply(stream);
     if (reply.kind !== 'written') {

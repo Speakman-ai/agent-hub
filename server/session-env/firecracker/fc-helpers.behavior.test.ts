@@ -13,6 +13,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'fs';
 import os from 'os';
@@ -195,6 +196,95 @@ describe('fc-launch-vmm.sh', () => {
       );
       expect(res.status).toBe(2);
       expect(res.stderr).toMatch(/--exec-file \/usr\/bin\/firecracker/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts pinned --exec-file /usr/bin/firecracker in argv path validation', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-launch-ok-'));
+    try {
+      const conf = writeRootsConf(base);
+      const chroot = path.join(base, 'jail');
+      mkdirSync(chroot, { recursive: true });
+      const script = `
+        set -euo pipefail
+        source ${JSON.stringify(pathGuard)}
+        export AGENT_HUB_FC_ROOTS_CONF=${JSON.stringify(conf)}
+        fc_assert_argv_paths_under_roots \\
+          --id ahvm-test \\
+          --exec-file /usr/bin/firecracker \\
+          --uid 1000 \\
+          --gid 1000 \\
+          --chroot-base-dir ${JSON.stringify(chroot)} \\
+          -- \\
+          --api-sock ${JSON.stringify(path.join(base, 'api.sock'))} \\
+          --config-file ${JSON.stringify(path.join(base, 'vm-config.json'))}
+        echo OK
+      `;
+      const res = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(res.status, res.stderr).toBe(0);
+      expect(res.stdout).toMatch(/OK/);
+      expect(res.stderr).not.toMatch(/outside configured/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fc-path-guard symlink escape', () => {
+  it('rejects a worktree symlink that retargets an output under /tmp', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-symlink-'));
+    const outside = mkdtempSync(path.join(os.tmpdir(), 'fc-outside-'));
+    try {
+      const conf = writeRootsConf(base);
+      const link = path.join(base, 'escape');
+      // Hub-writable worktree entry pointing outside the allowed roots.
+      symlinkSync(outside, link);
+      const evilOut = path.join(link, 'disk.ext4');
+      const script = `
+        set -euo pipefail
+        source ${JSON.stringify(pathGuard)}
+        export AGENT_HUB_FC_ROOTS_CONF=${JSON.stringify(conf)}
+        fc_assert_output_under_roots 'workspace-out' ${JSON.stringify(evilOut)}
+      `;
+      const res = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/outside configured/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects disk outputs under WORKTREE_ROOTS even without a symlink', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-wt-out-'));
+    try {
+      const conf = writeRootsConf(base);
+      const wtOut = path.join(base, 'session-tree', 'workspace.ext4');
+      mkdirSync(path.dirname(wtOut), { recursive: true });
+      // Reconfigure so RUN_DIR is separate from WORKTREE_ROOTS.
+      writeFileSync(
+        conf,
+        [
+          `ARTIFACT_DIR="${path.join(base, 'artifacts')}"`,
+          `RUN_DIR="${path.join(base, 'vms')}"`,
+          `JAILER_DIR="${path.join(base, 'jailer')}"`,
+          `WORKTREE_ROOTS="${path.join(base, 'session-tree')}"`,
+          '',
+        ].join('\n'),
+      );
+      mkdirSync(path.join(base, 'artifacts'), { recursive: true });
+      mkdirSync(path.join(base, 'vms'), { recursive: true });
+      const script = `
+        set -euo pipefail
+        source ${JSON.stringify(pathGuard)}
+        export AGENT_HUB_FC_ROOTS_CONF=${JSON.stringify(conf)}
+        fc_assert_output_under_roots 'workspace-out' ${JSON.stringify(wtOut)}
+      `;
+      const res = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/outside configured/);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

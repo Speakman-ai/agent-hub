@@ -12,10 +12,11 @@ import {
 } from './sysbox-session-env.js';
 
 describe('isSysboxBaselineComm', () => {
-  it('treats dockerd/containerd/sleep as idle baseline', () => {
+  it('treats dockerd/containerd as idle baseline but not bash/sleep workers', () => {
     expect(isSysboxBaselineComm('dockerd')).toBe(true);
     expect(isSysboxBaselineComm('containerd')).toBe(true);
-    expect(isSysboxBaselineComm('sleep')).toBe(true);
+    expect(isSysboxBaselineComm('sleep')).toBe(false);
+    expect(isSysboxBaselineComm('bash')).toBe(false);
     expect(isSysboxBaselineComm('node')).toBe(false);
     expect(isSysboxBaselineComm('postgres')).toBe(false);
   });
@@ -200,6 +201,44 @@ describe('SysboxSessionEnv container start', () => {
     expect(env.containerStarted).toBe(true);
     const run = runCalls.find(isRunArgv)!;
     expect(run.some((a) => a.startsWith('127.0.0.1:') && a.endsWith(':5173'))).toBe(true);
+  });
+
+  it('reallocates a different host port after a Docker bind collision', async () => {
+    const allocated: number[] = [];
+    let nextHost = 4100;
+    let runAttempts = 0;
+    const { env, runCalls } = makeEnv(
+      {
+        publishPorts: [5173],
+        allocateHostPort: async () => {
+          const p = nextHost++;
+          allocated.push(p);
+          return p;
+        },
+        releaseHostPort: () => undefined,
+      },
+      (argv) => {
+        if (isRunArgv(argv)) {
+          runAttempts += 1;
+          if (runAttempts === 1) {
+            return {
+              ok: false,
+              stdout: '',
+              stderr: 'failed to bind host port: address already in use',
+            };
+          }
+        }
+        if (isDockerInfoProbe(argv)) return ok;
+        return ok;
+      },
+    );
+    await env.mountWorktree();
+    expect(env.containerStarted).toBe(true);
+    const runArgvs = runCalls.filter(isRunArgv);
+    expect(runArgvs.length).toBeGreaterThanOrEqual(2);
+    expect(runArgvs[0].some((a) => a.includes('4100:5173'))).toBe(true);
+    expect(runArgvs[1].some((a) => a.includes('4101:5173'))).toBe(true);
+    expect(allocated).toEqual([4100, 4101]);
   });
 
   it('starts once on mountWorktree: labeled graph volume, sysbox run, dockerd probe', async () => {
