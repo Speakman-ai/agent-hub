@@ -67,6 +67,23 @@ vmm=$!
 i=0
 while [ "$i" -lt 200 ]; do
   if [ -S "$sock" ]; then
+    # Hub dials this UDS after jailer creates it inside the chroot. Ensure
+    # every ancestor up through JAILER_DIR is other-executable (setup uses
+    # 0711 on the jailer base) so uid/gid `owner` can traverse without the
+    # tree being Hub-writable.
+    fc_load_roots
+    dir=$(dirname -- "$sock")
+    while [[ -n "$dir" && "$dir" != / ]]; do
+      chmod a+x -- "$dir" 2>/dev/null || true
+      cdir=$(fc_canonical_root "$dir" 2>/dev/null || echo "$dir")
+      cjail=$(fc_canonical_root "${JAILER_DIR}" 2>/dev/null || echo "${JAILER_DIR}")
+      if [[ "$cdir" == "$cjail" ]]; then
+        break
+      fi
+      parent=$(dirname -- "$dir")
+      [[ "$parent" == "$dir" ]] && break
+      dir=$parent
+    done
     chown "$owner" "$sock"
     break
   fi

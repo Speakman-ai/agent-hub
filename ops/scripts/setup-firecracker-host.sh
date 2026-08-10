@@ -230,8 +230,12 @@ CONTROL_DIR="${ARTIFACT_DIR}/control"
 mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}" "${CONTROL_DIR}"
 
 # Root-owned, Hub-unwritable disk + jail trees.
+# JAILER_DIR is 0711 (execute-only for others): the Hub must traverse to the
+# jailed vsock/API sockets (jailer.md) but must not list or write the tree.
+# VM_SCRATCH stays 0750 — Hub never needs to open those paths directly.
 chown -R root:root "${VM_SCRATCH}" "${JAILER_DIR}"
-chmod 0750 "${VM_SCRATCH}" "${JAILER_DIR}"
+chmod 0750 "${VM_SCRATCH}"
+chmod 0711 "${JAILER_DIR}"
 
 # Artifacts: readable by Hub, not writable (prevents planting symlinks that
 # retarget --base-rootfs). Kernel/rootfs files are world-readable.

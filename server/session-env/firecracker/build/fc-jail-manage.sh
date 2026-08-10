@@ -5,13 +5,17 @@
 #     Remove `<chrootBase>/firecracker/<vmId>` after the VMM is proven stopped.
 #
 #   fc-jail-manage.sh stage <chrootRoot> <kernel> <rootfs> <workspace> <uid> <gid> <configSrc>
-#     Create the jail root, hardlink/copy kernel+disks, install vm-config.json,
+#     Create the jail root, copy/reflink kernel+disks, install vm-config.json,
 #     and assign ownership/modes so the jailer UID can read/write RW disks.
 #     See firecracker jailer.md Observations.
 #
 # Destination paths must sit under the root-owned JAILER_DIR. Sources are
 # constrained by class (artifact / run / control) — never under Hub-writable
 # worktree roots — and symlink components are refused before any root write.
+#
+# Staging always copies (prefers reflink) — never hard-links. Hard-linking the
+# shared kernel then `chown -R` would retarget the ARTIFACT_DIR/vmlinux inode
+# to the jailer uid and let that account rewrite the trusted kernel.
 #
 # Authorized via sudoers — do not expand this into a general shell.
 set -euo pipefail
@@ -88,10 +92,11 @@ case "$cmd" in
       exit 2
     fi
     mkdir -p -- "$root"
+    # Independent destination inode — never hard-link shared/trusted inputs.
     stage_one() {
       local src=$1 dest=$2
       rm -f -- "$dest"
-      if ln -- "$src" "$dest" 2>/dev/null; then
+      if cp --reflink=auto -f -- "$src" "$dest" 2>/dev/null; then
         return 0
       fi
       cp -f -- "$src" "$dest"
@@ -105,12 +110,19 @@ case "$cmd" in
 
     # Least-privilege ownership for the jailer/Firecracker UID. Kernel is
     # read-only; both ext4 images are RW in the VM config and must be
-    # writable by that UID (jailer.md Observations).
+    # writable by that UID (jailer.md Observations). Only the jail copies
+    # are chowned — sources under ARTIFACT_DIR / RUN_DIR stay root-owned.
     chown -R "$uid:$gid" "$root"
     chmod 0755 "$root"
     chmod 0444 "$root/vmlinux"
     chmod 0660 "$root/rootfs.ext4" "$root/workspace.ext4"
     chmod 0644 "$root/vm-config.json"
+    # Hub must traverse JAILER_DIR → … → root to dial vsock (setup uses 0711
+    # on the jailer base; keep intermediate dirs other-executable too).
+    vm_tree=$(dirname -- "$root")
+    fc_tree=$(dirname -- "$vm_tree")
+    chmod 0755 "$vm_tree" "$fc_tree" 2>/dev/null || true
+    chmod o+x "$vm_tree" "$fc_tree" 2>/dev/null || true
     ;;
   *)
     echo "fc-jail-manage: unknown command: $cmd" >&2

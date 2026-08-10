@@ -87,7 +87,7 @@ export function isSysboxBaselineComm(comm: string): boolean {
 }
 
 /**
- * Parse one `pid comm` line from the container PID namespace (`ps -eo pid=,comm=`).
+ * Parse one `pid comm` line from the container PID namespace.
  * Returns true when the process is detached user work the idle reaper must respect.
  */
 export function isSysboxDetachedWorkloadLine(line: string): boolean {
@@ -102,6 +102,41 @@ export function isSysboxDetachedWorkloadLine(line: string): boolean {
   // a different pid and must still count as busy.
   if (/^sleep$/i.test(comm) && pid === '1') return false;
   return true;
+}
+
+/**
+ * Decide whether a container-ns `ps` dump shows detached user work.
+ *
+ * `stdout` is the probe shape from {@link SysboxSessionEnv.hasDetachedWorkload}:
+ * first line = probe shell PID (`$$`), remaining lines = `pid ppid comm`.
+ * The probe shell and its children (`ps`, etc.) are excluded so an otherwise
+ * idle entrypoint is not kept forever.
+ */
+export function hasSysboxDetachedWorkloadFromProbeOutput(stdout: string): boolean {
+  const lines = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return true; // fail closed — empty probe is unexpected
+  const selfPid = lines[0]!;
+  if (!/^\d+$/.test(selfPid)) return true;
+
+  const rows: Array<{ pid: string; ppid: string; comm: string }> = [];
+  for (const line of lines.slice(1)) {
+    const parts = line.split(/\s+/);
+    if (parts.length < 3) continue;
+    const pid = parts[0]!;
+    const ppid = parts[1]!;
+    const comm = parts.slice(2).join(' ');
+    rows.push({ pid, ppid, comm });
+  }
+
+  const childPids = new Set(rows.filter((r) => r.ppid === selfPid).map((r) => r.pid));
+  for (const row of rows) {
+    if (row.pid === selfPid || row.ppid === selfPid || childPids.has(row.pid)) continue;
+    if (isSysboxDetachedWorkloadLine(`${row.pid} ${row.comm}`)) return true;
+  }
+  return false;
 }
 
 const RUN_TIMEOUT_MS = 120_000;
@@ -326,23 +361,19 @@ export class SysboxSessionEnv implements SessionEnv {
     // `docker top` reports *host* PIDs, so entrypoint `sleep infinity` is never
     // PID 1 there and would look like forever-busy user work. Query the
     // container PID namespace instead. Fail closed on inspect errors. Subtract
-    // the Sysbox / entrypoint baseline so a healthy idle env can be reaped.
+    // the Sysbox / entrypoint baseline and this probe's own shell + children
+    // (`ps`) so a healthy idle env can be reaped.
     try {
       const res = await this.runDocker([
         'docker',
         'exec',
         this.containerName,
-        'ps',
-        '-eo',
-        'pid=,comm=',
+        'sh',
+        '-c',
+        'printf "%s\\n" "$$"; ps -eo pid=,ppid=,comm= --no-headers',
       ]);
       if (!res.ok) return true;
-      const lines = res.stdout
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const procs = lines.filter((line) => isSysboxDetachedWorkloadLine(line));
-      return procs.length > 0;
+      return hasSysboxDetachedWorkloadFromProbeOutput(res.stdout);
     } catch {
       return true;
     }
