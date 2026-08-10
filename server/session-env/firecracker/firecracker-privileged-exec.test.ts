@@ -92,6 +92,8 @@ describe('buildVmmDockerArgv', () => {
     expect(argv).toContain('/dev/kvm');
     expect(argv).toContain('/dev/net/tun');
     expect(argv).toContain('NET_ADMIN');
+    expect(argv).toContain('SYS_ADMIN');
+    expect(argv).toContain('seccomp=unconfined');
     expect(argv).not.toContain('--privileged');
     expect(argv.slice(0, 5)).toEqual(['docker', 'run', '--rm', '--name', 'ah-vmm-ahvm-sess-1']);
   });
