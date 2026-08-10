@@ -174,6 +174,145 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('## Browser Automation Available');
   });
 
+  // Regression: card b0004c55 — a session that could drive Chromium on turn
+  // one answered "I have no browser to open" on turn two, because the whole
+  // ReAct section (browser included) was gated behind isFirstMessage.
+  it('keeps a compact host-tool reminder naming the browser on subsequent messages', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: false,
+    });
+    expect(prompt).toContain('## ReAct Loop (host tools)');
+    expect(prompt).toContain('<agenthub:react>');
+    expect(prompt).toContain('"tool":"browser"');
+    expect(prompt).toMatch(/real Chromium browser/i);
+    expect(prompt).toMatch(/do not claim you lack a browser/i);
+  });
+
+  it('keeps the follow-up host-tool reminder far smaller than the full ReAct section', () => {
+    const first = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+    const subsequent = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: false });
+    const section = (prompt: string, heading: string) => {
+      const start = prompt.indexOf(heading);
+      const end = prompt.indexOf('\n\n## ', start + heading.length);
+      return prompt.slice(start, end === -1 ? undefined : end);
+    };
+    const fullBytes = Buffer.byteLength(section(first, '## ReAct Loop\n'), 'utf-8');
+    const compactBytes = Buffer.byteLength(
+      section(subsequent, '## ReAct Loop (host tools)'),
+      'utf-8',
+    );
+    expect(compactBytes).toBeGreaterThan(0);
+    expect(compactBytes).toBeLessThan(fullBytes / 3);
+  });
+
+  it('omits browser from the follow-up reminder when browser tools are disabled', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: false }), {
+      isFirstMessage: false,
+    });
+    expect(prompt).toContain('## ReAct Loop (host tools)');
+    expect(prompt).not.toContain('"tool":"browser"');
+    expect(prompt).toMatch(/browser tools.*(turned off|off)/i);
+  });
+
+  it('names the preview tool in the follow-up reminder only when a dev server is configured', () => {
+    const without = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: false });
+    expect(without).not.toContain('`preview`');
+
+    const withPreview = buildEnrichedPrompt(
+      makeProject({ prEnv: { devServer: { startCommand: 'npm run dev' } } }),
+      makeAgent(),
+      { isFirstMessage: false },
+    );
+    expect(withPreview).toContain('`preview`');
+  });
+
+  // The invariant the two ReAct branches must hold jointly: a follow-up turn
+  // may advertise LESS than the first turn (the trim), never MORE. Anything
+  // else means a config gate was added to one branch and not the other, and
+  // the model gets told about a tool the host will refuse.
+  describe('ReAct branch parity — first-message vs follow-up tool sets', () => {
+    const REACT_TOOLS = ['wiki', 'skill', 'web', 'browser', 'preview', 'terminal'] as const;
+
+    const section = (prompt: string, heading: string) => {
+      const start = prompt.indexOf(heading);
+      if (start === -1) return '';
+      const end = prompt.indexOf('\n\n## ', start + heading.length);
+      return prompt.slice(start, end === -1 ? undefined : end);
+    };
+
+    /** Tools the first-message section advertises as usable (bullet entries). */
+    const firstTurnTools = (prompt: string) => {
+      const body = section(prompt, '## ReAct Loop\n');
+      return REACT_TOOLS.filter((t) => body.includes(`- \`${t}\` —`));
+    };
+
+    /** Tools named in the follow-up reminder's `Tools: …` sentence. */
+    const followUpTools = (prompt: string) => {
+      const body = section(prompt, '## ReAct Loop (host tools)');
+      const list = /Tools: ([^.]*)\./.exec(body)?.[1] ?? '';
+      return REACT_TOOLS.filter((t) => list.includes(`\`${t}\``));
+    };
+
+    const MATRIX = [
+      { name: 'browser on, preview off', agent: {}, project: {} },
+      {
+        name: 'browser off, preview off',
+        agent: { browserToolsEnabled: false },
+        project: {},
+      },
+      {
+        name: 'browser on, preview on',
+        agent: {},
+        project: { prEnv: { devServer: { startCommand: 'npm run dev' } } },
+      },
+      {
+        name: 'browser off, preview on',
+        agent: { browserToolsEnabled: false },
+        project: { prEnv: { devServer: { startCommand: 'npm run dev' } } },
+      },
+    ];
+
+    for (const { name, agent, project } of MATRIX) {
+      it(`advertises no tool the first-message section withholds — ${name}`, () => {
+        const first = buildEnrichedPrompt(makeProject(project), makeAgent(agent), {
+          isFirstMessage: true,
+        });
+        const subsequent = buildEnrichedPrompt(makeProject(project), makeAgent(agent), {
+          isFirstMessage: false,
+        });
+
+        const advertisedFirst = firstTurnTools(first);
+        const advertisedLater = followUpTools(subsequent);
+
+        expect(advertisedLater.length).toBeGreaterThan(0);
+        // Set equality: the follow-up reminder exists precisely to preserve the
+        // capability list, so drift in either direction is a bug.
+        expect(advertisedLater).toEqual(advertisedFirst);
+      });
+    }
+
+    // `terminal` has no config gate anywhere in the codebase — its availability
+    // is runtime-only (has the human opened a shell), which the host reports as
+    // a `no_terminal` / `runtime_unwired` observation. Both branches therefore
+    // advertise it unconditionally; this pins that so a future gate added to
+    // one branch alone fails here.
+    it('advertises terminal on both branches for every config, with the human-opened caveat', () => {
+      for (const { agent, project } of MATRIX) {
+        const first = buildEnrichedPrompt(makeProject(project), makeAgent(agent), {
+          isFirstMessage: true,
+        });
+        const subsequent = buildEnrichedPrompt(makeProject(project), makeAgent(agent), {
+          isFirstMessage: false,
+        });
+        expect(firstTurnTools(first)).toContain('terminal');
+        expect(followUpTools(subsequent)).toContain('terminal');
+        // The follow-up reminder must not imply the agent can open a shell.
+        expect(subsequent).toMatch(/human has already (started|opened)/i);
+        expect(subsequent).toMatch(/not running/i);
+      }
+    });
+  });
+
   it('omits browser from ReAct instructions when browserToolsEnabled is false', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: false }), {
       isFirstMessage: true,

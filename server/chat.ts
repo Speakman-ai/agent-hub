@@ -874,6 +874,7 @@ ${skillsList.join('\n')}`;
     }
   }
 
+  const previewEnabledForPrompt = isDevServerConfigured(project.prEnv?.devServer);
   if (isFirstMessage) {
     const reactExampleJson = browserToolsOn
       ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
@@ -882,7 +883,6 @@ ${skillsList.join('\n')}`;
       ? `- \`browser\` — host Chromium via Stagehand (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — natural language or CSS/XPath; \`type\` also needs \`text\`), \`extract\` (optional \`instruction\`, optional JSON \`schema\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool to actually see the picture; the bytes are never inlined into the observation. Requires Playwright Chromium on the server and an LLM API key for natural-language \`act\`/\`extract\` (override model with \`STAGEHAND_MODEL\`).
 - **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
       : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
-    const previewEnabledForPrompt = isDevServerConfigured(project.prEnv?.devServer);
     const previewToolLines = previewEnabledForPrompt
       ? `\n- \`preview\` — observe and drive **this session's dev preview** after the human starts it via **Start preview** (field: \`op\` + operands). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. As with the \`browser\` tool, \`screenshot\` returns the absolute path of a saved image file to open with your file-reading tool. You cannot start or stop the preview — if none is running you'll get a "not running" observation; ask the human to start it.`
       : '';
@@ -900,6 +900,33 @@ Supported tools:
 - \`web\` — live web search via Serper (field: \`query\`). Only works when the server has \`SERPER_API_KEY\` or \`WEB_SEARCH_API_KEY\` set; otherwise the host returns a clear configuration error.
 ${browserToolLines}${previewToolLines}${terminalToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
+  } else {
+    // Follow-up turns drop the full section to save tokens, but the capability
+    // list itself must survive: with nothing in the prompt naming the host
+    // tools, models answer "I have no browser to open" on turn two of a
+    // session whose turn one could drive Chromium. Keep this compact.
+    //
+    // The tool list must mirror the first-message section's advertised set
+    // exactly (see the `follow-up reminder advertises no tool the first-message
+    // section withholds` test): `browser` and `preview` are config-gated there,
+    // `terminal` is not — it ships unconditionally because its availability is a
+    // *runtime* fact (has the human opened a shell), which the host reports as a
+    // `no_terminal` / `runtime_unwired` observation rather than a rejection.
+    const toolNames = ['`wiki`', '`skill`', '`web`'];
+    if (browserToolsOn) toolNames.push('`browser`');
+    if (previewEnabledForPrompt) toolNames.push('`preview`');
+    toolNames.push('`terminal`');
+    const exampleAction = browserToolsOn
+      ? '{"tool":"browser","op":"navigate","url":"https://example.com"}'
+      : '{"tool":"wiki","query":"..."}';
+    const browserReminder = browserToolsOn
+      ? `\n**You have a real Chromium browser in this session** — ops \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. Do not claim you lack a browser or web access; drive it with a \`browser\` action.`
+      : `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array.`;
+    const humanStartedLine = previewEnabledForPrompt
+      ? `\n\`preview\` and \`terminal\` act on what the human has already started (**Start preview** / the **Terminal** tab) — you cannot open either yourself, and you'll get a "not running" observation when none is up.`
+      : `\n\`terminal\` acts on a shell the human has already opened (the **Terminal** tab) — you cannot open one yourself, and you'll get a "not running" observation when none is up.`;
+    prompt += `\n\n## ReAct Loop (host tools)
+Still available mid-answer: emit a naked \`<agenthub:react>{"actions":[${exampleAction}]}</agenthub:react>\` block (valid JSON, never inside a code fence). Tools: ${toolNames.join(', ')}.${browserReminder}${humanStartedLine}`;
   }
 
   {
