@@ -117,6 +117,8 @@ describe('selectSessionEnvAdapter — microVM tier', () => {
   it('honors a forced microVM when the probe passes', () => {
     const selection = selectSessionEnvAdapter('firecracker', noSysbox, noContainer, vmReady);
     expect(selection).toMatchObject({ adapter: 'firecracker', forced: true, fellBack: false });
+    expect(selection.reason).toMatch(/jailer on by default/);
+    expect(selection.reason).not.toMatch(/jailer not default/);
   });
 
   it('leaves existing selections unchanged when nothing probed the VM tier', () => {

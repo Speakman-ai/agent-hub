@@ -48,6 +48,12 @@ function makeManager(
     idleTtlMs?: number;
     failOnMount?: boolean;
     bootSweep?: Promise<unknown>;
+    resolvePublishPorts?: (sessionId: string) => number[] | null;
+    onCreateOpts?: (opts: {
+      sessionId: string;
+      worktreePath: string;
+      sysboxDeps?: { publishPorts?: number[] };
+    }) => void;
   } = {},
 ): Harness {
   const created: FakeEnv[] = [];
@@ -56,6 +62,7 @@ function makeManager(
     resolveWorktree: (id) => worktrees.get(id) ?? null,
     resolveAdapter: () => opts.kind ?? 'container',
     createEnv: (kind, o) => {
+      opts.onCreateOpts?.(o);
       const env = new FakeEnv(kind, o.sessionId, o.worktreePath);
       if (opts.failOnMount) {
         env.mountWorktree = async () => {
@@ -67,6 +74,7 @@ function makeManager(
     },
     ...(opts.idleTtlMs !== undefined ? { idleTtlMs: opts.idleTtlMs } : {}),
     ...(opts.bootSweep ? { bootSweep: opts.bootSweep } : {}),
+    ...(opts.resolvePublishPorts ? { resolvePublishPorts: opts.resolvePublishPorts } : {}),
     logger: { log: () => {}, warn: () => {} },
   });
   return { manager, created, setWorktree: (id, p) => worktrees.set(id, p) };
@@ -81,6 +89,18 @@ describe('SessionEnvManager.ensure', () => {
     expect(created[0].worktreePath).toBe('/wt/s1');
     expect(created[0].mountCalls).toBe(1);
     expect(manager.get('s1')).toBe(env);
+  });
+
+  it('preloads publishPorts from resolvePublishPorts before first start', async () => {
+    // Terminal-first openPty under published-ports must not start with an
+    // empty `-p` set that locks out later preview mapPortsOut.
+    const createOpts: Array<{ sysboxDeps?: { publishPorts?: number[] } }> = [];
+    const { manager } = makeManager({
+      resolvePublishPorts: () => [3000, 5173],
+      onCreateOpts: (o) => createOpts.push(o),
+    });
+    await manager.ensure('s1');
+    expect(createOpts[0]?.sysboxDeps?.publishPorts).toEqual([3000, 5173]);
   });
 
   it('waits for the boot sweep before creating a container', async () => {

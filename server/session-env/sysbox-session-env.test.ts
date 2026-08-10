@@ -376,6 +376,9 @@ describe('SysboxSessionEnv.openPty', () => {
     const env = new SysboxSessionEnv({
       sessionId: 'sess-1',
       worktreePath: '/wt/session-1',
+      // Pin published-ports: Linux defaults to container-ip and would skip the
+      // ensureStarted path this test covers.
+      portRouting: 'published-ports',
       spawn: () => new FakeChild(1),
       runDocker: async (argv) => {
         fixture.runCalls.push(argv);

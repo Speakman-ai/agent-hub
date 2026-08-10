@@ -55,6 +55,11 @@ export interface CreatePreviewRuntimesDeps {
    * the same boundary as the session's terminal and commands.
    */
   resolveSharedEnv?: ResolveSharedSessionEnvFn;
+  /**
+   * Keep the session env's idle clock alive while the preview is in use
+   * (guest daemons do not count as Hub-visible live processes).
+   */
+  onSessionActivity?: (sessionId: string) => void;
 }
 
 export interface CreatePreviewRuntimesResult {
@@ -88,6 +93,7 @@ export function createPreviewRuntimes(
     notifyStatus: deps.notifyStatus,
     config: deps.devServerConfig,
     ...(deps.resolveSharedEnv ? { resolveSharedEnv: deps.resolveSharedEnv } : {}),
+    ...(deps.onSessionActivity ? { onSessionActivity: deps.onSessionActivity } : {}),
   });
 
   const portMin = deps.devServerConfig?.portRange?.min ?? DEFAULT_PREVIEW_PORT_RANGE.min;

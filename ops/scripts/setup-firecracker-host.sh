@@ -249,9 +249,8 @@ else
   echo "warning: disk helper not found at ${HELPER_SRC}; pass --helper PATH" >&2
 fi
 
-# Exactly two privileged operations, named explicitly. A blanket NOPASSWD:ALL
-# would make the microVM boundary pointless — the Hub could simply become root
-# on the host it is trying to isolate sessions from.
+# Privileged operations the Hub runs via `sudo -n` in local exec mode, named
+# explicitly. A blanket NOPASSWD:ALL would make the microVM boundary pointless.
 #
 # Only meaningful for a Hub running directly on the host. A containerized Hub
 # has no account here and reaches these operations through a privileged helper
@@ -261,6 +260,10 @@ if id -u "${HUB_USER}" >/dev/null 2>&1; then
 # Managed by ops/scripts/setup-firecracker-host.sh
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-prepare-disks.sh
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/ip, /sbin/ip, /usr/bin/ip
+${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/modprobe, /sbin/modprobe
+${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/sysctl, /sbin/sysctl
+${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/iptables, /sbin/iptables, /usr/sbin/iptables-nft, /usr/sbin/xtables-nft-multi
+${HUB_USER} ALL=(root) NOPASSWD: /usr/bin/firecracker, /usr/bin/jailer
 SUDOERS
   chmod 0440 /etc/sudoers.d/agent-hub-firecracker
   visudo -cf /etc/sudoers.d/agent-hub-firecracker >/dev/null
@@ -276,8 +279,9 @@ echo
 if [[ ! -f "${ARTIFACT_DIR}/vmlinux" || ! -f "${ARTIFACT_DIR}/rootfs.ext4" ]]; then
   echo "    STILL NEEDED: guest artifacts are not staged. Build them with"
   echo "      server/session-env/firecracker/build/build-guest-artifacts.sh --out ${ARTIFACT_DIR}"
-  echo "    Until then the capability probe will decline and the Hub falls back"
-  echo "    to the container backend."
+  echo "    Until then the capability probe will decline; with"
+  echo "    sessionEnvAdapter=firecracker the Hub fails closed, and with auto"
+  echo "    it uses sysbox (or host) instead."
 else
   echo "    Guest artifacts present. Restart the Hub to pick up the backend."
 fi

@@ -46,6 +46,12 @@ export interface SessionEnvManagerDeps {
    * under container-IP routing never call this.
    */
   allocateHostPort?: (internalPort: number) => number | Promise<number>;
+  /**
+   * Preview internal ports to declare before the first container start.
+   * Under published-ports routing, a terminal-first openPty would otherwise
+   * start with an empty `-p` set and lock out later mapPortsOut.
+   */
+  resolvePublishPorts?: (sessionId: string) => number[] | null;
   /** Idle envs with no live processes are reaped after this long. Default 4h. */
   idleTtlMs?: number;
   /**
@@ -147,13 +153,19 @@ export class SessionEnvManager {
     }
     const kind = (this.deps.resolveAdapter ?? (() => getSessionEnvSelection().adapter))();
     const create = this.deps.createEnv ?? createSessionEnv;
+    const publishPorts = this.deps.resolvePublishPorts?.(sessionId) ?? null;
+    const sysboxDeps = {
+      ...(this.deps.allocateHostPort ? { allocateHostPort: this.deps.allocateHostPort } : {}),
+      ...(publishPorts && publishPorts.length > 0 ? { publishPorts } : {}),
+    };
     const hostDeps = this.deps.allocateHostPort
       ? { allocateHostPort: this.deps.allocateHostPort }
       : undefined;
     const env = create(kind, {
       sessionId,
       worktreePath,
-      ...(hostDeps ? { hostDeps, sysboxDeps: hostDeps } : {}),
+      ...(hostDeps ? { hostDeps } : {}),
+      ...(Object.keys(sysboxDeps).length > 0 ? { sysboxDeps } : {}),
     });
     entry.env = env;
     // Self-eviction: an env disposed directly (reaper, teardown, crash

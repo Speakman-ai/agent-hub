@@ -30,6 +30,7 @@ import { createWriteStream } from 'fs';
 import { mkdir, rm, stat, writeFile } from 'fs/promises';
 import { once } from 'events';
 import path from 'path';
+import { readLiveProcessIdentity } from './vmm-process-identity.js';
 import type { HostSpawnFn } from '../host-session-env.js';
 import {
   SessionEnv,
@@ -121,13 +122,30 @@ export type SpawnVmmFn = (spec: VmmLaunchSpec) => VmmHandle;
 export type StopVmmFn = (spec: {
   vmId: string;
   pid?: number;
-  /** Durable identity written after spawn — required for local-mode reclaim. */
+  /** Durable pid path written after spawn — required for local-mode reclaim. */
   pidFile?: string;
+  /** cmdline/starttime/exe snapshot — required before local SIGKILL. */
+  identityFile?: string;
 }) => void | Promise<void>;
 
 /** Per-VM pidfile under the session scratch dir (local exec mode). */
 export function vmmPidFilePath(vmDir: string): string {
   return `${vmDir}/vmm.pid`;
+}
+
+/** Durable process identity — PID alone is reused by Linux after exit. */
+export function vmmIdentityFilePath(vmDir: string): string {
+  return `${vmDir}/vmm.identity.json`;
+}
+
+export interface VmmProcessIdentity {
+  pid: number;
+  /** Raw `/proc/<pid>/cmdline` (NUL-separated). */
+  cmdline: string;
+  /** Field 22 of `/proc/<pid>/stat` (starttime). */
+  starttime: string;
+  /** `realpath(/proc/<pid>/exe)` when available. */
+  exe: string;
 }
 
 export const defaultSpawnVmm: SpawnVmmFn = ({ argv, cwd }) =>
@@ -338,7 +356,9 @@ export class FirecrackerSessionEnv implements SessionEnv {
     this.vcpuCount = deps.vcpuCount ?? DEFAULT_VCPU;
     this.memSizeMib = deps.memSizeMib ?? DEFAULT_MEM_MIB;
     this.workspaceSizeMib = deps.workspaceSizeMib ?? DEFAULT_WORKSPACE_MIB;
-    this.useJailer = deps.useJailer ?? false;
+    // Jailer (or equal) is required for production isolation — see
+    // Firecracker prod-host-setup. Opt out only with an explicit false.
+    this.useJailer = deps.useJailer ?? true;
     this.jailerUid = deps.jailerUid ?? 1000;
     this.jailerGid = deps.jailerGid ?? 1000;
     this.baseEnv = deps.baseEnv ?? {};
@@ -451,6 +471,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
         vmId: this.vmId,
         pid: this.#vmProcess?.pid,
         pidFile,
+        identityFile: vmmIdentityFilePath(this.vmDir),
       });
       // Firecracker *binds* these two paths and refuses to start if either
       // already exists. A vm id is derived from the session id, so a session
@@ -520,6 +541,10 @@ export class FirecrackerSessionEnv implements SessionEnv {
       // pid is gone). Docker mode uses the ah-vmm-* container name instead.
       if (typeof vmm.pid === 'number' && vmm.pid > 0) {
         await this.io.writeFile(pidFile, `${vmm.pid}\n`);
+        const identity = readLiveProcessIdentity(vmm.pid);
+        if (identity) {
+          await this.io.writeFile(vmmIdentityFilePath(this.vmDir), `${JSON.stringify(identity)}\n`);
+        }
       }
       vmm.stderr?.on('data', (chunk: string | Buffer) => {
         this.logger.warn(`[fc ${this.vmId}] ${chunk.toString().trimEnd()}`);
@@ -871,53 +896,62 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
 
   async #doDispose(graceMs: number): Promise<void> {
+    // Refuse new work while tearing down, but only commit disposed + clear the
+    // dispose latch after stopVmm succeeds — a failed stop must leave taps /
+    // slots / disks alone and remain retryable.
     this.#disposed = true;
-    if (this.#startPromise) await this.#startPromise.catch(() => undefined);
+    try {
+      if (this.#startPromise) await this.#startPromise.catch(() => undefined);
 
-    const entries = [...this.live];
-    for (const entry of entries) {
-      try {
-        entry.kill('SIGTERM');
-      } catch {
-        // Raced its own exit.
+      const entries = [...this.live];
+      for (const entry of entries) {
+        try {
+          entry.kill('SIGTERM');
+        } catch {
+          // Raced its own exit.
+        }
       }
-    }
-    if (entries.length > 0) {
-      await Promise.race([Promise.all(entries.map((e) => e.exited)), this.clock.sleep(graceMs)]);
-      // No SIGKILL pass: killing the VMM destroys the kernel those processes
-      // run under, which is stronger than any per-process signal.
-    }
-
-    await this.#teardownVm();
-
-    this.settledMappings.clear();
-    for (const hook of this.disposeHooks) {
-      try {
-        hook();
-      } catch (err) {
-        this.logger.warn(`SessionEnv[${this.sessionId}] dispose hook threw: ${String(err)}`);
+      if (entries.length > 0) {
+        await Promise.race([Promise.all(entries.map((e) => e.exited)), this.clock.sleep(graceMs)]);
+        // No SIGKILL pass: killing the VMM destroys the kernel those processes
+        // run under, which is stronger than any per-process signal.
       }
+
+      await this.#teardownVm();
+
+      this.settledMappings.clear();
+      for (const hook of this.disposeHooks) {
+        try {
+          hook();
+        } catch (err) {
+          this.logger.warn(`SessionEnv[${this.sessionId}] dispose hook threw: ${String(err)}`);
+        }
+      }
+      this.disposeHooks.clear();
+    } catch (err) {
+      this.#disposed = false;
+      this.#disposePromise = null;
+      throw err;
     }
-    this.disposeHooks.clear();
   }
 
-  /** Kill the VMM, drop the tap, release the slot, remove the VM directory. */
+  /**
+   * Kill the VMM, drop the tap, release the slot, remove the VM directory.
+   * Fail closed: if the VMM cannot be proven stopped, leave disks/taps alone
+   * and surface the error — continuing would recreate the corruption path.
+   */
   async #teardownVm(): Promise<void> {
     const vmm = this.#vmProcess;
-    this.#vmProcess = null;
-    if (vmm) {
-      try {
-        await this.stopVmm({
-          vmId: this.vmId,
-          pid: vmm.pid,
-          pidFile: vmmPidFilePath(this.vmDir),
-        });
-      } catch (err) {
-        this.logger.warn(
-          `SessionEnv[${this.sessionId}] failed to stop VMM ${this.vmId}: ${String(err)}`,
-        );
-      }
+    // Keep #vmProcess until stop succeeds so a retry can still signal it.
+    if (vmm || (await this.io.isDirectory(this.vmDir).catch(() => false))) {
+      await this.stopVmm({
+        vmId: this.vmId,
+        pid: vmm?.pid,
+        pidFile: vmmPidFilePath(this.vmDir),
+        identityFile: vmmIdentityFilePath(this.vmDir),
+      });
     }
+    this.#vmProcess = null;
 
     const network = this.#network;
     this.#network = null;
