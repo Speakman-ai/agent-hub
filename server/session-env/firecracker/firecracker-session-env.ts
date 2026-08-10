@@ -518,6 +518,10 @@ export class FirecrackerSessionEnv implements SessionEnv {
       await this.io.writeFile(configPath, JSON.stringify(config, null, 2));
 
       const apiSockPath = `${this.vmDir}/api.sock`;
+      // Jailer without `--cgroup`: the docker VMM helper intentionally is not
+      // fully `--privileged`, so `/sys/fs/cgroup` is read-only and jailer
+      // cannot mkdir under it. Chroot + uid/gid drop still apply; memory is
+      // enforced by Firecracker's own balloon / machine-config mem size.
       const argv = this.useJailer
         ? buildJailerArgv({
             vmId: this.vmId,
@@ -526,7 +530,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
             chrootBaseDir: this.paths.jailerChrootBase ?? '/srv/jailer',
             apiSockPath,
             configPath,
-            cgroups: [`memory.max=${this.memSizeMib * 1024 * 1024}`],
+            cgroupVersion: 2,
           })
         : buildFirecrackerArgv({
             apiSockPath,
