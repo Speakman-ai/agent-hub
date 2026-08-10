@@ -78,13 +78,33 @@ export function registerFirecrackerBackend(defaults: FirecrackerBackendDefaults)
  * reach, and the failure surfaces as a guest with no network rather than as
  * anything that points at the mismatch.
  */
+/**
+ * Whether the VMM should run under the jailer.
+ *
+ * Defaults on for `local` exec (host paths the setup script prepares). Defaults
+ * off for `docker` until config/disks/vsock are staged into the jailer chroot
+ * — without that, Firecracker exits immediately and the Hub waits forever on a
+ * host vsock that never appears. Override with
+ * `AGENT_HUB_FIRECRACKER_USE_JAILER=0|1`.
+ */
+export function resolveFirecrackerUseJailer(
+  cfg: FirecrackerExecConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = env.AGENT_HUB_FIRECRACKER_USE_JAILER?.trim().toLowerCase();
+  if (raw === '0' || raw === 'false' || raw === 'off') return false;
+  if (raw === '1' || raw === 'true' || raw === 'on') return true;
+  return cfg.mode === 'local';
+}
+
 export function firecrackerExecDefaults(
   cfg: FirecrackerExecConfig,
-): Pick<FirecrackerSessionEnvDeps, 'io' | 'spawnVmm' | 'stopVmm'> {
+): Pick<FirecrackerSessionEnvDeps, 'io' | 'spawnVmm' | 'stopVmm' | 'useJailer'> {
   return {
     io: createFirecrackerHostIo(cfg),
     spawnVmm: createSpawnVmm(cfg),
     stopVmm: createStopVmm(cfg),
+    useJailer: resolveFirecrackerUseJailer(cfg),
   };
 }
 
