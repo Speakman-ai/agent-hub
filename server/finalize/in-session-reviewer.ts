@@ -31,6 +31,7 @@
 import type { ChildProcess } from 'child_process';
 import { spawn, execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
+import { wrapHostChildProcess, type ActiveChatProcess } from '../active-chat-process.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { resolveSessionCliSpawnEnv } from '../per-user-cli-spawn.js';
 import { resolveEffectiveModel } from '../effective-model.js';
@@ -88,7 +89,7 @@ export interface InSessionReviewerDeps {
   getCodexBin: () => string;
   getConfig: () => AppConfig;
   /** Track active CLIs so handleMultiAgentCancel can SIGTERM them. */
-  activeProcesses?: Map<string, ChildProcess>;
+  activeProcesses?: Map<string, ActiveChatProcess>;
   /** Override for tests; production uses the live spawn pipeline. */
   spawn?: typeof spawn;
   /** Per-call wall-clock cap; defaults to {@link REVIEWER_TURN_TIMEOUT_MS_DEFAULT}. */
@@ -516,7 +517,7 @@ interface OneTurnArgs {
   timeoutMs: number;
   signal?: ReviewerCancelSignal;
   sessionId: string;
-  activeProcesses?: Map<string, ChildProcess>;
+  activeProcesses?: Map<string, ActiveChatProcess>;
   spawnFn: typeof spawn;
   broadcast: BroadcastFn;
   reviewerName: string;
@@ -584,7 +585,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
 
       if (args.activeProcesses) {
         // Key by sessionId so handleMultiAgentCancel can SIGTERM us.
-        args.activeProcesses.set(args.sessionId, proc);
+        args.activeProcesses.set(args.sessionId, wrapHostChildProcess(proc));
       }
       trackChild(proc);
 

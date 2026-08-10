@@ -17,6 +17,8 @@ import { randomUUID } from 'crypto';
 import { getStmts } from './db.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import type { ChildProcess } from 'child_process';
+import type { ActiveChatProcess } from './active-chat-process.js';
+import { wrapHostChildProcess } from './active-chat-process.js';
 import type { Agent, EnrichedAgent, Project } from './types.js';
 
 vi.mock('./per-user-cli-spawn.js', () => ({
@@ -26,7 +28,7 @@ vi.mock('./per-user-cli-spawn.js', () => ({
 
 function stubChatDeps(
   agentId: string,
-  activeProcesses: Map<string, ChildProcess>,
+  activeProcesses: Map<string, ActiveChatProcess>,
 ): ReturnType<typeof createChatHandler> {
   const agent = { id: agentId, name: 'Reset test agent', engine: 'claude-code' } as Agent;
   const project = {
@@ -99,8 +101,8 @@ describe('handleChat — resume_attempts reset placement', () => {
   it('does NOT reset when the session is busy (duplicate send is enqueued, not spawned)', async () => {
     const { agentId, sessionId } = seedSession('busy', 3);
     // Active process present -> session is busy.
-    const activeProcesses = new Map<string, ChildProcess>([
-      [sessionId, { pid: 4242 } as ChildProcess],
+    const activeProcesses = new Map<string, ActiveChatProcess>([
+      [sessionId, wrapHostChildProcess({ pid: 4242 } as ChildProcess)],
     ]);
     const { handleChat } = stubChatDeps(agentId, activeProcesses);
 

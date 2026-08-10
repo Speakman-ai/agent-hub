@@ -143,6 +143,18 @@ describe('createVmAgentProcess', () => {
     stream.emit('stdout', Buffer.from('x'));
     expect(onActivity).toHaveBeenCalled();
   });
+  it('sends writeStdin / endStdin over the stream', () => {
+    const stream = new FakeStream();
+    const { process } = createVmAgentProcess({ stream, name: 'codex' });
+    process.writeStdin?.('prompt body');
+    process.endStdin?.();
+    const frames = stream.decodeSent();
+    expect(frames[0].type).toBe('stdin');
+    expect(frames[0].payload.toString()).toBe('prompt body');
+    expect(decodeJsonPayload<VmAgentControl>(frames[1].payload)).toEqual({
+      kind: 'stdin-eof',
+    });
+  });
 });
 
 describe('createVmAgentPty', () => {

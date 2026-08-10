@@ -20,6 +20,7 @@ import path from 'path';
 import { getStmts } from './db.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import type { ChildProcess } from 'child_process';
+import type { ActiveChatProcess } from './active-chat-process.js';
 import type { Agent, EnrichedAgent, Project, SessionRow } from './types.js';
 
 vi.mock('./per-user-cli-spawn.js', () => ({
@@ -75,7 +76,7 @@ function makeDeps(agentId: string, bin: string): ChatHandlerDeps {
     createCursorChat: undefined,
     findAgent: (id) => (id === agentId ? { project, agent } : null),
     getEnrichedAgent: (id) => (id === agentId ? enriched : null),
-    activeProcesses: new Map<string, ChildProcess>(),
+    activeProcesses: new Map<string, ActiveChatProcess>(),
     autonomousProjects: new Set(),
     getClaudeBin: () => bin,
     getCursorBin: () => bin,

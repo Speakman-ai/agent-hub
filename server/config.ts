@@ -45,6 +45,14 @@ const DEFAULT_SKILLS_DIR: string = path.join(__dirname, 'default-skills');
 const AGENT_HUB_SKILL_DIR: string = path.join(DEFAULT_SKILLS_DIR, 'agent-hub');
 
 /**
+ * Absolute path to the bundled `default-skills/` tree (every shipped skill).
+ * Used when staging skill wrappers into an env-owned guest worktree.
+ */
+export function resolveDefaultSkillsDir(): string {
+  return DEFAULT_SKILLS_DIR;
+}
+
+/**
  * Absolute path to the bundled `agent-hub` skill directory, or null when it
  * cannot be found on disk (e.g. an unusual packaged layout). Exported so the
  * spawn-env smoke test can assert the contract without re-deriving the path.

@@ -1010,7 +1010,10 @@ if (existsSync(CLIENT_DIST) && existsSync(path.join(CLIENT_DIST, 'index.html')))
 // "session is still streaming" guard on `POST /api/sessions/:id/create-pr`
 // without spinning up a real CLI. Production code should keep using the
 // existing call sites (`activeProcesses.set` / `.get` / `.delete`) below.
-export const activeProcesses = new Map<string, ChildProcess>();
+export const activeProcesses = new Map<
+  string,
+  import('./active-chat-process.js').ActiveChatProcess
+>();
 
 // ─── Preview runtime ────────────────────────────────────────────────────
 //
@@ -1896,6 +1899,10 @@ const chatHandler = createChatHandler({
   createCursorChat: undefined,
   ensureWorktree,
   drainQueue: (sessionId: string) => drainQueue(sessionId),
+  ensureSessionEnv: async (sessionId: string) => {
+    await whenSessionEnvSelectionReady();
+    return sessionEnvManager.ensure(sessionId);
+  },
   rescheduleCron,
   getDevServerRuntime: () => devServerRuntime,
   getPtyHost: () => ptyHost,

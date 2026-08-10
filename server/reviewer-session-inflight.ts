@@ -1,4 +1,3 @@
-import type { ChildProcess } from 'child_process';
 import type { Project, SessionRow } from './types.js';
 
 const REVIEW_PR_TITLE_RE = /^Review: PR #(\d+)\b/i;
@@ -20,7 +19,7 @@ export function findInFlightReviewerSessionId(
   project: Project,
   prNumber: number,
   listSessionsForAgent: (agentId: string) => SessionRow[],
-  activeProcesses: Map<string, ChildProcess>,
+  activeProcesses: Map<string, import('./active-chat-process.js').ActiveChatProcess>,
 ): string | null {
   const reviewerIds = (project.agents || []).filter((a) => a.role === 'reviewer').map((a) => a.id);
   for (const reviewerId of reviewerIds) {

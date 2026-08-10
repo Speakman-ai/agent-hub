@@ -78,6 +78,14 @@ export interface SessionEnvProcess {
    * children are reaped with their parent.
    */
   kill(signal?: NodeJS.Signals): void;
+  /**
+   * Write to the child's stdin. Optional — adapters that open stdin as
+   * `ignore` (host preview spawns) omit these. Guest exec and any spawn that
+   * needs a stdin prompt (Codex `-`) implement them.
+   */
+  writeStdin?(data: string | Buffer): void;
+  /** Close stdin (EOF). */
+  endStdin?(): void;
 }
 
 export interface SessionEnvPtyOpts {
