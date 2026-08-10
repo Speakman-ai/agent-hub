@@ -462,6 +462,11 @@ export class FirecrackerSessionEnv implements SessionEnv {
 
     try {
       await this.io.mkdirp(this.vmDir);
+      // Jailer refuses to start when its chroot base is missing — create it
+      // on first use so a host that skipped the setup script still boots.
+      if (this.useJailer) {
+        await this.io.mkdirp(this.paths.jailerChrootBase ?? '/srv/jailer');
+      }
       // A previous VMM for this vm id may still hold api.sock / vsock.sock or
       // the tap even though this process is gone — stop and confirm exit
       // before unlinking or rewriting disks. Fail closed: a stop error means

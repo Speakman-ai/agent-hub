@@ -265,8 +265,14 @@ export interface BuildJailerArgvOpts {
   configPath: string;
   /** Pre-created network namespace to join, when one is used. */
   netns?: string;
-  /** cgroup v2 constraints, e.g. `memory.max=6442450944`. */
+  /**
+   * cgroup constraints, e.g. v2 `memory.max=6442450944` or v1
+   * `memory.limit_in_bytes=…`. Jailer defaults to cgroup v1, so callers that
+   * pass v2 file names must also set {@link cgroupVersion} to 2.
+   */
   cgroups?: string[];
+  /** Jailer `--cgroup-version`. Defaults to 2 when omitted (modern hosts). */
+  cgroupVersion?: 1 | 2;
 }
 
 /**
@@ -288,6 +294,10 @@ export function buildJailerArgv(opts: BuildJailerArgvOpts): string[] {
     String(opts.gid),
     '--chroot-base-dir',
     opts.chrootBaseDir,
+    // AL2023 / modern Ubuntu are cgroup v2; jailer's implicit default is v1
+    // and fails with "No hierarchy found for this cgroup version".
+    '--cgroup-version',
+    String(opts.cgroupVersion ?? 2),
   ];
   if (opts.netns) argv.push('--netns', opts.netns);
   for (const cgroup of opts.cgroups ?? []) argv.push('--cgroup', cgroup);

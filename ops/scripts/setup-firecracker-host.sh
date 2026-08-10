@@ -223,11 +223,12 @@ fi
 # after this script runs, which leaves them unreadable to a Hub that is not
 # root. A non-recursive chown here fails later as an EACCES on `mkdir` at the
 # first session start, far from the cause.
-mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+JAILER_DIR="${ARTIFACT_DIR}/jailer"
+mkdir -p "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}"
 if id -u "${HUB_USER}" >/dev/null 2>&1; then
-  chown -R "${HUB_USER}:${HUB_USER}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+  chown -R "${HUB_USER}:${HUB_USER}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}"
 else
-  chown -R "${HUB_UID}:${HUB_GID}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}"
+  chown -R "${HUB_UID}:${HUB_GID}" "${ARTIFACT_DIR}" "${RUN_DIR}" "${VM_SCRATCH}" "${JAILER_DIR}"
   echo "==> Scratch owned by uid ${HUB_UID}:${HUB_GID} (containerized Hub)"
 fi
 
