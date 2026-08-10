@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import path from 'path';
 import type { ChildProcess } from 'child_process';
+import type { ActiveChatProcess } from './active-chat-process.js';
 import { getStmts } from './db.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import { SAFE_ARG_STRLEN_BYTES } from './spawn-prompt-payload.js';
@@ -27,7 +28,7 @@ afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-function makeDeps(activeProcesses: Map<string, ChildProcess>, bin: string): ChatHandlerDeps {
+function makeDeps(activeProcesses: Map<string, ActiveChatProcess>, bin: string): ChatHandlerDeps {
   const agent = { id: agentId, name: 'Forward target', engine: 'claude-code' } as Agent;
   const project = {
     id: `${testPrefix}-project`,
@@ -126,7 +127,7 @@ async function spawnTurnPrompt(sessionId: string, content: string): Promise<stri
     `#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf '%s' "$last" > "${argFile}"\ncat >/dev/null 2>&1\nexit 0\n`,
   );
   chmodSync(bin, 0o755);
-  const activeProcesses = new Map<string, ChildProcess>();
+  const activeProcesses = new Map<string, ActiveChatProcess>();
   const { handleChat } = createChatHandler(makeDeps(activeProcesses, bin));
 
   await handleChat(null, { type: 'chat', agentId, sessionId, content });

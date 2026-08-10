@@ -4046,7 +4046,7 @@ export interface RouteDeps {
     skillCredentialMerge?: { ownerId: string | null; agentId: string; project: Project },
   ) => Promise<string>;
   DEFAULT_MODEL: string;
-  activeProcesses: Map<string, import('child_process').ChildProcess>;
+  activeProcesses: Map<string, import('./active-chat-process.js').ActiveChatProcess>;
   getProjectDataDir: (projectId: string) => string;
   ensureDocsAgents: () => void;
   retireIntakeAgents: () => void;

@@ -9,6 +9,8 @@ import { randomUUID } from 'crypto';
 import { getStmts } from './db.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import type { ChildProcess } from 'child_process';
+import type { ActiveChatProcess } from './active-chat-process.js';
+import { wrapHostChildProcess } from './active-chat-process.js';
 import type { Agent, EnrichedAgent, Project } from './types.js';
 
 const killProcessGroupMock = vi.hoisted(() => vi.fn());
@@ -56,7 +58,7 @@ function makeProject(): Project {
 function stubChatDeps(
   sessionId: string,
   agentId: string,
-  activeProcesses: Map<string, ChildProcess>,
+  activeProcesses: Map<string, ActiveChatProcess>,
 ): ReturnType<typeof createChatHandler> & { broadcasts: Array<Record<string, unknown>> } {
   const agent = makeAgent(agentId);
   const project = makeProject();
@@ -123,7 +125,9 @@ describe('handleChat — interrupt-now existing queued row', () => {
   it('calls killProcessGroup when busy and frame has _existingMsgId without _fromQueue', async () => {
     const { agentId, sessionId, queuedMsgId } = seedQueuedSession('kill');
     const fakeProc = { pid: 42_4242 } as ChildProcess;
-    const activeProcesses = new Map<string, ChildProcess>([[sessionId, fakeProc]]);
+    const activeProcesses = new Map<string, ActiveChatProcess>([
+      [sessionId, wrapHostChildProcess(fakeProc)],
+    ]);
     const { handleChat, broadcasts } = stubChatDeps(sessionId, agentId, activeProcesses);
 
     vi.useFakeTimers();

@@ -95,6 +95,20 @@ RUN systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
 # mailhog is the motivating case for VM-level isolation.
 RUN systemctl enable docker.service 2>/dev/null || true
 
+# Agent engine CLIs — chat turns under env-owned Firecracker run *inside* the
+# guest, so these must exist on PATH here (mirrors server/Dockerfile runtime).
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex
+
+# Cursor Agent + Grok install into the workspace user's ~/.local/bin.
+# finalize-runner uses uid 1000 as `runner`.
+RUN if id runner >/dev/null 2>&1; then \
+      su - runner -c 'curl -fsSL https://cursor.com/install | bash' && \
+      su - runner -c 'curl -fsSL https://x.ai/cli/install.sh | bash'; \
+    else \
+      curl -fsSL https://cursor.com/install | bash && \
+      curl -fsSL https://x.ai/cli/install.sh | bash; \
+    fi
+
 # `Delegate=yes` so containers started inside the guest get their own cgroup
 # subtree rather than fighting systemd for the root one.
 RUN mkdir -p /etc/systemd/system/docker.service.d \

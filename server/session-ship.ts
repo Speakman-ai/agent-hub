@@ -76,7 +76,7 @@ export interface TriggerSessionShipArgs {
   agent: Agent;
   stmts: Stmts;
   broadcast: BroadcastFn;
-  activeProcesses: Map<string, ChildProcess>;
+  activeProcesses: Map<string, import('./active-chat-process.js').ActiveChatProcess>;
   source?: SessionShipSource;
   handleChat: (
     ws: null,

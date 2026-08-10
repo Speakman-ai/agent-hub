@@ -169,7 +169,15 @@ export function buildChildEnv(
   overrides: Record<string, string | null | undefined>,
 ): Record<string, string> {
   const env: Record<string, string> = {
-    PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    PATH: [
+      `${workspaceUser.home}/.local/bin`,
+      '/usr/local/sbin',
+      '/usr/local/bin',
+      '/usr/sbin',
+      '/usr/bin',
+      '/sbin',
+      '/bin',
+    ].join(':'),
     HOME: workspaceUser.home,
     USER: workspaceUser.name,
     LOGNAME: workspaceUser.name,

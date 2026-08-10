@@ -157,6 +157,17 @@ export function createVmAgentProcess(opts: VmAgentProcessOpts): VmAgentProcessHa
       const control: VmAgentControl = { kind: 'signal', signal };
       stream.send(encodeJsonFrame('control', control));
     },
+    writeStdin: (data) => {
+      if (exitResult !== null) return;
+      opts.onActivity?.();
+      const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+      stream.send(encodeFrame('stdin', buf));
+    },
+    endStdin: () => {
+      if (exitResult !== null) return;
+      const control: VmAgentControl = { kind: 'stdin-eof' };
+      stream.send(encodeJsonFrame('control', control));
+    },
   };
 
   return { process, exited };

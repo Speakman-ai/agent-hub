@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { randomUUID } from 'crypto';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import type { ChildProcess } from 'child_process';
+import type { ActiveChatProcess } from './active-chat-process.js';
 import {
   clearReactChainCancel,
   isReactChainCancelRequested,
@@ -42,7 +43,7 @@ function stubChatDeps(): {
     createCursorChat: undefined,
     findAgent: findAgent as unknown as ChatHandlerDeps['findAgent'],
     getEnrichedAgent: () => null,
-    activeProcesses: new Map<string, ChildProcess>(),
+    activeProcesses: new Map<string, ActiveChatProcess>(),
     autonomousProjects: new Set(),
     getClaudeBin: () => '/bin/true',
     getCursorBin: () => '/bin/true',

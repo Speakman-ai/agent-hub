@@ -16,6 +16,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import path from 'path';
 import type { ChildProcess } from 'child_process';
+import type { ActiveChatProcess } from './active-chat-process.js';
 import { getStmts } from './db.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import { _resetEphemeralBackgroundBashForTesting } from './ephemeral-background-bash.js';
@@ -42,7 +43,7 @@ beforeEach(() => {
   _resetEphemeralBackgroundBashForTesting();
 });
 
-function makeDeps(activeProcesses: Map<string, ChildProcess>, bin: string): ChatHandlerDeps {
+function makeDeps(activeProcesses: Map<string, ActiveChatProcess>, bin: string): ChatHandlerDeps {
   const agent = { id: agentId, name: 'BG target', engine: 'claude-code' } as Agent;
   const project = {
     id: `${testPrefix}-project`,
@@ -149,7 +150,7 @@ async function runTurn(
   expectedSpawns = 1,
 ): Promise<string[]> {
   const { bin, argFile } = makeFakeCli(streamJsonLines);
-  const activeProcesses = new Map<string, ChildProcess>();
+  const activeProcesses = new Map<string, ActiveChatProcess>();
   const { handleChat } = createChatHandler(makeDeps(activeProcesses, bin));
 
   await handleChat(null, { type: 'chat', agentId, sessionId, content });
@@ -179,7 +180,7 @@ async function lastPromptOf(
  * `error` and never `spawn`. Returns nothing — the point is the side effect.
  */
 async function runTurnWithFailedSpawn(sessionId: string, content: string): Promise<void> {
-  const activeProcesses = new Map<string, ChildProcess>();
+  const activeProcesses = new Map<string, ActiveChatProcess>();
   const missingBin = path.join(tmpRoot, `${randomUUID()}-does-not-exist`);
   const { handleChat } = createChatHandler(makeDeps(activeProcesses, missingBin));
   await handleChat(null, { type: 'chat', agentId, sessionId, content });
@@ -197,7 +198,7 @@ async function runTurnWithFailedContinuation(
 ): Promise<void> {
   const { bin } = makeFakeCli(streamJsonLines);
   const missingBin = path.join(tmpRoot, `${randomUUID()}-does-not-exist`);
-  const activeProcesses = new Map<string, ChildProcess>();
+  const activeProcesses = new Map<string, ActiveChatProcess>();
   const deps = makeDeps(activeProcesses, bin);
   let spawns = 0;
   const { handleChat } = createChatHandler({
@@ -428,7 +429,7 @@ describe('a turn that parks work in a background shell keeps going', () => {
     );
     chmodSync(bin, 0o755);
 
-    const activeProcesses = new Map<string, ChildProcess>();
+    const activeProcesses = new Map<string, ActiveChatProcess>();
     const { handleChat } = createChatHandler(makeDeps(activeProcesses, bin));
     await handleChat(null, { type: 'chat', agentId, sessionId, content: 'Build it.' });
     await waitFor(() => recordedPrompts(argFile).length >= 2);

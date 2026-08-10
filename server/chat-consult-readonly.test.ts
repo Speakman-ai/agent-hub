@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import path from 'path';
 import type { ChildProcess } from 'child_process';
+import type { ActiveChatProcess } from './active-chat-process.js';
 import { getStmts } from './db.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import type { Agent, EnrichedAgent, Project } from './types.js';
@@ -27,7 +28,7 @@ afterAll(() => {
 
 function makeDeps(
   engine: string,
-  activeProcesses: Map<string, ChildProcess>,
+  activeProcesses: Map<string, ActiveChatProcess>,
   argvRecorderBin: string,
   projectMode = 'dev',
 ): ChatHandlerDeps {
@@ -112,7 +113,7 @@ async function spawnTurn(
     `#!/bin/sh\nprintf "%s\\n" "$@" > "${argFile}"\ncat >/dev/null 2>&1\nexit 0\n`,
   );
   chmodSync(argvRecorderBin, 0o755);
-  const activeProcesses = new Map<string, ChildProcess>();
+  const activeProcesses = new Map<string, ActiveChatProcess>();
   const { handleChat } = createChatHandler(
     makeDeps(engine, activeProcesses, argvRecorderBin, options.projectMode),
   );

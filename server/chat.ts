@@ -4,7 +4,12 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
-import { trackChild, killProcessGroup } from './process-groups.js';
+import { trackChild } from './process-groups.js';
+import {
+  wrapGuestChatProcess,
+  wrapHostChildProcess,
+  type ActiveChatProcess,
+} from './active-chat-process.js';
 import {
   buildEphemeralBackgroundBashHaltNotice,
   buildEphemeralBackgroundBashNotice,
@@ -43,7 +48,16 @@ import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { isDevServerConfigured } from './dev-server-config.js';
 import { getSessionEnvSelection } from './session-env/sysbox-capability.js';
-import { envOwnedHostCliRefusal } from './session-env/env-owned-cli-gate.js';
+import { worktreeSharingForKind, type SessionEnv } from './session-env/session-env.js';
+import {
+  adaptSpawnEnvForGuest,
+  buildGuestCliCommand,
+  finalizeGuestSpawnEnv,
+  hostCwdToWorktreeRelative,
+  prepareGuestCliTurn,
+  writeGuestSystemPromptFile,
+} from './session-env/guest-cli-spawn.js';
+import { FIRECRACKER_GUEST_WORKSPACE } from './session-env/firecracker/firecracker-vm-args.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -427,7 +441,7 @@ export interface ChatHandlerDeps {
   broadcast: BroadcastFn;
   findAgent: (agentId: string) => AgentLookup | null;
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
-  activeProcesses: Map<string, ChildProcess>;
+  activeProcesses: Map<string, ActiveChatProcess>;
   autonomousProjects: Set<string>;
   getClaudeBin: () => string;
   getCursorBin: () => string;
@@ -449,6 +463,12 @@ export interface ChatHandlerDeps {
     githubRepo?: string | null,
     hostedBarePath?: string | null,
   ) => Promise<string>;
+  /**
+   * Ensure the session's SessionEnv is started. Required for env-owned
+   * backends (Firecracker) so chat CLI turns spawn inside the guest.
+   * Optional in tests that never exercise Firecracker.
+   */
+  ensureSessionEnv?: (sessionId: string) => Promise<SessionEnv>;
   drainQueue: (sessionId: string) => void;
   /**
    * Accessor for the managed dev-server runtime. Returns `null` when the
@@ -1846,6 +1866,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     resolveSlashSkill,
     createCursorChat: _createCursorChat,
     ensureWorktree,
+    ensureSessionEnv,
     drainQueue,
     getDevServerRuntime,
     getPtyHost,
@@ -2283,7 +2304,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           if (proc) {
             markSessionTermination(sessionId, 'chat_interrupt_queued');
             console.info(`[chat] chat_interrupt_queued: sending SIGTERM session=${sessionId}`);
-            killProcessGroup(proc, 'SIGTERM');
+            proc.kill('SIGTERM');
           }
           setTimeout(runExistingQueued, 100);
           broadcast({ type: 'interrupted', sessionId });
@@ -2371,7 +2392,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           if (proc) {
             markSessionTermination(sessionId, 'chat_interrupt');
             console.info(`[chat] chat_interrupt: sending SIGTERM session=${sessionId}`);
-            killProcessGroup(proc, 'SIGTERM');
+            proc.kill('SIGTERM');
           }
           broadcast({ type: 'interrupted', sessionId });
         }
@@ -2902,28 +2923,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // place, regardless of which engine eventually spawns.
       let baseBranchAdvanced: import('./worktree.js').BaseBranchAdvancedInfo | null = null;
 
-      // Env-owned backends (Firecracker) keep the live worktree in the guest.
-      // Host CLI spawn would write a divergent second tree — refuse until
-      // guest-side CLI spawn exists.
-      const envOwnedCliRefusal = envOwnedHostCliRefusal(getSessionEnvSelection().adapter);
-      if (envOwnedCliRefusal) {
-        console.error(`[chat] ${envOwnedCliRefusal}`);
-        saveErrorMessage(sessionId, assistantMsgId, engine, model, envOwnedCliRefusal);
-        broadcast({
-          type: 'error',
-          messageId: assistantMsgId,
-          sessionId,
-          error: envOwnedCliRefusal,
-        });
-        try {
-          stmts.deleteActiveTask.run(sessionId);
-        } catch {}
-        recomputeSessionState(stmts, sessionId, { agentId, broadcast });
-        drainQueue(sessionId);
-        return;
-      }
-
       let effectiveCwd: string = project.cwd;
+      let sessionEnv: SessionEnv | null = null;
+      const envOwned = worktreeSharingForKind(getSessionEnvSelection().adapter) === 'env-owned';
       const pinnedSpawnCwd =
         typeof msg._spawnCwd === 'string' && msg._spawnCwd.trim() !== ''
           ? msg._spawnCwd.trim()
@@ -2964,6 +2966,49 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         console.log(
           `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
         );
+      }
+
+      if (envOwned) {
+        if (!ensureSessionEnv) {
+          const errText =
+            'Firecracker session environments require ensureSessionEnv — ' +
+            'the Hub server failed to wire SessionEnvManager into chat.';
+          console.error(`[chat] ${errText}`);
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          drainQueue(sessionId);
+          return;
+        }
+        try {
+          sessionEnv = await ensureSessionEnv(sessionId);
+        } catch (err: unknown) {
+          const errText =
+            `Failed to start session environment for env-owned CLI turn: ` +
+            (err instanceof Error ? err.message : String(err));
+          console.error(`[chat] ${errText}`);
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          drainQueue(sessionId);
+          return;
+        }
       }
 
       // Surface base-branch drift (umbrella moved while this card was
@@ -3206,16 +3251,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       let imagePromptSuffix = '';
       if (images && images.length > 0) {
-        const imgCwd = session!.worktree_path || project.cwd;
-        const imgDir = path.join(imgCwd, '.agent-hub-images');
-        mkdirSync(imgDir, { recursive: true });
         const imgPaths: string[] = [];
-        for (const img of images as unknown as ImageRef[]) {
-          const srcPath = path.join(uploadsDir, img.filename);
-          if (existsSync(srcPath)) {
-            const destPath = path.join(imgDir, img.filename);
-            writeFileSync(destPath, readFileSync(srcPath));
-            imgPaths.push(destPath);
+        if (sessionEnv && envOwned) {
+          const imgDirRel = '.agent-hub-images';
+          await sessionEnv.worktreeIo.exec(`mkdir -p ${imgDirRel}`, { cwd: '.' });
+          for (const img of images as unknown as ImageRef[]) {
+            const srcPath = path.join(uploadsDir, img.filename);
+            if (existsSync(srcPath)) {
+              const destRel = `${imgDirRel}/${img.filename}`;
+              await sessionEnv.worktreeIo.writeFile(destRel, readFileSync(srcPath));
+              imgPaths.push(`${FIRECRACKER_GUEST_WORKSPACE}/${destRel}`);
+            }
+          }
+        } else {
+          const imgCwd = session!.worktree_path || project.cwd;
+          const imgDir = path.join(imgCwd, '.agent-hub-images');
+          mkdirSync(imgDir, { recursive: true });
+          for (const img of images as unknown as ImageRef[]) {
+            const srcPath = path.join(uploadsDir, img.filename);
+            if (existsSync(srcPath)) {
+              const destPath = path.join(imgDir, img.filename);
+              writeFileSync(destPath, readFileSync(srcPath));
+              imgPaths.push(destPath);
+            }
           }
         }
         if (imgPaths.length > 0) {
@@ -3537,6 +3595,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               agentHooks: agent.hooks,
               includeSystemHooks: isWorktree,
             });
+            // Env-owned: host writes land on the seed only — mirror settings into
+            // the live guest tree so Claude inside the VM sees the hooks.
+            if (sessionEnv && envOwned) {
+              const settingsHost = path.join(effectiveCwd, '.claude', 'settings.json');
+              if (existsSync(settingsHost)) {
+                await sessionEnv.worktreeIo.exec(`mkdir -p .claude`, { cwd: '.' });
+                await sessionEnv.worktreeIo.writeFile(
+                  '.claude/settings.json',
+                  readFileSync(settingsHost),
+                );
+              }
+            }
           } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);
             console.warn(`[chat] Failed to write hooks config: ${message}`);
@@ -3735,65 +3805,234 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
 
-      // Pre-spawn cwd guard. Node's child_process.spawn reports ENOENT against
-      // the *command* when the cwd doesn't exist, which historically surfaced
-      // as the misleading "binary not found at <bin>" error even though the bin
-      // itself was fine. Catch this case up front: auto-create the directory
-      // when possible (recoverable) or fail with a precise, actionable message.
-      const ensureCwd = ensureSpawnCwd(effectiveCwd);
-      if (ensureCwd.status === 'auto-created') {
-        console.warn(`[chat] auto-created missing cwd for session ${sessionId}: ${effectiveCwd}`);
-      } else if (ensureCwd.status === 'failed') {
-        const errText =
-          `Working directory does not exist and could not be created: ${effectiveCwd}. ` +
-          `Update the project's "cwd" in Settings or create the directory. ` +
-          `(${ensureCwd.reason})`;
-        console.error(`[chat] ${errText}`);
-        saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
-        broadcast({
-          type: 'error',
-          messageId: assistantMsgId,
-          sessionId,
-          error: errText,
-        });
-        try {
-          stmts.deleteActiveTask.run(sessionId);
-        } catch {}
-        // The turn never spawned (bad cwd) — leave the cache out of `working`.
-        recomputeSessionState(stmts, sessionId, { agentId, broadcast });
-        drainQueue(sessionId);
-        return;
+      // Pre-spawn cwd guard (host path). Env-owned turns use the guest
+      // worktree; the host seed is only checked when we still spawn on host.
+      if (!envOwned) {
+        const ensureCwd = ensureSpawnCwd(effectiveCwd);
+        if (ensureCwd.status === 'auto-created') {
+          console.warn(`[chat] auto-created missing cwd for session ${sessionId}: ${effectiveCwd}`);
+        } else if (ensureCwd.status === 'failed') {
+          const errText =
+            `Working directory does not exist and could not be created: ${effectiveCwd}. ` +
+            `Update the project's "cwd" in Settings or create the directory. ` +
+            `(${ensureCwd.reason})`;
+          console.error(`[chat] ${errText}`);
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          drainQueue(sessionId);
+          return;
+        }
       }
 
       const cliTurnStartMs = Date.now();
-      // Open stdin as a pipe only when the engine branch staged a
-      // `stdinPrompt` (currently codex-cli using the `-` sentinel).
-      // Every other engine leaves stdin closed so an over-eager CLI
-      // never blocks on a read that will never come.
-      const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
-      const proc = spawn(bin, args, {
-        cwd: effectiveCwd,
-        env: spawnEnv,
-        stdio: [childStdin, 'pipe', 'pipe'],
-        // Run as its own process-group leader so killProcessGroup(proc) reaches
-        // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
-        detached: true,
-      });
-      // Feed the prompt to the child once the pipe is open. We
-      // explicitly call `.end()` so the child sees EOF and codex's
-      // `exec -` finalizes the prompt buffer. If the write fails (e.g.
-      // the child died between spawn and write) we swallow the error
-      // — the close handler picks up the exit code and surfaces a
-      // sane message.
-      if (stdinPrompt !== null && proc.stdin) {
+
+      type CliIo = {
+        onSpawned: (cb: () => void) => void;
+        onStdout: (cb: (chunk: string) => void) => void;
+        onStderr: (cb: (chunk: string) => void) => void;
+        onClose: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void;
+        onError: (cb: (err: Error) => void) => void;
+      };
+
+      let cliIo: CliIo;
+      let activeHandle: ActiveChatProcess;
+      let spawnPid: number | null = null;
+      /** Absolute path used for host-side diff enrichment; guest uses seed path. */
+      const hostDiffCwd = effectiveCwd;
+
+      if (envOwned && sessionEnv) {
+        let guestBin = bin;
+        let guestArgs = [...args];
+        let guestEnv: Record<string, string>;
+        let guestCwdRel = '.';
         try {
-          proc.stdin.end(stdinPrompt, 'utf8');
-        } catch (err) {
-          console.error(
-            `[chat] failed to write stdin prompt for ${engine} (${sessionId}):`,
-            err instanceof Error ? err.message : err,
-          );
+          const prepared = await prepareGuestCliTurn({
+            env: sessionEnv,
+            engine,
+            hostBin: bin,
+            hostHome: typeof spawnEnv.HOME === 'string' ? spawnEnv.HOME : undefined,
+          });
+          guestBin = prepared.guestBin;
+          const adapted = adaptSpawnEnvForGuest(spawnEnv, {
+            guestHome: prepared.guestHome,
+            guestSkillsRoot: prepared.guestSkillsRoot,
+          });
+          guestEnv = finalizeGuestSpawnEnv(adapted, prepared.skillScriptDirs, prepared.guestHome);
+          const hostWorktree = session!.worktree_path || effectiveCwd;
+          guestCwdRel = hostCwdToWorktreeRelative(effectiveCwd, hostWorktree);
+
+          if (engine === 'claude-code') {
+            const idx = guestArgs.indexOf('--system-prompt-file');
+            if (idx >= 0 && typeof guestArgs[idx + 1] === 'string') {
+              if (systemPromptFileCleanup) {
+                systemPromptFileCleanup();
+                systemPromptFileCleanup = null;
+              }
+              const guestPrompt = await writeGuestSystemPromptFile(
+                sessionEnv,
+                sessionId,
+                enrichedPrompt,
+              );
+              guestArgs[idx + 1] = guestPrompt.guestPath;
+              systemPromptFileCleanup = () => {
+                void guestPrompt.cleanup();
+              };
+            }
+          }
+
+          const command = buildGuestCliCommand(guestBin, guestArgs);
+          const guestProc = sessionEnv.spawn(command, {
+            cwd: guestCwdRel,
+            env: guestEnv,
+            name: `chat:${engine}`,
+          });
+          spawnPid = guestProc.pid;
+          activeHandle = wrapGuestChatProcess((signal) => guestProc.kill(signal));
+
+          let spawned = false;
+          const spawnWaiters: Array<() => void> = [];
+          const markSpawned = () => {
+            if (spawned) return;
+            spawned = true;
+            for (const w of spawnWaiters) w();
+            spawnWaiters.length = 0;
+          };
+          // Guest `started` frame may arrive after we subscribe; also treat
+          // first stdout/stderr as evidence the process is up.
+          const unsubStarted = guestProc.onStdout(() => {
+            markSpawned();
+          });
+          unsubStarted();
+
+          let errorSubs: Array<(err: Error) => void> = [];
+          let closeSubs: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
+          guestProc.onExit((result) => {
+            if (result.error) {
+              for (const cb of errorSubs) cb(result.error);
+            }
+            for (const cb of closeSubs) cb(result.code, result.signal);
+          });
+
+          cliIo = {
+            onSpawned: (cb) => {
+              if (spawned || guestProc.pid != null) {
+                spawned = true;
+                cb();
+                return;
+              }
+              spawnWaiters.push(cb);
+              // Poll pid briefly — createVmAgentProcess sets pid on started frame.
+              const t = setInterval(() => {
+                if (guestProc.pid != null) {
+                  clearInterval(t);
+                  markSpawned();
+                }
+              }, 20);
+              setTimeout(() => clearInterval(t), 30_000).unref?.();
+            },
+            onStdout: (cb) => {
+              guestProc.onStdout((chunk) => {
+                markSpawned();
+                cb(chunk);
+              });
+            },
+            onStderr: (cb) => {
+              guestProc.onStderr((chunk) => {
+                markSpawned();
+                cb(chunk);
+              });
+            },
+            onClose: (cb) => {
+              closeSubs.push(cb);
+            },
+            onError: (cb) => {
+              errorSubs.push(cb);
+            },
+          };
+
+          if (stdinPrompt !== null) {
+            try {
+              guestProc.writeStdin?.(stdinPrompt);
+              guestProc.endStdin?.();
+            } catch (err) {
+              console.error(
+                `[chat] failed to write stdin prompt for ${engine} (${sessionId}):`,
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+        } catch (err: unknown) {
+          const errText =
+            `Failed to spawn ${engine} in session environment: ` +
+            (err instanceof Error ? err.message : String(err));
+          console.error(`[chat] ${errText}`);
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          drainQueue(sessionId);
+          return;
         }
+      } else {
+        // Open stdin as a pipe only when the engine branch staged a
+        // `stdinPrompt` (currently codex-cli using the `-` sentinel).
+        // Every other engine leaves stdin closed so an over-eager CLI
+        // never blocks on a read that will never come.
+        const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
+        const proc = spawn(bin, args, {
+          cwd: effectiveCwd,
+          env: spawnEnv,
+          stdio: [childStdin, 'pipe', 'pipe'],
+          // Run as its own process-group leader so killProcessGroup(proc) reaches
+          // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
+          detached: true,
+        });
+        if (stdinPrompt !== null && proc.stdin) {
+          try {
+            proc.stdin.end(stdinPrompt, 'utf8');
+          } catch (err) {
+            console.error(
+              `[chat] failed to write stdin prompt for ${engine} (${sessionId}):`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+        spawnPid = proc.pid ?? null;
+        activeHandle = wrapHostChildProcess(proc);
+        cliIo = {
+          onSpawned: (cb) => {
+            proc.once('spawn', cb);
+          },
+          onStdout: (cb) => {
+            proc.stdout?.on('data', (chunk: Buffer) => cb(chunk.toString()));
+          },
+          onStderr: (cb) => {
+            proc.stderr?.on('data', (chunk: Buffer) => cb(chunk.toString()));
+          },
+          onClose: (cb) => {
+            proc.on('close', (code, signal) => cb(code, signal));
+          },
+          onError: (cb) => {
+            proc.on('error', cb);
+          },
+        };
+        trackChild(proc);
       }
 
       const S = stmts;
@@ -3829,22 +4068,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // records it came from can go. Node emits `spawn` before any stdout data,
       // so this can never race ahead of a shell THIS turn starts. A spawn that
       // fails emits `error` instead and leaves the records for the next attempt.
-      proc.once('spawn', () => clearEphemeralBackgroundBash(sessionId));
+      cliIo.onSpawned(() => clearEphemeralBackgroundBash(sessionId));
 
-      activeProcesses.set(sessionId, proc);
+      activeProcesses.set(sessionId, activeHandle);
       if (turnStartLockHeld) {
         releaseSessionWorktreeLock(sessionId, 'turn-start');
         turnStartLockHeld = false;
       }
-      trackChild(proc);
       // NOTE: `sessions.last_turn_error` is intentionally NOT cleared here.
       // Clearing at spawn would reopen the Finalize automation gate while a
       // recovery turn is still in flight (a parked ready_to_push run could
       // auto-push mid-recovery). The flag clears only in the close handler,
       // after this turn has verifiably ended cleanly. See server/turn-error.ts.
-      if (proc.pid) {
+      if (spawnPid) {
         try {
-          S.updateActiveTaskPid.run(proc.pid, sessionId);
+          S.updateActiveTaskPid.run(spawnPid, sessionId);
         } catch {}
       }
 
@@ -4094,22 +4332,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       function handleParsedEvents(events: StreamEvent[]): void {
         const enriched =
           engine === 'codex-cli'
-            ? enrichCodexFileChangeDiffs(events, effectiveCwd, {
+            ? enrichCodexFileChangeDiffs(events, hostDiffCwd, {
                 fileChangeToolUseIds: codexFileChangeToolUseIds,
               })
             : events;
         for (const event of enriched) handleEvent(event);
       }
 
-      proc.stdout!.on('data', (chunk: Buffer) => {
-        handleParsedEvents(parser.feed(chunk));
+      cliIo.onStdout((chunk: string) => {
+        handleParsedEvents(parser.feed(Buffer.from(chunk)));
       });
 
-      proc.stderr!.on('data', (chunk: Buffer) => {
-        errorOutput += chunk.toString();
+      cliIo.onStderr((chunk: string) => {
+        errorOutput += chunk;
       });
 
-      proc.on('close', async (code: number | null, signal: NodeJS.Signals | null) => {
+      cliIo.onClose(async (code: number | null, signal: NodeJS.Signals | null) => {
         activeProcesses.delete(sessionId);
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
@@ -5752,7 +5990,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         await runWorktreeAutoCommitAndDrainTail(true);
       });
 
-      proc.on('error', (err: Error) => {
+      cliIo.onError((err: Error) => {
         spawnErrored = true;
         activeProcesses.delete(sessionId);
         // Also clean up the per-spawn system-prompt temp file when

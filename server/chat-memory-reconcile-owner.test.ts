@@ -5,6 +5,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import type { ChildProcess } from 'child_process';
+import type { ActiveChatProcess } from './active-chat-process.js';
 import { getDb, getStmts } from './db.js';
 import type { Agent, EnrichedAgent, Project } from './types.js';
 
@@ -100,7 +101,7 @@ function makeDeps(agentId: string): Parameters<typeof createChatHandler>[0] {
     createCursorChat: undefined,
     findAgent: (id) => (id === agentId ? { project, agent } : null),
     getEnrichedAgent: (id) => (id === agentId ? enriched : null),
-    activeProcesses: new Map<string, ChildProcess>(),
+    activeProcesses: new Map<string, ActiveChatProcess>(),
     autonomousProjects: new Set(),
     getClaudeBin: () => claudeBin,
     getCursorBin: () => claudeBin,

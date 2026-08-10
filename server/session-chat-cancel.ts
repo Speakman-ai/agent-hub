@@ -1,5 +1,4 @@
-import type { ChildProcess } from 'child_process';
-import { killProcessGroup } from './process-groups.js';
+import type { ActiveChatProcess } from './active-chat-process.js';
 import { markSessionTermination } from './process-termination.js';
 import { requestReactChainCancel } from './react-chain-cancel.js';
 
@@ -8,7 +7,7 @@ export const CANCEL_SIGKILL_GRACE_MS = 5000;
 
 export interface SessionChatCancelDeps {
   sessionId: string;
-  activeProcesses: Map<string, ChildProcess>;
+  activeProcesses: Map<string, ActiveChatProcess>;
   /** Injectable for tests; defaults to `setTimeout`. */
   scheduleEscalation?: (fn: () => void, ms: number) => unknown;
 }
@@ -36,7 +35,7 @@ export function cancelSessionChatRun(deps: SessionChatCancelDeps): void {
   if (!proc) return;
   markSessionTermination(sessionId, 'user_cancel');
   console.info(`[chat] user_cancel: sending SIGTERM session=${sessionId}`);
-  killProcessGroup(proc, 'SIGTERM');
+  proc.kill('SIGTERM');
 
   const schedule = deps.scheduleEscalation ?? ((fn, ms) => setTimeout(fn, ms).unref?.());
   schedule(() => {
@@ -44,6 +43,6 @@ export function cancelSessionChatRun(deps: SessionChatCancelDeps): void {
     console.warn(
       `[chat] user_cancel: SIGTERM ignored after ${CANCEL_SIGKILL_GRACE_MS}ms, escalating to SIGKILL session=${sessionId}`,
     );
-    killProcessGroup(proc, 'SIGKILL');
+    proc.kill('SIGKILL');
   }, CANCEL_SIGKILL_GRACE_MS);
 }
