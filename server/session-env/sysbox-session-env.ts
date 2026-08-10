@@ -170,7 +170,8 @@ export interface SysboxSessionEnvDeps {
   openPty?: HostPtyFactory;
   /** Host-port allocator (the 4100–4999 pool in production). Default identity. */
   allocateHostPort?: (internalPort: number) => number | Promise<number>;
-  releaseHostPort?: (mapping: SessionEnvPortMapping) => void;
+  /** Release a port reserved by {@link allocateHostPort} after Docker claims it (or start fails). */
+  releaseHostPort?: (hostPort: number) => void;
   /** Env for the docker CLIENT processes on the host. Default process.env. */
   dockerClientEnv?: Record<string, string | undefined>;
   clock?: SessionEnvClock;
@@ -220,7 +221,7 @@ export class SysboxSessionEnv implements SessionEnv {
   private readonly runDocker: SysboxRunFn;
   private readonly ptyFactory: HostPtyFactory;
   private readonly allocateHostPort: (internalPort: number) => number | Promise<number>;
-  private readonly releaseHostPort: ((mapping: SessionEnvPortMapping) => void) | null;
+  private readonly releaseHostPort: ((hostPort: number) => void) | null;
   private readonly dockerClientEnv: Record<string, string | undefined>;
   private readonly clock: SessionEnvClock;
   private readonly isDirectory: (path: string) => Promise<boolean>;
@@ -291,6 +292,32 @@ export class SysboxSessionEnv implements SessionEnv {
     return this.liveProcesses.size + this.livePtys.size;
   }
 
+  async hasDetachedWorkload(): Promise<boolean> {
+    if (!this.#started) return false;
+    // Processes the Hub did not spawn (compose databases, workers) still show
+    // in `docker top`. Fail closed on inspect errors.
+    try {
+      const res = await this.runDocker(['docker', 'top', this.containerName, '-eo', 'pid,comm']);
+      if (!res.ok) return true;
+      const lines = res.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+      // Header + pause/init-only → no detached workload worth keeping.
+      const procs = lines.slice(1).filter((line) => {
+        const comm = line.split(/\s+/).slice(1).join(' ').toLowerCase();
+        return comm && !/^(pause|cat|sh|bash)$/.test(comm);
+      });
+      return procs.length > 0;
+    } catch {
+      return true;
+    }
+  }
+
+  retainAfterFailedEnsure(): boolean {
+    return false;
+  }
+
   onDispose(cb: () => void): () => void {
     this.disposeHooks.add(cb);
     return () => this.disposeHooks.delete(cb);
@@ -338,55 +365,70 @@ export class SysboxSessionEnv implements SessionEnv {
               }),
           );
 
-    const volume = await this.runDocker(
-      buildCreateSysboxGraphVolumeArgv({
-        containerName: this.containerName,
-        sessionId: this.sessionId,
-      }),
-    );
-    if (!volume.ok) {
-      throw new Error(
-        `Failed to create sysbox graph volume for session ${this.sessionId}: ${volume.stderr.trim() || volume.stdout.trim()}`,
-      );
-    }
-
-    const owner = await this.statWorkspaceOwner(this.worktreePath);
-
-    const run = await this.runDocker(
-      buildStartSysboxContainerArgv({
-        sessionId: this.sessionId,
-        containerName: this.containerName,
-        image: this.image,
-        worktreePath: this.worktreePath,
-        ports,
-        isolation: this.isolation,
-        env: { ...this.containerEnv, ...workspaceOwnerEnv(owner) },
-      }),
-    );
-    if (!run.ok) {
-      // Best-effort cleanup so a retry does not hit name/volume collisions.
-      await this.runDocker(buildStopSysboxContainerArgv(this.containerName));
-      await this.runDocker(buildRemoveSysboxGraphVolumeArgv(this.containerName));
-      throw new Error(
-        `Failed to start sysbox session container ${this.containerName}: ${run.stderr.trim() || run.stdout.trim()}`,
-      );
-    }
+    let portsReleased = false;
+    const releasePorts = () => {
+      if (portsReleased) return;
+      portsReleased = true;
+      for (const p of ports) this.releaseHostPort?.(p.hostPort);
+    };
 
     try {
-      await this.#waitForInnerDocker();
-      if (this.portRouting === 'container-ip') {
-        this.#containerIp = await this.#readContainerIp();
+      const volume = await this.runDocker(
+        buildCreateSysboxGraphVolumeArgv({
+          containerName: this.containerName,
+          sessionId: this.sessionId,
+        }),
+      );
+      if (!volume.ok) {
+        throw new Error(
+          `Failed to create sysbox graph volume for session ${this.sessionId}: ${volume.stderr.trim() || volume.stdout.trim()}`,
+        );
       }
+
+      const owner = await this.statWorkspaceOwner(this.worktreePath);
+
+      const run = await this.runDocker(
+        buildStartSysboxContainerArgv({
+          sessionId: this.sessionId,
+          containerName: this.containerName,
+          image: this.image,
+          worktreePath: this.worktreePath,
+          ports,
+          isolation: this.isolation,
+          env: { ...this.containerEnv, ...workspaceOwnerEnv(owner) },
+        }),
+      );
+      // Docker now owns the published ports (or the attempt failed). Drop the
+      // Hub-side reservation so the numbers can be reused after stop / retry.
+      releasePorts();
+      if (!run.ok) {
+        // Best-effort cleanup so a retry does not hit name/volume collisions.
+        await this.runDocker(buildStopSysboxContainerArgv(this.containerName));
+        await this.runDocker(buildRemoveSysboxGraphVolumeArgv(this.containerName));
+        throw new Error(
+          `Failed to start sysbox session container ${this.containerName}: ${run.stderr.trim() || run.stdout.trim()}`,
+        );
+      }
+
+      try {
+        await this.#waitForInnerDocker();
+        if (this.portRouting === 'container-ip') {
+          this.#containerIp = await this.#readContainerIp();
+        }
+      } catch (err) {
+        // A started-but-unready container is not usable and would make the
+        // retry hit a name collision. Remove both resources before surfacing
+        // the readiness error; the boot reconcile remains the crash backstop.
+        await this.runDocker(buildStopSysboxContainerArgv(this.containerName));
+        await this.runDocker(buildRemoveSysboxGraphVolumeArgv(this.containerName));
+        throw err;
+      }
+      this.#started = true;
+      this.touch();
     } catch (err) {
-      // A started-but-unready container is not usable and would make the
-      // retry hit a name collision. Remove both resources before surfacing
-      // the readiness error; the boot reconcile remains the crash backstop.
-      await this.runDocker(buildStopSysboxContainerArgv(this.containerName));
-      await this.runDocker(buildRemoveSysboxGraphVolumeArgv(this.containerName));
+      releasePorts();
       throw err;
     }
-    this.#started = true;
-    this.touch();
   }
 
   /**
@@ -816,7 +858,7 @@ export class SysboxSessionEnv implements SessionEnv {
     for (const pending of this.portMappings.values()) {
       try {
         const mapping = await pending;
-        this.releaseHostPort?.(mapping);
+        this.releaseHostPort?.(mapping.hostPort);
       } catch {
         // Allocation failed — nothing to release.
       }

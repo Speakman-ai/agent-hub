@@ -269,10 +269,11 @@ export function createFirecrackerHostIo(cfg: FirecrackerExecConfig): Firecracker
  */
 export const FC_LAUNCH_VMM_HELPER_DEFAULT = '/usr/local/lib/agent-hub/fc-launch-vmm.sh';
 
-/** @deprecated Kept for test assertions on the helper script body. */
+/** @deprecated Kept for test assertions on the helper script contract. */
 export const VMM_LAUNCH_SCRIPT = [
-  'sock=$1; owner=$2; shift 2',
-  '"$@" &',
+  'sock=$1; owner=$2; mode=$3; shift 3',
+  'case "$mode" in firecracker) bin=/usr/bin/firecracker ;; jailer) bin=/usr/bin/jailer ;; *) exit 2 ;; esac',
+  '"$bin" "$@" &',
   'vmm=$!',
   'i=0',
   'while [ $i -lt 200 ]; do',
@@ -286,6 +287,43 @@ export function resolveFcLaunchVmmHelper(env: NodeJS.ProcessEnv = process.env): 
   return env.AGENT_HUB_FIRECRACKER_LAUNCH_HELPER?.trim() || FC_LAUNCH_VMM_HELPER_DEFAULT;
 }
 
+/**
+ * Normalize the first argv token to a launch mode the root helper accepts.
+ * Caller-chosen executable paths are rejected — only firecracker|jailer.
+ */
+export function resolveVmmLaunchMode(command: string | undefined): 'firecracker' | 'jailer' {
+  const base = (command ?? '').trim();
+  if (base === 'firecracker' || base === '/usr/bin/firecracker') return 'firecracker';
+  if (base === 'jailer' || base === '/usr/bin/jailer') return 'jailer';
+  throw new Error(
+    `fc-launch-vmm refused executable ${JSON.stringify(command)}; only firecracker|jailer are permitted`,
+  );
+}
+
+/** Ensure jailer argv pins Firecracker to the hard-coded host binary. */
+export function normalizeJailerLaunchArgs(args: string[]): string[] {
+  const out = [...args];
+  let sawExec = false;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] !== '--exec-file') continue;
+    const next = out[i + 1];
+    if (next === undefined) {
+      throw new Error('jailer launch argv missing value for --exec-file');
+    }
+    if (next !== '/usr/bin/firecracker' && next !== 'firecracker') {
+      throw new Error(
+        `jailer --exec-file must be /usr/bin/firecracker (got ${JSON.stringify(next)})`,
+      );
+    }
+    out[i + 1] = '/usr/bin/firecracker';
+    sawExec = true;
+  }
+  if (!sawExec) {
+    throw new Error('jailer launch argv requires --exec-file /usr/bin/firecracker');
+  }
+  return out;
+}
+
 export function buildVmmLaunchArgv(
   spec: VmmLaunchSpec,
   env: NodeJS.ProcessEnv = process.env,
@@ -294,7 +332,10 @@ export function buildVmmLaunchArgv(
   if (vsockPath === undefined || ownerUid === undefined || ownerGid === undefined) {
     return argv;
   }
-  return [resolveFcLaunchVmmHelper(env), vsockPath, `${ownerUid}:${ownerGid}`, ...argv];
+  const [command, ...rest] = argv;
+  const mode = resolveVmmLaunchMode(command);
+  const args = mode === 'jailer' ? normalizeJailerLaunchArgs(rest) : rest;
+  return [resolveFcLaunchVmmHelper(env), vsockPath, `${ownerUid}:${ownerGid}`, mode, ...args];
 }
 
 /**

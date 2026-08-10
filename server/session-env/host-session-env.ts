@@ -211,6 +211,15 @@ export class HostSessionEnv implements SessionEnv {
     return this.liveProcesses.size + this.livePtys.size;
   }
 
+  async hasDetachedWorkload(): Promise<boolean> {
+    // Host adapter has no hidden boundary — Hub-tracked handles are complete.
+    return false;
+  }
+
+  retainAfterFailedEnsure(): boolean {
+    return false;
+  }
+
   onDispose(cb: () => void): () => void {
     this.disposeHooks.add(cb);
     return () => this.disposeHooks.delete(cb);

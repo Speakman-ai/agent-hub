@@ -25,6 +25,12 @@ class FakeEnv {
   liveProcessCount() {
     return this.live;
   }
+  async hasDetachedWorkload() {
+    return false;
+  }
+  retainAfterFailedEnsure() {
+    return false;
+  }
   onDispose(cb: () => void) {
     this.hooks.add(cb);
     return () => this.hooks.delete(cb);

@@ -418,9 +418,11 @@ describe('SysboxSessionEnv.dispose', () => {
     const released: number[] = [];
     const fixture = await startedEnv({
       allocateHostPort: (internal) => internal + 1000,
-      releaseHostPort: (m) => released.push(m.hostPort),
+      releaseHostPort: (hostPort) => released.push(hostPort),
     });
     const { env, runCalls, clock } = fixture;
+    // Published ports are released once docker run claims them (start), not at dispose.
+    expect(released).toEqual([6173]);
     env.spawn('npm run dev');
 
     const disposed = env.dispose({ graceMs: 5000 });
@@ -437,7 +439,6 @@ describe('SysboxSessionEnv.dispose', () => {
     expect(volRm).toEqual(['docker', 'volume', 'rm', '-f', 'agenthub-session-sess-1-graph']);
     // rm happens after the grace race, volume rm after container rm.
     expect(runCalls.indexOf(rm)).toBeLessThan(runCalls.indexOf(volRm));
-    expect(released).toEqual([6173]);
     expect(env.disposed).toBe(true);
   });
 
