@@ -39,6 +39,7 @@ import {
   POST_FINALIZE_PUSH_LOCK_ERROR,
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from './post-push-session-lock.js';
+import { stopBackgroundShellsAfterFinalizePush } from './post-push-background-shells.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -299,6 +300,22 @@ async function executePush(args: {
     };
   }
 
+  // The session is now locked in ask mode and will never ship again — its
+  // background shells go with it. Awaited so the "pushed" broadcast below
+  // cannot beat a still-armed shell into dispatching a wake turn.
+  //
+  // Guarded even though the callee documents itself as non-throwing: past this
+  // line the push is persisted and the PR is open on GitHub, so *nothing*
+  // cosmetic may turn it into a reported failure. This is the layer that makes
+  // that true independently of the callee's contract holding.
+  await stopBackgroundShellsAfterFinalizePush(deps, session.id).catch((err: unknown) => {
+    console.warn(
+      `[finalize-push] background-shell teardown threw run=${run.id} session=${session.id}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  });
+
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: run.id,
@@ -497,6 +514,16 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
             message: msg,
           };
         }
+        // Adopting a peer's push locks this session too, so its shells are
+        // just as dead as the pushing run's. Guarded for the same reason as the
+        // primary push path: the peer's PR already exists.
+        await stopBackgroundShellsAfterFinalizePush(deps, session.id).catch((err: unknown) => {
+          console.warn(
+            `[finalize-push] background-shell teardown threw run=${run.id} session=${session.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
         deps.broadcast({
           type: 'finalize_run_phase_changed',
           run_id: run.id,

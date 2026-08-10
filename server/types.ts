@@ -4102,10 +4102,19 @@ export interface RouteDeps {
    * turns). The full runtime type lives in
    * `background-shells/background-shell-runtime.ts`; base RouteDeps only
    * needs the session-reap surface (the routes file extends this with the
-   * full getter). See `stopBackgroundShellsForSession` in routes/sessions.ts.
+   * full getter). See `stopBackgroundShellsForSession` in routes/sessions.ts
+   * and `stopBackgroundShellsAfterFinalizePush` in
+   * finalize/post-push-background-shells.ts.
    */
   getBackgroundShellRuntime?: () => {
     stopBySessionId: (sessionId: string) => Promise<number>;
+    /**
+     * Disarm and stop exactly the shells that existed when the call was made.
+     * Used by boundary teardowns (the Finalize push) that must leave
+     * post-boundary shells alone. Optional on the base type so a partial test
+     * double only has to supply the session-wide reap.
+     */
+    stopSessionSnapshot?: (sessionId: string) => Promise<Array<{ id: string }>>;
   } | null;
   /**
    * The background-shell watch loop. Session teardown drops the session's

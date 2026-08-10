@@ -672,6 +672,59 @@ export class BackgroundShellRuntime {
     return rows.length;
   }
 
+  /**
+   * Tear down exactly the shells that existed at the moment of the call, and
+   * nothing else.
+   *
+   * The session-wide siblings (`cancelWatch`, `stopBySessionId`) re-query the
+   * table after every `await`, which is correct for session delete — the
+   * session is going away, so anything that appears mid-teardown should die
+   * too. It is wrong for a *boundary* teardown like the Finalize push, where
+   * work started after the boundary is supposed to survive. Since `stop()`
+   * awaits the SIGTERM grace before escalating, that teardown can easily run
+   * for seconds, and a session-wide sweep at the end of it would kill a shell
+   * started in the meantime.
+   *
+   * So the row set is snapshotted **synchronously**, before the first `await`,
+   * and every subsequent operation is keyed to those ids: the disarm targets
+   * them individually rather than `WHERE session_id = ?`, and only snapshotted
+   * rows are stopped. A shell created at any point after entry is invisible to
+   * this call.
+   *
+   * Returns the rows that were actually stopped.
+   */
+  async stopSessionSnapshot(sessionId: string): Promise<BackgroundShellRow[]> {
+    // Synchronous: no `await` may precede this read, or the snapshot is not a
+    // snapshot of the boundary any more.
+    const snapshot = this.db
+      .prepare(`SELECT * FROM background_shells WHERE session_id = ?`)
+      .all(sessionId) as BackgroundShellRow[];
+    if (snapshot.length === 0) return [];
+
+    // Per-id disarm rather than `disarmSessionWatch`: the session-wide UPDATE
+    // would silently clear the watch flag of a post-boundary shell too.
+    for (const row of snapshot) {
+      if (row.watch === 1) this.clearWatch(row.id);
+    }
+
+    const stopped: BackgroundShellRow[] = [];
+    for (const row of snapshot) {
+      if (row.status === 'running') {
+        const result = await this.stop(row.id);
+        if (result) stopped.push(result);
+      }
+    }
+    // Emit the disarmed-but-already-terminal rows so the UI's "watching" pill
+    // clears even when nothing needed killing (same reason `cancelWatch` does).
+    for (const row of snapshot) {
+      if (row.status !== 'running' && row.watch === 1) {
+        const updated = this.getById(row.id);
+        if (updated) this.emit(updated);
+      }
+    }
+    return stopped;
+  }
+
   // ─── Internals ────────────────────────────────────────────────────────
 
   /**

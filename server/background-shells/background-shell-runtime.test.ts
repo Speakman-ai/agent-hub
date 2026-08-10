@@ -790,3 +790,73 @@ describe('BackgroundShellRuntime — watch surface', () => {
     expect(running.some((r) => r.id === done.id)).toBe(false);
   });
 });
+
+describe('BackgroundShellRuntime.stopSessionSnapshot', () => {
+  it('stops armed and unwatched shells that existed at the boundary', async () => {
+    const h = makeHarness();
+    const armed = h.runtime.start({ ...START, watch: true });
+    const unwatched = h.runtime.start({ ...START, label: 'no-watch' });
+
+    const stopped = await h.runtime.stopSessionSnapshot('sess-1');
+
+    expect(stopped.map((r) => r.id).sort()).toEqual([armed.id, unwatched.id].sort());
+    expect(h.runtime.getById(armed.id)?.status).toBe('stopped');
+    expect(h.runtime.getById(armed.id)?.watch).toBe(0);
+    expect(h.runtime.getById(unwatched.id)?.status).toBe('stopped');
+  });
+
+  it('leaves a shell started while the teardown is mid-flight running', async () => {
+    // Regression: the teardown used to end with a session-wide sweep. Stopping
+    // a shell awaits the SIGTERM grace, so that sweep re-queried the table
+    // seconds later and killed anything started in the meantime — contradicting
+    // the Finalize-push contract that post-boundary work behaves normally.
+    const h = makeHarness();
+    const before = h.runtime.start({ ...START, watch: true });
+
+    // Do not await: the snapshot is taken synchronously, then the first
+    // `await this.stop(...)` yields control back here — exactly the window a
+    // follow-up or post-finalize trigger would start a shell in.
+    const teardown = h.runtime.stopSessionSnapshot('sess-1');
+    const after = h.runtime.start({ ...START, label: 'post-push', watch: true });
+    const stopped = await teardown;
+
+    expect(stopped.map((r) => r.id)).toEqual([before.id]);
+    expect(h.runtime.getById(before.id)?.status).toBe('stopped');
+
+    // The post-boundary shell is untouched: still running, and still armed —
+    // a session-wide disarm would have cleared the flag even without a kill.
+    const survivor = h.runtime.getById(after.id);
+    expect(survivor?.status).toBe('running');
+    expect(survivor?.watch).toBe(1);
+  });
+
+  it('does not touch other sessions', async () => {
+    const h = makeHarness();
+    const mine = h.runtime.start({ ...START, watch: true });
+    const theirs = h.runtime.start({ ...START, sessionId: 'sess-2' });
+
+    await h.runtime.stopSessionSnapshot('sess-1');
+
+    expect(h.runtime.getById(mine.id)?.status).toBe('stopped');
+    expect(h.runtime.getById(theirs.id)?.status).toBe('running');
+  });
+
+  it('is a no-op on a session with no shells', async () => {
+    const h = makeHarness();
+    await expect(h.runtime.stopSessionSnapshot('sess-empty')).resolves.toEqual([]);
+  });
+
+  it('disarms an already-terminal armed row without resurrecting its status', async () => {
+    const h = makeHarness();
+    const finished = h.runtime.start({ ...START, watch: true });
+    h.children[0].emitExit(0);
+
+    const stopped = await h.runtime.stopSessionSnapshot('sess-1');
+
+    // Nothing to kill, but the row must still be disarmed so the watcher does
+    // not treat the completion as a wake worth dispatching post-push.
+    expect(stopped).toEqual([]);
+    expect(h.runtime.getById(finished.id)?.watch).toBe(0);
+    expect(h.runtime.getById(finished.id)?.status).toBe('exited');
+  });
+});

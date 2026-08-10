@@ -789,3 +789,162 @@ describe('push gate requires a pushable HEAD', () => {
     gate.mockResolvedValue({ ok: true, changes: { hasUnpushed: true } } as never);
   });
 });
+
+describe('runFinalizePush background-shell teardown', () => {
+  function withShellRuntime(snapshotStopped: string[]) {
+    const { deps, addMessage, broadcast } = makeDeps();
+    const stopSessionSnapshot = vi.fn(async () => snapshotStopped.map((id) => ({ id })));
+    const stopBySessionId = vi.fn(async () => 0);
+    const forgetSession = vi.fn();
+    const wired = {
+      ...deps,
+      getBackgroundShellRuntime: () => ({ stopSessionSnapshot, stopBySessionId }),
+      getBackgroundShellWatcher: () => ({ forgetSession }),
+    };
+    return {
+      deps: wired,
+      addMessage,
+      broadcast,
+      stopSessionSnapshot,
+      stopBySessionId,
+      forgetSession,
+    };
+  }
+
+  it('stops the session background shells once the push is persisted', async () => {
+    // Regression: shells outlived Finalize. The session is locked in ask mode
+    // by lockSessionAfterFinalizePush, but its shells kept running and the
+    // watch loop could still wake it after the PR was open.
+    const h = withShellRuntime(['sh-1', 'sh-2']);
+
+    const outcome = await runFinalizePush({
+      deps: h.deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(h.forgetSession).toHaveBeenCalledWith('sess-1');
+    expect(h.stopSessionSnapshot).toHaveBeenCalledWith('sess-1');
+    expect(h.stopBySessionId).not.toHaveBeenCalled();
+    const teardownNotice = h.addMessage.run.mock.calls.find(
+      (c: unknown[]) =>
+        JSON.parse(c[7] as string).kind === 'background_shell_finalize_push_teardown',
+    );
+    expect(teardownNotice).toBeTruthy();
+    expect(JSON.parse(teardownNotice![7] as string).stoppedCount).toBe(2);
+  });
+
+  it('tears the shells down before announcing the push', async () => {
+    // The wake loop must be disarmed before the UI learns the run is pushed —
+    // otherwise a shell finishing in that window still opens a turn.
+    const h = withShellRuntime(['sh-1']);
+    const order: string[] = [];
+    h.stopSessionSnapshot.mockImplementation(async () => {
+      order.push('stopSessionSnapshot');
+      return [{ id: 'sh-1' }];
+    });
+    h.broadcast.mockImplementation((evt: { type?: string; status?: string }) => {
+      if (evt.type === 'finalize_run_completed') order.push('completed');
+    });
+
+    await runFinalizePush({
+      deps: h.deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+    });
+
+    expect(order).toEqual(['stopSessionSnapshot', 'completed']);
+  });
+
+  it('still completes the push when the teardown notice write throws', async () => {
+    // End-to-end companion to the module-level guards: the notice is cosmetic
+    // and runs last, after the push is persisted, so no failure writing it may
+    // turn a completed push into a reported failure. (This one exercises the
+    // inner insert guard — the pre-insert path is only reachable via an
+    // injected newId, which production does not override.)
+    const h = withShellRuntime(['sh-1']);
+    h.addMessage.run.mockImplementation((...args: unknown[]) => {
+      const meta = JSON.parse(args[7] as string) as { kind?: string };
+      if (meta.kind === 'background_shell_finalize_push_teardown') {
+        throw new Error('db is locked');
+      }
+    });
+
+    const outcome = await runFinalizePush({
+      deps: h.deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(
+      h.broadcast.mock.calls.some(
+        (c: unknown[]) => (c[0] as { type?: string }).type === 'finalize_run_completed',
+      ),
+    ).toBe(true);
+  });
+
+  it('still completes the push when the shell-runtime getter throws', async () => {
+    // The teardown runs after the push is persisted. A throwing dependency
+    // lookup must not turn a completed push into a reported failure or swallow
+    // its completion broadcasts.
+    const { deps, broadcast } = makeDeps();
+    const wired = {
+      ...deps,
+      getBackgroundShellRuntime: () => {
+        throw new Error('deps not wired');
+      },
+    };
+
+    const outcome = await runFinalizePush({
+      deps: wired as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(
+      broadcast.mock.calls.some(
+        (c: unknown[]) => (c[0] as { type?: string }).type === 'finalize_run_completed',
+      ),
+    ).toBe(true);
+  });
+
+  it('pushes fine when no background-shell runtime is wired', async () => {
+    const { deps } = makeDeps();
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+    });
+
+    expect(outcome.ok).toBe(true);
+  });
+});
