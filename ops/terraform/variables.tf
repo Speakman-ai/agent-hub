@@ -234,6 +234,12 @@ variable "ci_ssm_deploy_instance_tags" {
   default     = {}
 }
 
+variable "ci_ssm_expected_deploy_instance_id" {
+  description = "The instance CI will actually SSM, i.e. the DOCKER_DEPLOY_INSTANCE_ID repo Variable read by .github/workflows/ecr-publish-rollout-docker-dev.yml. NOT a targeting knob — it never widens the grant. It is asserted at plan time to be inside the set resolved from `ci_ssm_deploy_instance_id` / `ci_ssm_deploy_instance_tags`, so a replaced box that moved the repo Variable without moving these fails the plan (naming both ids) instead of failing the rollout with AccessDeniedException on ssm:SendCommand. release-all.yml injects it automatically as TF_VAR_ci_ssm_expected_deploy_instance_id; leave it empty to skip the assertion on a local plan."
+  type        = string
+  default     = ""
+}
+
 # --- Dedicated ALB (ops/terraform/alb.tf) — TLS at ALB, HTTP to Agent Hub on the instance ---
 
 variable "enable_dedicated_alb" {

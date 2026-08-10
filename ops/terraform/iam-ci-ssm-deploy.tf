@@ -56,6 +56,17 @@ locals {
     "arn:aws:ec2:${var.aws_region}:${local.ci_ssm_account_id}:instance/${id}"
   ]
 
+  # The box CI is going to SSM, mirrored from the rollout workflow's
+  # DOCKER_DEPLOY_INSTANCE_ID repo Variable. Deliberately absent from
+  # `ci_ssm_target_instance_ids` above: this is an assertion input, not a
+  # targeting knob. If it widened the grant, anyone able to edit a repo Variable
+  # could hand the CI role SendCommand on an arbitrary instance, and the drift
+  # this exists to catch would silently "fix" itself into an unreviewed grant.
+  ci_ssm_expected_instance_id = trimspace(var.ci_ssm_expected_deploy_instance_id)
+  ci_ssm_expected_covered = local.ci_ssm_expected_instance_id == "" || contains(
+    local.ci_ssm_target_instance_ids, local.ci_ssm_expected_instance_id
+  )
+
   ci_ssm_deploy_role_name = local.ci_ssm_deploy_enabled ? (
     var.manage_github_oidc_role
     ? aws_iam_role.gha_ecr_push[0].name
@@ -115,6 +126,44 @@ resource "aws_iam_role_policy" "github_actions_ecr_push_ssm_dev_deploy" {
     precondition {
       condition     = length(local.ci_ssm_target_instance_ids) > 0
       error_message = "enable_ci_ssm_deploy_after_ecr_push = true resolved zero deploy targets. Set ci_ssm_deploy_instance_id to the instance CI restarts, and/or ci_ssm_deploy_instance_tags to a tag map matching it (e.g. { Name = \"agenthub-dev-sandbox\" }) in this workspace's region. The target must match the DOCKER_DEPLOY_INSTANCE_ID repo Variable used by .github/workflows/ecr-publish-rollout-docker-dev.yml."
+    }
+  }
+}
+
+# Plan-time diff between the two private stores that name the deploy box: the
+# DOCKER_DEPLOY_INSTANCE_ID repo Variable (which the rollout workflow SSMs) and
+# the ci_ssm_deploy_* tfvars (which scope the grant). Nothing in the tree can see
+# both, so release CI passes the former in as
+# TF_VAR_ci_ssm_expected_deploy_instance_id and this resource asserts the grant
+# covers it. The precondition on the policy above only proves *something*
+# resolved; the sandbox rebuild of 2026-08-09 resolved exactly one box, the wrong
+# one, and shipped a policy that could never authorise the rollout.
+#
+# `terraform_data` is a built-in no-op — this creates nothing in AWS, it only
+# gives the assertion somewhere to live.
+resource "terraform_data" "ci_ssm_deploy_target_guard" {
+  # Keyed on the expected id rather than on ci_ssm_deploy_enabled: disabling the
+  # feature drops the grant entirely, which breaks the rollout the same
+  # AccessDenied way, so the guard has to outlive the policy it checks.
+  count = local.ci_ssm_expected_instance_id != "" ? 1 : 0
+
+  # Both sides are inputs so that a move on *either* plans a change here, which
+  # is what guarantees the preconditions get evaluated in exactly the scenario
+  # they exist for — rather than depending on whether Terraform evaluates
+  # preconditions for a resource it considers a no-op.
+  input = {
+    expected = local.ci_ssm_expected_instance_id
+    resolved = local.ci_ssm_target_instance_ids
+  }
+
+  lifecycle {
+    precondition {
+      condition     = local.ci_ssm_deploy_enabled
+      error_message = "CI expects to SSM ${local.ci_ssm_expected_instance_id} (DOCKER_DEPLOY_INSTANCE_ID repo Variable) but this workspace creates no grant: enable_ci_ssm_deploy_after_ecr_push is false, or neither ci_ssm_deploy_instance_id nor ci_ssm_deploy_instance_tags is set. Every rollout would fail with AccessDeniedException on ssm:SendCommand. Enable the grant here, or clear ci_ssm_expected_deploy_instance_id if a different workspace owns it."
+    }
+    precondition {
+      condition     = local.ci_ssm_expected_covered
+      error_message = "CI ssm:SendCommand grant does not cover the box CI restarts. Expected ${local.ci_ssm_expected_instance_id} (DOCKER_DEPLOY_INSTANCE_ID repo Variable, passed in as TF_VAR_ci_ssm_expected_deploy_instance_id) but ci_ssm_deploy_instance_id / ci_ssm_deploy_instance_tags resolved [${join(", ", local.ci_ssm_target_instance_ids)}] in ${var.aws_region}. The deploy box was most likely replaced: point ci_ssm_deploy_instance_tags at its Name tag (that survives the next rebuild) and/or set ci_ssm_deploy_instance_id to the new id. Failing here is the cheap version — the alternative is a mid-rollout AccessDeniedException."
     }
   }
 }

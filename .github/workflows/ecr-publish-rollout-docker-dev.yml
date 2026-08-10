@@ -403,6 +403,7 @@ jobs:
             cat "$SEND_ERR" >&2
             if grep -q 'AccessDeniedException' "$SEND_ERR"; then
               echo "::error::ssm:SendCommand denied for $DEPLOY_INSTANCE_ID in $AWS_DEPLOY_REGION. The CI role's SSM grant (Terraform aws_iam_role_policy.github_actions_ecr_push_ssm_dev_deploy) is scoped to different instances. Point ci_ssm_deploy_instance_tags / ci_ssm_deploy_instance_id at the same box as the DOCKER_DEPLOY_INSTANCE_ID repo Variable, re-apply Terraform, then re-run this job."
+              echo "::error::Reaching this means the DOCKER_DEPLOY_INSTANCE_ID repo Variable changed since the last prod Terraform apply — release-all.yml passes it into the plan as TF_VAR_ci_ssm_expected_deploy_instance_id and terraform_data.ci_ssm_deploy_target_guard fails the plan on this mismatch. Re-run the release Terraform apply (or apply locally) after fixing the tfvars."
             fi
             exit 1
           fi

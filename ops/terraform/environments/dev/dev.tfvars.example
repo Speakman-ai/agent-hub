@@ -50,6 +50,13 @@ enable_ci_ssm_deploy_after_ecr_push = true
 ci_ssm_deploy_instance_tags         = { Name = "<DEV_SANDBOX_NAME_TAG>" }
 ci_ssm_deploy_instance_id           = "<DEV_SANDBOX_INSTANCE_ID>"
 
+# Plan-time drift guard. Asserts the grant above actually covers the box CI
+# restarts, so a replaced sandbox fails the plan (with both ids named) instead of
+# the rollout. release-all.yml injects this from the DOCKER_DEPLOY_INSTANCE_ID
+# repo Variable as TF_VAR_ci_ssm_expected_deploy_instance_id, so leave it unset
+# here — set it only to check a local plan against a specific box.
+# ci_ssm_expected_deploy_instance_id = "<DEV_SANDBOX_INSTANCE_ID>"
+
 # First-launch admin credentials. The server writes a random password to
 # <dataDir>/initial-credentials.txt (mode 0600) when
 # agent_hub_default_password = "auto". Retrieve it after first boot via SSM.
