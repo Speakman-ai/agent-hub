@@ -160,12 +160,18 @@ export class GuestWorktreeIo implements SessionWorktreeIo {
 /** GNU / BusyBox `stat` wording for a path that is not there. */
 export function isMissingPathStatFailure(stderr: string): boolean {
   const text = stderr.toLowerCase();
-  return (
-    text.includes('no such file or directory') ||
-    text.includes('cannot statx') ||
-    text.includes('cannot stat ') ||
-    text.includes('does not exist')
-  );
+  // Permission / access failures also contain `cannot statx` / `cannot stat`
+  // and must NOT be treated as missing — otherwise Finalize's ship gate opens
+  // when `.agent-hub/ci.yaml` is unreadable.
+  if (
+    text.includes('permission denied') ||
+    text.includes('operation not permitted') ||
+    text.includes('eacces') ||
+    text.includes('eperm')
+  ) {
+    return false;
+  }
+  return text.includes('no such file or directory') || text.includes('does not exist');
 }
 
 /** `%y` type letters from `find -printf`. */

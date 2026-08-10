@@ -40,6 +40,10 @@ function mockReconcileRun(
     if (argv[0] === 'iptables' && argv.includes('-C')) {
       return { ok: false, stdout: '', stderr: 'No chain/target/match by that name' };
     }
+    // bridge-nf-call-iptables verify must report 1 for NAT readiness.
+    if (argv[0] === 'sysctl' && argv[1] === '-n' && String(argv[2]).includes('bridge-nf')) {
+      return { ok: true, stdout: '1\n', stderr: '' };
+    }
     return { ok: true, stdout: '', stderr: '' };
   });
 }
@@ -253,6 +257,19 @@ describe('reconcileFirecrackerHost', () => {
     await reconcileFirecrackerHost({ run, stopStaleVmms });
     expect(stopStaleVmms).toHaveBeenCalledTimes(1);
     expect(events.indexOf('stop')).toBeLessThan(events.indexOf('del'));
+  });
+
+  it('fails closed when stale VMM stop fails (no tap delete, nat not ready)', async () => {
+    const stopStaleVmms = vi.fn(async () => {
+      throw new Error('docker rm failed');
+    });
+    const run = mockReconcileRun();
+    const warn = vi.fn();
+    const result = await reconcileFirecrackerHost({ run, stopStaleVmms, logger: { warn } });
+    expect(result.natReady).toBe(false);
+    expect(result.deletedTaps).toEqual([]);
+    expect(run).not.toHaveBeenCalledWith(['ip', 'link', 'del', 'ahfct3']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refusing Firecracker readiness'));
   });
 
   it('creates the bridge, installs guest NAT, and deletes stale taps', async () => {

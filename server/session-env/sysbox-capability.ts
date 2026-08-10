@@ -258,15 +258,17 @@ export function selectSessionEnvAdapter(
         mode,
         forced: true,
         fellBack: false,
-        reason: 'forced by config (sessionEnvAdapter=firecracker); probe passed',
+        reason:
+          'forced by config (sessionEnvAdapter=firecracker); probe passed — ' +
+          'experimental backend (not auto-selected; jailer not default)',
         probe,
       };
     }
-    // No fallback, unlike a forced sysbox. `resolveSessionEnvBackend` throws
-    // for this exact case, so reporting a container or host fallback here
-    // would describe a run that never happens — and an operator who wrote
-    // "firecracker" asked for a hardware boundary, which a container does not
-    // provide. `auto` is the mode that degrades; this one is a demand.
+    // No fallback. `resolveSessionEnvBackend` throws for this exact case, so
+    // reporting a container or host fallback here would describe a run that
+    // never happens — and an operator who wrote "firecracker" asked for a
+    // hardware boundary, which a container does not provide. `auto` is the
+    // mode that degrades; this one is a demand.
     return {
       adapter: 'firecracker',
       mode,
@@ -320,25 +322,18 @@ export function selectSessionEnvAdapter(
         probe,
       };
     }
-    // A forced sysbox that the probe rejects prefers the container backend
-    // over host: the operator asked for isolation, so a weaker boundary is
-    // closer to the intent than no boundary.
-    if (containerUsable) {
-      return {
-        adapter: 'container',
-        mode,
-        forced: false,
-        fellBack: true,
-        reason: `sysbox forced by config but unavailable — using the container backend instead: ${probe.missing.join('; ')}`,
-        probe,
-      };
-    }
+    // Fail closed — same contract as forced firecracker. Degrading to the
+    // privileged container would grant `--privileged --cgroupns=host` after
+    // the operator asked for sysbox; falling to host would silently drop
+    // isolation. Sessions fail until sysbox is fixed or the mode is changed.
     return {
-      adapter: 'host',
+      adapter: 'sysbox',
       mode,
-      forced: false,
-      fellBack: true,
-      reason: `sysbox forced by config but unavailable — falling back to host adapter: ${probe.missing.join('; ')}`,
+      forced: true,
+      fellBack: false,
+      reason:
+        `sysbox forced by config but unavailable — sessions will fail until ` +
+        `this is fixed (set sessionEnvAdapter=auto to degrade instead): ${probe.missing.join('; ')}`,
       probe,
     };
   }
@@ -389,7 +384,10 @@ export function logSessionEnvSelection(
   const line = `[session-env] adapter=${selection.adapter} (mode=${selection.mode}) — ${selection.reason}`;
   const degradedOnLinux =
     platform === 'linux' && selection.adapter === 'host' && selection.mode !== 'host';
-  if (selection.fellBack || degradedOnLinux) {
+  // Forced sysbox/firecracker stay selected when unavailable (fail closed) —
+  // still warn so operators notice sessions will not start.
+  const forcedUnavailable = selection.forced && selection.reason.includes('unavailable');
+  if (selection.fellBack || degradedOnLinux || forcedUnavailable) {
     logger.warn(line);
   } else {
     logger.log(line);

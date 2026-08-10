@@ -268,6 +268,37 @@ async function ensureIptablesRulePairs(
  * Enable ip_forward + MASQUERADE/FORWARD for the guest subnet.
  * Idempotent: each iptables rule is `-C`'d before `-A`/`-I`.
  */
+/**
+ * Bridged L2 traffic between session taps does not hit iptables FORWARD unless
+ * br_netfilter is loaded and bridge-nf-call-iptables is on. Without that, the
+ * ahfc0→ahfc0 DROP rule is a no-op and sibling guests can talk directly.
+ */
+export async function ensureBridgeNetfilter(
+  deps: Pick<ReconcileFirecrackerHostDeps, 'run' | 'logger'>,
+): Promise<boolean> {
+  const logger = deps.logger ?? { warn: (msg: string) => console.warn(msg) };
+  const modprobe = await deps.run(['modprobe', 'br_netfilter']);
+  if (!modprobe.ok) {
+    logger.warn(`[firecracker] modprobe br_netfilter failed: ${modprobe.stderr.trim()}`);
+    return false;
+  }
+  const enable = await deps.run(['sysctl', '-qw', 'net.bridge.bridge-nf-call-iptables=1']);
+  if (!enable.ok) {
+    logger.warn(`[firecracker] failed to enable bridge-nf-call-iptables: ${enable.stderr.trim()}`);
+    return false;
+  }
+  // Best-effort ipv6 twin — failure here must not block ipv4 isolation.
+  await deps.run(['sysctl', '-qw', 'net.bridge.bridge-nf-call-ip6tables=1']);
+  const verify = await deps.run(['sysctl', '-n', 'net.bridge.bridge-nf-call-iptables']);
+  if (!verify.ok || verify.stdout.trim() !== '1') {
+    logger.warn(
+      `[firecracker] bridge-nf-call-iptables not enabled (got ${JSON.stringify(verify.stdout.trim())})`,
+    );
+    return false;
+  }
+  return true;
+}
+
 export async function ensureFirecrackerGuestNat(
   deps: ReconcileFirecrackerHostDeps,
 ): Promise<boolean> {
@@ -282,6 +313,8 @@ export async function ensureFirecrackerGuestNat(
     return false;
   }
 
+  const bridgeNfOk = await ensureBridgeNetfilter(deps);
+
   const { required, optional } = buildEnsureGuestNatArgv(uplink);
   const sysctl = await deps.run(required[0]!);
   if (!sysctl.ok) {
@@ -294,7 +327,8 @@ export async function ensureFirecrackerGuestNat(
   // Optional DOCKER-USER rules: chain may not exist when Docker is absent.
   await ensureIptablesRulePairs(deps.run, optional, logger, { warnOnFailure: false });
   // Forwarding must actually be on — MASQUERADE alone does not move packets.
-  return sysctl.ok && iptablesOk;
+  // Bridge netfilter is required for the inter-TAP DROP to see L2 traffic.
+  return sysctl.ok && iptablesOk && bridgeNfOk;
 }
 
 /**
@@ -328,14 +362,21 @@ export async function reconcileFirecrackerHost(
     }
   }
 
-  const natReady = await ensureFirecrackerGuestNat(deps);
+  let natReady = await ensureFirecrackerGuestNat(deps);
 
+  let staleVmmsStopped = true;
   if (deps.stopStaleVmms) {
     try {
       await deps.stopStaleVmms();
     } catch (err) {
+      // Fail closed: deleting taps / rewriting disks while a VMM still holds
+      // them open risks filesystem corruption.
+      staleVmmsStopped = false;
+      natReady = false;
       logger.warn(
-        `[firecracker] failed to stop stale VMM containers: ${err instanceof Error ? err.message : String(err)}`,
+        `[firecracker] failed to stop stale VMMs — refusing Firecracker readiness: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
     }
   }
@@ -347,10 +388,13 @@ export async function reconcileFirecrackerHost(
   }
 
   const deletedTaps: string[] = [];
-  for (const tap of parseSessionTapNames(listed.stdout)) {
-    const res = await deps.run(['ip', 'link', 'del', tap]);
-    if (res.ok) deletedTaps.push(tap);
-    else logger.warn(`[firecracker] failed to delete stale tap ${tap}: ${res.stderr.trim()}`);
+  // Only reclaim taps when stale VMMs are confirmed gone (or no stop hook).
+  if (staleVmmsStopped) {
+    for (const tap of parseSessionTapNames(listed.stdout)) {
+      const res = await deps.run(['ip', 'link', 'del', tap]);
+      if (res.ok) deletedTaps.push(tap);
+      else logger.warn(`[firecracker] failed to delete stale tap ${tap}: ${res.stderr.trim()}`);
+    }
   }
   return { bridgeReady, natReady, deletedTaps };
 }

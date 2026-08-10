@@ -286,7 +286,9 @@ export class SysboxSessionEnv implements SessionEnv {
   }
 
   liveProcessCount(): number {
-    return this.liveProcesses.size + this.livePtys.size + (this.#started ? 1 : 0);
+    // Count real workloads only. Treating the container boundary itself as a
+    // live process disabled idle reaping for every started env.
+    return this.liveProcesses.size + this.livePtys.size;
   }
 
   onDispose(cb: () => void): () => void {
@@ -714,7 +716,14 @@ export class SysboxSessionEnv implements SessionEnv {
     // while the result keeps input order. Under published-ports routing every
     // port must be declared before the container starts; `mapPort` rejects an
     // undeclared port post-start.
-    return Promise.all(internalPorts.map((p) => this.mapPort(p)));
+    const mappings = await Promise.all(internalPorts.map((p) => this.mapPort(p)));
+    // mountWorktree may have deferred docker run so publishes could still be
+    // declared. Start now that this batch is recorded — preview spawn requires
+    // a running container, and `-p` flags are fixed at `docker run`.
+    if (this.portRouting === 'published-ports') {
+      await this.ensureStarted();
+    }
+    return mappings;
   }
 
   listPortMappings(): SessionEnvPortMapping[] {

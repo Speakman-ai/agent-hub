@@ -145,6 +145,9 @@ function makeIo(overrides: Partial<FirecrackerHostIo> = {}) {
       if (argv[0] === 'iptables' && argv.includes('-C')) {
         return { ok: false, stdout: '', stderr: 'No chain/target/match by that name' };
       }
+      if (argv[0] === 'sysctl' && argv[1] === '-n' && String(argv[2]).includes('bridge-nf')) {
+        return { ok: true, stdout: '1\n', stderr: '' };
+      }
       return { ok: true, stdout: '', stderr: '' };
     },
     writeFile: async (path, contents) => {
@@ -248,7 +251,11 @@ describe('FirecrackerSessionEnv start', () => {
     const { env, removed, stopVmm } = makeEnv();
     await env.ensureStarted();
 
-    expect(stopVmm).toHaveBeenCalledWith({ vmId: 'ahvm-sess-1', pid: undefined });
+    expect(stopVmm).toHaveBeenCalledWith({
+      vmId: 'ahvm-sess-1',
+      pid: undefined,
+      pidFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.pid',
+    });
     expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/api.sock');
     expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/vsock.sock');
   });
@@ -336,7 +343,8 @@ describe('FirecrackerSessionEnv processes', () => {
     expect(proc.pid).toBe(91);
     expect(out).toEqual(['compiling']);
     expect(onExit).toHaveBeenCalledWith({ code: 2, signal: null });
-    expect(env.liveProcessCount()).toBe(1);
+    // Exited processes are dropped; the VM boundary itself is not a live count.
+    expect(env.liveProcessCount()).toBe(0);
   });
 
   it('rejects a cwd that escapes the worktree', async () => {
@@ -358,7 +366,7 @@ describe('FirecrackerSessionEnv processes', () => {
     conn.replyJson('started', { pid: 55 });
     const pty = await opening;
     expect(pty.pid).toBe(55);
-    expect(env.liveProcessCount()).toBe(2);
+    expect(env.liveProcessCount()).toBe(1);
   });
 
   it('carries an unset variable as an explicit null', async () => {
@@ -426,7 +434,11 @@ describe('FirecrackerSessionEnv dispose', () => {
     await env.ensureStarted();
     await env.dispose();
 
-    expect(stopVmm).toHaveBeenCalledWith({ vmId: 'ahvm-sess-1', pid: 4242 });
+    expect(stopVmm).toHaveBeenCalledWith({
+      vmId: 'ahvm-sess-1',
+      pid: 4242,
+      pidFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.pid',
+    });
     expect(runs.at(-1)).toEqual(['ip', 'link', 'del', 'ahfct3']);
     expect(slots.released).toEqual([3]);
     // The whole directory goes, not just the sockets start cleared out of the

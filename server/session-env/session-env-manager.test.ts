@@ -325,17 +325,16 @@ describe('SessionEnvManager.reap', () => {
     expect(results[1].status).toBe('fulfilled');
   });
 
-  it('spares an env whose boundary is started but idle', async () => {
+  it('reaps a started env that is idle with no live workload', async () => {
+    // The container/VM boundary itself is not a live process — otherwise every
+    // started session would retain memory/slots forever.
     const { manager, created } = makeManager({ idleTtlMs: 1000 });
     await manager.ensure('s1');
     created[0].lastActivityAtMs = 0;
     created[0].live = 0;
-    (created[0] as FakeEnv & { started?: boolean }).started = true;
-    const original = created[0].liveProcessCount.bind(created[0]);
-    created[0].liveProcessCount = () => original() + 1;
 
-    await expect(manager.reap(5000)).resolves.toEqual({ scanned: 1, reaped: 0 });
-    expect(created[0].disposeCalls).toBe(0);
+    await expect(manager.reap(5000)).resolves.toEqual({ scanned: 1, reaped: 1 });
+    expect(created[0].disposeCalls).toBe(1);
   });
 
   it('spares a recently active env', async () => {

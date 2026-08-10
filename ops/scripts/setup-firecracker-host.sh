@@ -183,7 +183,16 @@ ip link set "${BRIDGE}" up
 UPLINK="$(ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
 if [[ -n "${UPLINK}" ]]; then
   sysctl -qw net.ipv4.ip_forward=1
-  printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-agent-hub-firecracker.conf
+  # Bridged guest↔guest traffic is L2 and skips iptables FORWARD unless
+  # br_netfilter is loaded — without it the ahfc0→ahfc0 DROP is a no-op.
+  modprobe br_netfilter 2>/dev/null || true
+  sysctl -qw net.bridge.bridge-nf-call-iptables=1 2>/dev/null || true
+  sysctl -qw net.bridge.bridge-nf-call-ip6tables=1 2>/dev/null || true
+  {
+    printf 'net.ipv4.ip_forward = 1\n'
+    printf 'net.bridge.bridge-nf-call-iptables = 1\n'
+    printf 'net.bridge.bridge-nf-call-ip6tables = 1\n'
+  } > /etc/sysctl.d/99-agent-hub-firecracker.conf
   # -C tests for the rule first so re-running does not stack duplicates that
   # would survive as a growing NAT table across upgrades.
   iptables -t nat -C POSTROUTING -s "${SUBNET}" -o "${UPLINK}" -j MASQUERADE 2>/dev/null \

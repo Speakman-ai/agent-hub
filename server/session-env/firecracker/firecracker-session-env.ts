@@ -118,7 +118,17 @@ export interface VmmLaunchSpec {
  * the VM running.
  */
 export type SpawnVmmFn = (spec: VmmLaunchSpec) => VmmHandle;
-export type StopVmmFn = (spec: { vmId: string; pid?: number }) => void | Promise<void>;
+export type StopVmmFn = (spec: {
+  vmId: string;
+  pid?: number;
+  /** Durable identity written after spawn — required for local-mode reclaim. */
+  pidFile?: string;
+}) => void | Promise<void>;
+
+/** Per-VM pidfile under the session scratch dir (local exec mode). */
+export function vmmPidFilePath(vmDir: string): string {
+  return `${vmDir}/vmm.pid`;
+}
 
 export const defaultSpawnVmm: SpawnVmmFn = ({ argv, cwd }) =>
   (nodeSpawn as unknown as HostSpawnFn)(argv[0], argv.slice(1), {
@@ -133,6 +143,9 @@ export const defaultSpawnVmm: SpawnVmmFn = ({ argv, cwd }) =>
 export const defaultStopVmm: StopVmmFn = ({ pid }) => {
   if (pid !== undefined) process.kill(-pid, 'SIGKILL');
 };
+
+/** Cap guest exec capture the same way the host pre-commit runner does. */
+export const FIRECRACKER_EXEC_OUTPUT_MAX_BYTES = 10 * 1024 * 1024;
 
 /** Host-side IO the adapter needs. Injected so tests touch no real host. */
 export interface FirecrackerHostIo {
@@ -380,7 +393,8 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
 
   liveProcessCount(): number {
-    return this.live.size + (this.#started ? 1 : 0);
+    // Count guest processes only — a started-but-idle VM must remain reaped.
+    return this.live.size;
   }
 
   onDispose(cb: () => void): () => void {
@@ -429,22 +443,20 @@ export class FirecrackerSessionEnv implements SessionEnv {
     try {
       await this.io.mkdirp(this.vmDir);
       // A previous VMM for this vm id may still hold api.sock / vsock.sock or
-      // the tap even though this process is gone — stop it before unlinking.
-      try {
-        await this.stopVmm({ vmId: this.vmId, pid: this.#vmProcess?.pid });
-      } catch (err) {
-        this.logger.warn(
-          `[firecracker] best-effort stop of stale VMM ${this.vmId} failed: ` +
-            `${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+      // the tap even though this process is gone — stop and confirm exit
+      // before unlinking or rewriting disks. Fail closed: a stop error means
+      // the old VMM may still have the images open.
+      const pidFile = vmmPidFilePath(this.vmDir);
+      await this.stopVmm({
+        vmId: this.vmId,
+        pid: this.#vmProcess?.pid,
+        pidFile,
+      });
       // Firecracker *binds* these two paths and refuses to start if either
       // already exists. A vm id is derived from the session id, so a session
       // whose VMM died without unlinking them — a host reboot, an OOM kill —
       // boots straight back onto its own leftovers and fails with
-      // FailedToBindSocket every time, permanently. Nothing can be listening:
-      // the process that owned them is gone by definition, since we are about
-      // to spawn its replacement.
+      // FailedToBindSocket every time, permanently.
       await this.io.rmrf(`${this.vmDir}/api.sock`);
       await this.io.rmrf(this.vsockPath);
 
@@ -504,6 +516,11 @@ export class FirecrackerSessionEnv implements SessionEnv {
         ...this.hubOwner(),
       });
       this.#vmProcess = vmm;
+      // Durable identity for local-mode reclaim after a Hub crash (in-memory
+      // pid is gone). Docker mode uses the ah-vmm-* container name instead.
+      if (typeof vmm.pid === 'number' && vmm.pid > 0) {
+        await this.io.writeFile(pidFile, `${vmm.pid}\n`);
+      }
       vmm.stderr?.on('data', (chunk: string | Buffer) => {
         this.logger.warn(`[fc ${this.vmId}] ${chunk.toString().trimEnd()}`);
       });
@@ -795,18 +812,33 @@ export class FirecrackerSessionEnv implements SessionEnv {
    */
   async #execCapture(
     command: string,
-    opts: { cwd: string; timeoutMs: number },
+    opts: { cwd: string; timeoutMs: number; maxOutputBytes?: number },
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
     await this.ensureStarted();
     const proc = this.spawn(command, { cwd: opts.cwd, name: 'worktree-io' });
+    const maxBytes = opts.maxOutputBytes ?? FIRECRACKER_EXEC_OUTPUT_MAX_BYTES;
     let stdout = '';
     let stderr = '';
-    proc.onStdout((chunk) => {
-      stdout += chunk;
-    });
-    proc.onStderr((chunk) => {
-      stderr += chunk;
-    });
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let overLimit = false;
+
+    const append = (kind: 'stdout' | 'stderr', chunk: string) => {
+      const n = Buffer.byteLength(chunk, 'utf8');
+      if (kind === 'stdout') {
+        stdoutBytes += n;
+        if (stdoutBytes <= maxBytes) stdout += chunk;
+      } else {
+        stderrBytes += n;
+        if (stderrBytes <= maxBytes) stderr += chunk;
+      }
+      if (!overLimit && stdoutBytes + stderrBytes > maxBytes) {
+        overLimit = true;
+        proc.kill('SIGKILL');
+      }
+    };
+    proc.onStdout((chunk) => append('stdout', chunk));
+    proc.onStderr((chunk) => append('stderr', chunk));
 
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -820,6 +852,9 @@ export class FirecrackerSessionEnv implements SessionEnv {
         // command that finished during setup is not waited on forever.
         proc.onExit(resolve);
       });
+      if (overLimit) {
+        throw new Error(`Guest command exceeded ${maxBytes} bytes of captured output: ${command}`);
+      }
       if (exit.error) throw exit.error;
       return { stdout, stderr, exitCode: exit.code };
     } finally {
@@ -872,7 +907,11 @@ export class FirecrackerSessionEnv implements SessionEnv {
     this.#vmProcess = null;
     if (vmm) {
       try {
-        await this.stopVmm({ vmId: this.vmId, pid: vmm.pid });
+        await this.stopVmm({
+          vmId: this.vmId,
+          pid: vmm.pid,
+          pidFile: vmmPidFilePath(this.vmDir),
+        });
       } catch (err) {
         this.logger.warn(
           `SessionEnv[${this.sessionId}] failed to stop VMM ${this.vmId}: ${String(err)}`,
