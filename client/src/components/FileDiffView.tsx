@@ -10,7 +10,16 @@
  * their anchored line (file + line + side, GitHub-style).
  */
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, FileDiff, Plus, Loader2, X, MessageSquare } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  FileDiff,
+  Plus,
+  Loader2,
+  X,
+  MessageSquare,
+  CheckCircle2,
+} from 'lucide-react';
 import { splitUnifiedDiff, annotateDiffLines } from '../utils/commitDiff';
 import { relativePrTime } from '../utils/prFormatting';
 
@@ -54,6 +63,90 @@ function CommentBubble({ comment, onDelete }: any) {
         )}
       </div>
       <p className="text-xs text-gray-200 whitespace-pre-wrap mt-1">{comment.body}</p>
+    </div>
+  );
+}
+
+/**
+ * One conversation anchored to a diff line. A resolved thread collapses to a
+ * single summary row (GitHub's "Resolve conversation") and expands on click;
+ * resolution is a property of the anchor, so every comment in the group
+ * carries the same flag.
+ */
+function CommentThread({ comments, filePath, anchor, onDeleteComment, onSetResolved }: any) {
+  const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const resolved = comments.some((c: any) => c.resolved);
+  const resolvedBy = comments.find((c: any) => c.resolved_by)?.resolved_by;
+  const canResolve = typeof onSetResolved === 'function';
+  const testKey = `${filePath}-${anchor.side}-${anchor.line}`;
+
+  const setResolved = async (next: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onSetResolved({ filePath, line: anchor.line, side: anchor.side, resolved: next });
+      // Collapse on resolve so the diff quietens down the way GitHub's does.
+      setExpanded(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (resolved && !expanded) {
+    return (
+      <div
+        className="ml-10 my-1 flex items-center gap-2 bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-1.5 font-sans text-[11px]"
+        data-testid={`inline-comment-thread-resolved-${testKey}`}
+      >
+        <CheckCircle2 size={11} className="text-emerald-400 flex-shrink-0" />
+        <span className="text-gray-400">
+          {resolvedBy ? `@${resolvedBy} marked this conversation as resolved` : 'Resolved'}
+        </span>
+        <span className="text-gray-600">
+          · {comments.length} comment{comments.length === 1 ? '' : 's'}
+        </span>
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="ml-auto text-gray-500 hover:text-gray-200 transition-colors"
+          data-testid={`inline-comment-thread-show-${testKey}`}
+        >
+          Show
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid={`inline-comment-thread-${testKey}`}>
+      {comments.map((c: any) => (
+        <CommentBubble key={c.id} comment={c} onDelete={onDeleteComment} />
+      ))}
+      {canResolve && (
+        <div className="ml-10 mb-1 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setResolved(!resolved)}
+            disabled={busy}
+            className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-100 disabled:text-gray-600 border border-gray-700 hover:border-gray-500 rounded px-2 py-0.5 transition-colors font-sans"
+            data-testid={`inline-comment-thread-toggle-${testKey}`}
+          >
+            {busy ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} />}
+            {resolved ? 'Unresolve conversation' : 'Resolve conversation'}
+          </button>
+          {resolved && (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className="text-[11px] text-gray-500 hover:text-gray-300 transition-colors font-sans"
+              data-testid={`inline-comment-thread-hide-${testKey}`}
+            >
+              Hide
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -116,6 +209,7 @@ export function FileDiffSection({
   comments = [],
   onAddComment = null,
   onDeleteComment = null,
+  onSetResolved = null,
 }: any) {
   const [open, setOpen] = useState(defaultOpen);
   const [composerKey, setComposerKey] = useState<any>(null);
@@ -126,6 +220,9 @@ export function FileDiffSection({
     anchor
       ? comments.filter((c: any) => c.side === anchor.side && Number(c.line) === anchor.line)
       : [];
+  const resolvedThreadCount = new Set(
+    comments.filter((c: any) => c.resolved).map((c: any) => `${c.side}:${c.line}`),
+  ).size;
 
   return (
     <div className="border border-gray-700/60 rounded-lg bg-gray-900/40">
@@ -148,6 +245,15 @@ export function FileDiffSection({
           <span className="flex items-center gap-1 text-[10px] text-amber-300 flex-shrink-0">
             <MessageSquare size={10} />
             {comments.length}
+          </span>
+        )}
+        {resolvedThreadCount > 0 && (
+          <span
+            className="flex items-center gap-1 text-[10px] text-emerald-400 flex-shrink-0"
+            data-testid={`diff-file-resolved-count-${section.filename}`}
+          >
+            <CheckCircle2 size={10} />
+            {resolvedThreadCount} resolved
           </span>
         )}
         {section.isBinary ? (
@@ -187,9 +293,16 @@ export function FileDiffSection({
                     {a.text || ' '}
                   </div>
                 </div>
-                {lineComments.map((c: any) => (
-                  <CommentBubble key={c.id} comment={c} onDelete={onDeleteComment} />
-                ))}
+                {lineComments.length > 0 && (
+                  <CommentThread
+                    key={`thread-${key}`}
+                    comments={lineComments}
+                    filePath={section.filename}
+                    anchor={anchor}
+                    onDeleteComment={onDeleteComment}
+                    onSetResolved={onSetResolved}
+                  />
+                )}
                 {commentable && composerKey === key && key !== null && (
                   <InlineComposer
                     onSubmit={async (text: any) => {
@@ -225,6 +338,7 @@ export default function FileDiffView({
   comments = [],
   onAddComment = null,
   onDeleteComment = null,
+  onSetResolved = null,
   defaultOpen = false,
 }: any) {
   const files = splitUnifiedDiff(patch);
@@ -241,6 +355,7 @@ export default function FileDiffView({
           comments={comments.filter((c: any) => c.file_path === section.filename)}
           onAddComment={onAddComment}
           onDeleteComment={onDeleteComment}
+          onSetResolved={onSetResolved}
         />
       ))}
     </div>

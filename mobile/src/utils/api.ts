@@ -1260,6 +1260,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
     }),
+    // `data`: { filePath, line, side, resolved } — collapses/expands an inline
+    // comment thread on a native PR.
+    setPullCommentThreadResolved: (projectId: any, number: any, data: any) => fetchJSON(`/projects/${projectId}/pulls/${number}/comment-threads/resolve`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
     // GitHub PR read proxy — same endpoints the web FileDiffView uses.
     getPrDiff: (prUrl: any) => fetchJSON(`/pr/diff?prUrl=${encodeURIComponent(prUrl)}`),
     getPrFiles: (prUrl: any) => fetchJSON(`/pr/files?prUrl=${encodeURIComponent(prUrl)}`),

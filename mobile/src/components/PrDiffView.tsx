@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator,
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativePrTime } from '../utils/prFormatting';
-import { normalizePrFiles, summarizePrFiles, fileStatusLabel, annotatePatchLines, commentAnchorFor, commentsForFile, } from '../utils/prDiffRender';
+import { normalizePrFiles, summarizePrFiles, fileStatusLabel, annotatePatchLines, commentAnchorFor, commentsForFile, groupCommentThreads, } from '../utils/prDiffRender';
 import { buildInlineCommentPayload } from '../utils/prReviewActions';
 /** Patch lines rendered per expanded file before truncating (mobile perf). */
 const MAX_RENDER_LINES = 500;
@@ -43,13 +43,82 @@ function lineStyles(kind: any) {
  * then write in the composer below the diff. Existing inline comments are
  * listed beneath the diff with their line anchors.
  */
-function FileSection({ file, initiallyOpen, comments, onAddComment }: any) {
+/**
+ * One conversation anchored to a diff line. Resolved threads collapse to a
+ * single summary row (the web diff and GitHub behave the same way) and expand
+ * on tap.
+ */
+function CommentThread({ thread, filePath, onSetResolved }: any) {
+    const [expanded, setExpanded] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<any>(null);
+    const canResolve = typeof onSetResolved === 'function';
+    const setResolved = async (next: any) => {
+        if (busy)
+            return;
+        setBusy(true);
+        setError(null);
+        try {
+            await onSetResolved({
+                filePath,
+                line: thread.line,
+                side: thread.side,
+                resolved: next,
+            });
+            setExpanded(false);
+        }
+        catch (err: any) {
+            setError(err?.message || 'Failed to update conversation');
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    if (thread.resolved && !expanded) {
+        return (<TouchableOpacity style={styles.threadResolved} onPress={() => setExpanded(true)} activeOpacity={0.7} accessibilityLabel={`Resolved conversation on ${thread.side} line ${thread.line}, ${thread.comments.length} comments. Tap to show.`}>
+        <Text style={styles.threadResolvedText} numberOfLines={2}>
+          {thread.resolvedBy
+                ? `@${thread.resolvedBy} marked this conversation as resolved`
+                : 'Conversation resolved'}
+          {' · '}
+          {thread.comments.length} comment{thread.comments.length === 1 ? '' : 's'}
+        </Text>
+        <Text style={styles.threadShowText}>Show</Text>
+      </TouchableOpacity>);
+    }
+    return (<View>
+      {thread.comments.map((c: any) => (<View key={c.id} style={styles.commentBubble}>
+          <View style={styles.commentHeader}>
+            <Text style={styles.commentUser}>@{c.user || 'unknown'}</Text>
+            <Text style={styles.commentAnchor}>
+              line {c.line} ({c.side === 'old' ? 'old' : 'new'})
+            </Text>
+            <Text style={styles.commentTime}>{relativePrTime(c.created_at)}</Text>
+          </View>
+          <Text style={styles.commentBody}>{c.body}</Text>
+        </View>))}
+      {error ? <Text style={styles.composerError}>{error}</Text> : null}
+      {canResolve ? (<View style={styles.threadActions}>
+          <TouchableOpacity style={styles.threadButton} onPress={() => setResolved(!thread.resolved)} disabled={busy} accessibilityState={{ disabled: busy, busy }}>
+            {busy ? (<ActivityIndicator size="small" color={colors.gray400}/>) : (<Text style={styles.threadButtonText}>
+                {thread.resolved ? 'Unresolve conversation' : 'Resolve conversation'}
+              </Text>)}
+          </TouchableOpacity>
+          {thread.resolved ? (<TouchableOpacity onPress={() => setExpanded(false)} disabled={busy}>
+              <Text style={styles.threadHideText}>Hide</Text>
+            </TouchableOpacity>) : null}
+        </View>) : null}
+    </View>);
+}
+function FileSection({ file, initiallyOpen, comments, onAddComment, onSetResolved }: any) {
     const [open, setOpen] = useState(initiallyOpen);
     const [selectedAnchor, setSelectedAnchor] = useState<any>(null);
     const [commentText, setCommentText] = useState('');
     const [posting, setPosting] = useState(false);
     const [postError, setPostError] = useState<any>(null);
     const commentable = typeof onAddComment === 'function';
+    const threads = groupCommentThreads(comments);
+    const resolvedThreadCount = threads.filter((t: any) => t.resolved).length;
     const annotated = open && file.patch ? annotatePatchLines(file.patch) : [];
     const truncatedCount = Math.max(0, annotated.length - MAX_RENDER_LINES);
     const visible = truncatedCount > 0 ? annotated.slice(0, MAX_RENDER_LINES) : annotated;
@@ -94,6 +163,7 @@ function FileSection({ file, initiallyOpen, comments, onAddComment }: any) {
           {file.previousFilename ? `${file.previousFilename} → ${file.filename}` : file.filename}
         </Text>
         {comments.length > 0 ? (<Text style={styles.fileCommentCount}>{comments.length} comments</Text>) : null}
+        {resolvedThreadCount > 0 ? (<Text style={styles.fileResolvedCount}>{resolvedThreadCount} resolved</Text>) : null}
         {file.isBinary ? (<Text style={styles.fileBinary}>binary</Text>) : (<Text style={styles.fileCounts}>
             <Text style={styles.fileAdds}>+{file.additions}</Text>{' '}
             <Text style={styles.fileDels}>{'−'}{file.deletions}</Text>
@@ -127,16 +197,7 @@ function FileSection({ file, initiallyOpen, comments, onAddComment }: any) {
                 </Text>)}
             </>)}
 
-          {comments.map((c: any) => (<View key={c.id} style={styles.commentBubble}>
-              <View style={styles.commentHeader}>
-                <Text style={styles.commentUser}>@{c.user || 'unknown'}</Text>
-                <Text style={styles.commentAnchor}>
-                  line {c.line} ({c.side === 'old' ? 'old' : 'new'})
-                </Text>
-                <Text style={styles.commentTime}>{relativePrTime(c.created_at)}</Text>
-              </View>
-              <Text style={styles.commentBody}>{c.body}</Text>
-            </View>))}
+          {threads.map((thread: any) => (<CommentThread key={thread.key} thread={thread} filePath={file.filename} onSetResolved={onSetResolved}/>))}
 
           {commentable && selectedAnchor && (<View style={styles.composer}>
               <Text style={styles.composerLabel}>
@@ -173,7 +234,7 @@ function FileSection({ file, initiallyOpen, comments, onAddComment }: any) {
  * the `/api/pr/diff` endpoint is text/plain, which the mobile fetchJSON
  * helper can't consume) and renders one collapsible block per file.
  */
-function PrDiffView({ prUrl, comments = [], onAddComment = null }: any) {
+function PrDiffView({ prUrl, comments = [], onAddComment = null, onSetResolved = null }: any) {
     const [files, setFiles] = useState<any>(null);
     const [truncatedList, setTruncatedList] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -230,7 +291,7 @@ function PrDiffView({ prUrl, comments = [], onAddComment = null }: any) {
         {truncatedList ? '  (list truncated)' : ''}
       </Text>
       {files.map((file: any, i: any) => (<FileSection key={`${file.filename}-${i}`} file={file} initiallyOpen={files.length <= AUTO_EXPAND_MAX_FILES ||
-                commentsForFile(comments, file.filename).length > 0} comments={commentsForFile(comments, file.filename)} onAddComment={onAddComment}/>))}
+                commentsForFile(comments, file.filename).length > 0} comments={commentsForFile(comments, file.filename)} onAddComment={onAddComment} onSetResolved={onSetResolved}/>))}
     </View>);
 }
 const styles = StyleSheet.create({
@@ -264,6 +325,7 @@ const styles = StyleSheet.create({
     fileStatus: { fontSize: 11, fontWeight: '700', width: 12, textAlign: 'center' },
     fileName: { flex: 1, color: colors.gray200, fontSize: 12, fontFamily: 'monospace' },
     fileCommentCount: { color: colors.amber400, fontSize: 10 },
+    fileResolvedCount: { color: colors.emerald400, fontSize: 10 },
     fileBinary: { color: colors.gray500, fontSize: 10 },
     fileCounts: { fontSize: 11, fontVariant: ['tabular-nums'] },
     fileAdds: { color: colors.emerald400, fontSize: 11 },
@@ -305,6 +367,29 @@ const styles = StyleSheet.create({
     commentTime: { color: colors.gray500, fontSize: 10, marginLeft: 'auto' },
     commentBody: { color: colors.gray200, fontSize: 12, lineHeight: 17 },
     commentHint: { color: colors.gray600, fontSize: 10, paddingTop: 6, paddingHorizontal: 4 },
+    threadResolved: {
+        marginTop: 6,
+        padding: 8,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        backgroundColor: colors.gray900,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 6,
+    },
+    threadResolvedText: { color: colors.gray400, fontSize: 11, flex: 1 },
+    threadShowText: { color: colors.gray300, fontSize: 11, fontWeight: '600' },
+    threadActions: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 6 },
+    threadButton: {
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 6,
+    },
+    threadButtonText: { color: colors.gray300, fontSize: 11 },
+    threadHideText: { color: colors.gray500, fontSize: 11 },
     composer: {
         marginTop: 6,
         padding: 8,

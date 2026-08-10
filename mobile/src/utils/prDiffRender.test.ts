@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { normalizePrFiles, summarizePrFiles, fileStatusLabel, annotatePatchLines, commentAnchorFor, commentsForFile, } from './prDiffRender';
+import { normalizePrFiles, summarizePrFiles, fileStatusLabel, annotatePatchLines, commentAnchorFor, commentsForFile, groupCommentThreads, } from './prDiffRender';
 describe('normalizePrFiles', () => {
     it('returns [] for null / undefined / junk payloads', () => {
         expect(normalizePrFiles(null)).toEqual([]);
@@ -171,5 +171,37 @@ describe('commentsForFile', () => {
     it('returns [] for missing filename or non-array comments', () => {
         expect(commentsForFile(comments, '')).toEqual([]);
         expect(commentsForFile(null, 'a.js')).toEqual([]);
+    });
+});
+describe('groupCommentThreads', () => {
+    const c = (over: any) => ({ id: 'x', line: 3, side: 'new', resolved: false, resolved_by: null, ...over });
+    it('groups comments sharing an anchor into one thread, in first-comment order', () => {
+        const threads = groupCommentThreads([
+            c({ id: 'a' }),
+            c({ id: 'b', line: 9 }),
+            c({ id: 'c' }),
+        ]);
+        expect(threads.map((t: any) => t.key)).toEqual(['new:3', 'new:9']);
+        expect(threads[0].comments.map((x: any) => x.id)).toEqual(['a', 'c']);
+    });
+    it('treats the old and new side of one line as separate threads', () => {
+        const threads = groupCommentThreads([c({ id: 'a' }), c({ id: 'b', side: 'old' })]);
+        expect(threads.map((t: any) => t.key)).toEqual(['new:3', 'old:3']);
+    });
+    it('marks the whole thread resolved when any comment carries the flag', () => {
+        const [thread] = groupCommentThreads([
+            c({ id: 'a' }),
+            c({ id: 'b', resolved: true, resolved_by: 'kevin' }),
+        ]);
+        expect(thread.resolved).toBe(true);
+        expect(thread.resolvedBy).toBe('kevin');
+        expect(thread.comments).toHaveLength(2);
+    });
+    it('leaves an untouched thread unresolved', () => {
+        expect(groupCommentThreads([c({ id: 'a' })])[0]).toMatchObject({ resolved: false, resolvedBy: null });
+    });
+    it('tolerates junk input', () => {
+        expect(groupCommentThreads(null)).toEqual([]);
+        expect(groupCommentThreads([null, undefined])).toEqual([]);
     });
 });

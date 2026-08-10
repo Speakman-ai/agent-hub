@@ -418,6 +418,138 @@ describe('native PR review lifecycle', () => {
       .expect(409);
   });
 
+  it('anchor validation rejects non-integer lines and unknown sides on both routes', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Strict anchors' }).expect(201);
+    const commentsUrl = `/api/projects/${id}/pulls/1/comments`;
+    const resolveUrl = `/api/projects/${id}/pulls/1/comment-threads/resolve`;
+
+    // A truncating parse would have accepted these and written to line 1 —
+    // a real, neighbouring thread the caller never named.
+    for (const line of [1.5, '1.5', '1junk', 'abc', '', null, true]) {
+      await authedPost(commentsUrl).send({ filePath: 'b.txt', line, body: 'x' }).expect(400);
+      await authedPost(resolveUrl).send({ filePath: 'b.txt', line, resolved: true }).expect(400);
+    }
+
+    // An unrecognised side used to be coerced to 'new'. GitHub's review API
+    // spells the sides LEFT/RIGHT, so this is the shape a client copying that
+    // vocabulary would send.
+    for (const side of ['LEFT', 'RIGHT', 'left', 'NEW', '', 42, null]) {
+      await authedPost(commentsUrl)
+        .send({ filePath: 'b.txt', line: 1, side, body: 'x' })
+        .expect(400);
+      await authedPost(resolveUrl)
+        .send({ filePath: 'b.txt', line: 1, side, resolved: true })
+        .expect(400);
+    }
+
+    // Integer-valued strings still work — agents post JSON by hand.
+    await authedPost(commentsUrl)
+      .send({ filePath: 'b.txt', line: '1', side: 'new', body: 'stringy line' })
+      .expect(201);
+    // Omitting side stays legal and still defaults to 'new'.
+    await authedPost(resolveUrl).send({ filePath: 'b.txt', line: 1, resolved: true }).expect(200);
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.inline_comments[0]).toMatchObject({ line: 1, side: 'new', resolved: true });
+  });
+
+  it('comment threads: resolve collapses the anchor, unresolve restores it', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Threaded' }).expect(201);
+    const resolveUrl = `/api/projects/${id}/pulls/1/comment-threads/resolve`;
+
+    // No comment at the anchor yet — nothing to resolve.
+    await authedPost(resolveUrl)
+      .send({ filePath: 'b.txt', line: 1, side: 'new', resolved: true })
+      .expect(404);
+
+    const first = await authedPost(`/api/projects/${id}/pulls/1/comments`)
+      .send({ filePath: 'b.txt', line: 1, side: 'new', body: 'rename this' })
+      .expect(201);
+
+    // Validation.
+    await authedPost(resolveUrl).send({ filePath: '', line: 1, resolved: true }).expect(400);
+    await authedPost(resolveUrl).send({ filePath: 'b.txt', line: 0, resolved: true }).expect(400);
+    await authedPost(resolveUrl).send({ filePath: 'b.txt', line: 1 }).expect(400);
+
+    const resolved = await authedPost(resolveUrl)
+      .send({ filePath: 'b.txt', line: 1, side: 'new', resolved: true })
+      .expect(200);
+    expect(resolved.body.thread).toMatchObject({
+      file_path: 'b.txt',
+      line: 1,
+      side: 'new',
+      resolved: true,
+    });
+    expect(resolved.body.thread.resolved_by).toBeTruthy();
+
+    let detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.inline_comments[0]).toMatchObject({ resolved: true });
+    expect(detail.body.inline_comments[0].resolved_at).toBeTruthy();
+
+    // A later comment on the same anchor joins the resolved thread rather
+    // than leaving it half-resolved.
+    await authedPost(`/api/projects/${id}/pulls/1/comments`)
+      .send({ filePath: 'b.txt', line: 1, side: 'new', body: 'still relevant?' })
+      .expect(201);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.inline_comments).toHaveLength(2);
+    expect(detail.body.inline_comments.every((c: { resolved: boolean }) => c.resolved)).toBe(true);
+
+    // The other side of the same line is a different thread.
+    await authedPost(`/api/projects/${id}/pulls/1/comments`)
+      .send({ filePath: 'b.txt', line: 1, side: 'old', body: 'separate thread' })
+      .expect(201);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(
+      detail.body.inline_comments.find((c: { side: string }) => c.side === 'old'),
+    ).toMatchObject({ resolved: false, resolved_by: null, resolved_at: null });
+
+    // Unresolve round-trip.
+    await authedPost(resolveUrl)
+      .send({ filePath: 'b.txt', line: 1, side: 'new', resolved: false })
+      .expect(200);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.inline_comments.every((c: { resolved: boolean }) => !c.resolved)).toBe(true);
+
+    // Deleting the last comment at an anchor drops its resolution, so a new
+    // comment on that line does not inherit a stale "resolved".
+    await authedPost(resolveUrl)
+      .send({ filePath: 'b.txt', line: 1, side: 'old', resolved: true })
+      .expect(200);
+    const oldSide = (
+      await authedGet(`/api/projects/${id}/pulls/1`).expect(200)
+    ).body.inline_comments.find((c: { side: string }) => c.side === 'old');
+    await authedDelete(`/api/projects/${id}/pulls/1/comments/${oldSide.id}`).expect(200);
+    await authedPost(`/api/projects/${id}/pulls/1/comments`)
+      .send({ filePath: 'b.txt', line: 1, side: 'old', body: 'fresh thread' })
+      .expect(201);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(
+      detail.body.inline_comments.find((c: { side: string }) => c.side === 'old'),
+    ).toMatchObject({ resolved: false });
+
+    // Deleting a comment from a multi-comment thread leaves it resolved.
+    await authedPost(resolveUrl)
+      .send({ filePath: 'b.txt', line: 1, side: 'new', resolved: true })
+      .expect(200);
+    await authedDelete(
+      `/api/projects/${id}/pulls/1/comments/${first.body.comment.id as string}`,
+    ).expect(200);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(
+      detail.body.inline_comments.find((c: { side: string }) => c.side === 'new'),
+    ).toMatchObject({ resolved: true });
+
+    // Unlike posting a comment, resolving stays available on a closed PR.
+    await authedPost('/api/pr/close')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(200);
+    await authedPost(resolveUrl)
+      .send({ filePath: 'b.txt', line: 1, side: 'new', resolved: false })
+      .expect(200);
+  });
+
   it('resolve (Autofix) spawns against native PR context', async () => {
     const { id, branch } = await hostedProjectWithBranch();
     await postPulls(id)

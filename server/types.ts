@@ -2827,6 +2827,13 @@ export interface Stmts {
   listPullRequestCommentsForPr: Stmt;
   getPullRequestComment: Stmt;
   deletePullRequestComment: Stmt;
+  /** Comments still anchored at (project_id, pr_number, file_path, line, side). */
+  countPullRequestCommentsAtAnchor: Stmt;
+  listPullRequestCommentThreadsForPr: Stmt;
+  /** Params: (project_id, pr_number, file_path, line, side, resolved_by, resolved_at). */
+  resolvePullRequestCommentThread: Stmt;
+  /** Params: (project_id, pr_number, file_path, line, side). */
+  unresolvePullRequestCommentThread: Stmt;
   /** Fully-validated finalize run for (project, branch, sha) — PR validation passthrough. */
   getValidatedFinalizeRunForSha: Stmt;
   /** Latest run carrying CI jobs for (project, sha, sha) — PR checks display. */

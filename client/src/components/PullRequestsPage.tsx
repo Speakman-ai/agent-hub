@@ -471,6 +471,7 @@ function PrFilesChanged({
   inlineComments = [],
   onAddComment = null,
   onDeleteComment = null,
+  onSetResolved = null,
 }: any) {
   const [diff, setDiff] = useState<any>(null);
   const [error, setError] = useState<any>(null);
@@ -504,6 +505,7 @@ function PrFilesChanged({
       comments={inlineComments}
       onAddComment={onAddComment}
       onDeleteComment={onDeleteComment}
+      onSetResolved={onSetResolved}
     />
   );
 }
@@ -1232,6 +1234,25 @@ function PrDetail({
               ? async (comment: any) => {
                   try {
                     await api.deleteNativePrComment(projectId, pr.number, comment.id);
+                    onRefresh();
+                  } catch (err: any) {
+                    toastErr(err);
+                  }
+                }
+              : null
+          }
+          onSetResolved={
+            // Not gated on `editable`: tidying up a finished review is still
+            // useful once the PR is closed or merged.
+            isNative
+              ? async ({ filePath, line, side, resolved }: any) => {
+                  try {
+                    await api.setNativePrCommentThreadResolved(projectId, pr.number, {
+                      filePath,
+                      line,
+                      side,
+                      resolved,
+                    });
                     onRefresh();
                   } catch (err: any) {
                     toastErr(err);

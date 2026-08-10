@@ -1279,6 +1279,24 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS pull_request_comments_pr
       ON pull_request_comments(project_id, pr_number, file_path, line);
+
+    -- Resolution state for an inline comment thread. A "thread" has no id of
+    -- its own: it is the set of pull_request_comments sharing an anchor
+    -- (file_path, line, side), which is also how the diff view groups them.
+    -- Presence of a row means resolved; unresolving deletes it, so there is
+    -- no tri-state to reconcile. Resolution lives here rather than on each
+    -- comment so a later reply joins an already-resolved thread instead of
+    -- leaving it half-resolved (GitHub's behaviour).
+    CREATE TABLE IF NOT EXISTS pull_request_comment_threads (
+      project_id TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      file_path TEXT NOT NULL,
+      line INTEGER NOT NULL,
+      side TEXT NOT NULL CHECK(side IN ('old', 'new')),
+      resolved_by TEXT NOT NULL,
+      resolved_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, pr_number, file_path, line, side)
+    );
   `);
 
   // Columns added to pull_requests after the table shipped — heal existing
@@ -6901,6 +6919,25 @@ function initDb(dataDir: string): void {
     ),
     getPullRequestComment: db.prepare('SELECT * FROM pull_request_comments WHERE id = ?'),
     deletePullRequestComment: db.prepare('DELETE FROM pull_request_comments WHERE id = ?'),
+    countPullRequestCommentsAtAnchor: db.prepare(
+      `SELECT COUNT(*) AS n FROM pull_request_comments
+        WHERE project_id = ? AND pr_number = ? AND file_path = ? AND line = ? AND side = ?`,
+    ),
+    listPullRequestCommentThreadsForPr: db.prepare(
+      `SELECT * FROM pull_request_comment_threads
+        WHERE project_id = ? AND pr_number = ?`,
+    ),
+    resolvePullRequestCommentThread: db.prepare(
+      `INSERT INTO pull_request_comment_threads
+         (project_id, pr_number, file_path, line, side, resolved_by, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, pr_number, file_path, line, side)
+       DO UPDATE SET resolved_by = excluded.resolved_by, resolved_at = excluded.resolved_at`,
+    ),
+    unresolvePullRequestCommentThread: db.prepare(
+      `DELETE FROM pull_request_comment_threads
+        WHERE project_id = ? AND pr_number = ? AND file_path = ? AND line = ? AND side = ?`,
+    ),
     // "Was this exact sha fully validated by Finalize?" — review + checks
     // both passed (mode 'full' reaching ready_to_push/pushing/pushed). Drives
     // the PR-level validation passthrough: validated heads skip PR CI and the

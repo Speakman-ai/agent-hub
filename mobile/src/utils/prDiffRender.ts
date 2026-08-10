@@ -149,3 +149,33 @@ export function commentsForFile(comments: any, filename: any) {
         return [];
     return comments.filter((c: any) => c && c.file_path === filename);
 }
+/**
+ * Group a file's inline comments into conversations. A thread is the set of
+ * comments sharing an anchor (line + side) — the same grouping the web diff
+ * uses — and resolution is a property of that anchor, so any comment in the
+ * group carrying `resolved` marks the whole thread resolved. Groups come back
+ * in first-comment order, which keeps the list stable across refetches.
+ */
+export function groupCommentThreads(comments: any) {
+    if (!Array.isArray(comments))
+        return [];
+    const byAnchor = new Map();
+    for (const c of comments) {
+        if (!c)
+            continue;
+        const side = c.side === 'old' ? 'old' : 'new';
+        const line = Number(c.line);
+        const key = `${side}:${line}`;
+        let thread = byAnchor.get(key);
+        if (!thread) {
+            thread = { key, line, side, comments: [], resolved: false, resolvedBy: null };
+            byAnchor.set(key, thread);
+        }
+        thread.comments.push(c);
+        if (c.resolved) {
+            thread.resolved = true;
+            thread.resolvedBy = thread.resolvedBy || c.resolved_by || null;
+        }
+    }
+    return Array.from(byAnchor.values());
+}

@@ -1550,6 +1550,16 @@ export const api = {
     fetchJSON(`/projects/${projectId}/pulls/${number}/comments/${commentId}`, {
       method: 'DELETE',
     }),
+  // Resolve/unresolve the inline comment thread anchored at filePath+line+side.
+  setNativePrCommentThreadResolved: (
+    projectId: any,
+    number: any,
+    { filePath, line, side = 'new', resolved }: any,
+  ) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/comment-threads/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ filePath, line, side, resolved }),
+    }),
   // Re-run a finished push/pr-ci run — all jobs, or one job when jobId set.
   rerunCiRun: (projectId: any, runId: any, jobId?: any) =>
     fetchJSON(`/projects/${projectId}/ci-runs/${runId}/rerun`, {

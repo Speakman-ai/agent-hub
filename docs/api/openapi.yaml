@@ -37815,6 +37815,83 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/comment-threads/resolve:
+    post:
+      tags:
+        - Projects
+      summary: Resolve or unresolve an inline comment thread on a native pull request
+      description: A thread is the set of inline comments sharing an anchor (filePath + line + side); resolution is stored against that anchor, so a later reply joins an already-resolved thread. Resolved threads render collapsed in the Files-changed diff. Allowed on closed and merged PRs.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filePath:
+                  type: string
+                  minLength: 1
+                line:
+                  type: integer
+                  minimum: 1
+                side:
+                  type: string
+                  enum:
+                    - old
+                    - new
+                resolved:
+                  type: boolean
+              required:
+                - filePath
+                - line
+                - resolved
+      responses:
+        "200":
+          description: The thread anchor and its new resolution state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  thread:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - thread
+        "400":
+          description: Invalid input or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR, or no comment at that anchor.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/pulls/{number}/comments/{commentId}:
     delete:
       tags:

@@ -186,6 +186,20 @@ export interface NativePrService {
   }): { comment: Record<string, unknown> };
   /** Delete an inline comment (route enforces author/ownership policy). */
   deleteInlineComment(args: { project: Project; number: number; commentId: string }): void;
+  /**
+   * Resolve or unresolve the comment thread anchored at file + line + side.
+   * Allowed on closed/merged PRs so reviewers can still tidy up a finished
+   * review; 404s when no comment is anchored there.
+   */
+  setCommentThreadResolved(args: {
+    project: Project;
+    number: number;
+    filePath: string;
+    line: number;
+    side: 'old' | 'new';
+    resolved: boolean;
+    actor: string;
+  }): { thread: Record<string, unknown> };
   diff(args: { project: Project; number: number }): Promise<{ source: 'agenthub'; diff: string }>;
   files(args: {
     project: Project;
@@ -553,7 +567,37 @@ function linkedEpicForRow(epics: EpicBranchRef[], row: PullRequestRow): LinkedEp
   return matchEpicForPrBranches(epics, { head: row.head_branch, base: row.base_branch });
 }
 
-/** Inline diff comments, raw (for in-diff rendering) and folded. */
+/** Anchor key shared by the comment rows and the thread-resolution rows. */
+function threadKey(filePath: string, line: number | string, side: string): string {
+  return `${side} ${line} ${filePath}`;
+}
+
+interface CommentThreadRow {
+  file_path: string;
+  line: number;
+  side: string;
+  resolved_by: string;
+  resolved_at: number;
+}
+
+function resolvedThreads(
+  stmts: Stmts,
+  projectId: string,
+  number: number,
+): Map<string, CommentThreadRow> {
+  const rows = stmts.listPullRequestCommentThreadsForPr.all(
+    projectId,
+    number,
+  ) as CommentThreadRow[];
+  return new Map(rows.map((r) => [threadKey(r.file_path, r.line, r.side), r]));
+}
+
+/**
+ * Inline diff comments, raw (for in-diff rendering) and folded. Each comment
+ * carries its thread's resolution so the diff view can collapse a resolved
+ * anchor without a second round trip — resolution itself is stored per
+ * thread, not per comment.
+ */
 function inlineComments(
   stmts: Stmts,
   projectId: string,
@@ -568,15 +612,22 @@ function inlineComments(
     body: string;
     created_at: number;
   }>;
-  return rows.map((r) => ({
-    id: r.id,
-    user: r.author,
-    file_path: r.file_path,
-    line: r.line,
-    side: r.side,
-    body: r.body,
-    created_at: toIso(r.created_at),
-  }));
+  const threads = resolvedThreads(stmts, projectId, number);
+  return rows.map((r) => {
+    const thread = threads.get(threadKey(r.file_path, r.line, r.side));
+    return {
+      id: r.id,
+      user: r.author,
+      file_path: r.file_path,
+      line: r.line,
+      side: r.side,
+      body: r.body,
+      created_at: toIso(r.created_at),
+      resolved: Boolean(thread),
+      resolved_by: thread?.resolved_by ?? null,
+      resolved_at: thread ? toIso(thread.resolved_at) : null,
+    };
+  });
 }
 
 /** Human reviews in the GitHub review-object shape the client renders. */
@@ -1062,18 +1113,81 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       requireHostedRepo(project);
       requirePr(stmts, project, number);
       const existing = stmts.getPullRequestComment.get(commentId) as
-        | { project_id: string; pr_number: number }
+        | { project_id: string; pr_number: number; file_path: string; line: number; side: string }
         | undefined;
       if (!existing || existing.project_id !== project.id || existing.pr_number !== number) {
         throw new NativePrError('Comment not found', 404);
       }
       stmts.deletePullRequestComment.run(commentId);
+      // Drop the thread's resolution once its last comment is gone, so a
+      // future comment on the same line does not inherit a stale "resolved".
+      const { n } = stmts.countPullRequestCommentsAtAnchor.get(
+        project.id,
+        number,
+        existing.file_path,
+        existing.line,
+        existing.side,
+      ) as { n: number };
+      if (n === 0) {
+        stmts.unresolvePullRequestCommentThread.run(
+          project.id,
+          number,
+          existing.file_path,
+          existing.line,
+          existing.side,
+        );
+      }
       broadcast({
         type: 'native_pr_update',
         projectId: project.id,
         prNumber: number,
         action: 'comment_deleted',
       });
+    },
+
+    setCommentThreadResolved({ project, number, filePath, line, side, resolved, actor }) {
+      requireHostedRepo(project);
+      requirePr(stmts, project, number);
+      const { n } = stmts.countPullRequestCommentsAtAnchor.get(
+        project.id,
+        number,
+        filePath,
+        line,
+        side,
+      ) as { n: number };
+      if (n === 0) {
+        throw new NativePrError('No comment thread at that anchor', 404);
+      }
+      const now = Date.now();
+      if (resolved) {
+        stmts.resolvePullRequestCommentThread.run(
+          project.id,
+          number,
+          filePath,
+          line,
+          side,
+          actor,
+          now,
+        );
+      } else {
+        stmts.unresolvePullRequestCommentThread.run(project.id, number, filePath, line, side);
+      }
+      broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: resolved ? 'comment_thread_resolved' : 'comment_thread_unresolved',
+      });
+      return {
+        thread: {
+          file_path: filePath,
+          line,
+          side,
+          resolved,
+          resolved_by: resolved ? actor : null,
+          resolved_at: resolved ? toIso(now) : null,
+        },
+      };
     },
   };
 }

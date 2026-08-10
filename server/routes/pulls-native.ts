@@ -405,6 +405,40 @@ registerPath({
 });
 
 registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/pulls/{number}/comment-threads/resolve',
+  tags: ['Projects'],
+  summary: 'Resolve or unresolve an inline comment thread on a native pull request',
+  description:
+    'A thread is the set of inline comments sharing an anchor (filePath + line + side); resolution is stored against that anchor, so a later reply joins an already-resolved thread. Resolved threads render collapsed in the Files-changed diff. Allowed on closed and merged PRs.',
+  request: {
+    params: z.object({ projectId: z.string(), number: z.string() }),
+    body: {
+      content: jsonContent(
+        z.object({
+          filePath: z.string().min(1),
+          line: z.coerce.number().int().min(1),
+          side: z.enum(['old', 'new']).optional(),
+          resolved: z.boolean(),
+        }),
+      ),
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: 'The thread anchor and its new resolution state.',
+      content: jsonContent(z.object({ thread: z.record(z.string(), z.unknown()) })),
+    },
+    400: { description: 'Invalid input or not Hub-hosted.', content: jsonContent(PrErrorSchema) },
+    404: {
+      description: 'Unknown project/PR, or no comment at that anchor.',
+      content: jsonContent(PrErrorSchema),
+    },
+  },
+});
+
+registerPath({
   method: 'delete',
   path: '/api/projects/{projectId}/pulls/{number}/comments/{commentId}',
   tags: ['Projects'],
@@ -665,6 +699,43 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
     return { project, number };
   };
 
+  /**
+   * Parse the (filePath, line, side) anchor shared by the inline-comment and
+   * thread-resolution routes, enforcing the registered Zod schema at runtime.
+   *
+   * Both fields are strict on purpose. `Number.parseInt` would accept `1.5`
+   * and `"1junk"` and quietly truncate them to a different line than the
+   * caller named, and coercing every unrecognised `side` to `'new'` would
+   * silently retarget the write — GitHub's own review API spells these sides
+   * `LEFT`/`RIGHT`, so a client copying that vocabulary is a realistic way to
+   * hit it. A wrong anchor is worse than a 400 because it lands on a real
+   * neighbouring thread.
+   */
+  const parseCommentAnchor = (
+    body: Record<string, unknown>,
+  ):
+    | { ok: true; anchor: { filePath: string; line: number; side: 'old' | 'new' } }
+    | { ok: false; error: string } => {
+    const filePath = typeof body.filePath === 'string' ? body.filePath.trim() : '';
+    if (!filePath) return { ok: false, error: 'filePath is required' };
+    // Strings stay acceptable (agents post JSON by hand), but only when they
+    // name an exact integer — Number('1junk') is NaN, Number('1.5') is 1.5.
+    const raw = body.line;
+    const line =
+      typeof raw === 'number'
+        ? raw
+        : typeof raw === 'string' && raw.trim() !== ''
+          ? Number(raw)
+          : Number.NaN;
+    if (!Number.isInteger(line) || line <= 0) {
+      return { ok: false, error: 'line must be a positive integer' };
+    }
+    if (body.side !== undefined && body.side !== 'old' && body.side !== 'new') {
+      return { ok: false, error: "side must be 'old' or 'new'" };
+    }
+    return { ok: true, anchor: { filePath, line, side: body.side === 'old' ? 'old' : 'new' } };
+  };
+
   const sendNativeError = (res: Response, err: unknown): void => {
     const status = err instanceof NativePrError ? err.status : 500;
     res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
@@ -796,23 +867,18 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
     const ctx = resolveActionContext(req, res);
     if (!ctx) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const filePath = typeof body.filePath === 'string' ? body.filePath.trim() : '';
-    const line = Number.parseInt(String(body.line), 10);
-    const side = body.side === 'old' ? 'old' : 'new';
+    const parsed = parseCommentAnchor(body);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
     const text = typeof body.body === 'string' ? body.body.trim() : '';
-    if (!filePath) return res.status(400).json({ error: 'filePath is required' });
-    if (!Number.isFinite(line) || line <= 0) {
-      return res.status(400).json({ error: 'line must be a positive integer' });
-    }
     if (!text) return res.status(400).json({ error: 'body is required' });
     const areq = req as AuthenticatedRequest;
     try {
       const { comment } = deps.nativePr!.addInlineComment({
         project: ctx.project,
         number: ctx.number,
-        filePath,
-        line,
-        side,
+        filePath: parsed.anchor.filePath,
+        line: parsed.anchor.line,
+        side: parsed.anchor.side,
         body: text,
         author: areq.authUser ?? areq.authUserId ?? 'user',
       });
@@ -821,6 +887,35 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       sendNativeError(res, err);
     }
   });
+
+  router.post(
+    '/api/projects/:projectId/pulls/:number/comment-threads/resolve',
+    (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const parsed = parseCommentAnchor(body);
+      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+      if (typeof body.resolved !== 'boolean') {
+        return res.status(400).json({ error: 'resolved must be a boolean' });
+      }
+      const areq = req as AuthenticatedRequest;
+      try {
+        const { thread } = deps.nativePr!.setCommentThreadResolved({
+          project: ctx.project,
+          number: ctx.number,
+          filePath: parsed.anchor.filePath,
+          line: parsed.anchor.line,
+          side: parsed.anchor.side,
+          resolved: body.resolved,
+          actor: areq.authUser ?? areq.authUserId ?? 'user',
+        });
+        res.json({ thread });
+      } catch (err: unknown) {
+        sendNativeError(res, err);
+      }
+    },
+  );
 
   router.post(
     '/api/projects/:projectId/pulls/generate-description',

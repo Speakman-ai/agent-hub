@@ -202,6 +202,10 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
         await api.addPullComment(projectId, prNumber, payload);
         onRefresh();
     }, [projectId, prNumber, onRefresh]);
+    const handleSetThreadResolved = useCallback(async (payload: any) => {
+        await api.setPullCommentThreadResolved(projectId, prNumber, payload);
+        onRefresh();
+    }, [projectId, prNumber, onRefresh]);
     const handleReopen = useCallback(async () => {
         if (reopening || !prNumber)
             return;
@@ -335,7 +339,7 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
 
       {showFiles ? (<>
           <Text style={styles.sectionHeader}>Files changed</Text>
-          <PrDiffView prUrl={caps.prUrl} comments={caps.isNative ? detail.inline_comments || [] : []} onAddComment={caps.canComment ? handleAddInlineComment : null}/>
+          <PrDiffView prUrl={caps.prUrl} comments={caps.isNative ? detail.inline_comments || [] : []} onAddComment={caps.canComment ? handleAddInlineComment : null} onSetResolved={caps.isNative ? handleSetThreadResolved : null}/>
         </>) : null}
 
       <Text style={styles.activitySectionHeader}>Activity</Text>
