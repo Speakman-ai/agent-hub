@@ -9018,6 +9018,145 @@ components:
         - nextCursor
         - facets
         - staleAfterMs
+    InfraFleetMetric:
+      type: object
+      properties:
+        metricName:
+          type: string
+        namespace:
+          type: string
+        stat:
+          type: string
+        label:
+          type: string
+          description: Short dashboard label, e.g. `CPU`.
+        unit:
+          type: string
+          enum:
+            - percent
+            - bytes
+            - count
+            - seconds
+          description: How a human reads the value, which decides client formatting.
+        description:
+          type: string
+          description: The pack's operator-facing line.
+        latest:
+          type: number
+          nullable: true
+          description: Newest bucket value, or null when the series reported nothing in the window. Null is a real answer — collected, nothing came back — and is not the same as zero.
+        latestTsMs:
+          type: integer
+          nullable: true
+        min:
+          type: number
+          nullable: true
+        max:
+          type: number
+          nullable: true
+        points:
+          type: array
+          items:
+            type: object
+            properties:
+              tsMs:
+                type: integer
+              value:
+                type: number
+            required:
+              - tsMs
+              - value
+          description: "Sparkline, oldest first. Empty buckets are absent rather than zero-filled: a gap is a resource that stopped reporting, and drawing it as zero would read as a healthy floor."
+      required:
+        - metricName
+        - namespace
+        - stat
+        - label
+        - unit
+        - description
+        - latest
+        - latestTsMs
+        - min
+        - max
+        - points
+    InfraFleet:
+      type: object
+      properties:
+        fromMs:
+          type: integer
+        toMs:
+          type: integer
+        bucketSeconds:
+          type: integer
+          description: Width of one sparkline bucket.
+        services:
+          type: array
+          items:
+            type: string
+        resources:
+          type: array
+          items:
+            type: object
+            properties:
+              resourceKey:
+                type: string
+              service:
+                type: string
+              resourceId:
+                type: string
+              name:
+                type: string
+                nullable: true
+              region:
+                type: string
+              accountId:
+                type: string
+              environment:
+                type: string
+                nullable: true
+              state:
+                type: string
+                nullable: true
+              lastSeen:
+                type: integer
+              metricDimensions:
+                type: object
+                nullable: true
+                additionalProperties:
+                  nullable: true
+                description: CloudWatch dimension map the resource’s series are keyed on. Carried so a card can open the full Metrics view without refetching the row.
+              features:
+                type: object
+                nullable: true
+                additionalProperties:
+                  nullable: true
+              metrics:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InfraFleetMetric"
+            required:
+              - resourceKey
+              - service
+              - resourceId
+              - name
+              - region
+              - accountId
+              - environment
+              - state
+              - lastSeen
+              - metricDimensions
+              - features
+              - metrics
+        truncated:
+          type: boolean
+          description: More resources matched than `limit`. Narrow, or use the Resources browser.
+      required:
+        - fromMs
+        - toMs
+        - bucketSeconds
+        - services
+        - resources
+        - truncated
     InfraMetricSeries:
       type: object
       properties:
@@ -32184,6 +32323,18 @@ paths:
           required: false
           name: cursor
           in: query
+        - schema:
+            anyOf:
+              - type: boolean
+              - type: string
+                enum:
+                  - "true"
+                  - "false"
+            description: "Default `false`: Service Quotas rows (`service=quota`, ids like `kms/L-0…`) are excluded. They describe a limit rather than something that runs, there are dozens per account, and the Overview quota panel already summarises them. Pass `true` to list them alongside real inventory. An explicit `service=quota` filter includes them regardless."
+          required: false
+          description: "Default `false`: Service Quotas rows (`service=quota`, ids like `kms/L-0…`) are excluded. They describe a limit rather than something that runs, there are dozens per account, and the Overview quota panel already summarises them. Pass `true` to list them alongside real inventory. An explicit `service=quota` filter includes them regardless."
+          name: includeQuotas
+          in: query
       responses:
         "200":
           description: Inventory page. Empty on a Hub whose infra store never opened.
@@ -32191,6 +32342,98 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InfraResourceList"
+        "400":
+          description: Malformed query.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+        "404":
+          description: Project not found, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable failure reason.
+                required:
+                  - error
+  /api/projects/{projectId}/infra/fleet:
+    get:
+      tags:
+        - Projects
+      summary: Compute fleet with headline metrics
+      description: |-
+        Every EC2 instance, ECS cluster/service and RDS instance in scope, each carrying the two or three headline series that belong on a dashboard, already reduced to a latest value and a sparkline.
+
+        This is the batch counterpart to `/infra/metrics`, which serves one resource and one metric per request — filling a dashboard through that endpoint costs resources × metrics round trips. Here the SQL scan count is bounded by the headline catalog and does not grow with the number of resources on the page.
+
+        Which series are headline is decided by the service packs (`server/infra/headline-metrics.ts`); a Container Insights series is omitted for a cluster that does not have the feature, because the collector never asked CloudWatch for it either.
+
+        **Cost:** local SQLite only. No AWS call.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            maxLength: 128
+            description: Comma-separated service tokens. Defaults to every dashboard service (`ec2`, `ecs`, `rds`). Tokens outside that set contribute nothing.
+          required: false
+          description: Comma-separated service tokens. Defaults to every dashboard service (`ec2`, `ecs`, `rds`). Tokens outside that set contribute nothing.
+          name: services
+          in: query
+        - schema:
+            type: string
+            maxLength: 32
+          required: false
+          name: region
+          in: query
+        - schema:
+            type: string
+            maxLength: 128
+            description: Exact match. The sentinel `none` selects rows carrying no environment label.
+          required: false
+          description: Exact match. The sentinel `none` selects rows carrying no environment label.
+          name: environment
+          in: query
+        - schema:
+            type: integer
+            minimum: 900000
+            maximum: 604800000
+            description: Lookback ending now. Defaults to 3h. The bucket width is derived from it so a sparkline holds roughly the same number of points at any window.
+          required: false
+          description: Lookback ending now. Defaults to 3h. The bucket width is derived from it so a sparkline holds roughly the same number of points at any window.
+          name: windowMs
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            description: Resources returned. Defaults to 60. Beyond the ceiling a dashboard is a list, which is what the Resources browser is for.
+          required: false
+          description: Resources returned. Defaults to 60. Beyond the ceiling a dashboard is a list, which is what the Resources browser is for.
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: The fleet. Empty `resources` on a project with no scopes, and on a Hub whose infra store never opened.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfraFleet"
         "400":
           description: Malformed query.
           content:

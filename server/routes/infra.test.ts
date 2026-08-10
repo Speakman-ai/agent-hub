@@ -684,6 +684,8 @@ function seedResource(
     name?: string | null;
     tags?: Array<{ Key: string; Value: string }> | null;
     lastSeen?: number;
+    /** CloudWatch dimension map, which is what binds a row to its headlines. */
+    dimensions?: Record<string, string> | null;
   } = {},
 ): string {
   const service = over.service ?? 'ec2';
@@ -695,8 +697,8 @@ function seedResource(
     .prepare(
       `INSERT INTO infra_resources (
          resource_key, project_id, account_id, region, service, resource_id,
-         name, tags_json, environment, state, first_seen, last_seen
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         name, tags_json, environment, state, metric_dimensions_json, first_seen, last_seen
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       resourceKey,
@@ -709,6 +711,7 @@ function seedResource(
       over.tags ? JSON.stringify(over.tags) : null,
       over.environment ?? null,
       over.state ?? 'running',
+      over.dimensions ? JSON.stringify(over.dimensions) : null,
       CHART_NOW - 24 * CHART_HOUR,
       over.lastSeen ?? CHART_NOW,
     );
@@ -780,6 +783,121 @@ describe('GET /api/projects/:projectId/infra/resources', () => {
     await request.get(`/api/projects/${projectId}/infra/resources?limit=0`).expect(400);
     await request.get(`/api/projects/${projectId}/infra/resources?limit=abc`).expect(400);
     await request.get('/api/projects/does-not-exist/infra/resources').expect(404);
+  });
+
+  it('hides Service Quotas rows unless they are asked for', async () => {
+    // These are the rows an operator reads as "kms keys and cloudwatch
+    // streams". They describe a limit rather than something that runs, there
+    // are dozens per account, and the Overview quota panel already summarises
+    // them — so they bury the instances this browser exists to show.
+    const projectId = await freshProject();
+    seedResource(projectId, { resourceId: 'i-web' });
+    seedResource(projectId, { resourceId: 'kms/L-0123', service: 'quota' });
+    seedResource(projectId, { resourceId: 'logs/L-9876', service: 'quota' });
+
+    const byDefault = await request.get(`/api/projects/${projectId}/infra/resources`).expect(200);
+    expect(byDefault.body.resources.map((r: any) => r.resourceId)).toEqual(['i-web']);
+    expect(byDefault.body.facets.total).toBe(1);
+    // The facet list stays project-wide on purpose (a dropdown that hides a
+    // value cannot be used to select it), so `quota` remains offered and
+    // picking it is the per-request way to opt back in.
+    expect(byDefault.body.facets.services.sort()).toEqual(['ec2', 'quota']);
+
+    const included = await request
+      .get(`/api/projects/${projectId}/infra/resources?includeQuotas=true`)
+      .expect(200);
+    expect(included.body.resources).toHaveLength(3);
+    expect(included.body.facets.services.sort()).toEqual(['ec2', 'quota']);
+  });
+
+  it('treats an explicit service=quota filter as asking for them', async () => {
+    const projectId = await freshProject();
+    seedResource(projectId, { resourceId: 'i-web' });
+    seedResource(projectId, { resourceId: 'kms/L-0123', service: 'quota' });
+
+    const res = await request
+      .get(`/api/projects/${projectId}/infra/resources?service=quota`)
+      .expect(200);
+    expect(res.body.resources.map((r: any) => r.resourceId)).toEqual(['kms/L-0123']);
+  });
+});
+
+describe('GET /api/projects/:projectId/infra/fleet', () => {
+  it('returns compute resources with headline metrics in one request', async () => {
+    const projectId = await freshProject();
+    const resourceKey = seedResource(projectId, {
+      resourceId: 'i-web',
+      dimensions: { InstanceId: 'i-web' },
+    });
+    seedResource(projectId, {
+      resourceId: 'db-1',
+      service: 'rds',
+      dimensions: { DBInstanceIdentifier: 'db-1' },
+    });
+    insertInfraMetricPoints([
+      {
+        projectId,
+        resourceKey,
+        namespace: 'AWS/EC2',
+        metricName: 'CPUUtilization',
+        stat: 'Average',
+        periodSeconds: 60,
+        tsMs: CHART_NOW - 120_000,
+        value: 37,
+      },
+    ]);
+
+    const res = await request.get(`/api/projects/${projectId}/infra/fleet`).expect(200);
+
+    expect(res.body.resources).toHaveLength(2);
+    expect(res.body.services).toEqual(['ec2', 'ecs', 'rds']);
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.bucketSeconds).toBeGreaterThanOrEqual(60);
+
+    const ec2 = res.body.resources.find((r: any) => r.resourceId === 'i-web');
+    const cpu = ec2.metrics.find((m: any) => m.metricName === 'CPUUtilization');
+    expect(cpu.label).toBe('CPU');
+    expect(cpu.unit).toBe('percent');
+    expect(cpu.latest).toBe(37);
+    expect(cpu.points.length).toBeGreaterThan(0);
+
+    // The point of the endpoint: an RDS instance arrives with its headlines
+    // already attached rather than needing a request per metric.
+    const rds = res.body.resources.find((r: any) => r.resourceId === 'db-1');
+    expect(rds.metrics.map((m: any) => m.metricName)).toEqual([
+      'CPUUtilization',
+      'FreeableMemory',
+      'DatabaseConnections',
+    ]);
+    expect(rds.metrics.every((m: any) => m.latest === null)).toBe(true);
+  });
+
+  it('narrows to the requested services and ignores tokens it does not chart', async () => {
+    const projectId = await freshProject();
+    seedResource(projectId, { resourceId: 'i-web', dimensions: { InstanceId: 'i-web' } });
+    seedResource(projectId, {
+      resourceId: 'db-1',
+      service: 'rds',
+      dimensions: { DBInstanceIdentifier: 'db-1' },
+    });
+    seedResource(projectId, { resourceId: 'kms/L-0123', service: 'quota' });
+
+    const rdsOnly = await request
+      .get(`/api/projects/${projectId}/infra/fleet?services=rds`)
+      .expect(200);
+    expect(rdsOnly.body.resources.map((r: any) => r.resourceId)).toEqual(['db-1']);
+
+    const quotas = await request
+      .get(`/api/projects/${projectId}/infra/fleet?services=quota`)
+      .expect(200);
+    expect(quotas.body.resources).toEqual([]);
+  });
+
+  it('rejects a window outside the supported range and 404s an unknown project', async () => {
+    const projectId = await freshProject();
+    await request.get(`/api/projects/${projectId}/infra/fleet?windowMs=1000`).expect(400);
+    await request.get(`/api/projects/${projectId}/infra/fleet?limit=0`).expect(400);
+    await request.get('/api/projects/does-not-exist/infra/fleet').expect(404);
   });
 });
 

@@ -17,6 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, RefreshCw, Search } from 'lucide-react';
+import { infraResourceHealth, type InfraResourceHealth } from '@shared/utils/infraResourceState';
 import { api } from '../../utils/api';
 
 export interface InfraResourceWire {
@@ -72,6 +73,16 @@ export interface ResourceFilterState {
   tagValue: string;
   search: string;
   includeStale: boolean;
+  /**
+   * Show Service Quotas rows, which are hidden by default.
+   *
+   * They are inventory in the schema's sense and not in an operator's: a row
+   * per quota per integrated service (`kms/L-0…`, `logs/L-9…`) describing a
+   * limit rather than something that runs, in large enough numbers to bury the
+   * instances this browser exists to find. The Overview quota panel already
+   * summarises them, so the default is off and this is the way back.
+   */
+  includeQuotas: boolean;
 }
 
 export const EMPTY_FILTERS: ResourceFilterState = {
@@ -83,6 +94,7 @@ export const EMPTY_FILTERS: ResourceFilterState = {
   tagValue: '',
   search: '',
   includeStale: false,
+  includeQuotas: false,
 };
 
 /**
@@ -104,6 +116,9 @@ export function toResourceQuery(filters: ResourceFilterState): Record<string, un
     tagValue: filters.tagKey ? filters.tagValue : '',
     search: filters.search.trim(),
     seenSince: filters.includeStale ? 0 : undefined,
+    // Only sent when on. The server's default is already "exclude", and sending
+    // `false` would put a param in the URL that changes nothing.
+    includeQuotas: filters.includeQuotas ? true : undefined,
   };
 }
 
@@ -145,15 +160,26 @@ export function isStaleResource(
   return nowMs - resource.lastSeen > staleAfterMs;
 }
 
+/**
+ * Tone per health class. The classifier is shared with the fleet dashboard
+ * rather than restated here: this badge previously matched `running` and
+ * `available` exactly, which left every healthy ECS cluster and service
+ * (`ACTIVE`, uppercase), load balancer (`active`) and Lambda (`Active`) in the
+ * neutral bucket, reading as "state unrecognised" for the entire happy path.
+ */
+const STATE_TONE: Record<InfraResourceHealth, string> = {
+  healthy: 'border-emerald-900/60 bg-emerald-950/30 text-emerald-300',
+  unhealthy: 'border-red-900/60 bg-red-950/30 text-red-300',
+  unknown: 'border-gray-800 bg-gray-900/50 text-gray-400',
+};
+
 function StateBadge({ state }: { state: string | null }): React.ReactElement {
-  const tone =
-    state === 'running' || state === 'available'
-      ? 'border-emerald-900/60 bg-emerald-950/30 text-emerald-300'
-      : state === 'terminated' || state === 'stopped' || state === 'deleted'
-        ? 'border-red-900/60 bg-red-950/30 text-red-300'
-        : 'border-gray-800 bg-gray-900/50 text-gray-400';
   return (
-    <span className={`rounded border px-1.5 py-0.5 text-[11px] ${tone}`}>{state ?? 'unknown'}</span>
+    <span
+      className={`rounded border px-1.5 py-0.5 text-[11px] ${STATE_TONE[infraResourceHealth(state)]}`}
+    >
+      {state ?? 'unknown'}
+    </span>
   );
 }
 
@@ -417,6 +443,15 @@ export default function InfraResourceBrowser({
             onChange={(e) => setFilter('includeStale', e.target.checked)}
           />
           Include resources no longer described
+        </label>
+
+        <label className="flex items-center gap-1.5 text-xs text-gray-400">
+          <input
+            type="checkbox"
+            checked={filters.includeQuotas}
+            onChange={(e) => setFilter('includeQuotas', e.target.checked)}
+          />
+          Include service quotas
         </label>
 
         <button

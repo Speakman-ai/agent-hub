@@ -6,6 +6,7 @@ import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } f
 import type { DeployTriggerEvent } from './deployTriggers';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import type { InfraSpendTrendWire } from '@shared/utils/infraSpend';
+import type { InfraFleetWire } from '@shared/utils/infraFleet';
 import type { QuotaHeadroomResponse } from '@shared/utils/quotaHeadroom';
 
 interface CreateDeployTriggerBody {
@@ -615,6 +616,12 @@ export const api = {
   // there is no metric WebSocket (decision INFRA-UI).
   listInfraResources: (projectId: string, params: Record<string, unknown> = {}) =>
     fetchJSON(`/projects/${projectId}/infra/resources${infraQuery(params)}`),
+  // The Overview dashboard: every compute resource with its headline series
+  // already reduced to a latest value and a sparkline. One request for the
+  // whole grid — `getInfraMetricRange` below is one resource and one metric per
+  // call, so building this client-side would be resources × metrics requests.
+  getInfraFleet: (projectId: string, params: Record<string, unknown> = {}) =>
+    fetchJSON<InfraFleetWire>(`/projects/${projectId}/infra/fleet${infraQuery(params)}`),
   listInfraMetricSeries: (projectId: string, resourceKey: string) =>
     fetchJSON(`/projects/${projectId}/infra/metric-series${infraQuery({ resource: resourceKey })}`),
   getInfraMetricRange: (projectId: string, params: Record<string, unknown>) =>

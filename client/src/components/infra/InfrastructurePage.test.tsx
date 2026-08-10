@@ -20,6 +20,9 @@ import { api } from '../../utils/api';
     getInfraHealthIngest: vi.fn(),
     createInfraHealthIngestToken: vi.fn(),
     revokeInfraHealthIngestToken: vi.fn(),
+    // …and the fleet dashboard, which reads every compute resource with its
+    // headline metrics in one request and polls it.
+    getInfraFleet: vi.fn(),
     // The Resources tab embeds the inventory browser, which polls on mount.
     listInfraResources: vi.fn(),
     listInfraMetricSeries: vi.fn(),
@@ -38,6 +41,7 @@ const getInfraMetricPacks = vi.mocked(api.getInfraMetricPacks);
 const getInfraSpend = vi.mocked(api.getInfraSpend);
 const getInfraQuotas = vi.mocked(api.getInfraQuotas);
 const getInfraHealthEvents = vi.mocked(api.getInfraHealthEvents);
+const getInfraFleet = vi.mocked(api.getInfraFleet);
 const getInfraSetupDraft = vi.mocked(api.getInfraSetupDraft);
 const startInfraWizard = vi.mocked(api.startInfraWizard);
 
@@ -181,6 +185,14 @@ describe('InfrastructurePage', () => {
     getInfraScopes.mockResolvedValue(emptyScopes as any);
     listInfraResources.mockResolvedValue(emptyResources as any);
     getInfraMetricPacks.mockResolvedValue({ packs: [ec2Pack] } as any);
+    getInfraFleet.mockResolvedValue({
+      fromMs: 0,
+      toMs: 0,
+      bucketSeconds: 300,
+      services: ['ec2', 'ecs', 'rds'],
+      resources: [],
+      truncated: false,
+    } as any);
     getInfraSpend.mockResolvedValue(optedOutSpend as any);
     getInfraHealthEvents.mockResolvedValue({
       events: [],

@@ -9,6 +9,14 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { MAX_INFRA_RESOURCE_LIMIT } from '../infra/infra-resource-store.js';
+import {
+  DEFAULT_FLEET_LIMIT,
+  DEFAULT_FLEET_WINDOW_MS,
+  MAX_FLEET_LIMIT,
+  MAX_FLEET_WINDOW_MS,
+  MIN_FLEET_WINDOW_MS,
+} from '../infra/infra-fleet.js';
+import { INFRA_FLEET_SERVICES } from '../infra/headline-metrics.js';
 import { MAX_METRIC_WINDOW_MS } from '../infra/infra-metric-read.js';
 import { COST_EXPLORER_LOOKBACK_DAYS } from '../infra/infra-cost.js';
 
@@ -1204,6 +1212,14 @@ export const ResourceListParamsSchema = z.object({
   }),
   limit: coercedInt.min(1).max(MAX_INFRA_RESOURCE_LIMIT).optional(),
   cursor: z.string().min(1).max(600).optional(),
+  includeQuotas: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .transform((value) => value === true || value === 'true')
+    .optional()
+    .openapi({
+      description:
+        'Default `false`: Service Quotas rows (`service=quota`, ids like `kms/L-0…`) are excluded. They describe a limit rather than something that runs, there are dozens per account, and the Overview quota panel already summarises them. Pass `true` to list them alongside real inventory. An explicit `service=quota` filter includes them regardless.',
+    }),
 });
 
 registerPath({
@@ -1218,6 +1234,116 @@ registerPath({
     200: {
       description: 'Inventory page. Empty on a Hub whose infra store never opened.',
       content: { 'application/json': { schema: InfraResourceListResponse } },
+    },
+    400: {
+      description: 'Malformed query.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    404: {
+      description: 'Project not found, or the caller cannot see it.',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+});
+
+export const FleetParamsSchema = z.object({
+  services: z
+    .string()
+    .max(128)
+    .optional()
+    .openapi({
+      description: `Comma-separated service tokens. Defaults to every dashboard service (\`${INFRA_FLEET_SERVICES.join('`, `')}\`). Tokens outside that set contribute nothing.`,
+    }),
+  region: z.string().max(32).optional(),
+  environment: z.string().max(128).optional().openapi({
+    description: 'Exact match. The sentinel `none` selects rows carrying no environment label.',
+  }),
+  windowMs: coercedInt
+    .min(MIN_FLEET_WINDOW_MS)
+    .max(MAX_FLEET_WINDOW_MS)
+    .optional()
+    .openapi({
+      description: `Lookback ending now. Defaults to ${DEFAULT_FLEET_WINDOW_MS / 3_600_000}h. The bucket width is derived from it so a sparkline holds roughly the same number of points at any window.`,
+    }),
+  limit: coercedInt
+    .min(1)
+    .max(MAX_FLEET_LIMIT)
+    .optional()
+    .openapi({
+      description: `Resources returned. Defaults to ${DEFAULT_FLEET_LIMIT}. Beyond the ceiling a dashboard is a list, which is what the Resources browser is for.`,
+    }),
+});
+
+const InfraFleetMetric = registerComponent(
+  'InfraFleetMetric',
+  z.object({
+    metricName: z.string(),
+    namespace: z.string(),
+    stat: z.string(),
+    label: z.string().openapi({ description: 'Short dashboard label, e.g. `CPU`.' }),
+    unit: z.enum(['percent', 'bytes', 'count', 'seconds']).openapi({
+      description: 'How a human reads the value, which decides client formatting.',
+    }),
+    description: z.string().openapi({ description: "The pack's operator-facing line." }),
+    latest: z.number().nullable().openapi({
+      description:
+        'Newest bucket value, or null when the series reported nothing in the window. Null is a real answer — collected, nothing came back — and is not the same as zero.',
+    }),
+    latestTsMs: z.number().int().nullable(),
+    min: z.number().nullable(),
+    max: z.number().nullable(),
+    points: z.array(z.object({ tsMs: z.number().int(), value: z.number() })).openapi({
+      description:
+        'Sparkline, oldest first. Empty buckets are absent rather than zero-filled: a gap is a resource that stopped reporting, and drawing it as zero would read as a healthy floor.',
+    }),
+  }),
+);
+
+const InfraFleetResponse = registerComponent(
+  'InfraFleet',
+  z.object({
+    fromMs: z.number().int(),
+    toMs: z.number().int(),
+    bucketSeconds: z.number().int().openapi({ description: 'Width of one sparkline bucket.' }),
+    services: z.array(z.string()),
+    resources: z.array(
+      z.object({
+        resourceKey: z.string(),
+        service: z.string(),
+        resourceId: z.string(),
+        name: z.string().nullable(),
+        region: z.string(),
+        accountId: z.string(),
+        environment: z.string().nullable(),
+        state: z.string().nullable(),
+        lastSeen: z.number().int(),
+        metricDimensions: z.record(z.string(), z.unknown()).nullable().openapi({
+          description:
+            'CloudWatch dimension map the resource’s series are keyed on. Carried so a card can open the full Metrics view without refetching the row.',
+        }),
+        features: z.record(z.string(), z.unknown()).nullable(),
+        metrics: z.array(InfraFleetMetric),
+      }),
+    ),
+    truncated: z.boolean().openapi({
+      description: 'More resources matched than `limit`. Narrow, or use the Resources browser.',
+    }),
+  }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/infra/fleet',
+  tags: ['Projects'],
+  summary: 'Compute fleet with headline metrics',
+  description:
+    'Every EC2 instance, ECS cluster/service and RDS instance in scope, each carrying the two or three headline series that belong on a dashboard, already reduced to a latest value and a sparkline.\n\nThis is the batch counterpart to `/infra/metrics`, which serves one resource and one metric per request — filling a dashboard through that endpoint costs resources × metrics round trips. Here the SQL scan count is bounded by the headline catalog and does not grow with the number of resources on the page.\n\nWhich series are headline is decided by the service packs (`server/infra/headline-metrics.ts`); a Container Insights series is omitted for a cluster that does not have the feature, because the collector never asked CloudWatch for it either.\n\n**Cost:** local SQLite only. No AWS call.',
+  request: { params: ProjectIdParam, query: FleetParamsSchema },
+  responses: {
+    200: {
+      description:
+        'The fleet. Empty `resources` on a project with no scopes, and on a Hub whose infra store never opened.',
+      content: { 'application/json': { schema: InfraFleetResponse } },
     },
     400: {
       description: 'Malformed query.',

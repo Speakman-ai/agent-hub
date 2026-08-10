@@ -72,6 +72,7 @@ import {
   DEFAULT_QUOTA_UTILIZATION_THRESHOLD,
   QUOTA_CRITICAL_UTILIZATION_THRESHOLD,
   QUOTA_UTILIZATION_EXPRESSION,
+  QUOTA_SERVICE_TOKEN,
   type QuotaHeadroomBand,
 } from '../infra/quota-catalog.js';
 import { costExplorerWindow } from '../infra/cost-explorer-sync.js';
@@ -107,6 +108,7 @@ import {
   type InfraResourceSeries,
 } from '../infra/infra-resource-store.js';
 import { queryInfraMetricBuckets, type InfraMetricBucketRow } from '../infra/infra-metric-store.js';
+import { buildInfraFleet, emptyInfraFleet } from '../infra/infra-fleet.js';
 import {
   aggregationForStat,
   buildInfraAlertOverlay,
@@ -125,6 +127,7 @@ import {
   RetentionConfigRequestSchema,
   ScopesReplaceRequestSchema,
   ResourceListParamsSchema,
+  FleetParamsSchema,
   MetricSeriesParamsSchema,
   MetricRangeParamsSchema,
   SpendTrendParamsSchema,
@@ -781,7 +784,19 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
           ? Date.now() - MAX_RESOURCE_STALENESS_MS
           : parsed.data.seenSince;
 
-      const query = { projectId, ...parsed.data, seenSinceMs };
+      // Service Quotas rows describe a limit, not something that runs, and a
+      // busy account has enough of them (`kms/L-0…`, `logs/L-9…`, one per
+      // integrated service) to bury the instances someone opened this browser
+      // to find. They have their own headroom panel on Overview, so they are
+      // off by default here. An explicit `service=quota` filter is a request
+      // for them and overrides the default, which keeps the facet dropdown
+      // honest once `includeQuotas` has revealed the token.
+      const excludeServices =
+        parsed.data.includeQuotas || parsed.data.service === QUOTA_SERVICE_TOKEN
+          ? undefined
+          : [QUOTA_SERVICE_TOKEN];
+
+      const query = { projectId, ...parsed.data, seenSinceMs, excludeServices };
       const page = listInfraResources(query);
       res.json({
         resources: page.resources.map(serializeInfraResource),
@@ -789,6 +804,58 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
         facets: listInfraResourceFacets(query),
         staleAfterMs: MAX_RESOURCE_STALENESS_MS,
       });
+    },
+  );
+
+  // The Overview dashboard. One request, every compute resource in scope, each
+  // with its headline series already reduced to a latest value and a sparkline
+  // — as opposed to `/infra/metrics`, which is one resource and one metric per
+  // request and therefore costs resources × metrics round trips to fill a page.
+  router.get(
+    '/api/projects/:projectId/infra/fleet',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!findProject(projectId)) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const parsed = validate(FleetParamsSchema, req.query ?? {}, res);
+      if (!parsed.ok) return;
+
+      const nowMs = Date.now();
+      const services = parsed.data.services
+        ?.split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      if (!isInfraDbInitialized()) {
+        // Same empty shape a project with no scopes yields, so the dashboard
+        // renders its "nothing collected yet" state instead of an error card on
+        // a Hub whose infra store never opened.
+        //
+        // Built through the shared envelope rather than restated: the response
+        // has to describe the window and bucket width the *caller asked for*,
+        // and hard-coding them here meant a 24h request was answered with a 3h
+        // window and a 60s bucket purely because storage had not been opened.
+        res.json(emptyInfraFleet({ services, windowMs: parsed.data.windowMs, nowMs }));
+        return;
+      }
+
+      res.json(
+        buildInfraFleet({
+          projectId,
+          services,
+          region: parsed.data.region,
+          environment: parsed.data.environment,
+          windowMs: parsed.data.windowMs,
+          limit: parsed.data.limit,
+          // Matches the Resources browser: the dashboard shows what is actually
+          // being polled, not every instance the account has ever run.
+          seenSinceMs: nowMs - MAX_RESOURCE_STALENESS_MS,
+          nowMs,
+        }),
+      );
     },
   );
 

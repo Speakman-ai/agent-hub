@@ -15,10 +15,26 @@ import InfraHealthTimeline from './InfraHealthTimeline';
 import InfraSpendPanel from './InfraSpendPanel';
 import InfraQuotaHeadroomPanel from './InfraQuotaHeadroomPanel';
 import InfraResourceBrowser, { type InfraResourceWire } from './InfraResourceBrowser';
+import InfraFleetDashboard from './InfraFleetDashboard';
 import InfraMetricChart from './InfraMetricChart';
 import InfraServiceNotes from './InfraServiceNotes';
 import { notesPackFor, type InfraServicePackWire } from '@shared/utils/infraPacks';
 import { api, type InfraSetupBlockerWire, type InfraSetupDraftWire } from '../../utils/api';
+
+/**
+ * What the Metrics tab needs in order to chart a resource — a subset of the
+ * browser's row.
+ *
+ * Structural rather than the full `InfraResourceWire` because two surfaces now
+ * select a resource: the browser, which has every column, and a fleet card,
+ * which does not. Narrowing to what is actually read is what stops the card
+ * from having to fabricate a `firstSeen` or an empty `tags` map to satisfy a
+ * type nothing downstream consults.
+ */
+type InfraSelectedResource = Pick<
+  InfraResourceWire,
+  'resourceKey' | 'resourceId' | 'name' | 'service' | 'region' | 'metricDimensions' | 'features'
+>;
 
 export interface InfraMonitoringStatus {
   profile?: string | null;
@@ -196,7 +212,7 @@ export default function InfrastructurePage({
   // charting the previous project's resource under this project's header.
   const [selected, setSelected] = useState<{
     projectId: string;
-    resource: InfraResourceWire;
+    resource: InfraSelectedResource;
   } | null>(null);
   const selectedResource = selected && selected.projectId === projectId ? selected.resource : null;
 
@@ -271,7 +287,7 @@ export default function InfrastructurePage({
   const notesPack = notesPackFor(packs, selectedResource);
 
   const handleSelectResource = useCallback(
-    (resource: InfraResourceWire) => {
+    (resource: InfraSelectedResource) => {
       setSelected({ projectId, resource });
       setTab('metrics');
     },
@@ -402,6 +418,14 @@ export default function InfrastructurePage({
                 Add an explicit account, region, and service scope before Agent Hub polls AWS.
                 Nothing is collected automatically.
               </EmptyState>
+            )}
+            {/* First thing on the tab that reports on the fleet itself, and
+                above the configuration panel on purpose: an operator opening
+                this module wants to know whether anything is wrong, and every
+                other panel here answers a question about the pipeline rather
+                than about the machines. */}
+            {hasScope && (
+              <InfraFleetDashboard projectId={projectId} onSelectResource={handleSelectResource} />
             )}
             <InfraScopeEditor
               projectId={projectId}

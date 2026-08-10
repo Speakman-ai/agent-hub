@@ -20,6 +20,10 @@
 import { createHash } from 'crypto';
 import { getInfraDb } from './infra-db.js';
 import { INFRA_EMPTY_DIMENSIONS_HASH } from './infra-schema.js';
+// Type-only, and deliberately so: infra-metric-read imports this module for
+// `isValidCloudWatchPeriod`, and a value import back would close the cycle. The
+// type is erased, so nothing loads at runtime.
+import type { BucketAggregation } from './infra-metric-read.js';
 
 /** One CloudWatch datapoint, as the collector hands it to the write queue. */
 export interface InfraMetricPointInput {
@@ -522,6 +526,158 @@ function mapPointRow(r: InfraMetricPointDbRow): InfraMetricPointRow {
     tsMs: r.ts_ms,
     value: r.value,
   };
+}
+
+/** One sparkline point: a bucket reduced to the single value a tile draws. */
+export interface InfraSparklinePoint {
+  tsMs: number;
+  value: number;
+}
+
+/**
+ * One series read across many resources at once.
+ *
+ * `resourceKeys` is the batch. Everything else pins the series, and all four
+ * pins are mandatory here unlike {@link InfraMetricQuery} — a dashboard read
+ * has no legitimate use for the union across statistics, and getting one would
+ * silently blend `Average` and `Maximum` into a single line.
+ */
+export interface InfraSparklineQuery {
+  projectId: string;
+  resourceKeys: readonly string[];
+  namespace: string;
+  metricName: string;
+  stat: string;
+  startMs: number;
+  endMs: number;
+  bucketSeconds: number;
+  /** Newest buckets kept per resource. A tile is ~40px wide, not a chart. */
+  maxPointsPerResource: number;
+  /**
+   * Which aggregate each bucket collapses to, the caller's decision for the
+   * same reason `selectBucketValue` is: a `Maximum` series averaged into its
+   * buckets erases the spike that is the whole reason it was charted. Derive it
+   * from the series' statistic with `aggregationForStat`.
+   */
+  aggregate: BucketAggregation;
+}
+
+/**
+ * How many resources one batch read will bind at once.
+ *
+ * SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` is 32,766 on the versions
+ * better-sqlite3 ships, so this is nowhere near the engine limit; it is a
+ * response-size bound. A caller with more resources than this pages.
+ */
+export const MAX_SPARKLINE_RESOURCES = 200;
+
+/**
+ * Sparklines for one series across a batch of resources, oldest point first.
+ *
+ * This is the read the fleet dashboard exists on top of. The single-series
+ * readers above answer "one resource, one metric", so a dashboard built on them
+ * costs resources × metrics HTTP round trips and the same number of SQL scans;
+ * this collapses the metric dimension to one scan per series regardless of how
+ * many resources are on screen.
+ *
+ * Two subtleties, both of which are wrong answers if left implicit:
+ *
+ *   - **Period tiers are not blended.** The collector stores one metric at
+ *     several `period_s` tiers (60s within 15 days, 300s within 63, 3600s
+ *     beyond), and a bucket that folds a 60s point and a 300s point together
+ *     double-counts a counter and mis-weights a gauge. `period_s` is therefore
+ *     part of the GROUP BY, and the *finest* tier present in the window wins
+ *     per resource — chosen per resource rather than globally because a
+ *     resource that started reporting mid-window legitimately has a different
+ *     set of tiers than its neighbours.
+ *   - **Empty buckets stay absent.** No observation is not a measurement of
+ *     zero. A gap in a sparkline is a resource that stopped reporting, and
+ *     zero-filling it would draw that as a healthy floor.
+ *
+ * Resources with no points in the window are absent from the returned map
+ * rather than mapped to an empty array, so a caller can tell "asked and got
+ * nothing" from "did not ask".
+ */
+export function queryInfraSparklines(q: InfraSparklineQuery): Map<string, InfraSparklinePoint[]> {
+  const keys = Array.from(new Set(q.resourceKeys)).slice(0, MAX_SPARKLINE_RESOURCES);
+  const out = new Map<string, InfraSparklinePoint[]>();
+  if (keys.length === 0) return out;
+
+  const step = Math.max(1, Math.floor(q.bucketSeconds)) * 1000;
+  const maxPoints = Math.max(1, Math.floor(q.maxPointsPerResource));
+  const placeholders = keys.map(() => '?').join(', ');
+
+  // `CAST(? AS INTEGER)` for the same reason queryInfraMetricBuckets needs it:
+  // better-sqlite3 binds a JS number as a double, and float division puts every
+  // point back on its own timestamp, bucketing nothing.
+  const rows = getInfraDb()
+    .prepare(
+      `SELECT resource_key,
+              period_s,
+              (ts_ms / CAST(? AS INTEGER)) * CAST(? AS INTEGER) AS bucket_ts,
+              MIN(value) AS min_value,
+              MAX(value) AS max_value,
+              SUM(value) AS sum_value,
+              COUNT(*)   AS n
+         FROM infra_metric_points
+        WHERE project_id = ?
+          AND resource_key IN (${placeholders})
+          AND namespace = ?
+          AND metric_name = ?
+          AND stat = ?
+          AND ts_ms >= ?
+          AND ts_ms <= ?
+        GROUP BY resource_key, period_s, bucket_ts
+        ORDER BY resource_key ASC, period_s ASC, bucket_ts ASC`,
+    )
+    .all(
+      step,
+      step,
+      q.projectId,
+      ...keys,
+      q.namespace,
+      q.metricName,
+      q.stat,
+      Math.floor(q.startMs),
+      Math.floor(q.endMs),
+    ) as Array<{
+    resource_key: string;
+    period_s: number;
+    bucket_ts: number;
+    min_value: number;
+    max_value: number;
+    sum_value: number;
+    n: number;
+  }>;
+
+  const aggregate = q.aggregate;
+  const finestTier = new Map<string, number>();
+  for (const row of rows) {
+    const seen = finestTier.get(row.resource_key);
+    if (seen === undefined || row.period_s < seen) finestTier.set(row.resource_key, row.period_s);
+  }
+
+  for (const row of rows) {
+    if (row.period_s !== finestTier.get(row.resource_key)) continue;
+    const value =
+      aggregate === 'min'
+        ? row.min_value
+        : aggregate === 'max'
+          ? row.max_value
+          : aggregate === 'sum'
+            ? row.sum_value
+            : row.sum_value / row.n;
+    const series = out.get(row.resource_key);
+    if (series) series.push({ tsMs: row.bucket_ts, value });
+    else out.set(row.resource_key, [{ tsMs: row.bucket_ts, value }]);
+  }
+
+  // Trim from the old end: a tile that has to drop points should drop the ones
+  // furthest from now, not the ones describing the current state.
+  for (const [key, series] of out) {
+    if (series.length > maxPoints) out.set(key, series.slice(series.length - maxPoints));
+  }
+  return out;
 }
 
 /** Count of stored points for a project (retention + tests). */

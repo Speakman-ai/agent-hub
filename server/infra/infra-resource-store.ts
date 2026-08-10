@@ -49,6 +49,18 @@ export const MAX_INFRA_RESOURCE_SERIES = 200;
 export interface InfraResourceListQuery {
   projectId: string;
   service?: string;
+  /**
+   * Service tokens to drop from the result, applied after `service`.
+   *
+   * Exists for `quota`. Service Quotas rows are inventory in the schema's sense
+   * and not in an operator's: `kms/L-0…`, `logs/L-9…` and a dozen more per
+   * account describe a limit, not a thing that runs, and there are enough of
+   * them to bury the EC2 instances someone opened this browser to find. They
+   * already have a dedicated headroom panel. Excluding rather than special-
+   * casing `quota` here keeps the policy at the caller, where the "include
+   * them anyway" toggle also lives.
+   */
+  excludeServices?: readonly string[];
   region?: string;
   accountId?: string;
   /**
@@ -126,6 +138,11 @@ function buildFilterClauses(query: InfraResourceListQuery): {
   if (query.service) {
     clauses.push('r.service = ?');
     params.push(query.service);
+  }
+  if (query.excludeServices && query.excludeServices.length > 0) {
+    const placeholders = query.excludeServices.map(() => '?').join(', ');
+    clauses.push(`r.service NOT IN (${placeholders})`);
+    params.push(...query.excludeServices);
   }
   if (query.region) {
     clauses.push('r.region = ?');
