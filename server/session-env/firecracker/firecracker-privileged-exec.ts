@@ -276,12 +276,17 @@ export function buildVmmLaunchArgv(spec: VmmLaunchSpec): string[] {
 }
 
 /**
- * Long-lived VMM container: KVM + tun devices and NET_ADMIN only.
+ * Long-lived VMM container: KVM + tun devices, NET_ADMIN, and the caps the
+ * jailer needs to unshare/chroot — still not full `--privileged`.
  *
  * One-shot helpers (`ip`, disk prepare) still use {@link buildPrivilegedArgv}
  * because losetup/mount need broader capabilities. A VMM escape must not
- * inherit full `--privileged` host device access — see Firecracker prod host
- * setup and Docker runtime privilege docs.
+ * inherit every host device — see Firecracker prod host setup and Docker
+ * runtime privilege docs.
+ *
+ * Jailer defaults on and calls `unshare(CLONE_NEWNS)` before pivot_root; the
+ * default Docker seccomp profile blocks that, which surfaced as
+ * "Failed to unshare into new mount namespace: Operation not permitted".
  */
 export function buildVmmDockerArgv(
   cfg: FirecrackerExecConfig,
@@ -316,8 +321,14 @@ export function buildVmmDockerArgv(
     '/dev/net/tun',
     '--cap-add',
     'NET_ADMIN',
+    // Jailer mount-namespace + chroot (not granted by NET_ADMIN alone).
+    '--cap-add',
+    'SYS_ADMIN',
+    '--cap-add',
+    'SYS_CHROOT',
+    // Default seccomp denies unshare(CLONE_NEWNS); jailer cannot start without this.
     '--security-opt',
-    'no-new-privileges:true',
+    'seccomp=unconfined',
     ...mountFlags(cfg.mounts),
     '-w',
     '/',
