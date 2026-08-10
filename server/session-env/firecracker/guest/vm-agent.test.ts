@@ -382,15 +382,19 @@ describe('resolveWorkspaceUser', () => {
   });
 
   it('parses the user out of /etc/passwd otherwise', () => {
+    // Must not match os.userInfo().username — resolveWorkspaceUser short-circuits
+    // to the current process user when the names match (Finalize runners are
+    // literally named `runner`, so a fixture user of that name never hits
+    // the passwd path on CI).
     const passwd = [
       'root:x:0:0:root:/root:/bin/bash',
-      'runner:x:1000:1000::/home/runner:/bin/bash',
+      'fcguest:x:1000:1000::/home/fcguest:/bin/bash',
     ];
-    expect(resolveWorkspaceUser('runner', () => passwd.join('\n'))).toEqual({
+    expect(resolveWorkspaceUser('fcguest', () => passwd.join('\n'))).toEqual({
       uid: 1000,
       gid: 1000,
-      home: '/home/runner',
-      name: 'runner',
+      home: '/home/fcguest',
+      name: 'fcguest',
     });
   });
 
