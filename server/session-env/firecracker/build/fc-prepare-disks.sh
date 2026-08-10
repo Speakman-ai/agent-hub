@@ -25,6 +25,15 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f /usr/local/lib/agent-hub/fc-path-guard.sh ]]; then
+  # shellcheck disable=SC1091
+  source /usr/local/lib/agent-hub/fc-path-guard.sh
+elif [[ -f "${SCRIPT_DIR}/fc-path-guard.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/fc-path-guard.sh"
+fi
+
 BASE_ROOTFS=""
 ROOTFS_OUT=""
 WORKSPACE_OUT=""
@@ -53,6 +62,12 @@ for required in BASE_ROOTFS ROOTFS_OUT WORKSPACE_OUT WORKTREE; do
     exit 2
   fi
 done
+
+# Refuse agent-controlled paths outside the host's configured Firecracker roots.
+fc_assert_under_roots 'base-rootfs' "${BASE_ROOTFS}"
+fc_assert_under_roots 'rootfs-out' "${ROOTFS_OUT}"
+fc_assert_under_roots 'workspace-out' "${WORKSPACE_OUT}"
+fc_assert_under_roots 'worktree' "${WORKTREE}"
 
 [[ -f "${BASE_ROOTFS}" ]] || { echo "fc-prepare-disks: base rootfs not found: ${BASE_ROOTFS}" >&2; exit 1; }
 [[ -d "${WORKTREE}" ]] || { echo "fc-prepare-disks: worktree not found: ${WORKTREE}" >&2; exit 1; }

@@ -6,11 +6,16 @@
  * second, divergent tree. Chat turns must run inside the env via
  * {@link SessionEnv.spawn}, with Linux CLIs available in the guest (baked into
  * the rootfs and/or installed on first use) and host-absolute paths remapped.
+ *
+ * Runtime state (CLI HOME, bundled skills, prompts, git/gh guard shims) lives
+ * **outside** the git worktree under {@link GUEST_RUNTIME_ROOT} so `git add -A`
+ * cannot commit credentials or Hub scaffolding into the session branch.
  */
 
 import { spawnSync } from 'child_process';
 import { readdir, readFile, stat } from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { resolveDefaultSkillsDir } from '../config.js';
 import type { SessionEnv } from './session-env.js';
 import { FIRECRACKER_GUEST_WORKSPACE } from './firecracker/firecracker-vm-args.js';
@@ -41,9 +46,20 @@ export function hostCwdToWorktreeRelative(hostCwd: string, hostWorktree: string)
   return rel === '' ? '.' : rel.split(path.sep).join('/');
 }
 
-const GUEST_CLI_HOME_REL = '.agent-hub/cli-home';
-const GUEST_SKILLS_REL = '.agent-hub/bundled-skills';
-const GUEST_PROMPTS_REL = '.agent-hub/prompts';
+/**
+ * Absolute guest paths outside `/workspace` (the mounted git worktree).
+ * finalize-runner uses uid 1000 as `runner`.
+ */
+export const GUEST_RUNTIME_ROOT = '/home/runner/.agent-hub-runtime';
+export const GUEST_CLI_HOME = `${GUEST_RUNTIME_ROOT}/cli-home`;
+export const GUEST_SKILLS_ROOT = `${GUEST_RUNTIME_ROOT}/bundled-skills`;
+export const GUEST_PROMPTS_DIR = `${GUEST_RUNTIME_ROOT}/prompts`;
+export const GUEST_SPAWN_GUARDS_DIR = `${GUEST_RUNTIME_ROOT}/spawn-guards`;
+
+const HOST_SPAWN_GUARDS_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../finalize/spawn-guards',
+);
 
 /** Engine → guest install command (Linux). Used when the bin is missing. */
 export const GUEST_CLI_INSTALL_BY_ENGINE: Record<
@@ -77,6 +93,47 @@ export const GUEST_CLI_INSTALL_BY_ENGINE: Record<
   },
 };
 
+type GuestAbsWriter = {
+  writeGuestFile?(guestPath: string, contents: Buffer): Promise<void>;
+};
+
+async function writeAbsGuestFile(
+  env: SessionEnv,
+  absPath: string,
+  contents: Buffer | string,
+): Promise<void> {
+  const buf = typeof contents === 'string' ? Buffer.from(contents) : contents;
+  const writer = env as SessionEnv & GuestAbsWriter;
+  if (typeof writer.writeGuestFile === 'function') {
+    await writer.writeGuestFile(absPath, buf);
+    return;
+  }
+  // Fallback for adapters without an absolute write: base64 via shell.
+  const dir = path.posix.dirname(absPath);
+  const b64 = buf.toString('base64');
+  const result = await env.worktreeIo.exec(
+    `mkdir -p ${shellQuote(dir)} && printf '%s' ${shellQuote(b64)} | base64 -d > ${shellQuote(absPath)}`,
+    { cwd: '.', timeoutMs: 120_000 },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Failed to write guest file ${absPath}: ${result.stderr.trim() || result.stdout.trim()}`,
+    );
+  }
+}
+
+async function mkdirAbsGuest(env: SessionEnv, absPath: string): Promise<void> {
+  const result = await env.worktreeIo.exec(`mkdir -p ${shellQuote(absPath)}`, { cwd: '.' });
+  if (result.exitCode !== 0) {
+    throw new Error(`Failed to mkdir ${absPath}: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+}
+
+async function absExistsInGuest(env: SessionEnv, absPath: string): Promise<boolean> {
+  const result = await env.worktreeIo.exec(`test -e ${shellQuote(absPath)}`, { cwd: '.' });
+  return result.exitCode === 0;
+}
+
 /**
  * Remap host spawn env for a guest CLI turn: guest HOME, drop host-only
  * absolute paths that would confuse Linux guests. PATH is filled in by
@@ -96,7 +153,8 @@ export function adaptSpawnEnvForGuest(
     if (
       (key.endsWith('_FILE') || key.endsWith('_PATH') || key.endsWith('_DIR')) &&
       value.startsWith('/') &&
-      !value.startsWith(FIRECRACKER_GUEST_WORKSPACE)
+      !value.startsWith(FIRECRACKER_GUEST_WORKSPACE) &&
+      !value.startsWith(GUEST_RUNTIME_ROOT)
     ) {
       continue;
     }
@@ -105,20 +163,26 @@ export function adaptSpawnEnvForGuest(
 
   out.HOME = opts.guestHome;
   out.AGENT_HUB_SKILLS_DIR = path.posix.join(opts.guestSkillsRoot, 'agent-hub');
+  // Point guard shims at guest binaries (host AGENT_HUB_REAL_* paths are useless).
+  out.AGENT_HUB_REAL_GIT = '/usr/bin/git';
+  out.AGENT_HUB_REAL_GH = '/usr/bin/gh';
   return out;
 }
 
 /**
  * Same as {@link adaptSpawnEnvForGuest} but with concrete skill script PATH
- * entries discovered after staging.
+ * entries discovered after staging, plus spawn-guard shims first on PATH.
  */
 export function finalizeGuestSpawnEnv(
   base: Record<string, string>,
   skillScriptDirs: string[],
   guestHome: string,
+  opts: { spawnGuardsDir?: string } = {},
 ): Record<string, string> {
   const localBin = `${guestHome}/.local/bin`;
+  const guards = opts.spawnGuardsDir ?? GUEST_SPAWN_GUARDS_DIR;
   const pathParts = [
+    guards,
     localBin,
     ...skillScriptDirs,
     '/usr/local/sbin',
@@ -136,14 +200,14 @@ export async function writeGuestSystemPromptFile(
   sessionId: string,
   enrichedPrompt: string,
 ): Promise<{ guestPath: string; cleanup: () => Promise<void> }> {
-  const rel = `${GUEST_PROMPTS_REL}/${sessionId.slice(0, 8)}-${Date.now()}-system-prompt.md`;
-  await env.worktreeIo.writeFile(rel, enrichedPrompt);
-  const guestPath = path.posix.join(FIRECRACKER_GUEST_WORKSPACE, rel);
+  await mkdirAbsGuest(env, GUEST_PROMPTS_DIR);
+  const abs = `${GUEST_PROMPTS_DIR}/${sessionId.slice(0, 8)}-${Date.now()}-system-prompt.md`;
+  await writeAbsGuestFile(env, abs, enrichedPrompt);
   return {
-    guestPath,
+    guestPath: abs,
     cleanup: async () => {
       try {
-        await env.worktreeIo.exec(`rm -f ${shellQuote(rel)}`, { cwd: '.' });
+        await env.worktreeIo.exec(`rm -f ${shellQuote(abs)}`, { cwd: '.' });
       } catch {
         /* best-effort */
       }
@@ -152,6 +216,9 @@ export async function writeGuestSystemPromptFile(
 }
 
 async function pathExistsInGuest(env: SessionEnv, relOrCommand: string): Promise<boolean> {
+  if (relOrCommand.startsWith('/')) {
+    return absExistsInGuest(env, relOrCommand);
+  }
   if (relOrCommand.includes('/')) {
     return env.worktreeIo.exists(relOrCommand);
   }
@@ -219,17 +286,8 @@ export async function ensureGuestEngineCli(
   return found;
 }
 
-async function copyHostFileToGuest(
-  env: SessionEnv,
-  hostPath: string,
-  guestRel: string,
-): Promise<void> {
-  const buf = await readFile(hostPath);
-  await env.worktreeIo.writeFile(guestRel, buf);
-}
-
 /**
- * Stage a minimal CLI HOME under the guest worktree and sync small auth
+ * Stage a minimal CLI HOME outside the git worktree and sync small auth
  * caches from the host per-user HOME when present. API keys already ride in
  * the spawn env; this covers OAuth/device-auth files CLIs still read from disk.
  */
@@ -237,10 +295,9 @@ export async function stageGuestCliHome(
   env: SessionEnv,
   hostHome: string | undefined,
 ): Promise<string> {
-  await env.worktreeIo.exec(`mkdir -p ${shellQuote(GUEST_CLI_HOME_REL)}`, { cwd: '.' });
-  const guestHome = path.posix.join(FIRECRACKER_GUEST_WORKSPACE, GUEST_CLI_HOME_REL);
+  await mkdirAbsGuest(env, GUEST_CLI_HOME);
 
-  if (!hostHome) return guestHome;
+  if (!hostHome) return GUEST_CLI_HOME;
 
   const smallFiles = [
     ['.claude.json', '.claude.json'],
@@ -255,11 +312,9 @@ export async function stageGuestCliHome(
     try {
       const st = await stat(hostPath);
       if (!st.isFile() || st.size > 2_000_000) continue;
-      const guestRel = path.posix.join(GUEST_CLI_HOME_REL, guestRelTail);
-      await env.worktreeIo.exec(`mkdir -p ${shellQuote(path.posix.dirname(guestRel))}`, {
-        cwd: '.',
-      });
-      await copyHostFileToGuest(env, hostPath, guestRel);
+      const guestAbs = path.posix.join(GUEST_CLI_HOME, guestRelTail);
+      await mkdirAbsGuest(env, path.posix.dirname(guestAbs));
+      await writeAbsGuestFile(env, guestAbs, await readFile(hostPath));
     } catch {
       /* missing on host — fine */
     }
@@ -270,32 +325,28 @@ export async function stageGuestCliHome(
     const cred = path.join(hostHome, '.claude', '.credentials.json');
     const st = await stat(cred);
     if (st.isFile() && st.size <= 2_000_000) {
-      const guestRel = path.posix.join(GUEST_CLI_HOME_REL, '.claude', '.credentials.json');
-      await env.worktreeIo.exec(`mkdir -p ${shellQuote(path.posix.dirname(guestRel))}`, {
-        cwd: '.',
-      });
-      await copyHostFileToGuest(env, cred, guestRel);
+      const guestAbs = path.posix.join(GUEST_CLI_HOME, '.claude', '.credentials.json');
+      await mkdirAbsGuest(env, path.posix.dirname(guestAbs));
+      await writeAbsGuestFile(env, guestAbs, await readFile(cred));
     }
   } catch {
     /* optional */
   }
 
-  return guestHome;
+  return GUEST_CLI_HOME;
 }
 
 /**
- * Copy bundled default-skills into the guest worktree so skill wrappers resolve
- * on PATH inside the VM.
+ * Copy bundled default-skills outside the worktree so skill wrappers resolve
+ * on PATH inside the VM without polluting `git status`.
  */
 export async function stageGuestBundledSkills(env: SessionEnv): Promise<{
   guestSkillsRoot: string;
   skillScriptDirs: string[];
 }> {
-  const marker = path.posix.join(GUEST_SKILLS_REL, '.staged');
+  const marker = path.posix.join(GUEST_SKILLS_ROOT, '.staged');
   const defaultSkillsDir = resolveDefaultSkillsDir();
-  if (!(await env.worktreeIo.exists(marker))) {
-    // Tar on the host, write one archive into the guest, extract there.
-    // Skills tree is ~1MB — under the vsock write-file frame cap.
+  if (!(await absExistsInGuest(env, marker))) {
     const tar = spawnSync('tar', ['-C', defaultSkillsDir, '-czf', '-', '.'], {
       encoding: 'buffer',
       maxBuffer: 20 * 1024 * 1024,
@@ -307,12 +358,12 @@ export async function stageGuestBundledSkills(env: SessionEnv): Promise<{
         }`,
       );
     }
-    const archiveRel = `${GUEST_SKILLS_REL}.tar.gz`;
-    await env.worktreeIo.exec(`mkdir -p ${shellQuote(GUEST_SKILLS_REL)}`, { cwd: '.' });
-    await env.worktreeIo.writeFile(archiveRel, tar.stdout);
+    const archiveAbs = `${GUEST_SKILLS_ROOT}.tar.gz`;
+    await mkdirAbsGuest(env, GUEST_SKILLS_ROOT);
+    await writeAbsGuestFile(env, archiveAbs, tar.stdout);
     const extract = await env.worktreeIo.exec(
-      `tar -xzf ${shellQuote(archiveRel)} -C ${shellQuote(GUEST_SKILLS_REL)} && ` +
-        `rm -f ${shellQuote(archiveRel)} && touch ${shellQuote(marker)}`,
+      `tar -xzf ${shellQuote(archiveAbs)} -C ${shellQuote(GUEST_SKILLS_ROOT)} && ` +
+        `rm -f ${shellQuote(archiveAbs)} && touch ${shellQuote(marker)}`,
       { cwd: '.', timeoutMs: 120_000 },
     );
     if (extract.exitCode !== 0) {
@@ -324,13 +375,12 @@ export async function stageGuestBundledSkills(env: SessionEnv): Promise<{
     }
   }
 
-  const guestSkillsRoot = path.posix.join(FIRECRACKER_GUEST_WORKSPACE, GUEST_SKILLS_REL);
   const skillScriptDirs: string[] = [];
   let entries: string[] = [];
   try {
     entries = await readdir(defaultSkillsDir);
   } catch {
-    return { guestSkillsRoot, skillScriptDirs };
+    return { guestSkillsRoot: GUEST_SKILLS_ROOT, skillScriptDirs };
   }
   const agentFirst = ['agent-hub', ...entries.filter((n) => n !== 'agent-hub').sort()];
   for (const name of agentFirst) {
@@ -341,9 +391,50 @@ export async function stageGuestBundledSkills(env: SessionEnv): Promise<{
     } catch {
       continue;
     }
-    skillScriptDirs.push(path.posix.join(guestSkillsRoot, name, 'scripts'));
+    skillScriptDirs.push(path.posix.join(GUEST_SKILLS_ROOT, name, 'scripts'));
   }
-  return { guestSkillsRoot, skillScriptDirs };
+  return { guestSkillsRoot: GUEST_SKILLS_ROOT, skillScriptDirs };
+}
+
+/**
+ * Stage the same git/gh Finalize guard shims the host installs via PATH so a
+ * Firecracker agent cannot bypass one-session-one-branch / direct-ship gates.
+ */
+export async function stageGuestSpawnGuards(env: SessionEnv): Promise<string> {
+  const marker = path.posix.join(GUEST_SPAWN_GUARDS_DIR, '.staged');
+  if (await absExistsInGuest(env, marker)) return GUEST_SPAWN_GUARDS_DIR;
+
+  await mkdirAbsGuest(env, GUEST_SPAWN_GUARDS_DIR);
+  for (const name of ['git', 'gh', '_finalize-ship-gate.sh']) {
+    const hostPath = path.join(HOST_SPAWN_GUARDS_DIR, name);
+    const buf = await readFile(hostPath);
+    const guestAbs = path.posix.join(GUEST_SPAWN_GUARDS_DIR, name);
+    await writeAbsGuestFile(env, guestAbs, buf);
+    const mode = name.endsWith('.sh') ? '0644' : '0755';
+    await env.worktreeIo.exec(`chmod ${mode} ${shellQuote(guestAbs)}`, { cwd: '.' });
+  }
+  await env.worktreeIo.exec(`touch ${shellQuote(marker)}`, { cwd: '.' });
+  return GUEST_SPAWN_GUARDS_DIR;
+}
+
+/**
+ * Assert the guest worktree has no untracked Hub runtime pollution under
+ * `/workspace/.agent-hub` (defense in depth if an older path leaks back).
+ */
+export async function assertGuestWorktreeCleanOfRuntime(env: SessionEnv): Promise<void> {
+  const probe = await env.worktreeIo.exec(
+    `git -C ${shellQuote(FIRECRACKER_GUEST_WORKSPACE)} status --porcelain --untracked-files=all -- .agent-hub 2>/dev/null || true`,
+    { cwd: '.' },
+  );
+  const dirty = probe.stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (dirty.length > 0) {
+    throw new Error(
+      `Guest runtime leaked into the git worktree (.agent-hub):\n${dirty.slice(0, 20).join('\n')}`,
+    );
+  }
 }
 
 export async function prepareGuestCliTurn(opts: {
@@ -356,16 +447,20 @@ export async function prepareGuestCliTurn(opts: {
   guestHome: string;
   guestSkillsRoot: string;
   skillScriptDirs: string[];
+  spawnGuardsDir: string;
 }> {
-  const [guestHome, skills] = await Promise.all([
+  const [guestHome, skills, spawnGuardsDir] = await Promise.all([
     stageGuestCliHome(opts.env, opts.hostHome),
     stageGuestBundledSkills(opts.env),
+    stageGuestSpawnGuards(opts.env),
   ]);
   const guestBin = await ensureGuestEngineCli(opts.env, opts.engine, opts.hostBin);
+  await assertGuestWorktreeCleanOfRuntime(opts.env);
   return {
     guestBin,
     guestHome,
     guestSkillsRoot: skills.guestSkillsRoot,
     skillScriptDirs: skills.skillScriptDirs,
+    spawnGuardsDir,
   };
 }

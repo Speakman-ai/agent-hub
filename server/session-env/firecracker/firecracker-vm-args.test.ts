@@ -170,10 +170,12 @@ describe('argv builders', () => {
   it('enslaves the tap to the shared bridge and brings it up', () => {
     const plan = planVmNetwork(7);
     expect(buildCreateTapArgv(plan)).toEqual([
-      ['ip', 'tuntap', 'add', 'ahfct7', 'mode', 'tap'],
-      ['ip', 'link', 'set', 'ahfct7', 'master', FIRECRACKER_BRIDGE_NAME],
-      ['ip', 'link', 'set', 'ahfct7', 'up'],
+      ['/usr/local/lib/agent-hub/fc-netctl.sh', 'tap-create', 'ahfct7'],
     ]);
-    expect(buildDeleteTapArgv(plan)).toEqual(['ip', 'link', 'del', 'ahfct7']);
+    expect(buildDeleteTapArgv(plan)).toEqual([
+      '/usr/local/lib/agent-hub/fc-netctl.sh',
+      'tap-delete',
+      'ahfct7',
+    ]);
   });
 });
