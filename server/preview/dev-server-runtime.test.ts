@@ -195,6 +195,14 @@ class FakeSessionEnv implements SessionEnv {
     return this.proc && !this.proc.exited ? 1 : 0;
   }
 
+  async hasDetachedWorkload(): Promise<boolean> {
+    return false;
+  }
+
+  retainAfterFailedEnsure(): boolean {
+    return false;
+  }
+
   touch(): void {
     this.lastActivityAtMs++;
   }

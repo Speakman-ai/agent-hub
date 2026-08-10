@@ -121,7 +121,55 @@ describe('buildVmmLaunchArgv', () => {
       '/vms/ahvm-s1/api.sock',
     ]);
     expect(VMM_LAUNCH_SCRIPT).toContain('chown "$owner" "$sock"');
+    expect(VMM_LAUNCH_SCRIPT).toContain('bin=/usr/bin/firecracker');
     expect(VMM_LAUNCH_SCRIPT.trimEnd().endsWith('wait $vmm')).toBe(true);
+  });
+
+  it('pins jailer launches to mode=jailer and /usr/bin/firecracker', () => {
+    const argv = buildVmmLaunchArgv({
+      vmId: 'ahvm-s1',
+      cwd: '/vms/ahvm-s1',
+      argv: [
+        'jailer',
+        '--id',
+        'ahvm-s1',
+        '--exec-file',
+        'firecracker',
+        '--uid',
+        '1000',
+        '--gid',
+        '1000',
+        '--chroot-base-dir',
+        '/jail',
+        '--cgroup-version',
+        '2',
+        '--',
+        '--api-sock',
+        'api.sock',
+        '--config-file',
+        'vm-config.json',
+      ],
+      vsockPath: '/jail/firecracker/ahvm-s1/root/vsock.sock',
+      ownerUid: 1000,
+      ownerGid: 1000,
+    });
+    expect(argv[0]).toBe('/usr/local/lib/agent-hub/fc-launch-vmm.sh');
+    expect(argv[3]).toBe('jailer');
+    const execIdx = argv.indexOf('--exec-file');
+    expect(argv[execIdx + 1]).toBe('/usr/bin/firecracker');
+  });
+
+  it('refuses arbitrary executables through the launch helper', () => {
+    expect(() =>
+      buildVmmLaunchArgv({
+        vmId: 'ahvm-s1',
+        cwd: '/vms/ahvm-s1',
+        argv: ['/bin/sh', '-c', 'id'],
+        vsockPath: '/vms/ahvm-s1/vsock.sock',
+        ownerUid: 1000,
+        ownerGid: 1000,
+      }),
+    ).toThrow(/only firecracker\|jailer/);
   });
 
   it('leaves the argv alone when no ownership handoff is needed', () => {

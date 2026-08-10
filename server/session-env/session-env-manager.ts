@@ -46,6 +46,8 @@ export interface SessionEnvManagerDeps {
    * under container-IP routing never call this.
    */
   allocateHostPort?: (internalPort: number) => number | Promise<number>;
+  /** Companion to {@link allocateHostPort} — drop the reservation after Docker binds (or start fails). */
+  releaseHostPort?: (hostPort: number) => void;
   /**
    * Preview internal ports to declare before the first container start.
    * Under published-ports routing, a terminal-first openPty would otherwise
@@ -132,8 +134,12 @@ export class SessionEnvManager {
     this.entries.set(sessionId, entry);
     entry.promise = this.#create(sessionId, entry);
     entry.promise.catch(() => {
-      // A failed creation must not wedge the session — allow a retry.
-      if (this.entries.get(sessionId) === entry) this.entries.delete(sessionId);
+      // A failed creation must not wedge the session when nothing was started.
+      // If an env object exists and is still live, retain it — Firecracker may
+      // have left taps/slots/VMM ownership after a failed boot teardown.
+      if (this.entries.get(sessionId) !== entry) return;
+      if (entry.env && !entry.env.disposed && entry.env.retainAfterFailedEnsure()) return;
+      this.entries.delete(sessionId);
     });
     return entry.promise;
   }
@@ -167,6 +173,7 @@ export class SessionEnvManager {
     const publishPorts = this.deps.resolvePublishPorts?.(sessionId) ?? null;
     const sysboxDeps = {
       ...(this.deps.allocateHostPort ? { allocateHostPort: this.deps.allocateHostPort } : {}),
+      ...(this.deps.releaseHostPort ? { releaseHostPort: this.deps.releaseHostPort } : {}),
       ...(publishPorts && publishPorts.length > 0 ? { publishPorts } : {}),
     };
     const hostDeps = this.deps.allocateHostPort
@@ -261,6 +268,19 @@ export class SessionEnvManager {
       if (!env || env.disposed) continue;
       if (env.liveProcessCount() > 0) continue;
       if (nowMs - env.lastActivityAtMs < this.idleTtlMs) continue;
+      let detached = false;
+      try {
+        detached = await env.hasDetachedWorkload();
+      } catch (err) {
+        // Fail closed: a probe error must not delete a live guest/container.
+        this.logger.warn(
+          `[session-env] ${sessionId}: workload probe failed (skipping reap): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        continue;
+      }
+      if (detached) continue;
       this.logger.log(`[session-env] ${sessionId}: reaping idle environment`);
       await this.dispose(sessionId);
       reaped++;

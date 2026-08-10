@@ -106,6 +106,10 @@ import {
 } from './session-env/firecracker/register-firecracker-backend.js';
 import { SessionEnvManager } from './session-env/session-env-manager.js';
 import { worktreeSharingForKind } from './session-env/session-env.js';
+import {
+  allocateEphemeralHostPort,
+  releaseEphemeralHostPort,
+} from './session-env/ephemeral-host-port.js';
 import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
 import { setSessionWorktreeIoResolver } from './session-worktree-io.js';
 import {
@@ -1220,24 +1224,11 @@ const sessionEnvManager = new SessionEnvManager({
   // Published-ports adapters need unique host ports per session; identity
   // mapping (internal===host) collides when two sessions share port 5173.
   allocateHostPort: () => allocateEphemeralHostPort(),
+  releaseHostPort: (hostPort) => releaseEphemeralHostPort(hostPort),
 });
 
-/** Bind briefly to claim a free host port for published-ports SessionEnvs. */
-function allocateEphemeralHostPort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      const port = typeof addr === 'object' && addr ? addr.port : 0;
-      server.close((err) => {
-        if (err) reject(err);
-        else if (port <= 0) reject(new Error('Failed to allocate ephemeral host port'));
-        else resolve(port);
-      });
-    });
-    server.on('error', reject);
-  });
-}
+// allocateEphemeralHostPort / releaseEphemeralHostPort live in
+// session-env/ephemeral-host-port.ts (in-process reservation until Docker binds).
 
 /**
  * Read/write access to a session's worktree, wherever it lives.

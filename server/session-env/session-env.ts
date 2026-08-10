@@ -295,6 +295,19 @@ export interface SessionEnv {
   // ── Lifecycle / reap hooks ─────────────────────────────────────
   /** Processes + PTYs currently alive inside the env. */
   liveProcessCount(): number;
+  /**
+   * True when the env hosts workloads that {@link liveProcessCount} cannot
+   * see (guest daemons, container services with no Hub exec/PTY handle).
+   * The idle reaper must not destroy the env when this returns true.
+   * Fail closed (return true) when the probe cannot run.
+   */
+  hasDetachedWorkload(): Promise<boolean>;
+  /**
+   * True when a failed {@link SessionEnvManager.ensure} must keep this entry
+   * so a replacement cannot race live resources (e.g. Firecracker boot
+   * failed and teardown did not complete). Default false.
+   */
+  retainAfterFailedEnsure(): boolean;
   /** Bump {@link lastActivityAtMs} (e.g. on proxy traffic). */
   touch(): void;
   /** Register a hook fired exactly once when disposal completes. */

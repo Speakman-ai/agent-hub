@@ -325,6 +325,12 @@ export class FirecrackerSessionEnv implements SessionEnv {
   #lastActivityAtMs: number;
   #startPromise: Promise<void> | null = null;
   #started = false;
+  /**
+   * Set when boot fails and {@link #teardownVm} also fails. Retries of
+   * ensureStarted must not spawn a second VMM against the same resources;
+   * dispose is the only recovery path.
+   */
+  #teardownIncomplete = false;
   #network: VmNetworkPlan | null = null;
   #vmProcess: VmmHandle | null = null;
 
@@ -439,8 +445,27 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
 
   liveProcessCount(): number {
-    // Count guest processes only — a started-but-idle VM must remain reaped.
+    // Count guest processes only — a started-but-idle VM must remain reaped
+    // unless {@link hasDetachedWorkload} reports listening services.
     return this.live.size;
+  }
+
+  async hasDetachedWorkload(): Promise<boolean> {
+    if (!this.#started) return false;
+    try {
+      const stream = await this.#open({ kind: 'list-ports' });
+      const reply = await awaitReply(stream, 5_000);
+      this.touch();
+      if (reply.kind !== 'ports') return true;
+      return reply.ports.length > 0;
+    } catch {
+      // Fail closed: an unreachable guest must not be deleted mid-workload.
+      return true;
+    }
+  }
+
+  retainAfterFailedEnsure(): boolean {
+    return this.#teardownIncomplete;
   }
 
   onDispose(cb: () => void): () => void {
@@ -452,11 +477,22 @@ export class FirecrackerSessionEnv implements SessionEnv {
 
   ensureStarted(): Promise<void> {
     this.#assertLive('ensureStarted');
+    if (this.#teardownIncomplete) {
+      return Promise.reject(
+        new Error(
+          `Firecracker session ${this.sessionId} has incomplete teardown after a failed boot; ` +
+            `dispose the environment before retrying`,
+        ),
+      );
+    }
     if (this.#startPromise) return this.#startPromise;
     const starting = this.#doStart();
     this.#startPromise = starting;
     starting.catch(() => {
-      // A failed boot must not wedge the env; allow a retry.
+      // A failed boot must not wedge the env when teardown completed; allow a
+      // retry. Incomplete teardown keeps the rejected promise so ensure()
+      // cannot spawn a replacement against live taps/slots.
+      if (this.#teardownIncomplete) return;
       if (this.#startPromise === starting) this.#startPromise = null;
     });
     return starting;
@@ -540,8 +576,9 @@ export class FirecrackerSessionEnv implements SessionEnv {
       let configPath: string;
       let argv: string[];
       if (this.useJailer) {
-        // Stage kernel/disks into the jail and pass jailed-relative paths —
-        // Firecracker cannot open host-absolute paths after pivot_root.
+        // Stage kernel/disks/config into the jail via the privileged helper —
+        // Firecracker cannot open host-absolute paths after pivot_root, and the
+        // Hub user cannot write into a root-owned chroot (EACCES).
         const stage = planJailerStage({
           chrootBaseDir: this.jailerBase,
           vmId: this.vmId,
@@ -549,7 +586,6 @@ export class FirecrackerSessionEnv implements SessionEnv {
           rootfsPath: disks.rootfsPath,
           workspacePath: disks.workspacePath,
         });
-        await this.#stageJailerResources(stage);
         const config = buildFirecrackerVmConfig({
           network,
           kernelPath: JAILER_STAGED_KERNEL,
@@ -561,12 +597,9 @@ export class FirecrackerSessionEnv implements SessionEnv {
           nameservers,
           bootArgsExtra,
         });
-        await this.io.writeFile(
-          `${stage.chrootRoot}/${JAILER_STAGED_CONFIG}`,
-          JSON.stringify(config, null, 2),
-        );
-        // Keep a host-side copy for operators debugging a failed boot.
-        await this.io.writeFile(`${this.vmDir}/vm-config.json`, JSON.stringify(config, null, 2));
+        const configSrc = `${this.vmDir}/vm-config.json`;
+        await this.io.writeFile(configSrc, JSON.stringify(config, null, 2));
+        await this.#stageJailerResources(stage, configSrc);
         apiSockPath = stage.apiSockPath;
         configPath = stage.configPath;
         // Jailer without `--cgroup`: the docker VMM helper intentionally is not
@@ -633,8 +666,19 @@ export class FirecrackerSessionEnv implements SessionEnv {
       this.touch();
     } catch (err) {
       // A half-booted VM would hold a slot and a tap while never serving a
-      // request; unwind everything before surfacing the failure.
-      await this.#teardownVm().catch(() => undefined);
+      // request; unwind everything before surfacing the failure. Do not
+      // swallow teardown errors — that orphans taps/slots/VMM ownership.
+      try {
+        await this.#teardownVm();
+      } catch (teardownErr) {
+        this.#teardownIncomplete = true;
+        const bootMsg = err instanceof Error ? err.message : String(err);
+        const tdMsg = teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+        throw new Error(
+          `Firecracker boot failed (${bootMsg}); teardown also failed (${tdMsg}). ` +
+            `Session env retains resource ownership until dispose succeeds.`,
+        );
+      }
       throw err;
     }
   }
@@ -998,6 +1042,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
       await this.#teardownVm();
 
       this.settledMappings.clear();
+      this.#teardownIncomplete = false;
       for (const hook of this.disposeHooks) {
         try {
           hook();
@@ -1070,7 +1115,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
     }
   }
 
-  async #stageJailerResources(stage: JailerStagePlan): Promise<void> {
+  async #stageJailerResources(stage: JailerStagePlan, configSrc: string): Promise<void> {
     const helper = resolveFcJailManageHelper();
     const kernel = stage.links.find((l) => l.jailName === JAILER_STAGED_KERNEL)?.hostPath;
     const rootfs = stage.links.find((l) => l.jailName === JAILER_STAGED_ROOTFS)?.hostPath;
@@ -1078,7 +1123,17 @@ export class FirecrackerSessionEnv implements SessionEnv {
     if (!kernel || !rootfs || !workspace) {
       throw new Error('Jailer stage plan missing kernel/rootfs/workspace host paths');
     }
-    const res = await this.io.run([helper, 'stage', stage.chrootRoot, kernel, rootfs, workspace]);
+    const res = await this.io.run([
+      helper,
+      'stage',
+      stage.chrootRoot,
+      kernel,
+      rootfs,
+      workspace,
+      String(this.jailerUid),
+      String(this.jailerGid),
+      configSrc,
+    ]);
     if (!res.ok) {
       throw new Error(
         `Failed to stage jailer resources into ${stage.chrootRoot}: ${

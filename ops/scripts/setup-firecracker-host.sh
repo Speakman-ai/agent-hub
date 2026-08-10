@@ -283,7 +283,6 @@ ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/ip, /sbin/ip, /usr/bin/ip
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/modprobe, /sbin/modprobe
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/sysctl, /sbin/sysctl
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/iptables, /sbin/iptables, /usr/sbin/iptables-nft, /usr/sbin/xtables-nft-multi
-${HUB_USER} ALL=(root) NOPASSWD: /usr/bin/firecracker, /usr/bin/jailer
 SUDOERS
   chmod 0440 /etc/sudoers.d/agent-hub-firecracker
   visudo -cf /etc/sudoers.d/agent-hub-firecracker >/dev/null

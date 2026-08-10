@@ -274,7 +274,12 @@ describe('FirecrackerSessionEnv start', () => {
     const apiIdx = spawned[0].args.indexOf('--api-sock');
     expect(spawned[0].args[apiIdx + 1]).toBe('api.sock');
     expect(runs.some((a) => a[0].endsWith('fc-jail-manage.sh') && a[1] === 'clean')).toBe(true);
-    expect(runs.some((a) => a[0].endsWith('fc-jail-manage.sh') && a[1] === 'stage')).toBe(true);
+    const stage = runs.find((a) => a[0].endsWith('fc-jail-manage.sh') && a[1] === 'stage');
+    expect(stage).toBeTruthy();
+    // stage <root> <kernel> <rootfs> <workspace> <uid> <gid> <configSrc>
+    expect(stage![6]).toBe('1001');
+    expect(stage![7]).toBe('1001');
+    expect(stage![8]).toMatch(/vm-config\.json$/);
   });
 
   it('can opt out of the jailer for debugging', async () => {
