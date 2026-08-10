@@ -152,6 +152,11 @@ describe('argv builders', () => {
     expect(argv.slice(0, sep)).toContain('--netns');
     expect(argv.slice(0, sep)).toContain('memory.max=6442450944');
     expect(argv.slice(0, sep)).toContain('1000');
+    // memory.max is cgroup v2; jailer's implicit default is v1 and fails on
+    // unified-hierarchy hosts with "No hierarchy found for this cgroup version".
+    const verIdx = argv.indexOf('--cgroup-version');
+    expect(verIdx).toBeGreaterThan(-1);
+    expect(argv[verIdx + 1]).toBe('2');
   });
 
   it('sanitizes a session id into a jailer-safe vm id', () => {
