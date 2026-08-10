@@ -9,9 +9,10 @@ import {
   SysboxSessionEnv,
   SysboxSessionEnvDeps,
   isSysboxBaselineComm,
+  isSysboxDetachedWorkloadLine,
 } from './sysbox-session-env.js';
 
-describe('isSysboxBaselineComm', () => {
+describe('isSysboxBaselineComm / isSysboxDetachedWorkloadLine', () => {
   it('treats dockerd/containerd as idle baseline but not bash/sleep workers', () => {
     expect(isSysboxBaselineComm('dockerd')).toBe(true);
     expect(isSysboxBaselineComm('containerd')).toBe(true);
@@ -19,6 +20,13 @@ describe('isSysboxBaselineComm', () => {
     expect(isSysboxBaselineComm('bash')).toBe(false);
     expect(isSysboxBaselineComm('node')).toBe(false);
     expect(isSysboxBaselineComm('postgres')).toBe(false);
+  });
+
+  it('ignores entrypoint PID 1 sleep but counts user sleep jobs', () => {
+    expect(isSysboxDetachedWorkloadLine('1 sleep')).toBe(false);
+    expect(isSysboxDetachedWorkloadLine('42 sleep')).toBe(true);
+    expect(isSysboxDetachedWorkloadLine('7 bash')).toBe(true);
+    expect(isSysboxDetachedWorkloadLine('9 dockerd')).toBe(false);
   });
 });
 

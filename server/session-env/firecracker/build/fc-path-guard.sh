@@ -132,6 +132,26 @@ fc_assert_under_roots() {
   exit 2
 }
 
+# Reject any symlink in the path components (closes Hub-writable symlink
+# retargets for inputs that will be opened as root).
+fc_assert_no_symlink_components() {
+  local label=$1 path=$2
+  fc_assert_safe_abs_path "$label" "$path"
+  local cur="" part
+  local IFS='/'
+  # shellcheck disable=SC2086
+  set -- ${path#/}
+  for part in "$@"; do
+    [[ -n "$part" ]] || continue
+    cur="${cur}/${part}"
+    if [[ -L "$cur" ]]; then
+      echo "fc-path-guard: $label contains symlink component: $cur" >&2
+      exit 2
+    fi
+  done
+}
+
+
 # Writable disk/jail outputs must live under RUN_DIR / JAILER_DIR / ARTIFACT_DIR
 # — never under a Hub-writable worktree (symlink escape surface).
 fc_assert_output_under_roots() {
@@ -141,6 +161,7 @@ fc_assert_output_under_roots() {
 fc_assert_worktree_under_roots() {
   fc_assert_under_roots "$1" "$2" WORKTREE_ROOTS
 }
+
 
 # Validate every absolute-path token in "$@". Exact pinned VMM binaries are
 # exempt (required for jailer --exec-file /usr/bin/firecracker).

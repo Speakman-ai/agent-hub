@@ -245,9 +245,18 @@ export interface FirecrackerPaths {
   kernelPath: string;
   /** Read-only base rootfs; each VM boots a copy-on-write clone. */
   baseRootfsPath: string;
-  /** Per-VM scratch (config, sockets, disks) lives under here. */
+  /**
+   * Root-owned per-VM disk scratch (`$runDir/<vmId>/*.ext4`). Must not be
+   * writable by the Hub account — the prepare-disks helper constructs paths
+   * here so an unprivileged symlink swap cannot retarget truncate/mkfs.
+   */
   runDir: string;
-  /** Jailer chroot base, when the jailer is used. */
+  /**
+   * Hub-writable control plane (`$controlDir/<vmId>/`): vm-config, pid,
+   * identity, logs, and (non-jailer) vsock/api sockets.
+   */
+  controlDir: string;
+  /** Jailer chroot base, when the jailer is used. Root-owned. */
   jailerChrootBase?: string;
   /** Privileged helper that clones the rootfs and seeds the workspace disk. */
   diskHelper?: string;
@@ -289,6 +298,7 @@ export interface FirecrackerSessionEnvDeps {
     worktreePath: string;
     paths: FirecrackerPaths;
     workspaceSizeMib: number;
+    vmId?: string;
   }) => Promise<PreparedDisks>;
   clock?: SessionEnvClock;
   readyTimeoutMs?: number;
@@ -407,6 +417,12 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
 
   private get vmDir(): string {
+    // Hub-writable control plane (config/pid/sockets). Disk images live under
+    // {@link diskDir} and are created only by the root prepare-disks helper.
+    return `${this.paths.controlDir}/${this.vmId}`;
+  }
+
+  private get diskDir(): string {
     return `${this.paths.runDir}/${this.vmId}`;
   }
   private get jailerBase(): string {
@@ -460,19 +476,18 @@ export class FirecrackerSessionEnv implements SessionEnv {
       if (reply.ports.length > 0) return true;
 
       // Listening ports miss queue workers / compute jobs with no socket.
-      // Inventory workspace-user processes and treat any non-baseline as busy.
+      // Inventory workspace-user processes, excluding this probe's own shell
+      // and its children (ps/awk) so an idle guest is not kept forever.
       const uid = 1000;
       const probe = await this.#execCapture(
-        `ps -eo uid=,comm= --no-headers 2>/dev/null | awk -v u=${uid} '$1==u {print $2}'`,
+        `ps -eo pid=,ppid=,uid=,comm= --no-headers 2>/dev/null | awk -v u=${uid} -v self=$$ '$1==self || $2==self { next } $3==u { print $4 }'`,
         { cwd: '/', timeoutMs: 5_000, maxOutputBytes: 64 * 1024 },
       );
       if (probe.exitCode !== 0) return true;
-      const baseline = new Set(['ps', 'awk']);
       const procs = probe.stdout
         .split('\n')
         .map((l) => l.trim())
-        .filter(Boolean)
-        .filter((comm) => !baseline.has(comm));
+        .filter(Boolean);
       return procs.length > 0;
     } catch {
       // Fail closed: an unreachable guest must not be deleted mid-workload.
@@ -540,9 +555,9 @@ export class FirecrackerSessionEnv implements SessionEnv {
 
     try {
       await this.io.mkdirp(this.vmDir);
-      if (this.useJailer) {
-        await this.io.mkdirp(this.jailerBase);
-      }
+      // Jailer base is root-owned; the stage helper creates the per-VM tree.
+      // Do not mkdir it as the Hub — that would require Hub write on a
+      // directory Firecracker requires to stay non-writable by unprivileged users.
       // A previous VMM for this vm id may still hold api.sock / vsock.sock or
       // the tap even though this process is gone — stop and confirm exit
       // before unlinking or rewriting disks / jail trees. Fail closed: a stop
@@ -583,6 +598,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
         worktreePath: this.worktreePath,
         paths: this.paths,
         workspaceSizeMib: this.workspaceSizeMib,
+        vmId: this.vmId,
       });
 
       const nameservers = await this.resolveNameservers();
@@ -1123,6 +1139,16 @@ export class FirecrackerSessionEnv implements SessionEnv {
         `SessionEnv[${this.sessionId}] failed to remove ${this.vmDir}: ${String(err)}`,
       );
     });
+    // Disk images live under the root-owned runDir — remove via the helper.
+    const helper = this.paths.diskHelper ?? DEFAULT_DISK_HELPER;
+    const cleaned = await this.io.run([helper, 'clean', '--vm-id', this.vmId]);
+    if (!cleaned.ok) {
+      this.logger.warn(
+        `SessionEnv[${this.sessionId}] failed to clean disk dir ${this.diskDir}: ${
+          cleaned.stderr.trim() || cleaned.stdout.trim()
+        }`,
+      );
+    }
   }
 
   async #cleanJailerTree(): Promise<void> {
@@ -1232,19 +1258,19 @@ export async function defaultPrepareDisks(
     worktreePath: string;
     paths: FirecrackerPaths;
     workspaceSizeMib: number;
+    vmId?: string;
   } & TranslationRoots,
 ): Promise<PreparedDisks> {
   const helper = ctx.paths.diskHelper ?? DEFAULT_DISK_HELPER;
-  const rootfsPath = `${ctx.vmDir}/rootfs.ext4`;
-  const workspacePath = `${ctx.vmDir}/workspace.ext4`;
+  const vmId = ctx.vmId ?? sessionVmId(ctx.sessionId);
+  const rootfsPath = `${ctx.paths.runDir}/${vmId}/rootfs.ext4`;
+  const workspacePath = `${ctx.paths.runDir}/${vmId}/workspace.ext4`;
   const res = await io.run([
     helper,
+    '--vm-id',
+    vmId,
     '--base-rootfs',
     ctx.paths.baseRootfsPath,
-    '--rootfs-out',
-    rootfsPath,
-    '--workspace-out',
-    workspacePath,
     '--workspace-size-mib',
     String(ctx.workspaceSizeMib),
     '--worktree',

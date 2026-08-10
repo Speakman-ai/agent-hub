@@ -599,6 +599,7 @@ export function resolveHelperMounts(
   const mounts: FirecrackerMount[] = [
     { path: dirOf(paths.kernelPath) },
     { path: paths.runDir },
+    { path: paths.controlDir },
     { path: env.AGENT_HUB_FIRECRACKER_BIN?.trim() || '/usr/bin/firecracker', readOnly: true },
     { path: env.AGENT_HUB_JAILER_BIN?.trim() || '/usr/bin/jailer', readOnly: true },
     { path: launchHelper, readOnly: true },
