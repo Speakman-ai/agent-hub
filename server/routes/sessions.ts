@@ -2302,6 +2302,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     // `https://agenthub.example.com`; the proxy uses its origin
     // (scheme + host) and falls back to 'self' when unset.
     parentPublicUrl: config.publicUrl,
+    onProxyActivity: (sessionId) => deps.touchSessionEnv?.(sessionId),
   });
   router.all('/api/sessions/:sessionId/preview/proxy', requireRole('User'), previewProxyHandler);
   router.all('/api/sessions/:sessionId/preview/proxy/*', requireRole('User'), previewProxyHandler);

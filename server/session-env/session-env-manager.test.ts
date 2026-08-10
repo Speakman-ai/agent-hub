@@ -270,20 +270,20 @@ describe('SessionEnvManager teardown', () => {
     expect(created[0].disposeCalls).toBe(1);
   });
 
-  it('builds a replacement even when the teardown failed', async () => {
-    // The name is probably free anyway, and refusing would leave the session
-    // with no environment at all.
+  it('retains ownership when dispose fails so ensure cannot replace a live env', async () => {
+    // Firecracker (and any fail-closed adapter) must keep the map entry when
+    // stop fails — otherwise a second env can target the same taps/disks.
     const { manager, created } = makeManager();
     await manager.ensure('s1');
     created[0].dispose = async () => {
       throw new Error('docker rm failed');
     };
 
-    await manager.dispose('s1');
-    expect(manager.listSessions()).toEqual([]);
+    await expect(manager.dispose('s1')).rejects.toThrow(/docker rm failed/);
+    expect(manager.listSessions()).toEqual(['s1']);
     const next = await manager.ensure('s1');
-    expect(created).toHaveLength(2);
-    expect(next).toBe(created[1] as unknown as SessionEnv);
+    expect(created).toHaveLength(1);
+    expect(next).toBe(created[0] as unknown as SessionEnv);
   });
 
   it('disposes every env on shutdown', async () => {

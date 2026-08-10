@@ -48,6 +48,12 @@ export type PreviewProxyDeps = {
    * path-prefix deployment.
    */
   parentPublicUrl?: string | null;
+  /**
+   * Called when a preview HTTP request is accepted for proxying. Keeps the
+   * session environment's idle clock alive while a browser is actively using
+   * the preview (daemonized DBs alone are not Hub-tracked handles).
+   */
+  onProxyActivity?: (sessionId: string) => void;
 };
 
 const HOP_BY_HOP = new Set([
@@ -483,6 +489,11 @@ export function createPreviewProxyHandler(deps: PreviewProxyDeps): RequestHandle
     if (port == null) {
       res.status(503).send('No active preview for this session');
       return;
+    }
+    try {
+      deps.onProxyActivity?.(sessionId);
+    } catch {
+      // Idle-clock bumps must not break the preview response.
     }
     proxyHttp(
       req,

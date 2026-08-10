@@ -1233,7 +1233,27 @@ const sessionEnvManager = new SessionEnvManager({
     if (!parsed.ok) return [DEFAULT_DEV_SERVER_PORT_ENTRY.internalPort];
     return resolveDevServerPortEntries(parsed.value).map((e) => e.internalPort);
   },
+  // Published-ports adapters need unique host ports per session; identity
+  // mapping (internal===host) collides when two sessions share port 5173.
+  allocateHostPort: () => allocateEphemeralHostPort(),
 });
+
+/** Bind briefly to claim a free host port for published-ports SessionEnvs. */
+function allocateEphemeralHostPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      server.close((err) => {
+        if (err) reject(err);
+        else if (port <= 0) reject(new Error('Failed to allocate ephemeral host port'));
+        else resolve(port);
+      });
+    });
+    server.on('error', reject);
+  });
+}
 
 /**
  * Read/write access to a session's worktree, wherever it lives.
@@ -1610,6 +1630,9 @@ export const routeDeps: RouteDeps = {
   restoreAutonomousCrons,
   scheduleAll,
   getDevServerRuntime: () => devServerRuntime,
+  touchSessionEnv: (sessionId) => {
+    sessionEnvManager.get(sessionId)?.touch();
+  },
   getBackgroundShellRuntime: () => backgroundShellRuntime,
   getBackgroundShellWatcher: () => backgroundShellWatcher,
   disposeSessionEnv: (sessionId: string) => sessionEnvManager.dispose(sessionId),

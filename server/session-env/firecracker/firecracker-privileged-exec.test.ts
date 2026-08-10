@@ -100,9 +100,10 @@ describe('buildVmmDockerArgv', () => {
 });
 
 describe('buildVmmLaunchArgv', () => {
-  it('hands the vsock socket to the Hub uid once firecracker creates it', () => {
+  it('hands the vsock socket to the Hub uid via the narrow launch helper', () => {
     // The VMM runs as root in both exec modes, so the Hub — which is not root —
     // cannot connect to the socket it just asked for unless ownership moves.
+    // Must not use `sudo sh -c` — sudoers only authorizes fc-launch-vmm.sh.
     const argv = buildVmmLaunchArgv({
       vmId: 'ahvm-s1',
       cwd: '/vms/ahvm-s1',
@@ -111,10 +112,8 @@ describe('buildVmmLaunchArgv', () => {
       ownerUid: 1000,
       ownerGid: 1000,
     });
-    // Positional, never interpolated: no value can be parsed as shell.
-    expect(argv.slice(0, 3)).toEqual(['sh', '-c', VMM_LAUNCH_SCRIPT]);
-    expect(argv.slice(3)).toEqual([
-      'sh',
+    expect(argv).toEqual([
+      '/usr/local/lib/agent-hub/fc-launch-vmm.sh',
       '/vms/ahvm-s1/vsock.sock',
       '1000:1000',
       'firecracker',
@@ -122,7 +121,6 @@ describe('buildVmmLaunchArgv', () => {
       '/vms/ahvm-s1/api.sock',
     ]);
     expect(VMM_LAUNCH_SCRIPT).toContain('chown "$owner" "$sock"');
-    // The container must live as long as the VMM, not as long as the chown.
     expect(VMM_LAUNCH_SCRIPT.trimEnd().endsWith('wait $vmm')).toBe(true);
   });
 

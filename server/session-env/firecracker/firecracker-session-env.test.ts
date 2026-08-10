@@ -208,6 +208,7 @@ function makeEnv(overrides: Record<string, unknown> = {}) {
       kernelPath: '/var/lib/agent-hub/fc/vmlinux',
       baseRootfsPath: '/var/lib/agent-hub/fc/rootfs.ext4',
       runDir: '/run/agent-hub/vms',
+      jailerChrootBase: '/srv/jailer',
     },
     io,
     slotsOverride: undefined,
@@ -258,14 +259,22 @@ describe('FirecrackerSessionEnv start', () => {
       identityFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.identity.json',
     });
     expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/api.sock');
-    expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/vsock.sock');
+    // Jailer creates the vsock inside the chroot; leftovers are cleared there.
+    expect(removed).toContain('/srv/jailer/firecracker/ahvm-sess-1/root/vsock.sock');
   });
 
   it('boots under the jailer by default', async () => {
-    const { env, spawned } = makeEnv({ jailerUid: 1001, jailerGid: 1001 });
+    const { env, spawned, runs } = makeEnv({ jailerUid: 1001, jailerGid: 1001 });
     await env.ensureStarted();
     expect(spawned[0].file).toBe('jailer');
     expect(spawned[0].args).toContain('--chroot-base-dir');
+    // Relative to the jail root after pivot_root — not host-absolute paths.
+    const configIdx = spawned[0].args.indexOf('--config-file');
+    expect(spawned[0].args[configIdx + 1]).toBe('vm-config.json');
+    const apiIdx = spawned[0].args.indexOf('--api-sock');
+    expect(spawned[0].args[apiIdx + 1]).toBe('api.sock');
+    expect(runs.some((a) => a[0].endsWith('fc-jail-manage.sh') && a[1] === 'clean')).toBe(true);
+    expect(runs.some((a) => a[0].endsWith('fc-jail-manage.sh') && a[1] === 'stage')).toBe(true);
   });
 
   it('can opt out of the jailer for debugging', async () => {

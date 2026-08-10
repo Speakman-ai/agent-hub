@@ -81,20 +81,21 @@ export function registerFirecrackerBackend(defaults: FirecrackerBackendDefaults)
 /**
  * Whether the VMM should run under the jailer.
  *
- * Defaults on for `local` exec (host paths the setup script prepares). Defaults
- * off for `docker` until config/disks/vsock are staged into the jailer chroot
- * — without that, Firecracker exits immediately and the Hub waits forever on a
- * host vsock that never appears. Override with
- * `AGENT_HUB_FIRECRACKER_USE_JAILER=0|1`.
+ * Defaults **on** for both local and docker exec once jail resources are
+ * staged into the chroot (see `firecracker-jailer-stage.ts`). Firecracker
+ * production guidance requires the jailer or equally restrictive constraints;
+ * docker mode without the jailer leaves a UID-0 VMM with host networking and
+ * writable mounts. Override with `AGENT_HUB_FIRECRACKER_USE_JAILER=0|1` only
+ * for break-glass debugging — not a supported production posture.
  */
 export function resolveFirecrackerUseJailer(
-  cfg: FirecrackerExecConfig,
+  _cfg: FirecrackerExecConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   const raw = env.AGENT_HUB_FIRECRACKER_USE_JAILER?.trim().toLowerCase();
   if (raw === '0' || raw === 'false' || raw === 'off') return false;
   if (raw === '1' || raw === 'true' || raw === 'on') return true;
-  return cfg.mode === 'local';
+  return true;
 }
 
 export function firecrackerExecDefaults(
