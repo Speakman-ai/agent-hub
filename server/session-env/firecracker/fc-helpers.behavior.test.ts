@@ -34,6 +34,7 @@ function writeRootsConf(base: string): string {
       `ARTIFACT_DIR="${base}"`,
       `RUN_DIR="${base}"`,
       `JAILER_DIR="${base}"`,
+      `CONTROL_DIR="${base}"`,
       `WORKTREE_ROOTS="${base}"`,
       'BRIDGE=ahfc0',
       'BRIDGE_CIDR=172.30.0.1/16',
@@ -124,17 +125,81 @@ describe('fc-jail-manage.sh stage', () => {
     }
   });
 
-  it('refuses stage sources outside configured roots', () => {
-    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-jail-outside-'));
+  it('refuses stage when config is outside CONTROL_DIR', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-jail-ctrl-'));
+    const other = mkdtempSync(path.join(os.tmpdir(), 'fc-jail-ctrl-other-'));
     try {
-      const conf = writeRootsConf(base);
+      const conf = path.join(base, 'roots.conf');
+      writeFileSync(
+        conf,
+        [
+          `ARTIFACT_DIR="${base}"`,
+          `RUN_DIR="${base}"`,
+          `JAILER_DIR="${base}"`,
+          `CONTROL_DIR="${path.join(base, 'control')}"`,
+          `WORKTREE_ROOTS="${base}"`,
+          '',
+        ].join('\n'),
+      );
+      mkdirSync(path.join(base, 'control'), { recursive: true });
       const root = path.join(base, 'firecracker', 'ahvm-1', 'root');
+      writeFileSync(path.join(base, 'vmlinux'), 'k');
+      writeFileSync(path.join(base, 'rootfs.ext4'), 'r');
+      writeFileSync(path.join(base, 'workspace.ext4'), 'w');
+      const outsideCfg = path.join(other, 'cfg.json');
+      writeFileSync(outsideCfg, '{}');
       const res = run(
         jailHelper,
         [
           'stage',
           root,
-          '/etc/passwd',
+          path.join(base, 'vmlinux'),
+          path.join(base, 'rootfs.ext4'),
+          path.join(base, 'workspace.ext4'),
+          '1000',
+          '1000',
+          outsideCfg,
+        ],
+        { AGENT_HUB_FC_ROOTS_CONF: conf },
+      );
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/outside configured/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses stage destination outside JAILER_DIR even under WORKTREE_ROOTS', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-jail-dest-'));
+    try {
+      const jailer = path.join(base, 'jailer');
+      const worktree = path.join(base, 'wt');
+      mkdirSync(jailer, { recursive: true });
+      mkdirSync(worktree, { recursive: true });
+      const conf = path.join(base, 'roots.conf');
+      writeFileSync(
+        conf,
+        [
+          `ARTIFACT_DIR="${base}"`,
+          `RUN_DIR="${base}"`,
+          `JAILER_DIR="${jailer}"`,
+          `CONTROL_DIR="${base}"`,
+          `WORKTREE_ROOTS="${worktree}"`,
+          '',
+        ].join('\n'),
+      );
+      writeFileSync(path.join(base, 'vmlinux'), 'k');
+      writeFileSync(path.join(base, 'rootfs.ext4'), 'r');
+      writeFileSync(path.join(base, 'workspace.ext4'), 'w');
+      writeFileSync(path.join(base, 'cfg.json'), '{}');
+      const evilRoot = path.join(worktree, 'firecracker', 'ahvm-1', 'root');
+      const res = run(
+        jailHelper,
+        [
+          'stage',
+          evilRoot,
+          path.join(base, 'vmlinux'),
           path.join(base, 'rootfs.ext4'),
           path.join(base, 'workspace.ext4'),
           '1000',
@@ -270,6 +335,7 @@ describe('fc-path-guard symlink escape', () => {
           `ARTIFACT_DIR="${path.join(base, 'artifacts')}"`,
           `RUN_DIR="${path.join(base, 'vms')}"`,
           `JAILER_DIR="${path.join(base, 'jailer')}"`,
+          `CONTROL_DIR="${path.join(base, 'control')}"`,
           `WORKTREE_ROOTS="${path.join(base, 'session-tree')}"`,
           '',
         ].join('\n'),
@@ -288,6 +354,65 @@ describe('fc-path-guard symlink escape', () => {
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
+  });
+
+  it('allows CONTROL_DIR paths and rejects mid-path symlink retargets', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-ctrl-'));
+    const outside = mkdtempSync(path.join(os.tmpdir(), 'fc-ctrl-out-'));
+    try {
+      const control = path.join(base, 'control');
+      mkdirSync(control, { recursive: true });
+      const conf = path.join(base, 'roots.conf');
+      writeFileSync(
+        conf,
+        [
+          `ARTIFACT_DIR="${base}"`,
+          `RUN_DIR="${base}"`,
+          `JAILER_DIR="${base}"`,
+          `CONTROL_DIR="${control}"`,
+          `WORKTREE_ROOTS="${base}"`,
+          '',
+        ].join('\n'),
+      );
+      const okCfg = path.join(control, 'vm', 'cfg.json');
+      mkdirSync(path.dirname(okCfg), { recursive: true });
+      writeFileSync(okCfg, '{}');
+      const okScript = `
+        set -euo pipefail
+        source ${JSON.stringify(pathGuard)}
+        export AGENT_HUB_FC_ROOTS_CONF=${JSON.stringify(conf)}
+        fc_assert_control_under_roots 'config' ${JSON.stringify(okCfg)}
+        fc_assert_no_symlink_components 'config' ${JSON.stringify(okCfg)}
+        echo OK
+      `;
+      const ok = spawnSync('bash', ['-c', okScript], { encoding: 'utf8' });
+      expect(ok.status, ok.stderr).toBe(0);
+
+      const link = path.join(control, 'escape');
+      symlinkSync(outside, link);
+      const evil = path.join(link, 'cfg.json');
+      const badScript = `
+        set -euo pipefail
+        source ${JSON.stringify(pathGuard)}
+        export AGENT_HUB_FC_ROOTS_CONF=${JSON.stringify(conf)}
+        fc_assert_no_symlink_components 'config' ${JSON.stringify(evil)}
+      `;
+      const bad = spawnSync('bash', ['-c', badScript], { encoding: 'utf8' });
+      expect(bad.status).toBe(2);
+      expect(bad.stderr).toMatch(/symlink component/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fc-prepare-disks.sh worktree copy', () => {
+  it('streams the worktree tar instead of buffering produced.stdout', () => {
+    const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+    expect(src).not.toMatch(/produced\.stdout/);
+    expect(src).toMatch(/AGENT_HUB_FC_WORKTREE_TAR_MAX_BYTES|worktree archive exceeded/);
+    expect(src).toMatch(/Popen\([\s\S]*tar[\s\S]*-cf[\s\S]*Popen\([\s\S]*tar[\s\S]*-xf/);
   });
 });
 

@@ -75,7 +75,7 @@ export interface SysboxRunResult {
 /** One-shot docker invocation (lifecycle ops, kills). Resolves, never rejects. */
 export type SysboxRunFn = (argv: string[]) => Promise<SysboxRunResult>;
 
-/** True when `docker top` `comm` is Sysbox/entrypoint baseline, not user work. */
+/** True when container-ns `comm` is Sysbox/entrypoint baseline, not user work. */
 export function isSysboxBaselineComm(comm: string): boolean {
   const c = comm.toLowerCase();
   if (!c) return true;
@@ -87,8 +87,8 @@ export function isSysboxBaselineComm(comm: string): boolean {
 }
 
 /**
- * Parse one `docker top -eo pid,comm` body line. Returns true when the process
- * is detached user work the idle reaper must respect.
+ * Parse one `pid comm` line from the container PID namespace (`ps -eo pid=,comm=`).
+ * Returns true when the process is detached user work the idle reaper must respect.
  */
 export function isSysboxDetachedWorkloadLine(line: string): boolean {
   const trimmed = line.trim();
@@ -323,17 +323,25 @@ export class SysboxSessionEnv implements SessionEnv {
 
   async hasDetachedWorkload(): Promise<boolean> {
     if (!this.#started) return false;
-    // Processes the Hub did not spawn (compose databases, workers) still show
-    // in `docker top`. Fail closed on inspect errors. Subtract the Sysbox /
-    // entrypoint baseline so a healthy idle env is not kept forever.
+    // `docker top` reports *host* PIDs, so entrypoint `sleep infinity` is never
+    // PID 1 there and would look like forever-busy user work. Query the
+    // container PID namespace instead. Fail closed on inspect errors. Subtract
+    // the Sysbox / entrypoint baseline so a healthy idle env can be reaped.
     try {
-      const res = await this.runDocker(['docker', 'top', this.containerName, '-eo', 'pid,comm']);
+      const res = await this.runDocker([
+        'docker',
+        'exec',
+        this.containerName,
+        'ps',
+        '-eo',
+        'pid=,comm=',
+      ]);
       if (!res.ok) return true;
       const lines = res.stdout
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean);
-      const procs = lines.slice(1).filter((line) => isSysboxDetachedWorkloadLine(line));
+      const procs = lines.filter((line) => isSysboxDetachedWorkloadLine(line));
       return procs.length > 0;
     } catch {
       return true;

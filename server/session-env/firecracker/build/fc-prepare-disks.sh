@@ -135,6 +135,7 @@ mount -o loop -- "${WORKSPACE_OUT}" "${MOUNT_DIR}"
 
 # Archive the worktree through an O_NOFOLLOW directory walk so a symlink swap
 # after canonicalize cannot retarget the read to another host path.
+export AGENT_HUB_WORKSPACE_SIZE_MIB="${WORKSPACE_SIZE_MIB}"
 python3 - "${WORKTREE}" "${MOUNT_DIR}" <<'PY'
 import os
 import subprocess
@@ -165,16 +166,51 @@ def open_nofollow_dir(abs_path: str) -> int:
 fd = open_nofollow_dir(worktree)
 try:
     src = f"/proc/self/fd/{fd}"
-    produced = subprocess.run(
+    # Stream producer → extractor. Never buffer the whole archive in RAM —
+    # multi-GB worktrees (or sparse bombs) would OOM the host.
+    max_bytes = int(os.environ.get("AGENT_HUB_FC_WORKTREE_TAR_MAX_BYTES", "0")) or (
+        int(os.environ.get("AGENT_HUB_WORKSPACE_SIZE_MIB", "32768")) * 1024 * 1024 * 2
+    )
+    produced = 0
+
+    def limited_read(stream, size):
+        nonlocal produced
+        chunk = stream.read(size)
+        if chunk:
+            produced += len(chunk)
+            if produced > max_bytes:
+                raise SystemExit(
+                    f"worktree archive exceeded {max_bytes} byte ceiling during copy"
+                )
+        return chunk
+
+    prod = subprocess.Popen(
         ["tar", "-C", src, "-cf", "-", "."],
         stdout=subprocess.PIPE,
-        check=True,
     )
-    subprocess.run(
+    assert prod.stdout is not None
+    cons = subprocess.Popen(
         ["tar", "-C", dest, "-xf", "-"],
-        input=produced.stdout,
-        check=True,
+        stdin=subprocess.PIPE,
     )
+    assert cons.stdin is not None
+    try:
+        while True:
+            chunk = limited_read(prod.stdout, 1024 * 1024)
+            if not chunk:
+                break
+            cons.stdin.write(chunk)
+        cons.stdin.close()
+        prod_rc = prod.wait()
+        cons_rc = cons.wait()
+    except Exception:
+        prod.kill()
+        cons.kill()
+        raise
+    if prod_rc != 0:
+        raise SystemExit(f"tar archive failed with exit {prod_rc}")
+    if cons_rc != 0:
+        raise SystemExit(f"tar extract failed with exit {cons_rc}")
 finally:
     os.close(fd)
 PY

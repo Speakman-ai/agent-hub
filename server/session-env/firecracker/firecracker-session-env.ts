@@ -253,7 +253,9 @@ export interface FirecrackerPaths {
   runDir: string;
   /**
    * Hub-writable control plane (`$controlDir/<vmId>/`): vm-config, pid,
-   * identity, logs, and (non-jailer) vsock/api sockets.
+   * identity, logs, and (non-jailer) vsock/api sockets. Default lives under
+   * the shared Firecracker data mount (`$artifactDir/control`) so a
+   * containerized Hub and the privileged helper see the same files.
    */
   controlDir: string;
   /** Jailer chroot base, when the jailer is used. Root-owned. */
