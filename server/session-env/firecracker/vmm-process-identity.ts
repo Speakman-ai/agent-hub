@@ -5,21 +5,38 @@
 import { readFileSync, realpathSync } from 'fs';
 import type { VmmProcessIdentity } from './firecracker-session-env.js';
 
-export function readLiveProcessIdentity(pid: number): VmmProcessIdentity | null {
+/** Result of inspecting `/proc/<pid>` for a recorded VMM. */
+export type ProcessIdentityLookup =
+  | { status: 'live'; identity: VmmProcessIdentity }
+  | { status: 'missing' }
+  | { status: 'unreadable'; reason: string };
+
+/**
+ * Read live process identity from `/proc`.
+ *
+ * `missing` means the PID is gone (`ENOENT`). Any other failure (hidepid,
+ * `EACCES`, parse errors while the process may still exist) is `unreadable` —
+ * callers must fail closed rather than treating that as "already exited".
+ */
+export function readLiveProcessIdentity(pid: number): ProcessIdentityLookup {
   try {
     const cmdline = readFileSync(`/proc/${pid}/cmdline`);
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
     // `/proc/<pid>/stat`: `pid (comm) state … starttime …` — comm may contain
     // spaces/parens, so split after the final `)`.
     const close = stat.lastIndexOf(')');
-    if (close < 0) return null;
+    if (close < 0) {
+      return { status: 'unreadable', reason: `malformed /proc/${pid}/stat` };
+    }
     const fields = stat
       .slice(close + 2)
       .trim()
       .split(/\s+/);
     // After `)`, field index 0 is state (overall field 3); starttime is overall 22 → index 19.
     const starttime = fields[19] ?? '';
-    if (!starttime) return null;
+    if (!starttime) {
+      return { status: 'unreadable', reason: `missing starttime in /proc/${pid}/stat` };
+    }
     let exe = '';
     try {
       exe = realpathSync(`/proc/${pid}/exe`);
@@ -27,14 +44,27 @@ export function readLiveProcessIdentity(pid: number): VmmProcessIdentity | null 
       // exe can vanish mid-exit; cmdline+starttime still uniquely identify.
     }
     return {
-      pid,
-      cmdline: cmdline.toString('binary'),
-      starttime,
-      exe,
+      status: 'live',
+      identity: {
+        pid,
+        cmdline: cmdline.toString('binary'),
+        starttime,
+        exe,
+      },
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return classifyProcReadFailure(err);
   }
+}
+
+/** Map a `/proc` read failure to missing vs unreadable (fail-closed). */
+export function classifyProcReadFailure(
+  err: unknown,
+): Exclude<ProcessIdentityLookup, { status: 'live' }> {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT') return { status: 'missing' };
+  const reason = err instanceof Error ? err.message : String(err);
+  return { status: 'unreadable', reason };
 }
 
 export function identitiesMatch(expected: VmmProcessIdentity, live: VmmProcessIdentity): boolean {

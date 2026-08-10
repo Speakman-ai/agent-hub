@@ -47,6 +47,7 @@ import {
   parseVmmIdentityFile,
   readLiveProcessIdentity,
 } from './vmm-process-identity.js';
+import { resolveFcJailManageHelper } from './firecracker-jailer-stage.js';
 
 export type FirecrackerExecMode = 'local' | 'docker';
 
@@ -104,9 +105,15 @@ async function killLocalVmmProcess(
   expected: VmmProcessIdentity | null,
 ): Promise<void> {
   const live = readLiveProcessIdentity(pid);
-  if (!live) {
+  if (live.status === 'missing') {
     // Already gone — nothing to kill.
     return;
+  }
+  if (live.status === 'unreadable') {
+    throw new Error(
+      `refusing to signal local VMM pid ${pid} (vm ${vmId}): /proc identity unreadable ` +
+        `(${live.reason}) — cannot prove the VMM exited`,
+    );
   }
   if (!expected) {
     throw new Error(
@@ -114,7 +121,7 @@ async function killLocalVmmProcess(
         `(vmm.identity.json) — cannot prove this PID is still our Firecracker/jailer`,
     );
   }
-  if (!identitiesMatch(expected, live)) {
+  if (!identitiesMatch(expected, live.identity)) {
     throw new Error(
       `refusing to signal pid ${pid} (vm ${vmId}): process identity mismatch ` +
         `(PID was reused or identity file is stale)`,
@@ -255,6 +262,14 @@ export function createFirecrackerHostIo(cfg: FirecrackerExecConfig): Firecracker
  * Failing to appear is not fatal — the Hub's own readiness wait still reports
  * the timeout, exactly as it did before.
  */
+/**
+ * Narrow root-owned helper that starts the VMM and chowns the vsock socket.
+ * Must match the path installed by `ops/scripts/setup-firecracker-host.sh`
+ * and authorized in sudoers — never `sudo sh -c`.
+ */
+export const FC_LAUNCH_VMM_HELPER_DEFAULT = '/usr/local/lib/agent-hub/fc-launch-vmm.sh';
+
+/** @deprecated Kept for test assertions on the helper script body. */
 export const VMM_LAUNCH_SCRIPT = [
   'sock=$1; owner=$2; shift 2',
   '"$@" &',
@@ -267,12 +282,19 @@ export const VMM_LAUNCH_SCRIPT = [
   'wait $vmm',
 ].join('\n');
 
-export function buildVmmLaunchArgv(spec: VmmLaunchSpec): string[] {
+export function resolveFcLaunchVmmHelper(env: NodeJS.ProcessEnv = process.env): string {
+  return env.AGENT_HUB_FIRECRACKER_LAUNCH_HELPER?.trim() || FC_LAUNCH_VMM_HELPER_DEFAULT;
+}
+
+export function buildVmmLaunchArgv(
+  spec: VmmLaunchSpec,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
   const { vsockPath, ownerUid, ownerGid, argv } = spec;
   if (vsockPath === undefined || ownerUid === undefined || ownerGid === undefined) {
     return argv;
   }
-  return ['sh', '-c', VMM_LAUNCH_SCRIPT, 'sh', vsockPath, `${ownerUid}:${ownerGid}`, ...argv];
+  return [resolveFcLaunchVmmHelper(env), vsockPath, `${ownerUid}:${ownerGid}`, ...argv];
 }
 
 /**
@@ -527,11 +549,15 @@ export function resolveHelperMounts(
   paths: FirecrackerPaths,
   env: NodeJS.ProcessEnv = process.env,
 ): FirecrackerMount[] {
+  const launchHelper = resolveFcLaunchVmmHelper(env);
+  const jailHelper = resolveFcJailManageHelper(env);
   const mounts: FirecrackerMount[] = [
     { path: dirOf(paths.kernelPath) },
     { path: paths.runDir },
     { path: env.AGENT_HUB_FIRECRACKER_BIN?.trim() || '/usr/bin/firecracker', readOnly: true },
     { path: env.AGENT_HUB_JAILER_BIN?.trim() || '/usr/bin/jailer', readOnly: true },
+    { path: launchHelper, readOnly: true },
+    { path: jailHelper, readOnly: true },
   ];
   // Finalize-runner helpers often lack kmod/procps; bind the host tools the
   // NAT reconcile needs so `modprobe` / `sysctl` are not mysterious PATH misses.

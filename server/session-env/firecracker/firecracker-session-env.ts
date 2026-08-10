@@ -31,6 +31,16 @@ import { mkdir, rm, stat, writeFile } from 'fs/promises';
 import { once } from 'events';
 import path from 'path';
 import { readLiveProcessIdentity } from './vmm-process-identity.js';
+import {
+  JAILER_STAGED_CONFIG,
+  JAILER_STAGED_KERNEL,
+  JAILER_STAGED_ROOTFS,
+  JAILER_STAGED_WORKSPACE,
+  jailerVmTree,
+  planJailerStage,
+  resolveFcJailManageHelper,
+  type JailerStagePlan,
+} from './firecracker-jailer-stage.js';
 import type { HostSpawnFn } from '../host-session-env.js';
 import {
   SessionEnv,
@@ -393,8 +403,24 @@ export class FirecrackerSessionEnv implements SessionEnv {
   private get vmDir(): string {
     return `${this.paths.runDir}/${this.vmId}`;
   }
+  private get jailerBase(): string {
+    return this.paths.jailerChrootBase ?? '/srv/jailer';
+  }
+
+  /** Host path of the jail root (`/` as seen by a jailed Firecracker). */
+  private get jailerChrootRoot(): string {
+    return planJailerStage({
+      chrootBaseDir: this.jailerBase,
+      vmId: this.vmId,
+      kernelPath: this.paths.kernelPath,
+      rootfsPath: 'unused',
+      workspacePath: 'unused',
+    }).chrootRoot;
+  }
+
   private get vsockPath(): string {
-    return `${this.vmDir}/vsock.sock`;
+    // Jailer creates the UDS inside the chroot; the Hub dials the host path.
+    return this.useJailer ? `${this.jailerChrootRoot}/vsock.sock` : `${this.vmDir}/vsock.sock`;
   }
 
   /**
@@ -462,20 +488,13 @@ export class FirecrackerSessionEnv implements SessionEnv {
 
     try {
       await this.io.mkdirp(this.vmDir);
-      // Jailer refuses to start when its chroot base is missing — create it
-      // on first use so a host that skipped the setup script still boots.
-      // Also drop any leftover `<base>/firecracker/<vmId>` tree: a prior
-      // failed boot leaves `/dev/net/tun` in the jail and the next mknod
-      // fails with EEXIST.
       if (this.useJailer) {
-        const jailerBase = this.paths.jailerChrootBase ?? '/srv/jailer';
-        await this.io.mkdirp(jailerBase);
-        await this.io.rmrf(`${jailerBase}/firecracker/${this.vmId}`);
+        await this.io.mkdirp(this.jailerBase);
       }
       // A previous VMM for this vm id may still hold api.sock / vsock.sock or
       // the tap even though this process is gone — stop and confirm exit
-      // before unlinking or rewriting disks. Fail closed: a stop error means
-      // the old VMM may still have the images open.
+      // before unlinking or rewriting disks / jail trees. Fail closed: a stop
+      // error means the old VMM may still have the images open.
       const pidFile = vmmPidFilePath(this.vmDir);
       await this.stopVmm({
         vmId: this.vmId,
@@ -483,6 +502,12 @@ export class FirecrackerSessionEnv implements SessionEnv {
         pidFile,
         identityFile: vmmIdentityFilePath(this.vmDir),
       });
+      // Only after stop: drop a leftover jail tree (root-owned after jailer
+      // ran) via the privileged helper. Cleaning before stop can unlink disks
+      // a surviving VMM still has open.
+      if (this.useJailer) {
+        await this.#cleanJailerTree();
+      }
       // Firecracker *binds* these two paths and refuses to start if either
       // already exists. A vm id is derived from the session id, so a session
       // whose VMM died without unlinking them — a host reboot, an OOM kill —
@@ -508,40 +533,76 @@ export class FirecrackerSessionEnv implements SessionEnv {
         workspaceSizeMib: this.workspaceSizeMib,
       });
 
-      const configPath = `${this.vmDir}/vm-config.json`;
-      const config = buildFirecrackerVmConfig({
-        network,
-        kernelPath: this.paths.kernelPath,
-        rootfsPath: disks.rootfsPath,
-        workspacePath: disks.workspacePath,
-        vsockUdsPath: this.vsockPath,
-        vcpuCount: this.vcpuCount,
-        memSizeMib: this.memSizeMib,
-        nameservers: await this.resolveNameservers(),
-        bootArgsExtra: [`ahvm.session=${this.sessionId}`],
-      });
-      await this.io.writeFile(configPath, JSON.stringify(config, null, 2));
+      const nameservers = await this.resolveNameservers();
+      const bootArgsExtra = [`ahvm.session=${this.sessionId}`];
 
-      const apiSockPath = `${this.vmDir}/api.sock`;
-      // Jailer without `--cgroup`: the docker VMM helper intentionally is not
-      // fully `--privileged`, so `/sys/fs/cgroup` is read-only and jailer
-      // cannot mkdir under it. Chroot + uid/gid drop still apply; memory is
-      // enforced by Firecracker's own balloon / machine-config mem size.
-      const argv = this.useJailer
-        ? buildJailerArgv({
-            vmId: this.vmId,
-            uid: this.jailerUid,
-            gid: this.jailerGid,
-            chrootBaseDir: this.paths.jailerChrootBase ?? '/srv/jailer',
-            apiSockPath,
-            configPath,
-            cgroupVersion: 2,
-          })
-        : buildFirecrackerArgv({
-            apiSockPath,
-            configPath,
-            logPath: `${this.vmDir}/firecracker.log`,
-          });
+      let apiSockPath: string;
+      let configPath: string;
+      let argv: string[];
+      if (this.useJailer) {
+        // Stage kernel/disks into the jail and pass jailed-relative paths —
+        // Firecracker cannot open host-absolute paths after pivot_root.
+        const stage = planJailerStage({
+          chrootBaseDir: this.jailerBase,
+          vmId: this.vmId,
+          kernelPath: this.paths.kernelPath,
+          rootfsPath: disks.rootfsPath,
+          workspacePath: disks.workspacePath,
+        });
+        await this.#stageJailerResources(stage);
+        const config = buildFirecrackerVmConfig({
+          network,
+          kernelPath: JAILER_STAGED_KERNEL,
+          rootfsPath: JAILER_STAGED_ROOTFS,
+          workspacePath: JAILER_STAGED_WORKSPACE,
+          vsockUdsPath: 'vsock.sock',
+          vcpuCount: this.vcpuCount,
+          memSizeMib: this.memSizeMib,
+          nameservers,
+          bootArgsExtra,
+        });
+        await this.io.writeFile(
+          `${stage.chrootRoot}/${JAILER_STAGED_CONFIG}`,
+          JSON.stringify(config, null, 2),
+        );
+        // Keep a host-side copy for operators debugging a failed boot.
+        await this.io.writeFile(`${this.vmDir}/vm-config.json`, JSON.stringify(config, null, 2));
+        apiSockPath = stage.apiSockPath;
+        configPath = stage.configPath;
+        // Jailer without `--cgroup`: the docker VMM helper intentionally is not
+        // fully `--privileged`, so `/sys/fs/cgroup` is read-only and jailer
+        // cannot mkdir under it. Chroot + uid/gid drop still apply; memory is
+        // enforced by Firecracker's own balloon / machine-config mem size.
+        argv = buildJailerArgv({
+          vmId: this.vmId,
+          uid: this.jailerUid,
+          gid: this.jailerGid,
+          chrootBaseDir: this.jailerBase,
+          apiSockPath,
+          configPath,
+          cgroupVersion: 2,
+        });
+      } else {
+        configPath = `${this.vmDir}/vm-config.json`;
+        const config = buildFirecrackerVmConfig({
+          network,
+          kernelPath: this.paths.kernelPath,
+          rootfsPath: disks.rootfsPath,
+          workspacePath: disks.workspacePath,
+          vsockUdsPath: this.vsockPath,
+          vcpuCount: this.vcpuCount,
+          memSizeMib: this.memSizeMib,
+          nameservers,
+          bootArgsExtra,
+        });
+        await this.io.writeFile(configPath, JSON.stringify(config, null, 2));
+        apiSockPath = `${this.vmDir}/api.sock`;
+        argv = buildFirecrackerArgv({
+          apiSockPath,
+          configPath,
+          logPath: `${this.vmDir}/firecracker.log`,
+        });
+      }
 
       const vmm = this.spawnVmm({
         vmId: this.vmId,
@@ -555,9 +616,12 @@ export class FirecrackerSessionEnv implements SessionEnv {
       // pid is gone). Docker mode uses the ah-vmm-* container name instead.
       if (typeof vmm.pid === 'number' && vmm.pid > 0) {
         await this.io.writeFile(pidFile, `${vmm.pid}\n`);
-        const identity = readLiveProcessIdentity(vmm.pid);
-        if (identity) {
-          await this.io.writeFile(vmmIdentityFilePath(this.vmDir), `${JSON.stringify(identity)}\n`);
+        const identityLookup = readLiveProcessIdentity(vmm.pid);
+        if (identityLookup.status === 'live') {
+          await this.io.writeFile(
+            vmmIdentityFilePath(this.vmDir),
+            `${JSON.stringify(identityLookup.identity)}\n`,
+          );
         }
       }
       vmm.stderr?.on('data', (chunk: string | Buffer) => {
@@ -967,18 +1031,24 @@ export class FirecrackerSessionEnv implements SessionEnv {
     }
     this.#vmProcess = null;
 
+    if (this.useJailer) {
+      await this.#cleanJailerTree();
+    }
+
     const network = this.#network;
-    this.#network = null;
     if (network) {
       const res = await this.io.run(buildDeleteTapArgv(network));
       if (!res.ok) {
-        this.logger.warn(
-          `SessionEnv[${this.sessionId}] failed to delete tap ${network.tapName}: ${res.stderr.trim()}`,
+        // Keep the slot/network owned — releasing would let the next VM reuse
+        // a tap name that is still present on the host.
+        throw new Error(
+          `Failed to delete tap ${network.tapName}: ${res.stderr.trim() || res.stdout.trim()}`,
         );
       }
-      // Released last: a slot handed out again before its tap is gone would
-      // collide on the interface name.
+      this.#network = null;
       this.slots.release(network.slot);
+    } else {
+      this.#network = null;
     }
 
     this.#started = false;
@@ -987,6 +1057,35 @@ export class FirecrackerSessionEnv implements SessionEnv {
         `SessionEnv[${this.sessionId}] failed to remove ${this.vmDir}: ${String(err)}`,
       );
     });
+  }
+
+  async #cleanJailerTree(): Promise<void> {
+    const tree = jailerVmTree(this.jailerBase, this.vmId);
+    const helper = resolveFcJailManageHelper();
+    const res = await this.io.run([helper, 'clean', tree]);
+    if (!res.ok) {
+      throw new Error(
+        `Failed to remove jailer tree ${tree}: ${res.stderr.trim() || res.stdout.trim()}`,
+      );
+    }
+  }
+
+  async #stageJailerResources(stage: JailerStagePlan): Promise<void> {
+    const helper = resolveFcJailManageHelper();
+    const kernel = stage.links.find((l) => l.jailName === JAILER_STAGED_KERNEL)?.hostPath;
+    const rootfs = stage.links.find((l) => l.jailName === JAILER_STAGED_ROOTFS)?.hostPath;
+    const workspace = stage.links.find((l) => l.jailName === JAILER_STAGED_WORKSPACE)?.hostPath;
+    if (!kernel || !rootfs || !workspace) {
+      throw new Error('Jailer stage plan missing kernel/rootfs/workspace host paths');
+    }
+    const res = await this.io.run([helper, 'stage', stage.chrootRoot, kernel, rootfs, workspace]);
+    if (!res.ok) {
+      throw new Error(
+        `Failed to stage jailer resources into ${stage.chrootRoot}: ${
+          res.stderr.trim() || res.stdout.trim()
+        }`,
+      );
+    }
   }
 
   #assertLive(op: string, cleanup?: () => void): void {

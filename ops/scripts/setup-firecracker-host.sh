@@ -242,7 +242,7 @@ if [[ "${SCRATCH_FSTYPE}" != "xfs" && "${SCRATCH_FSTYPE}" != "btrfs" ]]; then
   echo "         Consider mounting an XFS volume there." >&2
 fi
 
-# ── 6. Disk helper + sudoers ──────────────────────────────────────
+# ── 6. Disk helper + VMM launch helper + sudoers ──────────────────
 if [[ -f "${HELPER_SRC}" ]]; then
   install -D -m 0755 "${HELPER_SRC}" /usr/local/lib/agent-hub/fc-prepare-disks.sh
   echo "==> Installed fc-prepare-disks.sh"
@@ -250,8 +250,25 @@ else
   echo "warning: disk helper not found at ${HELPER_SRC}; pass --helper PATH" >&2
 fi
 
+LAUNCH_HELPER_SRC="${REPO_ROOT}/server/session-env/firecracker/build/fc-launch-vmm.sh"
+if [[ -f "${LAUNCH_HELPER_SRC}" ]]; then
+  install -D -m 0755 "${LAUNCH_HELPER_SRC}" /usr/local/lib/agent-hub/fc-launch-vmm.sh
+  echo "==> Installed fc-launch-vmm.sh"
+else
+  echo "warning: VMM launch helper not found at ${LAUNCH_HELPER_SRC}" >&2
+fi
+
+JAIL_HELPER_SRC="${REPO_ROOT}/server/session-env/firecracker/build/fc-jail-manage.sh"
+if [[ -f "${JAIL_HELPER_SRC}" ]]; then
+  install -D -m 0755 "${JAIL_HELPER_SRC}" /usr/local/lib/agent-hub/fc-jail-manage.sh
+  echo "==> Installed fc-jail-manage.sh"
+else
+  echo "warning: jail manage helper not found at ${JAIL_HELPER_SRC}" >&2
+fi
+
 # Privileged operations the Hub runs via `sudo -n` in local exec mode, named
 # explicitly. A blanket NOPASSWD:ALL would make the microVM boundary pointless.
+# Do NOT authorize `sh`/`bash` — VMM launch goes through fc-launch-vmm.sh.
 #
 # Only meaningful for a Hub running directly on the host. A containerized Hub
 # has no account here and reaches these operations through a privileged helper
@@ -260,6 +277,8 @@ if id -u "${HUB_USER}" >/dev/null 2>&1; then
   cat >/etc/sudoers.d/agent-hub-firecracker <<SUDOERS
 # Managed by ops/scripts/setup-firecracker-host.sh
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-prepare-disks.sh
+${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-launch-vmm.sh
+${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-jail-manage.sh
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/ip, /sbin/ip, /usr/bin/ip
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/modprobe, /sbin/modprobe
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/sysctl, /sbin/sysctl

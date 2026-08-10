@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { identitiesMatch, parseVmmIdentityFile } from './vmm-process-identity.js';
+import {
+  classifyProcReadFailure,
+  identitiesMatch,
+  parseVmmIdentityFile,
+} from './vmm-process-identity.js';
 import type { VmmProcessIdentity } from './firecracker-session-env.js';
 
 const base: VmmProcessIdentity = {
@@ -17,6 +21,20 @@ describe('parseVmmIdentityFile', () => {
   it('rejects missing fields', () => {
     expect(parseVmmIdentityFile('{"pid":1}')).toBeNull();
     expect(parseVmmIdentityFile('not-json')).toBeNull();
+  });
+});
+
+describe('classifyProcReadFailure', () => {
+  it('reports missing only for ENOENT', () => {
+    const err = new Error('gone') as NodeJS.ErrnoException;
+    err.code = 'ENOENT';
+    expect(classifyProcReadFailure(err)).toEqual({ status: 'missing' });
+  });
+
+  it('reports unreadable for EACCES rather than treating the VMM as dead', () => {
+    const err = new Error('hidden') as NodeJS.ErrnoException;
+    err.code = 'EACCES';
+    expect(classifyProcReadFailure(err)).toEqual({ status: 'unreadable', reason: 'hidden' });
   });
 });
 

@@ -109,8 +109,19 @@ export class SessionEnvManager {
    * at the same moment must not produce two containers for one session.
    */
   ensure(sessionId: string): Promise<SessionEnv> {
+    // A dispose in flight owns the session name — wait for it before deciding
+    // whether to reuse (failed stop) or replace (successful stop).
+    const pendingTeardown = this.teardowns.get(sessionId);
+    if (pendingTeardown) {
+      return pendingTeardown.then(
+        () => this.ensure(sessionId),
+        () => this.ensure(sessionId),
+      );
+    }
     const existing = this.entries.get(sessionId);
     // A disposed env is not reusable; drop it and build a fresh one.
+    // A live env whose prior dispose failed stays here (disposed === false)
+    // so we never allocate a second environment against the same resources.
     if (existing && !(existing.env?.disposed ?? false)) return existing.promise;
     if (existing) this.entries.delete(sessionId);
 
@@ -199,14 +210,19 @@ export class SessionEnvManager {
       await this.teardowns.get(sessionId)?.catch(() => undefined);
       return;
     }
-    this.entries.delete(sessionId);
-    const teardown = this.#teardown(sessionId, entry);
-    this.teardowns.set(sessionId, teardown);
-    try {
-      await teardown;
-    } finally {
-      if (this.teardowns.get(sessionId) === teardown) this.teardowns.delete(sessionId);
+    // Keep the map entry until dispose succeeds. Firecracker (and any adapter
+    // that fails closed on stop) must retain ownership of live VM resources —
+    // deleting first would let ensure() create a second env against the same
+    // taps/disks while stopVmm is still failing.
+    let teardown = this.teardowns.get(sessionId);
+    if (!teardown) {
+      teardown = this.#teardown(sessionId, entry).finally(() => {
+        if (this.teardowns.get(sessionId) === teardown) this.teardowns.delete(sessionId);
+      });
+      this.teardowns.set(sessionId, teardown);
     }
+    await teardown;
+    if (this.entries.get(sessionId) === entry) this.entries.delete(sessionId);
   }
 
   async #teardown(sessionId: string, entry: Entry): Promise<void> {
@@ -223,6 +239,7 @@ export class SessionEnvManager {
       this.logger.warn(
         `[session-env] ${sessionId}: dispose failed: ${err instanceof Error ? err.message : String(err)}`,
       );
+      throw err;
     }
   }
 

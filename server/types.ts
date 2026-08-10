@@ -4078,6 +4078,8 @@ export interface RouteDeps {
    * `createPreviewRuntimes` boot). The session archive/delete handlers
    * call `stopBySessionId` so the deleted session's preview is torn down.
    */
+  /** Bump a live SessionEnv idle clock (preview proxy / workload activity). */
+  touchSessionEnv?: (sessionId: string) => void;
   getDevServerRuntime?: () => {
     stopBySessionId: (sessionId: string) => Promise<number>;
   } | null;
