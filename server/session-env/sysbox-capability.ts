@@ -260,7 +260,7 @@ export function selectSessionEnvAdapter(
         fellBack: false,
         reason:
           'forced by config (sessionEnvAdapter=firecracker); probe passed — ' +
-          'experimental backend (not auto-selected; jailer not default)',
+          'experimental backend (not auto-selected; jailer on by default)',
         probe,
       };
     }

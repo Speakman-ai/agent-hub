@@ -230,6 +230,12 @@ export interface DevServerRuntimeDeps {
   isPortFree?: IsPortFreeFn;
   notifyLog?: DevServerNotifyLogFn;
   notifyStatus?: DevServerNotifyStatusFn;
+  /**
+   * Bump the session-owned env's activity clock when preview traffic keeps the
+   * group alive. Guest daemons are invisible to `liveProcessCount`, so without
+   * this the idle reaper can tear down a VM that is still serving a preview.
+   */
+  onSessionActivity?: (sessionId: string) => void;
   logger?: { log: (m: string) => void; warn: (m: string) => void; error: (m: string) => void };
 }
 
@@ -391,6 +397,7 @@ export class DevServerRuntime {
   private readonly isPortFree: IsPortFreeFn;
   private readonly notifyLog: DevServerNotifyLogFn | null;
   private readonly notifyStatus: DevServerNotifyStatusFn | null;
+  private readonly onSessionActivity: ((sessionId: string) => void) | null;
   private readonly logger: NonNullable<DevServerRuntimeDeps['logger']>;
 
   private readonly active = new Map<string, ActiveDevServer>();
@@ -427,6 +434,7 @@ export class DevServerRuntime {
     this.isPortFree = deps.isPortFree ?? isHostPortFree;
     this.notifyLog = deps.notifyLog ?? null;
     this.notifyStatus = deps.notifyStatus ?? null;
+    this.onSessionActivity = deps.onSessionActivity ?? null;
     this.logger = deps.logger ?? {
       log: (m) => console.log(m),
       warn: (m) => console.warn(m),
@@ -765,6 +773,14 @@ export class DevServerRuntime {
           WHERE id = ? AND runtime = ? AND status IN ('starting','ready')`,
       )
       .run(devServerId, DEV_SERVER_RUNTIME_KIND);
+    const sessionId =
+      this.active.get(devServerId)?.sessionId ??
+      (
+        this.db
+          .prepare(`SELECT session_id AS sessionId FROM worktree_preview_groups WHERE id = ?`)
+          .get(devServerId) as { sessionId: string } | undefined
+      )?.sessionId;
+    if (sessionId) this.onSessionActivity?.(sessionId);
   }
 
   /**

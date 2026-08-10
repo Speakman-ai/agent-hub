@@ -38,8 +38,15 @@ import {
   type StopVmmFn,
   type VmmHandle,
   type VmmLaunchSpec,
+  type VmmProcessIdentity,
+  vmmIdentityFilePath,
   vmmPidFilePath,
 } from './firecracker-session-env.js';
+import {
+  identitiesMatch,
+  parseVmmIdentityFile,
+  readLiveProcessIdentity,
+} from './vmm-process-identity.js';
 
 export type FirecrackerExecMode = 'local' | 'docker';
 
@@ -78,7 +85,41 @@ function processAlive(pid: number): boolean {
   }
 }
 
-async function killLocalVmmProcess(pid: number, vmId: string): Promise<void> {
+function loadStoredIdentity(identityFile?: string): VmmProcessIdentity | null {
+  if (!identityFile) return null;
+  try {
+    return parseVmmIdentityFile(readFileSync(identityFile, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Kill a local VMM only after proving the PID still refers to the same process
+ * we recorded at spawn (cmdline + starttime [+ exe]). A bare PID is reusable.
+ */
+async function killLocalVmmProcess(
+  pid: number,
+  vmId: string,
+  expected: VmmProcessIdentity | null,
+): Promise<void> {
+  const live = readLiveProcessIdentity(pid);
+  if (!live) {
+    // Already gone — nothing to kill.
+    return;
+  }
+  if (!expected) {
+    throw new Error(
+      `refusing to signal local VMM pid ${pid} (vm ${vmId}): no durable identity file ` +
+        `(vmm.identity.json) — cannot prove this PID is still our Firecracker/jailer`,
+    );
+  }
+  if (!identitiesMatch(expected, live)) {
+    throw new Error(
+      `refusing to signal pid ${pid} (vm ${vmId}): process identity mismatch ` +
+        `(PID was reused or identity file is stale)`,
+    );
+  }
   try {
     process.kill(-pid, 'SIGKILL');
   } catch (err) {
@@ -303,11 +344,12 @@ export function createSpawnVmm(cfg: FirecrackerExecConfig): SpawnVmmFn {
 }
 
 export function createStopVmm(cfg: FirecrackerExecConfig): StopVmmFn {
-  return async ({ vmId, pid, pidFile }) => {
+  return async ({ vmId, pid, pidFile, identityFile }) => {
     if (cfg.mode === 'local') {
-      const target = pid ?? (pidFile ? readPidFile(pidFile) : undefined);
+      const expected = loadStoredIdentity(identityFile);
+      const target = expected?.pid ?? pid ?? (pidFile ? readPidFile(pidFile) : undefined);
       if (target === undefined) return;
-      await killLocalVmmProcess(target, vmId);
+      await killLocalVmmProcess(target, vmId, expected);
       return;
     }
     // `docker rm -f` is the authoritative stop; killing the local client would
@@ -357,10 +399,12 @@ export async function stopStaleFirecrackerVmms(cfg: FirecrackerExecConfig): Prom
   }
   const stop = createStopVmm(cfg);
   for (const name of entries) {
-    const pidFile = vmmPidFilePath(`${runDir}/${name}`);
+    const vmDir = `${runDir}/${name}`;
+    const pidFile = vmmPidFilePath(vmDir);
+    const identityFile = vmmIdentityFilePath(vmDir);
     const pid = readPidFile(pidFile);
-    if (pid === undefined) continue;
-    await stop({ vmId: name, pid, pidFile });
+    if (pid === undefined && !loadStoredIdentity(identityFile)) continue;
+    await stop({ vmId: name, pid, pidFile, identityFile });
   }
 }
 
@@ -476,7 +520,9 @@ export function resolveHelperMounts(
     { path: dirOf(paths.kernelPath) },
     { path: paths.runDir },
     { path: env.AGENT_HUB_FIRECRACKER_BIN?.trim() || '/usr/bin/firecracker', readOnly: true },
+    { path: env.AGENT_HUB_JAILER_BIN?.trim() || '/usr/bin/jailer', readOnly: true },
   ];
+  if (paths.jailerChrootBase) mounts.push({ path: paths.jailerChrootBase });
   if (paths.diskHelper) mounts.push({ path: paths.diskHelper, readOnly: true });
   const worktrees = env.AGENT_HUB_HOST_WORKSPACES_DIR?.trim();
   if (worktrees) mounts.push({ path: worktrees });

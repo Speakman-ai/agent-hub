@@ -237,7 +237,7 @@ describe('FirecrackerSessionEnv start', () => {
     expect(config.vsock.guest_cid).toBe(3);
     expect(config['boot-source'].boot_args).toContain('ahvm.session=sess-1');
 
-    expect(spawned[0].file).toBe('firecracker');
+    expect(spawned[0].file).toBe('jailer');
     expect(env.vmStarted).toBe(true);
     expect(env.guestIp).toBe('172.30.0.3');
   });
@@ -255,16 +255,23 @@ describe('FirecrackerSessionEnv start', () => {
       vmId: 'ahvm-sess-1',
       pid: undefined,
       pidFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.pid',
+      identityFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.identity.json',
     });
     expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/api.sock');
     expect(removed).toContain('/run/agent-hub/vms/ahvm-sess-1/vsock.sock');
   });
 
-  it('boots under the jailer when asked', async () => {
-    const { env, spawned } = makeEnv({ useJailer: true, jailerUid: 1001, jailerGid: 1001 });
+  it('boots under the jailer by default', async () => {
+    const { env, spawned } = makeEnv({ jailerUid: 1001, jailerGid: 1001 });
     await env.ensureStarted();
     expect(spawned[0].file).toBe('jailer');
     expect(spawned[0].args).toContain('--chroot-base-dir');
+  });
+
+  it('can opt out of the jailer for debugging', async () => {
+    const { env, spawned } = makeEnv({ useJailer: false });
+    await env.ensureStarted();
+    expect(spawned[0].file).toBe('firecracker');
   });
 
   it('is idempotent across concurrent callers', async () => {
@@ -438,6 +445,7 @@ describe('FirecrackerSessionEnv dispose', () => {
       vmId: 'ahvm-sess-1',
       pid: 4242,
       pidFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.pid',
+      identityFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.identity.json',
     });
     expect(runs.at(-1)).toEqual(['ip', 'link', 'del', 'ahfct3']);
     expect(slots.released).toEqual([3]);
@@ -487,6 +495,26 @@ describe('FirecrackerSessionEnv dispose', () => {
     await env.dispose();
     await env.dispose();
     expect(hook).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when stopVmm rejects — leaves tap/slot/dir untouched', async () => {
+    const { env, stopVmm, slots, removed, runs } = makeEnv();
+    await env.ensureStarted();
+    const tapDeletesBefore = runs.filter((a) => a[1] === 'link' && a[2] === 'del').length;
+    // ensureStarted also calls stopVmm to clear leftovers — fail only on dispose.
+    stopVmm.mockRejectedValueOnce(new Error('identity mismatch'));
+
+    await expect(env.dispose()).rejects.toThrow(/identity mismatch/);
+    expect(env.disposed).toBe(false);
+    expect(slots.released).toEqual([]);
+    expect(removed).not.toContain('/run/agent-hub/vms/ahvm-sess-1');
+    expect(runs.filter((a) => a[1] === 'link' && a[2] === 'del')).toHaveLength(tapDeletesBefore);
+
+    // Retry succeeds after stopVmm recovers.
+    stopVmm.mockResolvedValueOnce(undefined);
+    await env.dispose();
+    expect(env.disposed).toBe(true);
+    expect(slots.released).toEqual([3]);
   });
 });
 

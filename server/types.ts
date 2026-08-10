@@ -3590,15 +3590,17 @@ export interface AppConfig {
   /**
    * Which SessionEnv backend runs per-session dev environments (dev server,
    * PTY host, port mapping). `auto` (the default) probes the host at boot and
-   * takes the strongest boundary available: `sysbox` when sysbox-runc is
-   * installed and registered with Docker, else `container` (privileged DinD)
-   * when docker is usable and container IPs are routable, else `host`.
-   * `firecracker` leads the `auto` order where the host can boot microVMs
-   * (`/dev/kvm` plus staged guest artifacts). `host` / `sysbox` / `container`
-   * / `firecracker` force a backend; a forced backend that fails its probe
-   * falls back with a logged warning. Configure via `sessionEnvAdapter` in
-   * config.json or env `AGENT_HUB_SESSION_ENV_ADAPTER`. Probe + selection
-   * logic: server/session-env/sysbox-capability.ts and
+   * picks `sysbox` when sysbox-runc is installed and registered with Docker,
+   * else `host`. MicroVM (`firecracker`) and privileged DinD (`container`) are
+   * never selected by `auto` — they require an explicit operator choice
+   * (agent CLIs still run host-side under `auto`, and privileged DinD is not
+   * a safe implicit fallback). Forced `sysbox` / `firecracker` fail closed
+   * when the probe fails (sessions error until the host is fixed or the mode
+   * is changed); forced `container` may degrade to `host` with a logged
+   * warning. Firecracker runs the VMM under the jailer by default. Configure
+   * via `sessionEnvAdapter` in config.json or env
+   * `AGENT_HUB_SESSION_ENV_ADAPTER`. Probe + selection:
+   * server/session-env/sysbox-capability.ts and
    * server/session-env/firecracker/firecracker-capability.ts; host install:
    * docs/deployment/SYSBOX-HOST-SETUP.md.
    */

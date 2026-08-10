@@ -271,6 +271,11 @@ import {
 import createChatHandler, { type ChatHandlerDeps, type WebSocketLike } from './chat.js';
 
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
+import {
+  DEFAULT_DEV_SERVER_PORT_ENTRY,
+  resolveDevServerPortEntries,
+} from './preview/dev-server-runtime.js';
+import { parseDevServerConfig } from './dev-server-config.js';
 import { createBackgroundShellRuntime } from './background-shells/background-shell-runtime-setup.js';
 import {
   BackgroundShellWatcher,
@@ -1026,6 +1031,9 @@ const { devServerRuntime } = createPreviewRuntimes({
     if (getSessionEnvSelection().adapter === 'host') return null;
     return sessionEnvManager.ensure(sessionId);
   },
+  onSessionActivity: (sessionId) => {
+    sessionEnvManager.get(sessionId)?.touch();
+  },
   devServerConfig: {
     urlBase: previewUrlBase,
     // Per-entry proxy URL: primary keeps the root mount, extra ports resolve to
@@ -1215,6 +1223,15 @@ const sessionEnvManager = new SessionEnvManager({
     // A session opted out of worktrees works directly in the project checkout.
     if (Number(session.use_worktree) === 1) return null;
     return findAgent(session.agent_id)?.project.cwd ?? null;
+  },
+  resolvePublishPorts: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session || session.deleted_at) return null;
+    const project = findAgent(session.agent_id)?.project;
+    if (!project) return null;
+    const parsed = parseDevServerConfig(project.prEnv?.devServer ?? {});
+    if (!parsed.ok) return [DEFAULT_DEV_SERVER_PORT_ENTRY.internalPort];
+    return resolveDevServerPortEntries(parsed.value).map((e) => e.internalPort);
   },
 });
 

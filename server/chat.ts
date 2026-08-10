@@ -43,6 +43,8 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { isDevServerConfigured } from './dev-server-config.js';
+import { getSessionEnvSelection } from './session-env/sysbox-capability.js';
+import { envOwnedHostCliRefusal } from './session-env/env-owned-cli-gate.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -2925,6 +2927,27 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // so we can post a card comment + augment the system prompt in one
       // place, regardless of which engine eventually spawns.
       let baseBranchAdvanced: import('./worktree.js').BaseBranchAdvancedInfo | null = null;
+
+      // Env-owned backends (Firecracker) keep the live worktree in the guest.
+      // Host CLI spawn would write a divergent second tree — refuse until
+      // guest-side CLI spawn exists.
+      const envOwnedCliRefusal = envOwnedHostCliRefusal(getSessionEnvSelection().adapter);
+      if (envOwnedCliRefusal) {
+        console.error(`[chat] ${envOwnedCliRefusal}`);
+        saveErrorMessage(sessionId, assistantMsgId, engine, model, envOwnedCliRefusal);
+        broadcast({
+          type: 'error',
+          messageId: assistantMsgId,
+          sessionId,
+          error: envOwnedCliRefusal,
+        });
+        try {
+          stmts.deleteActiveTask.run(sessionId);
+        } catch {}
+        recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+        drainQueue(sessionId);
+        return;
+      }
 
       let effectiveCwd: string = project.cwd;
       const pinnedSpawnCwd =
