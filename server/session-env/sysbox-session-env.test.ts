@@ -4,7 +4,22 @@ import type { HostChildLike, HostPtyFactory, HostPtyLike } from './host-session-
 import { SessionEnvClock } from './session-env.js';
 import { describeSessionEnvContract } from './session-env-contract.js';
 import { SYSBOX_SESSION_WORKSPACE } from './sysbox-exec-args.js';
-import { SysboxRunResult, SysboxSessionEnv, SysboxSessionEnvDeps } from './sysbox-session-env.js';
+import {
+  SysboxRunResult,
+  SysboxSessionEnv,
+  SysboxSessionEnvDeps,
+  isSysboxBaselineComm,
+} from './sysbox-session-env.js';
+
+describe('isSysboxBaselineComm', () => {
+  it('treats dockerd/containerd/sleep as idle baseline', () => {
+    expect(isSysboxBaselineComm('dockerd')).toBe(true);
+    expect(isSysboxBaselineComm('containerd')).toBe(true);
+    expect(isSysboxBaselineComm('sleep')).toBe(true);
+    expect(isSysboxBaselineComm('node')).toBe(false);
+    expect(isSysboxBaselineComm('postgres')).toBe(false);
+  });
+});
 
 // ── Fakes ─────────────────────────────────────────────────────────
 

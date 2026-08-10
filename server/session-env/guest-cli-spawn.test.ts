@@ -3,6 +3,10 @@ import {
   adaptSpawnEnvForGuest,
   buildGuestCliCommand,
   finalizeGuestSpawnEnv,
+  GUEST_CLI_HOME,
+  GUEST_RUNTIME_ROOT,
+  GUEST_SKILLS_ROOT,
+  GUEST_SPAWN_GUARDS_DIR,
   hostCwdToWorktreeRelative,
   shellQuote,
 } from './guest-cli-spawn.js';
@@ -28,7 +32,11 @@ describe('hostCwdToWorktreeRelative', () => {
 });
 
 describe('adaptSpawnEnvForGuest / finalizeGuestSpawnEnv', () => {
-  it('remaps HOME and drops host-only paths', () => {
+  it('remaps HOME outside the worktree and prepends spawn guards on PATH', () => {
+    expect(GUEST_CLI_HOME.startsWith(GUEST_RUNTIME_ROOT)).toBe(true);
+    expect(GUEST_SKILLS_ROOT.startsWith(GUEST_RUNTIME_ROOT)).toBe(true);
+    expect(GUEST_CLI_HOME.includes('/workspace')).toBe(false);
+
     const adapted = adaptSpawnEnvForGuest(
       {
         HOME: '/host/home',
@@ -36,25 +44,32 @@ describe('adaptSpawnEnvForGuest / finalizeGuestSpawnEnv', () => {
         AGENT_HUB_SKILLS_DIR: '/host/skills/agent-hub',
         AWS_CONFIG_FILE: '/host/aws/config',
         AGENT_HUB_URL: 'http://10.0.0.1:3051',
+        AGENT_HUB_PROTECT_SESSION_BRANCH: '1',
+        AGENT_HUB_REAL_GIT: '/host/usr/bin/git',
       },
       {
-        guestHome: '/workspace/.agent-hub/cli-home',
-        guestSkillsRoot: '/workspace/.agent-hub/bundled-skills',
+        guestHome: GUEST_CLI_HOME,
+        guestSkillsRoot: GUEST_SKILLS_ROOT,
       },
     );
-    expect(adapted.HOME).toBe('/workspace/.agent-hub/cli-home');
+    expect(adapted.HOME).toBe(GUEST_CLI_HOME);
     expect(adapted.ANTHROPIC_API_KEY).toBe('sk-test');
     expect(adapted.AGENT_HUB_URL).toBe('http://10.0.0.1:3051');
     expect(adapted.AWS_CONFIG_FILE).toBeUndefined();
-    expect(adapted.AGENT_HUB_SKILLS_DIR).toBe('/workspace/.agent-hub/bundled-skills/agent-hub');
+    expect(adapted.AGENT_HUB_SKILLS_DIR).toBe(`${GUEST_SKILLS_ROOT}/agent-hub`);
+    expect(adapted.AGENT_HUB_REAL_GIT).toBe('/usr/bin/git');
+    expect(adapted.AGENT_HUB_REAL_GH).toBe('/usr/bin/gh');
+    expect(adapted.AGENT_HUB_PROTECT_SESSION_BRANCH).toBe('1');
 
     const final = finalizeGuestSpawnEnv(
       adapted,
-      ['/workspace/.agent-hub/bundled-skills/agent-hub/scripts'],
-      '/workspace/.agent-hub/cli-home',
+      [`${GUEST_SKILLS_ROOT}/agent-hub/scripts`],
+      GUEST_CLI_HOME,
+      { spawnGuardsDir: GUEST_SPAWN_GUARDS_DIR },
     );
-    expect(final.PATH).toContain('/workspace/.agent-hub/cli-home/.local/bin');
-    expect(final.PATH).toContain('/workspace/.agent-hub/bundled-skills/agent-hub/scripts');
+    expect(final.PATH!.startsWith(`${GUEST_SPAWN_GUARDS_DIR}:`)).toBe(true);
+    expect(final.PATH).toContain(`${GUEST_CLI_HOME}/.local/bin`);
+    expect(final.PATH).toContain(`${GUEST_SKILLS_ROOT}/agent-hub/scripts`);
     expect(final.PATH).toContain('/usr/local/bin');
   });
 });

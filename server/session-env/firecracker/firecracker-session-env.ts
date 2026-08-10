@@ -457,7 +457,23 @@ export class FirecrackerSessionEnv implements SessionEnv {
       const reply = await awaitReply(stream, 5_000);
       this.touch();
       if (reply.kind !== 'ports') return true;
-      return reply.ports.length > 0;
+      if (reply.ports.length > 0) return true;
+
+      // Listening ports miss queue workers / compute jobs with no socket.
+      // Inventory workspace-user processes and treat any non-baseline as busy.
+      const uid = 1000;
+      const probe = await this.#execCapture(
+        `ps -eo uid=,comm= --no-headers 2>/dev/null | awk -v u=${uid} '$1==u {print $2}'`,
+        { cwd: '/', timeoutMs: 5_000, maxOutputBytes: 64 * 1024 },
+      );
+      if (probe.exitCode !== 0) return true;
+      const baseline = new Set(['ps', 'awk', 'bash', 'sh', 'dash', 'sleep', 'systemd', '(sd-pam)']);
+      const procs = probe.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .filter((comm) => !baseline.has(comm) && !comm.startsWith('systemd'));
+      return procs.length > 0;
     } catch {
       // Fail closed: an unreachable guest must not be deleted mid-workload.
       return true;

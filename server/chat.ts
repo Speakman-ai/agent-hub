@@ -2964,29 +2964,37 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         (session!.worktree_path || isNewEngineSession)
       ) {
         const priorWorktree = session!.worktree_path;
-        effectiveCwd = await ensureWorktree(
-          session!,
-          project.cwd,
-          agentId,
-          (project as ProjectWithCommands).commands?.install || null,
-          sessionPrBase,
-          (project as Project).repoUrl ?? null,
-          project.id,
-          (info) => {
-            baseBranchAdvanced = info;
-          },
-          (project as Project).githubRepo ?? null,
-          hostedBarePathForProject(project as Project),
-        );
-        session = stmts.getSession.get(sessionId) as SessionRow | undefined;
-        if (session) {
-          persistLegacyWikiHybridGateIfNeeded(session, sessionId);
-        }
-
-        if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
-          console.log(
-            `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
+        // After the first env-owned turn the host checkout is only a boot seed.
+        // Host-side fetch/rebase would mutate the stale seed while `/workspace`
+        // in the guest stays on the old history — skip maintenance and use the
+        // recorded path; guest worktreeIo owns the live tree.
+        if (envOwned && priorWorktree && !isNewEngineSession) {
+          effectiveCwd = priorWorktree;
+        } else {
+          effectiveCwd = await ensureWorktree(
+            session!,
+            project.cwd,
+            agentId,
+            (project as ProjectWithCommands).commands?.install || null,
+            sessionPrBase,
+            (project as Project).repoUrl ?? null,
+            project.id,
+            (info) => {
+              baseBranchAdvanced = info;
+            },
+            (project as Project).githubRepo ?? null,
+            hostedBarePathForProject(project as Project),
           );
+          session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+          if (session) {
+            persistLegacyWikiHybridGateIfNeeded(session, sessionId);
+          }
+
+          if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
+            console.log(
+              `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
+            );
+          }
         }
       } else if (!isNewEngineSession && !sessionUsesWorktree(session!) && session!.worktree_path) {
         console.log(
@@ -3892,7 +3900,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             guestHome: prepared.guestHome,
             guestSkillsRoot: prepared.guestSkillsRoot,
           });
-          guestEnv = finalizeGuestSpawnEnv(adapted, prepared.skillScriptDirs, prepared.guestHome);
+          guestEnv = finalizeGuestSpawnEnv(adapted, prepared.skillScriptDirs, prepared.guestHome, {
+            spawnGuardsDir: prepared.spawnGuardsDir,
+          });
           const hostWorktree = session!.worktree_path || effectiveCwd;
           guestCwdRel = hostCwdToWorktreeRelative(effectiveCwd, hostWorktree);
 
@@ -4360,8 +4370,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const codexFileChangeToolUseIds = new Set<string>();
 
       function handleParsedEvents(events: StreamEvent[]): void {
+        // Codex file-change enrichment reads the host seed checkout; under
+        // env-owned sharing the live edits exist only in the guest, so skip.
         const enriched =
-          engine === 'codex-cli'
+          engine === 'codex-cli' && !envOwned
             ? enrichCodexFileChangeDiffs(events, hostDiffCwd, {
                 fileChangeToolUseIds: codexFileChangeToolUseIds,
               })

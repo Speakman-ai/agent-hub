@@ -134,19 +134,12 @@ function makeIo(overrides: Partial<FirecrackerHostIo> = {}) {
   const io: FirecrackerHostIo = {
     run: async (argv) => {
       runs.push(argv);
-      // ensureFirecrackerGuestNat runs before tap create; give it a usable uplink.
-      if (argv[0] === 'ip' && argv.includes('route')) {
-        return {
-          ok: true,
-          stdout: '1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5\n',
-          stderr: '',
-        };
-      }
-      if (argv[0] === 'iptables' && argv.includes('-C')) {
-        return { ok: false, stdout: '', stderr: 'No chain/target/match by that name' };
-      }
-      if (argv[0] === 'sysctl' && argv[1] === '-n' && String(argv[2]).includes('bridge-nf')) {
-        return { ok: true, stdout: '1\n', stderr: '' };
+      // ensureFirecrackerGuestNat / tap ops go through fc-netctl.
+      if (typeof argv[0] === 'string' && argv[0].endsWith('fc-netctl.sh')) {
+        if (argv[1] === 'list-taps') {
+          return { ok: true, stdout: '', stderr: '' };
+        }
+        return { ok: true, stdout: '', stderr: '' };
       }
       return { ok: true, stdout: '', stderr: '' };
     },
@@ -228,10 +221,14 @@ describe('FirecrackerSessionEnv start', () => {
     const { env, runs, written, spawned } = makeEnv();
     await env.ensureStarted();
 
-    expect(runs.some((a) => a[0] === 'ip' && a[1] === 'tuntap' && a.includes('ahfct3'))).toBe(true);
+    expect(
+      runs.some(
+        (a) => a[0]?.endsWith('fc-netctl.sh') && a[1] === 'tap-create' && a.includes('ahfct3'),
+      ),
+    ).toBe(true);
     expect(runs.some((a) => a[0].endsWith('fc-prepare-disks.sh'))).toBe(true);
-    // Guest NAT is ensured before the tap is created.
-    expect(runs.some((a) => a[0] === 'sysctl' && a.includes('net.ipv4.ip_forward=1'))).toBe(true);
+    // Guest NAT is ensured before the tap is created (closed fc-netctl helper).
+    expect(runs.some((a) => a[0]?.endsWith('fc-netctl.sh') && a[1] === 'ensure-nat')).toBe(true);
 
     const config = JSON.parse([...written.values()][0]);
     expect(config['machine-config'].vcpu_count).toBeGreaterThan(0);
@@ -307,7 +304,7 @@ describe('FirecrackerSessionEnv start', () => {
     const { env, runs, slots } = makeEnv({ connect: guest.connect, readyTimeoutMs: 5 });
 
     await expect(env.ensureStarted()).rejects.toThrow(/did not answer within/);
-    expect(runs.some((a) => a[0] === 'ip' && a[1] === 'link' && a[2] === 'del')).toBe(true);
+    expect(runs.some((a) => a[0]?.endsWith('fc-netctl.sh') && a[1] === 'tap-delete')).toBe(true);
     expect(slots.released).toEqual([3]);
     expect(env.vmStarted).toBe(false);
   });
@@ -461,7 +458,7 @@ describe('FirecrackerSessionEnv dispose', () => {
       pidFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.pid',
       identityFile: '/run/agent-hub/vms/ahvm-sess-1/vmm.identity.json',
     });
-    expect(runs.at(-1)).toEqual(['ip', 'link', 'del', 'ahfct3']);
+    expect(runs.at(-1)).toEqual(['/usr/local/lib/agent-hub/fc-netctl.sh', 'tap-delete', 'ahfct3']);
     expect(slots.released).toEqual([3]);
     // The whole directory goes, not just the sockets start cleared out of the
     // way — leaving the disks behind would grow the run dir without bound.

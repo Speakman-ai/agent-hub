@@ -48,6 +48,7 @@ import {
   readLiveProcessIdentity,
 } from './vmm-process-identity.js';
 import { resolveFcJailManageHelper } from './firecracker-jailer-stage.js';
+import { resolveFcNetctlHelper } from './firecracker-vm-args.js';
 
 export type FirecrackerExecMode = 'local' | 'docker';
 
@@ -592,6 +593,9 @@ export function resolveHelperMounts(
 ): FirecrackerMount[] {
   const launchHelper = resolveFcLaunchVmmHelper(env);
   const jailHelper = resolveFcJailManageHelper(env);
+  const netctlHelper = resolveFcNetctlHelper(env);
+  const pathGuard =
+    env.AGENT_HUB_FIRECRACKER_PATH_GUARD?.trim() || '/usr/local/lib/agent-hub/fc-path-guard.sh';
   const mounts: FirecrackerMount[] = [
     { path: dirOf(paths.kernelPath) },
     { path: paths.runDir },
@@ -599,9 +603,11 @@ export function resolveHelperMounts(
     { path: env.AGENT_HUB_JAILER_BIN?.trim() || '/usr/bin/jailer', readOnly: true },
     { path: launchHelper, readOnly: true },
     { path: jailHelper, readOnly: true },
+    { path: netctlHelper, readOnly: true },
+    { path: pathGuard, readOnly: true },
   ];
   // Finalize-runner helpers often lack kmod/procps; bind the host tools the
-  // NAT reconcile needs so `modprobe` / `sysctl` are not mysterious PATH misses.
+  // netctl helper needs so `modprobe` / `sysctl` are not mysterious PATH misses.
   for (const hostTool of [
     '/usr/sbin/modprobe',
     '/sbin/modprobe',

@@ -266,9 +266,45 @@ else
   echo "warning: jail manage helper not found at ${JAIL_HELPER_SRC}" >&2
 fi
 
+NETCTL_SRC="${REPO_ROOT}/server/session-env/firecracker/build/fc-netctl.sh"
+PATH_GUARD_SRC="${REPO_ROOT}/server/session-env/firecracker/build/fc-path-guard.sh"
+if [[ -f "${PATH_GUARD_SRC}" ]]; then
+  install -D -m 0644 "${PATH_GUARD_SRC}" /usr/local/lib/agent-hub/fc-path-guard.sh
+  echo "==> Installed fc-path-guard.sh"
+fi
+if [[ -f "${NETCTL_SRC}" ]]; then
+  install -D -m 0755 "${NETCTL_SRC}" /usr/local/lib/agent-hub/fc-netctl.sh
+  echo "==> Installed fc-netctl.sh"
+else
+  echo "warning: netctl helper not found at ${NETCTL_SRC}" >&2
+fi
+
+# Fixed path allowlist the root helpers enforce. WORKTREE_ROOTS covers the
+# common Hub data layouts; extend via the conf file if your install differs.
+mkdir -p /etc/agent-hub
+HUB_HOME="$(getent passwd "${HUB_USER}" 2>/dev/null | cut -d: -f6 || true)"
+WORKTREE_ROOTS="/var/lib/agent-hub/workspaces"
+if [[ -n "${HUB_HOME}" ]]; then
+  WORKTREE_ROOTS="${WORKTREE_ROOTS}:${HUB_HOME}/.agent-hub/workspaces"
+fi
+cat >/etc/agent-hub/firecracker-roots.conf <<ROOTS
+# Managed by ops/scripts/setup-firecracker-host.sh
+ARTIFACT_DIR="${ARTIFACT_DIR}"
+RUN_DIR="${VM_SCRATCH}"
+JAILER_DIR="${ARTIFACT_DIR}/jailer"
+WORKTREE_ROOTS="${WORKTREE_ROOTS}"
+BRIDGE="${BRIDGE}"
+BRIDGE_CIDR="${BRIDGE_CIDR}"
+SUBNET="${SUBNET}"
+GATEWAY_IP="${BRIDGE_CIDR%%/*}"
+ROOTS
+chmod 0644 /etc/agent-hub/firecracker-roots.conf
+echo "==> Wrote /etc/agent-hub/firecracker-roots.conf"
+
 # Privileged operations the Hub runs via `sudo -n` in local exec mode, named
 # explicitly. A blanket NOPASSWD:ALL would make the microVM boundary pointless.
-# Do NOT authorize `sh`/`bash` — VMM launch goes through fc-launch-vmm.sh.
+# Do NOT authorize `sh`/`bash`, and do NOT authorize raw ip/modprobe/sysctl/
+# iptables — those run only inside the closed helpers below.
 #
 # Only meaningful for a Hub running directly on the host. A containerized Hub
 # has no account here and reaches these operations through a privileged helper
@@ -279,10 +315,7 @@ if id -u "${HUB_USER}" >/dev/null 2>&1; then
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-prepare-disks.sh
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-launch-vmm.sh
 ${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-jail-manage.sh
-${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/ip, /sbin/ip, /usr/bin/ip
-${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/modprobe, /sbin/modprobe
-${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/sysctl, /sbin/sysctl
-${HUB_USER} ALL=(root) NOPASSWD: /usr/sbin/iptables, /sbin/iptables, /usr/sbin/iptables-nft, /usr/sbin/xtables-nft-multi
+${HUB_USER} ALL=(root) NOPASSWD: /usr/local/lib/agent-hub/fc-netctl.sh
 SUDOERS
   chmod 0440 /etc/sudoers.d/agent-hub-firecracker
   visudo -cf /etc/sudoers.d/agent-hub-firecracker >/dev/null

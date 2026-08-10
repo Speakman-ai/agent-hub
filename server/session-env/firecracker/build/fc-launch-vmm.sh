@@ -12,10 +12,25 @@
 # Authorized via sudoers (local exec) or used as the docker VMM entrypoint.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f /usr/local/lib/agent-hub/fc-path-guard.sh ]]; then
+  # shellcheck disable=SC1091
+  source /usr/local/lib/agent-hub/fc-path-guard.sh
+elif [[ -f "${SCRIPT_DIR}/fc-path-guard.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/fc-path-guard.sh"
+fi
+
 sock=${1:?vsock path required}
 owner=${2:?owner uid:gid required}
 mode=${3:?mode required (firecracker|jailer)}
 shift 3
+
+fc_assert_under_roots 'vsock path' "$sock"
+if [[ ! "$owner" =~ ^[0-9]+:[0-9]+$ ]]; then
+  echo "fc-launch-vmm: owner must be uid:gid numeric (got: $owner)" >&2
+  exit 2
+fi
 
 case "$mode" in
   firecracker)
@@ -42,6 +57,10 @@ case "$mode" in
     exit 2
     ;;
 esac
+
+# Every absolute path in the remaining argv must sit under configured roots
+# (api sock, config, chroot base, jail id paths, log files, …).
+fc_assert_argv_paths_under_roots "$@"
 
 "$bin" "$@" &
 vmm=$!

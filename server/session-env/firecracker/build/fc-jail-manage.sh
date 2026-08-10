@@ -12,28 +12,22 @@
 # Authorized via sudoers — do not expand this into a general shell.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f /usr/local/lib/agent-hub/fc-path-guard.sh ]]; then
+  # shellcheck disable=SC1091
+  source /usr/local/lib/agent-hub/fc-path-guard.sh
+elif [[ -f "${SCRIPT_DIR}/fc-path-guard.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/fc-path-guard.sh"
+fi
+
 cmd=${1:?command required}
 shift
-
-# Reject empty, relative, traversal, whitespace, and control characters.
-assert_safe_abs_path() {
-  local label=$1 path=$2
-  if [[ -z "$path" || "$path" != /* ]]; then
-    echo "fc-jail-manage: $label must be an absolute path: ${path:-"(empty)"}" >&2
-    exit 2
-  fi
-  case "$path" in
-    *..*|*$'\n'*|*$'\r'*|*' '*)
-      echo "fc-jail-manage: refused unclean path ($label): $path" >&2
-      exit 2
-      ;;
-  esac
-}
 
 case "$cmd" in
   clean)
     tree=${1:?jail tree required}
-    assert_safe_abs_path 'jail tree' "$tree"
+    fc_assert_under_roots 'jail tree' "$tree"
     if [[ "$tree" != */firecracker/* ]]; then
       echo "fc-jail-manage: clean path must contain /firecracker/: $tree" >&2
       exit 2
@@ -57,11 +51,11 @@ case "$cmd" in
     uid=${5:?uid required}
     gid=${6:?gid required}
     config_src=${7:?config source required}
-    assert_safe_abs_path 'chroot root' "$root"
-    assert_safe_abs_path 'kernel' "$kernel"
-    assert_safe_abs_path 'rootfs' "$rootfs"
-    assert_safe_abs_path 'workspace' "$workspace"
-    assert_safe_abs_path 'config source' "$config_src"
+    fc_assert_under_roots 'chroot root' "$root"
+    fc_assert_under_roots 'kernel' "$kernel"
+    fc_assert_under_roots 'rootfs' "$rootfs"
+    fc_assert_under_roots 'workspace' "$workspace"
+    fc_assert_under_roots 'config source' "$config_src"
     if [[ ! "$uid" =~ ^[0-9]+$ || ! "$gid" =~ ^[0-9]+$ ]]; then
       echo "fc-jail-manage: uid/gid must be numeric (got uid=$uid gid=$gid)" >&2
       exit 2

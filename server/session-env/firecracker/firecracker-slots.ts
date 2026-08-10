@@ -20,6 +20,7 @@ import {
   FIRECRACKER_MIN_SLOT,
   FIRECRACKER_SUBNET_PREFIX,
   firecrackerSubnetCidr,
+  resolveFcNetctlHelper,
 } from './firecracker-vm-args.js';
 import type { FirecrackerSlotPool } from './firecracker-session-env.js';
 
@@ -72,6 +73,13 @@ export class InMemorySlotPool implements FirecrackerSlotPool {
 
 /** Commands that create the shared bridge every session tap attaches to. */
 export function buildEnsureBridgeArgv(): string[][] {
+  // Prefer the closed netctl helper; keep the historical raw argv shape as the
+  // fallback documentation of what netctl runs (unit tests assert both).
+  return [[resolveFcNetctlHelper(), 'ensure-bridge']];
+}
+
+/** @deprecated Prefer buildEnsureBridgeArgv(); retained for NAT shape tests. */
+export function buildEnsureBridgeRawIpArgv(): string[][] {
   return [
     ['ip', 'link', 'add', FIRECRACKER_BRIDGE_NAME, 'type', 'bridge'],
     [
@@ -328,32 +336,17 @@ export async function ensureFirecrackerGuestNat(
   deps: ReconcileFirecrackerHostDeps,
 ): Promise<boolean> {
   const logger = deps.logger ?? { warn: (msg: string) => console.warn(msg) };
-  const route = await deps.run(['ip', '-o', 'route', 'get', '1.1.1.1']);
-  const uplink = parseUplinkDev(route.ok ? route.stdout : '');
-  if (!uplink) {
+  // Closed helper owns uplink discovery, br_netfilter, sysctl, and iptables.
+  // The Hub process must not hold passwordless sudo for those binaries.
+  const helper = resolveFcNetctlHelper();
+  const res = await deps.run([helper, 'ensure-nat']);
+  if (!res.ok) {
     logger.warn(
-      '[firecracker] no default uplink — guests will have no outbound network ' +
-        `(ip route get 1.1.1.1: ${(route.stderr || route.stdout).trim() || 'empty'})`,
+      `[firecracker] fc-netctl ensure-nat failed: ${res.stderr.trim() || res.stdout.trim() || 'unknown'}`,
     );
     return false;
   }
-
-  const bridgeNfOk = await ensureBridgeNetfilter(deps);
-
-  const { required, optional } = buildEnsureGuestNatArgv(uplink);
-  const sysctl = await deps.run(required[0]!);
-  if (!sysctl.ok) {
-    logger.warn(`[firecracker] failed to enable ip_forward: ${sysctl.stderr.trim()}`);
-  }
-
-  const iptablesOk = await ensureIptablesRulePairs(deps.run, required.slice(1), logger, {
-    warnOnFailure: true,
-  });
-  // Optional DOCKER-USER rules: chain may not exist when Docker is absent.
-  await ensureIptablesRulePairs(deps.run, optional, logger, { warnOnFailure: false });
-  // Forwarding must actually be on — MASQUERADE alone does not move packets.
-  // Bridge netfilter is required for the inter-TAP DROP to see L2 traffic.
-  return sysctl.ok && iptablesOk && bridgeNfOk;
+  return true;
 }
 
 /**
@@ -373,18 +366,14 @@ export async function reconcileFirecrackerHost(
   deps: ReconcileFirecrackerHostDeps,
 ): Promise<ReconcileFirecrackerHostResult> {
   const logger = deps.logger ?? { warn: (msg: string) => console.warn(msg) };
+  const helper = resolveFcNetctlHelper();
 
-  let bridgeReady = true;
-  for (const argv of buildEnsureBridgeArgv()) {
-    const res = await deps.run(argv);
-    // "File exists" / "RTNETLINK answers: File exists" is the normal path on
-    // every boot after the first; only a different failure is a problem.
-    if (!res.ok && !/exists/i.test(res.stderr)) {
-      bridgeReady = false;
-      logger.warn(
-        `[firecracker] failed to prepare bridge via \`${argv.join(' ')}\`: ${res.stderr.trim()}`,
-      );
-    }
+  const bridge = await deps.run([helper, 'ensure-bridge']);
+  const bridgeReady = bridge.ok || /exists/i.test(bridge.stderr) || /exists/i.test(bridge.stdout);
+  if (!bridgeReady) {
+    logger.warn(
+      `[firecracker] failed to prepare bridge via fc-netctl: ${bridge.stderr.trim() || bridge.stdout.trim()}`,
+    );
   }
 
   let natReady = await ensureFirecrackerGuestNat(deps);
@@ -406,17 +395,20 @@ export async function reconcileFirecrackerHost(
     }
   }
 
-  const listed = await deps.run(['ip', '-o', 'link', 'show']);
+  const listed = await deps.run([helper, 'list-taps']);
   if (!listed.ok) {
-    logger.warn(`[firecracker] could not list host interfaces: ${listed.stderr.trim()}`);
+    logger.warn(`[firecracker] could not list session taps: ${listed.stderr.trim()}`);
     return { bridgeReady, natReady, deletedTaps: [] };
   }
 
   const deletedTaps: string[] = [];
   // Only reclaim taps when stale VMMs are confirmed gone (or no stop hook).
   if (staleVmmsStopped) {
-    for (const tap of parseSessionTapNames(listed.stdout)) {
-      const res = await deps.run(['ip', 'link', 'del', tap]);
+    for (const tap of listed.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((n) => /^ahfct\d+$/.test(n))) {
+      const res = await deps.run([helper, 'tap-delete', tap]);
       if (res.ok) deletedTaps.push(tap);
       else logger.warn(`[firecracker] failed to delete stale tap ${tap}: ${res.stderr.trim()}`);
     }

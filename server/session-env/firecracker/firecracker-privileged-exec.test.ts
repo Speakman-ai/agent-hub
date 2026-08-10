@@ -260,6 +260,8 @@ describe('resolveHelperMounts', () => {
     expect(byPath.has('/var/lib/agent-hub/firecracker')).toBe(true);
     expect(byPath.get('/usr/bin/firecracker')?.readOnly).toBe(true);
     expect(byPath.get('/usr/local/lib/agent-hub/fc-prepare-disks.sh')?.readOnly).toBe(true);
+    expect(byPath.get('/usr/local/lib/agent-hub/fc-netctl.sh')?.readOnly).toBe(true);
+    expect(byPath.get('/usr/local/lib/agent-hub/fc-path-guard.sh')?.readOnly).toBe(true);
   });
 
   it('drops the run directory when the artifact mount already covers it', () => {

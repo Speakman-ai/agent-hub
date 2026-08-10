@@ -305,15 +305,22 @@ export function buildJailerArgv(opts: BuildJailerArgvOpts): string[] {
   return argv;
 }
 
-/** Host commands that create and tear down a VM's tap device. */
+/** Default closed net helper (sudoers / docker entrypoint). */
+export const FC_NETCTL_HELPER_DEFAULT = '/usr/local/lib/agent-hub/fc-netctl.sh';
+
+export function resolveFcNetctlHelper(env: NodeJS.ProcessEnv = process.env): string {
+  return env.AGENT_HUB_FIRECRACKER_NETCTL_HELPER?.trim() || FC_NETCTL_HELPER_DEFAULT;
+}
+
+/**
+ * Host commands that create and tear down a VM's tap device.
+ * Routed through {@link resolveFcNetctlHelper} so local sudoers never grants
+ * raw `ip` to the Hub process.
+ */
 export function buildCreateTapArgv(plan: VmNetworkPlan): string[][] {
-  return [
-    ['ip', 'tuntap', 'add', plan.tapName, 'mode', 'tap'],
-    ['ip', 'link', 'set', plan.tapName, 'master', FIRECRACKER_BRIDGE_NAME],
-    ['ip', 'link', 'set', plan.tapName, 'up'],
-  ];
+  return [[resolveFcNetctlHelper(), 'tap-create', plan.tapName]];
 }
 
 export function buildDeleteTapArgv(plan: VmNetworkPlan): string[] {
-  return ['ip', 'link', 'del', plan.tapName];
+  return [resolveFcNetctlHelper(), 'tap-delete', plan.tapName];
 }
