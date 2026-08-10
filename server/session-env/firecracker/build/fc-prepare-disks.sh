@@ -64,10 +64,12 @@ for required in BASE_ROOTFS ROOTFS_OUT WORKSPACE_OUT WORKTREE; do
 done
 
 # Refuse agent-controlled paths outside the host's configured Firecracker roots.
-fc_assert_under_roots 'base-rootfs' "${BASE_ROOTFS}"
-fc_assert_under_roots 'rootfs-out' "${ROOTFS_OUT}"
-fc_assert_under_roots 'workspace-out' "${WORKSPACE_OUT}"
-fc_assert_under_roots 'worktree' "${WORKTREE}"
+# Inputs (base image, worktree) vs outputs (per-VM disks) use different root
+# sets so a Hub-writable worktree symlink cannot retarget truncate/mkfs at /dev.
+fc_assert_under_roots 'base-rootfs' "${BASE_ROOTFS}" ARTIFACT_DIR RUN_DIR
+fc_assert_output_under_roots 'rootfs-out' "${ROOTFS_OUT}"
+fc_assert_output_under_roots 'workspace-out' "${WORKSPACE_OUT}"
+fc_assert_worktree_under_roots 'worktree' "${WORKTREE}"
 
 [[ -f "${BASE_ROOTFS}" ]] || { echo "fc-prepare-disks: base rootfs not found: ${BASE_ROOTFS}" >&2; exit 1; }
 [[ -d "${WORKTREE}" ]] || { echo "fc-prepare-disks: worktree not found: ${WORKTREE}" >&2; exit 1; }

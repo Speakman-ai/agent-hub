@@ -94,25 +94,27 @@ export const GUEST_CLI_INSTALL_BY_ENGINE: Record<
 };
 
 type GuestAbsWriter = {
-  writeGuestFile?(guestPath: string, contents: Buffer): Promise<void>;
+  writeGuestFile?(guestPath: string, contents: Buffer, opts?: { mode?: string }): Promise<void>;
 };
 
 async function writeAbsGuestFile(
   env: SessionEnv,
   absPath: string,
   contents: Buffer | string,
+  opts: { mode?: string } = {},
 ): Promise<void> {
   const buf = typeof contents === 'string' ? Buffer.from(contents) : contents;
   const writer = env as SessionEnv & GuestAbsWriter;
   if (typeof writer.writeGuestFile === 'function') {
-    await writer.writeGuestFile(absPath, buf);
+    await writer.writeGuestFile(absPath, buf, opts);
     return;
   }
   // Fallback for adapters without an absolute write: base64 via shell.
   const dir = path.posix.dirname(absPath);
   const b64 = buf.toString('base64');
+  const mode = opts.mode ? ` && chmod ${opts.mode} ${shellQuote(absPath)}` : '';
   const result = await env.worktreeIo.exec(
-    `mkdir -p ${shellQuote(dir)} && printf '%s' ${shellQuote(b64)} | base64 -d > ${shellQuote(absPath)}`,
+    `mkdir -p ${shellQuote(dir)} && printf '%s' ${shellQuote(b64)} | base64 -d > ${shellQuote(absPath)}${mode}`,
     { cwd: '.', timeoutMs: 120_000 },
   );
   if (result.exitCode !== 0) {
@@ -409,11 +411,26 @@ export async function stageGuestSpawnGuards(env: SessionEnv): Promise<string> {
     const hostPath = path.join(HOST_SPAWN_GUARDS_DIR, name);
     const buf = await readFile(hostPath);
     const guestAbs = path.posix.join(GUEST_SPAWN_GUARDS_DIR, name);
-    await writeAbsGuestFile(env, guestAbs, buf);
+    // Pass mode through write-file so root vm-agent chmod's before the runner
+    // user would need to — a post-write chmod as runner fails on root-owned files.
     const mode = name.endsWith('.sh') ? '0644' : '0755';
-    await env.worktreeIo.exec(`chmod ${mode} ${shellQuote(guestAbs)}`, { cwd: '.' });
+    await writeAbsGuestFile(env, guestAbs, buf, { mode });
+    if (!name.endsWith('.sh')) {
+      const check = await env.worktreeIo.exec(`test -x ${shellQuote(guestAbs)}`, { cwd: '.' });
+      if (check.exitCode !== 0) {
+        throw new Error(
+          `Guest spawn guard ${guestAbs} is not executable after staging ` +
+            `(chmod/mode handoff failed). stderr: ${check.stderr.trim() || '(empty)'}`,
+        );
+      }
+    }
   }
-  await env.worktreeIo.exec(`touch ${shellQuote(marker)}`, { cwd: '.' });
+  const touch = await env.worktreeIo.exec(`touch ${shellQuote(marker)}`, { cwd: '.' });
+  if (touch.exitCode !== 0) {
+    throw new Error(
+      `Failed to write spawn-guards staging marker: ${touch.stderr.trim() || touch.stdout.trim()}`,
+    );
+  }
   return GUEST_SPAWN_GUARDS_DIR;
 }
 

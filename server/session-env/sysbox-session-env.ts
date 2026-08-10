@@ -79,7 +79,9 @@ export type SysboxRunFn = (argv: string[]) => Promise<SysboxRunResult>;
 export function isSysboxBaselineComm(comm: string): boolean {
   const c = comm.toLowerCase();
   if (!c) return true;
-  return /^(pause|cat|sh|bash|sleep|dockerd|containerd|containerd-shim|containerd-shim-runc-v2|runc|entrypoint\.sh|docker-init|docker-proxy)$/.test(
+  // Do NOT treat bash/sh/sleep as baseline — user jobs like `bash worker.sh`
+  // or `sleep 3600` must keep the env alive for the idle reaper.
+  return /^(pause|dockerd|containerd|containerd-shim|containerd-shim-runc-v2|runc|entrypoint\.sh|docker-init|docker-proxy)$/.test(
     c,
   );
 }
@@ -394,8 +396,11 @@ export class SysboxSessionEnv implements SessionEnv {
             [...this.declaredPorts]
               .sort((a, b) => a - b)
               .map(async (internalPort) => {
-                // Clear the pre-start mapping so mapPortPreStart reallocates.
+                // Clear both caches — portMappings holds the resolved Promise
+                // that mapPortPreStart returns first, so deleting only
+                // settledMappings still reuses the collided host port.
                 this.settledMappings.delete(internalPort);
+                this.portMappings.delete(internalPort);
                 const mapping = await this.mapPortPreStart(internalPort);
                 return { internalPort, hostPort: mapping.hostPort };
               }),

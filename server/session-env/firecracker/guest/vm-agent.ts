@@ -420,8 +420,15 @@ class Connection {
   }
 
   async #writeFile(request: VmAgentWriteFileRequest): Promise<void> {
-    await writeFile(request.path, Buffer.from(request.contentBase64, 'base64'));
-    if (request.mode) await chmod(request.path, Number.parseInt(request.mode, 8));
+    const mode = request.mode ? Number.parseInt(request.mode, 8) : undefined;
+    await writeFile(
+      request.path,
+      Buffer.from(request.contentBase64, 'base64'),
+      mode !== undefined && !Number.isNaN(mode) ? { mode } : undefined,
+    );
+    // chmod after write as a belt-and-suspenders for filesystems that ignore
+    // the create mode, and so existing files get the requested bits too.
+    if (mode !== undefined && !Number.isNaN(mode)) await chmod(request.path, mode);
     this.sendJson('reply', { kind: 'written' });
     this.finish();
   }
