@@ -1052,11 +1052,14 @@ export class FirecrackerSessionEnv implements SessionEnv {
 
   dispose(opts: SessionEnvDisposeOpts = {}): Promise<void> {
     if (this.#disposePromise) return this.#disposePromise;
-    this.#disposePromise = this.#doDispose(opts.graceMs ?? DEFAULT_DISPOSE_GRACE_MS);
+    this.#disposePromise = this.#doDispose(
+      opts.graceMs ?? DEFAULT_DISPOSE_GRACE_MS,
+      opts.forgetWorkspace === true,
+    );
     return this.#disposePromise;
   }
 
-  async #doDispose(graceMs: number): Promise<void> {
+  async #doDispose(graceMs: number, forgetWorkspace: boolean): Promise<void> {
     // Refuse new work while tearing down, but only commit disposed + clear the
     // dispose latch after stopVmm succeeds — a failed stop must leave taps /
     // slots / disks alone and remain retryable.
@@ -1078,7 +1081,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
         // run under, which is stronger than any per-process signal.
       }
 
-      await this.#teardownVm();
+      await this.#teardownVm({ forgetWorkspace });
 
       this.settledMappings.clear();
       this.#teardownIncomplete = false;
@@ -1098,11 +1101,13 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
 
   /**
-   * Kill the VMM, drop the tap, release the slot, remove the VM directory.
+   * Kill the VMM, drop the tap, release the slot, remove the control dir.
+   * The workspace disk stays unless `forgetWorkspace` — otherwise the next
+   * boot reseeds from the host scaffold and the session's commits vanish.
    * Fail closed: if the VMM cannot be proven stopped, leave disks/taps alone
    * and surface the error — continuing would recreate the corruption path.
    */
-  async #teardownVm(): Promise<void> {
+  async #teardownVm(opts: { forgetWorkspace?: boolean } = {}): Promise<void> {
     const vmm = this.#vmProcess;
     // Keep #vmProcess until stop succeeds so a retry can still signal it.
     if (vmm || (await this.io.isDirectory(this.vmDir).catch(() => false))) {
@@ -1141,6 +1146,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
         `SessionEnv[${this.sessionId}] failed to remove ${this.vmDir}: ${String(err)}`,
       );
     });
+    if (!opts.forgetWorkspace) return;
     // Disk images live under the root-owned runDir — remove via the helper.
     const helper = this.paths.diskHelper ?? DEFAULT_DISK_HELPER;
     const cleaned = await this.io.run([helper, 'clean', '--vm-id', this.vmId]);

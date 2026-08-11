@@ -448,7 +448,7 @@ describe('FirecrackerSessionEnv ports', () => {
 });
 
 describe('FirecrackerSessionEnv dispose', () => {
-  it('kills the VMM, drops the tap, releases the slot, and clears the run dir', async () => {
+  it('kills the VMM, drops the tap, releases the slot, and keeps the workspace disk', async () => {
     const { env, runs, slots, removed, stopVmm } = makeEnv();
     await env.ensureStarted();
     await env.dispose();
@@ -460,15 +460,24 @@ describe('FirecrackerSessionEnv dispose', () => {
       identityFile: '/run/agent-hub/vm-control/ahvm-sess-1/vmm.identity.json',
     });
     expect(runs.some((a) => a[0]?.endsWith('fc-netctl.sh') && a[1] === 'tap-delete')).toBe(true);
+    // Hub restart / idle reap must not delete workspace.ext4 — the next boot
+    // reattaches it. Session archive passes forgetWorkspace to clean.
+    expect(runs.some((a) => a[0]?.endsWith('fc-prepare-disks.sh') && a[1] === 'clean')).toBe(false);
+    expect(slots.released).toEqual([3]);
+    // Control-plane dir is Hub-removable; disk images stay under runDir.
+    expect(removed.at(-1)).toBe('/run/agent-hub/vm-control/ahvm-sess-1');
+  });
+
+  it('deletes the workspace disk only when the session itself is gone', async () => {
+    const { env, runs } = makeEnv();
+    await env.ensureStarted();
+    await env.dispose({ forgetWorkspace: true });
     expect(runs.at(-1)).toEqual([
       '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
       'clean',
       '--vm-id',
       'ahvm-sess-1',
     ]);
-    expect(slots.released).toEqual([3]);
-    // Control-plane dir is Hub-removable; disk images go through the helper.
-    expect(removed.at(-1)).toBe('/run/agent-hub/vm-control/ahvm-sess-1');
   });
 
   it('signals live processes before tearing the VM down', async () => {

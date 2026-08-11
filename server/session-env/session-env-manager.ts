@@ -26,7 +26,7 @@
  * idle reaper, not by any single feature stopping.
  */
 
-import type { SessionEnv, SessionEnvKind } from './session-env.js';
+import type { SessionEnv, SessionEnvDisposeOpts, SessionEnvKind } from './session-env.js';
 import { createSessionEnv, type CreateSessionEnvOpts } from './select-session-env.js';
 import { getSessionEnvSelection, whenSessionEnvSelectionReady } from './sysbox-capability.js';
 
@@ -208,7 +208,7 @@ export class SessionEnvManager {
   }
 
   /** Tear down one session's env. Idempotent. */
-  async dispose(sessionId: string): Promise<void> {
+  async dispose(sessionId: string, opts: SessionEnvDisposeOpts = {}): Promise<void> {
     const entry = this.entries.get(sessionId);
     if (!entry) {
       // Already being torn down by another caller. Reporting "done" while the
@@ -223,7 +223,7 @@ export class SessionEnvManager {
     // taps/disks while stopVmm is still failing.
     let teardown = this.teardowns.get(sessionId);
     if (!teardown) {
-      teardown = this.#teardown(sessionId, entry).finally(() => {
+      teardown = this.#teardown(sessionId, entry, opts).finally(() => {
         if (this.teardowns.get(sessionId) === teardown) this.teardowns.delete(sessionId);
       });
       this.teardowns.set(sessionId, teardown);
@@ -232,7 +232,7 @@ export class SessionEnvManager {
     if (this.entries.get(sessionId) === entry) this.entries.delete(sessionId);
   }
 
-  async #teardown(sessionId: string, entry: Entry): Promise<void> {
+  async #teardown(sessionId: string, entry: Entry, opts: SessionEnvDisposeOpts): Promise<void> {
     let env = entry.env;
     if (!env) {
       // Creation still in flight — wait for it so we dispose a real env
@@ -241,7 +241,7 @@ export class SessionEnvManager {
     }
     if (!env) return;
     try {
-      await env.dispose();
+      await env.dispose(opts);
     } catch (err) {
       this.logger.warn(
         `[session-env] ${sessionId}: dispose failed: ${err instanceof Error ? err.message : String(err)}`,

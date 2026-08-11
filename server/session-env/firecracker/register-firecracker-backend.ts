@@ -16,10 +16,13 @@
 import { registerSessionEnvBackend, unregisterSessionEnvBackend } from '../select-session-env.js';
 import {
   FirecrackerSessionEnv,
+  defaultFirecrackerHostIo,
+  type FirecrackerHostIo,
   type FirecrackerSessionEnvDeps,
   type FirecrackerPaths,
   type FirecrackerSlotPool,
 } from './firecracker-session-env.js';
+import { sessionVmId } from './firecracker-vm-args.js';
 import {
   createFirecrackerHostIo,
   createSpawnVmm,
@@ -112,6 +115,29 @@ export function firecrackerExecDefaults(
     stopVmm: createStopVmm(cfg),
     useJailer: resolveFirecrackerUseJailer(cfg),
   };
+}
+
+/**
+ * Delete the persisted workspace disk for a session that is itself gone.
+ *
+ * Idle reap and Hub restart leave the image so the next turn can reattach.
+ * Session archive/delete must still remove it even when no env is in memory.
+ */
+export async function forgetPersistedFirecrackerDisks(
+  sessionId: string,
+  opts: { io?: FirecrackerHostIo; paths?: FirecrackerPaths } = {},
+): Promise<void> {
+  const paths = opts.paths ?? firecrackerHostPaths();
+  const io = opts.io ?? defaultFirecrackerHostIo;
+  const helper = paths.diskHelper ?? '/usr/local/lib/agent-hub/fc-prepare-disks.sh';
+  const cleaned = await io.run([helper, 'clean', '--vm-id', sessionVmId(sessionId)]);
+  if (!cleaned.ok) {
+    console.warn(
+      `[firecracker] failed to forget workspace for ${sessionId}: ${
+        cleaned.stderr.trim() || cleaned.stdout.trim()
+      }`,
+    );
+  }
 }
 
 /** Test-only: drop the backend so `auto` stops considering it. */

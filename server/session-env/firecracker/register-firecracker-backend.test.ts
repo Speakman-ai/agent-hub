@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { resolveFirecrackerUseJailer } from './register-firecracker-backend.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  forgetPersistedFirecrackerDisks,
+  resolveFirecrackerUseJailer,
+} from './register-firecracker-backend.js';
 import type { FirecrackerExecConfig } from './firecracker-privileged-exec.js';
+import type { FirecrackerHostIo } from './firecracker-session-env.js';
 
 const localCfg: FirecrackerExecConfig = {
   mode: 'local',
@@ -36,5 +40,28 @@ describe('resolveFirecrackerUseJailer', () => {
     expect(resolveFirecrackerUseJailer(localCfg, { AGENT_HUB_FIRECRACKER_USE_JAILER: 'on' })).toBe(
       true,
     );
+  });
+});
+
+describe('forgetPersistedFirecrackerDisks', () => {
+  it('runs prepare-disks clean for the session vm id', async () => {
+    const run = vi.fn().mockResolvedValue({ ok: true, stdout: '', stderr: '' });
+    const io = { run } as unknown as FirecrackerHostIo;
+    await forgetPersistedFirecrackerDisks('sess-1', {
+      io,
+      paths: {
+        kernelPath: '/k',
+        baseRootfsPath: '/r',
+        runDir: '/vms',
+        controlDir: '/c',
+        diskHelper: '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
+      },
+    });
+    expect(run).toHaveBeenCalledWith([
+      '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
+      'clean',
+      '--vm-id',
+      'ahvm-sess-1',
+    ]);
   });
 });

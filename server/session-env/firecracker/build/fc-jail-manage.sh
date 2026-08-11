@@ -13,9 +13,11 @@
 # constrained by class (artifact / run / control) — never under Hub-writable
 # worktree roots — and symlink components are refused before any root write.
 #
-# Staging always copies (prefers reflink) — never hard-links. Hard-linking the
-# shared kernel then `chown -R` would retarget the ARTIFACT_DIR/vmlinux inode
-# to the jailer uid and let that account rewrite the trusted kernel.
+# Kernel and rootfs are copied (prefers reflink) — never hard-linked.
+# Hard-linking the shared kernel then `chown -R` would retarget the
+# ARTIFACT_DIR/vmlinux inode to the jailer uid.
+# Workspace is hard-linked (bind-mount fallback) so guest writes land on the
+# persistent RUN_DIR image and survive jail clean / VMM restart.
 #
 # Authorized via sudoers — do not expand this into a general shell.
 set -euo pipefail
@@ -54,6 +56,9 @@ case "$cmd" in
       echo "fc-jail-manage: refusing to clean symlink at $tree" >&2
       exit 2
     fi
+    # File bind-mount leftover from a cross-filesystem stage. Harmless no-op
+    # when the workspace was hard-linked (the common same-FS path).
+    umount -f "${tree%/}/root/workspace.ext4" 2>/dev/null || true
     rm -rf -- "$tree"
     ;;
   stage)
@@ -101,17 +106,36 @@ case "$cmd" in
       fi
       cp -f -- "$src" "$dest"
     }
+    # Same inode as RUN_DIR so guest writes survive jail clean. Kernel/rootfs
+    # stay copies: chown must not retarget ARTIFACT_DIR.
+    attach_workspace() {
+      local src=$1 dest=$2
+      umount -f "$dest" 2>/dev/null || true
+      rm -f -- "$dest"
+      if ln "$src" "$dest" 2>/dev/null; then
+        return 0
+      fi
+      touch -- "$dest"
+      if mount --bind "$src" "$dest"; then
+        return 0
+      fi
+      rm -f -- "$dest"
+      echo "fc-jail-manage: failed to attach persistent workspace (ln and bind-mount both failed)" >&2
+      exit 1
+    }
     stage_one "$kernel" "$root/vmlinux"
     stage_one "$rootfs" "$root/rootfs.ext4"
-    stage_one "$workspace" "$root/workspace.ext4"
+    attach_workspace "$workspace" "$root/workspace.ext4"
     # Config is written by this helper (not the unprivileged Hub) so the
     # chroot can stay owned by the jailer UID without an EACCES on create.
     cp -f -- "$config_src" "$root/vm-config.json"
 
     # Least-privilege ownership for the jailer/Firecracker UID. Kernel is
     # read-only; both ext4 images are RW in the VM config and must be
-    # writable by that UID (jailer.md Observations). Only the jail copies
-    # are chowned — sources under ARTIFACT_DIR / RUN_DIR stay root-owned.
+    # writable by that UID (jailer.md Observations). Kernel/rootfs copies
+    # are chowned independently of ARTIFACT_DIR. The workspace hardlink *is*
+    # the RUN_DIR inode, so that session-private image becomes jailer-owned
+    # too — required for Firecracker to write guest blocks.
     chown -R "$uid:$gid" "$root"
     chmod 0755 "$root"
     chmod 0444 "$root/vmlinux"

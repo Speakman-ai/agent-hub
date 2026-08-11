@@ -101,6 +101,7 @@ import {
 import {
   firecrackerExecDefaults,
   firecrackerHostPaths,
+  forgetPersistedFirecrackerDisks,
   registerFirecrackerBackend,
   unregisterFirecrackerBackend,
 } from './session-env/firecracker/register-firecracker-backend.js';
@@ -1559,7 +1560,14 @@ export const routeDeps: RouteDeps = {
   },
   getBackgroundShellRuntime: () => backgroundShellRuntime,
   getBackgroundShellWatcher: () => backgroundShellWatcher,
-  disposeSessionEnv: (sessionId: string) => sessionEnvManager.dispose(sessionId),
+  disposeSessionEnv: async (sessionId: string) => {
+    await sessionEnvManager.dispose(sessionId, { forgetWorkspace: true });
+    // Idle reap / Hub restart leave the workspace disk. Session end must
+    // still delete it when no env is live in memory.
+    if (getSessionEnvSelection().adapter === 'firecracker') {
+      await forgetPersistedFirecrackerDisks(sessionId);
+    }
+  },
   getSessionWorktreeIo: resolveSessionWorktreeIo,
   provisionSessionWorkspace: async (sessionId: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
