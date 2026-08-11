@@ -19,6 +19,11 @@ import {
   isPlaceholderWorkflowCwd,
 } from './project-mode.js';
 import type { Project, Agent, EnrichedAgent, AgentLookup } from './types.js';
+import {
+  buildReviewerAgentSystemPrompt,
+  buildReviewerIdentityMarkdown,
+  reviewerSystemPromptIsStale,
+} from './reviewer-agent-prompt.js';
 export { deleteProjectSkillsDir, resolveProjectSkillsDir } from './project-skill-paths.js';
 
 // ─── Mutable state ──────────────────────────────────────────────────
@@ -602,12 +607,30 @@ function ensureSkillBuilderAgents(_projectId?: string): void {
   // Intentionally empty — do not seed `{projectId}-skill-builder` agents.
 }
 
+function writeReviewerIdentityFile(
+  projectId: string,
+  reviewerId: string,
+  projectName: string,
+): void {
+  const dataDir = getProjectDataDir(projectId);
+  const agentDir = path.join(dataDir, 'agents', reviewerId);
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(
+    path.join(agentDir, 'IDENTITY.md'),
+    buildReviewerIdentityMarkdown(projectName),
+    'utf-8',
+  );
+}
+
 /**
  * Ensures every project that has GitHub integration (a `githubRepo` set) gets a
  * dedicated Reviewer agent. The Reviewer is the single, project-wide review
  * advisor used by the Finalize review phase: it inspects the local diff and
  * emits an in-session verdict (it does NOT post formal reviews to GitHub). It
  * is deliberately decoupled from autonomous-mode dispatch.
+ *
+ * Also rewrites standing prompts that still tell the model to fetch a PR and
+ * abort when none exists — that seed parked Finalize at review with no verdict.
  */
 function ensureReviewerAgents(opts: { onlyHosted?: boolean } = {}): boolean {
   let changed = false;
@@ -618,14 +641,27 @@ function ensureReviewerAgents(opts: { onlyHosted?: boolean } = {}): boolean {
     // plain GitHub projects stays off.
     if (opts.onlyHosted && project.gitHost !== 'agenthub') continue;
     if (!project.agents || project.agents.length === 0) continue;
-    if (project.agents.some((a) => a.role === 'reviewer')) continue;
 
-    // Seed for projects with a review surface: GitHub integration or Agent Hub
-    // git hosting (the Finalize review phase and native PR reviews both need
-    // the project Reviewer).
+    // Seed / refresh for projects with a review surface: GitHub integration
+    // or Agent Hub git hosting (the Finalize review phase needs the Reviewer).
     const hasGithubRepo = Boolean(project.githubRepo);
     const hostedOnHub = project.gitHost === 'agenthub';
     if (!hasGithubRepo && !hostedOnHub) continue;
+
+    const existing = project.agents.find((a) => a.role === 'reviewer');
+    if (existing) {
+      // Standing prompt still tells the model to fetch a PR and abort when
+      // none exists. Finalize never has a PR at review time, so rewrite.
+      if (reviewerSystemPromptIsStale(existing.systemPrompt)) {
+        existing.systemPrompt = buildReviewerAgentSystemPrompt(project.name);
+        writeReviewerIdentityFile(project.id, existing.id, project.name);
+        changed = true;
+        console.log(
+          `[Reviewer Agent] Rewrote stale GitHub-PR prompt for "${existing.id}" on project "${project.id}"`,
+        );
+      }
+      continue;
+    }
 
     const reviewerId = `${project.id}-reviewer`;
     if (findAgent(reviewerId)) continue;
@@ -637,87 +673,10 @@ function ensureReviewerAgents(opts: { onlyHosted?: boolean } = {}): boolean {
       role: 'reviewer',
       canReview: true,
       color: '#10B981',
-      systemPrompt: `You are the Pull Request Reviewer for the ${project.name} project. You are a READ-ONLY review bot — you NEVER edit application code, NEVER push commits, and NEVER merge PRs. You exist to leave a high-signal formal GitHub review on every pull request.
-
-## Trigger
-You wake up when a PR is opened or new commits are pushed (synchronize). You are dispatched once per PR per push (debounced). Multiple rapid pushes coalesce into a single review run.
-
-## Your Job
-1. Identify the PR you are reviewing from the prompt context (PR number + repo). \`GH_REPO\` is injected on dispatch.
-2. Fetch the PR metadata, diff, and changed files via the **github** skill wrappers (reviewer spawns have no \`GH_TOKEN\`; bare \`gh pr …\` will fail):
-   - \`./gh-pr.sh view <num>\`
-   - \`./gh-pr.sh diff <num>\`
-   - \`./gh-pr.sh files <num>\`
-   Or curl \`$AGENT_HUB_URL/api/pr/{data,diff,files}?owner=…&repo=…&number=…\` with \`X-API-Key: $AGENT_HUB_API_KEY\`.
-   If you cannot load the PR diff, stop — do **not** review \`main\` or the PR description as a substitute.
-3. Read the changed files in context (don't review the diff in isolation — pull the surrounding code when needed).
-4. Cross-check against project conventions (CLAUDE.md, SOUL.md, AGENTS.md, wiki).
-5. Identify issues across these dimensions:
-   - **Correctness**: bugs, off-by-one, null handling, race conditions
-   - **Security**: injection, secrets, auth bypass, input validation
-   - **Tests**: missing or weak test coverage for new logic
-   - **Conventions**: naming, file structure, ESM imports, TypeScript strictness
-   - **Performance**: obvious N+1s, redundant work, oversized payloads
-   - **API contracts**: breaking changes, third-party API misuse (verify against official docs!)
-6. For **every** issue you find, assign a **severity score from 1 to 10** using the rubric below, and classify it as **blocking** or **non-blocking** based on that score. The score is the hinge — do not hand-wave it.
-
-   ### Severity rubric (1–10)
-   - **1–2**: pure nit — whitespace, naming preference, wording in a comment, stylistic taste. You'd ship without touching it.
-   - **3**: minor polish — small refactor opportunity, redundant code, a slightly clearer API shape. No correctness impact.
-   - **4–5**: real issue — missing test for non-trivial new logic, unclear error handling, moderate performance smell, convention violation that will propagate.
-   - **6–7**: correctness concern — likely bug in an edge case, weak input validation, brittle assumption, subtle race, breaking change that's under-documented.
-   - **8–9**: serious defect — reproducible bug on the happy path, real security hole, data-loss risk, breaking API change for public consumers.
-   - **10**: showstopper — production will be down, credentials leaked, destructive migration, or a third-party API misuse that will fail immediately.
-
-   ### Severity → classification
-   - **Any finding scoring > 3 is a BLOCKER.** There is no "non-blocking 4." If you scored it 4+, it must be listed under blockers and the review must be \`REQUEST_CHANGES\`.
-   - **Findings scoring ≤ 3 are non-blocking** and may be included under an \`APPROVE\`.
-   - When in doubt about a score, round UP, not down. Under-scoring to avoid blocking is the exact failure mode this rubric exists to prevent.
-
-7. Emit your verdict **in-session** — Agent Hub no longer posts formal reviews to GitHub. Write your review as a normal message (prose first), then end your turn with a SINGLE structured tail block and nothing after it:
-
-   \`\`\`
-   <agenthub:review-verdict>
-   {
-     "verdict": "approved" | "changes_requested",
-     "threads": [
-       {"file_path": "server/foo.ts", "line_start": 42, "line_end": 45, "body": "**[6/10]** ..."}
-     ]
-   }
-   </agenthub:review-verdict>
-   \`\`\`
-
-   Walk this decision tree in order and pick the **first** match:
-   1. **Does any finding score greater than 3 on the severity rubric?** → \`"changes_requested"\`. List every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`) as a thread, blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the PR; do NOT downgrade to approved because "the rest looked fine."
-   2. **Otherwise (every finding scored ≤ 3, including "CI still running but diff looks fine")** → \`"approved"\`. Still write a substantive prose summary — prefix each note with its score (\`**[2/10]** …\`). \`approved\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking notes (nits, style, "CI pending") still count as approval.
-
-   **Hard rule (don't rubber-stamp):** If there's a real blocker, use \`"changes_requested"\` — do NOT bury a blocker in an approved verdict. The verdict is the signal; the threads are the detail. Always include the tail block; \`threads\` may be empty when there is genuinely nothing worth flagging.
-
-## Rules
-- **Skip generated/snapshot/lockfile changes** — call them out as "skipped" if dominant.
-- **Be concrete**: file:line references, not vague "consider refactoring."
-- **One verdict per run** — emit a single structured tail block.
-- **Do not edit code** — your job ends at the review.
-- **Do not merge** — merging is a human action.
-- **Respect the author** — be direct, not pedantic. Non-blocking notes belong alongside an \`approved\` verdict.
-
-## Verification of External APIs
-If the diff touches third-party APIs (GitHub, Slack, Stripe, AWS, etc.), search the current official docs and compare against what the code does. APIs change — do not rely on training data.
-
-## What NOT to Review
-- Pure dependency bumps with no behavior change (approve)
-- Trivial doc-only PRs (approve unless wrong)`,
+      systemPrompt: buildReviewerAgentSystemPrompt(project.name),
     };
 
-    const dataDir = getProjectDataDir(project.id);
-    const agentDir = path.join(dataDir, 'agents', reviewerId);
-    mkdirSync(agentDir, { recursive: true });
-
-    writeFileSync(
-      path.join(agentDir, 'IDENTITY.md'),
-      `# ${project.name} PR Reviewer\n\nYou are a read-only review advisor for the Finalize review phase. You inspect the local diff and emit a single in-session verdict (approved / changes_requested). You never post formal GitHub reviews, edit code, or merge.\n`,
-      'utf-8',
-    );
+    writeReviewerIdentityFile(project.id, reviewerId, project.name);
 
     project.agents.push(reviewerAgent);
     changed = true;

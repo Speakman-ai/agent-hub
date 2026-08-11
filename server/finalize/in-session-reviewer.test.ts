@@ -37,6 +37,7 @@ import {
   runReviewerTurn,
   pickReviewerAgentId,
   composeReviewerSystemPrompt,
+  FINALIZE_REVIEWER_TURN_OVERRIDE,
 } from './in-session-reviewer.js';
 import { initOrgsDb } from '../orgs.js';
 import { createUser } from '../users-store.js';
@@ -303,19 +304,31 @@ describe('pickReviewerAgentId', () => {
 });
 
 describe('composeReviewerSystemPrompt', () => {
-  it('appends the read-only + no-PR-yet reinforcement', () => {
+  it('wraps the standing prompt with a no-PR-yet override so a stale seed cannot abort', () => {
     const out = composeReviewerSystemPrompt('BASE', fakeProject, fakeCard);
     expect(out).toContain('BASE');
     expect(out).toContain('In-session Reviewer');
     expect(out).toContain('Do NOT edit files');
     expect(out).toContain('no PR exists yet');
     expect(out).toContain('agenthub:review-verdict');
+    expect(out.startsWith(FINALIZE_REVIEWER_TURN_OVERRIDE)).toBe(true);
+    expect(out.indexOf(FINALIZE_REVIEWER_TURN_OVERRIDE)).toBeLessThan(out.indexOf('BASE'));
+    expect(out.indexOf('BASE')).toBeLessThan(out.indexOf('In-session Reviewer'));
   });
 
   it('includes the card title and project name', () => {
     const out = composeReviewerSystemPrompt('B', fakeProject, fakeCard);
     expect(out).toContain('agent-hub');
     expect(out).toContain('In-session review wiring');
+  });
+
+  it('tells the model not to stop when the standing prompt still says fetch-a-PR-or-abort', () => {
+    const stale =
+      'Identify the PR you are reviewing from the prompt context. If you cannot load the PR diff, stop.';
+    const out = composeReviewerSystemPrompt(stale, fakeProject, fakeCard);
+    expect(out.indexOf('Do **not** stop, refuse, or ask for a PR URL')).toBeLessThan(
+      out.indexOf('If you cannot load the PR diff, stop'),
+    );
   });
 });
 

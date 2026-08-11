@@ -395,6 +395,12 @@ describe('ensureReviewerAgents', () => {
     // The old "skip nits unless egregious" line was a subtle approval nudge
     // that should stay gone.
     expect(sp).not.toMatch(/Skip nits unless egregious/);
+
+    // Finalize review runs before a PR exists. The old GitHub-PR seed told
+    // the model to abort without a PR number, which parked the run.
+    expect(sp).not.toContain('Identify the PR you are reviewing from the prompt context');
+    expect(sp).not.toContain('If you cannot load the PR diff, stop');
+    expect(sp).toContain('a reason to stop');
   });
 
   it('seeds a reviewer whose system prompt requires a 1–10 severity score and blocks on >3', async () => {
@@ -469,6 +475,53 @@ describe('ensureReviewerAgents', () => {
     await createProjectWithAgent(projId, 'No GitHub Reviewer', '#333');
     // No githubRepo → nothing to seed.
     expect(ensureReviewerAgents()).toBe(false);
+  });
+
+  it('rewrites a standing reviewer prompt that still says fetch-a-PR-or-stop', async () => {
+    const projId = `reviewer-backfill-${Date.now()}`;
+    const project = await createProjectWithAgent(projId, 'Stale Reviewer', '#444');
+    project.githubRepo = 'owner/stale-repo';
+    project.agents.push({
+      id: `${projId}-reviewer`,
+      name: 'Stale Reviewer',
+      engine: 'claude-code',
+      role: 'reviewer',
+      canReview: true,
+      systemPrompt:
+        'You exist to leave a high-signal formal GitHub review on every pull request. Identify the PR you are reviewing from the prompt context. If you cannot load the PR diff, stop.',
+    });
+    saveProjects();
+
+    ensureReviewerAgents();
+    const updated = findProject(projId)!.agents!.find((a) => a.role === 'reviewer')!;
+    expect(updated.systemPrompt).toContain('<agenthub:review-verdict>');
+    expect(updated.systemPrompt).not.toContain('If you cannot load the PR diff, stop');
+    const rewritten = updated.systemPrompt;
+    ensureReviewerAgents();
+    expect(findProject(projId)!.agents!.find((a) => a.role === 'reviewer')!.systemPrompt).toBe(
+      rewritten,
+    );
+  });
+
+  it('does not overwrite a custom reviewer prompt that is not the old GitHub-PR seed', async () => {
+    const projId = `reviewer-custom-${Date.now()}`;
+    const project = await createProjectWithAgent(projId, 'Custom Reviewer', '#555');
+    project.githubRepo = 'owner/custom-repo';
+    const custom = 'Review the local diff in the user prompt and emit a verdict.';
+    project.agents.push({
+      id: `${projId}-reviewer`,
+      name: 'Custom Reviewer',
+      engine: 'claude-code',
+      role: 'reviewer',
+      canReview: true,
+      systemPrompt: custom,
+    });
+    saveProjects();
+
+    ensureReviewerAgents();
+    expect(findProject(projId)!.agents!.find((a) => a.role === 'reviewer')!.systemPrompt).toBe(
+      custom,
+    );
   });
 });
 
