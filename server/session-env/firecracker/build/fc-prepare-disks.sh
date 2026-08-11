@@ -122,7 +122,8 @@ cp --reflink=auto -- "${BASE_ROOTFS}" "${ROOTFS_OUT}"
 
 # ── workspace disk ────────────────────────────────────────────────
 truncate -s "${WORKSPACE_SIZE_MIB}M" -- "${WORKSPACE_OUT}"
-mkfs.ext4 -q -F -L agent-hub-workspace "${WORKSPACE_OUT}"
+# ext4 volume labels are capped at 16 bytes; longer names only warn and truncate.
+mkfs.ext4 -q -F -L ah-workspace "${WORKSPACE_OUT}"
 
 MOUNT_DIR="$(mktemp -d)"
 cleanup() {
@@ -163,9 +164,10 @@ def open_nofollow_dir(abs_path: str) -> int:
             pass
         raise SystemExit(f"worktree open failed (symlink?): {e}") from e
 
-fd = open_nofollow_dir(worktree)
-try:
-    src = f"/proc/self/fd/{fd}"
+def stream_worktree(src_fd: int, dest_dir: str) -> None:
+    # `/proc/self/fd/N` is wrong here: tar is a subprocess, so "self" is tar's
+    # fd table (empty for N). Point at *this* process's still-open dir fd.
+    src = f"/proc/{os.getpid()}/fd/{src_fd}"
     # Stream producer → extractor. Never buffer the whole archive in RAM —
     # multi-GB worktrees (or sparse bombs) would OOM the host.
     max_bytes = int(os.environ.get("AGENT_HUB_FC_WORKTREE_TAR_MAX_BYTES", "0")) or (
@@ -187,10 +189,13 @@ try:
     prod = subprocess.Popen(
         ["tar", "-C", src, "-cf", "-", "."],
         stdout=subprocess.PIPE,
+        # Keep the dir fd open across exec so /proc/<pid>/fd/N stays valid for
+        # the child's open(); close_fds alone is fine because we open by path.
+        pass_fds=(src_fd,),
     )
     assert prod.stdout is not None
     cons = subprocess.Popen(
-        ["tar", "-C", dest, "-xf", "-"],
+        ["tar", "-C", dest_dir, "-xf", "-"],
         stdin=subprocess.PIPE,
     )
     assert cons.stdin is not None
@@ -211,6 +216,10 @@ try:
         raise SystemExit(f"tar archive failed with exit {prod_rc}")
     if cons_rc != 0:
         raise SystemExit(f"tar extract failed with exit {cons_rc}")
+
+fd = open_nofollow_dir(worktree)
+try:
+    stream_worktree(fd, dest)
 finally:
     os.close(fd)
 PY

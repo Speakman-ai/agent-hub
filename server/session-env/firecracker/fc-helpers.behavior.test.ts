@@ -420,6 +420,71 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     expect(src).toMatch(/AGENT_HUB_FC_WORKTREE_TAR_MAX_BYTES|worktree archive exceeded/);
     expect(src).toMatch(/Popen\([\s\S]*tar[\s\S]*-cf[\s\S]*Popen\([\s\S]*tar[\s\S]*-xf/);
   });
+
+  it('keeps the worktree-copy Python heredoc compilable (nonlocal needs a function)', () => {
+    const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+    const match = src.match(
+      /python3 - "\$\{WORKTREE\}" "\$\{MOUNT_DIR\}" <<'PY'\n([\s\S]*?)\nPY\n/,
+    );
+    expect(match?.[1], 'missing worktree-copy heredoc').toBeTruthy();
+    const py = match![1];
+    // Module-level `nonlocal` raises SyntaxError at compile time — the bug that
+    // took down every Firecracker session boot on DEV (label warning was noise).
+    expect(py).toMatch(/def stream_worktree\(/);
+    const compiled = spawnSync(
+      'python3',
+      ['-c', 'import sys; compile(sys.stdin.read(), "<fc-prepare>", "exec")'],
+      {
+        input: py,
+        encoding: 'utf8',
+      },
+    );
+    expect(compiled.status, compiled.stderr).toBe(0);
+  });
+
+  it('tar-streams via /proc/<pid>/fd (not /proc/self/fd — self is the tar child)', () => {
+    const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+    expect(src).toMatch(/\/proc\/\{os\.getpid\(\)\}\/fd\/\{src_fd\}/);
+    expect(src).not.toMatch(/src = f"\/proc\/self\/fd\/\{src_fd\}"/);
+  });
+
+  // O_NOFOLLOW + `/proc/<pid>/fd` are Linux-only; macOS tmpdirs also walk
+  // through `/var` → `/private/var` symlinks that the guard correctly refuses.
+  it.skipIf(process.platform !== 'linux')(
+    'copies a real worktree through the heredoc into a dest dir',
+    () => {
+      const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+      const match = src.match(
+        /python3 - "\$\{WORKTREE\}" "\$\{MOUNT_DIR\}" <<'PY'\n([\s\S]*?)\nPY\n/,
+      );
+      expect(match?.[1]).toBeTruthy();
+      const base = mkdtempSync(path.join(os.tmpdir(), 'fc-prepare-copy-'));
+      const worktree = path.join(base, 'wt');
+      const dest = path.join(base, 'out');
+      try {
+        mkdirSync(worktree);
+        mkdirSync(dest);
+        writeFileSync(path.join(worktree, 'README.md'), 'hello from prepare\n');
+        const py = match![1];
+        const run = spawnSync('python3', ['-', worktree, dest], {
+          input: py,
+          encoding: 'utf8',
+          env: { ...process.env, AGENT_HUB_WORKSPACE_SIZE_MIB: '64' },
+        });
+        expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
+        expect(readFileSync(path.join(dest, 'README.md'), 'utf8')).toBe('hello from prepare\n');
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('uses an ext4 label within the 16-byte limit', () => {
+    const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+    const label = src.match(/mkfs\.ext4[^\n]*-L\s+(\S+)/)?.[1];
+    expect(label).toBeTruthy();
+    expect(Buffer.byteLength(label!, 'utf8')).toBeLessThanOrEqual(16);
+  });
 });
 
 describe('jailer Hub traverse contract', () => {
