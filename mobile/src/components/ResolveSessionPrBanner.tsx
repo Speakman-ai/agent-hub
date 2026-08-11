@@ -1,12 +1,25 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Linking } from 'react-native';
 import { colors } from '../theme/colors';
+import { parseNativePrUrl } from '../utils/prFormatting';
 /**
- * Mobile counterpart to `client/src/components/ResolveSessionPrBanner.jsx`.
+ * Mobile counterpart to `client/src/components/ResolveSessionPrBanner.tsx`.
+ *
+ * `prUrl` is either a github.com URL or an Agent Hub-native route
+ * (`/projects/<id>/pulls/<n>`). Native PRs open the in-app Pull Requests
+ * screen — `Linking.openURL` on a relative route would fail, and the mirrored
+ * github.com repo has a different PR numbering.
  */
-export default function ResolveSessionPrBanner({ prUrl, prNumber, branchLabel, sessionId, onDismiss, }: any) {
+export default function ResolveSessionPrBanner({ prUrl, prNumber, branchLabel, sessionId, onDismiss, onOpenPrDetail, }: any) {
+    const nativeTarget = parseNativePrUrl(prUrl);
+    const canOpenNative = Boolean(nativeTarget) && typeof onOpenPrDetail === 'function';
+    const hostLabel = nativeTarget ? 'Agent Hub' : 'GitHub';
     const openPr = () => {
-        if (!prUrl)
+        if (nativeTarget && canOpenNative) {
+            onOpenPrDetail(nativeTarget.projectId, nativeTarget.number);
+            return;
+        }
+        if (!prUrl || nativeTarget)
             return;
         Linking.openURL(prUrl).catch((err: any) => {
             console.warn('[ResolveSessionPrBanner] openURL failed:', err?.message || err);
@@ -25,8 +38,8 @@ export default function ResolveSessionPrBanner({ prUrl, prNumber, branchLabel, s
             </Text>
             <Text style={styles.sub}>
               {prUrl
-            ? 'Open on GitHub — this session is not creating a new PR.'
-            : 'Set the project GitHub repo (owner/repo) in settings to link this PR.'}
+            ? `Open on ${hostLabel} — this session is not creating a new PR.`
+            : 'Set the project repository in settings to link this PR.'}
             </Text>
           </View>
         </View>
@@ -34,8 +47,8 @@ export default function ResolveSessionPrBanner({ prUrl, prNumber, branchLabel, s
           <Text style={styles.dismiss}>✕</Text>
         </TouchableOpacity>
       </View>
-      {prUrl ? (<TouchableOpacity onPress={openPr} style={styles.linkBtn} accessibilityRole="link" accessibilityLabel="Open pull request on GitHub">
-          <Text style={styles.linkText}>Open PR on GitHub</Text>
+      {prUrl && (canOpenNative || !nativeTarget) ? (<TouchableOpacity onPress={openPr} style={styles.linkBtn} accessibilityRole="link" accessibilityLabel={`Open pull request on ${hostLabel}`} testID="resolve-pr-banner-link">
+          <Text style={styles.linkText}>Open PR on {hostLabel}</Text>
         </TouchableOpacity>) : null}
     </View>);
 }

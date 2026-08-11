@@ -2621,6 +2621,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         sessionName: session!.name,
         githubRepo: (project as ProjectWithCommands & { githubRepo?: string }).githubRepo ?? null,
         cardPrUrl: linkedCardForPr?.pr_url ?? null,
+        gitHost: (project as ProjectWithCommands & { gitHost?: string }).gitHost ?? null,
+        projectId: (project as ProjectWithCommands & { id?: string }).id ?? null,
       });
       // Detect the repo's default branch (cached) so the Development
       // Lifecycle / Git Workflow guidance branches from / rebases onto the

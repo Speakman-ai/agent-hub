@@ -1288,6 +1288,29 @@ describe('Sessions', () => {
       expect(res.body.linkedCard).toBeNull();
     });
 
+    // Regression: a Hub-hosted project keeps `githubRepo` for the one-way
+    // mirror, so the inferred URL used to point at github.com/<repo>/pull/N —
+    // an unrelated PR. PR #N on such a project is a native Hub PR.
+    it('infers a native PR URL for Agent Hub-hosted projects', async () => {
+      const project = await createProject();
+      await request
+        .patch(`/api/projects/${project.id as string}`)
+        .send({ githubRepo: 'acme/widgets' })
+        .expect(200);
+      // `gitHost` cannot be PATCHed (the transition creates a bare repo on
+      // disk), so flip it on the in-memory project the route reads.
+      const { getProjects } = await import('../project-model.js');
+      const stored = getProjects().find((p) => p.id === (project.id as string))!;
+      stored.gitHost = 'agenthub';
+      const agent = await createAgent({ projectId: project.id as string });
+      const session = await createSession({
+        agentId: agent.id as string,
+        name: '[Resolve PR #77] Fix flaky test',
+      });
+      const res = await request.get(`/api/sessions/${session.id as string}/summary`).expect(200);
+      expect(res.body.sessionTitlePrUrl).toBe(`/projects/${project.id as string}/pulls/77`);
+    });
+
     it('exposes finalizePrUrl from the latest pushed finalize run when card has no pr_url', async () => {
       const project = await createProject();
       await request

@@ -5050,10 +5050,13 @@ export default function App({ initialView }: any = {}) {
   const activeResolvePrBannerInfo = useMemo(() => {
     if (!activeSession?.name || !isResolvePrSessionTitle(activeSession.name)) return null;
     return {
-      prUrl: inferPrUrlFromSessionTitle(activeSession.name, chatGithubRepo),
+      prUrl: inferPrUrlFromSessionTitle(activeSession.name, chatGithubRepo, {
+        gitHost: activeChatProject?.gitHost ?? null,
+        projectId: activeChatProject?.id ?? null,
+      }),
       prNumber: parseResolvePrNumberFromTitle(activeSession.name),
     };
-  }, [activeSession, chatGithubRepo]);
+  }, [activeSession, chatGithubRepo, activeChatProject?.gitHost, activeChatProject?.id]);
   const orchestrationTimelineEntries = useMemo(() => {
     if (!activeSessionId) return [];
     const out: any[] = [];
@@ -5481,6 +5484,7 @@ export default function App({ initialView }: any = {}) {
             replaysProjectId={replaysProjectId}
             securityProjectId={securityProjectId}
             pullsProjectId={pullsProjectId}
+            onOpenPrDetail={handleOpenPrDetail}
             workflowBadgeByProject={workflowSidebarBadgeByProject}
             unreadThreadCounts={unreadThreadCounts}
             unreadTicketCounts={unreadTicketCounts}
@@ -6380,6 +6384,7 @@ export default function App({ initialView }: any = {}) {
                                         prNumber={activeResolvePrBannerInfo.prNumber}
                                         branchLabel={changesReady[activeSessionId]?.branch}
                                         sessionId={activeSessionId}
+                                        onOpenPrDetail={handleOpenPrDetail}
                                         onDismiss={(sessionId: any) => {
                                           setChangesReady((prev: any) => {
                                             const next = { ...prev };

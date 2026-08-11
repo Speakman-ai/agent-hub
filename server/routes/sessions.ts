@@ -963,7 +963,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       !linkedCardPrUrl && latestFinalizeRun?.pr_url?.trim()
         ? latestFinalizeRun.pr_url.trim()
         : null;
-    const inferredTitlePr = inferPrUrlFromSessionTitle(session.name, githubRepo);
+    const inferredTitlePr = inferPrUrlFromSessionTitle(session.name, githubRepo, {
+      gitHost: found?.project?.gitHost ?? null,
+      projectId,
+    });
     const sessionTitlePrUrl =
       !linkedCardPrUrl && !finalizePrUrl && inferredTitlePr ? inferredTitlePr : null;
 

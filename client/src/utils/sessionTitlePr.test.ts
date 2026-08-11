@@ -54,6 +54,45 @@ describe('inferPrUrlFromSessionTitle', () => {
   it('does not match Resolve pattern mid-string', () => {
     expect(inferPrUrlFromSessionTitle('prefix [Resolve PR #1] x', 'a/b')).toBeNull();
   });
+
+  // Regression: Hub-hosted projects keep a `githubRepo` for the one-way
+  // mirror, so PR #N was being linked to github.com/<repo>/pull/N — an
+  // unrelated PR. Native PRs must resolve to the in-app route.
+  it('builds a native PR URL for gitHost: agenthub projects', () => {
+    expect(
+      inferPrUrlFromSessionTitle('[Resolve PR #587] Nightly sync', 'acme/widgets', {
+        gitHost: 'agenthub',
+        projectId: 'acme-widgets',
+      }),
+    ).toBe('/projects/acme-widgets/pulls/587');
+  });
+
+  it('returns null rather than a github.com link when a hosted project has no id', () => {
+    expect(
+      inferPrUrlFromSessionTitle('[Resolve PR #5] x', 'acme/app', {
+        gitHost: 'agenthub',
+        projectId: null,
+      }),
+    ).toBeNull();
+  });
+
+  it('still honours an explicit github.com URL in the title on a hosted project', () => {
+    expect(
+      inferPrUrlFromSessionTitle('[Resolve PR #5] https://github.com/o/r/pull/9', 'o/r', {
+        gitHost: 'agenthub',
+        projectId: 'proj',
+      }),
+    ).toBe('https://github.com/o/r/pull/9');
+  });
+
+  it('keeps GitHub URLs for gitHost: github projects', () => {
+    expect(
+      inferPrUrlFromSessionTitle('[Resolve PR #42] x', 'acme/app', {
+        gitHost: 'github',
+        projectId: 'acme',
+      }),
+    ).toBe('https://github.com/acme/app/pull/42');
+  });
 });
 
 describe('isResolvePrSessionTitle', () => {

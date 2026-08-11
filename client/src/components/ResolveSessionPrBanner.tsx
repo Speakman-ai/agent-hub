@@ -1,8 +1,14 @@
 import { ExternalLink, X } from 'lucide-react';
+import { parseNativePrUrl } from '../utils/prFormatting';
 
 /**
  * Shown instead of ChangesReadyBox when the session is fixing an existing PR
- * (`[Resolve PR #N]` title). Offers an outbound GitHub link when `prUrl` is known.
+ * (`[Resolve PR #N]` title).
+ *
+ * `prUrl` is either a github.com URL or an Agent Hub-native route
+ * (`/projects/<id>/pulls/<n>`). Native PRs open the in-app PR detail view —
+ * sending the operator to github.com would land them on an unrelated PR
+ * number in the mirror repo.
  */
 export default function ResolveSessionPrBanner({
   prUrl,
@@ -10,7 +16,12 @@ export default function ResolveSessionPrBanner({
   branchLabel,
   sessionId,
   onDismiss,
+  onOpenPrDetail,
 }: any) {
+  const nativeTarget = parseNativePrUrl(prUrl);
+  const canOpenNative = Boolean(nativeTarget) && typeof onOpenPrDetail === 'function';
+  const hostLabel = nativeTarget ? 'Agent Hub' : 'GitHub';
+
   return (
     <div className="flex justify-start mb-4 px-1">
       <div className="max-w-[95%] sm:max-w-[90%] w-full bg-gray-800/80 border border-gray-700/60 rounded-xl px-4 py-3 space-y-3">
@@ -27,8 +38,8 @@ export default function ResolveSessionPrBanner({
             </div>
             <p className="text-xs text-gray-500 mt-1">
               {prUrl
-                ? 'Open the PR on GitHub — this session is not creating a new pull request.'
-                : 'This session updates an existing PR on GitHub. Set the project’s GitHub repository (owner/repo) to enable an outbound link.'}
+                ? `Open the PR on ${hostLabel} — this session is not creating a new pull request.`
+                : 'This session updates an existing pull request. Set the project’s repository in settings to enable an outbound link.'}
             </p>
           </div>
           <button
@@ -40,12 +51,23 @@ export default function ResolveSessionPrBanner({
             <X size={14} />
           </button>
         </div>
-        {prUrl ? (
+        {canOpenNative ? (
+          <button
+            type="button"
+            onClick={() => onOpenPrDetail(nativeTarget!.projectId, nativeTarget!.number)}
+            className="inline-flex items-center gap-2 text-sm font-medium text-sky-400 hover:text-sky-300"
+            data-testid="resolve-pr-banner-link"
+          >
+            Open PR on Agent Hub
+            <ExternalLink size={14} />
+          </button>
+        ) : prUrl && !nativeTarget ? (
           <a
             href={prUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 text-sm font-medium text-sky-400 hover:text-sky-300"
+            data-testid="resolve-pr-banner-link"
           >
             Open PR on GitHub
             <ExternalLink size={14} />

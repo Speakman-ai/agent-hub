@@ -185,7 +185,7 @@ export const SessionSummaryComponent = registerComponent(
       }),
       sessionTitlePrUrl: z.string().nullable().openapi({
         description:
-          'Best-effort PR URL inferred from Resolve/Review-style session titles when neither the linked card nor the latest Finalize run supplies a PR URL.',
+          'Best-effort PR URL inferred from Resolve/Review-style session titles when neither the linked card nor the latest Finalize run supplies a PR URL. A github.com URL for GitHub-hosted projects, or the native client route `/projects/<projectId>/pulls/<number>` when the project is hosted on Agent Hub.',
       }),
       runSnapshot: z.record(z.string(), z.unknown()),
       skills: z.array(

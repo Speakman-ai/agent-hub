@@ -48,6 +48,7 @@ import OrgSwitcher from './OrgSwitcher';
 import { isElectron } from '../utils/isElectron';
 import humanCron from '@shared/utils/humanCron';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
+import { parseNativePrUrl } from '../utils/prFormatting';
 import AgentAvatar from './AgentAvatar';
 import { daysUntilPurge } from '../utils/time';
 import SidebarSessionOrchestration from './SidebarSessionOrchestration';
@@ -146,6 +147,12 @@ export default function Sidebar({
   securityProjectId,
   wikiProjectId,
   pullsProjectId,
+  /**
+   * Open the in-app PR detail view: `(projectId, prNumber) => void`. Used for
+   * Agent Hub-native PR links, which are client routes rather than external
+   * pages.
+   */
+  onOpenPrDetail,
   notesProjectId,
   workflowBadgeByProject = {},
   unreadThreadCounts = {},
@@ -1442,8 +1449,13 @@ export default function Sidebar({
                                           ? inferPrUrlFromSessionTitle(
                                               session.name,
                                               project.githubRepo,
+                                              {
+                                                gitHost: project.gitHost,
+                                                projectId: project.id,
+                                              },
                                             )
                                           : null;
+                                      const resolvePrNative = parseNativePrUrl(resolvePrHref);
                                       return (
                                         <div
                                           key={session.id}
@@ -1503,9 +1515,21 @@ export default function Sidebar({
                                                   type="button"
                                                   data-testid="resolve-pr-external-link"
                                                   className="flex-shrink-0 p-1 mr-0.5 rounded text-sky-400 hover:text-sky-300 hover:bg-gray-700/50"
-                                                  title="Open existing PR on GitHub"
+                                                  title={`Open existing PR on ${
+                                                    resolvePrNative ? 'Agent Hub' : 'GitHub'
+                                                  }`}
                                                   onClick={(e: any) => {
                                                     e.stopPropagation();
+                                                    // Native PR URLs are in-app
+                                                    // routes — window.open would
+                                                    // miss the hash router.
+                                                    if (resolvePrNative) {
+                                                      onOpenPrDetail?.(
+                                                        resolvePrNative.projectId,
+                                                        resolvePrNative.number,
+                                                      );
+                                                      return;
+                                                    }
                                                     window.open(
                                                       resolvePrHref,
                                                       '_blank',
@@ -1833,7 +1857,10 @@ export default function Sidebar({
                           const prReady = changesReadyBySession[session.id];
                           const resolvePrHref =
                             prReady && isResolvePrSessionTitle(session.name)
-                              ? inferPrUrlFromSessionTitle(session.name, project.githubRepo)
+                              ? inferPrUrlFromSessionTitle(session.name, project.githubRepo, {
+                                  gitHost: project.gitHost,
+                                  projectId: project.id,
+                                })
                               : null;
                           return (
                             <button
@@ -1857,7 +1884,7 @@ export default function Sidebar({
                               {resolvePrHref && (
                                 <span
                                   className="flex items-center text-sky-400 flex-shrink-0"
-                                  title="Existing PR — open session for GitHub link"
+                                  title="Existing PR — open session for the PR link"
                                   aria-hidden
                                 >
                                   <ExternalLink size={11} />

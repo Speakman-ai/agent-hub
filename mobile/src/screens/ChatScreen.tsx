@@ -68,10 +68,22 @@ export default function ChatScreen() {
         if (!activeSession?.name || !isResolvePrSessionTitle(activeSession.name))
             return null;
         return {
-            prUrl: inferPrUrlFromSessionTitle(activeSession.name, activeProject?.githubRepo),
+            prUrl: inferPrUrlFromSessionTitle(activeSession.name, activeProject?.githubRepo, {
+                gitHost: activeProject?.gitHost ?? null,
+                projectId: activeProject?.id ?? null,
+            }),
             prNumber: parseResolvePrNumberFromTitle(activeSession.name),
         };
     }, [activeSession, activeProject]);
+    const openNativePrDetail = useCallback((projectId: any, prNumber: any) => {
+        if (!projectId)
+            return;
+        navigation.navigate('PullRequests', {
+            projectId,
+            project: projects?.find((p: any) => p.id === projectId) ?? undefined,
+            prNumber: prNumber ?? undefined,
+        });
+    }, [navigation, projects]);
     const showFinalizeBar = Boolean(activeSessionId && activeProject?.id);
     const finalize = useFinalizeRunPoll(activeSessionId, {
         enabled: showFinalizeBar && !workflowProject,
@@ -133,7 +145,7 @@ export default function ChatScreen() {
             <DelegationPanel delegations={item.data.tasks} sessionId={activeSessionId} onCancel={handleDelegationCancel}/>
           </View>);
             case 'resolve-pr-banner':
-                return (<ResolveSessionPrBanner sessionId={activeSessionId} prUrl={item.data.prUrl} prNumber={item.data.prNumber} branchLabel={pendingChanges?.branch} onDismiss={dismissChangesReady}/>);
+                return (<ResolveSessionPrBanner sessionId={activeSessionId} prUrl={item.data.prUrl} prNumber={item.data.prNumber} branchLabel={pendingChanges?.branch} onDismiss={dismissChangesReady} onOpenPrDetail={openNativePrDetail}/>);
             default:
                 return null;
         }
