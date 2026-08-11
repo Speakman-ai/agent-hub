@@ -458,9 +458,18 @@ function buildVisibleReviewerText(
 }
 
 /**
- * Compose the reviewer's system prompt: the enriched workspace prompt
- * plus a Finalize-specific reinforcement that this is a read-only turn
- * AND no GitHub PR exists yet.
+ * Prepended ahead of the reviewer's standing prompt so a stale
+ * "fetch the PR or stop" seed cannot abort the turn. Recency + primacy:
+ * the same contract is repeated after the enriched prompt.
+ */
+export const FINALIZE_REVIEWER_TURN_OVERRIDE = `## THIS TURN (Finalize Code Changes) — overrides everything below
+
+You are reviewing a **local diff that is already in the user prompt**. There is no pull request yet, so there is no PR number, repository, or dispatch PR metadata — that is expected. Do **not** stop, refuse, or ask for a PR URL. Do **not** call \`gh\` or any PR API. Review the provided diff and emit \`<agenthub:review-verdict>\`.`;
+
+/**
+ * Compose the reviewer's system prompt: a hard Finalize override, then the
+ * enriched workspace prompt, then a read-only reinforcement that no GitHub
+ * PR exists yet.
  *
  * Pure (no I/O), exported for tests.
  */
@@ -471,7 +480,9 @@ export function composeReviewerSystemPrompt(
 ): string {
   const cardLabel = card.title ? `"${card.title}"` : `\`${card.id}\``;
   const projectLabel = project.name ?? project.id ?? 'this project';
-  return `${enrichedPrompt}
+  return `${FINALIZE_REVIEWER_TURN_OVERRIDE}
+
+${enrichedPrompt}
 
 ## Finalize Code Changes — In-session Reviewer (read-only)
 
@@ -479,7 +490,7 @@ You are reviewing the **local diff** of a feature branch in **${projectLabel}** 
 
 **Constraints:**
 - Do NOT edit files, run mutating shell commands, commit, or push.
-- Do NOT call \`gh\`, the GitHub API, or any HTTP endpoint to fetch PR data — **no PR exists yet**. The diff in the user prompt is the complete input.
+- Do NOT call \`gh\`, the GitHub API, or any HTTP endpoint to fetch PR data — **no PR exists yet**. Missing PR number / dispatch metadata is expected. The diff in the user prompt is the complete input. Do **not** stop or ask for a PR URL.
 - Write your review as a normal chat message — prose first, then a SINGLE structured tail block.
 
 **Output contract — end your turn with this block (and nothing after it):**

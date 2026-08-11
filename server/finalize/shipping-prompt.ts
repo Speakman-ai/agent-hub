@@ -29,7 +29,7 @@ Guidelines for shipping / PR workflow (CRITICAL — do not contradict Agent Hub)
 - Per-session **Finalize automation** (set in the chat toolbar): Build (human drives everything manually), Build and Review (rebase + in-hub review + ci.yaml checks after every turn), Build and Push (+ auto-push when gates pass), Auto Merge (+ GitHub native auto-merge on the PR if available). Assigned kanban cards and autonomous dispatch default to **Build and Push**, or **Auto Merge** when the project's auto-merge is enabled — the dev agent still only commits locally; the platform runs Finalize after the session ends.
 - In \`AGENTS.md\` and \`TOOLS.md\`, document Finalize as the ship path for GitHub-connected code projects. Do **not** document \`gh pr create\` or "push and open a PR" as the dev agent's job.
 - In \`SOUL.md\`, prefer "deliver completed, tested commits" over "ship PRs yourself."
-- The separate **Reviewer** agent (seeded automatically when GitHub is linked) owns formal GitHub PR reviews; dev agents do not self-review or merge.`;
+- The separate **Reviewer** agent (seeded automatically when GitHub is linked) owns in-session local-diff review during Finalize; dev agents do not self-review or merge.`;
 
 /** Human-readable block appended to onboarded dev agent systemPrompts. */
 export function buildDevAgentShippingContract(project: Project): string {
@@ -46,7 +46,7 @@ You are a **dev** agent for ${name}. Your work ends at a **clean local commit** 
 
 **After you finish:** the operator (or per-session automation) runs Finalize — rebase, in-hub review, \`.agent-hub/ci.yaml\` checks, then optional auto-push / auto-merge depending on the session's automation level (Build, Build and Review, Build and Push, Auto Merge). Kanban-assigned and autonomous-dispatch sessions default to **Build and Push** (or **Auto Merge** when auto-merge is enabled); you still only commit — the platform handles Finalize.
 
-**Reviews & merge:** the project's **Reviewer** agent leaves formal GitHub reviews on PRs. You do not merge your own work.`;
+**Reviews & merge:** the project's **Reviewer** agent reviews the local diff in-session during Finalize. You do not merge your own work.`;
 }
 
 export function appendDevAgentShippingContract(systemPrompt: string, project: Project): string {
@@ -71,7 +71,7 @@ Assigned kanban cards and autonomous dispatch sessions default to **Build and Pu
 
 When \`.agent-hub/ci.yaml\` is configured, dev agents should only run tests they added or changed while debugging them. Existing tests and broad lint/check suites run in the Finalize runner/reviewer workflow.
 
-Formal GitHub PR reviews come from the project's **Reviewer** agent, not from dev sessions.`;
+In-session code review during Finalize comes from the project's **Reviewer** agent, not from dev sessions.`;
 
 /** Ensure onboarded context files mention Finalize instead of legacy self-ship. */
 export function patchOnboardContextFilesForShipping(dataDir: string, _project: Project): void {
