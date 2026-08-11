@@ -55,7 +55,7 @@ jobs:                      # required, non-empty MAP keyed by job id
 |---|---|---|
 | `version` | Yes | Must be the literal integer `2`. Strings (`"2"`) fail. |
 | `on` | Yes | List of strings. Allowed values: `finalize`, `manual`, `push` (`push` marks configs meant for CI-on-push against Hub-hosted repos). No `pull_request`. |
-| `timeout_minutes` | No | Integer in `[1, 240]`. Default = 240. Config may **lower** the cap; raising it is rejected. |
+| `timeout_minutes` | No | Integer in `[1, 240]`. Default = 240. **Pipeline wall-clock** hang limit (jobs/steps). Config may **lower** that hang limit; raising it is rejected. Does **not** cap the 4-hour active-time budget for reviewer / fix-dispatch agent turns. |
 | `env` | No | Map of string→string. Lowest-precedence env layer. |
 | `jobs` | Yes | Non-empty **map** keyed by job id (not a list). |
 
@@ -126,7 +126,9 @@ A job with no `matrix` is one instance: ordinal `1` of total `1`. An explicit
   on its own runner with a fresh worktree, so every job installs its own
   deps. (A `/finalize-cache` Docker volume exists for `docker save/load`
   image reuse via a `warmup` job — not for npm.)
-- Active time across the whole run is capped at `timeout_minutes`.
+- Pipeline wall-clock (jobs/steps) is capped at `timeout_minutes`. The
+  4-hour active-time budget for reviewer / fix-dispatch agent turns is
+  a separate ceiling and is **not** lowered by this field.
 - Step output is streamed back to the originating session as it
   arrives.
 - On failure, the orchestrator dispatches the failed-step context

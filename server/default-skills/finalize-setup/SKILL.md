@@ -187,7 +187,7 @@ Show the proposed YAML verbatim in a fenced ```yaml block. Then
 Constraints:
 
 - `on:` is a non-empty list of `finalize` / `manual` (no `pull_request`)
-- `timeout_minutes` between 1 and 240 (config may lower, never raise)
+- `timeout_minutes` between 1 and 240 (pipeline wall-clock hang limit; config may lower, never raise). Does not cap the 4-hour active-time budget for reviewer / fix-dispatch turns.
 - **No** `shell:`, `uses:`, `with:`, or `autofix:` anywhere
 - every job needs `runs-on: ubuntu-24.04` (or `ubuntu-latest`, or `host`
   for a gate that needs no Docker); matrix values must be **quoted
