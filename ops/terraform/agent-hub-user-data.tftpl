@@ -271,10 +271,10 @@ APP_PORT="${app_port}"
 if [ -f /etc/agent-hub/image-tag ]; then
   DEPLOY_TAG="\$(tr -d '[:space:]' < /etc/agent-hub/image-tag)"
   if [ -n "\$DEPLOY_TAG" ]; then
-    IMAGE_BASE="\${IMAGE_URI%:*}"
+    IMAGE_BASE="$${IMAGE_URI%:*}"
     IMAGE_URI="\$IMAGE_BASE:\$DEPLOY_TAG"
     if [ -n "\$RUNNER_IMAGE_URI" ]; then
-      RUNNER_BASE="\${RUNNER_IMAGE_URI%:*}"
+      RUNNER_BASE="$${RUNNER_IMAGE_URI%:*}"
       RUNNER_IMAGE_URI="\$RUNNER_BASE:\$DEPLOY_TAG"
     fi
   fi
