@@ -520,6 +520,18 @@ export interface ReapFinalizeSourcesArgs {
 const DEFAULT_SOURCE_GRACE_MS = 5 * 60_000;
 
 /**
+ * Staging checkout is `runId`. Per-job copies used by the local DinD backend
+ * are `runId.job.<slug>` siblings — keep them for as long as the run itself.
+ */
+export function isRetainedFinalizeSourceName(name: string, retainRunIds: Set<string>): boolean {
+  if (retainRunIds.has(name)) return true;
+  for (const id of retainRunIds) {
+    if (id && name.startsWith(`${id}.job.`)) return true;
+  }
+  return false;
+}
+
+/**
  * Delete staging checkouts whose run no longer needs them.
  *
  * A crashed Hub leaves these behind, and a repo checkout is not small, so the
@@ -543,7 +555,7 @@ export async function reapFinalizeSourceCheckouts(
   const retain = args.retainRunIds();
   const reaped: string[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || retain.has(entry.name)) continue;
+    if (!entry.isDirectory() || isRetainedFinalizeSourceName(entry.name, retain)) continue;
     const dir = path.join(root, entry.name);
     try {
       const info = await stat(dir);

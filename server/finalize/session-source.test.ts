@@ -359,6 +359,24 @@ describe('reapFinalizeSourceCheckouts', () => {
     expect(existsSync(fresh)).toBe(true);
   });
 
+  it('keeps per-job copies while the parent run is retained', async () => {
+    const root = await tmpDir('reap-job');
+    const staging = await stagedDir(root, 'run-live', OLD);
+    const jobCopy = await stagedDir(root, 'run-live.job.frontend-default', OLD);
+    const otherJob = await stagedDir(root, 'run-dead.job.frontend-default', OLD);
+
+    const reaped = await reapFinalizeSourceCheckouts({
+      retainRunIds: () => new Set(['run-live']),
+      root,
+      logger: { warn: () => {} },
+    });
+
+    expect(reaped).toEqual(['run-dead.job.frontend-default']); // only the other run's copy
+    expect(existsSync(staging)).toBe(true);
+    expect(existsSync(jobCopy)).toBe(true);
+    expect(existsSync(otherJob)).toBe(false);
+  });
+
   it('is a no-op when nothing was ever staged on this host', async () => {
     await expect(
       reapFinalizeSourceCheckouts({
