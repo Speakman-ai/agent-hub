@@ -226,6 +226,13 @@ export class SessionEnvDisposedError extends Error {
 export interface SessionEnvDisposeOpts {
   /** ms between SIGTERM and SIGKILL for survivors. Default 5000. */
   graceMs?: number;
+  /**
+   * Drop persisted env disks (Firecracker workspace.ext4). True only when the
+   * *session* is gone (archive/delete). Hub restart and idle reap must leave
+   * the disk so the next turn reattaches the same commits instead of
+   * reseeding from the host scaffold.
+   */
+  forgetWorkspace?: boolean;
 }
 
 export interface SessionEnv {

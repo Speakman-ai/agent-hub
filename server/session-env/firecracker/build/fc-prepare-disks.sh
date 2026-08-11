@@ -114,11 +114,22 @@ mkdir -m 0700 -p "${VM_DIR}"
 
 ROOTFS_OUT="${VM_DIR}/rootfs.ext4"
 WORKSPACE_OUT="${VM_DIR}/workspace.ext4"
-# Drop any leftover files from a prior boot before recreating.
-rm -f -- "${ROOTFS_OUT}" "${WORKSPACE_OUT}"
+WORKSPACE_READY="${VM_DIR}/workspace.ready"
+# Rootfs is the guest OS — always clone a fresh one. The workspace disk is
+# the session's only copy of the worktree; destroying it on every boot is
+# what rolled Firecracker sessions back to the scaffold on follow-up turns.
+rm -f -- "${ROOTFS_OUT}"
 
 # ── rootfs clone ──────────────────────────────────────────────────
 cp --reflink=auto -- "${BASE_ROOTFS}" "${ROOTFS_OUT}"
+
+if [[ -f "${WORKSPACE_READY}" && -s "${WORKSPACE_OUT}" && ! -L "${WORKSPACE_OUT}" ]]; then
+  echo "fc-prepare-disks: reusing workspace=${WORKSPACE_OUT}"
+  echo "fc-prepare-disks: rootfs=${ROOTFS_OUT} workspace=${WORKSPACE_OUT}"
+  exit 0
+fi
+
+rm -f -- "${WORKSPACE_OUT}" "${WORKSPACE_READY}"
 
 # ── workspace disk ────────────────────────────────────────────────
 truncate -s "${WORKSPACE_SIZE_MIB}M" -- "${WORKSPACE_OUT}"
@@ -260,4 +271,5 @@ sync
 cleanup
 trap - EXIT
 
+touch -- "${WORKSPACE_READY}"
 echo "fc-prepare-disks: rootfs=${ROOTFS_OUT} workspace=${WORKSPACE_OUT}"

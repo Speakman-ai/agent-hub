@@ -118,14 +118,50 @@ describe('fc-jail-manage.sh stage', () => {
       expect(diskMode).toBe(0o660);
       const kernelMode = statSync(path.join(root, 'vmlinux')).mode & 0o777;
       expect(kernelMode).toBe(0o444);
-      // Copy/reflink — never hard-link — so chown cannot retarget ARTIFACT_DIR.
+      // Copy/reflink kernel — never hard-link — so chown cannot retarget ARTIFACT_DIR.
       const kernelAfter = statSync(kernel);
       expect(kernelAfter.ino).not.toBe(statSync(path.join(root, 'vmlinux')).ino);
       expect(kernelAfter.uid).toBe(kernelBefore.uid);
       expect(kernelAfter.mode).toBe(kernelBefore.mode);
+      // Workspace is the same inode as RUN_DIR so guest writes persist.
+      expect(statSync(workspace).ino).toBe(statSync(path.join(root, 'workspace.ext4')).ino);
       // RW disks must be writable by the staging uid (jailer contract).
       chmodSync(path.join(root, 'workspace.ext4'), 0o660);
       writeFileSync(path.join(root, 'workspace.ext4'), 'ww');
+      expect(readFileSync(workspace, 'utf8')).toBe('ww');
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('jail clean drops the staged link without deleting the RUN_DIR workspace', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-jail-keep-ws-'));
+    try {
+      const conf = writeRootsConf(base);
+      const tree = path.join(base, 'firecracker', 'ahvm-1');
+      const root = path.join(tree, 'root');
+      const kernel = path.join(base, 'vmlinux');
+      const rootfs = path.join(base, 'rootfs.ext4');
+      const workspace = path.join(base, 'workspace.ext4');
+      const configSrc = path.join(base, 'cfg.json');
+      writeFileSync(kernel, 'k');
+      writeFileSync(rootfs, 'r');
+      writeFileSync(workspace, 'seed\n');
+      writeFileSync(configSrc, '{}');
+      const uid = String(process.getuid?.() ?? 1000);
+      const gid = String(process.getgid?.() ?? 1000);
+      const staged = run(
+        jailHelper,
+        ['stage', root, kernel, rootfs, workspace, uid, gid, configSrc],
+        { AGENT_HUB_FC_ROOTS_CONF: conf },
+      );
+      expect(staged.status, staged.stderr).toBe(0);
+      writeFileSync(path.join(root, 'workspace.ext4'), 'guest-commit\n');
+
+      const cleaned = run(jailHelper, ['clean', tree], { AGENT_HUB_FC_ROOTS_CONF: conf });
+      expect(cleaned.status, cleaned.stderr).toBe(0);
+      expect(existsSync(tree)).toBe(false);
+      expect(readFileSync(workspace, 'utf8')).toBe('guest-commit\n');
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -414,6 +450,14 @@ describe('fc-path-guard symlink escape', () => {
 });
 
 describe('fc-prepare-disks.sh worktree copy', () => {
+  it('reuses an existing workspace disk instead of reseeding from the host', () => {
+    const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+    expect(src).toMatch(/workspace\.ready/);
+    expect(src).toMatch(/reusing workspace=/);
+    expect(src).not.toMatch(/rm -f -- "\$\{ROOTFS_OUT\}" "\$\{WORKSPACE_OUT\}"/);
+    expect(src).toMatch(/rm -f -- "\$\{ROOTFS_OUT\}"/);
+  });
+
   it('streams the worktree tar instead of buffering produced.stdout', () => {
     const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
     expect(src).not.toMatch(/produced\.stdout/);
