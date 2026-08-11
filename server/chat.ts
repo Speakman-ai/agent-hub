@@ -59,6 +59,7 @@ import {
   writeGuestSystemPromptFile,
 } from './session-env/guest-cli-spawn.js';
 import { FIRECRACKER_GUEST_WORKSPACE } from './session-env/firecracker/firecracker-vm-args.js';
+import { emitSessionEnvLaunchProgress } from './session-env/session-env-progress.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -2918,6 +2919,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
       const assistantMsgId = uuidv4();
+      // Seq is shared by host-emitted progress (VM launch) and later CLI
+      // stream events. Hoisted so Firecracker boot can persist a
+      // `progress_step` before the parser exists.
+      let seq = 0;
 
       let engineSessionId: string | null = session!.engine_session_id || null;
       const isNewEngineSession = !engineSessionId;
@@ -3022,9 +3027,68 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           drainQueue(sessionId);
           return;
         }
+        const launchStartedAt = Date.now();
+        try {
+          stmts.insertActiveTask.run(
+            sessionId,
+            assistantMsgId,
+            agentId,
+            null,
+            content,
+            engine,
+            model,
+          );
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('Failed to insert active_tasks row:', message);
+        }
+        recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+        emitSessionEnvLaunchProgress({
+          stmts,
+          broadcast,
+          sessionId,
+          messageId: assistantMsgId,
+          nextSeq: () => ++seq,
+          status: 'started',
+          startedAt: launchStartedAt,
+        });
+        // Thinking currently lands after worktree + VM boot, which left the
+        // chat on a blank "Waiting for first event…" for tens of seconds.
+        // Flip the live tail now so ProgressPanel / SessionTail can show
+        // "Launching session VM" for the duration of `ensureSessionEnv`.
+        broadcast({
+          type: 'thinking',
+          messageId: assistantMsgId,
+          sessionId,
+          agentId: agent.id,
+          agentName: agent.name,
+          agentColor: agent.color ?? null,
+          engine,
+          model,
+        });
         try {
           sessionEnv = await ensureSessionEnv(sessionId);
+          emitSessionEnvLaunchProgress({
+            stmts,
+            broadcast,
+            sessionId,
+            messageId: assistantMsgId,
+            nextSeq: () => ++seq,
+            status: 'completed',
+            startedAt: launchStartedAt,
+            finishedAt: Date.now(),
+          });
         } catch (err: unknown) {
+          emitSessionEnvLaunchProgress({
+            stmts,
+            broadcast,
+            sessionId,
+            messageId: assistantMsgId,
+            nextSeq: () => ++seq,
+            status: 'failed',
+            startedAt: launchStartedAt,
+            finishedAt: Date.now(),
+          });
           const errText =
             `Failed to start session environment for env-owned CLI turn: ` +
             (err instanceof Error ? err.message : String(err));
@@ -3605,7 +3669,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const parser = createStreamParser(engine);
       let finalText = '';
       let partialFallback = '';
-      let seq = 0;
       let errorOutput = '';
       // Accumulates error payloads that arrive on *stdout* (as JSONL for Codex /
       // Gemini) so the close handler can surface a meaningful message even when

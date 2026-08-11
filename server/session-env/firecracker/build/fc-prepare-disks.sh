@@ -186,8 +186,36 @@ def stream_worktree(src_fd: int, dest_dir: str) -> None:
                 )
         return chunk
 
+    # Skip generated trees. Survey Tracker (and most Node/Python repos) keep
+    # live `node_modules` / venvs in the host worktree — often still being
+    # written by a background install. Archiving them (a) takes minutes and
+    # stalls "Waiting for first event…", (b) races GNU tar ("file changed as
+    # we read it" / "File shrank") and fails the VM boot. The guest installs
+    # its own deps; host `node_modules` is a host-filesystem trick with no
+    # meaning across the VM boundary.
+    tar_create = [
+        "tar",
+        "-C",
+        src,
+        "--exclude-vcs-ignores",
+        "--exclude=node_modules",
+        "--exclude=__pycache__",
+        "--exclude=.venv",
+        "--exclude=venv",
+        "--exclude=.tox",
+        "--exclude=.angular",
+        "--exclude=.next",
+        "--exclude=.nuxt",
+        "--exclude=.turbo",
+        "--exclude=.parcel-cache",
+        "--exclude=coverage",
+        "--exclude=.cache",
+        "-cf",
+        "-",
+        ".",
+    ]
     prod = subprocess.Popen(
-        ["tar", "-C", src, "-cf", "-", "."],
+        tar_create,
         stdout=subprocess.PIPE,
         # Keep the dir fd open across exec so /proc/<pid>/fd/N stays valid for
         # the child's open(); close_fds alone is fine because we open by path.
@@ -212,7 +240,9 @@ def stream_worktree(src_fd: int, dest_dir: str) -> None:
         prod.kill()
         cons.kill()
         raise
-    if prod_rc != 0:
+    # GNU tar exits 1 when some files changed during the read. That is
+    # expected on a live worktree; exit 2+ is a real archive failure.
+    if prod_rc not in (0, 1):
         raise SystemExit(f"tar archive failed with exit {prod_rc}")
     if cons_rc != 0:
         raise SystemExit(f"tar extract failed with exit {cons_rc}")

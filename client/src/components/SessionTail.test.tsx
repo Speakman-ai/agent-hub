@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import SessionTail, { eventsToBlocks } from './SessionTail';
+import { SESSION_ENV_LAUNCH_STEP } from '@shared/utils/sessionEnvLaunch';
 
 /**
  * `eventsToBlocks` turns a raw event stream into renderable blocks. The tail
@@ -594,6 +595,33 @@ describe('eventsToBlocks — progress_step handling', () => {
 
     const kinds = eventsToBlocks(events).map((b: any) => b.kind);
     expect(kinds!).toEqual(['text', 'tool', 'text']);
+  });
+
+  it('shows a VM launching spinner instead of Waiting for first event', () => {
+    const events = wrap([
+      {
+        type: 'progress_step',
+        step: SESSION_ENV_LAUNCH_STEP,
+        status: 'started',
+        startedAt: 1,
+      },
+    ]);
+    render(
+      <SessionTail
+        message={{
+          id: 'm-vm',
+          role: 'assistant',
+          engine: 'claude-code',
+          model: 'opus',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={events}
+        agentColor="#6366f1"
+        streaming
+      />,
+    );
+    expect(screen.getByTestId('session-env-launching')).toHaveTextContent('Launching session VM…');
+    expect(screen.queryByText('Waiting for first event…')).toBeNull();
   });
 });
 

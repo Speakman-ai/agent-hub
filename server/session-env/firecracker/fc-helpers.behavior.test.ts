@@ -418,7 +418,8 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
     expect(src).not.toMatch(/produced\.stdout/);
     expect(src).toMatch(/AGENT_HUB_FC_WORKTREE_TAR_MAX_BYTES|worktree archive exceeded/);
-    expect(src).toMatch(/Popen\([\s\S]*tar[\s\S]*-cf[\s\S]*Popen\([\s\S]*tar[\s\S]*-xf/);
+    expect(src).toMatch(/Popen\(\s*tar_create[\s\S]*Popen\([\s\S]*tar[\s\S]*-xf/);
+    expect(src).toMatch(/"-cf"/);
   });
 
   it('keeps the worktree-copy Python heredoc compilable (nonlocal needs a function)', () => {
@@ -448,6 +449,16 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     expect(src).not.toMatch(/src = f"\/proc\/self\/fd\/\{src_fd\}"/);
   });
 
+  it('excludes generated dependency trees and treats GNU tar exit 1 as success', () => {
+    const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+    // Live node_modules is what made Survey Tracker session boots hang on
+    // "Waiting for first event…" then die with "File shrank" / "file changed
+    // as we read it". The guest installs its own deps.
+    expect(src).toMatch(/--exclude=node_modules/);
+    expect(src).toMatch(/--exclude-vcs-ignores/);
+    expect(src).toMatch(/prod_rc not in \(0, 1\)/);
+  });
+
   // O_NOFOLLOW + `/proc/<pid>/fd` are Linux-only; macOS tmpdirs also walk
   // through `/var` → `/private/var` symlinks that the guard correctly refuses.
   it.skipIf(process.platform !== 'linux')(
@@ -465,6 +476,11 @@ describe('fc-prepare-disks.sh worktree copy', () => {
         mkdirSync(worktree);
         mkdirSync(dest);
         writeFileSync(path.join(worktree, 'README.md'), 'hello from prepare\n');
+        mkdirSync(path.join(worktree, 'frontend', 'node_modules', 'async'), { recursive: true });
+        writeFileSync(
+          path.join(worktree, 'frontend', 'node_modules', 'async', 'priorityQueue.js'),
+          'should-not-be-copied\n',
+        );
         const py = match![1];
         const run = spawnSync('python3', ['-', worktree, dest], {
           input: py,
@@ -473,6 +489,7 @@ describe('fc-prepare-disks.sh worktree copy', () => {
         });
         expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
         expect(readFileSync(path.join(dest, 'README.md'), 'utf8')).toBe('hello from prepare\n');
+        expect(existsSync(path.join(dest, 'frontend', 'node_modules'))).toBe(false);
       } finally {
         rmSync(base, { recursive: true, force: true });
       }

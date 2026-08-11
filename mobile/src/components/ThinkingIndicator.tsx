@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, Easing } from 'react-native';
 import { colors } from '../theme/colors';
 import { formatElapsed } from '../utils/time';
-export default function ThinkingIndicator({ agentColor }: any) {
+export default function ThinkingIndicator({ agentColor, statusText }: any) {
     const [elapsed, setElapsed] = useState(0);
     const dot1 = useRef(new Animated.Value(0.3)).current;
     const dot2 = useRef(new Animated.Value(0.3)).current;
@@ -57,7 +57,7 @@ export default function ThinkingIndicator({ agentColor }: any) {
             <Animated.View style={[styles.dot, { opacity: dot3 }]}/>
           </View>
           <Text style={styles.elapsedText}>
-            Thinking... {formatElapsed(elapsed)}
+            {statusText || 'Thinking...'} {formatElapsed(elapsed)}
           </Text>
         </View>
       </View>

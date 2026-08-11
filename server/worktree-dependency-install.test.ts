@@ -18,8 +18,12 @@ import os from 'os';
  */
 let childProcessExecMock: ReturnType<typeof vi.fn>;
 
+const { configState } = vi.hoisted(() => ({
+  configState: { defaultCwd: '/tmp', sessionEnvAdapter: 'auto' as string },
+}));
+
 vi.mock('./config.js', () => ({
-  default: { defaultCwd: '/tmp' },
+  default: configState,
 }));
 
 vi.mock('child_process', async (importOriginal) => {
@@ -75,6 +79,7 @@ describe('setupDependencies awaited install failures', () => {
 
   beforeEach(() => {
     cleanup = [];
+    configState.sessionEnvAdapter = 'auto';
     delete process.env.TEST_WORKTREE_EXEC_FAIL;
     sourceDir = path.join(os.tmpdir(), `wh-src-${Date.now()}`);
     cloneDir = path.join(os.tmpdir(), `wh-clone-${Date.now()}`);
@@ -188,5 +193,18 @@ describe('setupDependencies awaited install failures', () => {
     });
     expect(childProcessExecMock).toHaveBeenCalledTimes(1);
     clearDependencyInstallFailureMarker(cloneDir);
+  });
+
+  it('skips host install when the session env is Firecracker (guest owns deps)', async () => {
+    configState.sessionEnvAdapter = 'firecracker';
+    const { __test } = await worktreePromise;
+    childProcessExecMock.mockClear();
+
+    await __test.setupDependencies(sourceDir, cloneDir, 'npm ci', {
+      awaitInstall: true,
+      preferInstallAllScript: false,
+    });
+
+    expect(childProcessExecMock).not.toHaveBeenCalled();
   });
 });

@@ -26,6 +26,7 @@ import { isWorkflowProject } from '../utils/project-mode';
 import ResolveSessionPrBanner from '../components/ResolveSessionPrBanner';
 import { shouldShowViewChanges } from '../utils/sessionExtras';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle, parseResolvePrNumberFromTitle, } from '@shared/utils/sessionTitlePr';
+import { latestSessionEnvLaunchStatus } from '@shared/utils/sessionEnvLaunch';
 export default function ChatScreen() {
     const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, handleCredentialSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, artifactReloadBySession, } = useApp();
     // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
@@ -121,7 +122,9 @@ export default function ChatScreen() {
           </View>);
             }
             case 'thinking':
-                return <ThinkingIndicator agentColor={activeAgent?.color}/>;
+                return (<ThinkingIndicator agentColor={activeAgent?.color} statusText={latestSessionEnvLaunchStatus(streamingMsgId ? eventsByMessage[streamingMsgId] : undefined) === 'started'
+                        ? 'Launching session VM…'
+                        : undefined}/>);
             case 'streaming':
                 return (<View>
             <StreamingMessage content={item.data.content} agentColor={activeAgent?.color} agentName={activeAgent?.name} engine={item.data.engine} onInterrupt={handleCancel}/>
