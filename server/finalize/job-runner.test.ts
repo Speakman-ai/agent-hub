@@ -1026,7 +1026,10 @@ jobs:
       // below would fail with infra_error. The local backend uses the mocked
       // startJobContainer/createJobScopedSpawnStep/stopJobContainer this test
       // already asserts against.
-      runnerBackend: createLocalRunnerBackend(),
+      runnerBackend: createLocalRunnerBackend({
+        sourceRoot: '/tmp/finalize-source-dind-test',
+        materialize: async () => undefined,
+      }),
     };
 
     const result = await runJobPhase(deps, {

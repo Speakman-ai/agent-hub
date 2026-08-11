@@ -33,7 +33,7 @@ export interface JobClaimSpec {
   matrixKey: string;
   /** Resolved runner image for `runs-on` (e.g. agent-hub finalize runner). */
   image: string;
-  /** Hub-local worktree path (the local backend bind-mounts it; remote ships a bundle). */
+  /** Hub-local worktree path (local backend clones a per-job copy then bind-mounts it; remote ships a bundle). */
   worktreePath: string;
   composeProjectName: string;
   /** Merged job env (top + job + matrix + builtins + project secrets). */
