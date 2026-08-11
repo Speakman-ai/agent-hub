@@ -31,7 +31,7 @@
  *
  *   3. Both have `timeoutMinutes` inside the parser-enforced ceiling
  *      [1, 240]. The ceiling is the same field at v1 and v2 — a config
- *      may lower the active-time cap but never raise it.
+ *      may lower the pipeline hang limit but never raise it.
  *
  *   4. Every executable step on every repo has a non-empty `name` and
  *      `run`. At v1 the steps live at `cfg.steps`; at v2 they live
