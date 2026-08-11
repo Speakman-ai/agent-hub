@@ -1,7 +1,13 @@
 import type { Request } from 'express';
 import type { AuthenticatedRequest } from './auth.js';
 import { resolveVisibilityCaller } from './project-visibility-middleware.js';
-import { deriveSupportTicketReleaseState, maskReporterEmail } from './support-tickets-store.js';
+import {
+  deriveSupportTicketReleaseState,
+  getConvertedCardSummaries,
+  getConvertedCardSummary,
+  maskReporterEmail,
+  type ConvertedCardSummary,
+} from './support-tickets-store.js';
 import {
   listReleaseNotificationOutboxBySupportTicket,
   releaseNotificationHistoryItem,
@@ -13,6 +19,8 @@ export type SupportTicketResponse = SupportTicketRow & {
   reporter_email_masked: boolean;
   release_state: SupportTicketReleaseState | null;
   release_notifications?: ReleaseNotificationHistoryItem[];
+  /** Board-facing identity of `converted_card_id`, or null when unset/deleted. */
+  converted_card: ConvertedCardSummary | null;
 };
 
 export interface LinkedSupportTicketMetadata {
@@ -45,6 +53,12 @@ export function serializeSupportTicket(
   opts: {
     canReadReporterEmail: boolean;
     releaseNotifications?: ReleaseNotificationHistoryItem[];
+    /**
+     * Pre-resolved card summary (see {@link serializeSupportTickets}). Pass it
+     * to skip the per-ticket lookup; omit it entirely for single-ticket reads.
+     * `null` means "already resolved, and the card is gone".
+     */
+    convertedCard?: ConvertedCardSummary | null;
   },
 ): SupportTicketResponse {
   const hasEmail = Boolean(ticket.reporter_email);
@@ -55,6 +69,10 @@ export function serializeSupportTicket(
       : maskReporterEmail(ticket.reporter_email),
     reporter_email_masked: hasEmail && !opts.canReadReporterEmail,
     release_state: deriveSupportTicketReleaseState(ticket),
+    converted_card:
+      opts.convertedCard !== undefined
+        ? opts.convertedCard
+        : getConvertedCardSummary(ticket.converted_card_id),
   };
   if (opts.releaseNotifications) {
     response.release_notifications = opts.releaseNotifications;
@@ -74,6 +92,36 @@ export function serializeSupportTicketForRequest(
     canReadReporterEmail: canReadReporterEmail(req),
     releaseNotifications,
   });
+}
+
+/**
+ * Serialize a whole list of tickets.
+ *
+ * Never map `serializeSupportTicket` over a list directly: that resolves the
+ * converted card one query per ticket (an N+1 on any converted-status page).
+ * This batches the card lookup into a single round trip first.
+ */
+export function serializeSupportTickets(
+  tickets: SupportTicketRow[],
+  opts: { canReadReporterEmail: boolean },
+): SupportTicketResponse[] {
+  const summaries = getConvertedCardSummaries(tickets.map((t) => t.converted_card_id));
+  return tickets.map((ticket) =>
+    serializeSupportTicket(ticket, {
+      canReadReporterEmail: opts.canReadReporterEmail,
+      convertedCard: ticket.converted_card_id
+        ? (summaries.get(ticket.converted_card_id) ?? null)
+        : null,
+    }),
+  );
+}
+
+/** Request-scoped {@link serializeSupportTickets} — resolves email visibility once. */
+export function serializeSupportTicketsForRequest(
+  req: Request,
+  tickets: SupportTicketRow[],
+): SupportTicketResponse[] {
+  return serializeSupportTickets(tickets, { canReadReporterEmail: canReadReporterEmail(req) });
 }
 
 export function serializeSupportTicketForBroadcast(

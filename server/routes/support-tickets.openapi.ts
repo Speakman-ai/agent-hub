@@ -37,6 +37,21 @@ const SupportTicketReleaseNotificationComponent = registerComponent(
   }),
 );
 
+const SupportTicketConvertedCardComponent = registerComponent(
+  'SupportTicketConvertedCard',
+  z
+    .object({
+      id: z.string(),
+      short_id: z.number().int().nullable(),
+      title: z.string(),
+      column_name: z.string().nullable(),
+    })
+    .openapi({
+      description:
+        'Board-facing identity of the kanban card a ticket was converted into or linked to, so clients can name and link to it instead of showing a bare card id.',
+    }),
+);
+
 const ErrorResponse = registerComponent(
   'SupportTicketErrorResponse',
   z
@@ -73,6 +88,10 @@ export const SupportTicketComponent = registerComponent(
         .nullable()
         .openapi({ description: 'Server-relative ref to an attached screenshot, or null.' }),
       converted_card_id: z.string().nullable(),
+      converted_card: SupportTicketConvertedCardComponent.nullable().openapi({
+        description:
+          'Resolved card identity for converted_card_id. Null when the ticket is unconverted or the card has since been deleted.',
+      }),
       wont_do_reason: z.string().nullable().openapi({
         description: "Operator reason the ticket was marked 'wont_do', or null otherwise.",
       }),

@@ -11,6 +11,8 @@ import {
   recordSupportTicketInvestigation,
   setSupportTicketReplayRef,
   convertSupportTicketToCard,
+  getConvertedCardSummary,
+  getConvertedCardSummaries,
   deleteSupportTicket,
   markSupportTicketRead,
   markSupportTicketUnread,
@@ -325,5 +327,63 @@ describe('support-tickets-store — read/unread', () => {
     expect(countUnreadSupportTickets('p1')).toBe(1);
     expect(countUnreadSupportTickets('p2')).toBe(1);
     expect(countUnreadSupportTickets('p3')).toBe(0);
+  });
+});
+
+describe('support-tickets-store — converted card summaries', () => {
+  /** Minimal board/column/card rows so the summary join has something to read. */
+  function seedCard(id: string, title: string, shortId: number): void {
+    const db = getDb();
+    db.prepare(
+      "INSERT OR IGNORE INTO kanban_boards (id, project_id, name) VALUES ('b-sum', 'p1', 'Board')",
+    ).run();
+    db.prepare(
+      "INSERT OR IGNORE INTO kanban_columns (id, board_id, name, position) VALUES ('col-sum', 'b-sum', 'To Do', 0)",
+    ).run();
+    db.prepare(
+      'INSERT INTO kanban_cards (id, column_id, board_id, title, short_id, position) VALUES (?, ?, ?, ?, ?, 0)',
+    ).run(id, 'col-sum', 'b-sum', title, shortId);
+  }
+
+  beforeEach(() => {
+    wipeTables(getDb(), ['kanban_cards', 'kanban_columns', 'kanban_boards']);
+  });
+
+  it('resolves a single card to its board-facing identity', () => {
+    seedCard('card-a', 'Cant find linked card', 1768);
+    expect(getConvertedCardSummary('card-a')).toEqual({
+      id: 'card-a',
+      short_id: 1768,
+      title: 'Cant find linked card',
+      column_name: 'To Do',
+    });
+    expect(getConvertedCardSummary('card-gone')).toBeNull();
+    expect(getConvertedCardSummary(null)).toBeNull();
+  });
+
+  it('batches many ids into one keyed map, skipping blanks and missing cards', () => {
+    // The batch path is what keeps list responses off an N+1 — every id in the
+    // page resolves through this single call.
+    seedCard('card-a', 'First', 1);
+    seedCard('card-b', 'Second', 2);
+
+    const summaries = getConvertedCardSummaries([
+      'card-a',
+      'card-b',
+      'card-a', // duplicate
+      'card-missing',
+      null,
+      undefined,
+      '  ',
+    ]);
+
+    expect([...summaries.keys()].sort()).toEqual(['card-a', 'card-b']);
+    expect(summaries.get('card-b')).toEqual({
+      id: 'card-b',
+      short_id: 2,
+      title: 'Second',
+      column_name: 'To Do',
+    });
+    expect(getConvertedCardSummaries([]).size).toBe(0);
   });
 });

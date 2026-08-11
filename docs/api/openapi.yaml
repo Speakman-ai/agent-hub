@@ -14130,6 +14130,25 @@ components:
         - can_retry
         - created_at
         - updated_at
+    SupportTicketConvertedCard:
+      type: object
+      properties:
+        id:
+          type: string
+        short_id:
+          type: integer
+          nullable: true
+        title:
+          type: string
+        column_name:
+          type: string
+          nullable: true
+      required:
+        - id
+        - short_id
+        - title
+        - column_name
+      description: Board-facing identity of the kanban card a ticket was converted into or linked to, so clients can name and link to it instead of showing a bare card id.
     SupportTicketErrorResponse:
       type: object
       properties:
@@ -14202,6 +14221,11 @@ components:
         converted_card_id:
           type: string
           nullable: true
+        converted_card:
+          allOf:
+            - $ref: "#/components/schemas/SupportTicketConvertedCard"
+            - nullable: true
+              description: Resolved card identity for converted_card_id. Null when the ticket is unconverted or the card has since been deleted.
         wont_do_reason:
           type: string
           nullable: true
@@ -14261,6 +14285,7 @@ components:
         - replay_ref
         - screenshot_ref
         - converted_card_id
+        - converted_card
         - wont_do_reason
         - release_state
         - fixed_at

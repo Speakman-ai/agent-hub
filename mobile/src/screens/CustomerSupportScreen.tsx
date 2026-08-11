@@ -7,6 +7,7 @@ import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, performTicketLink, releaseStateLabel, mergeTicketDetail, } from '../utils/supportTickets';
 import { SidebarContext } from '../context/SidebarContext';
+import { convertedCardLabel } from '@shared/utils/convertedCardLabel';
 const SEVERITY_COLOR: Record<string, any> = {
     critical: colors.red500,
     high: colors.rose400,
@@ -299,7 +300,9 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
       ) : null}
 
       <View style={styles.actionRow}>
-        {isConverted ? (<Text style={styles.convertedText}>{'✓'} Converted to card</Text>) : (<TouchableOpacity onPress={handleConvert} disabled={converting} style={[styles.convertButton, converting && styles.convertButtonDisabled]}>
+        {isConverted ? (<Text style={styles.convertedText} testID="converted-card-label">
+            {'✓'} Converted to {convertedCardLabel(item) ?? 'card'}
+          </Text>) : (<TouchableOpacity onPress={handleConvert} disabled={converting} style={[styles.convertButton, converting && styles.convertButtonDisabled]}>
             <Text style={styles.convertButtonText}>
               {converting ? 'Converting…' : '▤ Convert to card'}
             </Text>

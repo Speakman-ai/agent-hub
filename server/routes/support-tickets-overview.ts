@@ -1,9 +1,9 @@
 import { Router, Request, Response } from 'express';
-import type { RouteDeps, SupportTicketRow } from '../types.js';
+import type { RouteDeps } from '../types.js';
 import { listAllSupportTickets, SUPPORT_TICKET_STATUSES } from '../support-tickets-store.js';
 import type { SupportTicketStatus } from '../types.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
-import { serializeSupportTicket } from './support-tickets.js';
+import { serializeSupportTickets } from '../support-ticket-serialization.js';
 
 /**
  * Cross-project support overview.
@@ -67,12 +67,17 @@ export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Rou
       caller.localBypass || caller.role === 'Owner' || caller.role === 'Admin',
     );
 
-    const tickets = listAllSupportTickets({
-      projectId: resolvedProjectId,
-      statuses: status ? [status as SupportTicketStatus] : undefined,
-      unread,
-    }).map((t: SupportTicketRow) => ({
-      ...serializeSupportTicket(t, { canReadReporterEmail }),
+    // Serialize as a batch — the per-ticket path would re-query each ticket's
+    // converted card, an N+1 across this cross-project list.
+    const tickets = serializeSupportTickets(
+      listAllSupportTickets({
+        projectId: resolvedProjectId,
+        statuses: status ? [status as SupportTicketStatus] : undefined,
+        unread,
+      }),
+      { canReadReporterEmail },
+    ).map((t) => ({
+      ...t,
       project_name: projectNameById.get(t.project_id) ?? t.project_id,
     }));
 

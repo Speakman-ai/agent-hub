@@ -46,6 +46,7 @@ import {
   serializeSupportTicket,
   serializeSupportTicketForBroadcast,
   serializeSupportTicketForRequest,
+  serializeSupportTicketsForRequest,
   type SupportTicketResponse,
 } from '../support-ticket-serialization.js';
 
@@ -183,7 +184,9 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     }
 
     const tickets = listSupportTickets(project.id, { statuses, type });
-    res.json(tickets.map((ticket) => serializeForRequest(req, ticket)));
+    // Batched on purpose: a per-ticket serialize would re-query the converted
+    // card (and re-resolve the caller's email visibility) once per row.
+    res.json(serializeSupportTicketsForRequest(req, tickets));
   });
 
   // Registered before the `/:id` route so the literal path wins the match.

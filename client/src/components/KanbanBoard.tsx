@@ -803,6 +803,8 @@ export default function KanbanBoard({
   onCollapsedColumnIdsChange,
   onOpenEpics,
   onOpenTemplates,
+  focusCardId = null,
+  onFocusCardConsumed,
 }: any) {
   // The assignment dropdown must only offer agents that belong to this
   // project — agents are loaded app-wide and flattened across every visible
@@ -1216,6 +1218,48 @@ export default function KanbanBoard({
   useEffect(() => {
     pendingTemplateCreateRef.current = null;
   }, [projectId]);
+
+  // Deep-link: another surface (a converted support ticket, a toast) asked for
+  // a specific card to be opened. Columns load paged, so the card may not be in
+  // `cards` yet — fall back to the unpaged card list before giving up. The id
+  // is consumed either way so a failed lookup can't re-fire on every render.
+  //
+  // The guard is armed only while the prop holds that id: clearing it (which
+  // the parent does the moment we report the id consumed) re-arms the board, so
+  // asking for the *same* card again later opens it again instead of no-opping.
+  const consumedFocusCardIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusCardId) {
+      consumedFocusCardIdRef.current = null;
+      return;
+    }
+    if (loading) return;
+    if (consumedFocusCardIdRef.current === focusCardId) return;
+    consumedFocusCardIdRef.current = focusCardId;
+
+    const loaded = cardsRef.current.find((c: any) => c.id === focusCardId);
+    if (loaded) {
+      openDetail(loaded);
+      onFocusCardConsumed?.();
+      return;
+    }
+
+    let cancelled = false;
+    api
+      .getBoardCards(projectId)
+      .then((all: any) => {
+        if (cancelled) return;
+        const card = (Array.isArray(all) ? all : []).find((c: any) => c.id === focusCardId);
+        if (card) openDetail(card);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) onFocusCardConsumed?.();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [focusCardId, loading, openDetail, onFocusCardConsumed, projectId]);
 
   useEffect(() => {
     if (!defaultAddCardColumnId || !pendingTemplateCreateRef.current) return;

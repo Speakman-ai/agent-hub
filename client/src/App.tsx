@@ -572,6 +572,9 @@ export default function App({ initialView }: any = {}) {
     () => new Set(),
   );
   const [kanbanPendingCreateTemplate, setKanbanPendingCreateTemplate] = useState<any>(null);
+  // A card another surface asked the board to open (e.g. the card a support
+  // ticket was converted into). Cleared once the board consumes it.
+  const [kanbanFocusCardId, setKanbanFocusCardId] = useState<string | null>(null);
   const kanbanProjectId = currentView.startsWith('kanban:') ? currentView.slice(7) : null;
   const kanbanContextProjectId =
     kanbanProjectId ??
@@ -5627,6 +5630,8 @@ export default function App({ initialView }: any = {}) {
                     const projectId = currentView.split(':')[1];
                     setCurrentView(`kanban-templates:${projectId}`);
                   }}
+                  focusCardId={kanbanFocusCardId}
+                  onFocusCardConsumed={() => setKanbanFocusCardId(null)}
                   showToast={showToast}
                   onProjectsRefresh={() => {
                     // Re-pull the project list so derived flags reflect any
@@ -5928,6 +5933,12 @@ export default function App({ initialView }: any = {}) {
                   agents={agents.filter((a: any) => a.projectId === supportProjectId)}
                   modelConfig={modelConfig}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
+                  onOpenCard={(cardId: any) => {
+                    if (!cardId) return;
+                    setKanbanFocusCardId(cardId);
+                    setCurrentView(`kanban:${supportProjectId}`);
+                    setSidebarOpen(false);
+                  }}
                 />
               ) : currentView === 'home' ? (
                 <PersonalDashboard

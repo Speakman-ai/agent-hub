@@ -1138,4 +1138,48 @@ describe('CustomerSupportPage — read/unread', () => {
     });
     await waitFor(() => expect(screen.queryByTestId('unread-dot')).toBeNull());
   });
+  it('links a converted ticket to its card by name, not by card id', async () => {
+    // Regression: the converted ticket only showed the opaque card id, which
+    // matches nothing on the board — so the card was unfindable.
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({
+        id: 'conv',
+        subject: 'Cant find linked card',
+        status: 'converted',
+        converted_card_id: 'card-uuid-9',
+        converted_card: {
+          id: 'card-uuid-9',
+          short_id: 1768,
+          title: 'Fix the support link',
+          column_name: 'To Do',
+        },
+      }),
+    ]);
+    const onOpenCard = vi.fn();
+    render(<CustomerSupportPage projectId="proj-1" onOpenCard={onOpenCard} />);
+
+    const link = await screen.findByTestId('converted-card-link');
+    expect(link).toHaveTextContent('#1768 · Fix the support link');
+    expect(screen.queryByText(/card-uuid-9/)).toBeNull();
+
+    fireEvent.click(link);
+    expect(onOpenCard).toHaveBeenCalledWith('card-uuid-9');
+  });
+
+  it('falls back to plain converted text when the card cannot be resolved', async () => {
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({
+        id: 'orphan',
+        subject: 'Deleted card',
+        status: 'converted',
+        converted_card_id: 'card-gone',
+        converted_card: null,
+      }),
+    ]);
+    render(<CustomerSupportPage projectId="proj-1" onOpenCard={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('Converted to card')).toBeInTheDocument());
+    expect(screen.queryByTestId('converted-card-link')).toBeNull();
+    expect(screen.queryByText(/card-gone/)).toBeNull();
+  });
 });

@@ -380,6 +380,59 @@ export function convertSupportTicketToCard(id: string, cardId: string): SupportT
   return getSupportTicket(id);
 }
 
+/**
+ * Human-facing identity of the kanban card a ticket was converted into or
+ * linked to. The ticket row only stores an opaque `converted_card_id`, which
+ * matches nothing an operator can see on the board — cards are identified
+ * there by `#short_id` and title. Responses carry this summary so the support
+ * UI can name the card and link straight to it.
+ */
+export interface ConvertedCardSummary {
+  id: string;
+  short_id: number | null;
+  title: string;
+  column_name: string | null;
+}
+
+const CONVERTED_CARD_SUMMARY_SELECT = `SELECT c.id AS id, c.short_id AS short_id, c.title AS title, col.name AS column_name
+     FROM kanban_cards c
+     LEFT JOIN kanban_columns col ON col.id = c.column_id`;
+
+/** Resolve a card id to its board-facing identity, or null if it's gone. */
+export function getConvertedCardSummary(
+  cardId: string | null | undefined,
+): ConvertedCardSummary | null {
+  if (!cardId) return null;
+  const row = getDb().prepare(`${CONVERTED_CARD_SUMMARY_SELECT} WHERE c.id = ?`).get(cardId) as
+    | ConvertedCardSummary
+    | undefined;
+  return row ?? null;
+}
+
+/**
+ * Batch sibling of {@link getConvertedCardSummary}, keyed by card id. List
+ * responses resolve every converted card in one round trip instead of one
+ * query per ticket. Ids missing from the map are cards that no longer exist.
+ */
+export function getConvertedCardSummaries(
+  cardIds: Array<string | null | undefined>,
+): Map<string, ConvertedCardSummary> {
+  const out = new Map<string, ConvertedCardSummary>();
+  const ids = uniqueStrings(cardIds);
+  if (!ids.length) return out;
+  // SQLite's default host-parameter ceiling is 999, so chunk rather than
+  // letting a large converted-ticket page blow the statement apart.
+  const CHUNK = 500;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const rows = getDb()
+      .prepare(`${CONVERTED_CARD_SUMMARY_SELECT} WHERE c.id IN (${chunk.map(() => '?').join(',')})`)
+      .all(...chunk) as ConvertedCardSummary[];
+    for (const row of rows) out.set(row.id, row);
+  }
+  return out;
+}
+
 function uniqueStrings(values: unknown[]): string[] {
   return [
     ...new Set(

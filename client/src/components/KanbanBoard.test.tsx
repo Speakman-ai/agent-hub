@@ -20,6 +20,7 @@ import { api } from '../utils/api';
 (vi as any).mock('../utils/api.js', () => ({
   api: {
     getBoard: vi.fn(),
+    getBoardCards: vi.fn(),
     getColumnCards: vi.fn(),
     get: vi.fn(),
     getCardComments: vi.fn(),
@@ -2226,5 +2227,86 @@ describe('KanbanBoard collapsed-column wiring (controlled vs uncontrolled)', () 
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
       expect(stored).toContain('col-todo');
     });
+  });
+});
+
+describe('KanbanBoard focusCardId deep link', () => {
+  beforeEach(() => {
+    (api.getBoard as any).mockReset();
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+    (api.getBoardCards as any).mockReset();
+    (api.getCardComments as any).mockResolvedValue([]);
+  });
+
+  it('opens the requested card and reports it consumed', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([{ id: 'card-9', title: 'Converted card', column_id: 'col-todo', position: 0 }]),
+    );
+    const onFocusCardConsumed = vi.fn();
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        focusCardId="card-9"
+        onFocusCardConsumed={onFocusCardConsumed}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('card-detail-modal')).toBeInTheDocument());
+    expect(onFocusCardConsumed).toHaveBeenCalled();
+    // Already-loaded cards don't need the unpaged fallback fetch.
+    expect(api.getBoardCards).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the unpaged card list when the card is not in a loaded page', async () => {
+    (api.getBoard as any).mockResolvedValue(makeBoard([]));
+    (api.getBoardCards as any).mockResolvedValue([
+      { id: 'card-off-page', title: 'Off-page card', column_id: 'col-todo', position: 0 },
+    ]);
+    const onFocusCardConsumed = vi.fn();
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        focusCardId="card-off-page"
+        onFocusCardConsumed={onFocusCardConsumed}
+      />,
+    );
+
+    await waitFor(() => expect(api.getBoardCards).toHaveBeenCalledWith('p1'));
+    await waitFor(() => expect(screen.getByTestId('card-detail-modal')).toBeInTheDocument());
+    await waitFor(() => expect(onFocusCardConsumed).toHaveBeenCalled());
+  });
+
+  it('reopens the same card after the prop is cleared and set again', async () => {
+    // Regression: the consumed-id guard used to latch forever, so returning to
+    // support and picking the same converted card a second time did nothing.
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([{ id: 'card-9', title: 'Converted card', column_id: 'col-todo', position: 0 }]),
+    );
+    const onFocusCardConsumed = vi.fn();
+    const props = {
+      projectId: 'p1',
+      project: { name: 'P' },
+      refreshKey: 0,
+      onFocusCardConsumed,
+    };
+
+    const { rerender } = render(<KanbanBoard {...props} focusCardId="card-9" />);
+    await waitFor(() => expect(screen.getByTestId('card-detail-modal')).toBeInTheDocument());
+
+    // The parent clears the id once consumed; the operator closes the card.
+    rerender(<KanbanBoard {...props} focusCardId={null} />);
+    fireEvent.click(screen.getByLabelText('Close'));
+    await waitFor(() => expect(screen.queryByTestId('card-detail-modal')).toBeNull());
+
+    // Selecting the same card again must open it a second time.
+    rerender(<KanbanBoard {...props} focusCardId="card-9" />);
+    await waitFor(() => expect(screen.getByTestId('card-detail-modal')).toBeInTheDocument());
   });
 });

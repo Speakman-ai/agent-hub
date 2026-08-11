@@ -2251,6 +2251,9 @@ export const api = {
     const qs = params.toString();
     return fetchJSON(`/projects/${projectId}/board/columns/${columnId}/cards${qs ? `?${qs}` : ''}`);
   },
+  // Every card on the board, unpaged. Used to resolve a card the paged board
+  // view hasn't loaded yet (e.g. deep-linking to a card from another surface).
+  getBoardCards: (projectId: any) => fetchJSON(`/projects/${projectId}/board/cards`),
   createColumn: (projectId: any, data: { name: string; color?: string | null }) =>
     fetchJSON(`/projects/${projectId}/board/columns`, {
       method: 'POST',

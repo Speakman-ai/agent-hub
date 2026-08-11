@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Link2,
 } from 'lucide-react';
+import { convertedCardId, convertedCardLabel } from '@shared/utils/convertedCardLabel';
 import { api } from '../utils/api';
 import { getServerBase } from '../utils/connection';
 import ReplayPlayerModal from './ReplayPlayerModal';
@@ -720,6 +721,45 @@ function LinkToCardControl({
   );
 }
 
+/**
+ * The "this ticket became a card" affordance. The ticket row only stores an
+ * opaque card id, which matches nothing an operator can search for on the
+ * board — cards are identified there by `#short_id` and title. So render the
+ * card's actual name and make it open that card, falling back to the plain
+ * status text when the server couldn't resolve the card (deleted, or an older
+ * payload without `converted_card`).
+ */
+function ConvertedCardLink({ ticket, onOpenCard }: any) {
+  const card = ticket?.converted_card;
+  const cardId = convertedCardId(ticket);
+  const label = convertedCardLabel(ticket);
+
+  if (!label || !cardId || typeof onOpenCard !== 'function') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+        <Check size={13} />
+        Converted to card
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-emerald-400">
+      <Check size={13} className="flex-shrink-0" />
+      <span className="flex-shrink-0">Converted to</span>
+      <button
+        type="button"
+        onClick={() => onOpenCard(cardId)}
+        title={card.column_name ? `Open card in ${card.column_name}` : 'Open card on the board'}
+        data-testid="converted-card-link"
+        className="pointer-events-auto relative min-w-0 truncate text-emerald-300 underline decoration-emerald-500/40 underline-offset-2 hover:text-emerald-200"
+      >
+        {label}
+      </button>
+    </span>
+  );
+}
+
 function TicketScreenshot({ src, scrollRoot }: any) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(() => typeof IntersectionObserver === 'undefined');
@@ -768,6 +808,7 @@ function SupportTicketCard({
   onConverted,
   onUpdated,
   onNotify,
+  onOpenCard,
 }: any) {
   const type = TYPE_META[ticket.type] || TYPE_META.other;
   const { Icon } = type;
@@ -889,10 +930,7 @@ function SupportTicketCard({
 
             <div className="mt-2.5 flex items-center gap-2 flex-wrap">
               {isConverted ? (
-                <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
-                  <Check size={13} />
-                  Converted to card
-                </span>
+                <ConvertedCardLink ticket={ticket} onOpenCard={onOpenCard} />
               ) : (
                 <>
                   <ConvertControl
@@ -984,6 +1022,7 @@ function SupportTicketDetailModal({
   onConverted,
   onUpdated,
   onNotify,
+  onOpenCard,
 }: any) {
   // Only the *fetched enrichment* is held locally — the complete
   // ai_investigation the list rows truncate to ai_summary. Every other field is
@@ -1262,10 +1301,7 @@ function SupportTicketDetailModal({
           {/* Footer actions */}
           <div className="flex items-center gap-2 flex-wrap border-t border-gray-800 px-5 py-3">
             {isConverted ? (
-              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
-                <Check size={13} />
-                Converted to card{ticket.converted_card_id ? ` · ${ticket.converted_card_id}` : ''}
-              </span>
+              <ConvertedCardLink ticket={ticket} onOpenCard={onOpenCard} />
             ) : (
               <>
                 <ConvertControl
@@ -1324,7 +1360,7 @@ function SupportTicketDetailModal({
 }
 
 function CustomerSupportPageInner(
-  { projectId, agents = [], onNotify, initialTicketId }: any,
+  { projectId, agents = [], onNotify, initialTicketId, onOpenCard }: any,
   ref: any,
 ) {
   const [tickets, setTickets] = useState<any[]>([]);
@@ -1575,6 +1611,7 @@ function CustomerSupportPageInner(
                 onConverted={removeTicket}
                 onUpdated={upsertTicket}
                 onNotify={onNotify}
+                onOpenCard={onOpenCard}
               />
             ))}
           </div>
@@ -1591,6 +1628,7 @@ function CustomerSupportPageInner(
           onConverted={removeTicket}
           onUpdated={upsertTicket}
           onNotify={onNotify}
+          onOpenCard={onOpenCard}
         />
       ) : null}
     </div>

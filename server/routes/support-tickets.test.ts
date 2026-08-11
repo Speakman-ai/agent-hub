@@ -502,6 +502,51 @@ describe('support-tickets routes', () => {
     expect(openList.body.find((t: { id: string }) => t.id === ticketId)?.status).toBe('new');
   });
 
+  it('names the converted card (short id + title) on every ticket read', async () => {
+    // Regression: the ticket only carried the opaque `converted_card_id`, which
+    // matches nothing an operator can find on the board — cards are identified
+    // there by #short_id and title. Every ticket read must resolve the card.
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'find me on the board', subject: 'Cant find linked card', severity: 'medium' })
+      .expect(201);
+    const ticketId = created.body.id as string;
+    expect(created.body.converted_card).toBeNull();
+
+    const convert = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
+      .expect(201);
+    const card = convert.body.card as { id: string; short_id: number; title: string };
+    const expected = {
+      id: card.id,
+      short_id: card.short_id,
+      title: 'Cant find linked card',
+      column_name: 'To Do',
+    };
+    expect(convert.body.ticket.converted_card).toEqual(expected);
+
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${ticketId}`)
+      .expect(200);
+    expect(detail.body.converted_card).toEqual(expected);
+
+    const done = await request
+      .get(`/api/projects/${projectId}/support-tickets?status=converted`)
+      .expect(200);
+    expect(done.body.find((t: { id: string }) => t.id === ticketId).converted_card).toEqual(
+      expected,
+    );
+
+    // A deleted card degrades to null rather than leaving a dangling name.
+    await request.delete(`/api/projects/${projectId}/board/cards/${card.id}`).expect(200);
+    const orphaned = await request
+      .get(`/api/projects/${projectId}/support-tickets/${ticketId}`)
+      .expect(200);
+    expect(orphaned.body.converted_card_id).toBe(card.id);
+    expect(orphaned.body.converted_card).toBeNull();
+  });
+
   it('convert with no body leaves the card auto_merge unset (project default)', async () => {
     const projectId = await newProjectId();
     const created = await request
