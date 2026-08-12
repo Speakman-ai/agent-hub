@@ -462,23 +462,39 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   }
 
-  /** Tear down any preview group owned by `sessionId`. */
-  async function stopPreviewsForSession(sessionId: string): Promise<void> {
+  /**
+   * Stop only the session's running **dev preview** (compose / node process).
+   *
+   * Must not dispose the session env, kill background shells, or clear Bash
+   * notices — those belong to the session, not the preview. Disposing the env
+   * here is what made "Stop preview" feel like ending the session and wiping
+   * in-env changes (Firecracker/container disk reset to the host seed).
+   */
+  async function stopPreviewOnlyForSession(sessionId: string): Promise<void> {
+    const devServerRuntime = deps.getDevServerRuntime?.();
+    if (!devServerRuntime) return;
+    try {
+      await devServerRuntime.stopBySessionId(sessionId);
+    } catch (err: unknown) {
+      console.warn(
+        `[sessions] dev-server stopBySessionId failed (${sessionId}):`,
+        (err as Error).message,
+      );
+    }
+  }
+
+  /**
+   * Full session runtime teardown for archive/delete: preview, background
+   * shells, ephemeral Bash notices, and the session environment itself.
+   *
+   * The env deliberately outlives an individual preview stop — this is the
+   * only path that releases it, otherwise containers / microVMs accumulate.
+   */
+  async function teardownSessionRuntime(sessionId: string): Promise<void> {
     // The session will never take another turn, so nothing will consume its
     // pending native-background-Bash notice. Drop it rather than leak the rows.
     clearEphemeralBackgroundBash(sessionId);
-    const devServerRuntime = deps.getDevServerRuntime?.();
-    const tasks: Promise<unknown>[] = [];
-    if (devServerRuntime) {
-      tasks.push(
-        devServerRuntime.stopBySessionId(sessionId).catch((err: unknown) => {
-          console.warn(
-            `[sessions] dev-server stopBySessionId failed (${sessionId}):`,
-            (err as Error).message,
-          );
-        }),
-      );
-    }
+    const tasks: Promise<unknown>[] = [stopPreviewOnlyForSession(sessionId)];
     const backgroundShellRuntime = deps.getBackgroundShellRuntime?.();
     if (backgroundShellRuntime) {
       // Drop the watcher's in-memory pending wakes before the kill. The
@@ -502,10 +518,6 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         }),
       );
     }
-    // The session's environment outlives its preview by design, so nothing
-    // above releases it. Ending the session is the point at which it must go
-    // — otherwise a container, its inner image cache, and its graph volume
-    // survive every archive and accumulate until the disk fills.
     if (deps.disposeSessionEnv) {
       tasks.push(
         deps.disposeSessionEnv(sessionId).catch((err: unknown) => {
@@ -520,9 +532,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   }
 
   /** Fire-and-forget variant for bulk archive loops. */
-  function stopPreviewsBestEffort(sessionId: string): void {
-    void stopPreviewsForSession(sessionId).catch((err) => {
-      console.warn(`[sessions] preview teardown failed (${sessionId}):`, (err as Error).message);
+  function teardownSessionRuntimeBestEffort(sessionId: string): void {
+    void teardownSessionRuntime(sessionId).catch((err) => {
+      console.warn(
+        `[sessions] session runtime teardown failed (${sessionId}):`,
+        (err as Error).message,
+      );
     });
   }
 
@@ -1236,7 +1251,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         activeProcesses.delete(session.id);
       }
       closeBrowserBestEffort(session.id);
-      stopPreviewsBestEffort(session.id);
+      teardownSessionRuntimeBestEffort(session.id);
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
@@ -1270,7 +1285,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (activeProcesses.has(session.id)) continue;
       if (computeSessionState(stmts, session.id) !== 'pushed') continue;
       closeBrowserBestEffort(session.id);
-      stopPreviewsBestEffort(session.id);
+      teardownSessionRuntimeBestEffort(session.id);
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
@@ -1306,7 +1321,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (activeProcesses.has(session.id)) continue;
       if (computeSessionState(stmts, session.id) !== 'merged') continue;
       closeBrowserBestEffort(session.id);
-      stopPreviewsBestEffort(session.id);
+      teardownSessionRuntimeBestEffort(session.id);
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
@@ -1350,7 +1365,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     closeBrowserBestEffort(sessionId);
-    await stopPreviewsForSession(sessionId);
+    await teardownSessionRuntime(sessionId);
 
     // Cleanup runs BEFORE the soft-delete so it can resolve the card's owning
     // agent without depending on whether `getSession` filters archived rows.
@@ -2121,7 +2136,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
           return res.status(404).json({ error: 'Session not found' });
         }
-        await stopPreviewsForSession(sessionId);
+        await stopPreviewOnlyForSession(sessionId);
         deps.broadcast({
           type: 'agenthub_preview',
           kind: 'preview_stopped',
