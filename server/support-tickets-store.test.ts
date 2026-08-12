@@ -8,6 +8,7 @@ import {
   normalizeReporterEmail,
   updateSupportTicketStatus,
   updateSupportTicketType,
+  updateSupportTicketSeverity,
   recordSupportTicketInvestigation,
   setSupportTicketReplayRef,
   convertSupportTicketToCard,
@@ -198,9 +199,21 @@ describe('support-tickets-store — lifecycle & mutations', () => {
     expect(() => updateSupportTicketType(t.id, 'nope' as never)).toThrow(/type must be one of/);
   });
 
+  it('re-rates a ticket severity and rejects an invalid severity', () => {
+    const t = createSupportTicket({ projectId: 'p1', body: 'b', severity: 'low' });
+    expect(updateSupportTicketSeverity(t.id, 'critical')!.severity).toBe('critical');
+    expect(getSupportTicket(t.id)!.severity).toBe('critical');
+
+    expect(() => updateSupportTicketSeverity(t.id, 'urgent' as never)).toThrow(
+      /severity must be one of/,
+    );
+    expect(getSupportTicket(t.id)!.severity).toBe('critical');
+  });
+
   it('returns null when updating a missing ticket', () => {
     expect(updateSupportTicketStatus('missing', 'closed')).toBeNull();
     expect(updateSupportTicketType('missing', 'bug')).toBeNull();
+    expect(updateSupportTicketSeverity('missing', 'high')).toBeNull();
   });
 
   it('records an AI investigation and stamps ai_investigated_at', () => {

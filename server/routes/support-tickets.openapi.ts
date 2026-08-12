@@ -149,6 +149,10 @@ export const PatchSupportTicketRequestSchema = z
       description:
         'Reclassify the ticket request type (bug, question, feature_request, incident, other).',
     }),
+    severity: z.enum(SEVERITIES).optional().openapi({
+      description:
+        'Re-rate the ticket severity (critical, high, medium, low). Drives queue ordering and the priority a converted card inherits.',
+    }),
     wontDoReason: z.string().nullable().optional().openapi({
       description:
         "Reason the ticket is being marked 'wont_do'. Required (non-empty) when status is 'wont_do'; cleared on any other status transition.",
@@ -162,7 +166,7 @@ export const PatchSupportTicketRequestSchema = z
     }),
   })
   .openapi({
-    description: 'Partial update: status/type transition and/or AI/replay/screenshot fields.',
+    description: 'Partial update: status/type/severity change and/or AI/replay/screenshot fields.',
   });
 
 const projectIdParams = z.object({
@@ -339,14 +343,14 @@ registerPath({
   method: 'patch',
   path: '/api/projects/{projectId}/support-tickets/{id}',
   tags: ['Support'],
-  summary: 'Update a support ticket (status, type, AI investigation, replay ref)',
+  summary: 'Update a support ticket (status, type, severity, AI investigation, replay ref)',
   request: {
     params: ticketParams,
     body: { content: jsonContent(PatchSupportTicketRequestSchema) },
   },
   responses: {
     200: { description: 'Updated ticket.', content: jsonContent(SupportTicketComponent) },
-    400: errorResponse('Invalid status or type.'),
+    400: errorResponse('Invalid status, type, or severity.'),
     404: errorResponse('Project or ticket not found.'),
   },
 });

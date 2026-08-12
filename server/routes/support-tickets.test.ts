@@ -368,6 +368,70 @@ describe('support-tickets routes', () => {
       .expect(400);
   });
 
+  it('PATCH re-rates ticket severity and reorders the queue', async () => {
+    const projectId = await newProjectId();
+    const low = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'mis-rated at intake', severity: 'low' })
+      .expect(201);
+    await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'genuinely urgent', severity: 'high' })
+      .expect(201);
+    const id = low.body.id as string;
+
+    const patched = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ severity: 'critical' })
+      .expect(200);
+    expect(patched.body.severity).toBe('critical');
+
+    // The list is severity-ordered server-side, so the re-rated ticket now leads.
+    const listed = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(listed.body[0].id).toBe(id);
+
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ severity: 'urgent' })
+      .expect(400);
+    const unchanged = await request
+      .get(`/api/projects/${projectId}/support-tickets/${id}`)
+      .expect(200);
+    expect(unchanged.body.severity).toBe('critical');
+  });
+
+  it('PATCH rejects a bad enum before writing any other field', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'all or nothing', severity: 'medium', type: 'question', subject: 'atomic' })
+      .expect(201);
+    const id = created.body.id as string;
+
+    // A valid field paired with an invalid one must not half-apply: the store
+    // mutations run in sequence, so validation has to happen before the first
+    // write or `type` lands while `severity` 400s.
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ type: 'bug', severity: 'urgent' })
+      .expect(400);
+
+    const after = await request.get(`/api/projects/${projectId}/support-tickets/${id}`).expect(200);
+    expect(after.body.type).toBe('question');
+    expect(after.body.severity).toBe('medium');
+
+    // Same guard in the other direction: a bad status must not land the type.
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ type: 'incident', status: 'archived' })
+      .expect(400);
+    const after2 = await request
+      .get(`/api/projects/${projectId}/support-tickets/${id}`)
+      .expect(200);
+    expect(after2.body.type).toBe('question');
+    expect(after2.body.status).toBe('new');
+  });
+
   it('rejects a missing body and invalid status filter', async () => {
     const projectId = await newProjectId();
     await request

@@ -6,6 +6,7 @@ import {
   listSupportTickets,
   updateSupportTicketStatus,
   updateSupportTicketType,
+  updateSupportTicketSeverity,
   setSupportTicketWontDoReason,
   convertSupportTicketToCard,
   recordSupportTicketInvestigation,
@@ -17,8 +18,14 @@ import {
   SUPPORT_TICKET_STATUSES,
   SUPPORT_TICKET_OPEN_STATUSES,
   SUPPORT_TICKET_TYPES,
+  SUPPORT_TICKET_SEVERITIES,
 } from '../support-tickets-store.js';
-import type { SupportTicketStatus, SupportTicketType, SupportTicketRow } from '../types.js';
+import type {
+  SupportTicketStatus,
+  SupportTicketType,
+  SupportTicketSeverity,
+  SupportTicketRow,
+} from '../types.js';
 import { intakeSupportTicket, setGuardedReplayRef } from '../support-ticket-intake.js';
 import { setSupportTicketScreenshotRef } from '../support-tickets-store.js';
 import {
@@ -351,16 +358,25 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         return res.status(404).json({ error: 'Support ticket not found' });
       }
 
-      const { status, type, wontDoReason, aiSummary, aiInvestigation, replayRef, screenshot } =
-        req.body as {
-          status?: string;
-          type?: string;
-          wontDoReason?: string | null;
-          aiSummary?: string | null;
-          aiInvestigation?: string | null;
-          replayRef?: string | null;
-          screenshot?: string | null;
-        };
+      const {
+        status,
+        type,
+        severity,
+        wontDoReason,
+        aiSummary,
+        aiInvestigation,
+        replayRef,
+        screenshot,
+      } = req.body as {
+        status?: string;
+        type?: string;
+        severity?: string;
+        wontDoReason?: string | null;
+        aiSummary?: string | null;
+        aiInvestigation?: string | null;
+        replayRef?: string | null;
+        screenshot?: string | null;
+      };
 
       // A "won't do" ticket must always carry a non-empty reason. Fail fast
       // before any field is written (clear 400 for the UI) when either:
@@ -376,6 +392,21 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           error:
             "wontDoReason is required for a 'wont_do' ticket; transition the status to clear it",
         });
+      }
+
+      // Validate every enum field BEFORE the first write. The mutations below
+      // run in sequence against the store, so a late rejection (e.g. a bad
+      // `severity` in `{ type: 'bug', severity: 'urgent' }`) would 400 with the
+      // earlier fields already persisted — a partial write the caller can't see.
+      const enumChecks: Array<[string | undefined, readonly string[], string]> = [
+        [status, SUPPORT_TICKET_STATUSES, 'status'],
+        [type, SUPPORT_TICKET_TYPES, 'type'],
+        [severity, SUPPORT_TICKET_SEVERITIES, 'severity'],
+      ];
+      for (const [value, allowed, field] of enumChecks) {
+        if (value !== undefined && !allowed.includes(value)) {
+          return res.status(400).json({ error: `${field} must be one of: ${allowed.join(', ')}` });
+        }
       }
 
       // Resolve the screenshot mutation up-front so a bad data URL fails the
@@ -412,6 +443,9 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         }
         if (type !== undefined) {
           ticket = updateSupportTicketType(ticket.id, type as SupportTicketType)!;
+        }
+        if (severity !== undefined) {
+          ticket = updateSupportTicketSeverity(ticket.id, severity as SupportTicketSeverity)!;
         }
         if (aiSummary !== undefined || aiInvestigation !== undefined) {
           // Pass the raw values through: the store preserves fields left

@@ -5736,6 +5736,9 @@ function initDb(dataDir: string): void {
     updateSupportTicketType: db.prepare(
       `UPDATE support_tickets SET type = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
+    updateSupportTicketSeverity: db.prepare(
+      `UPDATE support_tickets SET severity = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
     updateSupportTicketInvestigation: db.prepare(
       `UPDATE support_tickets
          SET ai_summary = ?, ai_investigation = ?, ai_investigated_at = datetime('now'),

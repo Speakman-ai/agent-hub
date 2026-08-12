@@ -2422,6 +2422,7 @@ export interface Stmts {
   listSupportTicketsByProjectAndStatus: Stmt;
   updateSupportTicketStatus: Stmt;
   updateSupportTicketType: Stmt;
+  updateSupportTicketSeverity: Stmt;
   updateSupportTicketInvestigation: Stmt;
   setSupportTicketReplayRef: Stmt;
   setSupportTicketScreenshotRef: Stmt;

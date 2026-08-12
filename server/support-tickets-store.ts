@@ -301,6 +301,24 @@ export function updateSupportTicketType(
 }
 
 /**
+ * Change a ticket's severity. Returns the updated row, or null if the ticket
+ * doesn't exist. Throws on an invalid severity. Severity drives queue ordering
+ * and the priority a converted kanban card inherits, so operators need to be
+ * able to correct an intake that came in over- or under-stated.
+ */
+export function updateSupportTicketSeverity(
+  id: string,
+  severity: SupportTicketSeverity,
+): SupportTicketRow | null {
+  if (!isSeverity(severity)) {
+    throw new Error(`severity must be one of: ${SUPPORT_TICKET_SEVERITIES.join(', ')}`);
+  }
+  if (!getSupportTicket(id)) return null;
+  getStmts().updateSupportTicketSeverity.run(severity, id);
+  return getSupportTicket(id);
+}
+
+/**
  * Record the result of an AI investigation and stamp `ai_investigated_at`.
  * Returns null if the ticket doesn't exist.
  *

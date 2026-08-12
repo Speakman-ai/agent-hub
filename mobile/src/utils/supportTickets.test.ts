@@ -96,6 +96,23 @@ describe('mergeTicketDetail', () => {
     it('leaves a closed modal empty when a detail response arrives late', () => {
         expect(mergeTicketDetail(null, { id: 'tkt-1' })).toBeNull();
     });
+    // The screen reconciles an open detail sheet through this helper on every
+    // mutation (optimistic write, server row, rollback), so a re-rated severity
+    // has to land on the sheet without blanking the notifications it loaded
+    // separately — a PATCH response doesn't carry them.
+    it('applies a re-rated severity to the open sheet without dropping loaded detail', () => {
+        const selected = {
+            id: 'tkt-1',
+            severity: 'low',
+            release_notifications: [{ id: 'note-1' }],
+        };
+        const patched = { id: 'tkt-1', severity: 'critical' };
+        expect(mergeTicketDetail(selected, patched)).toEqual({
+            id: 'tkt-1',
+            severity: 'critical',
+            release_notifications: [{ id: 'note-1' }],
+        });
+    });
 });
 describe('performTicketDelete', () => {
     function makeHarness({ deleteTicket }: any) {

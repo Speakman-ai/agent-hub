@@ -14,6 +14,7 @@ import { api } from '../utils/api';
     assignCard: vi.fn(),
     setSupportTicketStatus: vi.fn(),
     setSupportTicketType: vi.fn(),
+    setSupportTicketSeverity: vi.fn(),
     deleteSupportTicket: vi.fn(),
     markSupportTicketRead: vi.fn().mockResolvedValue({}),
     markSupportTicketUnread: vi.fn().mockResolvedValue({}),
@@ -108,7 +109,7 @@ describe('CustomerSupportPage', () => {
     const feat = screen.getByText('Dark mode please');
     expect(crit.compareDocumentPosition(feat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    // Type + severity badges, AI summary, and a bug "Watch replay" button render
+    // Type + severity controls, AI summary, and a bug "Watch replay" button render
     // (the replay now opens a sandboxed in-app player rather than a raw JSON link).
     // "Bug" also appears as a type-filter chip, so scope to the card badges.
     expect(screen.getAllByText('Bug').length).toBeGreaterThan(0);
@@ -117,7 +118,9 @@ describe('CustomerSupportPage', () => {
         .getAllByTestId('ticket-type-select')
         .some((select: any) => select.value === 'feature_request'),
     ).toBe(true);
-    expect(screen.getByText('critical')).toBeInTheDocument();
+    expect(
+      screen.getAllByTestId('ticket-severity-select').some((s: any) => s.value === 'critical'),
+    ).toBe(true);
     expect(screen.getByText('Likely a null deref in checkout')).toBeInTheDocument();
     const replay = screen.getByRole('button', { name: /watch replay/i });
     expect(replay!).toBeInTheDocument();
@@ -1037,6 +1040,52 @@ describe('CustomerSupportPage — reclassify ticket type', () => {
     );
     await waitFor(() =>
       expect((screen.getByTestId('ticket-type-select') as any).value).toBe('feature_request'),
+    );
+  });
+});
+
+describe('CustomerSupportPage — change severity', () => {
+  it('re-rates a ticket via the severity dropdown', async () => {
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({ id: 't1', subject: 'Re-rate me', severity: 'low' }),
+    ]);
+    (api.setSupportTicketSeverity as any).mockResolvedValue(
+      ticket({ id: 't1', subject: 'Re-rate me', severity: 'critical' }),
+    );
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Re-rate me')).toBeInTheDocument());
+
+    const select = screen.getAllByTestId('ticket-severity-select')[0] as any;
+    expect(select.value).toBe('low');
+    fireEvent.change(select, { target: { value: 'critical' } } as any);
+
+    await waitFor(() =>
+      expect(api.setSupportTicketSeverity).toHaveBeenCalledWith('proj-1', 't1', 'critical'),
+    );
+    await waitFor(() =>
+      expect((screen.getAllByTestId('ticket-severity-select')[0] as any).value).toBe('critical'),
+    );
+  });
+
+  it('reverts the severity when the update fails', async () => {
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({ id: 't1', subject: 'Flaky re-rate', severity: 'medium' }),
+    ]);
+    (api.setSupportTicketSeverity as any).mockRejectedValue(new Error('nope'));
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Flaky re-rate')).toBeInTheDocument());
+
+    fireEvent.change(
+      screen.getAllByTestId('ticket-severity-select')[0] as any,
+      {
+        target: { value: 'critical' },
+      } as any,
+    );
+
+    await waitFor(() =>
+      expect((screen.getAllByTestId('ticket-severity-select')[0] as any).value).toBe('medium'),
     );
   });
 });

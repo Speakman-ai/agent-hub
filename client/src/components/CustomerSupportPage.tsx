@@ -49,6 +49,13 @@ const SEVERITY_BADGE = {
   low: 'bg-gray-600/30 text-gray-300 border-gray-600/50',
 } as Record<string, any>;
 
+const SEVERITY_OPTIONS = [
+  { value: 'critical', label: 'Critical' },
+  { value: 'high', label: 'High' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'low', label: 'Low' },
+];
+
 const TYPE_META = {
   bug: { label: 'Bug', Icon: Bug, className: 'text-rose-400' },
   feature_request: { label: 'Feature request', Icon: Lightbulb, className: 'text-emerald-400' },
@@ -405,6 +412,52 @@ function TypeSelect({ projectId, ticket, stretched = false, onUpdated }: any) {
     >
       {TYPE_OPTIONS.map((o: any) => (
         <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+// Severity picker. Severity is set at intake (by the reporter or the AI triage
+// pass) and is often wrong, so it stays operator-editable: it drives the queue
+// ordering and the priority a converted kanban card inherits. Rendered with the
+// same colour coding as the read-only badge it replaces.
+function SeveritySelect({ projectId, ticket, stretched = false, onUpdated }: any) {
+  const [saving, setSaving] = useState(false);
+  const pe = stretched ? 'pointer-events-auto relative' : '';
+  const current = SEVERITY_OPTIONS.some((o: any) => o.value === ticket.severity)
+    ? ticket.severity
+    : 'low';
+  const severityClass = SEVERITY_BADGE[current] || SEVERITY_BADGE.low;
+
+  const handleChange = async (e: any) => {
+    const next = e.target.value;
+    if (next === ticket.severity || saving) return;
+    setSaving(true);
+    onUpdated?.({ ...ticket, severity: next });
+    try {
+      const updated = await api.setSupportTicketSeverity(projectId, ticket.id, next);
+      if (updated) onUpdated?.(updated);
+    } catch {
+      onUpdated?.(ticket);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <select
+      value={current}
+      onChange={handleChange}
+      disabled={saving}
+      aria-label="Ticket severity"
+      title="Change ticket severity"
+      data-testid="ticket-severity-select"
+      className={`${pe} text-[10px] font-semibold uppercase tracking-wide border rounded px-1.5 py-0.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed ${severityClass}`}
+    >
+      {SEVERITY_OPTIONS.map((o: any) => (
+        <option key={o.value} value={o.value} className="bg-gray-900 text-gray-200">
           {o.label}
         </option>
       ))}
@@ -812,7 +865,6 @@ function SupportTicketCard({
 }: any) {
   const type = TYPE_META[ticket.type] || TYPE_META.other;
   const { Icon } = type;
-  const severityClass = SEVERITY_BADGE[ticket.severity] || SEVERITY_BADGE.low;
   const replayId = ticket.type === 'bug' ? parseReplayIdFromRef(ticket.replay_ref) : null;
   const screenshotUrl = resolveUploadUrl(ticket.screenshot_ref);
   const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
@@ -851,11 +903,12 @@ function SupportTicketCard({
                   className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"
                 />
               ) : null}
-              <span
-                className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${severityClass}`}
-              >
-                {ticket.severity}
-              </span>
+              <SeveritySelect
+                projectId={projectId}
+                ticket={ticket}
+                stretched
+                onUpdated={onUpdated}
+              />
               <TypeSelect projectId={projectId} ticket={ticket} stretched onUpdated={onUpdated} />
               <StatusSelect projectId={projectId} ticket={ticket} stretched onUpdated={onUpdated} />
               <ReleaseStateBadge ticket={ticket} />
@@ -1075,7 +1128,6 @@ function SupportTicketDetailModal({
 
   const type = TYPE_META[ticket.type] || TYPE_META.other;
   const { Icon } = type;
-  const severityClass = SEVERITY_BADGE[ticket.severity] || SEVERITY_BADGE.low;
   const replayId = ticket.type === 'bug' ? parseReplayIdFromRef(ticket.replay_ref) : null;
   const screenshotUrl = resolveUploadUrl(ticket.screenshot_ref);
   const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
@@ -1132,11 +1184,7 @@ function SupportTicketDetailModal({
             <Icon size={18} className={`flex-shrink-0 mt-0.5 ${type.className}`} />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span
-                  className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${severityClass}`}
-                >
-                  {ticket.severity}
-                </span>
+                <SeveritySelect projectId={projectId} ticket={ticket} onUpdated={onUpdated} />
                 <TypeSelect projectId={projectId} ticket={ticket} onUpdated={onUpdated} />
                 {isConverted ? (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800/60 text-gray-500">

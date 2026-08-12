@@ -41610,7 +41610,7 @@ paths:
     patch:
       tags:
         - Support
-      summary: Update a support ticket (status, type, AI investigation, replay ref)
+      summary: Update a support ticket (status, type, severity, AI investigation, replay ref)
       parameters:
         - schema:
             type: string
@@ -41650,6 +41650,14 @@ paths:
                     - incident
                     - other
                   description: Reclassify the ticket request type (bug, question, feature_request, incident, other).
+                severity:
+                  type: string
+                  enum:
+                    - critical
+                    - high
+                    - medium
+                    - low
+                  description: Re-rate the ticket severity (critical, high, medium, low). Drives queue ordering and the priority a converted card inherits.
                 wontDoReason:
                   type: string
                   nullable: true
@@ -41667,7 +41675,7 @@ paths:
                   type: string
                   nullable: true
                   description: Attach a screenshot (base64 data URL) or clear it with null. Persisted server-side; exposed via screenshot_ref.
-              description: "Partial update: status/type transition and/or AI/replay/screenshot fields."
+              description: "Partial update: status/type/severity change and/or AI/replay/screenshot fields."
       responses:
         "200":
           description: Updated ticket.
@@ -41676,7 +41684,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SupportTicket"
         "400":
-          description: Invalid status or type.
+          description: Invalid status, type, or severity.
           content:
             application/json:
               schema:

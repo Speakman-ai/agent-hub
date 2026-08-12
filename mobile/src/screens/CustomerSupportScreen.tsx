@@ -14,6 +14,12 @@ const SEVERITY_COLOR: Record<string, any> = {
     medium: colors.amber400,
     low: colors.gray500,
 };
+const SEVERITY_OPTIONS = [
+    { key: 'critical', label: 'Critical' },
+    { key: 'high', label: 'High' },
+    { key: 'medium', label: 'Medium' },
+    { key: 'low', label: 'Low' },
+];
 const TYPE_LABEL: Record<string, any> = {
     bug: 'Bug',
     feature_request: 'Feature request',
@@ -70,7 +76,7 @@ function notificationRecipientLabel(notification: any) {
 function notificationStatusLabel(notification: any) {
     return String(notification?.status || 'pending').replaceAll('_', ' ');
 }
-function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo, onReclassify, onConverted }: any) {
+function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo, onReclassify, onReRate, onConverted }: any) {
     const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
     const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
     const hasReplay = item.type === 'bug' && item.replay_ref;
@@ -329,6 +335,9 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
           <TouchableOpacity testID="reclassify-ticket" onPress={() => onReclassify?.(item)} style={styles.statusActionButton}>
             <Text style={styles.statusActionText}>Reclassify</Text>
           </TouchableOpacity>
+          <TouchableOpacity testID="re-rate-ticket" onPress={() => onReRate?.(item)} style={styles.statusActionButton}>
+            <Text style={styles.statusActionText}>Severity</Text>
+          </TouchableOpacity>
           {[
                 { value: 'closed', label: 'Done' },
                 { value: 'duplicate', label: 'Duplicate' },
@@ -394,6 +403,7 @@ export default function CustomerSupportScreen({ route }: any) {
     const [wontDoTicket, setWontDoTicket] = useState<any>(null);
     const [wontDoReason, setWontDoReason] = useState('');
     const [reclassifyTicket, setReclassifyTicket] = useState<any>(null);
+    const [severityTicket, setSeverityTicket] = useState<any>(null);
     const activeStatusFilter = STATUS_FILTERS.find((f: any) => f.key === statusFilter) || STATUS_FILTERS[0];
     const load = useCallback(async () => {
         if (!projectId)
@@ -486,7 +496,13 @@ export default function CustomerSupportScreen({ route }: any) {
                 return without;
             return sortTickets([...without, updated]);
         });
-        setSelectedTicket((cur: any) => (cur && cur.id === updated.id ? updated : cur));
+        // Keep an open detail sheet in lock-step with the list. Every mutation
+        // path (status, type, severity — optimistic write, server reconcile, and
+        // rollback) funnels through here, so the sheet never shows a stale value.
+        // Merge rather than replace: PATCH responses omit detail-only fields the
+        // sheet loaded separately (release_notifications), which a bare
+        // assignment would blank out.
+        setSelectedTicket((cur: any) => mergeTicketDetail(cur, updated));
     };
     // Optimistically apply a status change, reconciling with the server's row.
     const setStatus = async (ticket: any, status: any, reason: any) => {
@@ -524,6 +540,21 @@ export default function CustomerSupportScreen({ route }: any) {
         catch (err: any) {
             upsertOrDrop(ticket);
             Alert.alert('Could not reclassify ticket', err?.message || 'Failed to reclassify ticket');
+        }
+    };
+    // Severity drives the queue order and the priority a converted card
+    // inherits, so it stays editable after intake got it wrong.
+    const setSeverity = async (ticket: any, severity: any) => {
+        setSeverityTicket(null);
+        upsertOrDrop({ ...ticket, severity });
+        try {
+            const updated = await api.setSupportTicketSeverity(projectId, ticket.id, severity);
+            if (updated)
+                upsertOrDrop(updated);
+        }
+        catch (err: any) {
+            upsertOrDrop(ticket);
+            Alert.alert('Could not change severity', err?.message || 'Failed to change severity');
         }
     };
     const handleTicketPress = useCallback((ticket: any) => {
@@ -581,7 +612,7 @@ export default function CustomerSupportScreen({ route }: any) {
         deepLinkAppliedRef.current = deepLinkedTicketId;
         handleTicketPress(match);
     }, [deepLinkedTicketId, tickets, handleTicketPress]);
-    const renderItem = ({ item }: any) => (<TicketCard item={item} projectId={projectId} onOpenReplay={openReplay} onDeleted={removeTicket} onPress={handleTicketPress} onSetStatus={setStatus} onWontDo={handleWontDo} onReclassify={setReclassifyTicket} onConverted={upsertOrDrop}/>);
+    const renderItem = ({ item }: any) => (<TicketCard item={item} projectId={projectId} onOpenReplay={openReplay} onDeleted={removeTicket} onPress={handleTicketPress} onSetStatus={setStatus} onWontDo={handleWontDo} onReclassify={setReclassifyTicket} onReRate={setSeverityTicket} onConverted={upsertOrDrop}/>);
     if (selectedTicket) {
         const title = selectedTicket.subject?.trim() || selectedTicket.body?.trim() || '(no subject)';
         const screenshotUrl = resolveUploadUrl(selectedTicket.screenshot_ref);
@@ -603,6 +634,9 @@ export default function CustomerSupportScreen({ route }: any) {
           </Text>
           <TouchableOpacity testID="detail-reclassify-ticket" onPress={() => setReclassifyTicket(selectedTicket)} style={styles.detailReclassifyButton}>
             <Text style={styles.statusActionText}>Reclassify</Text>
+          </TouchableOpacity>
+          <TouchableOpacity testID="detail-re-rate-ticket" onPress={() => setSeverityTicket(selectedTicket)} style={styles.detailReclassifyButton}>
+            <Text style={styles.statusActionText}>Severity</Text>
           </TouchableOpacity>
           {selectedTicket.body ? (<Text style={styles.detailBody}>{selectedTicket.body}</Text>) : null}
           {reporterText(selectedTicket) ? (<Text style={styles.reporter}>{reporterText(selectedTicket)}</Text>) : null}
@@ -649,6 +683,26 @@ export default function CustomerSupportScreen({ route }: any) {
               })}
               <View style={styles.modalActions}>
                 <TouchableOpacity onPress={() => setReclassifyTicket(null)} style={styles.modalCancel}>
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+        <Modal visible={!!severityTicket} transparent animationType="fade" onRequestClose={() => setSeverityTicket(null)}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard} testID="severity-modal">
+              <Text style={styles.modalTitle}>Change severity</Text>
+              {SEVERITY_OPTIONS.map((s: any) => {
+                const active = severityTicket?.severity === s.key;
+                return (<TouchableOpacity key={s.key} testID={`severity-option-${s.key}`} onPress={() => severityTicket ? setSeverity(severityTicket, s.key) : undefined} style={[styles.reclassifyOption, active && styles.statusActionButtonActive]}>
+                  <Text style={[styles.statusActionText, active && styles.statusActionTextActive]}>
+                    {s.label}
+                  </Text>
+                </TouchableOpacity>);
+              })}
+              <View style={styles.modalActions}>
+                <TouchableOpacity onPress={() => setSeverityTicket(null)} style={styles.modalCancel}>
                   <Text style={styles.modalCancelText}>Cancel</Text>
                 </TouchableOpacity>
               </View>
@@ -726,6 +780,26 @@ export default function CustomerSupportScreen({ route }: any) {
             })}
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={() => setReclassifyTicket(null)} style={styles.modalCancel}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={!!severityTicket} transparent animationType="fade" onRequestClose={() => setSeverityTicket(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard} testID="severity-modal">
+            <Text style={styles.modalTitle}>Change severity</Text>
+            {SEVERITY_OPTIONS.map((s: any) => {
+              const active = severityTicket?.severity === s.key;
+              return (<TouchableOpacity key={s.key} testID={`severity-option-${s.key}`} onPress={() => severityTicket ? setSeverity(severityTicket, s.key) : undefined} style={[styles.reclassifyOption, active && styles.statusActionButtonActive]}>
+                <Text style={[styles.statusActionText, active && styles.statusActionTextActive]}>
+                  {s.label}
+                </Text>
+              </TouchableOpacity>);
+            })}
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={() => setSeverityTicket(null)} style={styles.modalCancel}>
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
             </View>
