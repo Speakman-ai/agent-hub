@@ -55,6 +55,17 @@ export function resolveWorktreeRelativePath(file: string): string | null {
   return rel.split(path.sep).join('/');
 }
 
+/**
+ * Hub-owned paths that can appear dirty in a session worktree but are not
+ * session/agent code changes (e.g. session-startup status). Exclude them from
+ * the Changes pane / badge so the count matches "diff vs base branch of what
+ * you would ship", not platform bookkeeping.
+ */
+export function isHubManagedChangePath(file: string): boolean {
+  const rel = resolveWorktreeRelativePath(file) ?? file.replaceAll('\\', '/');
+  return rel === '.agent-hub-runtime' || rel.startsWith('.agent-hub-runtime/');
+}
+
 /** Git's empty-tree object hash — used as the base when no real base ref
  * can be resolved (brand-new repo / detached worktree with no upstream). */
 const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -393,10 +404,12 @@ export async function listSessionChangedPaths(
 
   const membership = new Map<string, { untracked: boolean }>();
   for (const s of parseNameStatusZ(nameStatusRes.stdout)) {
+    if (isHubManagedChangePath(s.path)) continue;
     membership.set(s.path, { untracked: false });
   }
   const seen = new Set(membership.keys());
   for (const p of normalizeUntracked(untrackedRes.stdout, seen)) {
+    if (isHubManagedChangePath(p)) continue;
     membership.set(p, { untracked: true });
   }
   return membership;
@@ -447,6 +460,7 @@ export async function computeSessionChanges(
   const seen = new Set<string>();
 
   for (const s of statuses) {
+    if (isHubManagedChangePath(s.path)) continue;
     const stat = numstat.get(s.path);
     files.push({
       path: s.path,
@@ -466,7 +480,9 @@ export async function computeSessionChanges(
   // is an all-add patch) so the UI doesn't show "+0 −0" for new text files.
   // Paths are normalized through the worktree-safety helper before any are
   // handed to git, since they feed `--no-index` spawns.
-  const untrackedToAdd = normalizeUntracked(untrackedRes.stdout, seen);
+  const untrackedToAdd = normalizeUntracked(untrackedRes.stdout, seen).filter(
+    (p) => !isHubManagedChangePath(p),
+  );
   // Bound the per-file numstat probes: untracked respects .gitignore so this
   // is normally a handful of files, but cap it so a pathological set can't
   // spawn hundreds of git processes. Files past the cap fall back to 0/0.

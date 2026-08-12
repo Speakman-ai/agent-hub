@@ -501,6 +501,9 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     expect(src).toMatch(/--exclude=node_modules/);
     expect(src).toMatch(/--exclude-vcs-ignores/);
     expect(src).toMatch(/prod_rc not in \(0, 1\)/);
+    // Tracked-but-ignored paths must be re-materialized or Changes shows
+    // false deletions (sample.env / .vscode on Survey Tracker).
+    expect(src).toMatch(/checkout-index.*-a.*-f|checkout-index", "-a", "-f"/);
   });
 
   // O_NOFOLLOW + `/proc/<pid>/fd` are Linux-only; macOS tmpdirs also walk
@@ -520,11 +523,38 @@ describe('fc-prepare-disks.sh worktree copy', () => {
         mkdirSync(worktree);
         mkdirSync(dest);
         writeFileSync(path.join(worktree, 'README.md'), 'hello from prepare\n');
+        writeFileSync(path.join(worktree, '.gitignore'), 'tracked-ignored.txt\nnode_modules/\n');
+        writeFileSync(path.join(worktree, 'tracked-ignored.txt'), 'keep-me\n');
         mkdirSync(path.join(worktree, 'frontend', 'node_modules', 'async'), { recursive: true });
         writeFileSync(
           path.join(worktree, 'frontend', 'node_modules', 'async', 'priorityQueue.js'),
           'should-not-be-copied\n',
         );
+        const gitEnv = {
+          ...process.env,
+          GIT_CONFIG_COUNT: '2',
+          GIT_CONFIG_KEY_0: 'user.email',
+          GIT_CONFIG_VALUE_0: 'test@example.com',
+          GIT_CONFIG_KEY_1: 'user.name',
+          GIT_CONFIG_VALUE_1: 'Test',
+        };
+        expect(
+          spawnSync('git', ['init'], { cwd: worktree, encoding: 'utf8', env: gitEnv }).status,
+        ).toBe(0);
+        expect(
+          spawnSync('git', ['add', '-f', 'README.md', '.gitignore', 'tracked-ignored.txt'], {
+            cwd: worktree,
+            encoding: 'utf8',
+            env: gitEnv,
+          }).status,
+        ).toBe(0);
+        expect(
+          spawnSync('git', ['commit', '-m', 'init'], {
+            cwd: worktree,
+            encoding: 'utf8',
+            env: gitEnv,
+          }).status,
+        ).toBe(0);
         const py = match![1];
         const run = spawnSync('python3', ['-', worktree, dest], {
           input: py,
@@ -534,6 +564,8 @@ describe('fc-prepare-disks.sh worktree copy', () => {
         expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
         expect(readFileSync(path.join(dest, 'README.md'), 'utf8')).toBe('hello from prepare\n');
         expect(existsSync(path.join(dest, 'frontend', 'node_modules'))).toBe(false);
+        // Tar skipped this via --exclude-vcs-ignores; checkout-index restores it.
+        expect(readFileSync(path.join(dest, 'tracked-ignored.txt'), 'utf8')).toBe('keep-me\n');
       } finally {
         rmSync(base, { recursive: true, force: true });
       }
