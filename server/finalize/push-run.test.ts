@@ -221,6 +221,37 @@ describe('runFinalizePush force', () => {
     }
   });
 
+  it('retries push after infra_error on the push phase without force', async () => {
+    const { deps } = makeDeps();
+    const run = {
+      ...baseRun(),
+      status: 'infra_error' as const,
+      phase: 'push' as const,
+      validated_head_sha: 'abc123',
+      failure_reason: 'github_push_5xx',
+    };
+    (deps.stmts.claimFinalizeRunPush.run as ReturnType<typeof vi.fn>).mockReturnValue({
+      changes: 1,
+    });
+    const pushAndCreatePr = vi.fn().mockResolvedValue({
+      prUrl: 'https://github.com/o/r/pull/99',
+    });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run,
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome).toEqual({ ok: true, prUrl: 'https://github.com/o/r/pull/99' });
+    expect(deps.stmts.claimFinalizeRunPush.run).toHaveBeenCalledWith(run.id, 'abc123');
+    expect(pushAndCreatePr).toHaveBeenCalled();
+  });
+
   it('claims ready_to_push before GitHub work so duplicate push callers cannot create duplicate PRs', async () => {
     const { deps } = makeDeps();
     let releasePush: () => void = () => {};

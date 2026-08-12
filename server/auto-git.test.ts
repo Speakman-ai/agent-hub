@@ -300,17 +300,22 @@ describe('buildPushArgs — lease pinning', () => {
     ).toEqual(['push', `--force-with-lease=feature/x:${sha}`, '-u', 'origin', 'feature/x']);
   });
 
-  it('falls back to bare --force-with-lease when rebase rewrote history but branch is brand-new on origin', () => {
-    // Bare `--force-with-lease` correctly treats an absent remote ref as
-    // the empty value, so a brand-new branch push still passes the lease
-    // check. We document this fallback in the comment on `buildPushArgs`.
+  it('uses empty-expect lease when rebase rewrote history but branch is brand-new on origin', () => {
+    // Empty expect (`branch:`) requires the remote ref to be absent. A bare
+    // `--force-with-lease` would race a phantom remote-tracking ref.
     expect(
       buildPushArgs({
         branch: 'feature/brand-new',
         rebaseRewroteHistory: true,
         expectedRemoteSha: null,
       }),
-    ).toEqual(['push', '--force-with-lease', '-u', 'origin', 'feature/brand-new']);
+    ).toEqual([
+      'push',
+      '--force-with-lease=feature/brand-new:',
+      '-u',
+      'origin',
+      'feature/brand-new',
+    ]);
   });
 
   it('preserves slashes in branch names when pinning the lease (typical agent-hub/<project>/<short-uuid> shape)', () => {

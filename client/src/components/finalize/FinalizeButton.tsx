@@ -18,9 +18,13 @@ const OPTIMISTIC_BLOCK_MS = 1500;
 const WORKTREE_POLL_MS = 15_000;
 
 // A phase summary counts as "passed" once its run is validated (parked at
-// ready_to_push) or already pushed.
+// ready_to_push) or already pushed. Auto-push can then fail with
+// `infra_error` while `validated_head_sha` stays set — that must still
+// count as passed so the Push button stays confirm-free (and the label
+// stays "Finalized") instead of claiming Finalize never ran.
 function phasePassed(summary: any) {
-  return summary?.status === 'ready_to_push' || summary?.status === 'pushed';
+  if (summary?.status === 'ready_to_push' || summary?.status === 'pushed') return true;
+  return summary?.status === 'infra_error' && !!summary?.validated_head_sha;
 }
 
 /**

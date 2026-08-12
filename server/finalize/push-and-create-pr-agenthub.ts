@@ -70,10 +70,10 @@ export async function pushAndCreateNativePr(
   });
 
   // Pin the lease to an explicit ls-remote SHA so it does not depend on
-  // origin's fetch refspec (session clones fetch only `main`). A bare
-  // `--force-with-lease` is rejected as `(stale info)` when force-updating any
-  // other branch — notably a Resolve-PR session's PR head branch. See
-  // resolveExpectedRemoteSha in push-and-create-pr.ts.
+  // origin's fetch refspec (session clones fetch only `main`). When the branch
+  // is brand-new, use an empty expect (`branch:`) — a bare `--force-with-lease`
+  // races a phantom remote-tracking ref and rejects with `(stale info)`. See
+  // resolveExpectedRemoteSha / buildForceWithLeasePushArgs.
   const expectedRemoteSha = await resolveExpectedRemoteSha(
     args.worktreePath,
     args.branch,

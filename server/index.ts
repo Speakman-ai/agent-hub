@@ -1407,7 +1407,9 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
               getDb()
                 .prepare(
                   `SELECT id FROM finalize_runs
-                    WHERE ended_at IS NULL OR status IN ('ready_to_push', 'pushing')`,
+                    WHERE ended_at IS NULL
+                       OR status IN ('ready_to_push', 'pushing')
+                       OR (status = 'infra_error' AND phase = 'push' AND validated_head_sha IS NOT NULL)`,
                 )
                 .all() as Array<{ id: string }>
             ).map((r) => r.id),

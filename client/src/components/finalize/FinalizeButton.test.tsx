@@ -472,6 +472,52 @@ describe('FinalizeButton', () => {
     expect(window.confirm).not.toHaveBeenCalled();
   });
 
+  it('treats push-step infra_error with validated_head_sha as still finalized', async () => {
+    // Auto-push can fail after gates (stale lease, etc.) and leave the run at
+    // infra_error while validated_head_sha remains — Push must not warn that
+    // Finalize never ran.
+    window.confirm = vi.fn(() => true);
+    setHookState({
+      run: {
+        id: 'run-push-fail',
+        status: 'infra_error',
+        phase: 'push',
+        mode: 'full',
+        validated_head_sha: 'sha1',
+      },
+      status: 'infra_error',
+      phase: 'push',
+      isActive: false,
+      isTerminal: true,
+      phases: {
+        checks: {
+          run_id: 'run-push-fail',
+          status: 'infra_error',
+          mode: 'full',
+          validated_head_sha: 'sha1',
+        },
+        review: {
+          run_id: 'run-push-fail',
+          status: 'infra_error',
+          mode: 'full',
+          validated_head_sha: 'sha1',
+        },
+      },
+    });
+    (api.pushFinalizeRun as any).mockResolvedValue({
+      ok: true,
+      pr_url: '/projects/proj-1/pulls/1',
+    } as any);
+    render(<FinalizeButton {...baseProps} />);
+    expect(screen.getByTestId('finalize-button').textContent).toMatch(/Finalized/);
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    fireEvent.click(pushBtn as any);
+    await waitFor(() => {
+      expect(api.pushFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-push-fail');
+    });
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
   it('pushes without a confirm for a ready_to_push full run with no per-phase summaries', async () => {
     // Same fallback as the button's "Finalized" state: a completed full run
     // delivered without `phases` is still treated as fully validated, so Push
