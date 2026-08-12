@@ -531,14 +531,16 @@ Second:
     expect(asks[0].questions[0].question).toBe('Script?');
   });
 
-  it('rejects more than 4 questions', () => {
+  it('keeps the first 4 questions instead of dropping an oversized picker', () => {
     const q = (n: number) =>
       `{"question":"Q${n}?","header":"H${n}","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}`;
     const text = `\`\`\`agenthub:ask
 [${[1, 2, 3, 4, 5].map(q).join(',')}]
 \`\`\``;
-    const { asks } = extractAskBlocks(text);
-    expect(asks).toEqual([]);
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions.map((x) => x.question)).toEqual(['Q1?', 'Q2?', 'Q3?', 'Q4?']);
+    expect(strippedText).not.toContain('agenthub:ask');
   });
 
   it('produces the same askId for the same payload (stable)', () => {
