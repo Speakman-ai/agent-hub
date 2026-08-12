@@ -1108,6 +1108,16 @@ export const api = {
     fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/reopen`, {
       method: 'POST',
     }),
+  /** Batch triage — one transaction server-side; stale ids come back in `notFound`. */
+  bulkSetLogIssueStatus: (
+    projectId: any,
+    issueIds: string[],
+    status: 'open' | 'resolved' | 'ignored',
+  ) =>
+    fetchJSON(`/projects/${projectId}/logs/issues/bulk-status`, {
+      method: 'POST',
+      body: JSON.stringify({ issueIds, status }),
+    }),
   analyzeLogIssue: (projectId: any, issueId: any, options: { startAnother?: boolean } = {}) =>
     fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/analyze`, {
       method: 'POST',

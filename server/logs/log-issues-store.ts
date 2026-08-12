@@ -288,6 +288,44 @@ export function setIssueStatus(
 }
 
 /**
+ * Set the same lifecycle status on many issues in one transaction, so a batch
+ * either lands whole or not at all and never leaves the list half-transitioned.
+ * Ids are deduplicated (a repeated id is one update, reported once) and scoped
+ * to the project, so an id from another project lands in `notFound` rather than
+ * mutating a hidden project's issue. Order follows the caller's id order for
+ * unique ids.
+ */
+export function setIssueStatuses(
+  projectId: string,
+  issueIds: readonly string[],
+  status: IssueStatus,
+  actorUserId: string | null,
+  nowMs: number,
+): { updated: LogIssueRow[]; notFound: string[] } {
+  const db = getLogsDb();
+  const unique = [...new Set(issueIds)];
+  return db.transaction(() => {
+    const stmt = db.prepare(
+      `UPDATE log_issues
+         SET status = ?, status_updated_at = ?, status_updated_by = ?, updated_at = ?
+       WHERE project_id = ? AND id = ?`,
+    );
+    const updated: LogIssueRow[] = [];
+    const notFound: string[] = [];
+    for (const issueId of unique) {
+      const info = stmt.run(status, nowMs, actorUserId, nowMs, projectId, issueId);
+      if (info.changes === 0) {
+        notFound.push(issueId);
+        continue;
+      }
+      const row = getIssue(projectId, issueId);
+      if (row) updated.push(row);
+    }
+    return { updated, notFound };
+  })();
+}
+
+/**
  * Atomically claim the Analyze slot before creating a session in agent-hub.db.
  * `replaceSessionId` is only supplied when the issue points at a deleted
  * session; the compare-and-swap keeps two stale-link retries from both

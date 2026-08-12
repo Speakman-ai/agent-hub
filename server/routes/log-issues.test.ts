@@ -115,3 +115,89 @@ describe('issue lifecycle transitions', () => {
     await request.post(`/api/projects/${projectB}/logs/issues/${id}/resolve`).expect(404);
   });
 });
+
+describe('POST /api/projects/:projectId/logs/issues/bulk-status', () => {
+  let bulkIds: string[];
+
+  beforeAll(() => {
+    insertLogRecords(
+      [
+        errRecord(projectA, 'bulk alpha exploded', 400),
+        errRecord(projectA, 'bulk beta exploded', 500),
+      ],
+      Date.now(),
+    );
+  });
+
+  async function idsFor(bodies: string[]): Promise<string[]> {
+    const list = await request.get(`/api/projects/${projectA}/logs/issues?limit=200`).expect(200);
+    return bodies.map((body) => {
+      const match = (list.body.issues as Array<{ id: string; title: string }>).find((issue) =>
+        issue.title.includes(body),
+      );
+      if (!match) throw new Error(`no issue for ${body}`);
+      return match.id;
+    });
+  }
+
+  it('resolves every selected issue in one call', async () => {
+    bulkIds = await idsFor(['bulk alpha', 'bulk beta']);
+    const res = await request
+      .post(`/api/projects/${projectA}/logs/issues/bulk-status`)
+      .send({ issueIds: bulkIds, status: 'resolved' })
+      .expect(200);
+    expect(res.body.updated.map((i: { id: string }) => i.id).sort()).toEqual([...bulkIds].sort());
+    expect(res.body.updated.every((i: { status: string }) => i.status === 'resolved')).toBe(true);
+    expect(res.body.notFound).toEqual([]);
+
+    for (const id of bulkIds) {
+      const detail = await request.get(`/api/projects/${projectA}/logs/issues/${id}`).expect(200);
+      expect(detail.body.status).toBe('resolved');
+    }
+  });
+
+  it('reports unknown ids instead of failing the batch', async () => {
+    const [known] = await idsFor(['bulk alpha']);
+    const res = await request
+      .post(`/api/projects/${projectA}/logs/issues/bulk-status`)
+      .send({ issueIds: [known, 'not-an-issue'], status: 'ignored' })
+      .expect(200);
+    expect(res.body.updated).toHaveLength(1);
+    expect(res.body.updated[0].id).toBe(known);
+    expect(res.body.notFound).toEqual(['not-an-issue']);
+  });
+
+  it('never transitions an issue belonging to another project', async () => {
+    const foreign = await request.get(`/api/projects/${projectB}/logs/issues`).expect(200);
+    const foreignId = foreign.body.issues[0].id as string;
+    const res = await request
+      .post(`/api/projects/${projectA}/logs/issues/bulk-status`)
+      .send({ issueIds: [foreignId], status: 'resolved' })
+      .expect(200);
+    expect(res.body.updated).toEqual([]);
+    expect(res.body.notFound).toEqual([foreignId]);
+
+    const stillOpen = await request
+      .get(`/api/projects/${projectB}/logs/issues/${foreignId}`)
+      .expect(200);
+    expect(stillOpen.body.status).toBe('open');
+  });
+
+  it('rejects an empty selection and an unknown status', async () => {
+    await request
+      .post(`/api/projects/${projectA}/logs/issues/bulk-status`)
+      .send({ issueIds: [], status: 'resolved' })
+      .expect(400);
+    await request
+      .post(`/api/projects/${projectA}/logs/issues/bulk-status`)
+      .send({ issueIds: ['x'], status: 'bogus' })
+      .expect(400);
+  });
+
+  it('404s for an unknown project', async () => {
+    await request
+      .post(`/api/projects/does-not-exist/logs/issues/bulk-status`)
+      .send({ issueIds: ['x'], status: 'resolved' })
+      .expect(404);
+  });
+});

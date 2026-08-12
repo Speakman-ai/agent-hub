@@ -8,6 +8,7 @@ import {
   getIssue,
   getIssueReleases,
   setIssueStatus,
+  setIssueStatuses,
   RECURRENCE_ACTOR,
   claimIssueAnalyzeSession,
   releaseIssueAnalyzeSession,
@@ -185,6 +186,31 @@ describe('recurrence and lifecycle', () => {
     const issue = listIssues({ projectId: 'p1' }).issues[0]!;
     expect(setIssueStatus('p2', issue.id, 'resolved', 'user-a', NOW)).toBeNull();
     expect(getIssue('p2', issue.id)).toBeNull();
+  });
+
+  it('setIssueStatuses transitions a whole batch, deduplicating repeated ids', () => {
+    insertLogRecords(
+      [errRecord('p1', 'alpha failed', 100), errRecord('p1', 'beta failed', 200)],
+      NOW,
+    );
+    const ids = listIssues({ projectId: 'p1' }).issues.map((i) => i.id);
+    expect(ids).toHaveLength(2);
+
+    const result = setIssueStatuses('p1', [...ids, ids[0]!], 'resolved', 'user-a', NOW);
+    expect(result.updated.map((i) => i.id).sort()).toEqual([...ids].sort());
+    expect(result.notFound).toEqual([]);
+    expect(result.updated.every((i) => i.status === 'resolved')).toBe(true);
+    expect(result.updated.every((i) => i.status_updated_by === 'user-a')).toBe(true);
+  });
+
+  it('setIssueStatuses leaves foreign-project ids untouched and reports them', () => {
+    insertLogRecords([errRecord('p1', 'x failed', 100)], NOW);
+    const issue = listIssues({ projectId: 'p1' }).issues[0]!;
+
+    const result = setIssueStatuses('p2', [issue.id, 'nope'], 'resolved', 'user-a', NOW);
+    expect(result.updated).toEqual([]);
+    expect(result.notFound).toEqual([issue.id, 'nope']);
+    expect(getIssue('p1', issue.id)!.status).toBe('open');
   });
 
   it('atomically allows only one Analyze claim and supports stale-claim replacement', () => {

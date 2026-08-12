@@ -12,6 +12,7 @@ vi.mock('../../utils/api', () => ({
     reopenLogIssue: vi.fn(),
     analyzeLogIssue: vi.fn(),
     fixLogIssue: vi.fn(),
+    bulkSetLogIssueStatus: vi.fn(),
   },
 }));
 
@@ -158,6 +159,133 @@ describe('IssuesView', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith('Issue resolved', 'success'));
     // The row badge now reflects the resolved state.
     await waitFor(() => expect(screen.getAllByText('resolved').length).toBeGreaterThan(0));
+  });
+
+  describe('batch triage', () => {
+    const secondIssue = {
+      ...openIssue,
+      id: 'iss-2',
+      title: 'RangeError: index out of range',
+      messageTemplate: 'index out of range',
+      exceptionType: 'RangeError',
+    };
+
+    it('batch-resolves the selected issues and drops them from the Open tab', async () => {
+      (api.listLogIssues as any).mockResolvedValue({
+        issues: [openIssue, secondIssue],
+        nextCursor: null,
+      });
+      (api.bulkSetLogIssueStatus as any).mockResolvedValue({
+        updated: [
+          { ...openIssue, status: 'resolved' },
+          { ...secondIssue, status: 'resolved' },
+        ],
+        notFound: [],
+      });
+      const showToast = vi.fn();
+
+      render(<IssuesView projectId="p1" showToast={showToast} />);
+      fireEvent.click(await screen.findByLabelText('Select all issues'));
+      expect(screen.getByText('2 selected')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /Resolve selected/ }));
+
+      await waitFor(() =>
+        expect(api.bulkSetLogIssueStatus).toHaveBeenCalledWith(
+          'p1',
+          ['iss-1', 'iss-2'],
+          'resolved',
+        ),
+      );
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith('2 issues resolved', 'success'));
+      expect(await screen.findByText(/No open error issues/i)).toBeInTheDocument();
+    });
+
+    it('sends only the ticked rows and reports stale ids in the toast', async () => {
+      (api.listLogIssues as any).mockResolvedValue({
+        issues: [openIssue, secondIssue],
+        nextCursor: null,
+      });
+      (api.bulkSetLogIssueStatus as any).mockResolvedValue({
+        updated: [{ ...secondIssue, status: 'ignored' }],
+        notFound: ['iss-1'],
+      });
+      const showToast = vi.fn();
+
+      render(<IssuesView projectId="p1" showToast={showToast} />);
+      fireEvent.click(await screen.findByLabelText('Select RangeError: index out of range'));
+      expect(screen.getByText('1 selected')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /Ignore selected/ }));
+
+      await waitFor(() =>
+        expect(api.bulkSetLogIssueStatus).toHaveBeenCalledWith('p1', ['iss-2'], 'ignored'),
+      );
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          '1 issue ignored · 1 no longer available',
+          'success',
+        ),
+      );
+      // The untouched row stays on the tab; the ignored one leaves it.
+      expect(screen.getByText(/cannot read property x of undefined/i)).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.queryByText(/index out of range/i)).not.toBeInTheDocument(),
+      );
+    });
+
+    it('keeps a row ticked while the batch is in flight instead of clearing it', async () => {
+      // Regression: completion used to reset the whole selection, silently
+      // dropping rows ticked mid-request that were never part of the batch.
+      let resolveBulk: (value: unknown) => void = () => {};
+      (api.listLogIssues as any).mockResolvedValue({
+        issues: [openIssue, secondIssue],
+        nextCursor: null,
+      });
+      (api.bulkSetLogIssueStatus as any).mockReturnValue(
+        new Promise((resolve) => (resolveBulk = resolve)),
+      );
+
+      render(<IssuesView projectId="p1" />);
+      fireEvent.click(
+        await screen.findByLabelText('Select TypeError: cannot read property x of undefined'),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /Resolve selected/ }));
+      // Only the first row was submitted; tick the second one mid-request.
+      expect(api.bulkSetLogIssueStatus).toHaveBeenCalledWith('p1', ['iss-1'], 'resolved');
+      fireEvent.click(screen.getByLabelText('Select RangeError: index out of range'));
+
+      await act(async () =>
+        resolveBulk({ updated: [{ ...openIssue, status: 'resolved' }], notFound: [] }),
+      );
+
+      expect(screen.getByText('1 selected')).toBeInTheDocument();
+      expect(screen.getByLabelText('Select RangeError: index out of range')).toBeChecked();
+    });
+
+    it('offers no Resolve button when every selected issue is already resolved', async () => {
+      const resolved = { ...openIssue, status: 'resolved' as const };
+      (api.listLogIssues as any).mockResolvedValue({ issues: [resolved], nextCursor: null });
+
+      render(<IssuesView projectId="p1" />);
+      fireEvent.click(await screen.findByLabelText('Select all issues'));
+
+      expect(screen.queryByRole('button', { name: /Resolve selected/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Reopen selected/ })).toBeInTheDocument();
+    });
+
+    it('surfaces a failed batch without clearing the selection', async () => {
+      (api.listLogIssues as any).mockResolvedValue({ issues: [openIssue], nextCursor: null });
+      (api.bulkSetLogIssueStatus as any).mockRejectedValue(new Error('500: boom'));
+      const showToast = vi.fn();
+
+      render(<IssuesView projectId="p1" showToast={showToast} />);
+      fireEvent.click(await screen.findByLabelText('Select all issues'));
+      fireEvent.click(screen.getByRole('button', { name: /Resolve selected/ }));
+
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith('500: boom', 'error'));
+      expect(screen.getByText('1 selected')).toBeInTheDocument();
+    });
   });
 
   it('starts Analyze and opens the linked normal chat session', async () => {

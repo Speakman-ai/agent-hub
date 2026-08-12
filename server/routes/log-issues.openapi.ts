@@ -74,6 +74,27 @@ export const LogIssueActionRequest = registerComponent(
   }),
 );
 
+/** Upper bound on one bulk transition, matching the largest list page. */
+export const MAX_BULK_ISSUE_IDS = MAX_ISSUE_LIST_LIMIT;
+
+export const LogIssueBulkStatusRequest = registerComponent(
+  'LogIssueBulkStatusRequest',
+  z.object({
+    issueIds: z.array(z.string().min(1).max(200)).min(1).max(MAX_BULK_ISSUE_IDS),
+    status: z.enum(ISSUE_STATUSES as unknown as [string, ...string[]]),
+  }),
+);
+
+const LogIssueBulkStatusResponse = registerComponent(
+  'LogIssueBulkStatusResponse',
+  z.object({
+    updated: z.array(LogIssue),
+    notFound: z
+      .array(z.string())
+      .describe('Requested ids that do not belong to this project (or no longer exist).'),
+  }),
+);
+
 const projectParam = z.object({ projectId: z.string() });
 const issueParam = z.object({ projectId: z.string(), issueId: z.string() });
 
@@ -186,6 +207,37 @@ const transitionResponses = {
     content: { 'application/json': { schema: ErrorResponse } },
   },
 } as const;
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/logs/issues/bulk-status',
+  tags: ['Logs'],
+  summary: 'Set the lifecycle status of many error issues at once',
+  description:
+    'Applies one status (open/resolved/ignored) to every listed issue in a single transaction. Ids are deduplicated and project-scoped; ids that do not resolve in this project are reported in `notFound` rather than failing the batch.',
+  request: {
+    params: projectParam,
+    body: { content: { 'application/json': { schema: LogIssueBulkStatusRequest } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated issues plus any unresolved ids.',
+      content: { 'application/json': { schema: LogIssueBulkStatusResponse } },
+    },
+    400: {
+      description: 'Malformed body (empty selection, unknown status, or over the id cap).',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Project not found or not visible.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
 
 registerPath({
   method: 'post',

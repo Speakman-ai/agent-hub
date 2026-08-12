@@ -35,6 +35,20 @@ import {
   type LogIssueActionLinks,
 } from '@shared/utils/logIssueActions';
 import { logIssueSeenMs } from '@shared/utils/logIssueTime';
+import {
+  BULK_ACTION_LABEL,
+  BULK_ACTION_STATUS,
+  allVisibleSelected,
+  applyBulkUpdateToList,
+  bulkActionAvailable,
+  bulkResultMessage,
+  clearSubmittedIds,
+  pruneSelection,
+  selectedStatuses,
+  toggleSelectAll,
+  toggleSelectedId,
+  type LogIssueBulkAction,
+} from '@shared/utils/logIssueSelection';
 
 interface IssueRelease {
   release: string | null;
@@ -81,6 +95,20 @@ const STATUS_TABS: ReadonlyArray<{ key: string; label: string }> = [
   { key: '', label: 'All' },
 ];
 
+const BULK_ACTIONS: readonly LogIssueBulkAction[] = ['resolve', 'ignore', 'reopen'];
+
+const BULK_ACTION_ICON: Record<LogIssueBulkAction, typeof CheckCircle2> = {
+  resolve: CheckCircle2,
+  ignore: BellOff,
+  reopen: RotateCcw,
+};
+
+const BULK_ACTION_TONE: Record<LogIssueBulkAction, string> = {
+  resolve: 'border-emerald-600/40 bg-emerald-600/10 text-emerald-300 hover:bg-emerald-600/20',
+  ignore: 'border-gray-600/40 bg-gray-600/10 text-gray-300 hover:bg-gray-600/20',
+  reopen: 'border-sky-600/40 bg-sky-600/10 text-sky-300 hover:bg-sky-600/20',
+};
+
 function statusBadge(status: LogIssue['status']): React.ReactElement {
   const map: Record<LogIssue['status'], string> = {
     open: 'bg-red-500/15 text-red-300 border-red-500/30',
@@ -111,6 +139,8 @@ export default function IssuesView({
   const [detail, setDetail] = useState<LogIssue | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkAction, setBulkAction] = useState<LogIssueBulkAction | null>(null);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
   const [fixingId, setFixingId] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
@@ -162,8 +192,22 @@ export default function IssuesView({
   useEffect(() => {
     setExpandedId(null);
     setDetail(null);
+    setSelectedIds([]);
     void load({ append: false });
   }, [load]);
+
+  // A reload or a recurrence-driven refresh can retire a ticked row. Keeping
+  // its id would batch-transition an issue the user can no longer see.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.length === 0) return prev;
+      const next = pruneSelection(
+        prev,
+        issues.map((issue) => issue.id),
+      );
+      return next.length === prev.length ? prev : next;
+    });
+  }, [issues]);
 
   // The App WebSocket bridge turns the server's project-scoped action events
   // into a DOM event. This keeps the issue detail live when another tab or
@@ -301,6 +345,46 @@ export default function IssuesView({
     [projectId, showToast],
   );
 
+  const runBulk = useCallback(
+    async (action: LogIssueBulkAction) => {
+      if (selectedIds.length === 0 || bulkAction) return;
+      // Freeze the ids this request submits. Rows stay tickable while it runs,
+      // so only these may be cleared on completion — anything ticked meanwhile
+      // was never sent and must survive.
+      const submitted = selectedIds;
+      setBulkAction(action);
+      try {
+        const result = (await api.bulkSetLogIssueStatus(
+          projectId,
+          submitted,
+          BULK_ACTION_STATUS[action],
+        )) as { updated: LogIssue[]; notFound: string[] };
+        const updated = Array.isArray(result.updated) ? result.updated : [];
+        const notFound = Array.isArray(result.notFound) ? result.notFound : [];
+        // On a filtered tab the transitioned rows leave the list, so an
+        // expanded panel for one of them has to close with it.
+        const removed = new Set(
+          updated.filter((row) => status && row.status !== status).map((row) => row.id),
+        );
+        setIssues((prev) => applyBulkUpdateToList(prev, updated, status));
+        setExpandedId((prev) => (prev && removed.has(prev) ? null : prev));
+        setDetail((prev) => {
+          if (!prev) return prev;
+          if (removed.has(prev.id)) return null;
+          const patch = updated.find((row) => row.id === prev.id);
+          return patch ? { ...prev, ...patch } : prev;
+        });
+        setSelectedIds((prev) => clearSubmittedIds(prev, submitted));
+        showToast?.(bulkResultMessage(action, updated.length, notFound.length), 'success');
+      } catch (err) {
+        showToast?.(err instanceof Error ? err.message : 'Batch update failed', 'error');
+      } finally {
+        setBulkAction(null);
+      }
+    },
+    [bulkAction, projectId, selectedIds, showToast, status],
+  );
+
   const runAction = useCallback(
     async (action: LogIssueAction, issue: LogIssue, startAnother = false) => {
       const key = logIssueActionKey(issue.id, action);
@@ -404,6 +488,9 @@ export default function IssuesView({
     [onOpenSession, projectId, showToast],
   );
 
+  const visibleIds = issues.map((issue) => issue.id);
+  const selectionStatuses = selectedStatuses(issues, selectedIds);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 border-b border-gray-800 pb-2">
@@ -432,6 +519,53 @@ export default function IssuesView({
         </div>
       ) : null}
 
+      {!loading && issues.length > 0 ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-b border-gray-800 pb-2">
+          <label className="inline-flex items-center gap-2 text-xs text-gray-400">
+            <input
+              type="checkbox"
+              aria-label="Select all issues"
+              checked={allVisibleSelected(selectedIds, visibleIds)}
+              onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
+              className="h-3.5 w-3.5 accent-emerald-500"
+            />
+            {selectedIds.length > 0 ? `${selectedIds.length} selected` : 'Select all'}
+          </label>
+          {selectedIds.length > 0 ? (
+            <>
+              {BULK_ACTIONS.filter((action) => bulkActionAvailable(selectionStatuses, action)).map(
+                (action) => {
+                  const Icon = BULK_ACTION_ICON[action];
+                  return (
+                    <button
+                      key={action}
+                      type="button"
+                      disabled={bulkAction !== null}
+                      onClick={() => void runBulk(action)}
+                      className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs disabled:opacity-50 ${BULK_ACTION_TONE[action]}`}
+                    >
+                      {bulkAction === action ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <Icon size={13} />
+                      )}
+                      {BULK_ACTION_LABEL[action]} selected
+                    </button>
+                  );
+                },
+              )}
+              <button
+                type="button"
+                onClick={() => setSelectedIds([])}
+                className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:bg-gray-800"
+              >
+                Clear
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center gap-2 p-8 text-sm text-gray-500">
@@ -450,39 +584,50 @@ export default function IssuesView({
               const lastSeenMs = logIssueSeenMs(issue.lastSeen);
               return (
                 <li key={issue.id} className="rounded border border-gray-800 bg-gray-900/40">
-                  <button
-                    type="button"
-                    onClick={() => openDetail(issue)}
-                    aria-expanded={isOpen}
-                    className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-gray-800/40"
-                  >
-                    <span className="mt-1 text-gray-500">
-                      {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </span>
-                    <span
-                      className={`mt-0.5 shrink-0 rounded border px-1 text-[10px] font-semibold uppercase ${severityTone(
-                        SEVERITY_NUMBER.ERROR,
-                      )}`}
+                  <div className="flex items-start">
+                    <label className="flex cursor-pointer items-center py-3 pl-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${issue.title || issue.messageTemplate || 'issue'}`}
+                        checked={selectedIds.includes(issue.id)}
+                        onChange={() => setSelectedIds((prev) => toggleSelectedId(prev, issue.id))}
+                        className="h-3.5 w-3.5 accent-emerald-500"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => openDetail(issue)}
+                      aria-expanded={isOpen}
+                      className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2 text-left hover:bg-gray-800/40"
                     >
-                      {issue.exceptionType || 'error'}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm text-gray-100">
-                        {issue.title || issue.messageTemplate || '(no message)'}
+                      <span className="mt-1 text-gray-500">
+                        {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       </span>
-                      <span className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-gray-500">
-                        {issue.service ? <span>{issue.service}</span> : null}
-                        {issue.environment ? <span>{issue.environment}</span> : null}
-                        <span>{issue.eventCount.toLocaleString()} events</span>
-                        {lastSeenMs !== null ? (
-                          <span title={formatDateTime(lastSeenMs)}>
-                            last {relativeTime(lastSeenMs)}
-                          </span>
-                        ) : null}
+                      <span
+                        className={`mt-0.5 shrink-0 rounded border px-1 text-[10px] font-semibold uppercase ${severityTone(
+                          SEVERITY_NUMBER.ERROR,
+                        )}`}
+                      >
+                        {issue.exceptionType || 'error'}
                       </span>
-                    </span>
-                    {statusBadge(issue.status)}
-                  </button>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-gray-100">
+                          {issue.title || issue.messageTemplate || '(no message)'}
+                        </span>
+                        <span className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-gray-500">
+                          {issue.service ? <span>{issue.service}</span> : null}
+                          {issue.environment ? <span>{issue.environment}</span> : null}
+                          <span>{issue.eventCount.toLocaleString()} events</span>
+                          {lastSeenMs !== null ? (
+                            <span title={formatDateTime(lastSeenMs)}>
+                              last {relativeTime(lastSeenMs)}
+                            </span>
+                          ) : null}
+                        </span>
+                      </span>
+                      {statusBadge(issue.status)}
+                    </button>
+                  </div>
 
                   {isOpen ? (
                     <div className="border-t border-gray-800 px-3 py-3">

@@ -77,6 +77,20 @@ import {
   type LogIssueActionEvent,
   type LogIssueActionLinks,
 } from '@shared/utils/logIssueActions';
+import {
+  BULK_ACTION_LABEL,
+  BULK_ACTION_STATUS,
+  allVisibleSelected,
+  applyBulkUpdateToList,
+  bulkActionAvailable,
+  bulkResultMessage,
+  clearSubmittedIds,
+  pruneSelection,
+  selectedStatuses,
+  toggleSelectAll,
+  toggleSelectedId,
+  type LogIssueBulkAction,
+} from '@shared/utils/logIssueSelection';
 
 type LogsTab = 'live' | 'issues' | 'sources';
 
@@ -116,6 +130,41 @@ export async function runLogClear(deps: LogClearDeps): Promise<void> {
     showToast?.(clearedLogsMessage(typeof res?.purged === 'number' ? res.purged : 0), 'success');
   } catch (err: any) {
     showToast?.(err?.message || 'Failed to clear logs', 'error');
+  }
+}
+
+/** Injected dependencies for a batch issue transition (test seam). */
+export interface BulkIssueStatusDeps {
+  projectId: string;
+  issueIds: string[];
+  action: LogIssueBulkAction;
+  bulkSetStatus: (
+    projectId: string,
+    issueIds: string[],
+    status: 'open' | 'resolved' | 'ignored',
+  ) => Promise<{ updated?: unknown; notFound?: unknown } | undefined>;
+  showToast?: (message: string, kind?: string) => void;
+}
+
+/**
+ * Batch-transition the selected issues and toast the outcome. Extracted from
+ * the component so the wiring is unit-testable without a native runtime.
+ * Returns `null` on failure so the caller leaves the selection intact — a
+ * failed batch must not look like it applied.
+ */
+export async function runBulkIssueStatus(
+  deps: BulkIssueStatusDeps,
+): Promise<{ updated: LogIssue[]; notFound: string[] } | null> {
+  const { projectId, issueIds, action, bulkSetStatus, showToast } = deps;
+  try {
+    const res = await bulkSetStatus(projectId, issueIds, BULK_ACTION_STATUS[action]);
+    const updated = Array.isArray(res?.updated) ? (res!.updated as LogIssue[]) : [];
+    const notFound = Array.isArray(res?.notFound) ? (res!.notFound as string[]) : [];
+    showToast?.(bulkResultMessage(action, updated.length, notFound.length), 'success');
+    return { updated, notFound };
+  } catch (err: any) {
+    showToast?.(err?.message || 'Batch update failed', 'error');
+    return null;
   }
 }
 
@@ -588,6 +637,8 @@ export function LiveLogsView({
 }
 
 // ── Issues view ──────────────────────────────────────────────────────────────
+const BULK_ACTIONS: readonly LogIssueBulkAction[] = ['resolve', 'ignore', 'reopen'];
+
 const ACTION_LABEL: Record<IssueAction, string> = {
   resolve: 'Resolve',
   ignore: 'Ignore',
@@ -621,6 +672,8 @@ export function IssuesView({
   const [detail, setDetail] = useState<LogIssue | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkAction, setBulkAction] = useState<LogIssueBulkAction | null>(null);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
   const [fixingId, setFixingId] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
@@ -679,8 +732,22 @@ export function IssuesView({
     setExpandedId(null);
     setDetail(null);
     setDetailLoading(false);
+    setSelectedIds([]);
     void load({ append: false });
   }, [load]);
+
+  // A reload or a recurrence-driven refresh can retire a ticked row. Keeping
+  // its id would batch-transition an issue the user can no longer see.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.length === 0) return prev;
+      const next = pruneSelection(
+        prev,
+        issues.map((issue) => issue.id),
+      );
+      return next.length === prev.length ? prev : next;
+    });
+  }, [issues]);
 
   // AppContext owns the main WebSocket on mobile and supplies the latest
   // project-scoped Logs action event. Reconcile it into the same state used by
@@ -820,6 +887,42 @@ export function IssuesView({
     [projectId, showToast, status],
   );
 
+  const runBulk = useCallback(
+    async (action: LogIssueBulkAction) => {
+      if (selectedIds.length === 0 || bulkAction) return;
+      // Freeze the ids this request submits. Rows stay tappable while it runs,
+      // so only these may be cleared on completion — anything ticked meanwhile
+      // was never sent and must survive.
+      const submitted = selectedIds;
+      setBulkAction(action);
+      const result = await runBulkIssueStatus({
+        projectId,
+        issueIds: submitted,
+        action,
+        bulkSetStatus: api.bulkSetLogIssueStatus,
+        showToast,
+      });
+      setBulkAction(null);
+      if (!result) return; // failed batch — keep the selection so it can be retried
+      // On a filtered tab the transitioned rows leave the list, so an expanded
+      // panel for one of them has to close with it.
+      const removed = new Set(
+        result.updated.filter((row) => status && row.status !== status).map((row) => row.id),
+      );
+      setIssues((prev) => applyBulkUpdateToList(prev, result.updated, status));
+      if (removed.size > 0) detailSeqRef.current += 1;
+      setExpandedId((prev) => (prev && removed.has(prev) ? null : prev));
+      setDetail((prev) => {
+        if (!prev) return prev;
+        if (removed.has(prev.id)) return null;
+        const patch = result.updated.find((row) => row.id === prev.id);
+        return patch ? { ...prev, ...patch } : prev;
+      });
+      setSelectedIds((prev) => clearSubmittedIds(prev, submitted));
+    },
+    [bulkAction, projectId, selectedIds, showToast, status],
+  );
+
   const runAction = useCallback(
     async (action: LogIssueAction, issue: LogIssue, startAnother = false) => {
       const key = logIssueActionKey(issue.id, action);
@@ -928,6 +1031,15 @@ export function IssuesView({
     return (
       <View key={issue.id} style={styles.issueCard} testID="log-issue-card">
         <TouchableOpacity onPress={() => openDetail(issue)} style={styles.issueHead}>
+          <TouchableOpacity
+            onPress={() => setSelectedIds((prev) => toggleSelectedId(prev, issue.id))}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: selectedIds.includes(issue.id) }}
+            testID={`log-issue-select-${issue.id}`}
+          >
+            <Text style={styles.issueCheckbox}>{selectedIds.includes(issue.id) ? '☑' : '☐'}</Text>
+          </TouchableOpacity>
           <Text style={styles.issueCaret}>{isOpen ? '▾' : '▸'}</Text>
           <View style={styles.issueMain}>
             <Text style={styles.issueTitle} numberOfLines={2}>
@@ -1059,6 +1171,57 @@ export function IssuesView({
       {error ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>⚠ {error}</Text>
+        </View>
+      ) : null}
+
+      {!loading && issues.length > 0 ? (
+        <View style={styles.bulkBar} testID="logs-issue-bulk-bar">
+          <TouchableOpacity
+            onPress={() =>
+              setSelectedIds((prev) =>
+                toggleSelectAll(
+                  prev,
+                  issues.map((issue) => issue.id),
+                ),
+              )
+            }
+            accessibilityRole="checkbox"
+            accessibilityState={{
+              checked: allVisibleSelected(
+                selectedIds,
+                issues.map((issue) => issue.id),
+              ),
+            }}
+            testID="logs-issue-select-all"
+          >
+            <Text style={styles.bulkSelectAll}>
+              {allVisibleSelected(
+                selectedIds,
+                issues.map((issue) => issue.id),
+              )
+                ? '☑'
+                : '☐'}{' '}
+              {selectedIds.length > 0 ? `${selectedIds.length} selected` : 'Select all'}
+            </Text>
+          </TouchableOpacity>
+          {selectedIds.length > 0
+            ? BULK_ACTIONS.filter((action) =>
+                bulkActionAvailable(selectedStatuses(issues, selectedIds), action),
+              ).map((action) => (
+                <TouchableOpacity
+                  key={action}
+                  disabled={bulkAction !== null}
+                  onPress={() => void runBulk(action)}
+                  style={[styles.issueActionBtn, bulkAction !== null && styles.btnDisabled]}
+                  testID={`logs-issue-bulk-${action}`}
+                >
+                  {bulkAction === action ? (
+                    <ActivityIndicator size="small" color={colors.gray400} />
+                  ) : null}
+                  <Text style={styles.issueActionText}>{BULK_ACTION_LABEL[action]} selected</Text>
+                </TouchableOpacity>
+              ))
+            : null}
         </View>
       ) : null}
 
@@ -1336,6 +1499,16 @@ const styles = StyleSheet.create({
   },
   issueHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 10 },
   issueCaret: { color: colors.gray500, fontSize: 12, marginTop: 2 },
+  issueCheckbox: { color: colors.gray300, fontSize: 14, marginTop: 1 },
+  bulkBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  bulkSelectAll: { fontSize: 12, color: colors.gray400 },
   issueMain: { flex: 1 },
   issueTitle: { fontSize: 13, color: colors.gray100 },
   issueException: { color: colors.red400, fontWeight: '700', fontSize: 11 },

@@ -433,6 +433,8 @@ export const api = {
     resolveLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/resolve`, { method: 'POST' }),
     ignoreLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/ignore`, { method: 'POST' }),
     reopenLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/reopen`, { method: 'POST' }),
+    /** Batch triage — one transaction server-side; stale ids come back in `notFound`. */
+    bulkSetLogIssueStatus: (projectId: any, issueIds: string[], status: 'open' | 'resolved' | 'ignored') => fetchJSON(`/projects/${projectId}/logs/issues/bulk-status`, { method: 'POST', body: JSON.stringify({ issueIds, status }) }),
     analyzeLogIssue: (projectId: any, issueId: any, options: { startAnother?: boolean } = {}) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/analyze`, { method: 'POST', body: JSON.stringify({ startAnother: options.startAnother === true }) }),
     fixLogIssue: (projectId: any, issueId: any, options: { startAnother?: boolean } = {}) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/fix`, { method: 'POST', body: JSON.stringify({ startAnother: options.startAnother === true }) }),
     // ── Replays / RUM dashboard (mirrors client/src/utils/api.ts) ──

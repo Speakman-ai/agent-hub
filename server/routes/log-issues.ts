@@ -29,6 +29,7 @@ import {
   getIssue,
   getIssueReleases,
   setIssueStatus,
+  setIssueStatuses,
   claimIssueAnalyzeSession,
   releaseIssueAnalyzeSession,
   ownsIssueAnalyzeSessionClaim,
@@ -48,7 +49,11 @@ import { markSessionFinalizeAutomation } from '../session-ship.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { getUserProjectDefaultFinalizeAutomation } from '../user-project-settings.js';
-import { IssueListParamsSchema, LogIssueActionRequest } from './log-issues.openapi.js';
+import {
+  IssueListParamsSchema,
+  LogIssueActionRequest,
+  LogIssueBulkStatusRequest,
+} from './log-issues.openapi.js';
 
 /** Recent raw records surfaced on an issue detail response. */
 const ISSUE_SAMPLE_LIMIT = 20;
@@ -218,6 +223,33 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
         ...serializeLogIssue(issue, releases),
         samples: samples.records.map(serializeLogRecord),
       });
+    },
+  );
+
+  // ─── Bulk lifecycle transition ────────────────────────────────────
+  //
+  // One transaction for the whole selection so a batch never lands half
+  // applied. Ids that do not belong to this project come back in `notFound`
+  // instead of failing the batch — a stale client selection (an issue deleted
+  // or purged since the page loaded) must not block the rest of the transition.
+  router.post(
+    '/api/projects/:projectId/logs/issues/bulk-status',
+    requireRole('User'),
+    (req: Request, res: Response) => {
+      if (!requireVisibleProject(req, res)) return;
+      const parsed = LogIssueBulkStatusRequest.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid bulk request' });
+        return;
+      }
+      const { updated, notFound } = setIssueStatuses(
+        req.params.projectId as string,
+        parsed.data.issueIds,
+        parsed.data.status as IssueStatus,
+        actorId(req),
+        Date.now(),
+      );
+      res.json({ updated: updated.map((issue) => serializeLogIssue(issue)), notFound });
     },
   );
 

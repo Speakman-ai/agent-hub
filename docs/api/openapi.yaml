@@ -9562,6 +9562,41 @@ components:
         startAnother:
           type: boolean
           default: false
+    LogIssueBulkStatusRequest:
+      type: object
+      properties:
+        issueIds:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+          minItems: 1
+          maxItems: 200
+        status:
+          type: string
+          enum:
+            - open
+            - resolved
+            - ignored
+      required:
+        - issueIds
+        - status
+    LogIssueBulkStatusResponse:
+      type: object
+      properties:
+        updated:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogIssue"
+        notFound:
+          type: array
+          items:
+            type: string
+          description: Requested ids that do not belong to this project (or no longer exist).
+      required:
+        - updated
+        - notFound
     LogIssueFixResponse:
       type: object
       properties:
@@ -33217,6 +33252,48 @@ paths:
                 $ref: "#/components/schemas/LogIssueErrorResponse"
         "404":
           description: Project or issue not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+  /api/projects/{projectId}/logs/issues/bulk-status:
+    post:
+      tags:
+        - Logs
+      summary: Set the lifecycle status of many error issues at once
+      description: Applies one status (open/resolved/ignored) to every listed issue in a single transaction. Ids are deduplicated and project-scoped; ids that do not resolve in this project are reported in `notFound` rather than failing the batch.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogIssueBulkStatusRequest"
+      responses:
+        "200":
+          description: Updated issues plus any unresolved ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueBulkStatusResponse"
+        "400":
+          description: Malformed body (empty selection, unknown status, or over the id cap).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "404":
+          description: Project not found or not visible.
           content:
             application/json:
               schema:
