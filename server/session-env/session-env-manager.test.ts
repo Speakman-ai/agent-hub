@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { SessionEnvManager } from './session-env-manager.js';
 import type { SessionEnv, SessionEnvKind } from './session-env.js';
+import type { SessionWorktreeIo, WorktreeExecResult } from './worktree-io.js';
+import {
+  __resetSessionStartupStatusForTests,
+  getSessionStartupStatus,
+} from './session-startup-hooks.js';
 
 /** Minimal SessionEnv double — only the manager-facing surface is exercised. */
 class FakeEnv {
@@ -11,16 +16,34 @@ class FakeEnv {
   disposeCalls = 0;
   live = 0;
   private readonly hooks = new Set<() => void>();
+  worktreeIo: SessionWorktreeIo;
 
   constructor(
     readonly kind: SessionEnvKind,
     readonly sessionId: string,
     readonly worktreePath: string,
-  ) {}
+    execImpl?: (cmd: string) => Promise<WorktreeExecResult>,
+  ) {
+    this.worktreeIo = {
+      sharing: 'host-shared',
+      hostPath: worktreePath,
+      git: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      exec: async (command) => {
+        if (execImpl) return execImpl(command);
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+      readFile: async () => Buffer.from(''),
+      writeFile: async () => {},
+      downloadFile: async () => {},
+      listDir: async () => [],
+      stat: async () => null,
+      exists: async () => false,
+    };
+  }
 
   async mountWorktree() {
     this.mountCalls++;
-    return { hostPath: this.worktreePath, envPath: '/workspace' };
+    return { hostPath: this.worktreePath, envPath: '/workspace', sharing: 'host-shared' as const };
   }
   liveProcessCount() {
     return this.live;
@@ -55,6 +78,8 @@ function makeManager(
     failOnMount?: boolean;
     bootSweep?: Promise<unknown>;
     resolvePublishPorts?: (sessionId: string) => number[] | null;
+    resolveStartupCommands?: (sessionId: string) => string[];
+    slowStartupMs?: number;
     onCreateOpts?: (opts: {
       sessionId: string;
       worktreePath: string;
@@ -67,9 +92,15 @@ function makeManager(
   const manager = new SessionEnvManager({
     resolveWorktree: (id) => worktrees.get(id) ?? null,
     resolveAdapter: () => opts.kind ?? 'container',
+    ...(opts.resolveStartupCommands ? { resolveStartupCommands: opts.resolveStartupCommands } : {}),
     createEnv: (kind, o) => {
       opts.onCreateOpts?.(o);
-      const env = new FakeEnv(kind, o.sessionId, o.worktreePath);
+      const env = new FakeEnv(kind, o.sessionId, o.worktreePath, async (cmd) => {
+        if (opts.slowStartupMs && cmd.startsWith('sleep-hook')) {
+          await new Promise((r) => setTimeout(r, opts.slowStartupMs));
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      });
       if (opts.failOnMount) {
         env.mountWorktree = async () => {
           throw new Error('container failed to start');
@@ -370,5 +401,27 @@ describe('SessionEnvManager.reap', () => {
 
     await expect(manager.reap(5000)).resolves.toEqual({ scanned: 1, reaped: 0 });
     expect(created[0].disposeCalls).toBe(0);
+  });
+});
+
+describe('SessionEnvManager session startup hooks', () => {
+  beforeEach(() => {
+    __resetSessionStartupStatusForTests();
+  });
+
+  it('resolves ensure before a slow startup hook finishes', async () => {
+    const { manager } = makeManager({
+      resolveStartupCommands: () => ['sleep-hook-long'],
+      slowStartupMs: 200,
+    });
+    const t0 = Date.now();
+    await manager.ensure('s1');
+    expect(Date.now() - t0).toBeLessThan(150);
+    await vi.waitFor(
+      () => {
+        expect(getSessionStartupStatus('s1')?.status).toBe('ready');
+      },
+      { timeout: 2000 },
+    );
   });
 });

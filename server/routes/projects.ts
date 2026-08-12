@@ -448,7 +448,7 @@ interface ProjectCommands {
   lint: string | null;
 }
 
-/** Normalize `preCommitCommands` from JSON bodies (POST/PATCH/onboard). */
+/** Normalize string-command lists from JSON bodies (POST/PATCH/onboard). */
 function normalizePreCommitCommands(value: unknown): string[] {
   if (value == null) return [];
   if (!Array.isArray(value)) return [];
@@ -457,6 +457,9 @@ function normalizePreCommitCommands(value: unknown): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+/** Same shape as pre-commit — reused for `sessionStartupCommands`. */
+const normalizeSessionStartupCommands = normalizePreCommitCommands;
 
 /** Persisted 1–5; invalid values yield `undefined` (caller returns 400 when the field was explicit). */
 function normalizeCheckHealMaxRounds(value: unknown): number | undefined {
@@ -1673,6 +1676,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       color,
       commands,
       preCommitCommands,
+      sessionStartupCommands,
       checkHealCommands,
       checkHealMaxRounds,
       mode,
@@ -1685,6 +1689,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       color?: string;
       commands?: ProjectCommands;
       preCommitCommands?: unknown;
+      sessionStartupCommands?: unknown;
       checkHealCommands?: unknown;
       checkHealMaxRounds?: unknown;
       mode?: unknown;
@@ -1801,6 +1806,10 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     }
     const pcCreate = normalizePreCommitCommands(preCommitCommands);
     if (pcCreate.length) (project as Record<string, unknown>).preCommitCommands = pcCreate;
+    const startupCreate = normalizeSessionStartupCommands(sessionStartupCommands);
+    if (startupCreate.length) {
+      (project as Record<string, unknown>).sessionStartupCommands = startupCreate;
+    }
     const healCreate = normalizePreCommitCommands(checkHealCommands);
     if (healCreate.length) (project as Record<string, unknown>).checkHealCommands = healCreate;
     if ((req.body as Record<string, unknown>).checkHealMaxRounds !== undefined) {
@@ -2044,6 +2053,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
       const pc = normalizePreCommitCommands(rawPc);
       if (pc.length) (project as Record<string, unknown>).preCommitCommands = pc;
       else delete (project as Record<string, unknown>).preCommitCommands;
+    }
+    if ((req.body as Record<string, unknown>).sessionStartupCommands !== undefined) {
+      const rawSu = (req.body as Record<string, unknown>).sessionStartupCommands;
+      const su = normalizeSessionStartupCommands(rawSu);
+      if (su.length) (project as Record<string, unknown>).sessionStartupCommands = su;
+      else delete (project as Record<string, unknown>).sessionStartupCommands;
     }
     if ((req.body as Record<string, unknown>).checkHealCommands !== undefined) {
       const rawH = (req.body as Record<string, unknown>).checkHealCommands;
@@ -2875,6 +2890,10 @@ This workspace has no git repo and no PR automation — your job is planning, or
     }
     const pcOnboard = normalizePreCommitCommands(projectData.preCommitCommands);
     if (pcOnboard.length) (project as Record<string, unknown>).preCommitCommands = pcOnboard;
+    const startupOnboard = normalizeSessionStartupCommands(projectData.sessionStartupCommands);
+    if (startupOnboard.length) {
+      (project as Record<string, unknown>).sessionStartupCommands = startupOnboard;
+    }
     const healOnboard = normalizePreCommitCommands(projectData.checkHealCommands);
     if (healOnboard.length) (project as Record<string, unknown>).checkHealCommands = healOnboard;
     if (projectData.checkHealMaxRounds !== undefined) {

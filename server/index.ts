@@ -113,6 +113,8 @@ import {
 } from './session-env/ephemeral-host-port.js';
 import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
 import { setSessionWorktreeIoResolver } from './session-worktree-io.js';
+import { getProjectSessionStartupCommands } from './session-env/session-startup-hooks.js';
+import { emitSessionStartupProgress } from './session-env/session-env-progress.js';
 import {
   describeSessionEnvPortRouting,
   resolveSessionEnvPortRouting,
@@ -1212,6 +1214,23 @@ const sessionEnvManager = new SessionEnvManager({
     // A session opted out of worktrees works directly in the project checkout.
     if (Number(session.use_worktree) === 1) return null;
     return findAgent(session.agent_id)?.project.cwd ?? null;
+  },
+  resolveStartupCommands: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session || session.deleted_at) return [];
+    const project = findAgent(session.agent_id)?.project;
+    if (!project) return [];
+    return getProjectSessionStartupCommands(project);
+  },
+  onStartupProgress: (update) => {
+    emitSessionStartupProgress({
+      stmts: stmts!,
+      broadcast,
+      sessionId: update.sessionId,
+      status: update.stepStatus,
+      startedAt: update.startedAt,
+      finishedAt: update.finishedAt,
+    });
   },
   resolvePublishPorts: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;

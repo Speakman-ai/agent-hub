@@ -413,6 +413,29 @@ describe('FinalizeButton', () => {
     expect(await screen.findByTestId('finalize-push-to-github-button')).toBeInTheDocument();
   });
 
+  it('shows Push to Agent Hub for hosted projects even without GitHub OAuth', async () => {
+    (fetchMock as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ connected: false }) as any,
+    });
+    render(<FinalizeButton {...baseProps} hosted />);
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    expect(pushBtn).toBeInTheDocument();
+    expect(pushBtn).toHaveTextContent('Push to Agent Hub');
+  });
+
+  it('hides Push for GitHub-backed projects when GitHub is not connected', async () => {
+    (fetchMock as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ connected: false }) as any,
+    });
+    render(<FinalizeButton {...baseProps} hosted={false} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('finalize-push-to-github-button')).not.toBeInTheDocument();
+  });
+
   it('pushes without a confirm when both phases passed on the same commit', async () => {
     window.confirm = vi.fn(() => true);
     setHookState({
