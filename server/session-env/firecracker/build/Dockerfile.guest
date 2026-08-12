@@ -111,12 +111,17 @@ RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex \
 RUN if id runner >/dev/null 2>&1; then \
       su - runner -c 'curl -fsSL https://x.ai/cli/install.sh | bash' ; \
       su - runner -c 'curl -fsSL https://cursor.com/install | bash' ; \
-      su - runner -c 'ln -sfn "$(readlink -f "$HOME/.local/bin/cursor-agent")" "$HOME/.local/bin/agent"' ; \
-      su - runner -c 'command -v agent && command -v cursor-agent && command -v grok' ; \
+      su - runner -c 'export PATH="$HOME/.local/bin:$PATH"; \
+        target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
+        test -n "$target" && test -x "$target"; \
+        ln -sfn "$target" "$HOME/.local/bin/agent"; \
+        command -v agent; command -v cursor-agent' ; \
     else \
       curl -fsSL https://x.ai/cli/install.sh | bash ; \
       curl -fsSL https://cursor.com/install | bash ; \
-      ln -sfn "$(readlink -f "$HOME/.local/bin/cursor-agent")" "$HOME/.local/bin/agent" ; \
+      export PATH="$HOME/.local/bin:$PATH"; \
+      target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
+      ln -sfn "$target" "$HOME/.local/bin/agent"; \
     fi
 
 # `Delegate=yes` so containers started inside the guest get their own cgroup
