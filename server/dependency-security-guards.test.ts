@@ -114,8 +114,11 @@ const LOCKFILES = [
 interface LockEntry {
   version?: string;
   link?: boolean;
+  dev?: boolean;
+  optional?: boolean;
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
 }
 
 function lockPackages(relPath: string): Record<string, LockEntry> {
@@ -945,6 +948,181 @@ describe('override-backed advisory floors', () => {
       ).toBe(true);
     });
   }
+});
+
+/**
+ * Advisories with **no published fix at any released version**. Each vulnerable
+ * range below covers every version the registry has ever published, so there is
+ * nothing to upgrade *to* -- `first_patched_version` is `null` upstream, not
+ * merely undiscovered. Per the convention in
+ * `security-bump-prs-hand-edited-lockfiles-break-installs`, these deliberately
+ * get **no `FLOORS` entry**: a floor naming a version that does not exist fails
+ * immediately, and a floor at the current version passes forever and hides the
+ * day a real patch ships.
+ *
+ * What is guarded here instead is the *reachability argument* that justifies
+ * carrying each one. Accepting an unfixable advisory is only defensible while
+ * the vulnerable code stays on the path we assessed; if a future dependency
+ * change pulls the same package into a new consumer, the justification is void
+ * and nobody would otherwise notice. These assertions fail in that case and
+ * force the note to be re-derived rather than re-read.
+ */
+describe('unpatched advisories (containment guards)', () => {
+  /**
+   * `dependents` is the exhaustive set of packages allowed to pull this copy in.
+   * `flags` records the install-class fields the risk assessment leans on.
+   */
+  const CONTAINED: Array<{
+    workspace: (typeof LOCKFILES)[number]['name'];
+    pkg: string;
+    advisory: string[];
+    vulnerableRange: string;
+    dependents: string[];
+    flags?: { dev?: boolean; optional?: boolean };
+    why: string;
+  }> = [
+    // Vulnerable range `<= 2.0.1`; 2.0.1 is the newest version extract-zip has
+    // ever published. Symlink path traversal while unpacking a zip -- only
+    // exploitable by an archive an attacker controls.
+    //
+    // Escaping it needs a parent that drops the dependency outright:
+    // `@puppeteer/browsers` 3.x swapped to `modern-tar`, and electron 43 moved
+    // to `@electron-internal/extract-zip`. Both are rejected below.
+    {
+      workspace: 'root',
+      pkg: 'extract-zip',
+      advisory: ['GHSA-jmr9-qjv8-65gv'],
+      vulnerableRange: '<= 2.0.1',
+      dependents: ['electron'],
+      // devDependency: it runs at `npm install` time to unpack the Electron
+      // release archive from the project's own GitHub releases, never a
+      // user-supplied zip, and it is not part of any shipped artifact.
+      flags: { dev: true },
+      why: 'electron 39 -> 43 is four majors of the desktop shell (Chromium/Node bumps, API removals) for a dev-only unpack of a trusted archive',
+    },
+    {
+      workspace: 'server',
+      pkg: 'extract-zip',
+      advisory: ['GHSA-jmr9-qjv8-65gv'],
+      vulnerableRange: '<= 2.0.1',
+      dependents: ['@puppeteer/browsers'],
+      // Optional throughout: @browserbasehq/stagehand -> puppeteer-core ->
+      // @puppeteer/browsers, used only to unpack a browser build downloaded
+      // from Chrome for Testing. The ReAct browser tool runs on Playwright.
+      flags: { optional: true },
+      why: 'puppeteer-core pins @puppeteer/browsers at exactly 2.3.0 (an override to the 3.x line that drops extract-zip breaks that pin), 22.15.0 is the top of the 22.x line stagehand accepts, and the only clean escape is stagehand 3 -> 4, which replaces the whole browser backend',
+    },
+    // Two advisories, same shape: an infinite loop in a format parser (JXL/HEIF
+    // and ICNS). Vulnerable range `<= 2.0.2` covers 2.0.2, the newest published
+    // version -- and metro@0.87.0, the newest metro, still declares
+    // `image-size: ^1.0.2`, so no parent bump escapes it either.
+    {
+      workspace: 'mobile',
+      pkg: 'image-size',
+      advisory: ['GHSA-5p2g-fcmc-qvqq', 'GHSA-w3rx-r6r6-pgpr'],
+      vulnerableRange: '<= 2.0.2',
+      dependents: ['metro'],
+      // Metro is the bundler: it measures image assets committed to this repo
+      // at build time and never runs inside the shipped app.
+      why: 'every published version is vulnerable and 2.x is a breaking major outside metro’s `^1.0.2` range, so a bump would break the bundler without clearing the advisory',
+    },
+  ];
+
+  for (const { workspace, pkg, advisory, vulnerableRange, dependents, flags, why } of CONTAINED) {
+    const label = advisory.join(', ');
+
+    it(`${workspace}: ${pkg} stays confined to ${dependents.join(', ')} (${label})`, () => {
+      const entry = LOCKFILES.find((l) => l.name === workspace);
+      expect(entry, `unknown workspace ${workspace}`).toBeDefined();
+      const packages = lockPackages(entry!.lock);
+
+      const actual = new Set<string>();
+      for (const [key, meta] of Object.entries(packages)) {
+        const declared = {
+          ...(meta.dependencies ?? {}),
+          ...(meta.optionalDependencies ?? {}),
+          ...(meta.peerDependencies ?? {}),
+        };
+        if (declared[pkg]) actual.add(packageNameOf(key) || '<root>');
+      }
+
+      expect(
+        [...actual].sort(),
+        `${workspace}: ${pkg} has no published fix (${label}, vulnerable ${vulnerableRange}); ` +
+          `carrying it is only justified while ${dependents.join(', ')} is its sole consumer. ` +
+          `A new consumer means the accepted-risk note must be re-derived. Context: ${why}`,
+      ).toEqual([...dependents].sort());
+    });
+
+    if (flags) {
+      it(`${workspace}: every ${pkg} copy stays ${Object.keys(flags).join('/')} (${label})`, () => {
+        const entry = LOCKFILES.find((l) => l.name === workspace);
+        const packages = lockPackages(entry!.lock);
+        let checked = 0;
+
+        for (const [key, meta] of Object.entries(packages)) {
+          if (packageNameOf(key) !== pkg || !meta.version) continue;
+          checked++;
+          for (const [flag, want] of Object.entries(flags)) {
+            expect(
+              meta[flag as 'dev' | 'optional'] === true,
+              `${workspace}: ${key}@${meta.version} must stay "${flag}: ${want}" -- ` +
+                `${pkg} carries the unfixed ${label}, and the risk assessment rests on it ` +
+                `never entering the production graph`,
+            ).toBe(true);
+          }
+        }
+
+        expect(checked, `expected at least one ${pkg} entry in ${workspace}`).toBeGreaterThan(0);
+      });
+    }
+  }
+
+  /**
+   * GHSA-866g-f22w-33x8 (low): uncontrolled resource consumption in
+   * `createJsonResponseHandler`. Vulnerable range `<= 3.0.97` while the stable
+   * 3.x line tops out at 3.0.32, so every published 3.x is inside it. The
+   * reachable sink parses responses from configured, trusted LLM provider
+   * endpoints, not attacker-controlled hosts.
+   *
+   * Containment is asserted on the one fact a lockfile can actually settle:
+   * the first-party `ai` / `@ai-sdk/*` family pins provider-utils to an *exact*
+   * version. An override to 4.x/5.x therefore does not merely sit outside a
+   * declared range, it contradicts an exact pin -- satisfying a scanner while
+   * breaking the stack at runtime, the trap documented in
+   * `security-bump-prs-hand-edited-lockfiles-break-installs`.
+   *
+   * Deliberately not asserted: that every consumer's *range* stays inside
+   * `<= 3.0.97`. It does not, and should not be forced to -- the third-party
+   * `ollama-ai-provider-v2` declares `^3.0.17`, which formally admits 3.1.0+.
+   * That range only resolves inside the advisory because the 3.1.0 line is
+   * still prerelease-only, which is a registry fact of today rather than a
+   * property of this repo, so encoding it here would make the suite fail on an
+   * upstream publish that changed nothing about our exposure.
+   */
+  it('server: the first-party @ai-sdk family pins @ai-sdk/provider-utils exactly', () => {
+    const packages = lockPackages('./package-lock.json');
+    const ranged: string[] = [];
+    let pinned = 0;
+
+    for (const [key, meta] of Object.entries(packages)) {
+      const name = packageNameOf(key);
+      if (name !== 'ai' && !name.startsWith('@ai-sdk/')) continue;
+      const spec = meta.dependencies?.['@ai-sdk/provider-utils'];
+      if (!spec || NON_REGISTRY_SPEC.test(spec)) continue;
+      if (/^\d+\.\d+\.\d+$/.test(spec)) pinned++;
+      else ranged.push(`${name} -> ${spec}`);
+    }
+
+    expect(pinned, 'expected first-party @ai-sdk consumers in the server lockfile').toBeGreaterThan(
+      0,
+    );
+    expect(
+      ranged.sort(),
+      'these first-party @ai-sdk packages no longer pin @ai-sdk/provider-utils exactly; an overrides ' +
+        'entry may now be safe where it previously broke the stack at runtime',
+    ).toEqual([]);
+  });
 });
 
 /**
