@@ -26,9 +26,15 @@ describe('guestEngineBinCandidates', () => {
     expect(guestEngineBinCandidates('claude', GUEST_CLI_HOME)[0]).toBe(
       `${GUEST_CLI_HOME}/.local/bin/claude`,
     );
-    expect(guestEngineBinCandidates('agent', GUEST_CLI_HOME)).toContain(
-      '/home/runner/.local/bin/agent',
+    expect(guestEngineBinCandidates('gemini', GUEST_CLI_HOME)).toContain(
+      '/home/runner/.local/bin/gemini',
     );
+  });
+
+  it('puts cursor-agent ahead of agent so Grok cannot shadow Cursor', () => {
+    const c = guestEngineBinCandidates('agent', GUEST_CLI_HOME);
+    expect(c[0]).toBe(`${GUEST_CLI_HOME}/.local/bin/cursor-agent`);
+    expect(c).toContain(`${GUEST_CLI_HOME}/.local/bin/agent`);
   });
 });
 
