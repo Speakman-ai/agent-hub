@@ -29,6 +29,7 @@ import {
   type TaskProtection,
 } from './ecs-task-protection.js';
 import { checkSpotInterruption } from './spot-interruption.js';
+import { chownWorktreeForJobRunner } from './worktree-job-ownership.js';
 
 export interface AgentLogFrame {
   seq: number;
@@ -174,6 +175,11 @@ export async function runAgentJob(args: {
   transport: AgentTransport;
   docker: AgentDocker;
   materialize?: (spec: RunnerJobWireSpec, destPath: string) => Promise<void>;
+  /**
+   * Align materialized worktree ownership with the job container's `runner`
+   * (uid 1000). Injectable for tests; defaults to {@link chownWorktreeForJobRunner}.
+   */
+  ensureJobWorktreeOwnership?: (destPath: string) => Promise<void>;
   logFlushMs?: number;
   heartbeatMs?: number;
   /**
@@ -278,6 +284,10 @@ export async function runAgentJob(args: {
     if (spec.worktreeRef && args.materialize) {
       await args.materialize(spec, jobWorkspace);
     }
+    // Agent image and job image can disagree on `runner`'s uid during a
+    // rollout (agent on :main → 1001, job on a pinned build → 1000). Without
+    // this, npm ci / venv mkdir EACCES across every shard.
+    await (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace);
     const containerName = await docker.startContainer(spec, jobWorkspace);
     let seq = 0;
     try {
