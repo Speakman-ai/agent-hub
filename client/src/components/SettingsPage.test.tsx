@@ -560,8 +560,34 @@ describe('SettingsPage — sidebar navigation', () => {
     const { findByText } = render(<ProjectsSection projects={projects} projectId="p1" />);
     await findByText('Project settings');
     expect(
-      await findByText('Configure secrets, visibility, and lifecycle settings for this project.'),
+      await findByText(
+        'Configure install/build commands, session startup, secrets, visibility, and lifecycle settings for this project.',
+      ),
     ).toBeTruthy();
+  });
+
+  it('renders project workflow commands on ProjectsSection, not AgentConfigSection', async () => {
+    const projects = [
+      {
+        id: 'p1',
+        name: 'Acme',
+        color: '#ff0000',
+        cwd: '/tmp/a',
+        githubRepo: '',
+        agents: [],
+        commands: { install: 'npm ci', build: '', test: '', lint: '' },
+      },
+    ];
+    const projectsView = render(<ProjectsSection projects={projects} projectId="p1" />);
+    expect(await projectsView.findByText('Project Commands')).toBeTruthy();
+    expect(projectsView.getByTestId('project-workflow-commands-p1')).toBeTruthy();
+    projectsView.unmount();
+
+    const agentsView = render(
+      <AgentConfigSection projects={projects} agents={[]} projectId="p1" />,
+    );
+    expect(agentsView.queryByText('Project Commands')).toBeNull();
+    expect(agentsView.queryByTestId('project-workflow-commands-p1')).toBeNull();
   });
 
   it('no longer renders the Clone URL, GitHub Repository, PR toggles, or workflow runs', async () => {

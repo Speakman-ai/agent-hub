@@ -1017,6 +1017,467 @@ export function GitHubSection() {
 }
 
 /**
+ * Install/build/test/lint, pre-commit, session startup, check auto-heal,
+ * orchestration budgets, and browser-tool defaults for one project.
+ *
+ * Lives on Project Configuration (not Agents) — these are project workflow
+ * settings, not per-agent identity.
+ */
+function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }: any) {
+  const projectId = project.id;
+
+  const [commands, setCommands] = useState(() => ({
+    install: project.commands?.install || '',
+    build: project.commands?.build || '',
+    test: project.commands?.test || '',
+    lint: project.commands?.lint || '',
+  }));
+  const [preCommitInput, setPreCommitInput] = useState(() =>
+    Array.isArray(project.preCommitCommands) && project.preCommitCommands.length
+      ? project.preCommitCommands.join('\n')
+      : '',
+  );
+  const [sessionStartupInput, setSessionStartupInput] = useState(() =>
+    Array.isArray(project.sessionStartupCommands) && project.sessionStartupCommands.length
+      ? project.sessionStartupCommands.join('\n')
+      : '',
+  );
+  const [checkHealInput, setCheckHealInput] = useState(() =>
+    Array.isArray(project.checkHealCommands) && project.checkHealCommands.length
+      ? project.checkHealCommands.join('\n')
+      : '',
+  );
+  const [checkHealMaxRounds, setCheckHealMaxRounds] = useState(() => {
+    const n = project.checkHealMaxRounds;
+    return typeof n === 'number' && n >= 1 && n <= 5 ? String(n) : '2';
+  });
+  const [orchestrationFields, setOrchestrationFields] = useState(() =>
+    orchestrationFieldsFromProject(project.orchestrationBudgets),
+  );
+  const [browserFields, setBrowserFields] = useState(() => ({
+    defaultOn: project.browserToolsDefaultEnabled !== false,
+    viewportW:
+      typeof project.browserViewportWidth === 'number' ? String(project.browserViewportWidth) : '',
+    viewportH:
+      typeof project.browserViewportHeight === 'number'
+        ? String(project.browserViewportHeight)
+        : '',
+    timeoutMs:
+      typeof project.browserPageLoadTimeoutMs === 'number'
+        ? String(project.browserPageLoadTimeoutMs)
+        : '',
+  }));
+  const [saved, setSaved] = useState(false);
+
+  const serverSnap = useMemo(
+    () =>
+      JSON.stringify({
+        commands: project.commands ?? null,
+        preCommitCommands: project.preCommitCommands ?? [],
+        sessionStartupCommands: project.sessionStartupCommands ?? [],
+        checkHealCommands: project.checkHealCommands ?? [],
+        checkHealMaxRounds: project.checkHealMaxRounds ?? null,
+        orchestrationBudgets: project.orchestrationBudgets ?? null,
+        browserToolsDefaultEnabled: project.browserToolsDefaultEnabled ?? null,
+        browserViewportWidth: project.browserViewportWidth ?? null,
+        browserViewportHeight: project.browserViewportHeight ?? null,
+        browserPageLoadTimeoutMs: project.browserPageLoadTimeoutMs ?? null,
+      }),
+    [project],
+  );
+
+  useEffect(() => {
+    setCommands({
+      install: project.commands?.install || '',
+      build: project.commands?.build || '',
+      test: project.commands?.test || '',
+      lint: project.commands?.lint || '',
+    });
+    setPreCommitInput(
+      Array.isArray(project.preCommitCommands) && project.preCommitCommands.length
+        ? project.preCommitCommands.join('\n')
+        : '',
+    );
+    setSessionStartupInput(
+      Array.isArray(project.sessionStartupCommands) && project.sessionStartupCommands.length
+        ? project.sessionStartupCommands.join('\n')
+        : '',
+    );
+    setCheckHealInput(
+      Array.isArray(project.checkHealCommands) && project.checkHealCommands.length
+        ? project.checkHealCommands.join('\n')
+        : '',
+    );
+    {
+      const n = project.checkHealMaxRounds;
+      setCheckHealMaxRounds(typeof n === 'number' && n >= 1 && n <= 5 ? String(n) : '2');
+    }
+    setOrchestrationFields(orchestrationFieldsFromProject(project.orchestrationBudgets));
+    setBrowserFields({
+      defaultOn: project.browserToolsDefaultEnabled !== false,
+      viewportW:
+        typeof project.browserViewportWidth === 'number'
+          ? String(project.browserViewportWidth)
+          : '',
+      viewportH:
+        typeof project.browserViewportHeight === 'number'
+          ? String(project.browserViewportHeight)
+          : '',
+      timeoutMs:
+        typeof project.browserPageLoadTimeoutMs === 'number'
+          ? String(project.browserPageLoadTimeoutMs)
+          : '',
+    });
+    // Re-sync only when the server snapshot for this project changes — not
+    // on every parent re-render while the user is typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- serverSnap is the intentional gate
+  }, [serverSnap]);
+
+  const save = async () => {
+    try {
+      const preCommitLines = preCommitInput
+        .split('\n')
+        .map((l: any) => l.trim())
+        .filter(Boolean);
+      const sessionStartupLines = sessionStartupInput
+        .split('\n')
+        .map((l: any) => l.trim())
+        .filter(Boolean);
+      const checkHealLines = checkHealInput
+        .split('\n')
+        .map((l: any) => l.trim())
+        .filter(Boolean);
+      const roundsParsed = parseInt(String(checkHealMaxRounds ?? '2').trim(), 10);
+      const rounds =
+        Number.isFinite(roundsParsed) && roundsParsed >= 1 && roundsParsed <= 5 ? roundsParsed : 2;
+      const hasObTyping = ORCHESTRATION_FIELD_META.some(
+        ({ key }: any) => String(orchestrationFields[key] ?? '').trim() !== '',
+      );
+      const basePayload = {
+        commands: {
+          install: commands.install || null,
+          build: commands.build || null,
+          test: commands.test || null,
+          lint: commands.lint || null,
+        },
+        preCommitCommands: preCommitLines,
+        sessionStartupCommands: sessionStartupLines,
+        checkHealCommands: checkHealLines,
+        checkHealMaxRounds: checkHealLines.length ? rounds : null,
+      };
+      let payload: any = basePayload;
+      if (!hasObTyping) {
+        payload = { ...basePayload, orchestrationBudgets: null };
+      } else {
+        const obParsed = buildOrchestrationBudgetsPayload(orchestrationFields);
+        if (obParsed === null) {
+          showToast?.(
+            'Orchestration budgets: values must be whole numbers (e.g. 4, 120000). Budgets were not saved — fix or clear the fields and try again.',
+            'error',
+          );
+          return;
+        }
+        payload = { ...basePayload, orchestrationBudgets: obParsed };
+      }
+
+      const browserPayload: Record<string, any> = {};
+      if (browserFields.defaultOn) {
+        browserPayload.browserToolsDefaultEnabled =
+          project.browserToolsDefaultEnabled === false ? true : null;
+      } else {
+        browserPayload.browserToolsDefaultEnabled = false;
+      }
+      const mergeOptDim = (raw: any, prevVal: any, field: any, min: any, max: any, label: any) => {
+        const t = String(raw ?? '').trim();
+        if (t === '') {
+          if (prevVal != null) browserPayload[field] = null;
+          return true;
+        }
+        const n = parseInt(t, 10);
+        if (!Number.isFinite(n) || n < min || n > max) {
+          showToast?.(
+            `${label}: use an integer between ${min} and ${max}, or leave empty.`,
+            'error',
+          );
+          return false;
+        }
+        browserPayload[field] = n;
+        return true;
+      };
+      if (
+        !mergeOptDim(
+          browserFields.viewportW,
+          project.browserViewportWidth,
+          'browserViewportWidth',
+          320,
+          3840,
+          'Viewport width',
+        )
+      ) {
+        return;
+      }
+      if (
+        !mergeOptDim(
+          browserFields.viewportH,
+          project.browserViewportHeight,
+          'browserViewportHeight',
+          240,
+          2160,
+          'Viewport height',
+        )
+      ) {
+        return;
+      }
+      const timeoutRaw = String(browserFields.timeoutMs ?? '').trim();
+      if (timeoutRaw === '') {
+        if (project.browserPageLoadTimeoutMs != null) {
+          browserPayload.browserPageLoadTimeoutMs = null;
+        }
+      } else {
+        const n = parseInt(timeoutRaw, 10);
+        if (!Number.isFinite(n) || n < 1000 || n > 120000) {
+          showToast?.(
+            'Browser timeout: enter 1000–120000 ms, or leave empty for default.',
+            'error',
+          );
+          return;
+        }
+        browserPayload.browserPageLoadTimeoutMs = n;
+      }
+
+      payload = { ...payload, ...browserPayload };
+      await api.updateProject(projectId, payload);
+      onProjectsChange?.();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err: any) {
+      const msg = String(err?.message || err || 'Failed to save');
+      if (showToast) showToast(msg, 'error');
+      else alert(msg);
+    }
+  };
+
+  return (
+    <div className="space-y-3" data-testid={`project-workflow-commands-${projectId}`}>
+      <div className="space-y-2">
+        <label className="text-xs text-gray-400 font-semibold">Project Commands</label>
+        {['install', 'build', 'test', 'lint'].map((cmd: any) => (
+          <div key={cmd} className="flex items-center gap-2">
+            <label className="text-xs text-gray-400 flex-shrink-0 w-28 capitalize">{cmd}:</label>
+            <input
+              value={(commands as any)[cmd] || ''}
+              onChange={(e: any) =>
+                setCommands((prev: any) => ({ ...prev, [cmd]: e.target.value }))
+              }
+              placeholder={
+                cmd === 'install'
+                  ? 'npm ci'
+                  : cmd === 'build'
+                    ? 'npm run build'
+                    : cmd === 'test'
+                      ? 'npm test'
+                      : 'npm run lint'
+              }
+              className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1 font-mono"
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="pt-1">
+        <label className="text-xs text-gray-400 font-semibold">
+          Pre-commit (before git commit)
+        </label>
+        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
+          One shell command per line, run in the agent worktree after an initial{' '}
+          <code className="text-gray-400">git add</code>, then the tree is{' '}
+          <code className="text-gray-400">git add</code>’d again before{' '}
+          <code className="text-gray-400">git commit</code> so formatters/fixers stay staged. Leave
+          empty to skip. Native git hooks still run on commit.
+        </p>
+        <textarea
+          value={preCommitInput}
+          onChange={(e: any) => setPreCommitInput(e.target.value)}
+          placeholder={'npm run lint\nnpm test'}
+          rows={4}
+          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+        />
+      </div>
+
+      <div className="pt-1">
+        <label className="text-xs text-gray-400 font-semibold">
+          Session startup (after env boot)
+        </label>
+        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
+          One shell command per line, run in the background inside the session environment after
+          every VM/container boot (does not block chat). Use idempotent commands (e.g.{' '}
+          <code className="text-gray-400">[ -d .venv ] || python3 -m venv .venv</code>
+          ). Status is written to{' '}
+          <code className="text-gray-400">.agent-hub-runtime/session-startup.json</code> so the
+          agent can see progress. Leave empty to skip.
+        </p>
+        <textarea
+          value={sessionStartupInput}
+          onChange={(e: any) => setSessionStartupInput(e.target.value)}
+          placeholder={
+            '[ -d .venv ] || python3 -m venv .venv\n.venv/bin/pip install -r requirements.txt'
+          }
+          rows={4}
+          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+        />
+      </div>
+
+      <div className="pt-1">
+        <label className="text-xs text-gray-400 font-semibold">
+          Check auto-heal (after failed pre-commit)
+        </label>
+        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
+          One shell command per line (e.g. <code className="text-gray-400">npm run lint:fix</code>,{' '}
+          <code className="text-gray-400">npm run format</code>). When a configured pre-commit
+          command exits non-zero, the server runs these fixers, optionally re-stages with{' '}
+          <code className="text-gray-400">git add -A</code>, waits briefly, then re-runs{' '}
+          <strong>all</strong> check commands. Timeouts and output-cap failures are never
+          auto-healed. Leave empty to keep the legacy fail-fast behavior.
+        </p>
+        <textarea
+          value={checkHealInput}
+          onChange={(e: any) => setCheckHealInput(e.target.value)}
+          placeholder={'npm run lint:fix\nnpm run format'}
+          rows={3}
+          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+        />
+        <div className="flex items-center gap-2 mt-1.5">
+          <label className="text-[11px] text-gray-500 whitespace-nowrap">
+            Max check rounds (1–5, default 2)
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={5}
+            value={checkHealMaxRounds}
+            onChange={(e: any) => setCheckHealMaxRounds(e.target.value)}
+            className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+          />
+        </div>
+      </div>
+
+      <div className="pt-2 border-t border-gray-700/50 space-y-2">
+        <label className="text-xs text-gray-400 font-semibold">ReAct / orchestration budgets</label>
+        <p className="text-[11px] text-gray-500">
+          Optional caps for auto-continuation, host ReAct actions, wiki hybrid RAG, and web search.
+          Leave all empty to clear project-level overrides (server defaults apply).
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+          {ORCHESTRATION_FIELD_META.map(({ key, label, hint }: any) => (
+            <div key={key}>
+              <label className="block text-[10px] text-gray-500 mb-0.5" title={hint}>
+                {label}
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={orchestrationFields[key] ?? ''}
+                onChange={(e: any) =>
+                  setOrchestrationFields((prev: any) => ({ ...prev, [key]: e.target.value }))
+                }
+                placeholder="—"
+                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="pt-2 border-t border-gray-700/50 space-y-2">
+        <div className="flex items-center gap-2 text-xs text-gray-400 font-semibold">
+          <Globe size={14} className="text-sky-400 shrink-0" />
+          <Monitor size={14} className="text-sky-400 shrink-0" />
+          <span>Browser tools (project default)</span>
+        </div>
+        <p className="text-[11px] text-gray-500">
+          Agents without their own Browser Tools setting follow this default. When OFF, host browser
+          ReAct tools stay out of the enriched prompt unless an agent explicitly enables them.
+        </p>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            data-testid={`project-${projectId}-browser-default-toggle`}
+            onClick={() =>
+              setBrowserFields((prev: any) => ({
+                ...prev,
+                defaultOn: !(prev.defaultOn !== false),
+              }))
+            }
+            className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+              browserFields.defaultOn !== false
+                ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+            }`}
+          >
+            {browserFields.defaultOn !== false ? 'ON' : 'OFF'}
+          </button>
+          <span className="text-[11px] text-gray-500">Default browser tools</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pl-1">
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Viewport width (px)</label>
+            <input
+              type="number"
+              min={320}
+              max={3840}
+              placeholder="1280 default"
+              value={browserFields.viewportW}
+              onChange={(e: any) =>
+                setBrowserFields((prev: any) => ({ ...prev, viewportW: e.target.value }))
+              }
+              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Viewport height (px)</label>
+            <input
+              type="number"
+              min={240}
+              max={2160}
+              placeholder="720 default"
+              value={browserFields.viewportH}
+              onChange={(e: any) =>
+                setBrowserFields((prev: any) => ({ ...prev, viewportH: e.target.value }))
+              }
+              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Load timeout (ms)</label>
+            <input
+              type="number"
+              min={1000}
+              max={120000}
+              step={500}
+              placeholder="30000 default"
+              value={browserFields.timeoutMs}
+              onChange={(e: any) =>
+                setBrowserFields((prev: any) => ({ ...prev, timeoutMs: e.target.value }))
+              }
+              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+            />
+          </div>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={save}
+        data-testid={`project-workflow-commands-save-${projectId}`}
+        className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
+      >
+        {saved ? 'Saved' : 'Save Commands'}
+      </button>
+    </div>
+  );
+}
+
+/**
  * ProjectsSection — per-project repository, workflow, and lifecycle settings.
  *
  * Split out of GitHubSection so the sidebar can navigate to "Projects" as its
@@ -1136,6 +1597,12 @@ export function ProjectsSection({
 
   const projectSettingsBody = (p: any) => (
     <div className={singleProjectMode ? 'space-y-4' : 'pl-8 pt-3 space-y-4'}>
+      <ProjectWorkflowCommandsEditor
+        project={p}
+        showToast={showToast}
+        onProjectsChange={onProjectsChange}
+      />
+
       <ProjectSecretsEditor projectId={p.id} />
 
       {/* Owner-managed visibility ACL — assign which users can see and open
@@ -1302,8 +1769,8 @@ export function ProjectsSection({
         </h3>
         <p className="text-xs text-gray-500 mb-4">
           {singleProjectMode
-            ? 'Configure secrets, visibility, and lifecycle settings for this project.'
-            : 'Configure secrets, visibility, and lifecycle settings for each project.'}
+            ? 'Configure install/build commands, session startup, secrets, visibility, and lifecycle settings for this project.'
+            : 'Configure install/build commands, session startup, secrets, visibility, and lifecycle settings for each project.'}
         </p>
       </div>
 
@@ -4041,652 +4508,8 @@ export function AgentConfigSection({
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
-  const [projectCommands, setProjectCommands] = useState<any>(() => {
-    const map: Record<string, any> = {};
-    scopedProjects.forEach((p: any) => {
-      map[p.id] = {
-        install: p.commands?.install || '',
-        build: p.commands?.build || '',
-        test: p.commands?.test || '',
-        lint: p.commands?.lint || '',
-      };
-    });
-    return map;
-  });
-  const [projectPreCommitInput, setProjectPreCommitInput] = useState<any>(() => {
-    const map: Record<string, any> = {};
-    projects.forEach((p: any) => {
-      map[p.id] =
-        Array.isArray(p.preCommitCommands) && p.preCommitCommands.length
-          ? p.preCommitCommands.join('\n')
-          : '';
-    });
-    return map;
-  });
-
-  const [projectSessionStartupInput, setProjectSessionStartupInput] = useState<any>(() => {
-    const map: Record<string, any> = {};
-    projects.forEach((p: any) => {
-      map[p.id] =
-        Array.isArray(p.sessionStartupCommands) && p.sessionStartupCommands.length
-          ? p.sessionStartupCommands.join('\n')
-          : '';
-    });
-    return map;
-  });
-
-  const [projectCheckHealInput, setProjectCheckHealInput] = useState<any>(() => {
-    const map: Record<string, any> = {};
-    projects.forEach((p: any) => {
-      map[p.id] =
-        Array.isArray(p.checkHealCommands) && p.checkHealCommands.length
-          ? p.checkHealCommands.join('\n')
-          : '';
-    });
-    return map;
-  });
-
-  const [projectCheckHealMaxRounds, setProjectCheckHealMaxRounds] = useState<any>(() => {
-    const map: Record<string, any> = {};
-    projects.forEach((p: any) => {
-      const n = p.checkHealMaxRounds;
-      map[p.id] = typeof n === 'number' && n >= 1 && n <= 5 ? String(n) : '2';
-    });
-    return map;
-  });
-
-  const [projectOrchestrationFields, setProjectOrchestrationFields] = useState<any>(() => {
-    const map: Record<string, any> = {};
-    projects.forEach((p: any) => {
-      map[p.id] = orchestrationFieldsFromProject(p.orchestrationBudgets);
-    });
-    return map;
-  });
-
-  const preCommitServerSnap = useMemo(
-    () =>
-      JSON.stringify(
-        Object.fromEntries(projects.map((p: any) => [p.id, p.preCommitCommands ?? []])),
-      ),
-    [projects],
-  );
-
-  const sessionStartupServerSnap = useMemo(
-    () =>
-      JSON.stringify(
-        Object.fromEntries(projects.map((p: any) => [p.id, p.sessionStartupCommands ?? []])),
-      ),
-    [projects],
-  );
-
-  const checkHealServerSnap = useMemo(
-    () =>
-      JSON.stringify(
-        Object.fromEntries(
-          projects.map((p: any) => [
-            p.id,
-            { h: p.checkHealCommands ?? [], r: p.checkHealMaxRounds ?? null },
-          ]),
-        ),
-      ),
-    [projects],
-  );
-
-  const orchestrationServerSnap = useMemo(
-    () =>
-      JSON.stringify(
-        Object.fromEntries(projects.map((p: any) => [p.id, p.orchestrationBudgets ?? null])),
-      ),
-    [projects],
-  );
-
-  useEffect(() => {
-    setProjectPreCommitInput(() =>
-      Object.fromEntries(
-        projects.map((p: any) => {
-          const fromServer =
-            Array.isArray(p.preCommitCommands) && p.preCommitCommands.length
-              ? p.preCommitCommands.join('\n')
-              : '';
-          return [p.id, fromServer];
-        }),
-      ),
-    );
-  }, [preCommitServerSnap]);
-
-  useEffect(() => {
-    setProjectSessionStartupInput(() =>
-      Object.fromEntries(
-        projects.map((p: any) => {
-          const fromServer =
-            Array.isArray(p.sessionStartupCommands) && p.sessionStartupCommands.length
-              ? p.sessionStartupCommands.join('\n')
-              : '';
-          return [p.id, fromServer];
-        }),
-      ),
-    );
-  }, [sessionStartupServerSnap]);
-
-  useEffect(() => {
-    setProjectCheckHealInput(() =>
-      Object.fromEntries(
-        projects.map((p: any) => {
-          const fromServer =
-            Array.isArray(p.checkHealCommands) && p.checkHealCommands.length
-              ? p.checkHealCommands.join('\n')
-              : '';
-          return [p.id, fromServer];
-        }),
-      ),
-    );
-    setProjectCheckHealMaxRounds(() =>
-      Object.fromEntries(
-        projects.map((p: any) => {
-          const n = p.checkHealMaxRounds;
-          return [p.id, typeof n === 'number' && n >= 1 && n <= 5 ? String(n) : '2'];
-        }),
-      ),
-    );
-  }, [checkHealServerSnap]);
-
-  useEffect(() => {
-    setProjectOrchestrationFields(() =>
-      Object.fromEntries(
-        projects.map((p: any) => [p.id, orchestrationFieldsFromProject(p.orchestrationBudgets)]),
-      ),
-    );
-  }, [orchestrationServerSnap]);
-
-  const browserDefaultsServerSnap = useMemo(
-    () =>
-      JSON.stringify(
-        Object.fromEntries(
-          projects.map((p: any) => [
-            p.id,
-            {
-              d: p.browserToolsDefaultEnabled ?? null,
-              w: p.browserViewportWidth ?? null,
-              h: p.browserViewportHeight ?? null,
-              t: p.browserPageLoadTimeoutMs ?? null,
-            },
-          ]),
-        ),
-      ),
-    [projects],
-  );
-
-  const [projectBrowserFields, setProjectBrowserFields] = useState<Record<string, any>>({});
-  useEffect(() => {
-    setProjectBrowserFields(() =>
-      Object.fromEntries(
-        projects.map((p: any) => [
-          p.id,
-          {
-            defaultOn: p.browserToolsDefaultEnabled !== false,
-            viewportW:
-              typeof p.browserViewportWidth === 'number' ? String(p.browserViewportWidth) : '',
-            viewportH:
-              typeof p.browserViewportHeight === 'number' ? String(p.browserViewportHeight) : '',
-            timeoutMs:
-              typeof p.browserPageLoadTimeoutMs === 'number'
-                ? String(p.browserPageLoadTimeoutMs)
-                : '',
-          },
-        ]),
-      ),
-    );
-  }, [browserDefaultsServerSnap]);
-
-  const [projectCommandsSaved, setProjectCommandsSaved] = useState<Record<string, any>>({});
-  const [expandedProject, setExpandedProject] = useState<any>(null);
-
-  const saveProjectCommands = async (projectId: any) => {
-    try {
-      const cmds = projectCommands[projectId] || {};
-      const preCommitLines = (projectPreCommitInput[projectId] || '')
-        .split('\n')
-        .map((l: any) => l.trim())
-        .filter(Boolean);
-      const sessionStartupLines = (projectSessionStartupInput[projectId] || '')
-        .split('\n')
-        .map((l: any) => l.trim())
-        .filter(Boolean);
-      const checkHealLines = (projectCheckHealInput[projectId] || '')
-        .split('\n')
-        .map((l: any) => l.trim())
-        .filter(Boolean);
-      const roundsRaw = String(projectCheckHealMaxRounds[projectId] ?? '2').trim();
-      const roundsParsed = parseInt(roundsRaw, 10);
-      const checkHealMaxRounds =
-        Number.isFinite(roundsParsed) && roundsParsed >= 1 && roundsParsed <= 5 ? roundsParsed : 2;
-      const obFields = projectOrchestrationFields[projectId] || {};
-      const hasObTyping = ORCHESTRATION_FIELD_META.some(
-        ({ key }: any) => String(obFields[key] ?? '').trim() !== '',
-      );
-      const basePayload = {
-        commands: {
-          install: cmds.install || null,
-          build: cmds.build || null,
-          test: cmds.test || null,
-          lint: cmds.lint || null,
-        },
-        preCommitCommands: preCommitLines,
-        sessionStartupCommands: sessionStartupLines,
-        checkHealCommands: checkHealLines,
-        checkHealMaxRounds: checkHealLines.length ? checkHealMaxRounds : null,
-      };
-      let payload: any = basePayload;
-      if (!hasObTyping) {
-        payload = { ...basePayload, orchestrationBudgets: null };
-      } else {
-        const obParsed = buildOrchestrationBudgetsPayload(obFields);
-        if (obParsed === null) {
-          showToast?.(
-            'Orchestration budgets: values must be whole numbers (e.g. 4, 120000). Budgets were not saved — fix or clear the fields and try again.',
-            'error',
-          );
-          return;
-        }
-        payload = { ...basePayload, orchestrationBudgets: obParsed };
-      }
-      const projRow = projects.find((x: any) => x.id === projectId);
-      const bf = projectBrowserFields[projectId] || {
-        defaultOn: true,
-        viewportW: '',
-        viewportH: '',
-        timeoutMs: '',
-      };
-      const browserPayload: Record<string, any> = {};
-      if (bf.defaultOn) {
-        browserPayload.browserToolsDefaultEnabled =
-          projRow?.browserToolsDefaultEnabled === false ? true : null;
-      } else {
-        browserPayload.browserToolsDefaultEnabled = false;
-      }
-      const mergeOptDim = (raw: any, prevVal: any, field: any, min: any, max: any, label: any) => {
-        const t = String(raw ?? '').trim();
-        if (t === '') {
-          if (prevVal != null) browserPayload[field] = null;
-          return true;
-        }
-        const n = parseInt(t, 10);
-        if (!Number.isFinite(n) || n < min || n > max) {
-          showToast?.(
-            `${label}: use an integer between ${min} and ${max}, or leave empty.`,
-            'error',
-          );
-          return false;
-        }
-        browserPayload[field] = n;
-        return true;
-      };
-      if (
-        !mergeOptDim(
-          bf.viewportW,
-          projRow?.browserViewportWidth,
-          'browserViewportWidth',
-          320,
-          3840,
-          'Viewport width',
-        )
-      ) {
-        return;
-      }
-      if (
-        !mergeOptDim(
-          bf.viewportH,
-          projRow?.browserViewportHeight,
-          'browserViewportHeight',
-          240,
-          2160,
-          'Viewport height',
-        )
-      ) {
-        return;
-      }
-      const timeoutRaw = String(bf.timeoutMs ?? '').trim();
-      if (timeoutRaw === '') {
-        if (projRow?.browserPageLoadTimeoutMs != null) {
-          browserPayload.browserPageLoadTimeoutMs = null;
-        }
-      } else {
-        const n = parseInt(timeoutRaw, 10);
-        if (!Number.isFinite(n) || n < 1000 || n > 120000) {
-          showToast?.(
-            'Browser timeout: enter 1000–120000 ms, or leave empty for default.',
-            'error',
-          );
-          return;
-        }
-        browserPayload.browserPageLoadTimeoutMs = n;
-      }
-
-      payload = { ...payload, ...browserPayload };
-      await api.updateProject(projectId, payload);
-      setProjectCommandsSaved((prev: any) => ({ ...prev, [projectId]: true }));
-      setTimeout(
-        () => setProjectCommandsSaved((prev: any) => ({ ...prev, [projectId]: false })),
-        2000,
-      );
-    } catch {}
-  };
-
   return (
     <div>
-      {/* Project-level settings */}
-      {scopedProjects.length > 0 && (
-        <div className="mb-6">
-          <h3 className="text-lg font-semibold mb-3">Project Settings</h3>
-          <div className="space-y-2">
-            {scopedProjects.map((p: any) => (
-              <div key={p.id} className="bg-gray-800 rounded-xl p-3 space-y-2">
-                <div
-                  className="flex items-center gap-3 cursor-pointer"
-                  onClick={() => setExpandedProject(expandedProject === p.id ? null : p.id)}
-                >
-                  <span className="text-2xl flex items-center text-gray-400">
-                    {expandedProject === p.id ? '▾' : '▸'}
-                  </span>
-                  <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color }} />
-                  <span className="text-sm font-medium">{p.name}</span>
-                </div>
-                {expandedProject === p.id && (
-                  <div className="pl-8 space-y-3">
-                    {/* Project Commands */}
-                    <div className="space-y-2">
-                      <label className="text-xs text-gray-400 font-semibold">
-                        Project Commands
-                      </label>
-                      {['install', 'build', 'test', 'lint'].map((cmd: any) => (
-                        <div key={cmd} className="flex items-center gap-2">
-                          <label className="text-xs text-gray-400 flex-shrink-0 w-28 capitalize">
-                            {cmd}:
-                          </label>
-                          <input
-                            value={projectCommands[p.id]?.[cmd] || ''}
-                            onChange={(e: any) =>
-                              setProjectCommands((prev: any) => ({
-                                ...prev,
-                                [p.id]: { ...prev[p.id], [cmd]: e.target.value },
-                              }))
-                            }
-                            placeholder={
-                              cmd === 'install'
-                                ? 'npm ci'
-                                : cmd === 'build'
-                                  ? 'npm run build'
-                                  : cmd === 'test'
-                                    ? 'npm test'
-                                    : 'npm run lint'
-                            }
-                            className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1 font-mono"
-                          />
-                        </div>
-                      ))}
-                      <div className="pt-1">
-                        <label className="text-xs text-gray-400 font-semibold">
-                          Pre-commit (before git commit)
-                        </label>
-                        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
-                          One shell command per line, run in the agent worktree after an initial{' '}
-                          <code className="text-gray-400">git add</code>, then the tree is{' '}
-                          <code className="text-gray-400">git add</code>’d again before{' '}
-                          <code className="text-gray-400">git commit</code> so formatters/fixers
-                          stay staged. Leave empty to skip. Native git hooks still run on commit.
-                        </p>
-                        <textarea
-                          value={projectPreCommitInput[p.id] ?? ''}
-                          onChange={(e: any) =>
-                            setProjectPreCommitInput((prev: any) => ({
-                              ...prev,
-                              [p.id]: e.target.value,
-                            }))
-                          }
-                          placeholder={'npm run lint\nnpm test'}
-                          rows={4}
-                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                        />
-                      </div>
-                      <div className="pt-1">
-                        <label className="text-xs text-gray-400 font-semibold">
-                          Session startup (after env boot)
-                        </label>
-                        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
-                          One shell command per line, run in the background inside the session
-                          environment after every VM/container boot (does not block chat). Use
-                          idempotent commands (e.g.{' '}
-                          <code className="text-gray-400">
-                            [ -d .venv ] || python3 -m venv .venv
-                          </code>
-                          ). Status is written to{' '}
-                          <code className="text-gray-400">
-                            .agent-hub-runtime/session-startup.json
-                          </code>{' '}
-                          so the agent can see progress. Leave empty to skip.
-                        </p>
-                        <textarea
-                          value={projectSessionStartupInput[p.id] ?? ''}
-                          onChange={(e: any) =>
-                            setProjectSessionStartupInput((prev: any) => ({
-                              ...prev,
-                              [p.id]: e.target.value,
-                            }))
-                          }
-                          placeholder={
-                            '[ -d .venv ] || python3 -m venv .venv\n.venv/bin/pip install -r requirements.txt'
-                          }
-                          rows={4}
-                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                        />
-                      </div>
-                      <div className="pt-1">
-                        <label className="text-xs text-gray-400 font-semibold">
-                          Check auto-heal (after failed pre-commit)
-                        </label>
-                        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
-                          One shell command per line (e.g.{' '}
-                          <code className="text-gray-400">npm run lint:fix</code>,{' '}
-                          <code className="text-gray-400">npm run format</code>). When a configured
-                          pre-commit command exits non-zero, the server runs these fixers,
-                          optionally re-stages with{' '}
-                          <code className="text-gray-400">git add -A</code>, waits briefly, then
-                          re-runs <strong>all</strong> check commands. Timeouts and output-cap
-                          failures are never auto-healed. Leave empty to keep the legacy fail-fast
-                          behavior.
-                        </p>
-                        <textarea
-                          value={projectCheckHealInput[p.id] ?? ''}
-                          onChange={(e: any) =>
-                            setProjectCheckHealInput((prev: any) => ({
-                              ...prev,
-                              [p.id]: e.target.value,
-                            }))
-                          }
-                          placeholder={'npm run lint:fix\nnpm run format'}
-                          rows={3}
-                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                        />
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <label className="text-[11px] text-gray-500 whitespace-nowrap">
-                            Max check rounds (1–5, default 2)
-                          </label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={5}
-                            value={projectCheckHealMaxRounds[p.id] ?? '2'}
-                            onChange={(e: any) =>
-                              setProjectCheckHealMaxRounds((prev: any) => ({
-                                ...prev,
-                                [p.id]: e.target.value,
-                              }))
-                            }
-                            className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                          />
-                        </div>
-                      </div>
-                      <div className="pt-2 border-t border-gray-700/50 space-y-2">
-                        <label className="text-xs text-gray-400 font-semibold">
-                          ReAct / orchestration budgets
-                        </label>
-                        <p className="text-[11px] text-gray-500">
-                          Optional caps for auto-continuation, host ReAct actions, wiki hybrid RAG,
-                          and web search. Leave all empty to clear project-level overrides (server
-                          defaults apply).
-                        </p>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
-                          {ORCHESTRATION_FIELD_META.map(({ key, label, hint }: any) => (
-                            <div key={key}>
-                              <label
-                                className="block text-[10px] text-gray-500 mb-0.5"
-                                title={hint}
-                              >
-                                {label}
-                              </label>
-                              <input
-                                type="text"
-                                inputMode="numeric"
-                                value={(projectOrchestrationFields[p.id] || {})[key] ?? ''}
-                                onChange={(e: any) =>
-                                  setProjectOrchestrationFields((prev: any) => ({
-                                    ...prev,
-                                    [p.id]: { ...(prev[p.id] || {}), [key]: e.target.value },
-                                  }))
-                                }
-                                placeholder="—"
-                                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="pt-2 border-t border-gray-700/50 space-y-2">
-                        <div className="flex items-center gap-2 text-xs text-gray-400 font-semibold">
-                          <Globe size={14} className="text-sky-400 shrink-0" />
-                          <Monitor size={14} className="text-sky-400 shrink-0" />
-                          <span>Browser tools (project default)</span>
-                        </div>
-                        <p className="text-[11px] text-gray-500">
-                          Agents without their own Browser Tools setting follow this default. When
-                          OFF, host browser ReAct tools stay out of the enriched prompt unless an
-                          agent explicitly enables them.
-                        </p>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            data-testid={`project-${p.id}-browser-default-toggle`}
-                            onClick={() =>
-                              setProjectBrowserFields((prev: any) => {
-                                const row = {
-                                  defaultOn: true,
-                                  viewportW: '',
-                                  viewportH: '',
-                                  timeoutMs: '',
-                                  ...prev[p.id],
-                                };
-                                const cur = row.defaultOn !== false;
-                                return {
-                                  ...prev,
-                                  [p.id]: { ...row, defaultOn: !cur },
-                                };
-                              })
-                            }
-                            className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                              projectBrowserFields[p.id]?.defaultOn !== false
-                                ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                                : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                            }`}
-                          >
-                            {projectBrowserFields[p.id]?.defaultOn !== false ? 'ON' : 'OFF'}
-                          </button>
-                          <span className="text-[11px] text-gray-500">Default browser tools</span>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pl-1">
-                          <div>
-                            <label className="block text-[10px] text-gray-500 mb-0.5">
-                              Viewport width (px)
-                            </label>
-                            <input
-                              type="number"
-                              min={320}
-                              max={3840}
-                              placeholder="1280 default"
-                              value={projectBrowserFields[p.id]?.viewportW ?? ''}
-                              onChange={(e: any) =>
-                                setProjectBrowserFields((prev: any) => ({
-                                  ...prev,
-                                  [p.id]: {
-                                    ...(prev[p.id] || { defaultOn: true }),
-                                    viewportW: e.target.value,
-                                  },
-                                }))
-                              }
-                              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-gray-500 mb-0.5">
-                              Viewport height (px)
-                            </label>
-                            <input
-                              type="number"
-                              min={240}
-                              max={2160}
-                              placeholder="720 default"
-                              value={projectBrowserFields[p.id]?.viewportH ?? ''}
-                              onChange={(e: any) =>
-                                setProjectBrowserFields((prev: any) => ({
-                                  ...prev,
-                                  [p.id]: {
-                                    ...(prev[p.id] || { defaultOn: true }),
-                                    viewportH: e.target.value,
-                                  },
-                                }))
-                              }
-                              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-gray-500 mb-0.5">
-                              Load timeout (ms)
-                            </label>
-                            <input
-                              type="number"
-                              min={1000}
-                              max={120000}
-                              step={500}
-                              placeholder="30000 default"
-                              value={projectBrowserFields[p.id]?.timeoutMs ?? ''}
-                              onChange={(e: any) =>
-                                setProjectBrowserFields((prev: any) => ({
-                                  ...prev,
-                                  [p.id]: {
-                                    ...(prev[p.id] || { defaultOn: true }),
-                                    timeoutMs: e.target.value,
-                                  },
-                                }))
-                              }
-                              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => saveProjectCommands(p.id)}
-                        className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
-                      >
-                        {projectCommandsSaved[p.id] ? 'Saved' : 'Save Commands'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold">Agent Configurations</h3>
         <button
