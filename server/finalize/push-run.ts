@@ -7,6 +7,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import { execFile } from 'child_process';
+import { access } from 'fs/promises';
 import { promisify } from 'util';
 import type {
   FinalizeRunRow,
@@ -45,6 +46,59 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Directory holding the commits this run will push.
+ *
+ * Prefer the staging checkout recorded on the run (env-owned / Firecracker).
+ * After a failed auto-push the source reaper may delete that directory while
+ * the run row still points at it — rematerialise from the session rather than
+ * failing `git rev-parse` with `spawn git ENOENT` (missing cwd).
+ */
+async function ensurePushSourcePath(args: {
+  deps: Pick<RouteDeps, 'stmts'>;
+  run: FinalizeRunRow;
+  session: SessionRow;
+}): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
+  const { deps, run, session } = args;
+  const recorded = runSourcePath(run, session);
+  if (recorded && (await pathExists(recorded))) {
+    return { ok: true, path: recorded };
+  }
+  if (!session.worktree_path || !session.worktree_branch) {
+    return { ok: false, message: 'Session has no worktree.' };
+  }
+  try {
+    const source = await acquireFinalizeSource({
+      runId: run.id,
+      sessionId: session.id,
+      worktreePath: session.worktree_path,
+      branch: session.worktree_branch,
+    });
+    try {
+      deps.stmts.updateFinalizeRunWorktreePath.run(source.path, run.id);
+    } catch {
+      /* best-effort — in-memory path below is enough for this push */
+    }
+    run.worktree_path = source.path;
+    return { ok: true, path: source.path };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      message: `Could not restore the finalize source checkout: ${msg}`,
+    };
+  }
+}
+
 export type FinalizePushOutcome =
   | { ok: true; prUrl: string }
   | { ok: false; httpStatus: number; error: string; message: string };
@@ -59,7 +113,10 @@ export function resolvePushGateBaseline(run: FinalizeRunRow, currentHead: string
 }
 
 function finalizePhasePassed(run: FinalizeRunRow | undefined): run is FinalizeRunRow {
-  return run?.status === 'ready_to_push' || run?.status === 'pushed';
+  if (!run) return false;
+  if (run.status === 'ready_to_push' || run.status === 'pushed') return true;
+  // Push-step infra failure after gates still carries validated_head_sha.
+  return run.status === 'infra_error' && !!run.validated_head_sha;
 }
 
 function resolveSessionPushGateSignals(args: {
@@ -493,7 +550,13 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
-  if (!force && run.status !== 'ready_to_push') {
+  // Allow a retry after the push step itself failed (auto-push / lease /
+  // remote blip). Gates already passed — `validated_head_sha` is the proof —
+  // so requiring a full Finalize re-run would only re-burn CI for a ship
+  // that already cleared review + checks.
+  const pushRetryable =
+    run.status === 'infra_error' && run.phase === 'push' && !!run.validated_head_sha;
+  if (!force && run.status !== 'ready_to_push' && !pushRetryable) {
     return {
       ok: false,
       httpStatus: 409,
@@ -542,15 +605,16 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
-  const sourcePath = runSourcePath(run, session);
-  if (!sourcePath) {
+  const ensured = await ensurePushSourcePath({ deps, run, session });
+  if (!ensured.ok) {
     return {
       ok: false,
       httpStatus: 400,
       error: 'no_worktree',
-      message: 'Session has no worktree.',
+      message: ensured.message,
     };
   }
+  const sourcePath = ensured.path;
 
   let currentHead: string;
   try {
@@ -625,7 +689,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     validatedHeadSha = gate.validatedHeadSha;
   }
 
-  if (run.status === 'ready_to_push') {
+  if (run.status === 'ready_to_push' || pushRetryable) {
     const claim = deps.stmts.claimFinalizeRunPush.run(run.id, validatedHeadSha);
     if (claim.changes === 0) {
       const fresh = deps.stmts.getFinalizeRun.get(run.id) as FinalizeRunRow | undefined;

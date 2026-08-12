@@ -349,14 +349,13 @@ export const MAX_GIT_COMMIT_MESSAGE_CHARS = 27_000;
  *      pushed the same branch in between.
  *   2. Rebase rewrote history but `expectedRemoteSha` is null — either the
  *      branch is brand-new on origin OR the `ls-remote` lookup itself
- *      failed (network/auth). In both cases we fall back to bare
- *      `--force-with-lease`, which git treats as "expect the locally
- *      cached remote tip". For a brand-new branch that cache is empty, so
- *      the lease passes; for an `ls-remote` failure we accept the legacy
- *      stale-cache race instead of aborting the push — the rebase already
- *      validated the local tip is on top of origin/<base>, so the worst
- *      case is the original `(stale info)` rejection, which surfaces
- *      loudly and recovers on the next session.
+ *      failed (network/auth). Use `--force-with-lease=<branch>:` (empty
+ *      expect = remote must not have the ref). A bare `--force-with-lease`
+ *      is unsafe: the local `refs/remotes/origin/<branch>` cache can be a
+ *      phantom tip (e.g. Finalize staging seeded from `main`) even when
+ *      origin has never had the branch, which rejects with `(stale info)`.
+ *      If `ls-remote` failed but the remote ref actually exists, empty
+ *      expect refuses closed — better than racing a wrong cache.
  *   3. Rebase did NOT rewrite history: plain push, no lease — server-side
  *      fast-forward enforcement catches concurrent pushes.
  *
@@ -380,7 +379,7 @@ export function buildPushArgs(opts: {
   }
   const lease = expectedRemoteSha
     ? `--force-with-lease=${branch}:${expectedRemoteSha}`
-    : '--force-with-lease';
+    : `--force-with-lease=${branch}:`;
   return ['push', lease, '-u', 'origin', branch];
 }
 

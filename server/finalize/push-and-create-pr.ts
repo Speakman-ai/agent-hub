@@ -90,9 +90,12 @@ const PUSH_TIMEOUT_MS = 5 * 60 * 1000;
  * auto-commit pipeline.
  *
  * Returns `null` for a brand-new branch (empty `ls-remote`) or any `ls-remote`
- * failure (network/auth) — callers then fall back to a bare
- * `--force-with-lease`, which is correct for ref creation and degrades to the
- * legacy behavior for the rare lookup failure.
+ * failure (network/auth) — callers then use an empty-expect lease
+ * (`--force-with-lease=<branch>:`) so the push requires the remote ref to be
+ * absent. A bare `--force-with-lease` is wrong here: Finalize staging checkouts
+ * often carry a phantom `refs/remotes/origin/<branch>` (seeded from `main`)
+ * even when origin has never had that branch, and the bare form compares
+ * against that stale local cache → `! [rejected] … (stale info)`.
  */
 export async function resolveExpectedRemoteSha(
   worktreePath: string,
@@ -119,16 +122,23 @@ export async function resolveExpectedRemoteSha(
 
 /**
  * Build the `git push` argv with a `--force-with-lease` that is pinned to an
- * explicit expected SHA when known, falling back to a bare lease otherwise.
- * See {@link resolveExpectedRemoteSha} for why the pin matters.
+ * explicit expected SHA when known. When the SHA is unknown (brand-new branch
+ * or failed `ls-remote`), use an empty expect (`<branch>:`) so git requires the
+ * remote ref to be absent — never a bare `--force-with-lease`, which races a
+ * stale local `refs/remotes/origin/<branch>` cache. See
+ * {@link resolveExpectedRemoteSha}.
  */
 export function buildForceWithLeasePushArgs(
   branch: string,
   expectedRemoteSha: string | null,
 ): string[] {
+  // Empty expect (`branch:`) = "remote must not have this ref". Required when
+  // `ls-remote` returned nothing: a bare lease would consult a possibly-phantom
+  // remote-tracking ref left by the staging materialize and reject with
+  // `(stale info)` even though origin has never seen the branch.
   const lease = expectedRemoteSha
     ? `--force-with-lease=${branch}:${expectedRemoteSha}`
-    : '--force-with-lease';
+    : `--force-with-lease=${branch}:`;
   return ['push', lease, '-u', 'origin', branch];
 }
 

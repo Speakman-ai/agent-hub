@@ -6328,7 +6328,14 @@ function initDb(dataDir: string): void {
           SET phase = 'push',
               status = 'pushing'
         WHERE id = ?
-          AND status = 'ready_to_push'
+          AND (
+            status = 'ready_to_push'
+            OR (
+              status = 'infra_error'
+              AND phase = 'push'
+              AND validated_head_sha IS NOT NULL
+            )
+          )
           AND NOT EXISTS (
             SELECT 1
               FROM finalize_runs peer

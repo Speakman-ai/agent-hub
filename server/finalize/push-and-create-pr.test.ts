@@ -559,10 +559,13 @@ describe('buildForceWithLeasePushArgs', () => {
     ]);
   });
 
-  it('falls back to a bare lease when the expected SHA is unknown (brand-new branch)', () => {
+  it('uses an empty-expect lease when the expected SHA is unknown (brand-new branch)', () => {
+    // Empty expect (`branch:`) requires the remote ref to be absent. A bare
+    // `--force-with-lease` would consult a phantom remote-tracking ref and
+    // reject with `(stale info)` — see buildForceWithLeasePushArgs.
     expect(__test.buildForceWithLeasePushArgs('agent-hub/dev/session-1', null)).toEqual([
       'push',
-      '--force-with-lease',
+      '--force-with-lease=agent-hub/dev/session-1:',
       '-u',
       'origin',
       'agent-hub/dev/session-1',
@@ -632,7 +635,7 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
     ]);
   });
 
-  it('falls back to a bare lease for a brand-new branch (empty ls-remote)', async () => {
+  it('uses an empty-expect lease for a brand-new branch (empty ls-remote)', async () => {
     mockExecFile.mockImplementation(
       (
         cmd,
@@ -673,7 +676,7 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
     // calls[0] = git remote get-url (lock), calls[1] = ls-remote, calls[2] = push.
     expect(mockExecFile.mock.calls[2]![1]).toEqual([
       'push',
-      '--force-with-lease',
+      '--force-with-lease=agent-hub/dev/session-1:',
       '-u',
       'origin',
       'agent-hub/dev/session-1',
