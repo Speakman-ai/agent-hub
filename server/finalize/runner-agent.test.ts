@@ -82,7 +82,10 @@ function fakes(polls: AgentPollResult[], exitFor: (run: string) => number) {
 }
 
 /** Skip real `sudo chown` — unit tests never have passwordless sudo. */
-const noChown = { ensureJobWorktreeOwnership: async () => {} };
+const noChown = {
+  clearJobWorktreeDest: async () => {},
+  ensureJobWorktreeOwnership: async () => {},
+};
 
 describe('runAgentJob', () => {
   it('runs steps in order, streams logs, reports exits, tears down on finish', async () => {
@@ -415,7 +418,7 @@ describe('runAgentJob', () => {
     expect(materialized).toEqual(['/ws/repo']);
   });
 
-  it('chowns the materialized worktree before starting the job container', async () => {
+  it('clears then materializes then chowns before starting the job container', async () => {
     const { transport, docker, events } = fakes([{ type: 'finish' }], () => 0);
     const order: string[] = [];
     await runAgentJob({
@@ -424,6 +427,9 @@ describe('runAgentJob', () => {
       workspaceDir: '/ws',
       transport,
       docker,
+      clearJobWorktreeDest: async (dest) => {
+        order.push(`clear:${dest}`);
+      },
       materialize: async () => {
         order.push('materialize');
       },
@@ -431,7 +437,7 @@ describe('runAgentJob', () => {
         order.push(`chown:${dest}`);
       },
     });
-    expect(order).toEqual(['materialize', 'chown:/ws/repo']);
+    expect(order).toEqual(['clear:/ws/repo', 'materialize', 'chown:/ws/repo']);
     expect(events[0]).toBe('start:/ws/repo');
   });
 
