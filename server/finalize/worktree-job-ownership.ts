@@ -1,6 +1,7 @@
 /**
  * Align a fleet-materialized worktree with the Finalize job container's
- * `runner` account (uid/gid 1000).
+ * `runner` account (uid/gid 1000), and clear leftover dest trees before
+ * rematerialize.
  *
  * The runner-agent task and the per-job DinD container can run different image
  * tags during a rollout. Older agent images left `runner` on uid 1001 (ubuntu
@@ -9,9 +10,14 @@
  * `npm ci` / `python3 -m venv` fails with EACCES on
  * `/github/workspace/frontend/node_modules` (and `.venv`).
  *
- * Chown after materialize closes the gap regardless of which agent image did
- * the clone. Requires passwordless sudo (granted to `runner` in the Finalize
- * Dockerfile).
+ * Separately, rematerialize must `sudo rm -rf` the prior dest: leftover
+ * root/other-uid files from a previous job make plain `fs.rm` fail with EACCES
+ * *before* chown can run, which marks shards lost and collapses fleet
+ * concurrency under dynamic scale-down.
+ *
+ * Chown after materialize closes the uid gap regardless of which agent image
+ * did the clone. Requires passwordless sudo (granted to `runner` in the
+ * Finalize Dockerfile).
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -26,6 +32,27 @@ export type ExecFileFn = (
   file: string,
   args: readonly string[],
 ) => Promise<{ stdout: string; stderr: string }>;
+
+/**
+ * Force-remove a prior job's materialized worktree so the next materialize can
+ * clone into a clean path.
+ *
+ * Fleet hosts reuse `/finalize-ws/repo` across jobs. A previous job container
+ * (or an older agent uid) often leaves root-/other-uid files behind
+ * (`.DS_Store`, `.claude`, `node_modules`, …). Plain `fs.rm` then fails with
+ * EACCES before we ever reach {@link chownWorktreeForJobRunner}, the agent
+ * reports the job lost, queue depth collapses, and dynamic fleet scale-down
+ * shrinks concurrency to a handful of agents. `sudo rm -rf` clears any uid.
+ * No-op when `destPath` is empty.
+ */
+export async function clearWorktreeDestForRematerialize(
+  destPath: string,
+  opts: { execFile?: ExecFileFn } = {},
+): Promise<void> {
+  if (!destPath) return;
+  const run = opts.execFile ?? execFileAsync;
+  await run('sudo', ['rm', '-rf', destPath]);
+}
 
 /**
  * Recursively chown `destPath` to the job-container runner identity.

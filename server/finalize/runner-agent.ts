@@ -29,7 +29,10 @@ import {
   type TaskProtection,
 } from './ecs-task-protection.js';
 import { checkSpotInterruption } from './spot-interruption.js';
-import { chownWorktreeForJobRunner } from './worktree-job-ownership.js';
+import {
+  chownWorktreeForJobRunner,
+  clearWorktreeDestForRematerialize,
+} from './worktree-job-ownership.js';
 
 export interface AgentLogFrame {
   seq: number;
@@ -176,6 +179,11 @@ export async function runAgentJob(args: {
   docker: AgentDocker;
   materialize?: (spec: RunnerJobWireSpec, destPath: string) => Promise<void>;
   /**
+   * Wipe a leftover worktree dest before rematerialize (`sudo rm -rf`).
+   * Injectable for tests; defaults to {@link clearWorktreeDestForRematerialize}.
+   */
+  clearJobWorktreeDest?: (destPath: string) => Promise<void>;
+  /**
    * Align materialized worktree ownership with the job container's `runner`
    * (uid 1000). Injectable for tests; defaults to {@link chownWorktreeForJobRunner}.
    */
@@ -281,6 +289,9 @@ export async function runAgentJob(args: {
     // root itself: that root (/finalize-ws) is a bind-mount point — it can't be
     // rmdir'd, and materializeWorktree clears its dest before cloning.
     const jobWorkspace = path.join(args.workspaceDir, 'repo');
+    // Prior jobs leave other-uid / root files under /finalize-ws/repo; wipe with
+    // sudo first so materialize's fs.rm cannot EACCES and strand the shard.
+    await (args.clearJobWorktreeDest ?? clearWorktreeDestForRematerialize)(jobWorkspace);
     if (spec.worktreeRef && args.materialize) {
       await args.materialize(spec, jobWorkspace);
     }

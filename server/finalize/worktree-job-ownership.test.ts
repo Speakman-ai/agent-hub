@@ -3,7 +3,22 @@ import {
   FINALIZE_JOB_RUNNER_GID,
   FINALIZE_JOB_RUNNER_UID,
   chownWorktreeForJobRunner,
+  clearWorktreeDestForRematerialize,
 } from './worktree-job-ownership.js';
+
+describe('clearWorktreeDestForRematerialize', () => {
+  it('sudo rm -rf the dest path', async () => {
+    const execFile = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    await clearWorktreeDestForRematerialize('/finalize-ws/repo', { execFile });
+    expect(execFile).toHaveBeenCalledWith('sudo', ['rm', '-rf', '/finalize-ws/repo']);
+  });
+
+  it('is a no-op for an empty path', async () => {
+    const execFile = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    await clearWorktreeDestForRematerialize('', { execFile });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+});
 
 describe('chownWorktreeForJobRunner', () => {
   it('sudo chowns the tree to the job-container runner uid/gid', async () => {
