@@ -81,6 +81,9 @@ function fakes(polls: AgentPollResult[], exitFor: (run: string) => number) {
   return { transport, docker, logs, results, events, finishArgs };
 }
 
+/** Skip real `sudo chown` — unit tests never have passwordless sudo. */
+const noChown = { ensureJobWorktreeOwnership: async () => {} };
+
 describe('runAgentJob', () => {
   it('runs steps in order, streams logs, reports exits, tears down on finish', async () => {
     const { transport, docker, logs, results, events } = fakes(
@@ -97,6 +100,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire(),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       logFlushMs: 5,
@@ -138,6 +142,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire(),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       heartbeatMs: 5,
@@ -178,6 +183,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire(),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       // Heartbeat far slower than the probe: a reclaim must still be reported
@@ -232,6 +238,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire(),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       heartbeatMs: 100_000,
@@ -275,6 +282,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire(),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       heartbeatMs: 5,
@@ -290,7 +298,14 @@ describe('runAgentJob', () => {
 
   it('treats a 410/gone poll as teardown', async () => {
     const { transport, docker, events } = fakes([{ type: 'gone' }], () => 0);
-    await runAgentJob({ jobId: 'j', spec: wire(), workspaceDir: '/ws', transport, docker });
+    await runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      transport,
+      docker,
+      ...noChown,
+    });
     expect(events).toEqual(['start:/ws/repo', 'stop:c1', 'finish']);
   });
 
@@ -304,6 +319,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire(),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       protection,
@@ -320,7 +336,15 @@ describe('runAgentJob', () => {
     };
     const protection = fakeProtection();
     await expect(
-      runAgentJob({ jobId: 'j', spec: wire(), workspaceDir: '/ws', transport, docker, protection }),
+      runAgentJob({
+        jobId: 'j',
+        spec: wire(),
+        workspaceDir: '/ws',
+        transport,
+        docker,
+        protection,
+        ...noChown,
+      }),
     ).rejects.toThrow('dind boot failed');
     expect(protection.calls[0]).toBe(true);
     expect(protection.calls.at(-1)).toBe(false);
@@ -350,6 +374,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire(),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       startSampler: () => sampler,
@@ -364,6 +389,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire(),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       startSampler: () => ({ stop: () => null }),
@@ -379,6 +405,7 @@ describe('runAgentJob', () => {
       jobId: 'j',
       spec: wire({ worktreeRef: { key: 'worktrees/o/r.bundle', sha256: 'x', sizeBytes: 1 } }),
       workspaceDir: '/ws',
+      ...noChown,
       transport,
       docker,
       materialize: async (_spec, dest) => {
@@ -386,6 +413,26 @@ describe('runAgentJob', () => {
       },
     });
     expect(materialized).toEqual(['/ws/repo']);
+  });
+
+  it('chowns the materialized worktree before starting the job container', async () => {
+    const { transport, docker, events } = fakes([{ type: 'finish' }], () => 0);
+    const order: string[] = [];
+    await runAgentJob({
+      jobId: 'j',
+      spec: wire({ worktreeRef: { key: 'worktrees/o/r.bundle', sha256: 'x', sizeBytes: 1 } }),
+      workspaceDir: '/ws',
+      transport,
+      docker,
+      materialize: async () => {
+        order.push('materialize');
+      },
+      ensureJobWorktreeOwnership: async (dest) => {
+        order.push(`chown:${dest}`);
+      },
+    });
+    expect(order).toEqual(['materialize', 'chown:/ws/repo']);
+    expect(events[0]).toBe('start:/ws/repo');
   });
 
   // Regression: a hung/runaway remote step used to pin the agent in execStep
@@ -450,6 +497,7 @@ describe('runAgentJob', () => {
         jobId: 'j',
         spec: wire(),
         workspaceDir: '/ws',
+        ...noChown,
         transport,
         docker,
         startSampler: () => ({ stop: () => null }),
@@ -486,6 +534,7 @@ describe('runAgentJob', () => {
         jobId: 'j',
         spec: wire(),
         workspaceDir: '/ws',
+        ...noChown,
         transport,
         docker,
         startSampler: () => ({ stop: () => null }),
@@ -519,6 +568,7 @@ describe('runAgentJob', () => {
         jobId: 'j',
         spec: wire(),
         workspaceDir: '/ws',
+        ...noChown,
         transport,
         docker,
         logFlushMs: 5,
@@ -544,6 +594,7 @@ describe('runAgentJob', () => {
           jobId: 'j',
           spec: wire(),
           workspaceDir: '/ws',
+          ...noChown,
           transport,
           docker,
           logFlushMs: 5,
@@ -577,6 +628,7 @@ describe('runAgentJob', () => {
         jobId: 'j',
         spec: wire(),
         workspaceDir: '/ws',
+        ...noChown,
         transport,
         docker,
         logFlushMs: 5,
