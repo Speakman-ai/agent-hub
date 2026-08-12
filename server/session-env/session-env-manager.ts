@@ -75,6 +75,17 @@ export interface SessionEnvManagerDeps {
     finishedAt?: number;
     detail?: string;
   }) => void;
+  /**
+   * Progress for non-host env boot (`Launching session VM`). Fired around
+   * create + mountWorktree so the Progress panel covers the blank gap before
+   * session startup hooks. Host adapter skips this (no VM/container to boot).
+   */
+  onEnvLaunchProgress?: (update: {
+    sessionId: string;
+    status: 'started' | 'completed' | 'failed';
+    startedAt: number;
+    finishedAt?: number;
+  }) => void;
   /** Idle envs with no live processes are reaped after this long. Default 4h. */
   idleTtlMs?: number;
   /**
@@ -202,42 +213,73 @@ export class SessionEnvManager {
     const hostDeps = this.deps.allocateHostPort
       ? { allocateHostPort: this.deps.allocateHostPort }
       : undefined;
-    const env = create(kind, {
-      sessionId,
-      worktreePath,
-      ...(hostDeps ? { hostDeps } : {}),
-      ...(Object.keys(sysboxDeps).length > 0 ? { sysboxDeps } : {}),
-    });
-    entry.env = env;
-    // Self-eviction: an env disposed directly (reaper, teardown, crash
-    // cleanup) must not linger in the map as a live-looking entry.
-    env.onDispose(() => {
-      if (this.entries.get(sessionId) === entry) this.entries.delete(sessionId);
-    });
-    await env.mountWorktree();
-    this.logger.log(`[session-env] ${sessionId}: ready on "${kind}" adapter`);
 
-    // Background project startup hooks — never block ensure()/chat. Abort on dispose.
-    const commands = this.deps.resolveStartupCommands?.(sessionId) ?? [];
-    if (commands.length > 0) {
-      const abort = new AbortController();
-      entry.startupAbort = abort;
-      void startSessionStartupHooks({
+    const launchStartedAt = Date.now();
+    const reportLaunch = kind !== 'host';
+    if (reportLaunch) {
+      this.deps.onEnvLaunchProgress?.({
         sessionId,
-        env,
-        commands,
-        signal: abort.signal,
-        onProgress: (update) => {
-          this.deps.onStartupProgress?.({ sessionId, ...update });
-        },
-      }).then((status) => {
-        this.logger.log(
-          `[session-env] ${sessionId}: startup hooks ${status.status} (${commands.length} command(s))`,
-        );
+        status: 'started',
+        startedAt: launchStartedAt,
       });
     }
 
-    return env;
+    try {
+      const env = create(kind, {
+        sessionId,
+        worktreePath,
+        ...(hostDeps ? { hostDeps } : {}),
+        ...(Object.keys(sysboxDeps).length > 0 ? { sysboxDeps } : {}),
+      });
+      entry.env = env;
+      // Self-eviction: an env disposed directly (reaper, teardown, crash
+      // cleanup) must not linger in the map as a live-looking entry.
+      env.onDispose(() => {
+        if (this.entries.get(sessionId) === entry) this.entries.delete(sessionId);
+      });
+      await env.mountWorktree();
+      if (reportLaunch) {
+        this.deps.onEnvLaunchProgress?.({
+          sessionId,
+          status: 'completed',
+          startedAt: launchStartedAt,
+          finishedAt: Date.now(),
+        });
+      }
+      this.logger.log(`[session-env] ${sessionId}: ready on "${kind}" adapter`);
+
+      // Background project startup hooks — never block ensure()/chat. Abort on dispose.
+      const commands = this.deps.resolveStartupCommands?.(sessionId) ?? [];
+      if (commands.length > 0) {
+        const abort = new AbortController();
+        entry.startupAbort = abort;
+        void startSessionStartupHooks({
+          sessionId,
+          env,
+          commands,
+          signal: abort.signal,
+          onProgress: (update) => {
+            this.deps.onStartupProgress?.({ sessionId, ...update });
+          },
+        }).then((status) => {
+          this.logger.log(
+            `[session-env] ${sessionId}: startup hooks ${status.status} (${commands.length} command(s))`,
+          );
+        });
+      }
+
+      return env;
+    } catch (err) {
+      if (reportLaunch) {
+        this.deps.onEnvLaunchProgress?.({
+          sessionId,
+          status: 'failed',
+          startedAt: launchStartedAt,
+          finishedAt: Date.now(),
+        });
+      }
+      throw err;
+    }
   }
 
   /** The session's env if one is live, without creating it. */

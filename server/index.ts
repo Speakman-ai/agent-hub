@@ -114,7 +114,10 @@ import {
 import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
 import { setSessionWorktreeIoResolver } from './session-worktree-io.js';
 import { getProjectSessionStartupCommands } from './session-env/session-startup-hooks.js';
-import { emitSessionStartupProgress } from './session-env/session-env-progress.js';
+import {
+  emitSessionStartupProgress,
+  emitSessionEnvLaunchProgress,
+} from './session-env/session-env-progress.js';
 import {
   describeSessionEnvPortRouting,
   resolveSessionEnvPortRouting,
@@ -1233,6 +1236,16 @@ const sessionEnvManager = new SessionEnvManager({
       detail: update.detail,
     });
   },
+  onEnvLaunchProgress: (update) => {
+    emitSessionEnvLaunchProgress({
+      stmts: stmts!,
+      broadcast,
+      sessionId: update.sessionId,
+      status: update.status,
+      startedAt: update.startedAt,
+      finishedAt: update.finishedAt,
+    });
+  },
   resolvePublishPorts: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session || session.deleted_at) return null;
@@ -1603,7 +1616,7 @@ export const routeDeps: RouteDeps = {
     const { project, agent } = found;
     const installCommand =
       (project as { commands?: { install?: string | null } }).commands?.install ?? null;
-    return ensureWorktree(
+    const worktreePath = await ensureWorktree(
       session,
       project.cwd,
       agent.id,
@@ -1615,6 +1628,14 @@ export const routeDeps: RouteDeps = {
       project.githubRepo ?? null,
       hostedBarePathForProject(project),
     );
+    // Firecracker / container boots are long; kick them as soon as the
+    // worktree exists so Progress shows "Launching session VM" instead of a
+    // blank chat. Host adapter has nothing to boot.
+    await whenSessionEnvSelectionReady();
+    if (getSessionEnvSelection().adapter !== 'host') {
+      await sessionEnvManager.ensure(sessionId);
+    }
+    return worktreePath;
   },
   switchSessionWorkspaceBranch: async (sessionId: string, branch: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;

@@ -58,6 +58,35 @@ class FakeEnv {
     this.hooks.add(cb);
     return () => this.hooks.delete(cb);
   }
+  spawn(command: string) {
+    const run = async () => {
+      try {
+        return await this.worktreeIo.exec(command);
+      } catch {
+        return { stdout: '', stderr: 'spawn failed', exitCode: 1 };
+      }
+    };
+    let settled: { code: number | null; signal: null } | null = null;
+    const exitWaiters: Array<(e: { code: number | null; signal: null }) => void> = [];
+    void run().then((r) => {
+      settled = { code: r.exitCode, signal: null };
+      for (const cb of exitWaiters) cb(settled);
+    });
+    return {
+      pid: 1,
+      name: command,
+      exited: false,
+      exitResult: null,
+      onStdout: () => () => {},
+      onStderr: () => () => {},
+      onExit: (cb: (e: { code: number | null; signal: null }) => void) => {
+        if (settled) queueMicrotask(() => cb(settled!));
+        else exitWaiters.push(cb);
+        return () => {};
+      },
+      kill: () => {},
+    };
+  }
   async dispose() {
     this.disposeCalls++;
     this.disposed = true;
@@ -80,6 +109,12 @@ function makeManager(
     resolvePublishPorts?: (sessionId: string) => number[] | null;
     resolveStartupCommands?: (sessionId: string) => string[];
     slowStartupMs?: number;
+    onEnvLaunchProgress?: (update: {
+      sessionId: string;
+      status: 'started' | 'completed' | 'failed';
+      startedAt: number;
+      finishedAt?: number;
+    }) => void;
     onCreateOpts?: (opts: {
       sessionId: string;
       worktreePath: string;
@@ -93,6 +128,7 @@ function makeManager(
     resolveWorktree: (id) => worktrees.get(id) ?? null,
     resolveAdapter: () => opts.kind ?? 'container',
     ...(opts.resolveStartupCommands ? { resolveStartupCommands: opts.resolveStartupCommands } : {}),
+    ...(opts.onEnvLaunchProgress ? { onEnvLaunchProgress: opts.onEnvLaunchProgress } : {}),
     createEnv: (kind, o) => {
       opts.onCreateOpts?.(o);
       const env = new FakeEnv(kind, o.sessionId, o.worktreePath, async (cmd) => {
@@ -423,5 +459,38 @@ describe('SessionEnvManager session startup hooks', () => {
       },
       { timeout: 2000 },
     );
+  });
+});
+
+describe('SessionEnvManager env launch progress', () => {
+  it('emits started then completed for non-host adapters', async () => {
+    const events: string[] = [];
+    const { manager } = makeManager({
+      kind: 'firecracker',
+      onEnvLaunchProgress: (u) => events.push(u.status),
+    });
+    await manager.ensure('s1');
+    expect(events).toEqual(['started', 'completed']);
+  });
+
+  it('skips launch progress for the host adapter', async () => {
+    const events: string[] = [];
+    const { manager } = makeManager({
+      kind: 'host',
+      onEnvLaunchProgress: (u) => events.push(u.status),
+    });
+    await manager.ensure('s1');
+    expect(events).toEqual([]);
+  });
+
+  it('emits failed when mountWorktree throws', async () => {
+    const events: string[] = [];
+    const { manager } = makeManager({
+      kind: 'container',
+      failOnMount: true,
+      onEnvLaunchProgress: (u) => events.push(u.status),
+    });
+    await expect(manager.ensure('s1')).rejects.toThrow(/container failed/);
+    expect(events).toEqual(['started', 'failed']);
   });
 });

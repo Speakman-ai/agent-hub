@@ -183,4 +183,19 @@ describe('ProgressPanel render', () => {
     fireEvent.click(screen.getByRole('button', { name: /Progress/ }));
     expect(screen.getByTestId('progress-step-detail').textContent).toContain('boom');
   });
+
+  it('renders Launching session VM while started with no chat stream required', () => {
+    const steps = [
+      {
+        step: 'Launching session VM',
+        status: 'started',
+        startedAt: Date.now() - 1000,
+      },
+    ];
+    render(<ProgressPanel steps={steps} sessionRunning={false} />);
+    // Empty chat still shows Progress when session-progress WS events arrive.
+    expect(screen.getByTestId('progress-panel')).toBeInTheDocument();
+    expect(screen.getByText('Launching session VM')).toBeInTheDocument();
+    expect(screen.getByLabelText('in progress')).toBeInTheDocument();
+  });
 });

@@ -1310,8 +1310,10 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
         </label>
         <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
           One shell command per line, run in the background inside the session environment after
-          every VM/container boot (does not block chat). Use idempotent commands (e.g.{' '}
-          <code className="text-gray-400">[ -d .venv ] || python3 -m venv .venv</code>
+          every VM/container boot (does not block chat). Each command uses the session workspace cwd
+          — the same worktree root as chat, terminal, and preview (guest{' '}
+          <code className="text-gray-400">/workspace</code> when env-owned). Use idempotent commands
+          (e.g. <code className="text-gray-400">[ -d .venv ] || python3 -m venv .venv</code>
           ). Status is written to{' '}
           <code className="text-gray-400">.agent-hub-runtime/session-startup.json</code> so the
           agent can see progress. Leave empty to skip.

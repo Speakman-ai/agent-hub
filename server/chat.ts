@@ -58,7 +58,6 @@ import {
   writeGuestSystemPromptFile,
 } from './session-env/guest-cli-spawn.js';
 import { FIRECRACKER_GUEST_WORKSPACE } from './session-env/firecracker/firecracker-vm-args.js';
-import { emitSessionEnvLaunchProgress } from './session-env/session-env-progress.js';
 import {
   formatSessionStartupPromptSection,
   getProjectSessionStartupCommands,
@@ -3017,7 +3016,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           drainQueue(sessionId);
           return;
         }
-        const launchStartedAt = Date.now();
         try {
           stmts.insertActiveTask.run(
             sessionId,
@@ -3033,19 +3031,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           console.error('Failed to insert active_tasks row:', message);
         }
         recomputeSessionState(stmts, sessionId, { agentId, broadcast });
-        emitSessionEnvLaunchProgress({
-          stmts,
-          broadcast,
-          sessionId,
-          messageId: assistantMsgId,
-          nextSeq: () => ++seq,
-          status: 'started',
-          startedAt: launchStartedAt,
-        });
-        // Thinking currently lands after worktree + VM boot, which left the
-        // chat on a blank "Waiting for first event…" for tens of seconds.
-        // Flip the live tail now so ProgressPanel / SessionTail can show
-        // "Launching session VM" for the duration of `ensureSessionEnv`.
+        // "Launching session VM" Progress is owned by SessionEnvManager so
+        // workspace/ensure, terminal, and preview share the same indicator.
+        // Flip the live tail now so SessionTail is not stuck on a blank
+        // "Waiting for first event…" while ensureSessionEnv runs (or returns
+        // an already-warm env from workspace ensure).
         broadcast({
           type: 'thinking',
           messageId: assistantMsgId,
@@ -3058,27 +3048,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         });
         try {
           sessionEnv = await ensureSessionEnv(sessionId);
-          emitSessionEnvLaunchProgress({
-            stmts,
-            broadcast,
-            sessionId,
-            messageId: assistantMsgId,
-            nextSeq: () => ++seq,
-            status: 'completed',
-            startedAt: launchStartedAt,
-            finishedAt: Date.now(),
-          });
         } catch (err: unknown) {
-          emitSessionEnvLaunchProgress({
-            stmts,
-            broadcast,
-            sessionId,
-            messageId: assistantMsgId,
-            nextSeq: () => ++seq,
-            status: 'failed',
-            startedAt: launchStartedAt,
-            finishedAt: Date.now(),
-          });
           const errText =
             `Failed to start session environment for env-owned CLI turn: ` +
             (err instanceof Error ? err.message : String(err));
