@@ -222,6 +222,9 @@ function makeStmts(): {
         if (row) row.worktree_path = path;
       }),
     } as unknown as OrchestratorDeps['stmts']['updateFinalizeRunWorktreePath'],
+    updateFinalizeRunValidatedBaseSha: {
+      run: vi.fn(() => {}),
+    } as unknown as OrchestratorDeps['stmts']['updateFinalizeRunValidatedBaseSha'],
     updateFinalizeRunLoopRound: {
       run: vi.fn((round: number, id: string) => {
         const row = rows.get(id);

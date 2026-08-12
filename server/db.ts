@@ -1115,6 +1115,7 @@ function initDb(dataDir: string): void {
       ended_at INTEGER,
       pr_url TEXT,
       validated_head_sha TEXT,
+      validated_base_sha TEXT,
       mode TEXT NOT NULL DEFAULT 'full'
     );
     CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
@@ -1129,6 +1130,20 @@ function initDb(dataDir: string): void {
     -- TEMP B-TREE for the last ORDER BY term.
     CREATE INDEX IF NOT EXISTS idx_finalize_runs_active ON finalize_runs(started_at DESC, id DESC)
       WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response');
+    -- One landing at a time per (project, base branch). Held across the
+    -- base-drift check, the push, and (under Merge Automatically) the merge,
+    -- so two sessions cannot both read the same base as clean and then both
+    -- land on it. Rows are transient: released in a finally, and any row
+    -- older than the stale window is taken over (a crashed holder must not
+    -- wedge a project's pushes forever).
+    CREATE TABLE IF NOT EXISTS finalize_push_locks (
+      project_id TEXT NOT NULL,
+      base_branch TEXT NOT NULL,
+      holder_run_id TEXT NOT NULL,
+      acquired_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, base_branch)
+    );
+
     CREATE TABLE IF NOT EXISTS finalize_kickoff_claims (
       claim_key TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -1394,6 +1409,14 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT validated_head_sha FROM finalize_runs LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE finalize_runs ADD COLUMN validated_head_sha TEXT');
+  }
+
+  // The base sha a run rebased onto. Null on rows written before the base
+  // drift check existed; the check fails open for those.
+  try {
+    db.prepare('SELECT validated_base_sha FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_runs ADD COLUMN validated_base_sha TEXT');
   }
 
   try {
@@ -6173,6 +6196,42 @@ function initDb(dataDir: string): void {
     // is spawned fresh).
     updateFinalizeRunWorktreePath: db.prepare(
       `UPDATE finalize_runs SET worktree_path = ? WHERE id = ?`,
+    ),
+    // ── Push lock (project, base branch) ───────────────────────────────
+    // `INSERT OR IGNORE` is the whole mutual exclusion: better-sqlite3
+    // serializes writers, so exactly one caller sees `changes === 1` for a
+    // given (project_id, base_branch) key.
+    acquireFinalizePushLock: db.prepare(
+      `INSERT OR IGNORE INTO finalize_push_locks
+         (project_id, base_branch, holder_run_id, acquired_at)
+       VALUES (?, ?, ?, ?)`,
+    ),
+    getFinalizePushLock: db.prepare(
+      `SELECT * FROM finalize_push_locks WHERE project_id = ? AND base_branch = ?`,
+    ),
+    // Holder-scoped so a late release from a run whose lock was already taken
+    // over as stale cannot free the current holder's lock.
+    // Heartbeat: a long push (or an awaited auto-merge) must keep its lock
+    // alive, otherwise the stale-takeover window would hand the base to a
+    // second run while the first is still landing.
+    touchFinalizePushLock: db.prepare(
+      `UPDATE finalize_push_locks
+          SET acquired_at = ?
+        WHERE project_id = ? AND base_branch = ? AND holder_run_id = ?`,
+    ),
+    releaseFinalizePushLock: db.prepare(
+      `DELETE FROM finalize_push_locks
+        WHERE project_id = ? AND base_branch = ? AND holder_run_id = ?`,
+    ),
+    expireFinalizePushLock: db.prepare(
+      `DELETE FROM finalize_push_locks
+        WHERE project_id = ? AND base_branch = ? AND acquired_at < ?`,
+    ),
+    // Record the base sha the run just rebased onto, so the push path can tell
+    // whether the base moved onto ground this branch touches while review and
+    // steps were running (see finalize/base-drift.ts).
+    updateFinalizeRunValidatedBaseSha: db.prepare(
+      `UPDATE finalize_runs SET validated_base_sha = ? WHERE id = ?`,
     ),
     updateFinalizeRunLoopRound: db.prepare(`UPDATE finalize_runs SET loop_round = ? WHERE id = ?`),
     // Most-recent finalize run for a session. Used by the session-scoped

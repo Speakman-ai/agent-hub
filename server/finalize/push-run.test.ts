@@ -948,3 +948,228 @@ describe('runFinalizePush background-shell teardown', () => {
     expect(outcome.ok).toBe(true);
   });
 });
+
+describe('runFinalizePush base drift', () => {
+  /** Git double: base moved from base1 to base2 with the given paths. */
+  function driftGit(basePaths: string[], branchPaths: string[]) {
+    return vi.fn(async (a: string[]) => {
+      if (a[0] === 'rev-parse') return 'base2\n';
+      if (a[0] === 'diff' && a[3] === 'base2') return `${basePaths.join('\n')}\n`;
+      if (a[0] === 'diff') return `${branchPaths.join('\n')}\n`;
+      return '';
+    });
+  }
+
+  // The outage this guards: two sessions each land a migration numbered off
+  // the same parent. Each branch is green alone; together the graph has two
+  // leaves and `migrate` refuses to run.
+  it('refuses a ready_to_push run when the base moved onto ground the branch touches', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn();
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: { ...baseRun(), validated_head_sha: 'abc123', validated_base_sha: 'base1' },
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+      inspectBaseDriftGit: driftGit(
+        ['backend/jobs/migrations/0088_bar.py'],
+        ['backend/jobs/migrations/0088_foo.py'],
+      ),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toBe('base_branch_moved');
+      expect(outcome.httpStatus).toBe(409);
+    }
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
+  });
+
+  it('pushes when the base moved somewhere the branch does not touch', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: { ...baseRun(), validated_head_sha: 'abc123', validated_base_sha: 'base1' },
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+      inspectBaseDriftGit: driftGit(['docs/readme.md'], ['backend/jobs/views.py']),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(pushAndCreatePr).toHaveBeenCalledOnce();
+  });
+
+  it('does not consult git when the run predates the base-sha column', async () => {
+    const { deps } = makeDeps();
+    const git = vi.fn();
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: { ...baseRun(), validated_head_sha: 'abc123' },
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+      inspectBaseDriftGit: git as never,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(git).not.toHaveBeenCalled();
+  });
+
+  // Push Anyway has to stay an escape hatch — the overlap test is a
+  // directory-level heuristic — so a forced push is not blocked by drift.
+  // But the comparison still runs, and the stale landing is recorded in the
+  // timeline instead of being visible only in server logs.
+  it('lets a forced push through but records the drift in the timeline', async () => {
+    const { deps, addMessage } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });
+    const git = driftGit(['server/db.ts'], ['server/db.ts']);
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: { ...baseRun(), validated_base_sha: 'base1' },
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+      inspectBaseDriftGit: git,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(pushAndCreatePr).toHaveBeenCalledOnce();
+    // The comparison ran on the forced path.
+    expect(git).toHaveBeenCalled();
+    expect(lastTerminalMetadata(addMessage)).toMatchObject({ baseDrifted: true });
+  });
+
+  it('marks a forced push with no drift as not drifted', async () => {
+    const { deps, addMessage } = makeDeps();
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: { ...baseRun(), validated_base_sha: 'base1' },
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+      inspectBaseDriftGit: driftGit(['docs/readme.md'], ['server/db.ts']),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(lastTerminalMetadata(addMessage)).toMatchObject({ baseDrifted: false });
+  });
+});
+
+describe('runFinalizePush landing lock', () => {
+  /** Lock statements whose (project, base) key is already held by another run. */
+  function heldLockStmts(holder: string) {
+    return {
+      acquireFinalizePushLock: { run: vi.fn(() => ({ changes: 0 })) },
+      getFinalizePushLock: {
+        get: vi.fn(() => ({
+          project_id: 'proj-1',
+          base_branch: 'main',
+          holder_run_id: holder,
+          acquired_at: 1_000,
+        })),
+      },
+      releaseFinalizePushLock: { run: vi.fn() },
+      expireFinalizePushLock: { run: vi.fn() },
+    };
+  }
+
+  // The reviewer's point: re-resolving the base right before pushing narrows
+  // the window but does not close it. Two runs must not both get past the
+  // check into the landing.
+  it('refuses while another run holds the landing lock, without consulting git', async () => {
+    const { deps } = makeDeps();
+    Object.assign(deps.stmts, heldLockStmts('run-other'));
+    const pushAndCreatePr = vi.fn();
+    const git = vi.fn();
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: { ...baseRun(), validated_head_sha: 'abc123', validated_base_sha: 'base1' },
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+      inspectBaseDriftGit: git as never,
+      pushLock: { waitMs: 0, now: () => 5_000 },
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toBe('base_push_in_progress');
+      expect(outcome.httpStatus).toBe(409);
+    }
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
+    // The drift check never ran: the lock gates it, so the second run only
+    // evaluates drift after the holder has landed.
+    expect(git).not.toHaveBeenCalled();
+  });
+
+  it('releases the lock after a successful push so the next run can land', async () => {
+    const { deps } = makeDeps();
+    const release = vi.fn();
+    Object.assign(deps.stmts, {
+      acquireFinalizePushLock: { run: vi.fn(() => ({ changes: 1 })) },
+      getFinalizePushLock: { get: vi.fn(() => undefined) },
+      releaseFinalizePushLock: { run: release },
+      expireFinalizePushLock: { run: vi.fn() },
+    });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' }),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(release).toHaveBeenCalledWith('proj-1', 'main', 'run-1');
+  });
+
+  it('releases the lock when the push throws', async () => {
+    const { deps } = makeDeps();
+    const release = vi.fn();
+    Object.assign(deps.stmts, {
+      acquireFinalizePushLock: { run: vi.fn(() => ({ changes: 1 })) },
+      getFinalizePushLock: { get: vi.fn(() => undefined) },
+      releaseFinalizePushLock: { run: release },
+      expireFinalizePushLock: { run: vi.fn() },
+    });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr: vi.fn().mockRejectedValue(new Error('github exploded')),
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(release).toHaveBeenCalledWith('proj-1', 'main', 'run-1');
+  });
+});

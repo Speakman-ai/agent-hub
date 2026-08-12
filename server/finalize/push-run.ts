@@ -40,6 +40,18 @@ import {
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from './post-push-session-lock.js';
 import { stopBackgroundShellsAfterFinalizePush } from './post-push-background-shells.js';
+import {
+  BASE_BRANCH_MOVED_ERROR,
+  BASE_BRANCH_MOVED_MESSAGE,
+  inspectBaseDrift,
+  type GitRunner,
+} from './base-drift.js';
+import {
+  acquirePushLock,
+  PUSH_LOCK_BUSY_ERROR,
+  PUSH_LOCK_BUSY_MESSAGE,
+  type PushLockStmts,
+} from './push-lock.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -161,6 +173,19 @@ export interface RunFinalizePushArgs {
   cardLifecycle?: CardLifecycle;
   /** Operator override — skip ready_to_push and push-gate checks. */
   force?: boolean;
+  /** Test seam: git runner for the base-drift check. */
+  inspectBaseDriftGit?: GitRunner;
+  /**
+   * Landing-lock overrides. The automation path passes the wait/poll knobs
+   * it wants; tests inject a clock and sleep.
+   */
+  pushLock?: {
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    waitMs?: number;
+    staleMs?: number;
+    pollMs?: number;
+  };
 }
 
 async function executePush(args: {
@@ -174,6 +199,12 @@ async function executePush(args: {
   pushBranch: string;
   /** True when the push skipped the review + checks gate (force / push anyway). */
   bypassedGates: boolean;
+  /**
+   * True when the base moved onto ground this branch touches and the push
+   * went ahead anyway (forced pushes only). Surfaced in the timeline so the
+   * stale base is visible after the fact.
+   */
+  baseDrifted?: boolean;
   pushAndCreatePr?: PushAndCreatePrFn;
   lifecycle?: CardLifecycle;
 }): Promise<FinalizePushOutcome> {
@@ -339,6 +370,7 @@ async function executePush(args: {
       status: 'pushed',
       round: readFinalizeLoopRound(run),
       bypassedGates,
+      baseDrifted: args.baseDrifted ?? false,
       prUrl: pushResult.prUrl,
     },
   );
@@ -459,134 +491,208 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
-  let validatedHeadSha = currentHead;
-  if (!force) {
-    const { baselineSha, reviewerVerdict } = resolveSessionPushGateSignals({
-      stmts: deps.stmts as Stmts,
-      run,
-      sessionId: session.id,
-      currentHead,
-    });
-    const gate = evaluatePushGate({
-      stepStatus: 'success',
-      reviewerVerdict,
-      headBeforePhases: baselineSha,
-      headAtPushGate: currentHead,
-    });
-    if (gate.kind === 'refuse') {
-      return {
-        ok: false,
-        httpStatus: 409,
-        error: gate.refusalCode,
-        message:
-          gate.refusalCode === 'head_sha_moved'
-            ? 'HEAD changed since checks passed. Click Finalize Code Changes again to re-run review and tests.'
-            : gate.detail,
-      };
-    }
-    validatedHeadSha = gate.validatedHeadSha;
-  }
-
-  if (run.status === 'ready_to_push') {
-    const claim = deps.stmts.claimFinalizeRunPush.run(run.id, validatedHeadSha);
-    if (claim.changes === 0) {
-      const fresh = deps.stmts.getFinalizeRun.get(run.id) as FinalizeRunRow | undefined;
-      const status = fresh?.status ?? 'unknown';
-      const peer = deps.stmts.getFinalizePushPeerForSessionHead.get(
-        run.id,
-        session.id,
-        validatedHeadSha,
-      ) as FinalizeRunRow | undefined;
-      if (peer?.status === 'pushed' && peer.pr_url) {
-        try {
-          writeFinalizeRunPrUrl(
-            { stmts: deps.stmts as Stmts },
-            { runId: run.id, prUrl: peer.pr_url },
-          );
-          deps.stmts.markFinalizeRunPushed.run(run.id);
-          lockSessionAfterFinalizePush(deps.stmts as Stmts, session.id);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            ok: false,
-            httpStatus: 500,
-            error: 'persist_failed',
-            message: msg,
-          };
-        }
-        // Adopting a peer's push locks this session too, so its shells are
-        // just as dead as the pushing run's. Guarded for the same reason as the
-        // primary push path: the peer's PR already exists.
-        await stopBackgroundShellsAfterFinalizePush(deps, session.id).catch((err: unknown) => {
-          console.warn(
-            `[finalize-push] background-shell teardown threw run=${run.id} session=${session.id}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        });
-        deps.broadcast({
-          type: 'finalize_run_phase_changed',
-          run_id: run.id,
-          session_id: session.id,
-          phase: 'push',
-          status: 'pushed',
-        });
-        deps.broadcast({
-          type: 'finalize_run_completed',
-          run_id: run.id,
-          session_id: session.id,
-          status: 'pushed',
-          pr_url: peer.pr_url,
-        });
-        try {
-          const lifecycle =
-            args.cardLifecycle ??
-            buildOrchestratorDeps(deps, card, project.id).cardLifecycle ??
-            NOOP_CARD_LIFECYCLE;
-          lifecycle.onPushed({
-            runId: run.id,
-            prUrl: peer.pr_url,
-            triggerSource: run.trigger_source,
-          });
-        } catch {
-          /* cosmetic */
-        }
-        return { ok: true, prUrl: peer.pr_url };
-      }
-      return {
-        ok: false,
-        httpStatus: 409,
-        error:
-          status === 'pushed' || peer?.status === 'pushed' ? 'already_pushed' : 'push_in_flight',
-        message:
-          status === 'pushed' || peer?.status === 'pushed'
-            ? 'This validated head has already been pushed.'
-            : `Run is already being pushed (${peer?.status ?? status}).`,
-      };
-    }
-  }
-
-  const pushBranch = await resolvePushBranch(
-    session.worktree_path,
-    session.worktree_branch,
-    `run=${run.id}`,
-    args.resolveCurrentBranch ?? defaultResolveCurrentBranch,
-  );
-
-  return executePush({
-    deps,
-    project,
-    run,
+  // Serialize the whole check-through-landing sequence on (project, base).
+  // The drift check alone is check-then-act: two runs can both read the same
+  // base as clean and both land on it. Holding this lock means the second run
+  // only evaluates drift once the first has finished landing, so it sees the
+  // base the first one produced. Re-entrant by run id — the automation path
+  // takes the same lock around push + auto-merge before calling in here.
+  const lockBaseBranch = await resolveFinalizeBaseBranchForCard({
     card,
-    session,
-    validatedHeadSha,
-    pushBranch,
-    // A forced push skips the review + checks gate; a ready_to_push push
-    // (force=false) cleared it. This drives the timeline warning.
-    bypassedGates: force,
-    pushAndCreatePr: args.pushAndCreatePr,
-    lifecycle: args.cardLifecycle,
+    worktreePath: session.worktree_path,
+    getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
+  const lock = await acquirePushLock({
+    stmts: deps.stmts as PushLockStmts,
+    projectId: project.id,
+    baseBranch: lockBaseBranch,
+    holderRunId: run.id,
+    ...(args.pushLock ?? {}),
+  });
+  if (!lock.ok) {
+    console.warn(
+      `[finalize-push] refused push run=${run.id}: landing lock for ${project.id}/${lockBaseBranch} ` +
+        `held by run=${lock.heldBy ?? 'unknown'}`,
+    );
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: PUSH_LOCK_BUSY_ERROR,
+      message: PUSH_LOCK_BUSY_MESSAGE,
+    };
+  }
+  try {
+    let validatedHeadSha = currentHead;
+    let baseDrifted = false;
+    if (!force) {
+      const { baselineSha, reviewerVerdict } = resolveSessionPushGateSignals({
+        stmts: deps.stmts as Stmts,
+        run,
+        sessionId: session.id,
+        currentHead,
+      });
+      const gate = evaluatePushGate({
+        stepStatus: 'success',
+        reviewerVerdict,
+        headBeforePhases: baselineSha,
+        headAtPushGate: currentHead,
+      });
+      if (gate.kind === 'refuse') {
+        return {
+          ok: false,
+          httpStatus: 409,
+          error: gate.refusalCode,
+          message:
+            gate.refusalCode === 'head_sha_moved'
+              ? 'HEAD changed since checks passed. Click Finalize Code Changes again to re-run review and tests.'
+              : gate.detail,
+        };
+      }
+      validatedHeadSha = gate.validatedHeadSha;
+    }
+
+    // The base can move between parking at ready_to_push and this push — that
+    // window is minutes to hours, and two sessions landing in it is exactly
+    // how a project ends up with two branches that were each green alone and
+    // broken together. Unrelated base movement passes; only movement onto
+    // ground this branch also changes is stale.
+    //
+    // Evaluated on the forced path too. `force` means "I accept shipping
+    // without review and checks", which is a statement about THIS branch;
+    // whether the base moved underneath is a fact about the repository that
+    // the operator still deserves to see. A forced push is not blocked by it
+    // (the overlap test is a directory-level heuristic, and Push Anyway has
+    // to remain an escape hatch), but it is logged and carried into the
+    // timeline entry so the push is never silently stale.
+    const drift = await inspectBaseDrift({
+      worktreePath: session.worktree_path,
+      baseBranch: lockBaseBranch,
+      validatedBaseSha: run.validated_base_sha ?? null,
+      headSha: validatedHeadSha,
+      git: args.inspectBaseDriftGit,
+      onWarn: (message) =>
+        console.warn(`[finalize-push] base drift check degraded run=${run.id}: ${message}`),
+    });
+    if (drift.kind === 'stale') {
+      if (!force) {
+        console.warn(`[finalize-push] refused push run=${run.id}: ${drift.detail}`);
+        return {
+          ok: false,
+          httpStatus: 409,
+          error: BASE_BRANCH_MOVED_ERROR,
+          message: BASE_BRANCH_MOVED_MESSAGE,
+        };
+      }
+      baseDrifted = true;
+      console.warn(
+        `[finalize-push] forced push run=${run.id} proceeding over base drift: ${drift.detail}`,
+      );
+    }
+
+    if (run.status === 'ready_to_push') {
+      const claim = deps.stmts.claimFinalizeRunPush.run(run.id, validatedHeadSha);
+      if (claim.changes === 0) {
+        const fresh = deps.stmts.getFinalizeRun.get(run.id) as FinalizeRunRow | undefined;
+        const status = fresh?.status ?? 'unknown';
+        const peer = deps.stmts.getFinalizePushPeerForSessionHead.get(
+          run.id,
+          session.id,
+          validatedHeadSha,
+        ) as FinalizeRunRow | undefined;
+        if (peer?.status === 'pushed' && peer.pr_url) {
+          try {
+            writeFinalizeRunPrUrl(
+              { stmts: deps.stmts as Stmts },
+              { runId: run.id, prUrl: peer.pr_url },
+            );
+            deps.stmts.markFinalizeRunPushed.run(run.id);
+            lockSessionAfterFinalizePush(deps.stmts as Stmts, session.id);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+              ok: false,
+              httpStatus: 500,
+              error: 'persist_failed',
+              message: msg,
+            };
+          }
+          // Adopting a peer's push locks this session too, so its shells are
+          // just as dead as the pushing run's. Guarded for the same reason as the
+          // primary push path: the peer's PR already exists.
+          await stopBackgroundShellsAfterFinalizePush(deps, session.id).catch((err: unknown) => {
+            console.warn(
+              `[finalize-push] background-shell teardown threw run=${run.id} session=${session.id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+          deps.broadcast({
+            type: 'finalize_run_phase_changed',
+            run_id: run.id,
+            session_id: session.id,
+            phase: 'push',
+            status: 'pushed',
+          });
+          deps.broadcast({
+            type: 'finalize_run_completed',
+            run_id: run.id,
+            session_id: session.id,
+            status: 'pushed',
+            pr_url: peer.pr_url,
+          });
+          try {
+            const lifecycle =
+              args.cardLifecycle ??
+              buildOrchestratorDeps(deps, card, project.id).cardLifecycle ??
+              NOOP_CARD_LIFECYCLE;
+            lifecycle.onPushed({
+              runId: run.id,
+              prUrl: peer.pr_url,
+              triggerSource: run.trigger_source,
+            });
+          } catch {
+            /* cosmetic */
+          }
+          return { ok: true, prUrl: peer.pr_url };
+        }
+        return {
+          ok: false,
+          httpStatus: 409,
+          error:
+            status === 'pushed' || peer?.status === 'pushed' ? 'already_pushed' : 'push_in_flight',
+          message:
+            status === 'pushed' || peer?.status === 'pushed'
+              ? 'This validated head has already been pushed.'
+              : `Run is already being pushed (${peer?.status ?? status}).`,
+        };
+      }
+    }
+
+    const pushBranch = await resolvePushBranch(
+      session.worktree_path,
+      session.worktree_branch,
+      `run=${run.id}`,
+      args.resolveCurrentBranch ?? defaultResolveCurrentBranch,
+    );
+
+    return await executePush({
+      deps,
+      project,
+      run,
+      card,
+      session,
+      validatedHeadSha,
+      pushBranch,
+      // A forced push skips the review + checks gate; a ready_to_push push
+      // (force=false) cleared it. This drives the timeline warning.
+      bypassedGates: force,
+      baseDrifted,
+      pushAndCreatePr: args.pushAndCreatePr,
+      lifecycle: args.cardLifecycle,
+    });
+  } finally {
+    lock.handle.release();
+  }
 }
 
 export interface RunSessionPushArgs {

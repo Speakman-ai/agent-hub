@@ -369,6 +369,13 @@ export function writeFinalizeRunTerminalTimeline(
      */
     bypassedGates?: boolean;
     /**
+     * True when the push landed over a base that had moved onto ground the
+     * branch touches (a forced push only — the gated path refuses instead).
+     * Recorded so a stale landing is visible in the session timeline rather
+     * than only in server logs.
+     */
+    baseDrifted?: boolean;
+    /**
      * The opened/updated PR URL for a successful push. Carried in the
      * payload so the session's terminal block can render a clickable PR
      * link instead of plain "Pushed to GitHub" text.
@@ -377,11 +384,15 @@ export function writeFinalizeRunTerminalTimeline(
   },
 ): string | null {
   const bypassedGates = Boolean(args.bypassedGates);
+  const baseDrifted = Boolean(args.baseDrifted);
   const prUrl = typeof args.prUrl === 'string' && args.prUrl.length > 0 ? args.prUrl : null;
   const content =
     args.status === 'pushed'
       ? bypassedGates
-        ? 'Pushed to GitHub without running tests or review'
+        ? baseDrifted
+          ? 'Pushed to GitHub without running tests or review, over a base branch that ' +
+            'changed the same files'
+          : 'Pushed to GitHub without running tests or review'
         : 'Finalize run pushed'
       : args.status === 'cancelled'
         ? 'Finalize run cancelled'
@@ -400,6 +411,7 @@ export function writeFinalizeRunTerminalTimeline(
       failureReason: args.failureReason ?? null,
       round: args.round ?? 0,
       bypassedGates,
+      baseDrifted,
       prUrl,
     },
   });

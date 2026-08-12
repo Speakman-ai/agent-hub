@@ -21,6 +21,8 @@ import { AUTO_MERGE_ACTOR, autoMergeReadyPr } from './auto-merge-ready-pr.js';
 import { handleGithubCardOnMerge } from '../github-card-on-merge.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
 import { runFinalizePush } from './push-run.js';
+import { acquirePushLock, type PushLockStmts } from './push-lock.js';
+import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
 import { hasPushedFinalizeRun } from './post-push-session-lock.js';
 import {
@@ -306,20 +308,52 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
     return;
   }
 
-  const outcome = await runFinalizePush({
-    deps: routeDeps,
-    project: ctx.project,
-    run,
+  // Hold the (project, base) landing lock across push AND merge. Under
+  // Merge Automatically the merge is what actually moves the base, so a lock
+  // released at push time would let a second run evaluate base drift against
+  // a base this run is about to change. `runFinalizePush` takes the same lock
+  // by the same run id, which is re-entrant and releases nothing.
+  const lockBaseBranch = await resolveFinalizeBaseBranchForCard({
     card: ctx.card,
-    session: ctx.session,
+    worktreePath: ctx.session.worktree_path ?? '',
+    getEpic: (epicId) => routeDeps!.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
-  if (!outcome.ok) {
+  const lock = await acquirePushLock({
+    stmts: routeDeps.stmts as PushLockStmts,
+    projectId: ctx.project.id,
+    baseBranch: lockBaseBranch,
+    holderRunId: run.id,
+  });
+  if (!lock.ok) {
+    // Non-terminal: the run stays ready_to_push, so the next automation pass
+    // or a human push picks it up once the current holder lands.
     console.warn(
-      `[finalize-automation] Auto-push failed session=${args.sessionId} run=${args.runId}: ${outcome.message ?? outcome.error}`,
+      `[finalize-automation] Auto-push deferred session=${args.sessionId} run=${args.runId}: ` +
+        `landing lock for ${ctx.project.id}/${lockBaseBranch} held by run=${lock.heldBy ?? 'unknown'}`,
     );
     return;
   }
-  if (outcome.prUrl && shouldEnableAutoMergeForAutomation(level)) {
-    void autoMergeFinalizedPr(outcome.prUrl, ctx.project, true, ctx.session.worktree_path!);
+
+  try {
+    const outcome = await runFinalizePush({
+      deps: routeDeps,
+      project: ctx.project,
+      run,
+      card: ctx.card,
+      session: ctx.session,
+    });
+    if (!outcome.ok) {
+      console.warn(
+        `[finalize-automation] Auto-push failed session=${args.sessionId} run=${args.runId}: ${outcome.message ?? outcome.error}`,
+      );
+      return;
+    }
+    if (outcome.prUrl && shouldEnableAutoMergeForAutomation(level)) {
+      // Awaited, not fire-and-forget: the merge must complete inside the lock
+      // hold. `autoMergeFinalizedPr` swallows its own failures.
+      await autoMergeFinalizedPr(outcome.prUrl, ctx.project, true, ctx.session.worktree_path!);
+    }
+  } finally {
+    lock.handle.release();
   }
 }

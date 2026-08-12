@@ -1622,6 +1622,13 @@ export interface FinalizeRunRow {
    * run — push gate compares against this, not the trigger-time idempotency sha.
    */
   validated_head_sha: string | null;
+  /**
+   * `origin/<base>` as of the rebase that produced {@link validated_head_sha}.
+   * The push path re-resolves the base and refuses when it moved onto ground
+   * this branch also changes (see `finalize/base-drift.ts`). Null on rows
+   * written before the column existed — the check fails open for those.
+   */
+  validated_base_sha: string | null;
   /** 1-indexed fix-loop iteration; incremented at each rebase pass. */
   loop_round: number;
   /**
@@ -2582,6 +2589,18 @@ export interface Stmts {
    * spawned session.
    */
   updateFinalizeRunWorktreePath: Stmt;
+  /** Record the base sha the run rebased onto (base-drift baseline). */
+  updateFinalizeRunValidatedBaseSha: Stmt;
+  /** Take the (project, base branch) landing lock. `changes === 1` = acquired. */
+  acquireFinalizePushLock: Stmt;
+  /** Current holder of the landing lock, if any. */
+  getFinalizePushLock: Stmt;
+  /** Heartbeat the landing lock so a long push is not taken over as stale. */
+  touchFinalizePushLock: Stmt;
+  /** Release the landing lock; scoped to the holder so a stale release is a no-op. */
+  releaseFinalizePushLock: Stmt;
+  /** Take over a landing lock whose holder died mid-push. */
+  expireFinalizePushLock: Stmt;
   updateFinalizeRunLoopRound: Stmt;
   /**
    * Most-recent `finalize_runs` row for a session (ordered by

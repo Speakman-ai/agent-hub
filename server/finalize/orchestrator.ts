@@ -130,6 +130,7 @@ import type { FlakeRecoveredInstance } from './step-runner.js';
 import { loadActiveQuarantine, recordRunTestHistory } from './quarantine-gate.js';
 import { applyQuarantineToGate, describeExcused } from './quarantine.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
+import { inspectBaseDrift, resolveBaseSha } from './base-drift.js';
 
 export { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH };
 
@@ -277,6 +278,7 @@ export interface OrchestratorDeps {
     | 'updateFinalizeRunActiveSeconds'
     | 'updateFinalizeRunSessionId'
     | 'updateFinalizeRunWorktreePath'
+    | 'updateFinalizeRunValidatedBaseSha'
     | 'updateFinalizeRunLoopRound'
     | 'updateFinalizeRunReviewerVerdict'
     | 'failFinalizeRun'
@@ -867,6 +869,9 @@ export async function runFinalize(
     // this guard with an unchanged HEAD: it only fires when HEAD MOVED,
     // so the next snapshot necessarily differs.
     let prevValidatedHead: string | null = null;
+    // `origin/<base>` as of this round's rebase; baseline for the base-drift
+    // check at the push gate. Null when the base could not be resolved.
+    let baseValidatedAgainst: string | null = null;
     // §6 no-progress reruns: how many same-SHA reruns we've already spent this
     // streak. Reset to 0 whenever HEAD advances (a real commit landed). Bounds
     // the relaxed fix_no_progress path so a stuck run can't livelock.
@@ -1066,6 +1071,29 @@ export async function runFinalize(
         conflictsDispatched: rebaseOutcome.conflictsDispatchedCount ?? 0,
         head: headValidatedAgainst,
       });
+
+      // Baseline for the base-drift check: the base commit this round's
+      // review + steps actually sit on, derived as the merge base of the
+      // post-rebase HEAD and the base ref (NOT the base tip, which may have
+      // advanced since the rebase ran). Best-effort — an unresolvable base
+      // leaves the column null and the drift check fails open.
+      baseValidatedAgainst = await resolveBaseSha({
+        worktreePath,
+        baseBranch: opts.baseBranch,
+        headSha: headValidatedAgainst,
+        env: spawnEnv,
+        onWarn: (message) =>
+          log(`[finalize-orchestrator] base baseline degraded for run=${runId}: ${message}`),
+      });
+      try {
+        deps.stmts.updateFinalizeRunValidatedBaseSha?.run(baseValidatedAgainst, runId);
+      } catch (err) {
+        log(
+          `[finalize-orchestrator] validated_base_sha write failed for run=${runId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
 
       writeFinalizeRebaseResultTimeline(orchestratorTimelineDeps(deps), {
         sessionId,
@@ -1604,6 +1632,35 @@ export async function runFinalize(
           decision: 'pass',
           validatedHead: gateOutcome.validatedHeadSha,
         });
+
+        // ── Base-drift gate ─────────────────────────────────────────
+        // HEAD held still, but the base may have moved while review +
+        // steps ran. Unrelated base movement is normal and passes; only
+        // movement onto ground this branch also changes invalidates the
+        // signals we just collected. Re-enter the loop so the next
+        // rebase picks up the new base and re-runs everything against it.
+        const baseDrift = await inspectBaseDrift({
+          worktreePath,
+          baseBranch: opts.baseBranch,
+          validatedBaseSha: baseValidatedAgainst,
+          headSha: gateOutcome.validatedHeadSha,
+          env: spawnEnv,
+          onWarn: (message) =>
+            log(`[finalize-orchestrator] base drift check degraded for run=${runId}: ${message}`),
+        });
+        if (baseDrift.kind === 'stale') {
+          trace('push_gate', {
+            round: loopCount,
+            decision: 'refuse',
+            refusalCode: 'base_branch_moved',
+            overlap: baseDrift.overlap.slice(0, 10),
+          });
+          log(
+            `[finalize-orchestrator] base drift refused push for run=${runId}: ` +
+              `${baseDrift.detail}; re-entering rebase`,
+          );
+          continue;
+        }
 
         // ── Flake-recovery gate (§ retry-until-green) ───────────────
         // Classify the run's per-job retry history: a job that failed an
