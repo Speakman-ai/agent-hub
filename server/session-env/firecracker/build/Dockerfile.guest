@@ -97,16 +97,26 @@ RUN systemctl enable docker.service 2>/dev/null || true
 
 # Agent engine CLIs — chat turns under env-owned Firecracker run *inside* the
 # guest, so these must exist on PATH here (mirrors server/Dockerfile runtime).
-RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex \
+    && command -v claude \
+    && command -v gemini \
+    && command -v codex
 
 # Cursor Agent + Grok install into the workspace user's ~/.local/bin.
 # finalize-runner uses uid 1000 as `runner`.
+#
+# Order matters: both installers expose an `agent` shim. Install Grok first,
+# then Cursor, then force `agent` → Cursor's binary so cursor-agent sessions
+# do not silently invoke Grok (which leaves the UI on "Waiting…" forever).
 RUN if id runner >/dev/null 2>&1; then \
-      su - runner -c 'curl -fsSL https://cursor.com/install | bash' && \
-      su - runner -c 'curl -fsSL https://x.ai/cli/install.sh | bash'; \
+      su - runner -c 'curl -fsSL https://x.ai/cli/install.sh | bash' ; \
+      su - runner -c 'curl -fsSL https://cursor.com/install | bash' ; \
+      su - runner -c 'ln -sfn "$(readlink -f "$HOME/.local/bin/cursor-agent")" "$HOME/.local/bin/agent"' ; \
+      su - runner -c 'command -v agent && command -v cursor-agent && command -v grok' ; \
     else \
-      curl -fsSL https://cursor.com/install | bash && \
-      curl -fsSL https://x.ai/cli/install.sh | bash; \
+      curl -fsSL https://x.ai/cli/install.sh | bash ; \
+      curl -fsSL https://cursor.com/install | bash ; \
+      ln -sfn "$(readlink -f "$HOME/.local/bin/cursor-agent")" "$HOME/.local/bin/agent" ; \
     fi
 
 # `Delegate=yes` so containers started inside the guest get their own cgroup

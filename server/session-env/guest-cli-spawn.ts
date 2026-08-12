@@ -224,13 +224,23 @@ export async function writeGuestSystemPromptFile(
  * install even after a successful first install.
  */
 export function guestEngineBinCandidates(binName: string, guestHome: string): string[] {
-  return [
-    path.posix.join(guestHome, '.local', 'bin', binName),
-    path.posix.join('/home/runner', '.local', 'bin', binName),
+  const local = path.posix.join(guestHome, '.local', 'bin', binName);
+  const runnerLocal = path.posix.join('/home/runner', '.local', 'bin', binName);
+  const candidates = [
+    local,
+    runnerLocal,
     path.posix.join('/usr/local', 'bin', binName),
     path.posix.join('/usr', 'bin', binName),
-    binName,
   ];
+  // Cursor's installer also exposes `cursor-agent`; Grok may steal `agent`.
+  if (binName === 'agent') {
+    candidates.unshift(
+      path.posix.join(guestHome, '.local', 'bin', 'cursor-agent'),
+      path.posix.join('/home/runner', '.local', 'bin', 'cursor-agent'),
+    );
+  }
+  candidates.push(binName);
+  return candidates;
 }
 
 async function locateGuestEngineBin(
@@ -238,6 +248,16 @@ async function locateGuestEngineBin(
   binName: string,
   guestHome: string,
 ): Promise<string | null> {
+  // Prefer explicit candidates (Cursor's `cursor-agent` before a Grok-stolen
+  // `agent` shim) before trusting a bare `command -v`.
+  for (const candidate of guestEngineBinCandidates(binName, guestHome)) {
+    if (!candidate.startsWith('/')) continue;
+    if (await absExistsInGuest(env, candidate)) {
+      const exe = await env.worktreeIo.exec(`test -x ${shellQuote(candidate)}`, { cwd: '.' });
+      if (exe.exitCode === 0) return candidate;
+    }
+  }
+
   const pathPrefix = [
     path.posix.join(guestHome, '.local', 'bin'),
     '/home/runner/.local/bin',
@@ -251,14 +271,6 @@ async function locateGuestEngineBin(
   );
   const fromPath = which.stdout.trim().split('\n')[0]?.trim();
   if (which.exitCode === 0 && fromPath) return fromPath;
-
-  for (const candidate of guestEngineBinCandidates(binName, guestHome)) {
-    if (!candidate.startsWith('/')) continue;
-    if (await absExistsInGuest(env, candidate)) {
-      const exe = await env.worktreeIo.exec(`test -x ${shellQuote(candidate)}`, { cwd: '.' });
-      if (exe.exitCode === 0) return candidate;
-    }
-  }
   return null;
 }
 
