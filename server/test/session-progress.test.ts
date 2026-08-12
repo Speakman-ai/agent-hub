@@ -30,13 +30,22 @@ describe('session_progress — insert, complete, fetch', () => {
 
   it('inserts a started row and fetches it back in emit order', () => {
     const stmts = getStmts();
-    stmts.addSessionProgress.run(SESSION_ID, 'msg-1', 'Gather PR context', 'started', 1000, null);
+    stmts.addSessionProgress.run(
+      SESSION_ID,
+      'msg-1',
+      'Gather PR context',
+      'started',
+      1000,
+      null,
+      null,
+    );
     stmts.addSessionProgress.run(
       SESSION_ID,
       'msg-1',
       'Analyze diff and files',
       'started',
       2000,
+      null,
       null,
     );
 
@@ -51,10 +60,19 @@ describe('session_progress — insert, complete, fetch', () => {
 
   it('completeSessionProgress closes the most recent open row for (session, step)', () => {
     const stmts = getStmts();
-    stmts.addSessionProgress.run(SESSION_ID, 'msg-1', 'Gather PR context', 'started', 1000, null);
+    stmts.addSessionProgress.run(
+      SESSION_ID,
+      'msg-1',
+      'Gather PR context',
+      'started',
+      1000,
+      null,
+      null,
+    );
     const info = stmts.completeSessionProgress.run(
       'completed',
       5000,
+      null,
       SESSION_ID,
       'Gather PR context',
     ) as { changes?: number };
@@ -68,12 +86,27 @@ describe('session_progress — insert, complete, fetch', () => {
 
   it('failed status is preserved through complete()', () => {
     const stmts = getStmts();
-    stmts.addSessionProgress.run(SESSION_ID, null, 'Post formal review', 'started', 1000, null);
-    stmts.completeSessionProgress.run('failed', 2500, SESSION_ID, 'Post formal review');
+    stmts.addSessionProgress.run(
+      SESSION_ID,
+      null,
+      'Post formal review',
+      'started',
+      1000,
+      null,
+      null,
+    );
+    stmts.completeSessionProgress.run(
+      'failed',
+      2500,
+      '$ false (exit 1)\nboom',
+      SESSION_ID,
+      'Post formal review',
+    );
 
     const rows = stmts.getSessionProgress.all(SESSION_ID) as SessionProgressRow[];
     expect(rows[0].status).toBe('failed');
     expect(rows[0].finished_at).toBe(2500);
+    expect(rows[0].detail).toBe('$ false (exit 1)\nboom');
   });
 
   it('completeSessionProgress affects zero rows when no open step matches', () => {
@@ -81,6 +114,7 @@ describe('session_progress — insert, complete, fetch', () => {
     const info = stmts.completeSessionProgress.run(
       'completed',
       9999,
+      null,
       SESSION_ID,
       'Never started',
     ) as { changes?: number };
@@ -90,12 +124,28 @@ describe('session_progress — insert, complete, fetch', () => {
   it('re-emitting a step across a session only closes the most recent open row', () => {
     const stmts = getStmts();
     // First emission (early review)
-    stmts.addSessionProgress.run(SESSION_ID, 'msg-1', 'Gather PR context', 'started', 1000, null);
-    stmts.completeSessionProgress.run('completed', 1500, SESSION_ID, 'Gather PR context');
+    stmts.addSessionProgress.run(
+      SESSION_ID,
+      'msg-1',
+      'Gather PR context',
+      'started',
+      1000,
+      null,
+      null,
+    );
+    stmts.completeSessionProgress.run('completed', 1500, null, SESSION_ID, 'Gather PR context');
     // Second emission (re-review after autofix)
-    stmts.addSessionProgress.run(SESSION_ID, 'msg-2', 'Gather PR context', 'started', 5000, null);
+    stmts.addSessionProgress.run(
+      SESSION_ID,
+      'msg-2',
+      'Gather PR context',
+      'started',
+      5000,
+      null,
+      null,
+    );
 
-    stmts.completeSessionProgress.run('completed', 5800, SESSION_ID, 'Gather PR context');
+    stmts.completeSessionProgress.run('completed', 5800, null, SESSION_ID, 'Gather PR context');
 
     const rows = stmts.getSessionProgress.all(SESSION_ID) as SessionProgressRow[];
     expect(rows).toHaveLength(2);
@@ -107,8 +157,8 @@ describe('session_progress — insert, complete, fetch', () => {
 
   it('deleteSessionProgress wipes all rows for a session', () => {
     const stmts = getStmts();
-    stmts.addSessionProgress.run(SESSION_ID, 'msg-1', 'A', 'started', 1, null);
-    stmts.addSessionProgress.run(SESSION_ID, 'msg-1', 'B', 'completed', 2, 3);
+    stmts.addSessionProgress.run(SESSION_ID, 'msg-1', 'A', 'started', 1, null, null);
+    stmts.addSessionProgress.run(SESSION_ID, 'msg-1', 'B', 'completed', 2, 3, null);
     stmts.deleteSessionProgress.run(SESSION_ID);
     const rows = stmts.getSessionProgress.all(SESSION_ID) as SessionProgressRow[];
     expect(rows).toHaveLength(0);

@@ -946,6 +946,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       status: r.status,
       startedAt: r.started_at,
       finishedAt: r.finished_at ?? undefined,
+      ...(r.detail ? { detail: r.detail } : {}),
     }));
     res.json({ sessionId: req.params.sessionId, steps });
   });

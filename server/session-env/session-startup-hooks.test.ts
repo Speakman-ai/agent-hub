@@ -117,14 +117,19 @@ describe('runSessionStartupHooks', () => {
       if (cmd === 'false') return { stdout: '', stderr: 'boom', exitCode: 1 };
       return { stdout: '', stderr: '', exitCode: 0 };
     });
+    const progress: Array<{ stepStatus: string; detail?: string }> = [];
     const status = await runSessionStartupHooks({
       sessionId: 's1',
       env: makeEnv(io),
       commands: ['true', 'false', 'echo never'],
+      onProgress: (u) => progress.push({ stepStatus: u.stepStatus, detail: u.detail }),
     });
     expect(status.status).toBe('failed');
     expect(status.commands.map((c) => c.status)).toEqual(['ok', 'failed', 'skipped']);
     expect(status.commands[1]!.detail).toContain('boom');
+    expect(progress.at(-1)?.stepStatus).toBe('failed');
+    expect(progress.at(-1)?.detail).toContain('$ false');
+    expect(progress.at(-1)?.detail).toContain('boom');
   });
 
   it('aborts pending work when the signal fires before a command', async () => {

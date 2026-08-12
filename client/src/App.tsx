@@ -1834,6 +1834,7 @@ export default function App({ initialView }: any = {}) {
               status: data.status,
               startedAt: data.startedAt,
               finishedAt: data.finishedAt ?? undefined,
+              detail: data.detail ?? undefined,
             }),
           }));
           break;

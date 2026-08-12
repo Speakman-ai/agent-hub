@@ -1230,6 +1230,7 @@ const sessionEnvManager = new SessionEnvManager({
       status: update.stepStatus,
       startedAt: update.startedAt,
       finishedAt: update.finishedAt,
+      detail: update.detail,
     });
   },
   resolvePublishPorts: (sessionId) => {

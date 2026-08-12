@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SESSION_ENV_LAUNCH_STEP } from '../../shared/utils/sessionEnvLaunch.js';
-import { emitSessionEnvLaunchProgress } from './session-env-progress.js';
+import {
+  emitSessionEnvLaunchProgress,
+  emitSessionStartupProgress,
+} from './session-env-progress.js';
+import { SESSION_STARTUP_STEP } from './session-startup-hooks.js';
 
 function mockStmts(completeChanges = 1) {
   return {
@@ -39,6 +43,7 @@ describe('emitSessionEnvLaunchProgress', () => {
       'started',
       1000,
       null,
+      null,
     );
     expect(broadcast).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -62,6 +67,7 @@ describe('emitSessionEnvLaunchProgress', () => {
       status: 'started',
       startedAt: 1000,
       finishedAt: null,
+      detail: null,
     });
   });
 
@@ -82,6 +88,7 @@ describe('emitSessionEnvLaunchProgress', () => {
     expect(stmts.completeSessionProgress.run).toHaveBeenCalledWith(
       'completed',
       2500,
+      null,
       'sess-1',
       SESSION_ENV_LAUNCH_STEP,
     );
@@ -91,6 +98,37 @@ describe('emitSessionEnvLaunchProgress', () => {
         type: 'session-progress',
         status: 'completed',
         finishedAt: 2500,
+      }),
+    );
+  });
+});
+
+describe('emitSessionStartupProgress', () => {
+  it('persists failure detail on the Session setup step', () => {
+    const stmts = mockStmts(1);
+    const broadcast = vi.fn();
+    emitSessionStartupProgress({
+      stmts,
+      broadcast,
+      sessionId: 'sess-1',
+      status: 'failed',
+      startedAt: 1000,
+      finishedAt: 2000,
+      detail: '$ pip install (exit 1)\nerror: no such file',
+    });
+    expect(stmts.completeSessionProgress.run).toHaveBeenCalledWith(
+      'failed',
+      2000,
+      '$ pip install (exit 1)\nerror: no such file',
+      'sess-1',
+      SESSION_STARTUP_STEP,
+    );
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session-progress',
+        step: SESSION_STARTUP_STEP,
+        status: 'failed',
+        detail: '$ pip install (exit 1)\nerror: no such file',
       }),
     );
   });

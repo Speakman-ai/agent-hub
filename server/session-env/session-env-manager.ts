@@ -73,6 +73,7 @@ export interface SessionEnvManagerDeps {
     stepStatus: 'started' | 'completed' | 'failed';
     startedAt: number;
     finishedAt?: number;
+    detail?: string;
   }) => void;
   /** Idle envs with no live processes are reaped after this long. Default 4h. */
   idleTtlMs?: number;

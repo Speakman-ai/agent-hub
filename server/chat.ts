@@ -4323,6 +4323,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 'started',
                 event.startedAt,
                 null,
+                event.detail ?? null,
               );
             } else {
               // `completed` / `failed` — close the most recent open row for
@@ -4333,6 +4334,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               const info = S.completeSessionProgress.run(
                 event.status,
                 finishedAt,
+                event.detail ?? null,
                 sessionId,
                 event.step,
               );
@@ -4344,6 +4346,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   event.status,
                   event.startedAt,
                   finishedAt,
+                  event.detail ?? null,
                 );
               }
             }
@@ -4359,6 +4362,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             status: event.status,
             startedAt: event.startedAt,
             finishedAt: event.finishedAt ?? null,
+            detail: event.detail ?? null,
           });
         }
 

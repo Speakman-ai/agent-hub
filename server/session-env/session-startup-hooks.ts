@@ -82,6 +82,17 @@ function truncateDetail(stdout: string, stderr: string): string | null {
   return `…${merged.slice(-DETAIL_CAP)}`;
 }
 
+/** Compact failure text for Progress panel / WS (command + exit + log tail). */
+export function formatSessionStartupProgressDetail(
+  status: SessionStartupStatus,
+): string | undefined {
+  const failed = status.commands.find((c) => c.status === 'failed');
+  if (!failed) return undefined;
+  const header = `$ ${failed.cmd}` + (failed.exitCode != null ? ` (exit ${failed.exitCode})` : '');
+  const body = failed.detail?.trim();
+  return body ? `${header}\n${body}` : header;
+}
+
 function statusPathForEnv(env: SessionEnv): string {
   return env.worktreeIo.sharing === 'env-owned'
     ? SESSION_STARTUP_STATUS_GUEST_ABS
@@ -150,6 +161,7 @@ export interface RunSessionStartupHooksArgs {
     stepStatus: 'started' | 'completed' | 'failed';
     startedAt: number;
     finishedAt?: number;
+    detail?: string;
   }) => void;
 }
 
@@ -207,11 +219,17 @@ export async function runSessionStartupHooks(
     }
     statusBySession.set(args.sessionId, status);
     await persistStatusFile(args.env.worktreeIo, status);
+    const detail = formatSessionStartupProgressDetail(status);
+    console.warn(
+      `[session-startup] session=${args.sessionId} aborted before commands ran` +
+        (detail ? `\n${detail}` : ''),
+    );
     args.onProgress?.({
       runStatus: 'failed',
       stepStatus: 'failed',
       startedAt,
       finishedAt: status.finishedAt,
+      ...(detail ? { detail } : {}),
     });
     return status;
   }
@@ -234,6 +252,7 @@ export async function runSessionStartupHooks(
     entry.status = 'running';
     statusBySession.set(args.sessionId, { ...status, commands: [...status.commands] });
     await persistStatusFile(args.env.worktreeIo, status);
+    console.log(`[session-startup] session=${args.sessionId} running: ${entry.cmd}`);
 
     try {
       const result = await args.env.worktreeIo.exec(entry.cmd, {
@@ -253,6 +272,7 @@ export async function runSessionStartupHooks(
       if (result.exitCode === 0) {
         entry.status = 'ok';
         entry.detail = null;
+        console.log(`[session-startup] session=${args.sessionId} ok: ${entry.cmd}`);
       } else {
         entry.status = 'failed';
         entry.detail = truncateDetail(result.stdout, result.stderr) ?? `exit ${result.exitCode}`;
@@ -261,6 +281,9 @@ export async function runSessionStartupHooks(
         }
         status.status = 'failed';
         status.finishedAt = now();
+        console.warn(
+          `[session-startup] session=${args.sessionId} failed: ${entry.cmd} (exit ${result.exitCode})\n${entry.detail}`,
+        );
         break;
       }
     } catch (err) {
@@ -272,6 +295,9 @@ export async function runSessionStartupHooks(
       }
       status.status = 'failed';
       status.finishedAt = now();
+      console.warn(
+        `[session-startup] session=${args.sessionId} failed: ${entry.cmd}\n${entry.detail}`,
+      );
       break;
     }
   }
@@ -283,11 +309,22 @@ export async function runSessionStartupHooks(
 
   statusBySession.set(args.sessionId, status);
   await persistStatusFile(args.env.worktreeIo, status);
+  const progressDetail =
+    status.status === 'failed' ? formatSessionStartupProgressDetail(status) : undefined;
+  if (status.status === 'ready') {
+    console.log(
+      `[session-startup] session=${args.sessionId} ready (${status.commands.length} command(s))`,
+    );
+  } else if (status.status === 'failed' && progressDetail) {
+    // Already logged the failing command above; keep a one-line summary.
+    console.warn(`[session-startup] session=${args.sessionId} setup failed`);
+  }
   args.onProgress?.({
     runStatus: status.status,
     stepStatus: status.status === 'ready' ? 'completed' : 'failed',
     startedAt,
     finishedAt: status.finishedAt ?? now(),
+    ...(progressDetail ? { detail: progressDetail } : {}),
   });
   return status;
 }
@@ -314,16 +351,18 @@ export function startSessionStartupHooks(
       statusPath: statusPathForEnv(args.env),
     };
     statusBySession.set(args.sessionId, failed);
+    const detail = formatSessionStartupProgressDetail(failed);
     console.warn(
       `[session-startup] session=${args.sessionId} failed: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      }` + (detail ? `\n${detail}` : ''),
     );
     args.onProgress?.({
       runStatus: 'failed',
       stepStatus: 'failed',
       startedAt: failed.startedAt,
       finishedAt: failed.finishedAt ?? undefined,
+      ...(detail ? { detail } : {}),
     });
     return failed;
   });
