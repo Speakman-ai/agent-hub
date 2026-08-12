@@ -3,6 +3,7 @@ import {
   adaptSpawnEnvForGuest,
   buildGuestCliCommand,
   finalizeGuestSpawnEnv,
+  guestEngineBinCandidates,
   GUEST_CLI_HOME,
   GUEST_RUNTIME_ROOT,
   GUEST_SKILLS_ROOT,
@@ -16,6 +17,17 @@ describe('shellQuote / buildGuestCliCommand', () => {
     expect(shellQuote("it's")).toBe(`'it'\\''s'`);
     expect(buildGuestCliCommand('/usr/bin/claude', ['--print', 'hello world'])).toBe(
       `'/usr/bin/claude' '--print' 'hello world'`,
+    );
+  });
+});
+
+describe('guestEngineBinCandidates', () => {
+  it('prefers the staged CLI HOME local bin before runner/system paths', () => {
+    expect(guestEngineBinCandidates('claude', GUEST_CLI_HOME)[0]).toBe(
+      `${GUEST_CLI_HOME}/.local/bin/claude`,
+    );
+    expect(guestEngineBinCandidates('agent', GUEST_CLI_HOME)).toContain(
+      '/home/runner/.local/bin/agent',
     );
   });
 });
