@@ -321,6 +321,7 @@ function initDb(dataDir: string): void {
       status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
       started_at INTEGER NOT NULL,
       finished_at INTEGER,
+      detail TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_session_progress_session
@@ -1349,6 +1350,15 @@ function initDb(dataDir: string): void {
       CREATE INDEX IF NOT EXISTS finalize_run_steps_run
         ON finalize_run_steps(run_id, step_index);
     `);
+  }
+
+  // session_progress.detail — optional failure / diagnostic text for the
+  // Progress panel (session-setup stdout/stderr, etc.). CREATE TABLE above
+  // includes it for fresh DBs; heal legacy installs here.
+  try {
+    db.exec('ALTER TABLE session_progress ADD COLUMN detail TEXT');
+  } catch {
+    /* column already exists */
   }
 
   // session_replays.updated_at — added for the continuous-replay dashboard's
@@ -4733,15 +4743,15 @@ function initDb(dataDir: string): void {
 
     // Session progress steps (Cursor-style ProgressPanel rehydration)
     addSessionProgress: db.prepare(
-      `INSERT INTO session_progress (session_id, message_id, step, status, started_at, finished_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO session_progress (session_id, message_id, step, status, started_at, finished_at, detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     // Mark the most recent `started` row for this (session,step) as done.
     // Using the latest id disambiguates when the same step is re-emitted across
     // a session (e.g. re-review) — we only close the most recent open one.
     completeSessionProgress: db.prepare(
       `UPDATE session_progress
-         SET status = ?, finished_at = ?
+         SET status = ?, finished_at = ?, detail = ?
        WHERE id = (
          SELECT id FROM session_progress
          WHERE session_id = ? AND step = ? AND status = 'started'

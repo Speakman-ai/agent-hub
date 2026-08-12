@@ -1031,6 +1031,8 @@ export interface SessionProgressRow {
   started_at: number;
   /** Epoch ms when the step finished (completed or failed). Null while in-flight. */
   finished_at: number | null;
+  /** Optional failure / diagnostic text (e.g. session-setup stdout/stderr). */
+  detail: string | null;
   created_at: string;
 }
 
@@ -3867,6 +3869,8 @@ export interface ProgressStepEvent extends BaseStreamEvent {
   startedAt: number;
   /** Epoch ms when the step reached `completed` or `failed`. Absent for `started`. */
   finishedAt?: number;
+  /** Optional failure / diagnostic text shown under the Progress panel step. */
+  detail?: string;
 }
 
 /**

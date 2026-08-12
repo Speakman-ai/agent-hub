@@ -32,6 +32,7 @@ function emitProgressStep(args: {
   status: ProgressStepStatus;
   startedAt: number;
   finishedAt?: number;
+  detail?: string;
   nextSeq?: () => number;
   log?: (msg: string) => void;
 }): void {
@@ -41,6 +42,7 @@ function emitProgressStep(args: {
     status: args.status,
     startedAt: args.startedAt,
     ...(args.finishedAt != null ? { finishedAt: args.finishedAt } : {}),
+    ...(args.detail ? { detail: args.detail } : {}),
   };
   const seq = args.nextSeq?.() ?? Date.now();
   const log = args.log ?? ((msg: string) => console.warn(msg));
@@ -59,6 +61,7 @@ function emitProgressStep(args: {
       }`,
     );
   }
+  const detail = args.detail ?? null;
   try {
     if (args.status === 'started') {
       args.stmts.addSessionProgress.run(
@@ -68,12 +71,14 @@ function emitProgressStep(args: {
         'started',
         event.startedAt,
         null,
+        detail,
       );
     } else {
       const finishedAt = args.finishedAt ?? Date.now();
       const info = args.stmts.completeSessionProgress.run(
         args.status,
         finishedAt,
+        detail,
         args.sessionId,
         event.step,
       );
@@ -85,6 +90,7 @@ function emitProgressStep(args: {
           args.status,
           event.startedAt,
           finishedAt,
+          detail,
         );
       }
     }
@@ -111,6 +117,7 @@ function emitProgressStep(args: {
     status: event.status,
     startedAt: event.startedAt,
     finishedAt: event.finishedAt ?? null,
+    detail: event.detail ?? null,
   });
 }
 
@@ -147,6 +154,7 @@ export function emitSessionStartupProgress(args: {
   status: ProgressStepStatus;
   startedAt: number;
   finishedAt?: number;
+  detail?: string;
   log?: (msg: string) => void;
 }): void {
   emitProgressStep({
@@ -158,6 +166,7 @@ export function emitSessionStartupProgress(args: {
     status: args.status,
     startedAt: args.startedAt,
     finishedAt: args.finishedAt,
+    detail: args.detail,
     log: args.log,
   });
 }
