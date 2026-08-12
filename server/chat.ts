@@ -60,6 +60,11 @@ import {
 } from './session-env/guest-cli-spawn.js';
 import { FIRECRACKER_GUEST_WORKSPACE } from './session-env/firecracker/firecracker-vm-args.js';
 import { emitSessionEnvLaunchProgress } from './session-env/session-env-progress.js';
+import {
+  formatSessionStartupPromptSection,
+  getProjectSessionStartupCommands,
+  getSessionStartupStatus,
+} from './session-env/session-startup-hooks.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -813,6 +818,17 @@ export function buildEnrichedPrompt(
   if (browserToolsOn && isFirstMessage) {
     prompt += `\n\n## Browser Automation Available
 You have access to a real Chromium browser in this session. When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. The full operation list (\`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`) and the URL-egress caveats are in the **ReAct Loop** section further down — read them before driving sensitive pages.`;
+  }
+
+  // Background session-startup hooks (venv / npm install in guest, etc.).
+  if (options.sessionId && projectId) {
+    const startupProject = findProject(projectId);
+    const startupCmds = startupProject ? getProjectSessionStartupCommands(startupProject) : [];
+    if (startupCmds.length > 0) {
+      prompt += formatSessionStartupPromptSection(getSessionStartupStatus(options.sessionId), {
+        commandsConfigured: true,
+      });
+    }
   }
 
   if (projectId) {
@@ -3856,6 +3872,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // AGENT_HUB_PUBLIC_URL (config `publicUrl`). See resolveAgentHubApiBaseForSpawn.
         base.AGENT_HUB_URL = resolveAgentHubApiBaseForSpawn(config);
         base.PROJECT_ID = project.id;
+        {
+          const setup = getSessionStartupStatus(sessionId);
+          if (setup && setup.status !== 'skipped') {
+            base.AGENT_HUB_SESSION_SETUP_STATUS = setup.status;
+            base.AGENT_HUB_SESSION_SETUP_PATH = setup.statusPath;
+          }
+        }
         // Active-PR awareness for the spawned process — companion to the
         // `## Active Pull Request` system-prompt block (see buildEnrichedPrompt).
         // Scripts and skills that key off env vars (e.g. a future "before you

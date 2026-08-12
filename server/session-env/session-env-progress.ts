@@ -9,8 +9,9 @@ import type { BroadcastFn, ProgressStepEvent, ProgressStepStatus } from '../type
 import { buildSessionEventBroadcast } from '../session-event-broadcast.js';
 import { clampPayload } from '../session-events-store.js';
 import { SESSION_ENV_LAUNCH_STEP } from '../../shared/utils/sessionEnvLaunch.js';
+import { SESSION_STARTUP_STEP } from './session-startup-hooks.js';
 
-export { SESSION_ENV_LAUNCH_STEP };
+export { SESSION_ENV_LAUNCH_STEP, SESSION_STARTUP_STEP };
 
 type StmtRun = { run: (...args: any[]) => unknown };
 
@@ -20,25 +21,28 @@ export type SessionEnvProgressStmts = {
   completeSessionProgress: StmtRun;
 };
 
-export function emitSessionEnvLaunchProgress(args: {
+const SESSION_STARTUP_MESSAGE_ID = '__session_startup__';
+
+function emitProgressStep(args: {
   stmts: SessionEnvProgressStmts;
   broadcast: BroadcastFn;
   sessionId: string;
   messageId: string;
-  nextSeq: () => number;
+  step: string;
   status: ProgressStepStatus;
   startedAt: number;
   finishedAt?: number;
+  nextSeq?: () => number;
   log?: (msg: string) => void;
 }): void {
   const event: ProgressStepEvent = {
     type: 'progress_step',
-    step: SESSION_ENV_LAUNCH_STEP,
+    step: args.step,
     status: args.status,
     startedAt: args.startedAt,
     ...(args.finishedAt != null ? { finishedAt: args.finishedAt } : {}),
   };
-  const seq = args.nextSeq();
+  const seq = args.nextSeq?.() ?? Date.now();
   const log = args.log ?? ((msg: string) => console.warn(msg));
   try {
     args.stmts.addSessionEvent.run(
@@ -107,5 +111,53 @@ export function emitSessionEnvLaunchProgress(args: {
     status: event.status,
     startedAt: event.startedAt,
     finishedAt: event.finishedAt ?? null,
+  });
+}
+
+export function emitSessionEnvLaunchProgress(args: {
+  stmts: SessionEnvProgressStmts;
+  broadcast: BroadcastFn;
+  sessionId: string;
+  messageId: string;
+  nextSeq: () => number;
+  status: ProgressStepStatus;
+  startedAt: number;
+  finishedAt?: number;
+  log?: (msg: string) => void;
+}): void {
+  emitProgressStep({
+    stmts: args.stmts,
+    broadcast: args.broadcast,
+    sessionId: args.sessionId,
+    messageId: args.messageId,
+    step: SESSION_ENV_LAUNCH_STEP,
+    status: args.status,
+    startedAt: args.startedAt,
+    finishedAt: args.finishedAt,
+    nextSeq: args.nextSeq,
+    log: args.log,
+  });
+}
+
+/** Background session-startup-hooks progress (no chat message required). */
+export function emitSessionStartupProgress(args: {
+  stmts: SessionEnvProgressStmts;
+  broadcast: BroadcastFn;
+  sessionId: string;
+  status: ProgressStepStatus;
+  startedAt: number;
+  finishedAt?: number;
+  log?: (msg: string) => void;
+}): void {
+  emitProgressStep({
+    stmts: args.stmts,
+    broadcast: args.broadcast,
+    sessionId: args.sessionId,
+    messageId: SESSION_STARTUP_MESSAGE_ID,
+    step: SESSION_STARTUP_STEP,
+    status: args.status,
+    startedAt: args.startedAt,
+    finishedAt: args.finishedAt,
+    log: args.log,
   });
 }

@@ -4110,6 +4110,17 @@ export function AgentConfigSection({
     return map;
   });
 
+  const [projectSessionStartupInput, setProjectSessionStartupInput] = useState<any>(() => {
+    const map: Record<string, any> = {};
+    projects.forEach((p: any) => {
+      map[p.id] =
+        Array.isArray(p.sessionStartupCommands) && p.sessionStartupCommands.length
+          ? p.sessionStartupCommands.join('\n')
+          : '';
+    });
+    return map;
+  });
+
   const [projectCheckHealInput, setProjectCheckHealInput] = useState<any>(() => {
     const map: Record<string, any> = {};
     projects.forEach((p: any) => {
@@ -4142,6 +4153,14 @@ export function AgentConfigSection({
     () =>
       JSON.stringify(
         Object.fromEntries(projects.map((p: any) => [p.id, p.preCommitCommands ?? []])),
+      ),
+    [projects],
+  );
+
+  const sessionStartupServerSnap = useMemo(
+    () =>
+      JSON.stringify(
+        Object.fromEntries(projects.map((p: any) => [p.id, p.sessionStartupCommands ?? []])),
       ),
     [projects],
   );
@@ -4180,6 +4199,20 @@ export function AgentConfigSection({
       ),
     );
   }, [preCommitServerSnap]);
+
+  useEffect(() => {
+    setProjectSessionStartupInput(() =>
+      Object.fromEntries(
+        projects.map((p: any) => {
+          const fromServer =
+            Array.isArray(p.sessionStartupCommands) && p.sessionStartupCommands.length
+              ? p.sessionStartupCommands.join('\n')
+              : '';
+          return [p.id, fromServer];
+        }),
+      ),
+    );
+  }, [sessionStartupServerSnap]);
 
   useEffect(() => {
     setProjectCheckHealInput(() =>
@@ -4261,6 +4294,10 @@ export function AgentConfigSection({
         .split('\n')
         .map((l: any) => l.trim())
         .filter(Boolean);
+      const sessionStartupLines = (projectSessionStartupInput[projectId] || '')
+        .split('\n')
+        .map((l: any) => l.trim())
+        .filter(Boolean);
       const checkHealLines = (projectCheckHealInput[projectId] || '')
         .split('\n')
         .map((l: any) => l.trim())
@@ -4281,6 +4318,7 @@ export function AgentConfigSection({
           lint: cmds.lint || null,
         },
         preCommitCommands: preCommitLines,
+        sessionStartupCommands: sessionStartupLines,
         checkHealCommands: checkHealLines,
         checkHealMaxRounds: checkHealLines.length ? checkHealMaxRounds : null,
       };
@@ -4452,6 +4490,38 @@ export function AgentConfigSection({
                             }))
                           }
                           placeholder={'npm run lint\nnpm test'}
+                          rows={4}
+                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+                        />
+                      </div>
+                      <div className="pt-1">
+                        <label className="text-xs text-gray-400 font-semibold">
+                          Session startup (after env boot)
+                        </label>
+                        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
+                          One shell command per line, run in the background inside the session
+                          environment after every VM/container boot (does not block chat). Use
+                          idempotent commands (e.g.{' '}
+                          <code className="text-gray-400">
+                            [ -d .venv ] || python3 -m venv .venv
+                          </code>
+                          ). Status is written to{' '}
+                          <code className="text-gray-400">
+                            .agent-hub-runtime/session-startup.json
+                          </code>{' '}
+                          so the agent can see progress. Leave empty to skip.
+                        </p>
+                        <textarea
+                          value={projectSessionStartupInput[p.id] ?? ''}
+                          onChange={(e: any) =>
+                            setProjectSessionStartupInput((prev: any) => ({
+                              ...prev,
+                              [p.id]: e.target.value,
+                            }))
+                          }
+                          placeholder={
+                            '[ -d .venv ] || python3 -m venv .venv\n.venv/bin/pip install -r requirements.txt'
+                          }
                           rows={4}
                           className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
                         />

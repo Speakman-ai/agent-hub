@@ -3223,6 +3223,15 @@ export interface Project {
    */
   preCommitCommands?: string[];
   /**
+   * Shell commands run inside the session environment after every SessionEnv
+   * boot (Firecracker / container / host), in the worktree cwd. Started in the
+   * background so chat/terminal are not blocked; status is written to
+   * `.agent-hub-runtime/session-startup.json` and injected into the agent
+   * prompt. Scripts should be idempotent (`[ -d .venv ] || python3 -m venv .venv`).
+   * Web client: Settings → Project Settings. Mobile does not expose this yet.
+   */
+  sessionStartupCommands?: string[];
+  /**
    * When non-empty, a non-zero exit from `preCommitCommands` may run these
    * fixers (e.g. `npm run lint:fix`, `npm run format`) and re-run the failed
    * check suite, capped by `checkHealMaxRounds`.

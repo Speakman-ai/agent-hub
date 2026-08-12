@@ -194,6 +194,7 @@ export const ProjectOnboardRequestSchema = z
           .optional()
           .openapi({ description: 'GitHub repository selected during onboarding.' }),
         preCommitCommands: z.unknown().optional(),
+        sessionStartupCommands: z.unknown().optional(),
         checkHealCommands: z.unknown().optional(),
         checkHealMaxRounds: z.unknown().optional(),
       })

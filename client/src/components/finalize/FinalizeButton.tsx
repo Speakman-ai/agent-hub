@@ -236,7 +236,9 @@ export default function FinalizeButton({
         await api.pushSessionToGithub(projectId, sessionId, { force: true });
       }
     } catch (err: any) {
-      onError?.(err?.message || 'Failed to push to GitHub');
+      onError?.(
+        err?.message || (hosted ? 'Failed to push to Agent Hub' : 'Failed to push to GitHub'),
+      );
     } finally {
       setPushPending(false);
     }
@@ -249,6 +251,7 @@ export default function FinalizeButton({
     hasCommittableChanges,
     onError,
     isResolveSession,
+    hosted,
   ]);
 
   // Stop an in-flight phase. The server trips the orchestrator's cancel
@@ -305,7 +308,9 @@ export default function FinalizeButton({
   const activeSuffix =
     typeof activeSeconds === 'number' ? ` · ${formatDuration(activeSeconds)} active` : '';
 
-  const showPush = githubConnected && sessionId;
+  // Hub-hosted projects push via the Hub API (no GitHub OAuth required).
+  // GitHub-backed projects still need a connected GitHub account.
+  const showPush = !!sessionId && (hosted || githubConnected);
 
   return (
     <div className="relative flex shrink-0 gap-2 sm:inline-flex sm:items-center sm:gap-1">

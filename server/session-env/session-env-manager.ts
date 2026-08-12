@@ -29,6 +29,11 @@
 import type { SessionEnv, SessionEnvDisposeOpts, SessionEnvKind } from './session-env.js';
 import { createSessionEnv, type CreateSessionEnvOpts } from './select-session-env.js';
 import { getSessionEnvSelection, whenSessionEnvSelectionReady } from './sysbox-capability.js';
+import {
+  clearSessionStartupStatus,
+  startSessionStartupHooks,
+  type SessionStartupRunStatus,
+} from './session-startup-hooks.js';
 
 export interface SessionEnvManagerDeps {
   /**
@@ -54,6 +59,21 @@ export interface SessionEnvManagerDeps {
    * start with an empty `-p` set and lock out later mapPortsOut.
    */
   resolvePublishPorts?: (sessionId: string) => number[] | null;
+  /**
+   * Project `sessionStartupCommands` for this session (empty = skip).
+   * Looked up after mountWorktree; run in the background without blocking ensure.
+   */
+  resolveStartupCommands?: (sessionId: string) => string[];
+  /**
+   * Progress callback for background session startup hooks (Progress panel).
+   */
+  onStartupProgress?: (update: {
+    sessionId: string;
+    runStatus: SessionStartupRunStatus;
+    stepStatus: 'started' | 'completed' | 'failed';
+    startedAt: number;
+    finishedAt?: number;
+  }) => void;
   /** Idle envs with no live processes are reaped after this long. Default 4h. */
   idleTtlMs?: number;
   /**
@@ -76,6 +96,8 @@ interface Entry {
   /** In-flight or settled creation. One per session, so `ensure` races collapse. */
   promise: Promise<SessionEnv>;
   env: SessionEnv | null;
+  /** Cancels in-flight session startup hooks on dispose. */
+  startupAbort?: AbortController;
 }
 
 export class SessionEnvManager {
@@ -193,6 +215,27 @@ export class SessionEnvManager {
     });
     await env.mountWorktree();
     this.logger.log(`[session-env] ${sessionId}: ready on "${kind}" adapter`);
+
+    // Background project startup hooks — never block ensure()/chat. Abort on dispose.
+    const commands = this.deps.resolveStartupCommands?.(sessionId) ?? [];
+    if (commands.length > 0) {
+      const abort = new AbortController();
+      entry.startupAbort = abort;
+      void startSessionStartupHooks({
+        sessionId,
+        env,
+        commands,
+        signal: abort.signal,
+        onProgress: (update) => {
+          this.deps.onStartupProgress?.({ sessionId, ...update });
+        },
+      }).then((status) => {
+        this.logger.log(
+          `[session-env] ${sessionId}: startup hooks ${status.status} (${commands.length} command(s))`,
+        );
+      });
+    }
+
     return env;
   }
 
@@ -233,6 +276,8 @@ export class SessionEnvManager {
   }
 
   async #teardown(sessionId: string, entry: Entry, opts: SessionEnvDisposeOpts): Promise<void> {
+    entry.startupAbort?.abort();
+    clearSessionStartupStatus(sessionId);
     let env = entry.env;
     if (!env) {
       // Creation still in flight — wait for it so we dispose a real env
