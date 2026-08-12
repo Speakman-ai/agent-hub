@@ -208,6 +208,40 @@ describe('computeSessionChanges', () => {
     expect(paths).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
   });
 
+  it('omits Hub runtime bookkeeping from the Changes file list', async () => {
+    const routes: typeof baseRoutes = [
+      [has('rev-parse', '--verify', 'origin/main'), ok('basesha111\n')],
+      [has('merge-base'), ok('mergebase999\n')],
+      [has('rev-parse', '--abbrev-ref', 'HEAD'), ok('agent-hub/dev/session-x\n')],
+      [(a) => a[0] === 'rev-parse' && a[1] === 'HEAD', ok('headsha222\n')],
+      [
+        has('status', '--porcelain'),
+        ok('?? .agent-hub-runtime/session-startup.json\n M src/a.ts\n'),
+      ],
+      [
+        has('--name-status'),
+        ok(['M', 'src/a.ts', 'A', '.agent-hub-runtime/other.json'].join(NUL) + NUL),
+      ],
+      [
+        has('--numstat', '-z'),
+        ok(['1\t1\tsrc/a.ts', '2\t0\t.agent-hub-runtime/other.json'].join(NUL) + NUL),
+      ],
+      [
+        has('ls-files', '--others'),
+        ok(['.agent-hub-runtime/session-startup.json', 'src/new.ts'].join(NUL) + NUL),
+      ],
+      [has('--no-index', '--numstat'), ok('5\t0\tsrc/new.ts\n', 1)],
+    ];
+    const summary = await computeSessionChanges({
+      io,
+      baseBranch: 'main',
+      exec: fakeExec(routes),
+    });
+    const paths = summary.files.map((f) => f.path);
+    expect(paths).toEqual(['src/a.ts', 'src/new.ts']);
+    expect(paths.some((p) => p.startsWith('.agent-hub-runtime'))).toBe(false);
+  });
+
   it('throws GitCommandError when a core git command fails', async () => {
     // Simulates a stale worktree path / non-repo directory — every command
     // exits 128. The helper must surface this, not return an empty change set.

@@ -258,6 +258,24 @@ def stream_worktree(src_fd: int, dest_dir: str) -> None:
     if cons_rc != 0:
         raise SystemExit(f"tar extract failed with exit {cons_rc}")
 
+    # `--exclude-vcs-ignores` omits paths matching .gitignore even when they
+    # are tracked (force-added `sample.env`, ignored `.vscode/`, …). The guest
+    # then looks like those files were deleted, and the Changes badge fills
+    # with false positives against the base branch. Re-materialize every
+    # index entry from the copied `.git` so tracked files always land.
+    git_dir = os.path.join(dest_dir, ".git")
+    if os.path.isdir(git_dir):
+        restore = subprocess.run(
+            ["git", "-C", dest_dir, "checkout-index", "-a", "-f"],
+            capture_output=True,
+            text=True,
+        )
+        if restore.returncode != 0:
+            detail = (restore.stderr or restore.stdout or "").strip() or "no output"
+            raise SystemExit(
+                f"git checkout-index failed (exit {restore.returncode}): {detail}"
+            )
+
 fd = open_nofollow_dir(worktree)
 try:
     stream_worktree(fd, dest)
