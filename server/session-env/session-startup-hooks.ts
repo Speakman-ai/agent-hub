@@ -111,7 +111,17 @@ function statusPathForEnv(env: SessionEnv): string {
  * Important: do **not** use `worktreeIo.exec` here. On host-shared container
  * envs that path runs on the Hub host at the seed worktree; chat/terminal/
  * preview use `spawn` inside the env (`/workspace`). Startup must match.
+ *
+ * Commands are wrapped in `bash -c` so project config can use bashisms
+ * (`source`, `[[ ]]`, arrays). Adapters spawn via `/bin/sh -c` by default,
+ * which rejects `source` with exit 127.
  */
+export function wrapSessionStartupCommandForBash(command: string): string {
+  // Single-quote the user command for bash -c. Same quoting GuestWorktreeIo uses.
+  const quoted = `'${command.replaceAll("'", `'\\''`)}'`;
+  return `bash -c ${quoted}`;
+}
+
 export async function runStartupCommandInSessionWorkspace(
   env: SessionEnv,
   command: string,
@@ -123,7 +133,7 @@ export async function runStartupCommandInSessionWorkspace(
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   const timeoutMs = opts.timeoutMs ?? SESSION_STARTUP_COMMAND_TIMEOUT_MS;
   const maxBytes = opts.maxOutputBytes ?? STARTUP_OUTPUT_MAX_BYTES;
-  const proc = env.spawn(command, {
+  const proc = env.spawn(wrapSessionStartupCommandForBash(command), {
     cwd: '.',
     name: `session-startup:${command.slice(0, 48)}`,
   });

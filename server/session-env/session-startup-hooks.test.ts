@@ -176,7 +176,10 @@ describe('runSessionStartupHooks', () => {
     });
     expect(status.status).toBe('ready');
     expect(status.commands.map((c) => c.status)).toEqual(['ok', 'ok']);
-    expect(env.spawnCalls.map((c) => c.command)).toEqual(['echo one', 'echo two']);
+    expect(env.spawnCalls.map((c) => c.command)).toEqual([
+      "bash -c 'echo one'",
+      "bash -c 'echo two'",
+    ]);
     expect(env.spawnCalls.every((c) => c.cwd === '.')).toBe(true);
     expect(writes.some((w) => w.path === SESSION_STARTUP_STATUS_REL)).toBe(true);
     const last = JSON.parse(writes.at(-1)!.body) as SessionStartupStatus;
@@ -185,11 +188,28 @@ describe('runSessionStartupHooks', () => {
     expect(progress.at(-1)).toBe('completed');
   });
 
+  it('wraps commands in bash -c so source and other bashisms work', async () => {
+    const { io } = makeIo();
+    const env = makeEnv(io, (cmd) => {
+      expect(cmd.startsWith('bash -c ')).toBe(true);
+      expect(cmd).toContain('source .venv/bin/activate');
+      return makeSpawnProc({ exitCode: 0 });
+    });
+    const status = await runSessionStartupHooks({
+      sessionId: 's1',
+      env,
+      commands: ['source .venv/bin/activate'],
+    });
+    expect(status.status).toBe('ready');
+    expect(env.spawnCalls[0]?.command).toBe("bash -c 'source .venv/bin/activate'");
+  });
+
   it('fails fast and skips remaining commands', async () => {
     const { io } = makeIo();
     const progress: Array<{ stepStatus: string; detail?: string }> = [];
     const env = makeEnv(io, (cmd) => {
-      if (cmd === 'false') return makeSpawnProc({ stdout: '', stderr: 'boom', exitCode: 1 });
+      if (cmd.includes("'false'"))
+        return makeSpawnProc({ stdout: '', stderr: 'boom', exitCode: 1 });
       return makeSpawnProc({ exitCode: 0 });
     });
     const status = await runSessionStartupHooks({
@@ -204,7 +224,7 @@ describe('runSessionStartupHooks', () => {
     expect(progress.at(-1)?.stepStatus).toBe('failed');
     expect(progress.at(-1)?.detail).toContain('$ false');
     expect(progress.at(-1)?.detail).toContain('boom');
-    expect(env.spawnCalls.map((c) => c.command)).toEqual(['true', 'false']);
+    expect(env.spawnCalls.map((c) => c.command)).toEqual(["bash -c 'true'", "bash -c 'false'"]);
   });
 
   it('aborts pending work when the signal fires before a command', async () => {
@@ -212,7 +232,7 @@ describe('runSessionStartupHooks', () => {
     const { io } = makeIo();
     let slowProc: ReturnType<typeof makeSpawnProc> | null = null;
     const env = makeEnv(io, (cmd) => {
-      if (cmd === 'slow') {
+      if (cmd.includes("'slow'")) {
         slowProc = makeSpawnProc({ exitCode: 0, hangUntilKill: true });
         return slowProc;
       }
