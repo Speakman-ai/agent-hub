@@ -217,39 +217,70 @@ export async function writeGuestSystemPromptFile(
   };
 }
 
-async function pathExistsInGuest(env: SessionEnv, relOrCommand: string): Promise<boolean> {
-  if (relOrCommand.startsWith('/')) {
-    return absExistsInGuest(env, relOrCommand);
-  }
-  if (relOrCommand.includes('/')) {
-    return env.worktreeIo.exists(relOrCommand);
-  }
-  const result = await env.worktreeIo.exec(
-    `command -v ${shellQuote(relOrCommand)} >/dev/null 2>&1`,
-    {
-      cwd: '.',
-    },
+/**
+ * Places a prior install (or a baked rootfs binary) may live. `command -v`
+ * alone is not enough: guest `exec` uses a minimal PATH that omits
+ * `~/.local/bin`, so every chat turn was re-running the multi-minute curl
+ * install even after a successful first install.
+ */
+export function guestEngineBinCandidates(binName: string, guestHome: string): string[] {
+  return [
+    path.posix.join(guestHome, '.local', 'bin', binName),
+    path.posix.join('/home/runner', '.local', 'bin', binName),
+    path.posix.join('/usr/local', 'bin', binName),
+    path.posix.join('/usr', 'bin', binName),
+    binName,
+  ];
+}
+
+async function locateGuestEngineBin(
+  env: SessionEnv,
+  binName: string,
+  guestHome: string,
+): Promise<string | null> {
+  const pathPrefix = [
+    path.posix.join(guestHome, '.local', 'bin'),
+    '/home/runner/.local/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+  ].join(':');
+  const which = await env.worktreeIo.exec(
+    `PATH=${shellQuote(pathPrefix)}:$PATH command -v ${shellQuote(binName)} 2>/dev/null`,
+    { cwd: '.' },
   );
-  return result.exitCode === 0;
+  const fromPath = which.stdout.trim().split('\n')[0]?.trim();
+  if (which.exitCode === 0 && fromPath) return fromPath;
+
+  for (const candidate of guestEngineBinCandidates(binName, guestHome)) {
+    if (!candidate.startsWith('/')) continue;
+    if (await absExistsInGuest(env, candidate)) {
+      const exe = await env.worktreeIo.exec(`test -x ${shellQuote(candidate)}`, { cwd: '.' });
+      if (exe.exitCode === 0) return candidate;
+    }
+  }
+  return null;
 }
 
 /**
  * Ensure the engine CLI exists in the guest. Prefers a baked rootfs install;
  * otherwise runs the engine's install command (needs guest network).
+ *
+ * Installs into {@link GUEST_CLI_HOME} so the binary stays on the PATH
+ * {@link finalizeGuestSpawnEnv} builds for chat turns.
  */
 export async function ensureGuestEngineCli(
   env: SessionEnv,
   engine: string,
   hostBin: string,
+  opts: { guestHome?: string } = {},
 ): Promise<string> {
+  const guestHome = opts.guestHome ?? GUEST_CLI_HOME;
   const spec = GUEST_CLI_INSTALL_BY_ENGINE[engine];
   const binName = spec?.binName ?? path.basename(hostBin);
 
-  if (await pathExistsInGuest(env, binName)) {
-    const located = await env.worktreeIo.exec(`command -v ${shellQuote(binName)}`, { cwd: '.' });
-    const found = located.stdout.trim().split('\n')[0]?.trim();
-    if (found) return found;
-  }
+  const existing = await locateGuestEngineBin(env, binName, guestHome);
+  if (existing) return existing;
 
   if (!spec) {
     throw new Error(
@@ -258,8 +289,18 @@ export async function ensureGuestEngineCli(
     );
   }
 
+  const started = Date.now();
   console.log(`[guest-cli] installing ${engine} in guest via: ${spec.installCommand}`);
-  const install = await env.worktreeIo.exec(spec.installCommand, {
+  // Force user-local install into the staged CLI HOME. Without this, curl
+  // installers land under /home/runner/.local while chat spawns with
+  // HOME=GUEST_CLI_HOME — and the next turn cannot see the binary.
+  const installScript = [
+    `export HOME=${shellQuote(guestHome)}`,
+    'export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
+    'mkdir -p "$HOME/.local/bin"',
+    spec.installCommand,
+  ].join(' && ');
+  const install = await env.worktreeIo.exec(installScript, {
     cwd: '.',
     timeoutMs: 10 * 60_000,
   });
@@ -270,21 +311,14 @@ export async function ensureGuestEngineCli(
     );
   }
 
-  const located = await env.worktreeIo.exec(`command -v ${shellQuote(binName)}`, { cwd: '.' });
-  const found = located.stdout.trim().split('\n')[0]?.trim();
+  const found = await locateGuestEngineBin(env, binName, guestHome);
   if (!found) {
-    // Cursor/grok land in ~/.local/bin; ensure that is searchable.
-    const homeLocal = await env.worktreeIo.exec(
-      `test -x "$HOME/.local/bin/${binName}" && echo "$HOME/.local/bin/${binName}"`,
-      { cwd: '.' },
-    );
-    const alt = homeLocal.stdout.trim();
-    if (alt) return alt;
     throw new Error(
       `Installed ${engine} in guest but ${binName} is still not on PATH. ` +
         `stderr: ${install.stderr.trim() || '(empty)'}`,
     );
   }
+  console.log(`[guest-cli] ${engine} ready at ${found} (install ${Date.now() - started}ms)`);
   return found;
 }
 
@@ -471,7 +505,9 @@ export async function prepareGuestCliTurn(opts: {
     stageGuestBundledSkills(opts.env),
     stageGuestSpawnGuards(opts.env),
   ]);
-  const guestBin = await ensureGuestEngineCli(opts.env, opts.engine, opts.hostBin);
+  const guestBin = await ensureGuestEngineCli(opts.env, opts.engine, opts.hostBin, {
+    guestHome,
+  });
   await assertGuestWorktreeCleanOfRuntime(opts.env);
   return {
     guestBin,
