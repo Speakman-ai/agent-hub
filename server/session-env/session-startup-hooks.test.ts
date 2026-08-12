@@ -8,24 +8,24 @@ import {
   SESSION_STARTUP_STATUS_REL,
   type SessionStartupStatus,
 } from './session-startup-hooks.js';
-import type { SessionEnv } from './session-env.js';
-import type { SessionWorktreeIo, WorktreeExecResult } from './worktree-io.js';
+import type { SessionEnv, SessionEnvExit, SessionEnvProcess } from './session-env.js';
+import type { SessionWorktreeIo } from './worktree-io.js';
 
-function makeIo(execImpl?: (cmd: string) => Promise<WorktreeExecResult>): {
+function makeIo(): {
   io: SessionWorktreeIo;
   writes: Array<{ path: string; body: string }>;
-  execs: string[];
 } {
   const writes: Array<{ path: string; body: string }> = [];
-  const execs: string[] = [];
   const io: SessionWorktreeIo = {
     sharing: 'host-shared',
     hostPath: '/wt',
     git: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
     exec: async (command) => {
-      execs.push(command);
-      if (execImpl) return execImpl(command);
-      return { stdout: '', stderr: '', exitCode: 0 };
+      // Status-file mkdir is fine; command execution must go through spawn.
+      if (command.startsWith('mkdir ')) {
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }
+      throw new Error('session startup must use SessionEnv.spawn, not worktreeIo.exec');
     },
     readFile: async () => Buffer.from(''),
     writeFile: async (relPath, contents) => {
@@ -39,34 +39,104 @@ function makeIo(execImpl?: (cmd: string) => Promise<WorktreeExecResult>): {
     stat: async () => null,
     exists: async () => false,
   };
-  return { io, writes, execs };
+  return { io, writes };
 }
 
-function makeEnv(io: SessionWorktreeIo): SessionEnv {
-  return {
-    kind: 'host',
+function makeSpawnProc(result: {
+  stdout?: string;
+  stderr?: string;
+  exitCode: number;
+  hangUntilKill?: boolean;
+}): SessionEnvProcess & { killed: boolean } {
+  let resolveExit: ((e: SessionEnvExit) => void) | null = null;
+  const exitWaiters: Array<(e: SessionEnvExit) => void> = [];
+  const settle = (e: SessionEnvExit) => {
+    for (const cb of exitWaiters) cb(e);
+    resolveExit?.(e);
+  };
+  const proc = {
+    pid: 1,
+    name: 'test',
+    exited: false,
+    exitResult: null as SessionEnvExit | null,
+    killed: false,
+    onStdout(cb: (chunk: string) => void) {
+      if (result.stdout) queueMicrotask(() => cb(result.stdout!));
+      return () => {};
+    },
+    onStderr(cb: (chunk: string) => void) {
+      if (result.stderr) queueMicrotask(() => cb(result.stderr!));
+      return () => {};
+    },
+    onExit(cb: (e: SessionEnvExit) => void) {
+      exitWaiters.push(cb);
+      if (!result.hangUntilKill) {
+        queueMicrotask(() => {
+          const e = { code: result.exitCode, signal: null };
+          proc.exited = true;
+          proc.exitResult = e;
+          settle(e);
+        });
+      } else {
+        resolveExit = (e) => {
+          proc.exited = true;
+          proc.exitResult = e;
+          cb(e);
+        };
+      }
+      return () => {};
+    },
+    kill() {
+      proc.killed = true;
+      if (result.hangUntilKill) {
+        settle({ code: null, signal: 'SIGKILL' });
+      }
+    },
+  };
+  return proc;
+}
+
+function makeEnv(
+  io: SessionWorktreeIo,
+  spawnImpl?: (command: string, opts: { cwd?: string }) => SessionEnvProcess,
+): SessionEnv & {
+  spawnCalls: Array<{ command: string; cwd?: string }>;
+} {
+  const spawnCalls: Array<{ command: string; cwd?: string }> = [];
+  const env = {
+    kind: 'host' as const,
     sessionId: 's1',
     worktreePath: '/wt',
     worktreeIo: io,
     disposed: false,
     createdAtMs: 0,
     lastActivityAtMs: 0,
-    mountWorktree: async () => ({ hostPath: '/wt', envPath: '/workspace', sharing: 'host-shared' }),
+    spawnCalls,
+    mountWorktree: async () => ({
+      hostPath: '/wt',
+      envPath: '/workspace',
+      sharing: 'host-shared' as const,
+    }),
     liveProcessCount: () => 0,
     hasDetachedWorkload: async () => false,
     retainAfterFailedEnsure: () => false,
     onDispose: () => () => {},
     dispose: async () => {},
-    spawn: async () => {
-      throw new Error('not used');
+    spawn: (command: string, opts: { cwd?: string } = {}) => {
+      spawnCalls.push({ command, cwd: opts.cwd });
+      if (spawnImpl) return spawnImpl(command, opts);
+      return makeSpawnProc({ exitCode: 0 });
     },
     openPty: async () => {
       throw new Error('not used');
     },
     mapPortsOut: async () => [],
     unmapPorts: async () => {},
-    portRouting: { mode: 'host' },
-  } as unknown as SessionEnv;
+    portRouting: { mode: 'host' as const },
+  };
+  return env as unknown as SessionEnv & {
+    spawnCalls: Array<{ command: string; cwd?: string }>;
+  };
 }
 
 beforeEach(() => {
@@ -81,30 +151,33 @@ describe('normalizeSessionStartupCommands', () => {
 
 describe('runSessionStartupHooks', () => {
   it('is a no-op skipped status for an empty command list', async () => {
-    const { io, writes, execs } = makeIo();
+    const { io, writes } = makeIo();
+    const env = makeEnv(io);
     const status = await runSessionStartupHooks({
       sessionId: 's1',
-      env: makeEnv(io),
+      env,
       commands: [],
     });
     expect(status.status).toBe('skipped');
-    expect(execs).toEqual([]);
+    expect(env.spawnCalls).toEqual([]);
     expect(writes).toEqual([]);
     expect(getSessionStartupStatus('s1')?.status).toBe('skipped');
   });
 
-  it('runs commands sequentially and marks ready', async () => {
-    const { io, writes, execs } = makeIo();
+  it('runs commands via SessionEnv.spawn at the session worktree root', async () => {
+    const { io, writes } = makeIo();
     const progress: string[] = [];
+    const env = makeEnv(io);
     const status = await runSessionStartupHooks({
       sessionId: 's1',
-      env: makeEnv(io),
+      env,
       commands: ['echo one', 'echo two'],
       onProgress: (u) => progress.push(u.stepStatus),
     });
     expect(status.status).toBe('ready');
     expect(status.commands.map((c) => c.status)).toEqual(['ok', 'ok']);
-    expect(execs.filter((c) => c.startsWith('echo'))).toEqual(['echo one', 'echo two']);
+    expect(env.spawnCalls.map((c) => c.command)).toEqual(['echo one', 'echo two']);
+    expect(env.spawnCalls.every((c) => c.cwd === '.')).toBe(true);
     expect(writes.some((w) => w.path === SESSION_STARTUP_STATUS_REL)).toBe(true);
     const last = JSON.parse(writes.at(-1)!.body) as SessionStartupStatus;
     expect(last.status).toBe('ready');
@@ -113,14 +186,15 @@ describe('runSessionStartupHooks', () => {
   });
 
   it('fails fast and skips remaining commands', async () => {
-    const { io } = makeIo(async (cmd) => {
-      if (cmd === 'false') return { stdout: '', stderr: 'boom', exitCode: 1 };
-      return { stdout: '', stderr: '', exitCode: 0 };
-    });
+    const { io } = makeIo();
     const progress: Array<{ stepStatus: string; detail?: string }> = [];
+    const env = makeEnv(io, (cmd) => {
+      if (cmd === 'false') return makeSpawnProc({ stdout: '', stderr: 'boom', exitCode: 1 });
+      return makeSpawnProc({ exitCode: 0 });
+    });
     const status = await runSessionStartupHooks({
       sessionId: 's1',
-      env: makeEnv(io),
+      env,
       commands: ['true', 'false', 'echo never'],
       onProgress: (u) => progress.push({ stepStatus: u.stepStatus, detail: u.detail }),
     });
@@ -130,34 +204,34 @@ describe('runSessionStartupHooks', () => {
     expect(progress.at(-1)?.stepStatus).toBe('failed');
     expect(progress.at(-1)?.detail).toContain('$ false');
     expect(progress.at(-1)?.detail).toContain('boom');
+    expect(env.spawnCalls.map((c) => c.command)).toEqual(['true', 'false']);
   });
 
   it('aborts pending work when the signal fires before a command', async () => {
     const ac = new AbortController();
-    let resolveSlow: ((r: WorktreeExecResult) => void) | null = null;
-    const { io } = makeIo(async (cmd) => {
+    const { io } = makeIo();
+    let slowProc: ReturnType<typeof makeSpawnProc> | null = null;
+    const env = makeEnv(io, (cmd) => {
       if (cmd === 'slow') {
-        return await new Promise<WorktreeExecResult>((resolve) => {
-          resolveSlow = resolve;
-        });
+        slowProc = makeSpawnProc({ exitCode: 0, hangUntilKill: true });
+        return slowProc;
       }
-      return { stdout: '', stderr: '', exitCode: 0 };
+      return makeSpawnProc({ exitCode: 0 });
     });
     const runP = runSessionStartupHooks({
       sessionId: 's1',
-      env: makeEnv(io),
+      env,
       commands: ['slow', 'after'],
       signal: ac.signal,
     });
-    // Wait until the slow command is in flight, then abort.
     await vi.waitFor(() => {
       expect(getSessionStartupStatus('s1')?.commands[0]?.status).toBe('running');
     });
     ac.abort();
-    resolveSlow?.({ stdout: '', stderr: '', exitCode: 0 });
     const status = await runP;
     expect(status.status).toBe('failed');
     expect(status.commands[1]!.status).toBe('skipped');
+    expect(slowProc?.killed).toBe(true);
   });
 });
 

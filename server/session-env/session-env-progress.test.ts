@@ -133,3 +133,26 @@ describe('emitSessionStartupProgress', () => {
     );
   });
 });
+
+describe('emitSessionEnvLaunchProgress without chat messageId', () => {
+  it('uses the sentinel message id for manager-owned launch progress', () => {
+    const stmts = mockStmts();
+    const broadcast = vi.fn();
+    emitSessionEnvLaunchProgress({
+      stmts,
+      broadcast,
+      sessionId: 'sess-1',
+      status: 'started',
+      startedAt: 1000,
+    });
+    expect(stmts.addSessionProgress.run).toHaveBeenCalledWith(
+      'sess-1',
+      '__session_env_launch__',
+      SESSION_ENV_LAUNCH_STEP,
+      'started',
+      1000,
+      null,
+      null,
+    );
+  });
+});

@@ -22,6 +22,7 @@ export type SessionEnvProgressStmts = {
 };
 
 const SESSION_STARTUP_MESSAGE_ID = '__session_startup__';
+const SESSION_ENV_LAUNCH_MESSAGE_ID = '__session_env_launch__';
 
 function emitProgressStep(args: {
   stmts: SessionEnvProgressStmts;
@@ -125,8 +126,9 @@ export function emitSessionEnvLaunchProgress(args: {
   stmts: SessionEnvProgressStmts;
   broadcast: BroadcastFn;
   sessionId: string;
-  messageId: string;
-  nextSeq: () => number;
+  /** Defaults to `__session_env_launch__` when omitted (manager / non-chat paths). */
+  messageId?: string;
+  nextSeq?: () => number;
   status: ProgressStepStatus;
   startedAt: number;
   finishedAt?: number;
@@ -136,7 +138,7 @@ export function emitSessionEnvLaunchProgress(args: {
     stmts: args.stmts,
     broadcast: args.broadcast,
     sessionId: args.sessionId,
-    messageId: args.messageId,
+    messageId: args.messageId ?? SESSION_ENV_LAUNCH_MESSAGE_ID,
     step: SESSION_ENV_LAUNCH_STEP,
     status: args.status,
     startedAt: args.startedAt,

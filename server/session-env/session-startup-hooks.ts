@@ -2,8 +2,11 @@
  * Project session startup hooks — background shell commands after every
  * SessionEnv boot, without blocking `ensure()` / chat.
  *
- * Config lives on the Hub project (`sessionStartupCommands`). Status is kept
- * in-memory for the enriched prompt / spawn env and mirrored to
+ * Config lives on the Hub project (`sessionStartupCommands`). Commands run
+ * via {@link SessionEnv.spawn} with cwd at the session worktree root (the same
+ * workspace chat, terminal, and preview use — guest `/workspace` for
+ * env-owned / container envs, host worktree path for the host adapter). Status
+ * is kept in-memory for the enriched prompt / spawn env and mirrored to
  * `.agent-hub-runtime/session-startup.json` inside the session worktree so the
  * agent can `cat` it mid-turn.
  */
@@ -22,6 +25,9 @@ export const SESSION_STARTUP_STATUS_GUEST_ABS = `/workspace/${SESSION_STARTUP_ST
 
 /** Per-command wall-clock cap (15 min). */
 export const SESSION_STARTUP_COMMAND_TIMEOUT_MS = 900_000;
+
+/** Cap captured stdout+stderr the same way worktree IO / Finalize do. */
+const STARTUP_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 
 const DETAIL_CAP = 4_000;
 
@@ -97,6 +103,103 @@ function statusPathForEnv(env: SessionEnv): string {
   return env.worktreeIo.sharing === 'env-owned'
     ? SESSION_STARTUP_STATUS_GUEST_ABS
     : SESSION_STARTUP_STATUS_REL;
+}
+
+/**
+ * Run one startup command in the session workspace via {@link SessionEnv.spawn}.
+ *
+ * Important: do **not** use `worktreeIo.exec` here. On host-shared container
+ * envs that path runs on the Hub host at the seed worktree; chat/terminal/
+ * preview use `spawn` inside the env (`/workspace`). Startup must match.
+ */
+export async function runStartupCommandInSessionWorkspace(
+  env: SessionEnv,
+  command: string,
+  opts: {
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    maxOutputBytes?: number;
+  } = {},
+): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  const timeoutMs = opts.timeoutMs ?? SESSION_STARTUP_COMMAND_TIMEOUT_MS;
+  const maxBytes = opts.maxOutputBytes ?? STARTUP_OUTPUT_MAX_BYTES;
+  const proc = env.spawn(command, {
+    cwd: '.',
+    name: `session-startup:${command.slice(0, 48)}`,
+  });
+
+  let stdout = '';
+  let stderr = '';
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let overLimit = false;
+
+  const append = (kind: 'stdout' | 'stderr', chunk: string) => {
+    const n = Buffer.byteLength(chunk, 'utf8');
+    if (kind === 'stdout') {
+      stdoutBytes += n;
+      if (stdoutBytes <= maxBytes) stdout += chunk;
+    } else {
+      stderrBytes += n;
+      if (stderrBytes <= maxBytes) stderr += chunk;
+    }
+    if (!overLimit && stdoutBytes + stderrBytes > maxBytes) {
+      overLimit = true;
+      proc.kill('SIGKILL');
+    }
+  };
+  proc.onStdout((chunk) => append('stdout', chunk));
+  proc.onStderr((chunk) => append('stderr', chunk));
+
+  let onAbort: (() => void) | undefined;
+  try {
+    const exit = await new Promise<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+      error?: Error;
+    }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        proc.kill('SIGKILL');
+        reject(new Error(`Session startup command timed out after ${timeoutMs}ms: ${command}`));
+      }, timeoutMs);
+      timer.unref?.();
+
+      if (opts.signal) {
+        if (opts.signal.aborted) {
+          clearTimeout(timer);
+          proc.kill('SIGKILL');
+          reject(new Error('Session startup aborted'));
+          return;
+        }
+        onAbort = () => {
+          clearTimeout(timer);
+          proc.kill('SIGKILL');
+          reject(new Error('Session startup aborted'));
+        };
+        opts.signal.addEventListener('abort', onAbort, { once: true });
+      }
+
+      proc.onExit((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
+
+    if (exit.error) throw exit.error;
+    if (overLimit) {
+      const notice = `[session-startup] output exceeded ${maxBytes} bytes; process killed`;
+      return {
+        stdout,
+        stderr: stderr ? `${stderr}\n${notice}` : notice,
+        exitCode: exit.code ?? 1,
+      };
+    }
+    return { stdout, stderr, exitCode: exit.code };
+  } finally {
+    if (onAbort && opts.signal) {
+      opts.signal.removeEventListener('abort', onAbort);
+    }
+  }
 }
 
 async function persistStatusFile(
@@ -255,9 +358,9 @@ export async function runSessionStartupHooks(
     console.log(`[session-startup] session=${args.sessionId} running: ${entry.cmd}`);
 
     try {
-      const result = await args.env.worktreeIo.exec(entry.cmd, {
+      const result = await runStartupCommandInSessionWorkspace(args.env, entry.cmd, {
         timeoutMs: SESSION_STARTUP_COMMAND_TIMEOUT_MS,
-        maxBuffer: 8 * 1024 * 1024,
+        signal: args.signal,
       });
       if (args.signal?.aborted) {
         entry.status = 'skipped';
