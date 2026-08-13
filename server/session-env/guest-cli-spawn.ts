@@ -168,6 +168,10 @@ export function adaptSpawnEnvForGuest(
   // Point guard shims at guest binaries (host AGENT_HUB_REAL_* paths are useless).
   out.AGENT_HUB_REAL_GIT = '/usr/bin/git';
   out.AGENT_HUB_REAL_GH = '/usr/bin/gh';
+  // Cursor Agent may prefer the OS keychain on some hosts; guests have none.
+  // Force the file store so synced `$HOME/.cursor/auth.json` / `cli-config.json`
+  // (and `CURSOR_API_KEY`) are what the CLI actually uses.
+  out.AGENT_CLI_CREDENTIAL_STORE = 'file';
   return out;
 }
 
@@ -351,7 +355,14 @@ export async function stageGuestCliHome(
     ['.claude.json', '.claude.json'],
     ['.codex/auth.json', '.codex/auth.json'],
     ['.codex/config.toml', '.codex/config.toml'],
+    // Cursor browser/`agent login` caches. argv.json alone is not enough —
+    // without these the guest CLI reports "Authentication required… run
+    // agent login / set CURSOR_API_KEY" even when Account settings shows
+    // logged-in (that probe runs on the Hub host against per-user HOME).
     ['.cursor/argv.json', '.cursor/argv.json'],
+    ['.cursor/auth.json', '.cursor/auth.json'],
+    ['.cursor/cli-config.json', '.cursor/cli-config.json'],
+    ['.config/cursor/auth.json', '.config/cursor/auth.json'],
     ['.gemini/settings.json', '.gemini/settings.json'],
   ] as const;
 
