@@ -1,5 +1,6 @@
 /**
- * Start a worktree preview for a chat session (user toolbar / API only).
+ * Start a worktree preview for a chat session (toolbar REST, or ReAct
+ * `preview` `op: "start"`).
  */
 import { sessionUsesWorktree } from '../project-mode.js';
 import { effectiveCwdForSession } from '../routes/hooks.js';

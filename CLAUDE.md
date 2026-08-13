@@ -139,7 +139,7 @@ auto-continue the same turn:
 - `skill` (`name`) — load a registered skill.
 - `web` (`query`) — live web search (requires `SERPER_API_KEY` / `WEB_SEARCH_API_KEY` on the server).
 - `browser` (`op` + operands) — host Chromium via Stagehand (`navigate`, `click`, `type`, `extract`, `screenshot`, `read_page`, …). Egress policy blocks private/loopback/metadata targets on explicit `navigate` and `back`/`forward`, but not on every act-driven transition — plan isolation accordingly.
-- `preview` (`op` + operands) — observe and drive **this session's dev preview** after a human clicks **Start preview** (`state`, `logs`, `screenshot`, `navigate` by route, …). Agents cannot start or stop the preview.
+- `preview` (`op` + operands) — observe, start, and drive **this session's dev preview** (`start`, `state`, `logs`, `screenshot`, `navigate` by route, …). Agents can boot via `op: "start"` (same path as the toolbar); stop stays human-only.
 
 ### Talking to the Hub API — use the bundled wrappers, not raw curl
 The kanban / wiki / sessions / board helper scripts (`server.sh`, `board.sh`,

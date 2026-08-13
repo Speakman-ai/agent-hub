@@ -167,11 +167,16 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('## Browser Automation Available');
   });
 
-  it('omits the "Browser Automation Available" callout on subsequent (non-first) messages', () => {
+  it('keeps the "Browser Automation Available" callout on subsequent messages so mid-session refusals stop', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: false,
     });
-    expect(prompt).not.toContain('## Browser Automation Available');
+    expect(prompt).toContain('## Browser Automation Available');
+    expect(prompt).toMatch(/do not claim you lack web access or a browser/i);
+    expect(prompt).toContain('## ReAct Loop');
+    expect(prompt).toMatch(/live Chromium/i);
+    // Follow-ups stay compact — no full egress essay.
+    expect(prompt).not.toMatch(/DNS rebinding/i);
   });
 
   it('omits browser from ReAct instructions when browserToolsEnabled is false', () => {

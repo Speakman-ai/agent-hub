@@ -252,6 +252,7 @@ import {
   PREVIEW_REACT_OP_SET,
   PREVIEW_DRIVE_OPS,
 } from './preview/preview-react.js';
+import { startSessionPreview } from './preview/start-session-preview.js';
 import {
   runTerminalReActStep,
   createTerminalReactRuntime,
@@ -480,8 +481,9 @@ export interface ChatHandlerDeps {
    * runtime has not been wired (e.g. tests of unrelated chat surface).
    * The accessor pattern matches `getClaudeBin` / `getCursorBin` — callers
    * don't need to know whether the runtime was constructed at process
-   * start. Only the observe side of the ReAct `preview` tool consults it;
-   * lifecycle stays on the REST start/stop surface.
+   * start. The ReAct `preview` tool uses it for observe/drive ops and for
+   * `op: "start"` (same boot path as `POST …/preview/start`). Stop stays
+   * on the REST / toolbar surface.
    */
   getDevServerRuntime?: () => DevServerRuntime | null;
   /**
@@ -620,8 +622,10 @@ interface ReActAction {
   schema?: Record<string, unknown>;
   direction?: string;
   condition?: string;
-  /** preview navigate — path within the preview app (must start with `/`). */
+  /** preview navigate / start — path within the preview app (must start with `/`). */
   route?: string;
+  /** preview start — optional reason recorded on the preview task. */
+  reason?: string;
   /** preview logs — tail line count. */
   tail?: number;
   /** terminal inject — single command line to run at an idle prompt. */
@@ -807,15 +811,17 @@ export function buildEnrichedPrompt(
   const browserProject = projectId ? findProject(projectId) : null;
   const browserToolsOn = effectiveBrowserToolsEnabled(agent as Agent, browserProject ?? undefined);
 
-  // Browser-automation awareness callout — surfaced near the top of the
-  // prompt so the model notices it has live Chromium access before any
-  // AGENTS.md / SOUL.md / skill description has a chance to claim "I
-  // cannot access URLs". The full operation list and egress caveats
-  // remain in the "ReAct Loop" section further down; this is just the
-  // attention-grabbing pointer that prevents capability refusals.
-  if (browserToolsOn && isFirstMessage) {
+  // Browser-automation awareness callout — every turn when tools are on.
+  // Surfaced near the top so the model notices live Chromium before any
+  // AGENTS.md / SOUL.md / engine default has a chance to claim "I cannot
+  // access URLs". Previously first-message-only for tokens; that caused
+  // mid-session refusals ("I don't have a browser") once the callout and
+  // ReAct Loop dropped off follow-up prompts. Keep this short and always-on;
+  // the long op list stays in the first-turn ReAct Loop (with a compact
+  // reminder on later turns).
+  if (browserToolsOn) {
     prompt += `\n\n## Browser Automation Available
-You have access to a real Chromium browser in this session. When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. The full operation list (\`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`) and the URL-egress caveats are in the **ReAct Loop** section further down — read them before driving sensitive pages.`;
+You have access to a real Chromium browser in this session. When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — not the generic browser tool (loopback is blocked there).`;
   }
 
   // Background session-startup hooks (venv / npm install in guest, etc.).
@@ -922,7 +928,7 @@ ${skillsList.join('\n')}`;
       : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
     const previewEnabledForPrompt = isDevServerConfigured(project.prEnv?.devServer);
     const previewToolLines = previewEnabledForPrompt
-      ? `\n- \`preview\` — observe and drive **this session's dev preview** after the human starts it via **Start preview** (field: \`op\` + operands). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. You cannot start or stop the preview — if none is running you'll get a "not running" observation; ask the human to start it.`
+      ? `\n- \`preview\` — observe, start, and drive **this session's dev preview** (field: \`op\` + operands). Lifecycle: \`start\` (optional \`route\`, \`reason\`) boots the same stack as the toolbar **Start preview** (first boot can take several minutes — poll \`state\`/\`logs\` until ready). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. You cannot stop the preview — ask the human to use **Stop preview**.`
       : '';
     const terminalToolLines = `\n- \`terminal\` — co-observe and take a turn on **this session's shared terminal** the human opened (field: \`op\`). \`state\` — is a shell running, is it at an idle prompt. \`read\` — the current terminal screen + scrollback. \`inject\` (\`command\`) — run ONE command line at an idle prompt through the shared single-writer queue; it lands only when the shell is output-quiet and no human keystrokes are in flight (turn-taking), otherwise it's deferred with a retryable reason. The command is one line (no embedded newlines; the trailing newline is added for you). You cannot open or kill the shell — if none is running, ask the human to open the **Terminal** tab. This is for deliberate co-observation, not your primary command path — use your normal Bash tool for scripted work.`;
 
@@ -938,6 +944,24 @@ Supported tools:
 - \`web\` — live web search via Serper (field: \`query\`). Only works when the server has \`SERPER_API_KEY\` or \`WEB_SEARCH_API_KEY\` set; otherwise the host returns a clear configuration error.
 ${browserToolLines}${previewToolLines}${terminalToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
+  } else {
+    // Follow-up turns: keep a short capability index so the model does not
+    // invent "I have no browser/tools here" after the long first-turn dump
+    // ages out of attention. Full op docs shipped on turn 1.
+    const previewEnabledForPrompt = isDevServerConfigured(project.prEnv?.devServer);
+    const toolBits = [
+      '`wiki`',
+      '`skill`',
+      '`web`',
+      browserToolsOn ? '`browser` (live Chromium — do not claim you lack a browser)' : null,
+      previewEnabledForPrompt
+        ? '`preview` (this session\'s dev preview; `op:"start"` boots it)'
+        : null,
+      '`terminal`',
+      '`google`',
+    ].filter(Boolean);
+    prompt += `\n\n## ReAct Loop
+Host-mediated tools still available — emit naked \`<agenthub:react>{"actions":[…]}</agenthub:react>\` (no code fences). Tools: ${toolBits.join(', ')}.`;
   }
 
   {
@@ -974,8 +998,8 @@ The server moves the session's linked card to Done and appends an explanatory co
         }
 
         if (isDevServerConfigured(project.prEnv?.devServer)) {
-          prompt += `\n\n## Worktree preview (lifecycle is human-only)
-Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only the human starts or stops the dev preview using **Start preview** in the chat toolbar (first boot can take several minutes). Once it is running you can observe and drive it yourself with the ReAct \`preview\` tool — check \`{"tool":"preview","op":"state"}\`, read boot/runtime logs with \`"op":"logs"\`, and verify UI changes with \`"op":"screenshot"\` plus \`navigate\`/\`click\`/\`type\`. Your file edits may hot-reload the running preview automatically.`;
+          prompt += `\n\n## Worktree preview
+Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Start the managed preview yourself with ReAct \`{"tool":"preview","op":"start"}\` (optional \`route\` / \`reason\`), or ask the human to press **Start preview** (first boot can take several minutes). Stop remains human-only (**Stop preview**). Once starting/running, observe with \`"op":"state"\` / \`"op":"logs"\`, and verify UI with \`"op":"screenshot"\` plus \`navigate\`/\`click\`/\`type\`. Your file edits may hot-reload the running preview automatically.`;
         }
       }
     }
@@ -1533,6 +1557,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
         };
       }
       const route = typeof a.route === 'string' ? a.route.trim() : undefined;
+      const reason = typeof a.reason === 'string' ? a.reason.trim() : undefined;
       const target = (typeof a.target === 'string' ? a.target : undefined)?.trim() || undefined;
       const text = typeof a.text === 'string' ? a.text : undefined;
       const instruction = typeof a.instruction === 'string' ? a.instruction : undefined;
@@ -1555,6 +1580,12 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
           detail: 'preview navigate requires route starting with "/" (path within the preview app)',
         };
       }
+      if (op === 'start' && route !== undefined && !route.startsWith('/')) {
+        return {
+          error: 'malformed',
+          detail: 'preview start route must start with "/" when provided',
+        };
+      }
       if ((op === 'click' || op === 'type') && !target) {
         return { error: 'malformed', detail: `preview ${op} requires target` };
       }
@@ -1571,6 +1602,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
         tool: 'preview',
         op,
         route,
+        reason: reason || undefined,
         tail,
         target,
         text,
@@ -5343,6 +5375,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     {
                       op: opName,
                       route: action.route,
+                      reason: action.reason,
                       tail: action.tail,
                       target: action.target,
                       text: action.text,
@@ -5354,6 +5387,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     {
                       runtime: resolvePreviewReactRuntime(sessionId, [getDevServerRuntime?.()]),
                       launchOpts: browserLaunchOpts,
+                      startPreview: async ({ route, reason }) =>
+                        startSessionPreview({
+                          sessionId,
+                          body: { route, reason },
+                          broadcast,
+                          findAgent,
+                          getDevServerRuntime,
+                          getSession: (id) => stmts.getSession.get(id) as SessionRow | undefined,
+                          routing: {
+                            publicUrl: config.publicUrl,
+                            subdomainBase: config.previewSubdomainBase,
+                          },
+                        }),
                     },
                   );
                 } catch (err: unknown) {
@@ -5818,10 +5864,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
 
         if (previewDetection.task && !previewAlreadyRunning) {
-          // Preview boot is user-initiated only (POST …/preview/start). Agent
-          // `<agenthub:preview>` blocks are ignored so sessions never spin
-          // docker/npm stacks on their own. Do not broadcast preview_failed when
-          // the user already has a running preview — that would clobber Ready UI.
+          // Agent `<agenthub:preview>` XML blocks are ignored — use ReAct
+          // `{"tool":"preview","op":"start"}` instead. Do not broadcast
+          // preview_failed when the user already has a running preview —
+          // that would clobber Ready UI.
           try {
             broadcast({
               type: 'agenthub_preview',
@@ -5829,7 +5875,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               sessionId,
               previewId: '',
               error:
-                '**Preview not started:** only the human can boot a preview via **Start preview** in the chat toolbar. Do not emit `<agenthub:preview>` — the host ignores agent-initiated preview requests.',
+                '**Preview not started:** do not emit `<agenthub:preview>` — the host ignores that XML. Start the preview with ReAct `{"tool":"preview","op":"start"}`, or ask the human to press **Start preview**.',
               logTail: [],
             });
           } catch (err) {
