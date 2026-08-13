@@ -78,6 +78,7 @@ import {
   countUnreadSupportTickets,
   markSupportTicketsFixedPendingReleaseForCard,
 } from '../support-tickets-store.js';
+import { buildAssignedCardSessionContext } from '../assign-card-context.js';
 import {
   buildSpikeSessionContext,
   buildSpikeSessionContextFallback,
@@ -1518,15 +1519,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
               }),
         );
       } else {
-        contextLines.push(`# Task: ${card.title}`);
-        if (card.description) contextLines.push(`\n## Description\n${card.description}`);
-        if (card.priority) contextLines.push(`\n**Priority:** ${card.priority}`);
-        if (card.labels) contextLines.push(`**Labels:** ${card.labels}`);
-        if (card.github_issue_url) contextLines.push(`**GitHub:** ${card.github_issue_url}`);
-        if (assignmentNote) {
-          contextLines.push(`\n## Assignment Note\n${assignmentNote}`);
-        }
-
         // Seed the session replay attached to this card (support tickets carry
         // one; conversion moves the attribution to `session_replays.card_id`).
         // Without this the agent inherits only the inert `/uploads/replay-*.json`
@@ -1537,18 +1529,14 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           { stmts, config },
           req.params.cardId as string,
         );
-        if (replayContext) contextLines.push(`\n${replayContext}`);
 
         contextLines.push(
-          `\n---`,
-          `You have been assigned this task from the project kanban board. Review the description above and begin working on it.`,
-          ``,
-          `**This session is already linked to kanban card \`${req.params.cardId}\`.** Do **NOT** create a new card for this work — the card already exists and tracks your progress. The "Bias to Action — create a card" guidance in your system prompt does not apply here. Instead:`,
-          `- **Comment** on this card to record findings, blockers, or PR links: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\``,
-          `- **Move** this card to In Progress when you start: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\`. Do **not** move it to Done yourself — Done means merged, and the platform closes the card automatically when your change lands.`,
-          `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
-          ``,
-          `If the work splits into genuinely separate follow-ups, create child cards in To Do with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
+          buildAssignedCardSessionContext({
+            card,
+            projectId: req.params.projectId as string,
+            assignmentNote,
+            replayContext,
+          }),
         );
       }
 
