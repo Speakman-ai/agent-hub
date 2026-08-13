@@ -115,7 +115,7 @@ function makeSession(
   return { id, worktreePath };
 }
 
-function depsFor(projectCwd: string): PurgeDeps {
+function depsFor(projectCwd: string, overrides: Partial<PurgeDeps> = {}): PurgeDeps {
   return {
     db: getDb(),
     stmts: getStmts(),
@@ -129,6 +129,10 @@ function depsFor(projectCwd: string): PurgeDeps {
     ],
     removeWorkspace,
     cleanupStaleWorkspaces,
+    // Production forget talks to a privileged helper; tests stub success so
+    // row deletion stays under test without a Firecracker host.
+    forgetPersistedFirecrackerDisks: async () => {},
+    ...overrides,
   };
 }
 
@@ -215,6 +219,27 @@ describe('purgeExpiredArchivedSessions', () => {
     const { id, worktreePath } = makeSession(fixture.workspaceDir, { deletedAtSql: null });
 
     const result = await purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
+
+    expect(result.rowsDeleted).toBe(0);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id)).toBeDefined();
+  });
+
+  it('keeps the row when Firecracker disk forget fails so purge can retry', async () => {
+    const { id, worktreePath } = makeSession(fixture.workspaceDir, {
+      deletedAtSql: "datetime('now', '-25 hours')",
+    });
+    getDb()
+      .prepare("UPDATE sessions SET deleted_at = datetime('now', '-25 hours') WHERE id = ?")
+      .run(id);
+
+    const result = await purgeExpiredArchivedSessions(
+      depsFor(fixture.projectCwd, {
+        forgetPersistedFirecrackerDisks: async () => {
+          throw new Error('helper unavailable');
+        },
+      }),
+    );
 
     expect(result.rowsDeleted).toBe(0);
     expect(existsSync(worktreePath)).toBe(true);

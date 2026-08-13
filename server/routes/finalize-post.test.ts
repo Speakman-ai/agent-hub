@@ -330,6 +330,39 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     expect(runFinalize).not.toHaveBeenCalled();
   });
 
+  it('409 when push lands after the entry post-push check (inner kickoff TOCTOU)', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    // Entry gate is clean; a sibling push marks the session pushed while
+    // kickoff is still resolving the worktree / HEAD.
+    let pushedLookups = 0;
+    stmts.getPushedFinalizeRunForSession.get.mockImplementation(() => {
+      pushedLookups += 1;
+      if (pushedLookups === 1) return undefined;
+      return { id: 'run-pushed', status: 'pushed' };
+    });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({ mode: 'full' })
+      .expect(409);
+
+    expect(res.body).toMatchObject({ error: 'session_finalized_pushed' });
+    expect(pushedLookups).toBeGreaterThan(1);
+    expect(runFinalize).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['consult mode', { session_mode: 'consult', ask_mode: 0 }],
     ['legacy ask_mode', { session_mode: 'chat', ask_mode: 1 }],

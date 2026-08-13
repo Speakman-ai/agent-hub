@@ -533,16 +533,6 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     await Promise.all(tasks);
   }
 
-  /** Fire-and-forget variant for bulk archive loops. */
-  function teardownSessionRuntimeBestEffort(sessionId: string): void {
-    void teardownSessionRuntime(sessionId, { forgetWorkspace: false }).catch((err) => {
-      console.warn(
-        `[sessions] session runtime teardown failed (${sessionId}):`,
-        (err as Error).message,
-      );
-    });
-  }
-
   const router = Router();
 
   router.get('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
@@ -1235,11 +1225,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(events);
   });
 
-  router.delete('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
+  router.delete('/api/agents/:agentId/sessions', async (req: Request, res: Response) => {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
     let archived = 0;
+    let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
       const proc = activeProcesses.get(session.id);
@@ -1254,7 +1245,18 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         activeProcesses.delete(session.id);
       }
       closeBrowserBestEffort(session.id);
-      teardownSessionRuntimeBestEffort(session.id);
+      // Same fail-closed contract as single-session archive: never hide the
+      // row while a Firecracker VMM / workload may still be running.
+      try {
+        await teardownSessionRuntime(session.id, { forgetWorkspace: false });
+      } catch (err: unknown) {
+        failed++;
+        console.error(
+          `[sessions] refuse bulk archive; runtime teardown failed (${session.id}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        continue;
+      }
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
@@ -1268,7 +1270,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
     }
     // `deleted` mirrors `archived` for older clients that only read `deleted`.
-    res.json({ ok: true, archived, deleted: archived });
+    res.json({ ok: true, archived, deleted: archived, failed });
   });
 
   // Bulk soft-delete (archive) only the sessions whose resolved lifecycle state
@@ -1278,17 +1280,27 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // resolve to `pushed` (live activity outranks the settled push state), but we
   // keep the explicit guard as defence-in-depth so a racing process is never
   // archived out from under itself.
-  router.delete('/api/agents/:agentId/sessions/pushed', (req: Request, res: Response) => {
+  router.delete('/api/agents/:agentId/sessions/pushed', async (req: Request, res: Response) => {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
     let archived = 0;
+    let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
       if (computeSessionState(stmts, session.id) !== 'pushed') continue;
       closeBrowserBestEffort(session.id);
-      teardownSessionRuntimeBestEffort(session.id);
+      try {
+        await teardownSessionRuntime(session.id, { forgetWorkspace: false });
+      } catch (err: unknown) {
+        failed++;
+        console.error(
+          `[sessions] refuse bulk archive (pushed); runtime teardown failed (${session.id}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        continue;
+      }
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
@@ -1301,7 +1313,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         /* best-effort */
       }
     }
-    res.json({ ok: true, archived, deleted: archived });
+    res.json({ ok: true, archived, deleted: archived, failed });
   });
 
   // Bulk soft-delete (archive) only the sessions whose resolved lifecycle state
@@ -1314,17 +1326,27 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // process can never resolve to `merged` (live activity outranks the settled
   // merged marker), but we keep the explicit guard as defence-in-depth so a
   // racing process is never archived out from under itself.
-  router.delete('/api/agents/:agentId/sessions/merged', (req: Request, res: Response) => {
+  router.delete('/api/agents/:agentId/sessions/merged', async (req: Request, res: Response) => {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
     let archived = 0;
+    let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
       if (computeSessionState(stmts, session.id) !== 'merged') continue;
       closeBrowserBestEffort(session.id);
-      teardownSessionRuntimeBestEffort(session.id);
+      try {
+        await teardownSessionRuntime(session.id, { forgetWorkspace: false });
+      } catch (err: unknown) {
+        failed++;
+        console.error(
+          `[sessions] refuse bulk archive (merged); runtime teardown failed (${session.id}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        continue;
+      }
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
@@ -1337,7 +1359,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         /* best-effort */
       }
     }
-    res.json({ ok: true, archived, deleted: archived });
+    res.json({ ok: true, archived, deleted: archived, failed });
   });
 
   // Single-session DELETE is a *soft* delete (archive). The row is marked with

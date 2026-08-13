@@ -602,6 +602,81 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     },
   );
 
+  it('dirty restore walks the source via O_NOFOLLOW dirfds (no join+open escape)', () => {
+    const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+    expect(src).toMatch(/src_root_fd = open_nofollow_dir\(worktree\)/);
+    expect(src).toMatch(/os\.open\(leaf, os\.O_RDONLY \| nofollow, dir_fd=src_parent\)/);
+    expect(src).toMatch(/symlink escape/);
+    // Must not reintroduce path-join then open/stat on the source.
+    expect(src).not.toMatch(/src_path = os\.path\.join\(worktree, rel_s\)/);
+  });
+
+  it.skipIf(process.platform !== 'linux')(
+    'dirty restore does not follow an intermediate source symlink outside the worktree',
+    () => {
+      const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+      const match = src.match(
+        /python3 - "\$\{WORKTREE\}" "\$\{MOUNT_DIR\}" <<'PY'\n([\s\S]*?)\nPY\n/,
+      );
+      expect(match?.[1]).toBeTruthy();
+      const base = mkdtempSync(path.join(os.tmpdir(), 'fc-prepare-src-escape-'));
+      const worktree = path.join(base, 'wt');
+      const dest = path.join(base, 'out');
+      const hostSecret = path.join(base, 'host-secret.txt');
+      try {
+        mkdirSync(worktree);
+        mkdirSync(dest);
+        writeFileSync(hostSecret, 'classified\n');
+        mkdirSync(path.join(worktree, 'escape'));
+        writeFileSync(path.join(worktree, 'escape', 'host-secret.txt'), 'tracked\n');
+        const gitEnv = {
+          ...process.env,
+          GIT_CONFIG_COUNT: '2',
+          GIT_CONFIG_KEY_0: 'user.email',
+          GIT_CONFIG_VALUE_0: 'test@example.com',
+          GIT_CONFIG_KEY_1: 'user.name',
+          GIT_CONFIG_VALUE_1: 'Test',
+        };
+        expect(
+          spawnSync('git', ['init'], { cwd: worktree, encoding: 'utf8', env: gitEnv }).status,
+        ).toBe(0);
+        expect(
+          spawnSync('git', ['add', 'escape/host-secret.txt'], {
+            cwd: worktree,
+            encoding: 'utf8',
+            env: gitEnv,
+          }).status,
+        ).toBe(0);
+        expect(
+          spawnSync('git', ['commit', '-m', 'track'], {
+            cwd: worktree,
+            encoding: 'utf8',
+            env: gitEnv,
+          }).status,
+        ).toBe(0);
+        // Intermediate dir → host parent. join(worktree,"escape/host-secret.txt")
+        // would open the host file; O_NOFOLLOW on the component must refuse.
+        rmSync(path.join(worktree, 'escape'), { recursive: true, force: true });
+        symlinkSync(base, path.join(worktree, 'escape'));
+        const run = spawnSync('python3', ['-', worktree, dest], {
+          input: match![1],
+          encoding: 'utf8',
+          env: { ...process.env, AGENT_HUB_WORKSPACE_SIZE_MIB: '64' },
+        });
+        expect(run.status, `${run.stdout}\n${run.stderr}`).not.toBe(0);
+        expect(`${run.stdout}\n${run.stderr}`).toMatch(/symlink escape|refusing dirty/i);
+        expect(readFileSync(hostSecret, 'utf8')).toBe('classified\n');
+        if (existsSync(path.join(dest, 'escape', 'host-secret.txt'))) {
+          expect(readFileSync(path.join(dest, 'escape', 'host-secret.txt'), 'utf8')).not.toBe(
+            'classified\n',
+          );
+        }
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.skipIf(process.platform !== 'linux')(
     'dirty restore does not follow a destination symlink outside dest (root escape)',
     () => {

@@ -288,89 +288,132 @@ def stream_worktree(src_fd: int, dest_dir: str) -> None:
         )
         if dirty.returncode == 0 and dirty.stdout:
             dest_root_fd = os.open(dest_dir, os.O_RDONLY | os.O_DIRECTORY)
+            # Source walks must use the same O_NOFOLLOW dirfd discipline as
+            # dest. Joining `worktree/rel` then open/stat/lexists follows an
+            # intermediate repo-controlled symlink (escape → /etc) and would
+            # copy host files into the guest as root.
+            src_root_fd = open_nofollow_dir(worktree)
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
 
             def copy_dirty_nofollow(rel_s: str) -> None:
-                src_path = os.path.join(worktree, rel_s)
                 parts = [p for p in rel_s.split("/") if p not in ("", ".", "..")]
                 if not parts or any(p in ("", ".", "..") for p in rel_s.split("/")):
                     raise SystemExit(f"refusing unclean dirty path: {rel_s!r}")
-                # Deleted in the live tree — drop the index restore too.
-                if not os.path.lexists(src_path):
-                    dir_fd = dest_root_fd
-                    opened: list[int] = []
+
+                def walk_src_parent():
+                    dir_fd = src_root_fd
+                    opened = []
                     try:
                         for part in parts[:-1]:
                             nxt = os.open(
                                 part,
-                                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                                os.O_RDONLY | os.O_DIRECTORY | nofollow,
                                 dir_fd=dir_fd,
                             )
                             opened.append(nxt)
                             dir_fd = nxt
+                        return dir_fd, opened
+                    except FileNotFoundError:
+                        return None, opened
+                    except OSError as e:
+                        for fd in reversed(opened):
+                            os.close(fd)
+                        raise SystemExit(
+                            f"refusing dirty source path with symlink escape: {rel_s!r} ({e})"
+                        ) from e
+
+                src_parent, src_opened = walk_src_parent()
+                try:
+                    leaf = parts[-1]
+                    src_missing = src_parent is None
+                    if not src_missing:
                         try:
-                            os.unlink(parts[-1], dir_fd=dir_fd)
+                            os.lstat(leaf, dir_fd=src_parent)
+                        except FileNotFoundError:
+                            src_missing = True
+                    if src_missing:
+                        # Deleted in the live tree — drop the index restore too.
+                        dir_fd = dest_root_fd
+                        opened = []
+                        try:
+                            for part in parts[:-1]:
+                                nxt = os.open(
+                                    part,
+                                    os.O_RDONLY | os.O_DIRECTORY | nofollow,
+                                    dir_fd=dir_fd,
+                                )
+                                opened.append(nxt)
+                                dir_fd = nxt
+                            try:
+                                os.unlink(leaf, dir_fd=dir_fd)
+                            except FileNotFoundError:
+                                pass
                         except FileNotFoundError:
                             pass
-                    except FileNotFoundError:
-                        pass
+                        finally:
+                            for fd in reversed(opened):
+                                os.close(fd)
+                        return
+
+                    try:
+                        src_st = os.lstat(leaf, dir_fd=src_parent)
+                    except OSError as e:
+                        raise SystemExit(
+                            f"refusing dirty source lstat failure: {rel_s!r} ({e})"
+                        ) from e
+                    # Directories are not expected from `git diff --name-only`.
+                    if stat.S_ISDIR(src_st.st_mode) and not stat.S_ISLNK(src_st.st_mode):
+                        return
+
+                    dir_fd = dest_root_fd
+                    opened = []
+                    try:
+                        for part in parts[:-1]:
+                            try:
+                                nxt = os.open(
+                                    part,
+                                    os.O_RDONLY | os.O_DIRECTORY | nofollow,
+                                    dir_fd=dir_fd,
+                                )
+                            except FileNotFoundError:
+                                os.mkdir(part, 0o755, dir_fd=dir_fd)
+                                nxt = os.open(
+                                    part,
+                                    os.O_RDONLY | os.O_DIRECTORY | nofollow,
+                                    dir_fd=dir_fd,
+                                )
+                            opened.append(nxt)
+                            dir_fd = nxt
+                        try:
+                            os.unlink(leaf, dir_fd=dir_fd)
+                        except FileNotFoundError:
+                            pass
+                        if stat.S_ISLNK(src_st.st_mode):
+                            os.symlink(os.readlink(leaf, dir_fd=src_parent), leaf, dir_fd=dir_fd)
+                        else:
+                            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | nofollow
+                            out_fd = os.open(leaf, flags, 0o644, dir_fd=dir_fd)
+                            try:
+                                in_fd = os.open(leaf, os.O_RDONLY | nofollow, dir_fd=src_parent)
+                                try:
+                                    while True:
+                                        chunk = os.read(in_fd, 1024 * 1024)
+                                        if not chunk:
+                                            break
+                                        os.write(out_fd, chunk)
+                                finally:
+                                    os.close(in_fd)
+                            finally:
+                                os.close(out_fd)
+                            try:
+                                os.chmod(leaf, stat.S_IMODE(src_st.st_mode), dir_fd=dir_fd)
+                            except OSError:
+                                pass
                     finally:
                         for fd in reversed(opened):
                             os.close(fd)
-                    return
-                # Directories are not expected from `git diff --name-only`.
-                if os.path.isdir(src_path) and not os.path.islink(src_path):
-                    return
-                dir_fd = dest_root_fd
-                opened = []
-                try:
-                    for part in parts[:-1]:
-                        try:
-                            nxt = os.open(
-                                part,
-                                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
-                                dir_fd=dir_fd,
-                            )
-                        except FileNotFoundError:
-                            os.mkdir(part, 0o755, dir_fd=dir_fd)
-                            nxt = os.open(
-                                part,
-                                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
-                                dir_fd=dir_fd,
-                            )
-                        opened.append(nxt)
-                        dir_fd = nxt
-                    leaf = parts[-1]
-                    try:
-                        os.unlink(leaf, dir_fd=dir_fd)
-                    except FileNotFoundError:
-                        pass
-                    if os.path.islink(src_path):
-                        os.symlink(os.readlink(src_path), leaf, dir_fd=dir_fd)
-                    else:
-                        # Regular file (or other non-dir): write via O_NOFOLLOW.
-                        flags = (
-                            os.O_WRONLY
-                            | os.O_CREAT
-                            | os.O_TRUNC
-                            | getattr(os, "O_NOFOLLOW", 0)
-                        )
-                        out_fd = os.open(leaf, flags, 0o644, dir_fd=dir_fd)
-                        try:
-                            with open(src_path, "rb") as src_f:
-                                while True:
-                                    chunk = src_f.read(1024 * 1024)
-                                    if not chunk:
-                                        break
-                                    os.write(out_fd, chunk)
-                        finally:
-                            os.close(out_fd)
-                        try:
-                            st = os.stat(src_path, follow_symlinks=False)
-                            os.chmod(leaf, stat.S_IMODE(st.st_mode), dir_fd=dir_fd)
-                        except OSError:
-                            pass
                 finally:
-                    for fd in reversed(opened):
+                    for fd in reversed(src_opened):
                         os.close(fd)
 
             try:
@@ -383,6 +426,7 @@ def stream_worktree(src_fd: int, dest_dir: str) -> None:
                         continue
                     copy_dirty_nofollow(rel_s)
             finally:
+                os.close(src_root_fd)
                 os.close(dest_root_fd)
 
 fd = open_nofollow_dir(worktree)

@@ -138,7 +138,6 @@ describe('buildEnrichedPrompt — session startup setup', () => {
       worktreeIo: io,
       kind: 'host',
       spawn: () => {
-        let resolveExit: ((e: { code: number; signal: null }) => void) | null = null;
         const proc = {
           pid: 1,
           name: 'echo',
@@ -152,7 +151,6 @@ describe('buildEnrichedPrompt — session startup setup', () => {
               proc.exited = true;
               proc.exitResult = e;
               cb(e);
-              resolveExit?.(e);
             });
             return () => {};
           },

@@ -41,7 +41,7 @@ const getSessionCommittableChanges = vi.fn(async () => {
   return { ok: true as const };
 });
 vi.mock('./worktree-changes.js', () => ({
-  getSessionCommittableChanges: (...args: unknown[]) => getSessionCommittableChanges(...args),
+  getSessionCommittableChanges: () => getSessionCommittableChanges(),
 }));
 vi.mock('../session-worktree-io.js', () => ({
   sessionWorktreeIoFor: async () => ({}),
@@ -148,7 +148,9 @@ describe('finalize automation — level drives end-of-turn auto-fire', () => {
       stmts: {
         getSession: { get: () => session },
         getLatestFinalizeRunForSession: {
-          get: () => pushed ?? ({ id: 'run-inflight', status: 'running_checks' } as FinalizeRunRow),
+          get: () =>
+            pushed ??
+            ({ id: 'run-inflight', status: 'running_checks' } as unknown as FinalizeRunRow),
         },
         getPushedFinalizeRunForSession: { get: () => pushed },
         getFinalizeRun: { get: () => undefined },

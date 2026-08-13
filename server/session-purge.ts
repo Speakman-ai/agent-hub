@@ -74,6 +74,12 @@ export interface PurgeDeps {
    */
   removeWorkspace: (workspacePath: string) => boolean | Promise<boolean>;
   cleanupStaleWorkspaces: typeof defaultCleanupStaleWorkspaces;
+  /**
+   * Delete persisted Firecracker workspace disks. Must succeed before the
+   * session row is hard-deleted — otherwise a transient helper failure leaves
+   * disks on disk with no row left to retry. Injectable for tests.
+   */
+  forgetPersistedFirecrackerDisks?: (sessionId: string) => Promise<void>;
 }
 
 export interface PurgeResult {
@@ -87,6 +93,15 @@ export interface PurgeResult {
  * Default `PurgeDeps` wired to the production singletons. Tests construct
  * their own deps from a fresh in-memory DB.
  */
+async function defaultForgetPersistedFirecrackerDisks(sessionId: string): Promise<void> {
+  const paths = firecrackerHostPaths();
+  const execCfg = resolveFirecrackerExecConfig(paths);
+  await forgetPersistedFirecrackerDisks(sessionId, {
+    io: createFirecrackerHostIo(execCfg),
+    paths,
+  });
+}
+
 function defaultDeps(): PurgeDeps {
   return {
     db: _db!,
@@ -94,6 +109,7 @@ function defaultDeps(): PurgeDeps {
     getProjects: defaultGetProjects,
     removeWorkspace: defaultRemoveWorkspace,
     cleanupStaleWorkspaces: defaultCleanupStaleWorkspaces,
+    forgetPersistedFirecrackerDisks: defaultForgetPersistedFirecrackerDisks,
   };
 }
 
@@ -112,7 +128,24 @@ export async function purgeExpiredArchivedSessions(
   let rowsDeleted = 0;
   let workspacesRemoved = 0;
 
+  const forgetDisks =
+    deps.forgetPersistedFirecrackerDisks ?? defaultForgetPersistedFirecrackerDisks;
+
   for (const row of rows) {
+    // Soft archive keeps the Firecracker workspace disk; hard purge must
+    // delete it *before* the session row — a helper failure must leave the
+    // row so the next hourly tick can retry.
+    try {
+      await forgetDisks(row.id);
+    } catch (fcErr: unknown) {
+      const fcMsg = fcErr instanceof Error ? fcErr.message : String(fcErr);
+      console.error(
+        `[Purge] forgetPersistedFirecrackerDisks(${row.id}) failed; leaving row for retry:`,
+        fcMsg,
+      );
+      continue;
+    }
+
     if (row.worktree_path) {
       try {
         // `removeWorkspace` returns `true` only when something was actually
@@ -133,19 +166,6 @@ export async function purgeExpiredArchivedSessions(
       rowsDeleted++;
       cleanupSpawnCredsForSession(row.id, config.dataDir);
       removeBrowserScreenshotsForSession(row.id, config.dataDir);
-      // Soft archive keeps the Firecracker workspace disk; hard purge must
-      // delete it now that the row is gone for good.
-      try {
-        const paths = firecrackerHostPaths();
-        const execCfg = resolveFirecrackerExecConfig(paths);
-        await forgetPersistedFirecrackerDisks(row.id, {
-          io: createFirecrackerHostIo(execCfg),
-          paths,
-        });
-      } catch (fcErr: unknown) {
-        const fcMsg = fcErr instanceof Error ? fcErr.message : String(fcErr);
-        console.error(`[Purge] forgetPersistedFirecrackerDisks(${row.id}) failed:`, fcMsg);
-      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[Purge] deleteSession(${row.id}) failed:`, message);
