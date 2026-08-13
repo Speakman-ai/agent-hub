@@ -150,6 +150,7 @@ mount -o loop -- "${WORKSPACE_OUT}" "${MOUNT_DIR}"
 export AGENT_HUB_WORKSPACE_SIZE_MIB="${WORKSPACE_SIZE_MIB}"
 python3 - "${WORKTREE}" "${MOUNT_DIR}" <<'PY'
 import os
+import shutil
 import subprocess
 import sys
 
@@ -275,6 +276,32 @@ def stream_worktree(src_fd: int, dest_dir: str) -> None:
             raise SystemExit(
                 f"git checkout-index failed (exit {restore.returncode}): {detail}"
             )
+        # checkout-index restores the index blob, which clobbers dirty
+        # working-tree edits on tracked files. Re-copy those paths from the
+        # live source so uncommitted work survives into the guest.
+        dirty = subprocess.run(
+            ["git", "-C", worktree, "diff", "--name-only", "-z", "HEAD"],
+            capture_output=True,
+        )
+        if dirty.returncode == 0 and dirty.stdout:
+            for rel in dirty.stdout.split(b"\0"):
+                if not rel:
+                    continue
+                try:
+                    rel_s = rel.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                src_path = os.path.join(worktree, rel_s)
+                dst_path = os.path.join(dest_dir, rel_s)
+                if not os.path.isfile(src_path):
+                    # Deleted in the live tree — drop the index restore too.
+                    if os.path.lexists(dst_path) and not os.path.isdir(dst_path):
+                        os.unlink(dst_path)
+                    continue
+                parent = os.path.dirname(dst_path)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                shutil.copy2(src_path, dst_path, follow_symlinks=False)
 
 fd = open_nofollow_dir(worktree)
 try:

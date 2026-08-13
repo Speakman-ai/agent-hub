@@ -6,22 +6,28 @@
  * via {@link SessionEnv.spawn} with cwd at the session worktree root (the same
  * workspace chat, terminal, and preview use — guest `/workspace` for
  * env-owned / container envs, host worktree path for the host adapter). Status
- * is kept in-memory for the enriched prompt / spawn env and mirrored to
- * `.agent-hub-runtime/session-startup.json` inside the session worktree so the
- * agent can `cat` it mid-turn.
+ * is kept in-memory for the enriched prompt / spawn env and mirrored to a
+ * status file **outside** the git worktree (`GUEST_RUNTIME_ROOT` in guests,
+ * `$HOME/.agent-hub-runtime/…` on the host) so `git add -A` cannot pick it up.
  */
 import { randomUUID } from 'crypto';
+import { homedir } from 'os';
+import path from 'path';
 import type { SessionEnv } from './session-env.js';
-import type { SessionWorktreeIo } from './worktree-io.js';
+import { GUEST_RUNTIME_ROOT } from './guest-cli-spawn.js';
 
 /** Progress-panel / progress_step label. */
 export const SESSION_STARTUP_STEP = 'Session setup';
 
-/** Worktree-relative status file (guest path: `/workspace/<this>`). */
+/** @deprecated Prefer {@link SESSION_STARTUP_STATUS_GUEST_ABS}; kept for tests. */
 export const SESSION_STARTUP_STATUS_REL = '.agent-hub-runtime/session-startup.json';
 
-/** Guest-absolute path agents should prefer when env-owned. */
-export const SESSION_STARTUP_STATUS_GUEST_ABS = `/workspace/${SESSION_STARTUP_STATUS_REL}`;
+/** Guest-absolute status file (outside `/workspace`). */
+export const SESSION_STARTUP_STATUS_GUEST_ABS = `${GUEST_RUNTIME_ROOT}/session-startup.json`;
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
 
 /** Per-command wall-clock cap (15 min). */
 export const SESSION_STARTUP_COMMAND_TIMEOUT_MS = 900_000;
@@ -88,21 +94,35 @@ function truncateDetail(stdout: string, stderr: string): string | null {
   return `…${merged.slice(-DETAIL_CAP)}`;
 }
 
-/** Compact failure text for Progress panel / WS (command + exit + log tail). */
+/**
+ * Compact failure text for Progress panel / WS.
+ *
+ * Default is redacted: session-progress fans out over the WebSocket and must
+ * not carry startup command lines or log tails to other project members.
+ * Pass `{ redact: false }` for operator logs / the on-disk status file.
+ */
 export function formatSessionStartupProgressDetail(
   status: SessionStartupStatus,
+  opts: { redact?: boolean } = {},
 ): string | undefined {
   const failed = status.commands.find((c) => c.status === 'failed');
   if (!failed) return undefined;
+  const redact = opts.redact !== false;
+  if (redact) {
+    return failed.exitCode != null
+      ? `Session setup command failed (exit ${failed.exitCode})`
+      : 'Session setup command failed';
+  }
   const header = `$ ${failed.cmd}` + (failed.exitCode != null ? ` (exit ${failed.exitCode})` : '');
   const body = failed.detail?.trim();
   return body ? `${header}\n${body}` : header;
 }
 
-function statusPathForEnv(env: SessionEnv): string {
-  return env.worktreeIo.sharing === 'env-owned'
-    ? SESSION_STARTUP_STATUS_GUEST_ABS
-    : SESSION_STARTUP_STATUS_REL;
+function statusPathForEnv(env: SessionEnv, sessionId: string): string {
+  if (env.worktreeIo.sharing === 'env-owned') {
+    return SESSION_STARTUP_STATUS_GUEST_ABS;
+  }
+  return path.join(homedir(), '.agent-hub-runtime', 'session-startup', `${sessionId}.json`);
 }
 
 /**
@@ -212,16 +232,25 @@ export async function runStartupCommandInSessionWorkspace(
   }
 }
 
-async function persistStatusFile(
-  io: SessionWorktreeIo,
-  status: SessionStartupStatus,
-): Promise<void> {
+async function persistStatusFile(env: SessionEnv, status: SessionStartupStatus): Promise<void> {
+  const target = status.statusPath;
+  const body = `${JSON.stringify(status, null, 2)}\n`;
   try {
-    await io.exec('mkdir -p .agent-hub-runtime', { timeoutMs: 30_000 });
-    await io.writeFile(SESSION_STARTUP_STATUS_REL, `${JSON.stringify(status, null, 2)}\n`);
+    // Always write via absolute-path shell so host + guest stay out of the
+    // git worktree (HostWorktreeIo.writeFile is worktree-relative only).
+    const b64 = Buffer.from(body, 'utf8').toString('base64');
+    const dir = path.posix.dirname(target.split(path.sep).join('/'));
+    const abs = target.split(path.sep).join('/');
+    const result = await env.worktreeIo.exec(
+      `mkdir -p ${shellQuote(dir)} && printf '%s' ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}`,
+      { timeoutMs: 30_000 },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`);
+    }
   } catch (err) {
     console.warn(
-      `[session-startup] failed to write ${SESSION_STARTUP_STATUS_REL}: ${
+      `[session-startup] failed to write ${target}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
@@ -237,7 +266,7 @@ export function formatSessionStartupPromptSection(
     if (!opts.commandsConfigured) return '';
     return `\n\n## Session Startup Setup
 Status: **pending** (startup hooks have not reported yet)
-Status file: \`.agent-hub-runtime/session-startup.json\` (guest: \`${SESSION_STARTUP_STATUS_GUEST_ABS}\`)
+Status file: \`${SESSION_STARTUP_STATUS_GUEST_ABS}\` (outside the git worktree)
 
 Do **not** assume project deps (venv, node_modules, etc.) are ready yet. Poll the status file or wait before running tests that need them.`;
   }
@@ -288,7 +317,7 @@ export async function runSessionStartupHooks(
   const now = args.now ?? Date.now;
   const bootId = randomUUID();
   const startedAt = now();
-  const statusPath = statusPathForEnv(args.env);
+  const statusPath = statusPathForEnv(args.env, args.sessionId);
 
   if (args.commands.length === 0) {
     const skipped: SessionStartupStatus = {
@@ -317,7 +346,7 @@ export async function runSessionStartupHooks(
     statusPath,
   };
   statusBySession.set(args.sessionId, status);
-  await persistStatusFile(args.env.worktreeIo, status);
+  await persistStatusFile(args.env, status);
   args.onProgress?.({
     runStatus: 'pending',
     stepStatus: 'started',
@@ -331,11 +360,12 @@ export async function runSessionStartupHooks(
       if (c.status === 'pending') c.status = 'skipped';
     }
     statusBySession.set(args.sessionId, status);
-    await persistStatusFile(args.env.worktreeIo, status);
+    await persistStatusFile(args.env, status);
     const detail = formatSessionStartupProgressDetail(status);
+    const logDetail = formatSessionStartupProgressDetail(status, { redact: false });
     console.warn(
       `[session-startup] session=${args.sessionId} aborted before commands ran` +
-        (detail ? `\n${detail}` : ''),
+        (logDetail ? `\n${logDetail}` : ''),
     );
     args.onProgress?.({
       runStatus: 'failed',
@@ -349,7 +379,7 @@ export async function runSessionStartupHooks(
 
   status.status = 'running';
   statusBySession.set(args.sessionId, status);
-  await persistStatusFile(args.env.worktreeIo, status);
+  await persistStatusFile(args.env, status);
 
   for (let i = 0; i < status.commands.length; i++) {
     if (args.signal?.aborted) {
@@ -364,7 +394,7 @@ export async function runSessionStartupHooks(
     const entry = status.commands[i]!;
     entry.status = 'running';
     statusBySession.set(args.sessionId, { ...status, commands: [...status.commands] });
-    await persistStatusFile(args.env.worktreeIo, status);
+    await persistStatusFile(args.env, status);
     console.log(`[session-startup] session=${args.sessionId} running: ${entry.cmd}`);
 
     try {
@@ -421,7 +451,7 @@ export async function runSessionStartupHooks(
   }
 
   statusBySession.set(args.sessionId, status);
-  await persistStatusFile(args.env.worktreeIo, status);
+  await persistStatusFile(args.env, status);
   const progressDetail =
     status.status === 'failed' ? formatSessionStartupProgressDetail(status) : undefined;
   if (status.status === 'ready') {
@@ -461,14 +491,14 @@ export function startSessionStartupHooks(
         detail: err instanceof Error ? err.message : String(err),
       })),
       bootId: randomUUID(),
-      statusPath: statusPathForEnv(args.env),
+      statusPath: statusPathForEnv(args.env, args.sessionId),
     };
     statusBySession.set(args.sessionId, failed);
     const detail = formatSessionStartupProgressDetail(failed);
     console.warn(
       `[session-startup] session=${args.sessionId} failed: ${
         err instanceof Error ? err.message : String(err)
-      }` + (detail ? `\n${detail}` : ''),
+      }`,
     );
     args.onProgress?.({
       runStatus: 'failed',

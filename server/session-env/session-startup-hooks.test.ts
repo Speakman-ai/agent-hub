@@ -1,10 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { homedir } from 'os';
+import path from 'path';
 import {
   __resetSessionStartupStatusForTests,
+  formatSessionStartupProgressDetail,
   formatSessionStartupPromptSection,
   getSessionStartupStatus,
   normalizeSessionStartupCommands,
   runSessionStartupHooks,
+  SESSION_STARTUP_STATUS_GUEST_ABS,
   SESSION_STARTUP_STATUS_REL,
   type SessionStartupStatus,
 } from './session-startup-hooks.js';
@@ -21,7 +25,13 @@ function makeIo(): {
     hostPath: '/wt',
     git: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
     exec: async (command) => {
-      // Status-file mkdir is fine; command execution must go through spawn.
+      // Status-file persist uses mkdir + base64 decode to an absolute path.
+      const m = command.match(/base64 -d > '([^']+)'/);
+      if (m?.[1]) {
+        const b64 = command.match(/printf '%s' '([^']*)'/)?.[1] ?? '';
+        writes.push({ path: m[1], body: Buffer.from(b64, 'base64').toString('utf8') });
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }
       if (command.startsWith('mkdir ')) {
         return { stdout: '', stderr: '', exitCode: 0 };
       }
@@ -181,7 +191,12 @@ describe('runSessionStartupHooks', () => {
       "bash -c 'echo two'",
     ]);
     expect(env.spawnCalls.every((c) => c.cwd === '.')).toBe(true);
-    expect(writes.some((w) => w.path === SESSION_STARTUP_STATUS_REL)).toBe(true);
+    const expectedPath = path.join(homedir(), '.agent-hub-runtime', 'session-startup', 's1.json');
+    expect(status.statusPath).toBe(expectedPath);
+    expect(writes.some((w) => w.path === expectedPath)).toBe(true);
+    expect(
+      writes.every((w) => !w.path.includes('/workspace/') && w.path !== SESSION_STARTUP_STATUS_REL),
+    ).toBe(true);
     const last = JSON.parse(writes.at(-1)!.body) as SessionStartupStatus;
     expect(last.status).toBe('ready');
     expect(progress[0]).toBe('started');
@@ -222,19 +237,21 @@ describe('runSessionStartupHooks', () => {
     expect(status.commands.map((c) => c.status)).toEqual(['ok', 'failed', 'skipped']);
     expect(status.commands[1]!.detail).toContain('boom');
     expect(progress.at(-1)?.stepStatus).toBe('failed');
-    expect(progress.at(-1)?.detail).toContain('$ false');
-    expect(progress.at(-1)?.detail).toContain('boom');
+    // Progress/WS detail must not leak the command line or log tail.
+    expect(progress.at(-1)?.detail).toBe('Session setup command failed (exit 1)');
+    expect(progress.at(-1)?.detail).not.toContain('false');
+    expect(progress.at(-1)?.detail).not.toContain('boom');
     expect(env.spawnCalls.map((c) => c.command)).toEqual(["bash -c 'true'", "bash -c 'false'"]);
   });
 
   it('aborts pending work when the signal fires before a command', async () => {
     const ac = new AbortController();
     const { io } = makeIo();
-    let slowProc: ReturnType<typeof makeSpawnProc> | null = null;
+    const holder: { proc: ReturnType<typeof makeSpawnProc> | null } = { proc: null };
     const env = makeEnv(io, (cmd) => {
       if (cmd.includes("'slow'")) {
-        slowProc = makeSpawnProc({ exitCode: 0, hangUntilKill: true });
-        return slowProc;
+        holder.proc = makeSpawnProc({ exitCode: 0, hangUntilKill: true });
+        return holder.proc;
       }
       return makeSpawnProc({ exitCode: 0 });
     });
@@ -251,7 +268,24 @@ describe('runSessionStartupHooks', () => {
     const status = await runP;
     expect(status.status).toBe('failed');
     expect(status.commands[1]!.status).toBe('skipped');
-    expect(slowProc?.killed).toBe(true);
+    expect(holder.proc?.killed).toBe(true);
+  });
+});
+
+describe('formatSessionStartupProgressDetail', () => {
+  it('redacts command and output by default', () => {
+    const status: SessionStartupStatus = {
+      status: 'failed',
+      startedAt: 1,
+      finishedAt: 2,
+      bootId: 'x',
+      statusPath: SESSION_STARTUP_STATUS_GUEST_ABS,
+      commands: [{ cmd: 'secret-cmd', status: 'failed', exitCode: 7, detail: 'secret-out' }],
+    };
+    expect(formatSessionStartupProgressDetail(status)).toBe(
+      'Session setup command failed (exit 7)',
+    );
+    expect(formatSessionStartupProgressDetail(status, { redact: false })).toContain('secret-cmd');
   });
 });
 
@@ -264,6 +298,7 @@ describe('formatSessionStartupPromptSection', () => {
     const text = formatSessionStartupPromptSection(null, { commandsConfigured: true });
     expect(text).toContain('Session Startup Setup');
     expect(text).toContain('pending');
+    expect(text).toContain(SESSION_STARTUP_STATUS_GUEST_ABS);
   });
 
   it('includes ready guidance', () => {

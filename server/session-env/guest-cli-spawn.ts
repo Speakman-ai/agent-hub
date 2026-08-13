@@ -243,6 +243,13 @@ export function guestEngineBinCandidates(binName: string, guestHome: string): st
       path.posix.join('/home/runner', '.local', 'bin', 'cursor-agent'),
     );
   }
+  // xAI's installer lands `grok` under `~/.grok/bin` (not always `~/.local/bin`).
+  if (binName === 'grok') {
+    candidates.unshift(
+      path.posix.join(guestHome, '.grok', 'bin', 'grok'),
+      path.posix.join('/home/runner', '.grok', 'bin', 'grok'),
+    );
+  }
   candidates.push(binName);
   return candidates;
 }

@@ -111,15 +111,23 @@ RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex \
 RUN if id runner >/dev/null 2>&1; then \
       su - runner -c 'curl -fsSL https://x.ai/cli/install.sh | bash' ; \
       su - runner -c 'curl -fsSL https://cursor.com/install | bash' ; \
-      su - runner -c 'export PATH="$HOME/.local/bin:$PATH"; \
+      su - runner -c 'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; \
+        mkdir -p "$HOME/.local/bin"; \
+        if [ -x "$HOME/.grok/bin/grok" ] && [ ! -e "$HOME/.local/bin/grok" ]; then \
+          ln -sfn "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"; \
+        fi; \
         target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
         test -n "$target" && test -x "$target"; \
         ln -sfn "$target" "$HOME/.local/bin/agent"; \
-        command -v agent; command -v cursor-agent' ; \
+        command -v agent; command -v cursor-agent; command -v grok' ; \
     else \
       curl -fsSL https://x.ai/cli/install.sh | bash ; \
       curl -fsSL https://cursor.com/install | bash ; \
-      export PATH="$HOME/.local/bin:$PATH"; \
+      export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; \
+      mkdir -p "$HOME/.local/bin"; \
+      if [ -x "$HOME/.grok/bin/grok" ] && [ ! -e "$HOME/.local/bin/grok" ]; then \
+        ln -sfn "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"; \
+      fi; \
       target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
       ln -sfn "$target" "$HOME/.local/bin/agent"; \
     fi

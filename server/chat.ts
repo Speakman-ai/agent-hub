@@ -3226,10 +3226,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: err.message,
           });
+          // Env-owned turns insert active_tasks before ensure/auth — clear it
+          // or the session stays "busy" forever and the queue never drains.
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
           maybeFinalizeAutoReviewSession(
             { stmts, broadcast },
             { sessionId, agentId, error: err.message },
           );
+          drainQueue(sessionId);
           return;
         }
         throw err;
@@ -3250,10 +3257,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: errText,
           });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
           maybeFinalizeAutoReviewSession(
             { stmts, broadcast },
             { sessionId, agentId, error: errText },
           );
+          drainQueue(sessionId);
           return;
         }
       }

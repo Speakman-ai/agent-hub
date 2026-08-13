@@ -58,7 +58,13 @@ export interface BroadcastFilterDeps {
  * because the default project is shared across the org. Fan-out has to match
  * the REST gate or the WebSocket becomes the way around it.
  */
-const SESSION_PRIVATE_EVENT_TYPES = new Set(['background_shell_update']);
+const SESSION_PRIVATE_EVENT_TYPES = new Set([
+  'background_shell_update',
+  // Session Progress / event timeline can include startup-hook command lines
+  // and output tails — same ownership gate as background shells.
+  'session-event',
+  'session-progress',
+]);
 
 /**
  * Owner check for a session-scoped payload. Exported so the WebSocket connect

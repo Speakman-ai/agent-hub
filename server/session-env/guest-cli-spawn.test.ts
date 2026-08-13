@@ -41,6 +41,12 @@ describe('guestEngineBinCandidates', () => {
     expect(c[0]).toBe(`${GUEST_CLI_HOME}/.local/bin/cursor-agent`);
     expect(c).toContain(`${GUEST_CLI_HOME}/.local/bin/agent`);
   });
+
+  it('prefers ~/.grok/bin/grok from the xAI installer', () => {
+    const c = guestEngineBinCandidates('grok', GUEST_CLI_HOME);
+    expect(c[0]).toBe(`${GUEST_CLI_HOME}/.grok/bin/grok`);
+    expect(c).toContain('/home/runner/.grok/bin/grok');
+  });
 });
 
 describe('hostCwdToWorktreeRelative', () => {

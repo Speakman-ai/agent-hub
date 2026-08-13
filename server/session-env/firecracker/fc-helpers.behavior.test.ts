@@ -504,6 +504,9 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     // Tracked-but-ignored paths must be re-materialized or Changes shows
     // false deletions (sample.env / .vscode on Survey Tracker).
     expect(src).toMatch(/checkout-index.*-a.*-f|checkout-index", "-a", "-f"/);
+    // Dirty working-tree edits must be re-copied after checkout-index.
+    expect(src).toMatch(/diff", "--name-only", "-z", "HEAD"/);
+    expect(src).toMatch(/shutil\.copy2/);
   });
 
   // O_NOFOLLOW + `/proc/<pid>/fd` are Linux-only; macOS tmpdirs also walk
@@ -555,6 +558,8 @@ describe('fc-prepare-disks.sh worktree copy', () => {
             env: gitEnv,
           }).status,
         ).toBe(0);
+        // Uncommitted edit must survive checkout-index (dirty restore).
+        writeFileSync(path.join(worktree, 'README.md'), 'dirty working tree\n');
         const py = match![1];
         const run = spawnSync('python3', ['-', worktree, dest], {
           input: py,
@@ -562,7 +567,7 @@ describe('fc-prepare-disks.sh worktree copy', () => {
           env: { ...process.env, AGENT_HUB_WORKSPACE_SIZE_MIB: '64' },
         });
         expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
-        expect(readFileSync(path.join(dest, 'README.md'), 'utf8')).toBe('hello from prepare\n');
+        expect(readFileSync(path.join(dest, 'README.md'), 'utf8')).toBe('dirty working tree\n');
         expect(existsSync(path.join(dest, 'frontend', 'node_modules'))).toBe(false);
         // Tar skipped this via --exclude-vcs-ignores; checkout-index restores it.
         expect(readFileSync(path.join(dest, 'tracked-ignored.txt'), 'utf8')).toBe('keep-me\n');

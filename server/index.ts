@@ -1668,9 +1668,16 @@ export const routeDeps: RouteDeps = {
   disposeSessionEnv: async (sessionId: string) => {
     await sessionEnvManager.dispose(sessionId, { forgetWorkspace: true });
     // Idle reap / Hub restart leave the workspace disk. Session end must
-    // still delete it when no env is live in memory.
+    // still delete it when no env is live in memory. Route `clean` through
+    // privileged host IO (docker helper / sudo) — the default direct exec
+    // cannot reach the helper from a Hub container.
     if (getSessionEnvSelection().adapter === 'firecracker') {
-      await forgetPersistedFirecrackerDisks(sessionId);
+      const paths = firecrackerHostPaths();
+      const execCfg = resolveFirecrackerExecConfig(paths);
+      await forgetPersistedFirecrackerDisks(sessionId, {
+        io: createFirecrackerHostIo(execCfg),
+        paths,
+      });
     }
   },
   getSessionWorktreeIo: resolveSessionWorktreeIo,
@@ -1686,7 +1693,11 @@ export const routeDeps: RouteDeps = {
     const { project, agent } = found;
     const installCommand =
       (project as { commands?: { install?: string | null } }).commands?.install ?? null;
-    const worktreePath = await ensureWorktree(
+    // Side-effect-free: only materialize the host seed worktree. Firecracker /
+    // container boots happen later via chat / ensureSessionEnv so creating a
+    // session (or opening Finalize setup) does not pay for a VM that may never
+    // run a turn.
+    return ensureWorktree(
       session,
       project.cwd,
       agent.id,
@@ -1698,14 +1709,6 @@ export const routeDeps: RouteDeps = {
       project.githubRepo ?? null,
       hostedBarePathForProject(project),
     );
-    // Firecracker / container boots are long; kick them as soon as the
-    // worktree exists so Progress shows "Launching session VM" instead of a
-    // blank chat. Host adapter has nothing to boot.
-    await whenSessionEnvSelectionReady();
-    if (getSessionEnvSelection().adapter !== 'host') {
-      await sessionEnvManager.ensure(sessionId);
-    }
-    return worktreePath;
   },
   switchSessionWorkspaceBranch: async (sessionId: string, branch: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;

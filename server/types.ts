@@ -3228,7 +3228,7 @@ export interface Project {
    * Shell commands run inside the session environment after every SessionEnv
    * boot (Firecracker / container / host), in the worktree cwd. Started in the
    * background so chat/terminal are not blocked; status is written to
-   * `.agent-hub-runtime/session-startup.json` and injected into the agent
+   * session-startup status file (outside the git worktree) and injected into the agent
    * prompt. Scripts should be idempotent (`[ -d .venv ] || python3 -m venv .venv`).
    * Web client: Settings → Project Settings. Mobile does not expose this yet.
    */
