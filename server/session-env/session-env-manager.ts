@@ -42,8 +42,12 @@ export interface SessionEnvManagerDeps {
    * at a path that does not exist.
    */
   resolveWorktree: (sessionId: string) => string | null;
-  /** Adapter to build. Defaults to the boot-time capability selection. */
-  resolveAdapter?: () => SessionEnvKind;
+  /**
+   * Adapter to build for this session. Defaults to the boot-time capability
+   * selection. Callers may force `host` for workflow (no-code) projects so
+   * they never boot a VM against the shared project workspace.
+   */
+  resolveAdapter?: (sessionId: string) => SessionEnvKind;
   /** Seam for tests. Defaults to the real registry. */
   createEnv?: (kind: SessionEnvKind, opts: CreateSessionEnvOpts) => SessionEnv;
   /**
@@ -202,7 +206,7 @@ export class SessionEnvManager {
         `Session ${sessionId} has no workspace yet. Wait for workspace provisioning to finish.`,
       );
     }
-    const kind = (this.deps.resolveAdapter ?? (() => getSessionEnvSelection().adapter))();
+    const kind = (this.deps.resolveAdapter ?? (() => getSessionEnvSelection().adapter))(sessionId);
     const create = this.deps.createEnv ?? createSessionEnv;
     const publishPorts = this.deps.resolvePublishPorts?.(sessionId) ?? null;
     const sysboxDeps = {

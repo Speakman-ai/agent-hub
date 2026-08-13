@@ -49,7 +49,8 @@ import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { isDevServerConfigured } from './dev-server-config.js';
 import { getSessionEnvSelection } from './session-env/sysbox-capability.js';
-import { worktreeSharingForKind, type SessionEnv } from './session-env/session-env.js';
+import type { SessionEnv } from './session-env/session-env.js';
+import { sessionTurnUsesEnvOwnedWorktree } from './session-env/workflow-session-env.js';
 import {
   adaptSpawnEnvForGuest,
   buildGuestCliCommand,
@@ -2985,7 +2986,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       let effectiveCwd: string = project.cwd;
       let sessionEnv: SessionEnv | null = null;
-      const envOwned = worktreeSharingForKind(getSessionEnvSelection().adapter) === 'env-owned';
+      // Workflow (no-code) projects share project.cwd and must never boot a
+      // Firecracker VM — env-owned CLI turns wait on a worktree that never comes.
+      const envOwned = sessionTurnUsesEnvOwnedWorktree(
+        project as Project,
+        getSessionEnvSelection().adapter,
+      );
       const pinnedSpawnCwd =
         typeof msg._spawnCwd === 'string' && msg._spawnCwd.trim() !== ''
           ? msg._spawnCwd.trim()

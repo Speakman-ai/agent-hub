@@ -127,7 +127,11 @@ import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
-import { sessionUsesWorktree } from './project-mode.js';
+import { getProjectMode, sessionUsesWorktree } from './project-mode.js';
+import {
+  resolveSessionEnvAdapterForProject,
+  resolveSessionWorktreePath,
+} from './session-env/workflow-session-env.js';
 import { isSessionWorktreeLocked } from './session-worktree-lock.js';
 import {
   ensureSessionWorkspace,
@@ -1235,11 +1239,21 @@ const sessionEnvManager = new SessionEnvManager({
   bootSweep: sessionEnvBootSweep,
   resolveWorktree: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
-    if (!session || session.deleted_at) return null;
-    if (session.worktree_path) return session.worktree_path;
-    // A session opted out of worktrees works directly in the project checkout.
-    if (Number(session.use_worktree) === 1) return null;
-    return findAgent(session.agent_id)?.project.cwd ?? null;
+    if (!session) return null;
+    const project = findAgent(session.agent_id)?.project;
+    return resolveSessionWorktreePath({
+      worktreePath: session.worktree_path,
+      useWorktree: session.use_worktree,
+      deletedAt: session.deleted_at,
+      projectCwd: project?.cwd ?? null,
+      projectMode: getProjectMode(project),
+    });
+  },
+  // Workflow projects never get a VM — shared project.cwd on the host only.
+  resolveAdapter: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    const project = session ? findAgent(session.agent_id)?.project : null;
+    return resolveSessionEnvAdapterForProject(project, getSessionEnvSelection().adapter);
   },
   resolveStartupCommands: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
@@ -1308,14 +1322,18 @@ const sessionEnvManager = new SessionEnvManager({
 async function resolveSessionWorktreeIo(sessionId: string): Promise<SessionWorktreeIo | null> {
   await whenSessionEnvSelectionReady();
   const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
-  if (!session || session.deleted_at) return null;
-  const worktreePath =
-    session.worktree_path ??
-    (Number(session.use_worktree) === 1
-      ? null
-      : (findAgent(session.agent_id)?.project.cwd ?? null));
+  if (!session) return null;
+  const project = findAgent(session.agent_id)?.project;
+  const worktreePath = resolveSessionWorktreePath({
+    worktreePath: session.worktree_path,
+    useWorktree: session.use_worktree,
+    deletedAt: session.deleted_at,
+    projectCwd: project?.cwd ?? null,
+    projectMode: getProjectMode(project),
+  });
   if (!worktreePath) return null;
-  if (worktreeSharingForKind(getSessionEnvSelection().adapter) === 'host-shared') {
+  const adapter = resolveSessionEnvAdapterForProject(project, getSessionEnvSelection().adapter);
+  if (worktreeSharingForKind(adapter) === 'host-shared') {
     return new HostWorktreeIo(worktreePath);
   }
   return (await sessionEnvManager.ensure(sessionId)).worktreeIo;
