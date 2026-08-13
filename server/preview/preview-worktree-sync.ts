@@ -1,7 +1,7 @@
 /**
- * Keep a user-started session preview in sync with worktree edits.
- * Preview boot is human-only (toolbar / POST …/preview/start); agents must
- * not emit `<agenthub:preview>`.
+ * Keep a session preview in sync with worktree edits.
+ * Preview boot: toolbar / POST …/preview/start / ReAct `preview` `op: "start"`.
+ * Do not emit `<agenthub:preview>` XML — the host ignores it.
  *
  * - `preview_refresh` WS event → client reloads the iframe (Angular HMR often
  *   picks up changes without this; the refresh covers API/proxy staleness).

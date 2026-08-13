@@ -1,16 +1,15 @@
 /**
  * preview-react.ts — host-mediated `tool: preview` ReAct actions.
  *
- * Lets an agent OBSERVE (state / logs / screenshot) and DRIVE (navigate by
- * route, click, type, scroll, wait, read_page, extract) the preview —
- * managed dev server — that a human already started for
- * the agent's own session.
+ * Lets an agent OBSERVE (state / logs / screenshot), START (`start`), and
+ * DRIVE (navigate by route, click, type, scroll, wait, read_page, extract)
+ * the preview — managed dev server — for the agent's own session.
  *
  * Invariants:
- * - **Lifecycle stays human-only.** There is intentionally no start/stop op —
- *   preview boot remains `POST /api/sessions/:id/preview/start` from the chat
- *   toolbar. A session with no running preview gets a clear "not running"
- *   observation (hostExit 2), never a boot.
+ * - **Start is agent-callable; stop stays human-only.** `op: "start"` invokes
+ *   the same boot path as the toolbar (`startSessionPreview`). There is no
+ *   stop op — tearing down a live preview mid-turn is reserved for the human
+ *   **Stop preview** control.
  * - **Origin-pinned egress.** The agent's regular `browser` tool blocks
  *   loopback targets (SSRF policy), so previews on `localhost:<port>` are
  *   unreachable from it. The preview drive browser session relaxes that block
@@ -57,6 +56,7 @@ import { clipUtf8StringToMaxBytes } from '../utf8-clip.js';
 
 /** Single source of truth for ReAct `tool: preview` operations (keep in sync with parseReActBlock). */
 export const PREVIEW_REACT_OPS = [
+  'start',
   'state',
   'logs',
   'screenshot',
@@ -78,7 +78,7 @@ export const PREVIEW_REACT_OP_SET: ReadonlySet<string> = new Set(PREVIEW_REACT_O
  * Ops that need a server-side Chromium pointed at the preview. Gated behind
  * the same `browserToolsEnabled` flag as the regular `browser` tool so an
  * operator who turned Chromium off for an agent doesn't get it back via the
- * preview tool. `state` / `logs` are plain DB/log reads and are always on.
+ * preview tool. `start` / `state` / `logs` are host-side and always on.
  */
 export const PREVIEW_DRIVE_OPS: ReadonlySet<string> = new Set([
   'screenshot',
@@ -102,8 +102,10 @@ export const PREVIEW_LOGS_MARKDOWN_MAX_BYTES = 48_000;
 /** Fields parsed from `<agenthub:react>` preview actions (see chat.ts). */
 export interface PreviewReActActionInput {
   op: string;
-  /** navigate — path within the preview app; must start with `/`. */
+  /** navigate / start — path within the preview app; must start with `/`. */
   route?: string;
+  /** start — optional reason recorded on the preview task. */
+  reason?: string;
   /** logs — number of tail lines (default 200, max 1000). */
   tail?: number;
   target?: string;
@@ -141,11 +143,22 @@ export interface PreviewRuntimeForReact {
   serverReachableUrlForPort(port: number, sessionId?: string): string;
 }
 
+export type PreviewStartResult =
+  | { ok: true; started: true }
+  | { ok: false; error: string; statusCode?: number };
+
 export interface PreviewReActDeps {
   /** Null when the dev-server runtime is not wired (some tests). */
   runtime: PreviewRuntimeForReact | null;
   /** Agent/project browser tuning (viewport, timeout) for the drive session. */
   launchOpts?: BrowserSessionOptions;
+  /**
+   * Boot (or replace) this session's preview. Same path as the toolbar
+   * `POST …/preview/start`. Optional so unit tests of observe/drive ops
+   * need not wire boot; when missing, `op: "start"` tells the model to
+   * ask the human.
+   */
+  startPreview?: (opts: { route?: string; reason?: string }) => Promise<PreviewStartResult>;
 }
 
 /**
@@ -287,9 +300,11 @@ function isOnOrigin(pageUrl: string | null, origin: string): boolean {
 const NO_PREVIEW_MARKDOWN = [
   '## Preview tool',
   '',
-  'No preview is running for this session. Preview boot is human-only — ask the',
-  'user to press **Start preview** in the chat toolbar (first boot can take',
-  'several minutes), then retry this action once the pane shows **Ready**.',
+  'No preview is running for this session. Start one with',
+  '`{"tool":"preview","op":"start"}` (first boot can take several minutes),',
+  'then poll `{"tool":"preview","op":"state"}` / `"op":"logs"` until status is',
+  '**ready** before screenshot/click/type. The human can also press **Start preview**',
+  'in the chat toolbar.',
 ].join('\n');
 
 // ─── Main entry ──────────────────────────────────────────────────
@@ -327,6 +342,88 @@ export async function runPreviewReActStep(
     );
   }
   const runtime = deps.runtime;
+
+  // Start before requiring an active row — that's the whole point of `start`.
+  if (op === 'start') {
+    const existing = runtime.getActiveBySessionId(chatSessionId);
+    if (existing && (existing.status === 'ready' || existing.status === 'starting')) {
+      runtime.touchPreview(existing.id);
+      const state = {
+        status: existing.status,
+        url: existing.url || null,
+        port: existing.port || null,
+        startedAt: existing.started_at,
+        lastActiveAt: existing.last_active_at,
+      };
+      return outcome(
+        [
+          '## Preview: start',
+          '',
+          `Preview is already **${existing.status}** — no new boot was requested.`,
+          '',
+          '```json',
+          JSON.stringify(state, null, 2),
+          '```',
+          '',
+          existing.status === 'starting'
+            ? 'Poll `{"tool":"preview","op":"state"}` or `"op":"logs"` until status is **ready**.'
+            : 'You can drive it with screenshot / navigate / click / type.',
+        ].join('\n'),
+        0,
+        `start:already_${existing.status}`,
+        `Preview already ${existing.status}`,
+      );
+    }
+
+    if (!deps.startPreview) {
+      return outcome(
+        [
+          '## Preview tool',
+          '',
+          'Preview start is not wired on this server. Ask the human to press **Start preview**.',
+        ].join('\n'),
+        2,
+        'start_unwired',
+        'Preview start unavailable',
+      );
+    }
+
+    const route =
+      typeof input.route === 'string' && input.route.trim().startsWith('/')
+        ? input.route.trim()
+        : undefined;
+    const reason =
+      typeof input.reason === 'string' && input.reason.trim()
+        ? input.reason.trim()
+        : 'Started by agent via ReAct preview tool';
+
+    const result = await deps.startPreview({ route, reason });
+    if (!result.ok) {
+      return outcome(
+        `## Preview tool\nFailed to start preview: ${result.error}`,
+        2,
+        `start_failed:${result.statusCode ?? 'error'}`,
+        'Preview start failed',
+        { errorLine: result.error },
+      );
+    }
+
+    return outcome(
+      [
+        '## Preview: start',
+        '',
+        'Preview boot has been requested (same path as the toolbar **Start preview**).',
+        'First boot can take several minutes. Poll with:',
+        '- `{"tool":"preview","op":"state"}` until `status` is `"ready"`',
+        '- `{"tool":"preview","op":"logs"}` to watch install/compile output',
+        '',
+        'Do **not** screenshot/click until status is ready.',
+      ].join('\n'),
+      0,
+      'start:requested',
+      'Preview start requested',
+    );
+  }
 
   const row = runtime.getActiveBySessionId(chatSessionId);
   if (!row) {
@@ -382,7 +479,7 @@ export async function runPreviewReActStep(
     const hint =
       row.status === 'starting'
         ? 'The preview is still starting — retry shortly, or use `{"tool":"preview","op":"logs"}` to watch boot progress.'
-        : 'The preview failed to boot. Use `{"tool":"preview","op":"logs"}` to inspect the failure; only the human can restart it via **Start preview**.';
+        : 'The preview failed to boot. Use `{"tool":"preview","op":"logs"}` to inspect the failure, then retry with `{"tool":"preview","op":"start"}` (or ask the human to press **Start preview**).';
     return outcome(
       `## Preview tool\nPreview status is **${row.status}**, so browser ops are unavailable. ${hint}`,
       2,
@@ -647,13 +744,14 @@ export async function runPreviewReActStep(
           : { errorLine: r.error },
       );
     }
-    default:
-      // Exhaustiveness backstop — parse + op-set checks make this unreachable.
+    default: {
+      const _exhaustive: never = op;
       return outcome(
-        `## Preview tool error\nUnhandled op "${op}"`,
+        `## Preview tool error\nUnhandled op "${String(_exhaustive)}"`,
         1,
         'unhandled_op',
         'Unhandled preview action',
       );
+    }
   }
 }

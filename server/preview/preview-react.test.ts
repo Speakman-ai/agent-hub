@@ -144,11 +144,11 @@ function withCdp(page: ReturnType<typeof makeMockPage>) {
 describe('preview-react — op surface', () => {
   it('drive ops are exactly the ops that need Chromium', () => {
     const observeOps = PREVIEW_REACT_OPS.filter((op) => !PREVIEW_DRIVE_OPS.has(op));
-    expect(observeOps).toEqual(['state', 'logs']);
+    expect(observeOps).toEqual(['start', 'state', 'logs']);
   });
 
   it('rejects unknown ops with hostExit 1', async () => {
-    const r = await runPreviewReActStep(SESSION_ID, { op: 'start' }, { runtime: makeRuntime() });
+    const r = await runPreviewReActStep(SESSION_ID, { op: 'boot' }, { runtime: makeRuntime() });
     expect(r.hostExit).toBe(1);
     expect(r.hostDetail).toBe('bad_op');
     expect(r.markdown).toContain('Unsupported or missing op');
@@ -162,13 +162,14 @@ describe('preview-react — availability gates', () => {
     expect(r.hostDetail).toBe('runtime_unwired');
   });
 
-  it('returns a human-start hint when no preview is running (never boots one)', async () => {
+  it('points agents at op=start when no preview is running', async () => {
     const runtime = makeRuntime({ row: null });
     const r = await runPreviewReActStep(SESSION_ID, { op: 'screenshot' }, { runtime });
     expect(r.hostExit).toBe(2);
     expect(r.hostDetail).toBe('no_preview');
+    expect(r.markdown).toContain('"op":"start"');
     expect(r.markdown).toContain('Start preview');
-    expect(r.markdown).toContain('human-only');
+    expect(r.markdown).not.toContain('human-only');
   });
 
   it('blocks drive ops while starting, pointing at op=logs', async () => {
@@ -184,6 +185,7 @@ describe('preview-react — availability gates', () => {
     const drive = await runPreviewReActStep(SESSION_ID, { op: 'screenshot' }, { runtime });
     expect(drive.hostExit).toBe(2);
     expect(drive.hostDetail).toBe('not_ready:failed');
+    expect(drive.markdown).toContain('"op":"start"');
 
     const state = await runPreviewReActStep(SESSION_ID, { op: 'state' }, { runtime });
     expect(state.hostExit).toBe(0);
@@ -192,6 +194,66 @@ describe('preview-react — availability gates', () => {
     const logs = await runPreviewReActStep(SESSION_ID, { op: 'logs' }, { runtime });
     expect(logs.hostExit).toBe(0);
     expect(logs.markdown).toContain('boom');
+  });
+});
+
+describe('preview-react — op start', () => {
+  it('requests boot via startPreview when no row exists', async () => {
+    const runtime = makeRuntime({ row: null });
+    const startPreview = vi.fn(async () => ({ ok: true as const, started: true as const }));
+    const r = await runPreviewReActStep(
+      SESSION_ID,
+      { op: 'start', route: '/dash', reason: 'check UI' },
+      { runtime, startPreview },
+    );
+    expect(r.hostExit).toBe(0);
+    expect(r.hostDetail).toBe('start:requested');
+    expect(startPreview).toHaveBeenCalledWith({ route: '/dash', reason: 'check UI' });
+    expect(r.markdown).toContain('Poll with');
+  });
+
+  it('is idempotent when preview is already ready or starting', async () => {
+    for (const status of ['ready', 'starting'] as const) {
+      const runtime = makeRuntime({ row: makeRow(status) });
+      const startPreview = vi.fn(async () => ({ ok: true as const, started: true as const }));
+      const r = await runPreviewReActStep(SESSION_ID, { op: 'start' }, { runtime, startPreview });
+      expect(r.hostExit).toBe(0);
+      expect(r.hostDetail).toBe(`start:already_${status}`);
+      expect(startPreview).not.toHaveBeenCalled();
+      expect(runtime.touchPreview).toHaveBeenCalledWith('grp-1');
+    }
+  });
+
+  it('reboots a failed preview via startPreview', async () => {
+    const runtime = makeRuntime({ row: makeRow('failed') });
+    const startPreview = vi.fn(async () => ({ ok: true as const, started: true as const }));
+    const r = await runPreviewReActStep(SESSION_ID, { op: 'start' }, { runtime, startPreview });
+    expect(r.hostExit).toBe(0);
+    expect(r.hostDetail).toBe('start:requested');
+    expect(startPreview).toHaveBeenCalledWith({
+      route: undefined,
+      reason: 'Started by agent via ReAct preview tool',
+    });
+  });
+
+  it('returns hostExit 2 when startPreview is unwired', async () => {
+    const runtime = makeRuntime({ row: null });
+    const r = await runPreviewReActStep(SESSION_ID, { op: 'start' }, { runtime });
+    expect(r.hostExit).toBe(2);
+    expect(r.hostDetail).toBe('start_unwired');
+  });
+
+  it('surfaces startPreview failures', async () => {
+    const runtime = makeRuntime({ row: null });
+    const startPreview = vi.fn(async () => ({
+      ok: false as const,
+      error: 'no worktree',
+      statusCode: 400,
+    }));
+    const r = await runPreviewReActStep(SESSION_ID, { op: 'start' }, { runtime, startPreview });
+    expect(r.hostExit).toBe(2);
+    expect(r.hostDetail).toBe('start_failed:400');
+    expect(r.markdown).toContain('no worktree');
   });
 });
 
