@@ -1257,6 +1257,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
     }),
+    // Dismiss a submitted verdict review (GitHub "Dismiss review"). One-way; a
+    // reason is required. `data`: { reason }.
+    dismissPullReview: (projectId: any, number: any, reviewId: any, data: any) => fetchJSON(`/projects/${projectId}/pulls/${number}/reviews/${reviewId}/dismiss`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
     // `data`: { body, path?, line? } — path+line for inline file comments.
     addPullComment: (projectId: any, number: any, data: any) => fetchJSON(`/projects/${projectId}/pulls/${number}/comments`, {
         method: 'POST',

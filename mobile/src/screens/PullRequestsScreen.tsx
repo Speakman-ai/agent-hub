@@ -8,12 +8,13 @@ import { colors } from '../theme/colors';
 import { relativePrTime, diffSummary, prStateBadge, summarizeChecks, checksBadge, summarizeReviews, reviewsBadge, mergeableBadge, reviewDecisionListBadge, mergePipelineListBadge, buildPrActivityTimeline, } from '../utils/prFormatting';
 import { resolveAgentIdFromProject } from '../utils/projectAgents';
 import { isWorkflowProject } from '../utils/project-mode';
-import { prDetailCapabilities } from '../utils/prReviewActions';
+import { prDetailCapabilities, canDismissReview } from '../utils/prReviewActions';
 import { appendPrPage, canLoadMore, createListRequestGate, initialPrPaging, pagingAfterFailure, pagingAfterPage, } from '../utils/prPaging';
 import PrDiffView from '../components/PrDiffView';
 import PrReviewSheet from '../components/PrReviewSheet';
 import PrCommentSheet from '../components/PrCommentSheet';
 import PrEditSheet from '../components/PrEditSheet';
+import PrDismissSheet from '../components/PrDismissSheet';
 const STATE_TABS = [
     { key: 'open', label: 'Open' },
     { key: 'closed', label: 'Closed' },
@@ -187,6 +188,10 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
     const [editOpen, setEditOpen] = useState(false);
     const [reopening, setReopening] = useState(false);
     const [reverting, setReverting] = useState(false);
+    // The review currently being dismissed (drives the dismiss sheet), or null.
+    const [dismissTarget, setDismissTarget] = useState<any>(null);
+    // Which dismissed review's collapsed body the user chose to expand.
+    const [expandedDismissedId, setExpandedDismissedId] = useState<any>(null);
     const prNumber = pr?.number;
     // Sheets throw on failure so they can render the error inline and stay
     // open; success closes the sheet and refreshes the detail payload.
@@ -206,6 +211,12 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
         await api.setPullCommentThreadResolved(projectId, prNumber, payload);
         onRefresh();
     }, [projectId, prNumber, onRefresh]);
+    const handleDismissReview = useCallback(async (payload: any) => {
+        if (!dismissTarget?.id)
+            return;
+        await api.dismissPullReview(projectId, prNumber, dismissTarget.id, payload);
+        onRefresh();
+    }, [projectId, prNumber, dismissTarget, onRefresh]);
     const handleReopen = useCallback(async () => {
         if (reopening || !prNumber)
             return;
@@ -342,6 +353,42 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
           <PrDiffView prUrl={caps.prUrl} comments={caps.isNative ? detail.inline_comments || [] : []} onAddComment={caps.canComment ? handleAddInlineComment : null} onSetResolved={caps.isNative ? handleSetThreadResolved : null}/>
         </>) : null}
 
+      {caps.isNative && Array.isArray(detail.reviews) && detail.reviews.length > 0 ? (<>
+          <Text style={styles.sectionHeader}>Reviews</Text>
+          {detail.reviews.map((r: any, i: any) => {
+            const s = String(r.state || '').toUpperCase();
+            let c = colors.gray400;
+            if (s === 'APPROVED')
+                c = colors.emerald400;
+            else if (s === 'CHANGES_REQUESTED')
+                c = colors.red400;
+            else if (s === 'COMMENTED')
+                c = colors.blue400;
+            return (<View key={r.id || i} style={[styles.reviewBlock, r.dismissed && { opacity: 0.7 }]}>
+              <View style={styles.reviewHeader}>
+                <Text style={styles.reviewUser}>@{r.user || 'unknown'}</Text>
+                <Text style={[styles.reviewState, { color: r.dismissed ? colors.gray500 : c }]}>
+                  {s || 'REVIEW'}
+                </Text>
+                {r.dismissed ? (<Text style={[styles.reviewState, { color: colors.gray400 }]}>· dismissed</Text>) : null}
+                <View style={{ flex: 1 }}/>
+                {canDismissReview(detail, r) ? (<TouchableOpacity onPress={() => setDismissTarget(r)} accessibilityLabel={`Dismiss review by ${r.user || 'unknown'}`}>
+                    <Text style={[styles.prActionButtonText, { color: colors.gray400 }]}>Dismiss</Text>
+                  </TouchableOpacity>) : null}
+              </View>
+              {r.body && (!r.dismissed || expandedDismissedId === (r.id || i)) ? (<Text style={styles.reviewBody} numberOfLines={6}>{r.body}</Text>) : null}
+              {r.dismissed && r.dismissal_reason ? (<Text style={[styles.reviewBody, { color: colors.gray500, fontStyle: 'italic' }]}>
+                  Dismissed{r.dismissed_by ? ` by @${r.dismissed_by}` : ''}: {r.dismissal_reason}
+                </Text>) : null}
+              {r.dismissed && r.body ? (<TouchableOpacity onPress={() => setExpandedDismissedId((cur: any) => (cur === (r.id || i) ? null : r.id || i))}>
+                  <Text style={[styles.reviewTime, { color: colors.gray500 }]}>
+                    {expandedDismissedId === (r.id || i) ? 'Hide review' : 'Show dismissed review'}
+                  </Text>
+                </TouchableOpacity>) : null}
+            </View>);
+          })}
+        </>) : null}
+
       <Text style={styles.activitySectionHeader}>Activity</Text>
       <Text style={styles.activitySub}>
         Chronological history from GitHub (open/merge/close, reviews, and issue comments).
@@ -386,6 +433,7 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
       <PrReviewSheet visible={reviewOpen} prNumber={pr.number} onClose={() => setReviewOpen(false)} onSubmit={handleSubmitReview}/>
       <PrCommentSheet visible={commentOpen} prNumber={pr.number} onClose={() => setCommentOpen(false)} onSubmit={handleSubmitReview}/>
       <PrEditSheet visible={editOpen} pr={pr} onClose={() => setEditOpen(false)} onSubmit={handleSaveEdit}/>
+      <PrDismissSheet visible={!!dismissTarget} prNumber={pr.number} reviewer={dismissTarget?.user} onClose={() => setDismissTarget(null)} onSubmit={handleDismissReview}/>
     </ScrollView>);
 }
 /**

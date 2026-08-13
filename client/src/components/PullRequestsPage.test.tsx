@@ -42,6 +42,7 @@ import { api } from '../utils/api';
     rerunCiRun: vi.fn(),
     createNativePr: vi.fn(),
     revertNativePr: vi.fn(),
+    dismissNativePrReview: vi.fn(),
   },
 }));
 
@@ -1040,6 +1041,119 @@ describe('<PullRequestsPage /> — Revert on a merged native PR', () => {
     fireEvent.click(await screen.findByText('Fix the flaky test' as any));
     expect(await screen.findByText('Activity')).toBeInTheDocument();
     expect(screen.queryByTestId('pr-revert-button')).toBeNull();
+  });
+});
+
+describe('<PullRequestsPage /> — Dismiss review', () => {
+  const nativeOpenPr = { ...prSummary, html_url: '/projects/proj-1/pulls/123' };
+
+  async function openDetailWithReviews(reviews: any[], props: any = {}) {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [nativeOpenPr] });
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      source: 'agenthub',
+      pr: { ...nativeOpenPr, mergeable: true },
+      checks: [],
+      reviews,
+      comments: [],
+      inline_comments: [],
+    });
+    render(<PullRequestsPage projectId="proj-1" project={project} {...props} />);
+    fireEvent.click(await screen.findByText('Fix the flaky test' as any));
+    await screen.findByTestId('pr-reviews-list');
+  }
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('dismisses a verdict review through the inline reason box', async () => {
+    const onToast = vi.fn();
+    (api.dismissNativePrReview as any).mockResolvedValue({ review: { id: 'r1', dismissed: true } });
+    await openDetailWithReviews(
+      [
+        {
+          id: 'r1',
+          user: 'bob',
+          state: 'CHANGES_REQUESTED',
+          body: 'please fix',
+          submitted_at: '2026-04-19T10:00:00Z',
+          dismissed: false,
+        },
+      ],
+      { onToast },
+    );
+
+    // Reason box is not shown until Dismiss is clicked.
+    expect(screen.queryByTestId('pr-review-dismiss-form')).toBeNull();
+    fireEvent.click(screen.getByTestId('pr-review-dismiss' as any));
+
+    // Confirm is disabled until a reason is entered (required).
+    const confirm = screen.getByTestId('pr-review-dismiss-confirm');
+    expect(confirm).toBeDisabled();
+
+    const textarea = within(screen.getByTestId('pr-review-dismiss-form')).getByRole('textbox');
+    fireEvent.change(textarea, { target: { value: 'Stale — fixed later' } } as any);
+    expect(confirm).not.toBeDisabled();
+
+    fireEvent.click(confirm as any);
+    await waitFor(() =>
+      expect(api.dismissNativePrReview).toHaveBeenCalledWith(
+        'proj-1',
+        123,
+        'r1',
+        'Stale — fixed later',
+      ),
+    );
+    await waitFor(() =>
+      expect(onToast).toHaveBeenCalledWith('Review dismissed.', 'success', expect.any(Number)),
+    );
+  });
+
+  it('renders a dismissed review collapsed — body hidden behind a toggle — with its reason and no Dismiss button', async () => {
+    await openDetailWithReviews([
+      {
+        id: 'r2',
+        user: 'bob',
+        state: 'CHANGES_REQUESTED',
+        body: 'the full superseded review body',
+        submitted_at: '2026-04-19T10:00:00Z',
+        dismissed: true,
+        dismissed_by: 'alice',
+        dismissal_reason: 'Superseded by a later push',
+      },
+    ]);
+
+    expect(screen.getByTestId('pr-review-dismissed-badge')).toHaveTextContent('dismissed');
+    expect(screen.getByTestId('pr-review-dismissal-reason')).toHaveTextContent(
+      'Superseded by a later push',
+    );
+    expect(screen.getByTestId('pr-review-dismissal-reason')).toHaveTextContent('@alice');
+    // A dismissed review cannot be dismissed again.
+    expect(screen.queryByTestId('pr-review-dismiss')).toBeNull();
+
+    // Collapsed by default: the original body is NOT rendered until expanded.
+    expect(screen.queryByTestId('pr-review-body')).toBeNull();
+    fireEvent.click(screen.getByTestId('pr-review-toggle-body' as any));
+    expect(screen.getByTestId('pr-review-body')).toHaveTextContent(
+      'the full superseded review body',
+    );
+    // Toggling again re-collapses it.
+    fireEvent.click(screen.getByTestId('pr-review-toggle-body' as any));
+    expect(screen.queryByTestId('pr-review-body')).toBeNull();
+  });
+
+  it('does not offer Dismiss on a comment review (no verdict)', async () => {
+    await openDetailWithReviews([
+      {
+        id: 'r3',
+        user: 'bob',
+        state: 'COMMENTED',
+        body: 'just a note',
+        submitted_at: '2026-04-19T10:00:00Z',
+        dismissed: false,
+      },
+    ]);
+    expect(screen.queryByTestId('pr-review-dismiss')).toBeNull();
   });
 });
 

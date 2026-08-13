@@ -545,6 +545,14 @@ function PrDetail({
   const [reviewVerdict, setReviewVerdict] = useState('approved');
   const [reviewBody, setReviewBody] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
+  // Which review is showing its "Dismiss" reason box, the reason text, and
+  // whether a dismiss request is in flight.
+  const [dismissingId, setDismissingId] = useState<string | null>(null);
+  const [dismissReason, setDismissReason] = useState('');
+  const [dismissBusy, setDismissBusy] = useState(false);
+  // A dismissed review renders collapsed (GitHub parity); this holds the id of
+  // the one whose body the user chose to expand.
+  const [expandedDismissedId, setExpandedDismissedId] = useState<string | null>(null);
   if (!pr) return null;
 
   const toastErr = (err: any) => {
@@ -689,6 +697,23 @@ function PrDetail({
       toastErr(err);
     } finally {
       setSubmittingReview(false);
+    }
+  };
+
+  const handleDismissReview = async (reviewId: string) => {
+    const reason = dismissReason.trim();
+    if (!reason) return;
+    setDismissBusy(true);
+    try {
+      await api.dismissNativePrReview(projectId, pr.number, reviewId, reason);
+      setDismissingId(null);
+      setDismissReason('');
+      if (onToast) onToast('Review dismissed.', 'success', 4000);
+      onRefresh();
+    } catch (err: any) {
+      toastErr(err);
+    } finally {
+      setDismissBusy(false);
     }
   };
 
@@ -1065,26 +1090,131 @@ function PrDetail({
             )}
             {Array.isArray(detail.reviews) && detail.reviews.length > 0 && (
               <div className="space-y-2 mb-3" data-testid="pr-reviews-list">
-                {detail.reviews.map((r: any) => (
-                  <div key={r.id} className="bg-gray-900/40 border border-gray-800 rounded-lg p-3">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="text-gray-300 font-medium">@{r.user || 'unknown'}</span>
-                      <span className={reviewStateColor(r.state)}>
-                        {String(r.state || '')
-                          .toLowerCase()
-                          .replace('_', ' ')}
-                      </span>
-                      <span className="ml-auto text-gray-600">
-                        {relativePrTime(r.submitted_at)}
-                      </span>
+                {detail.reviews.map((r: any) => {
+                  const stateUpper = String(r.state || '').toUpperCase();
+                  // GitHub only lets you dismiss a verdict; a comment review
+                  // has none. Dismiss stays available on closed/merged PRs.
+                  const canDismiss =
+                    isNative &&
+                    !r.dismissed &&
+                    (stateUpper === 'APPROVED' || stateUpper === 'CHANGES_REQUESTED');
+                  return (
+                    <div
+                      key={r.id}
+                      data-testid="pr-review-item"
+                      className={`border rounded-lg p-3 ${
+                        r.dismissed
+                          ? 'bg-gray-900/20 border-gray-800/60 opacity-70'
+                          : 'bg-gray-900/40 border-gray-800'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-300 font-medium">@{r.user || 'unknown'}</span>
+                        <span
+                          className={
+                            r.dismissed ? 'text-gray-500 line-through' : reviewStateColor(r.state)
+                          }
+                        >
+                          {String(r.state || '')
+                            .toLowerCase()
+                            .replace('_', ' ')}
+                        </span>
+                        {r.dismissed && (
+                          <span
+                            className="text-gray-400 bg-gray-800/80 rounded px-1.5 py-0.5"
+                            data-testid="pr-review-dismissed-badge"
+                          >
+                            dismissed
+                          </span>
+                        )}
+                        <span className="ml-auto text-gray-600">
+                          {relativePrTime(r.submitted_at)}
+                        </span>
+                        {canDismiss && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDismissingId(r.id);
+                              setDismissReason('');
+                            }}
+                            data-testid="pr-review-dismiss"
+                            className="text-gray-400 hover:text-gray-200 transition-colors"
+                          >
+                            Dismiss
+                          </button>
+                        )}
+                      </div>
+                      {/* A dismissed review collapses to its dismissal note;
+                          the original body is hidden behind a Show toggle so a
+                          long, superseded review no longer fills the page. */}
+                      {r.body && (!r.dismissed || expandedDismissedId === r.id) && (
+                        <pre
+                          className="text-sm text-gray-300 whitespace-pre-wrap font-sans mt-1.5"
+                          data-testid="pr-review-body"
+                        >
+                          {r.body}
+                        </pre>
+                      )}
+                      {r.dismissed && r.dismissal_reason && (
+                        <p
+                          className="text-xs text-gray-500 mt-1.5 italic"
+                          data-testid="pr-review-dismissal-reason"
+                        >
+                          Dismissed{r.dismissed_by ? ` by @${r.dismissed_by}` : ''}:{' '}
+                          {r.dismissal_reason}
+                        </p>
+                      )}
+                      {r.dismissed && r.body && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedDismissedId((cur: string | null) =>
+                              cur === r.id ? null : r.id,
+                            )
+                          }
+                          data-testid="pr-review-toggle-body"
+                          className="text-xs text-gray-500 hover:text-gray-300 mt-1 transition-colors"
+                        >
+                          {expandedDismissedId === r.id ? 'Hide review' : 'Show dismissed review'}
+                        </button>
+                      )}
+                      {dismissingId === r.id && (
+                        <div className="mt-2 space-y-2" data-testid="pr-review-dismiss-form">
+                          <textarea
+                            value={dismissReason}
+                            onChange={(e: any) => setDismissReason(e.target.value)}
+                            rows={2}
+                            autoFocus
+                            placeholder="Why are you dismissing this review? (required)"
+                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                          />
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleDismissReview(r.id)}
+                              disabled={dismissBusy || !dismissReason.trim()}
+                              data-testid="pr-review-dismiss-confirm"
+                              className="flex items-center gap-1.5 text-sm bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 text-gray-100 px-3 py-1.5 rounded-lg transition-colors"
+                            >
+                              {dismissBusy && <Loader2 size={13} className="animate-spin" />}
+                              Dismiss review
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDismissingId(null);
+                                setDismissReason('');
+                              }}
+                              className="text-sm text-gray-400 hover:text-gray-200 px-2 py-1.5 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    {r.body && (
-                      <pre className="text-sm text-gray-300 whitespace-pre-wrap font-sans mt-1.5">
-                        {r.body}
-                      </pre>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 

@@ -337,6 +337,72 @@ describe('native PR review lifecycle', () => {
     expect(detail.body.pr.review_decision).toBe('APPROVED');
   });
 
+  it('dismiss review: drops the verdict from the decision, is validated, and is one-way', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Dismissable' }).expect(201);
+
+    // A changes-requested verdict drives the decision.
+    const review = await authedPost(`/api/projects/${id}/pulls/1/reviews`)
+      .send({ state: 'changes_requested', body: 'please fix' })
+      .expect(201);
+    const reviewId = review.body.review.id as string;
+    let detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr.review_decision).toBe('CHANGES_REQUESTED');
+
+    const dismissUrl = `/api/projects/${id}/pulls/1/reviews/${reviewId}/dismiss`;
+
+    // A reason is required.
+    await authedPost(dismissUrl).send({}).expect(400);
+    await authedPost(dismissUrl).send({ reason: '   ' }).expect(400);
+    // Unknown review → 404.
+    await authedPost(`/api/projects/${id}/pulls/1/reviews/nope/dismiss`)
+      .send({ reason: 'x' })
+      .expect(404);
+
+    const dismissed = await authedPost(dismissUrl)
+      .send({ reason: 'Stale — addressed in a later push' })
+      .expect(200);
+    expect(dismissed.body.review).toMatchObject({
+      id: reviewId,
+      dismissed: true,
+      dismissal_reason: 'Stale — addressed in a later push',
+    });
+    expect(dismissed.body.review.dismissed_by).toBeTruthy();
+
+    // The dismissed verdict no longer counts toward the decision, but the row
+    // (and its dismissal metadata) still renders for history.
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr.review_decision).toBeNull();
+    expect(detail.body.reviews).toHaveLength(1);
+    expect(detail.body.reviews[0]).toMatchObject({
+      dismissed: true,
+      dismissal_reason: 'Stale — addressed in a later push',
+    });
+    expect(detail.body.reviews[0].dismissed_at).toBeTruthy();
+
+    // Dismiss is one-way: a second dismiss of the same review is refused.
+    await authedPost(dismissUrl).send({ reason: 'again' }).expect(409);
+
+    // A comment review has no verdict to dismiss.
+    const commentReview = await authedPost(`/api/projects/${id}/pulls/1/reviews`)
+      .send({ state: 'commented', body: 'just noting' })
+      .expect(201);
+    await authedPost(`/api/projects/${id}/pulls/1/reviews/${commentReview.body.review.id}/dismiss`)
+      .send({ reason: 'nope' })
+      .expect(400);
+
+    // Dismiss stays available on a closed PR (reviewers tidy up after the fact).
+    const late = await authedPost(`/api/projects/${id}/pulls/1/reviews`)
+      .send({ state: 'approved', body: 'lgtm' })
+      .expect(201);
+    await authedPost('/api/pr/close')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(200);
+    await authedPost(`/api/projects/${id}/pulls/1/reviews/${late.body.review.id}/dismiss`)
+      .send({ reason: 'cleanup' })
+      .expect(200);
+  });
+
   it('request-review dispatches the Reviewer agent (manual_request); clearing the flag does not', async () => {
     // The dispatch itself is unit-tested in native-pr/auto-review.test.ts; here
     // we prove the ROUTE is wired to it. The dispatch helper is short-circuited

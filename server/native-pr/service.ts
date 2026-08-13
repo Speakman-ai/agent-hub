@@ -174,6 +174,20 @@ export interface NativePrService {
     body: string;
     reviewer: string;
   }): { review: Record<string, unknown> };
+  /**
+   * Dismiss a submitted verdict review (GitHub "Dismiss review"). The row is
+   * kept for history but its verdict stops counting toward the review
+   * decision, and it renders collapsed with the dismissal note. Only
+   * approved / changes_requested reviews can be dismissed; a comment review
+   * has no verdict to dismiss. Allowed on closed/merged PRs.
+   */
+  dismissReview(args: {
+    project: Project;
+    number: number;
+    reviewId: string;
+    reason: string;
+    actor: string;
+  }): { review: Record<string, unknown> };
   /** Inline (per-line) diff comment anchored to file + line + side. */
   addInlineComment(args: {
     project: Project;
@@ -642,6 +656,9 @@ function normalizedReviews(
     state: string;
     body: string;
     created_at: number;
+    dismissed_at: number | null;
+    dismissed_by: string | null;
+    dismissal_reason: string | null;
   }>;
   return rows.map((r) => ({
     id: r.id,
@@ -650,6 +667,12 @@ function normalizedReviews(
     body: r.body,
     submitted_at: toIso(r.created_at),
     html_url: null,
+    // GitHub "Dismiss review": a dismissed verdict stays in history but no
+    // longer counts, and renders collapsed with the dismissal note.
+    dismissed: Boolean(r.dismissed_at),
+    dismissed_by: r.dismissed_by ?? null,
+    dismissed_at: r.dismissed_at ? toIso(r.dismissed_at) : null,
+    dismissal_reason: r.dismissal_reason ?? null,
   }));
 }
 
@@ -1067,6 +1090,54 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
           body,
           submitted_at: toIso(now),
           html_url: null,
+        },
+      };
+    },
+
+    dismissReview({ project, number, reviewId, reason, actor }) {
+      requireHostedRepo(project);
+      requirePr(stmts, project, number);
+      const review = stmts.getPullRequestReview.get(reviewId) as
+        | {
+            id: string;
+            project_id: string;
+            pr_number: number;
+            reviewer: string;
+            state: string;
+            dismissed_at: number | null;
+          }
+        | undefined;
+      if (!review || review.project_id !== project.id || review.pr_number !== number) {
+        throw new NativePrError('Review not found', 404);
+      }
+      if (review.state === 'commented') {
+        throw new NativePrError('Only approve / request-changes reviews can be dismissed', 400);
+      }
+      const now = Date.now();
+      // The UPDATE is guarded by `dismissed_at IS NULL`, so the "already
+      // dismissed" decision is the write itself, not the earlier read: if a
+      // concurrent request won the race between the read above and here, this
+      // one changes zero rows and must 409 rather than broadcast/return a
+      // dismissal that was never persisted.
+      const { changes } = stmts.dismissPullRequestReview.run(actor, reason, now, reviewId);
+      if (changes === 0) {
+        throw new NativePrError('Review is already dismissed', 409);
+      }
+      broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: 'review_dismissed',
+      });
+      return {
+        review: {
+          id: review.id,
+          user: review.reviewer,
+          state: review.state.toUpperCase(),
+          dismissed: true,
+          dismissed_by: actor,
+          dismissal_reason: reason,
+          dismissed_at: toIso(now),
         },
       };
     },

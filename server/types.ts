@@ -911,6 +911,12 @@ export interface PullRequestReviewRow {
   state: 'approved' | 'changes_requested' | 'commented';
   body: string;
   created_at: number;
+  /** When the review was dismissed (GitHub "Dismiss review"); null while active. */
+  dismissed_at: number | null;
+  /** Who dismissed it; null while active. */
+  dismissed_by: string | null;
+  /** Required dismissal note shown collapsed on the review; null while active. */
+  dismissal_reason: string | null;
 }
 
 export interface DelegationRow {
@@ -2842,6 +2848,9 @@ export interface Stmts {
   /** Insert a human review row. Params: (id, project_id, pr_number, reviewer, state, body, created_at). */
   insertPullRequestReview: Stmt;
   listPullRequestReviewsForPr: Stmt;
+  getPullRequestReview: Stmt;
+  /** Dismiss a review. Params: (dismissed_by, dismissal_reason, dismissed_at, id). */
+  dismissPullRequestReview: Stmt;
   /** Inline diff comment. Params: (id, project_id, pr_number, author, file_path, line, side, body, created_at). */
   insertPullRequestComment: Stmt;
   listPullRequestCommentsForPr: Stmt;
