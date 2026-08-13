@@ -869,7 +869,16 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     const loginId = Date.now().toString(36);
     const proc = spawn(bin, ['login'], {
       cwd: home,
-      env: { ...process.env, HOME: home, NO_OPEN_BROWSER: '1' },
+      // Prefer file-backed credentials under the pinned per-user HOME so
+      // Firecracker guests can sync `$HOME/.cursor/auth.json` /
+      // `cli-config.json`. Keychain-only login looks "authenticated" on the
+      // Hub host probe but never reaches the session VM.
+      env: {
+        ...process.env,
+        HOME: home,
+        NO_OPEN_BROWSER: '1',
+        AGENT_CLI_CREDENTIAL_STORE: 'file',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });

@@ -78,6 +78,7 @@ describe('adaptSpawnEnvForGuest / finalizeGuestSpawnEnv', () => {
     expect(adapted.AGENT_HUB_REAL_GIT).toBe('/usr/bin/git');
     expect(adapted.AGENT_HUB_REAL_GH).toBe('/usr/bin/gh');
     expect(adapted.AGENT_HUB_PROTECT_SESSION_BRANCH).toBe('1');
+    expect(adapted.AGENT_CLI_CREDENTIAL_STORE).toBe('file');
 
     const final = finalizeGuestSpawnEnv(
       adapted,
