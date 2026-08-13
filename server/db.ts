@@ -6276,6 +6276,22 @@ function initDb(dataDir: string): void {
         ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
         LIMIT 1`,
     ),
+    // Post-Finalize-push lock for the native-PR auto-review path. Given a
+    // native PR URL, find a pushed Finalize run that shipped it. Keyed on the
+    // PR (project_id + pr_url), NOT the head sha, so it stays correct across a
+    // Finalize rebase-before-push (which mints a new sha the sha-exact
+    // `getValidatedFinalizeRunForSha` passthrough would miss). If this returns
+    // a row, the PR already shipped through Finalize and its pushing session is
+    // terminal — auto-review must not dispatch another review onto it.
+    getPushedFinalizeRunForProjectPrUrl: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE project_id = ?
+          AND pr_url = ?
+          AND status = 'pushed'
+        ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+        LIMIT 1`,
+    ),
     // Per-phase pickers. The split "Run Tests" / "Reviewer" buttons each
     // surface their own done-state, which may come from a phase-scoped run
     // (mode 'checks' / 'review') OR from a combined 'full' run that

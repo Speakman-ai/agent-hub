@@ -121,6 +121,24 @@ export async function maybeRunPrAutoReview(
       return;
     }
 
+    // Post-Finalize-push lock: if this PR already shipped through Finalize, the
+    // pushing session is terminal (lockSessionAfterFinalizePush set ask_mode=1
+    // and finalize_automation='manual') and its pre-push in-hub reviewer verdict
+    // is authoritative. Dispatching another review here would re-open an
+    // already-shipped, locked session. Keyed on the PR (not the head sha) so it
+    // stays correct across a Finalize rebase-before-push, which mints a new sha
+    // the sha-exact passthrough below would miss. A manual "Request review" is
+    // explicit human intent and overrides this.
+    if (
+      !manual &&
+      deps.stmts.getPushedFinalizeRunForProjectPrUrl.get(
+        project.id,
+        buildNativePrUrl(project.id, pr.number),
+      )
+    ) {
+      return;
+    }
+
     const repoPath = bareRepoPath(project.id);
     const headSha = await revParse(repoPath, `refs/heads/${pr.head_branch}`);
     if (!headSha) return; // branch gone

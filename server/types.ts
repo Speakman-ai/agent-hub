@@ -2619,6 +2619,13 @@ export interface Stmts {
   getLatestFinalizeRunForSession: Stmt;
   getPushedFinalizeRunForSession: Stmt;
   /**
+   * Pushed `finalize_runs` row that shipped a given native PR (project_id +
+   * pr_url), status `pushed`. Keyed on the PR, not the head sha, so it holds
+   * across a Finalize rebase-before-push. Used by the native-PR auto-review
+   * path to skip reviewing a PR that already shipped through Finalize.
+   */
+  getPushedFinalizeRunForProjectPrUrl: Stmt;
+  /**
    * Most-recent `finalize_runs` row for a session that exercised the CI
    * checks phase — `mode IN ('checks', 'full')`. Drives the "Tested"
    * done-state on the split Run Tests button.
