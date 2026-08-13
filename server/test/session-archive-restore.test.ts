@@ -15,7 +15,7 @@
  */
 
 import './setup.js';
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { getRequest, createProject, createAgent, createSession } from './helpers.js';
 import type TestAgent from 'supertest/lib/agent.js';
 
@@ -107,8 +107,11 @@ describe('Session archive & restore', () => {
     const liveId = stillLive.id as string;
 
     const bulk = await request.delete(`/api/agents/${aid}/sessions`).expect(200);
+    expect(bulk.body.ok).toBe(true);
     expect(bulk.body.archived).toBe(1);
     expect(bulk.body.deleted).toBe(1);
+    expect(bulk.body.failed).toBe(0);
+    expect(bulk.body.archivedIds).toEqual([liveId]);
 
     const liveList = await request.get(`/api/agents/${aid}/sessions`).expect(200);
     expect((liveList.body as Array<{ id: string }>).some((s) => s.id === liveId)).toBe(false);
@@ -120,6 +123,35 @@ describe('Session archive & restore', () => {
 
     await request.post(`/api/sessions/${priorId}/restore`).expect(200);
     await request.post(`/api/sessions/${liveId}/restore`).expect(200);
+  });
+
+  it('bulk DELETE skips archive when session env teardown fails', async () => {
+    const agent = await createAgent({
+      projectId: 'archive-proj',
+      id: `bulk-teardown-fail-${Date.now()}`,
+      name: 'Bulk teardown fail',
+    });
+    const aid = agent.id as string;
+    const live = await createSession({ agentId: aid, name: 'teardown-fail' });
+    const liveId = live.id as string;
+
+    const { routeDeps } = await import('../index.js');
+    const prevDispose = routeDeps.disposeSessionEnv;
+    routeDeps.disposeSessionEnv = vi.fn(async () => {
+      throw new Error('vmm still running');
+    });
+    try {
+      const bulk = await request.delete(`/api/agents/${aid}/sessions`).expect(500);
+      expect(bulk.body.ok).toBe(false);
+      expect(bulk.body.archived).toBe(0);
+      expect(bulk.body.failed).toBe(1);
+      expect(bulk.body.archivedIds).toEqual([]);
+
+      const liveList = await request.get(`/api/agents/${aid}/sessions`).expect(200);
+      expect((liveList.body as Array<{ id: string }>).some((s) => s.id === liveId)).toBe(true);
+    } finally {
+      routeDeps.disposeSessionEnv = prevDispose;
+    }
   });
 
   it('bulk DELETE pushed archives only sessions whose state is `pushed`, keeping the rest', async () => {

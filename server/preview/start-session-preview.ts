@@ -1,5 +1,6 @@
 /**
- * Start a worktree preview for a chat session (user toolbar / API only).
+ * Start a worktree preview for a chat session (toolbar REST, or ReAct
+ * `preview` `op: "start"`).
  */
 import { sessionUsesWorktree } from '../project-mode.js';
 import { effectiveCwdForSession } from '../routes/hooks.js';
@@ -8,6 +9,7 @@ import type { BroadcastFn, Project, SessionRow } from '../types.js';
 import type { PreviewRuntimeLike } from './preview-block.js';
 import { handlePreviewBlock, resolvePreviewHandlerReadyTimeoutMs } from './preview-block.js';
 import type { PreviewTask } from './preview-block.js';
+import { previewRoutingBlockReason, type PreviewRoutingInputs } from './preview-routing-mode.js';
 
 export interface StartSessionPreviewBody {
   route?: string;
@@ -21,6 +23,8 @@ export type StartSessionPreviewDeps = {
   findAgent: (agentId: string) => { project: Project; agent: { id: string } } | null;
   getDevServerRuntime?: () => DevServerRuntimeLike | null;
   getSession: (sessionId: string) => SessionRow | undefined;
+  /** Deployment URL shape; see `previewRoutingBlockReason`. */
+  routing?: PreviewRoutingInputs;
 };
 
 /**
@@ -70,8 +74,23 @@ export async function startSessionPreview(
   deps: StartSessionPreviewDeps,
 ): Promise<StartSessionPreviewResult> {
   const { sessionId, body, broadcast, findAgent, getSession } = deps;
+
+  // Refuse before spawning anything. A path-prefix preview boots fine and
+  // reports ready, so starting one just moves the failure somewhere it
+  // looks like a bug in the user's app rather than in the deployment.
+  if (deps.routing) {
+    const blocked = previewRoutingBlockReason(deps.routing);
+    if (blocked) return { ok: false, error: blocked, statusCode: 501 };
+  }
+
   const session = getSession(sessionId);
-  if (!session) {
+  // A soft-deleted session is gone as far as every other consumer is concerned
+  // (`SessionEnvManager.resolveWorktree`, `PtyHost.createSession`, the sidebar),
+  // and it must be gone here too. Without this the start is accepted with
+  // `{ok:true,started:true}` and then fails minutes later inside the env manager
+  // as "has no workspace yet, wait for workspace provisioning to finish" —
+  // pointing at a provisioning step that is not running and never will.
+  if (!session || session.deleted_at) {
     return { ok: false, error: 'Session not found', statusCode: 404 };
   }
 

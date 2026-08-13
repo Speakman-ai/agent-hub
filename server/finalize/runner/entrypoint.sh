@@ -2,7 +2,55 @@
 # Start inner dockerd for Finalize DinD runners, then hold the container open.
 set -euo pipefail
 
-DOCKERD_LOG=/tmp/dockerd.log
+# Must NOT live in /tmp. /tmp is world-writable and sticky, so when
+# fs.protected_regular=1 the kernel's may_create_in_sticky() refuses an O_CREAT
+# open of a file owned by another user — and it has no CAP_DAC_OVERRIDE bypass,
+# so even root is refused. The entrypoint runs as `runner` while the dockerd
+# redirect below runs under sudo, so a /tmp path makes root fail to open the
+# runner-owned log with EACCES and dockerd never starts. The Finalize fleet AMI
+# sets the sysctl to 0, which is why only Hub-host DinD (session envs) hit it.
+DOCKERD_LOG=/var/log/dockerd.log
+
+RUNNER_USER="${RUNNER_USER:-runner}"
+
+# The session worktree is bind-mounted from the host, so its files carry the
+# uid/gid of the process that created them — the Hub, typically uid 1000. A
+# container user on a different uid gets an effectively read-only workspace and
+# git refuses the checkout as "dubious ownership", which makes the session
+# unusable for editing, building, or committing. The Dockerfile therefore pins
+# $RUNNER_USER to 1000:1000 to match; this only verifies the result.
+#
+# Repairing a mismatch here is not possible, which is why this checks instead of
+# fixing. The entrypoint runs AS $RUNNER_USER, and nothing can renumber the
+# account a live process is using: `usermod` refuses ("user runner is currently
+# used by process 1", exit 8) and rewriting /etc/passwd orphans the running uid,
+# after which every `sudo` — including the one that starts dockerd — dies with
+# "you do not exist in the passwd database". Both were tried; both leave the
+# container dead in a way that reads as a mystery start failure.
+#
+# So a mismatch is reported as the build-time problem it actually is, rather than
+# handing back a container whose workspace silently rejects every write.
+# AGENT_HUB_WORKSPACE_UID unset means no check, which is the Finalize path.
+align_runner_identity() {
+  local want_uid="${AGENT_HUB_WORKSPACE_UID:-}"
+  local want_gid="${AGENT_HUB_WORKSPACE_GID:-}"
+  if [ -z "$want_uid" ]; then
+    return 0
+  fi
+
+  local cur_uid cur_gid
+  cur_uid="$(id -u "$RUNNER_USER")"
+  cur_gid="$(id -g "$RUNNER_USER")"
+  want_gid="${want_gid:-$cur_gid}"
+  if [ "$want_uid" = "$cur_uid" ] && [ "$want_gid" = "$cur_gid" ]; then
+    return 0
+  fi
+
+  echo "[finalize-runner] FATAL: workspace is owned by ${want_uid}:${want_gid} but ${RUNNER_USER} is ${cur_uid}:${cur_gid}." >&2
+  echo "[finalize-runner] A running account cannot be renumbered from inside its own container." >&2
+  echo "[finalize-runner] Rebuild this image with ${RUNNER_USER} on ${want_uid}:${want_gid} (see the useradd step in the Dockerfile)." >&2
+  return 1
+}
 
 # Configure a registry pull-through cache / mirror for the inner dockerd when
 # FINALIZE_REGISTRY_MIRROR is set (e.g. http://host.docker.internal:5000 locally,
@@ -61,7 +109,9 @@ start_dockerd() {
     return 0
   fi
 
-  : > "${DOCKERD_LOG}" 2>/dev/null || sudo sh -c ": > ${DOCKERD_LOG}"
+  # Created as root so the sudo'd append below is opening its own file, and
+  # 0644 so the failure `tail` at the end of this function can still read it.
+  sudo sh -c ": > ${DOCKERD_LOG} && chmod 0644 ${DOCKERD_LOG}"
 
   # A healthy overlay2 daemon is ready in a few seconds; cap the wait at ~30s so
   # a genuinely broken overlay2 falls through to vfs fast instead of burning 60s.
@@ -86,6 +136,7 @@ start_dockerd() {
 
 case "${1:-}" in
   daemon)
+    align_runner_identity
     configure_registry_mirror
     prepare_image_cache
     start_dockerd

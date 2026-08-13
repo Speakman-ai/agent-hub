@@ -167,11 +167,16 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('## Browser Automation Available');
   });
 
-  it('omits the "Browser Automation Available" callout on subsequent (non-first) messages', () => {
+  it('keeps the "Browser Automation Available" callout on subsequent messages so mid-session refusals stop', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: false,
     });
-    expect(prompt).not.toContain('## Browser Automation Available');
+    expect(prompt).toContain('## Browser Automation Available');
+    expect(prompt).toMatch(/do not claim you lack web access or a browser/i);
+    expect(prompt).toContain('## ReAct Loop');
+    expect(prompt).toMatch(/real Chromium browser/i);
+    // Follow-ups stay compact — no full egress essay.
+    expect(prompt).not.toMatch(/DNS rebinding/i);
   });
 
   // Regression: card b0004c55 — a session that could drive Chromium on turn
@@ -307,8 +312,8 @@ describe('buildEnrichedPrompt — first message gating', () => {
         expect(firstTurnTools(first)).toContain('terminal');
         expect(followUpTools(subsequent)).toContain('terminal');
         // The follow-up reminder must not imply the agent can open a shell.
-        expect(subsequent).toMatch(/human has already (started|opened)/i);
-        expect(subsequent).toMatch(/not running/i);
+        expect(subsequent).toMatch(/cannot open one yourself|human has already (started|opened)/i);
+        expect(subsequent).toMatch(/Terminal.*tab|not running/i);
       }
     });
   });

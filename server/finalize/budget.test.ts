@@ -3,8 +3,9 @@
  * accounting module.
  *
  * Coverage:
- *   - `resolveBudgetSeconds`: ci.yaml lowers the cap; never raises;
- *     hard-ceiling clamp; nullish / invalid inputs default safely.
+ *   - `resolveBudgetSeconds`: converts a minute-valued cap to seconds;
+ *     never raises above the hard ceiling; nullish / invalid inputs
+ *     default safely.
  *   - `billActiveSeconds`: DB write + broadcast; sub-second flooring;
  *     swallow on failure.
  *   - `broadcastActiveSeconds`: emits the running total.

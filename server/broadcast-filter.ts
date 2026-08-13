@@ -46,19 +46,26 @@ export interface BroadcastFilterDeps {
    * type makes every call site hand one over.
    */
   getSessionOwner: (sessionId: string) => string | null;
+  /**
+   * True when the session is intentionally readable by every org member
+   * (Reviewer threads, shared cron runs). Used for session-event /
+   * session-progress so live updates match `userCanReadSession`.
+   */
+  isSharedReadableSession?: (sessionId: string) => boolean;
 }
 
 /**
- * Event types whose payload is private to the session owner rather than to
+ * Event types whose payload is private to the session rather than to
  * everyone who can view the project.
  *
  * Background-shell rows carry the exact command line, cwd, pid, and log path
- * of work an agent parked in someone's session. The REST surface gates all of
- * it on `userOwnsSession`; project visibility alone is weaker than that,
- * because the default project is shared across the org. Fan-out has to match
- * the REST gate or the WebSocket becomes the way around it.
+ * of work an agent parked in someone's session — always owner-only
+ * (`userOwnsSession`). Session Progress / event timeline use the broader
+ * read predicate so Reviewer and shared-cron sessions stay live for every
+ * org member who can already GET the thread.
  */
-const SESSION_PRIVATE_EVENT_TYPES = new Set(['background_shell_update']);
+const SESSION_OWNER_ONLY_EVENT_TYPES = new Set(['background_shell_update']);
+const SESSION_READ_SCOPED_EVENT_TYPES = new Set(['session-event', 'session-progress']);
 
 /**
  * Owner check for a session-scoped payload. Exported so the WebSocket connect
@@ -142,12 +149,18 @@ export function shouldDeliverBroadcast(
     return stamp.userId === owner;
   }
 
-  // 3c. Session-private events are gated on session ownership *in addition
-  //    to* project visibility — the project check below still runs, so a
-  //    recipient needs both.
-  if (typeof data.type === 'string' && SESSION_PRIVATE_EVENT_TYPES.has(data.type)) {
+  // 3c. Session-scoped events: background shells stay owner-only; progress /
+  //    event timeline follow the shared-read contract for Reviewer / shared
+  //    cron sessions, then still require project visibility below.
+  if (typeof data.type === 'string' && SESSION_OWNER_ONLY_EVENT_TYPES.has(data.type)) {
     const sid = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : null;
     if (!shouldDeliverSessionScopedBroadcast(sid, stamp, deps)) return false;
+  }
+  if (typeof data.type === 'string' && SESSION_READ_SCOPED_EVENT_TYPES.has(data.type)) {
+    const sid = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : null;
+    if (!sid) return false;
+    const shared = deps.isSharedReadableSession?.(sid) === true;
+    if (!shared && !shouldDeliverSessionScopedBroadcast(sid, stamp, deps)) return false;
   }
 
   // 4. Try to resolve the event to a project. Unresolvable events keep

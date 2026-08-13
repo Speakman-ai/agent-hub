@@ -9,6 +9,8 @@ import {
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
   MIGRATE_LEGACY_PREVIEWS_SQL,
   ensureDevServerPreviewColumns,
+  ensureHostScopedPreviewPortUniqueness,
+  deleteEnvScopedPreviewRows,
   deleteOrphanedNonDevServerPreviewRows,
   dropComposePreviewColumns,
 } from './preview/preview-schema.js';
@@ -319,6 +321,7 @@ function initDb(dataDir: string): void {
       status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
       started_at INTEGER NOT NULL,
       finished_at INTEGER,
+      detail TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_session_progress_session
@@ -1359,6 +1362,15 @@ function initDb(dataDir: string): void {
       CREATE INDEX IF NOT EXISTS finalize_run_steps_run
         ON finalize_run_steps(run_id, step_index);
     `);
+  }
+
+  // session_progress.detail — optional failure / diagnostic text for the
+  // Progress panel (session-setup stdout/stderr, etc.). CREATE TABLE above
+  // includes it for fresh DBs; heal legacy installs here.
+  try {
+    db.exec('ALTER TABLE session_progress ADD COLUMN detail TEXT');
+  } catch {
+    /* column already exists */
   }
 
   // session_replays.updated_at — added for the continuous-replay dashboard's
@@ -3232,10 +3244,13 @@ function initDb(dataDir: string): void {
   db.exec(WORKTREE_PREVIEW_GROUPS_SCHEMA);
   db.exec(MIGRATE_LEGACY_PREVIEWS_SQL);
   ensureDevServerPreviewColumns(db);
+  // Rebuilds the process table on databases predating dial_scope, so it must
+  // follow the column backfill above (the rebuild copies those columns).
+  ensureHostScopedPreviewPortUniqueness(db);
 
   // Compose / legacy-spawn preview removal. The dev server is the only
   // preview runtime now, so rows those runtimes owned are unstoppable and
-  // would pin their ports against `worktree_preview_processes.port UNIQUE`
+  // would pin their host ports against the preview port pool
   // forever. Sweep the rows first, then drop the columns only they wrote —
   // the column drop has to come second because the sweep reads `runtime`,
   // and a legacy row folded in by MIGRATE_LEGACY_PREVIEWS_SQL above lands
@@ -3248,6 +3263,20 @@ function initDb(dataDir: string): void {
     dropComposePreviewColumns(db);
   } catch (err) {
     console.warn('[db] compose preview cleanup failed:', (err as Error).message);
+  }
+
+  // Previews served from inside a session container cannot outlive the Hub
+  // process that held their SessionEnv handle, and the boot reconcile sweep
+  // removes those containers outright. Their rows do survive here, so without
+  // this the Hub returns advertising a ready preview that only ever answers
+  // 502.
+  try {
+    const dropped = deleteEnvScopedPreviewRows(db);
+    if (dropped > 0) {
+      console.log(`[db] cleared ${dropped} preview group(s) whose session container is gone`);
+    }
+  } catch (err) {
+    console.warn('[db] session-env preview cleanup failed:', (err as Error).message);
   }
 
   // Worktree-preview secrets: per-project encrypted env merged into
@@ -4726,15 +4755,15 @@ function initDb(dataDir: string): void {
 
     // Session progress steps (Cursor-style ProgressPanel rehydration)
     addSessionProgress: db.prepare(
-      `INSERT INTO session_progress (session_id, message_id, step, status, started_at, finished_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO session_progress (session_id, message_id, step, status, started_at, finished_at, detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     // Mark the most recent `started` row for this (session,step) as done.
     // Using the latest id disambiguates when the same step is re-emitted across
     // a session (e.g. re-review) — we only close the most recent open one.
     completeSessionProgress: db.prepare(
       `UPDATE session_progress
-         SET status = ?, finished_at = ?
+         SET status = ?, finished_at = ?, detail = ?
        WHERE id = (
          SELECT id FROM session_progress
          WHERE session_id = ? AND step = ? AND status = 'started'
@@ -6417,7 +6446,14 @@ function initDb(dataDir: string): void {
           SET phase = 'push',
               status = 'pushing'
         WHERE id = ?
-          AND status = 'ready_to_push'
+          AND (
+            status = 'ready_to_push'
+            OR (
+              status = 'infra_error'
+              AND phase = 'push'
+              AND validated_head_sha IS NOT NULL
+            )
+          )
           AND NOT EXISTS (
             SELECT 1
               FROM finalize_runs peer

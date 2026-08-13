@@ -73,9 +73,20 @@ describe('buildAptInstallCommand', () => {
   it('builds a single-shell update+install with non-interactive frontend', () => {
     const cmd = buildAptInstallCommand(['imagemagick', 'libmagickwand-dev']);
     expect(cmd).toBe(
-      'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ' +
+      "apt_sudo=''; [ \"$(id -u)\" -eq 0 ] || apt_sudo='sudo -n'; " +
+        '$apt_sudo apt-get update && ' +
+        '$apt_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y ' +
         '--no-install-recommends imagemagick libmagickwand-dev',
     );
+  });
+
+  // The container backends exec as the non-root `runner` sudoer, so an
+  // unelevated apt-get fails with EACCES and the packages silently never land.
+  it('elevates with sudo when the exec user is not root', () => {
+    const cmd = buildAptInstallCommand(['awscli']);
+    expect(cmd).toContain("apt_sudo='sudo -n'");
+    expect(cmd).toContain('$apt_sudo apt-get update');
+    expect(cmd).toContain('$apt_sudo env DEBIAN_FRONTEND=noninteractive apt-get install');
   });
 });
 
@@ -123,6 +134,25 @@ describe('installDevServerSystemDeps', () => {
     expect(spy).toHaveBeenCalledOnce();
     expect(spy.mock.calls[0][0]).toContain('apt-get install');
     expect(lines).toContainEqual(['stdout', 'Setting up imagemagick']);
+  });
+
+  // Regression: the gate read `kind !== 'sysbox'`, so every Hub whose host
+  // lacks the sysbox runtime (the common case — it falls back to `container`)
+  // silently skipped the install and the dev server started without its
+  // declared OS packages.
+  it('runs apt inside the container env too, not just sysbox', async () => {
+    const spy = vi.fn();
+    const warn = vi.fn();
+    const env = fakeEnv('container', fakeProc({ code: 0, signal: null }).proc, spy);
+    const result = await installDevServerSystemDeps({
+      env,
+      aptPackages: ['awscli', 'postgresql-client'],
+      logger: { warn },
+    });
+    expect(result.ran).toBe(true);
+    expect(result.skipped).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+    expect(spy.mock.calls[0][0]).toContain('awscli postgresql-client');
   });
 
   it('forwards spawnEnv (project env + resolved secrets) to the apt process', async () => {

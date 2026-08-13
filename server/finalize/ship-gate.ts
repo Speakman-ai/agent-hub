@@ -5,10 +5,10 @@
  * ship through **Finalize Code Changes** instead of the direct
  * `create-ticket-and-pr` skill push path.
  */
-import { access } from 'fs/promises';
-import path from 'path';
 import type { FinalizeRunRow, SessionRow, Stmts } from '../types.js';
+import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
+import { worktreeHasFinalizeCi } from './worktree-has-ci.js';
 
 const TERMINAL_STATUSES = new Set([
   'pushed',
@@ -73,15 +73,42 @@ export interface EvaluateFinalizeShipGateArgs {
 
 export interface EvaluateFinalizeShipGateDeps {
   stmts: Pick<Stmts, 'getActiveFinalizeRunForSession' | 'getFinalizeRunByIdempotencyKey'>;
-  ciConfigExists?: (worktreePath: string) => Promise<boolean>;
+  ciConfigExists?: (session: SessionRow) => Promise<boolean>;
 }
 
-async function defaultCiConfigExists(worktreePath: string): Promise<boolean> {
+/**
+ * Whether this session's checkout carries `.agent-hub/ci.yaml`.
+ *
+ * "No ci.yaml" is the answer that *opens* this gate and lets an agent push and
+ * open a PR with none of the checks the project requires, so every uncertain
+ * outcome here has to resolve to "configured". Two sources, OR-ed, because
+ * each is authoritative in one direction only:
+ *
+ *   - The host seed is the directory the session was created from, and project
+ *     config arrives with it, so a hit there means the project is gated even
+ *     when the guest cannot be reached. It can go stale the moment the guest
+ *     writes, so a miss is not the final answer.
+ *   - The guest holds the live tree, so it is the one that knows about a
+ *     ci.yaml added during the session.
+ *
+ * A guest lookup that throws is not evidence of absence — an unreachable
+ * microVM would otherwise read as "this project has no CI" and wave the push
+ * through. Only two definite negatives open the gate.
+ */
+async function defaultCiConfigExists(session: SessionRow): Promise<boolean> {
+  const hostPath = session.worktree_path;
+  if (!hostPath) return false;
+  if (worktreeHasFinalizeCi(hostPath)) return true;
+
   try {
-    await access(path.join(worktreePath, DEFAULT_CI_CONFIG_RELATIVE_PATH));
+    const io = await sessionWorktreeIoFor(session.id, hostPath);
+    return await io.exists(DEFAULT_CI_CONFIG_RELATIVE_PATH);
+  } catch (err) {
+    console.warn(
+      `[ship-gate] session ${session.id}: could not read ${DEFAULT_CI_CONFIG_RELATIVE_PATH} ` +
+        `from the session worktree, assuming Finalize is configured: ${String(err)}`,
+    );
     return true;
-  } catch {
-    return false;
   }
 }
 
@@ -144,7 +171,7 @@ export async function evaluateFinalizeShipGate(
     };
   }
 
-  const hasCi = await ciExists(session.worktree_path);
+  const hasCi = await ciExists(session);
   if (!hasCi) {
     return {
       allowed: true,

@@ -7,11 +7,25 @@
  * split mirrors finalize/runner-exec-args.ts, where keeping the builders pure
  * is what makes the container invocations unit-testable without a daemon.
  *
- * Security posture (epic decision `isolation`): the session container runs
- * under the `sysbox-runc` runtime — a real user-namespace boundary. The
- * builders here must NEVER emit `--privileged`, `--cgroupns=host`, or a host
- * docker-socket mount; the project's own `docker compose` services run on the
- * INNER dockerd that the container entrypoint starts.
+ * Isolation runtimes
+ * ──────────────────
+ * The builders emit one of two container shapes, selected per env:
+ *
+ *   - `sysbox-runc` — `--runtime=sysbox-runc`, a real user-namespace
+ *     boundary. Strictly better, but it needs sysbox installed on the host.
+ *   - `privileged` — `--privileged --cgroupns=host`, the same shape Finalize
+ *     CI already runs on these machines. A weaker boundary, but it works
+ *     anywhere Docker does.
+ *
+ * Requiring sysbox meant that on any host without it, sessions silently ran
+ * with *no* isolation at all — every session's processes, ports, and services
+ * sharing the Hub host. A privileged container is a weaker boundary than
+ * sysbox and a far stronger one than that, so it is the fallback rather than
+ * "give up and use the host."
+ *
+ * In BOTH modes there is no host docker-socket mount: the project's own
+ * `docker compose` services run on the INNER dockerd the entrypoint starts.
+ * That invariant is not negotiable in either shape.
  */
 
 import { resolveHostMountPath } from '../finalize/runner-exec-args.js';
@@ -80,6 +94,48 @@ export interface SysboxPortPublish {
   hostPort: number;
 }
 
+/**
+ * Numeric owner of the bind-mounted worktree, as the Hub sees it. The
+ * container entrypoint aligns its `runner` account with these ids; without
+ * that the mount is read-only to the session and git rejects the checkout as
+ * "dubious ownership". See `align_runner_identity` in the runner entrypoint.
+ */
+export const WORKSPACE_UID_ENV = 'AGENT_HUB_WORKSPACE_UID';
+export const WORKSPACE_GID_ENV = 'AGENT_HUB_WORKSPACE_GID';
+
+export interface WorkspaceOwner {
+  uid: number;
+  gid: number;
+}
+
+/** Container env carrying {@link WorkspaceOwner}; empty when unknown. */
+export function workspaceOwnerEnv(owner: WorkspaceOwner | null): Record<string, string> {
+  if (!owner) return {};
+  return {
+    [WORKSPACE_UID_ENV]: String(owner.uid),
+    [WORKSPACE_GID_ENV]: String(owner.gid),
+  };
+}
+
+/** Container isolation runtime. See the module header. */
+export type ContainerIsolation = 'sysbox-runc' | 'privileged';
+
+/** `docker run` flags that select the isolation runtime. */
+export function isolationRunArgs(isolation: ContainerIsolation): string[] {
+  switch (isolation) {
+    case 'sysbox-runc':
+      return ['--runtime=sysbox-runc'];
+    case 'privileged':
+      // `--cgroupns=host` matches the Finalize runner: the inner dockerd
+      // needs its own cgroup view to start reliably.
+      return ['--privileged', '--cgroupns=host'];
+    default: {
+      const exhaustive: never = isolation;
+      throw new Error(`Unhandled container isolation: ${String(exhaustive)}`);
+    }
+  }
+}
+
 function pushEnvArgs(args: string[], env: Record<string, string | undefined> | undefined): void {
   for (const [key, value] of Object.entries(env ?? {})) {
     // An undefined value means "unset" — the container env is the image env
@@ -123,8 +179,14 @@ export interface StartSysboxContainerOptions {
   image: string;
   /** Worktree path as the Hub sees it (translated to a host path for `-v`). */
   worktreePath: string;
-  /** Loopback-only port publishes, fixed at container start. */
+  /**
+   * Loopback-only port publishes, fixed at container start. Empty under
+   * container-IP routing, where the Hub dials the container directly and
+   * nothing needs publishing.
+   */
   ports: SysboxPortPublish[];
+  /** Isolation runtime. Default `sysbox-runc` (back-compat). */
+  isolation?: ContainerIsolation;
   /** Extra container env (`-e`). The image env is the base; no host env leaks. */
   env?: Record<string, string>;
   /** In-container command holding the env open. Default {@link SYSBOX_SESSION_ENTRYPOINT}. */
@@ -132,25 +194,33 @@ export interface StartSysboxContainerOptions {
 }
 
 /**
- * Build argv for `docker run -d --runtime=sysbox-runc ...`.
+ * Build argv for `docker run -d ...` starting a session container.
  *
  * Invariants (the tests pin these):
- *   - `--runtime=sysbox-runc`, never `--privileged` / `--cgroupns=host`
- *   - no host docker-socket mount — docker inside is the INNER dockerd
- *   - port publishes bind 127.0.0.1 only (epic decision `port-model`)
+ *   - exactly one isolation runtime, per {@link isolationRunArgs}
+ *   - no host docker-socket mount in either mode — docker inside the
+ *     container is the INNER dockerd
+ *   - any port publishes bind 127.0.0.1 only, never `0.0.0.0`
  */
 export function buildStartSysboxContainerArgv(opts: StartSysboxContainerOptions): string[] {
   const hostMount = resolveHostMountPath(opts.worktreePath);
   const args = [
     'run',
     '-d',
-    '--runtime=sysbox-runc',
+    ...isolationRunArgs(opts.isolation ?? 'sysbox-runc'),
     '--name',
     opts.containerName,
     '--hostname',
     opts.containerName,
     ...sessionLabels(opts.sessionId),
   ];
+
+  // Boot as root so the entrypoint can align `runner` with the worktree owner:
+  // usermod refuses a uid change while any process runs as that user, and the
+  // image's own USER would make the entrypoint exactly such a process. Nothing
+  // interactive lands here — every exec below pins `-u runner`, which resolves
+  // to the aligned ids.
+  args.push('--user', 'root');
 
   args.push('-v', `${hostMount}:${SYSBOX_SESSION_WORKSPACE}:rw`);
   args.push('-v', `${sysboxGraphVolumeName(opts.containerName)}:/var/lib/docker`);
@@ -164,6 +234,32 @@ export function buildStartSysboxContainerArgv(opts: StartSysboxContainerOptions)
 
   args.push(opts.image, ...(opts.command ?? SYSBOX_SESSION_ENTRYPOINT));
   return ['docker', ...args];
+}
+
+/**
+ * Build argv reading the container's own IP address.
+ *
+ * Under container-IP routing this is the Hub's upstream host: no port is
+ * published, so the only route in is the container's address on the docker
+ * bridge. Emitting one address per attached network (space-separated) lets
+ * the caller take the first non-empty one without assuming a network name.
+ */
+export function buildInspectContainerIpArgv(containerName: string): string[] {
+  return [
+    'docker',
+    'inspect',
+    '-f',
+    '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}',
+    containerName,
+  ];
+}
+
+/** First non-empty address from {@link buildInspectContainerIpArgv} output. */
+export function parseContainerIp(stdout: string): string | null {
+  for (const token of stdout.trim().split(/\s+/)) {
+    if (token) return token;
+  }
+  return null;
 }
 
 /** In-container pidfile for one spawned process (unique per spawn). */

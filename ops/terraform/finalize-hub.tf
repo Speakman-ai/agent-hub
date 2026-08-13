@@ -82,3 +82,22 @@ resource "aws_iam_role_policy" "hub_dockerhub_secret_read" {
     }]
   })
 }
+
+# Fleet token is withheld from ops/scripts/sync-hub-env.sh (SSM history must not
+# carry secrets). On a NEW host user-data writes it into .env once; on an
+# EXISTING host operators pull it from Secrets Manager on-box. Grant the Hub
+# instance role read on the TF-managed secret so that path works without
+# shipping the token through SendCommand.
+resource "aws_iam_role_policy" "hub_fleet_token_read" {
+  count = local.finalize_create_fleet_token && var.enable_instance_ssm ? 1 : 0
+  name  = "finalize-fleet-token-read"
+  role  = aws_iam_role.ec2_ssm[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = [aws_secretsmanager_secret.finalize_fleet_token[0].arn]
+    }]
+  })
+}

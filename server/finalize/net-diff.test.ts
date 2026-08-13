@@ -7,6 +7,10 @@ import {
   type GitRunner,
   type NetDiffProbe,
 } from './net-diff.js';
+import { fakeHostSharedIo } from '../test/fake-worktree-io.js';
+
+/** Every probe here injects `runGit`, so the seam is only an opaque handle. */
+const io = fakeHostSharedIo();
 
 /**
  * A fake `git` runner. `existing` are refs `rev-parse --verify` resolves; for a
@@ -35,7 +39,7 @@ describe('hasPublishableChanges', () => {
 
   it('is false for a clean, fully-pushed worktree (no probe)', async () => {
     const probe = vi.fn<NetDiffProbe>();
-    expect(await hasPublishableChanges('/wt', clean, probe)).toBe(false);
+    expect(await hasPublishableChanges(io, clean, probe)).toBe(false);
     expect(probe).not.toHaveBeenCalled();
   });
 
@@ -45,28 +49,28 @@ describe('hasPublishableChanges', () => {
     // review + CI cycle and reported "no commits on this branch, so nothing
     // would ship" while the Changes badge advertised the edited files.
     const probe = vi.fn<NetDiffProbe>(async () => true);
-    expect(await hasPublishableChanges('/wt', dirty, probe)).toBe(false);
+    expect(await hasPublishableChanges(io, dirty, probe)).toBe(false);
     expect(probe).not.toHaveBeenCalled();
   });
 
   it('is true when unpushed commits produce a net diff vs base', async () => {
-    expect(await hasPublishableChanges('/wt', unpushed, async () => true)).toBe(true);
+    expect(await hasPublishableChanges(io, unpushed, async () => true)).toBe(true);
   });
 
   it('is false when unpushed commits net to zero vs base', async () => {
     // The "Finalize kicked off for an empty diff" case: commits exist but add
     // nothing to base (commit+revert / already integrated).
-    expect(await hasPublishableChanges('/wt', unpushed, async () => false)).toBe(false);
+    expect(await hasPublishableChanges(io, unpushed, async () => false)).toBe(false);
   });
 
   it('fails open (true) when the net diff is undeterminable', async () => {
-    expect(await hasPublishableChanges('/wt', unpushed, async () => null)).toBe(true);
+    expect(await hasPublishableChanges(io, unpushed, async () => null)).toBe(true);
   });
 
   it('still judges the commits when the worktree is also dirty', async () => {
     const dirtyAndUnpushed = { hasUncommitted: true, hasUnpushed: true };
-    expect(await hasPublishableChanges('/wt', dirtyAndUnpushed, async () => true)).toBe(true);
-    expect(await hasPublishableChanges('/wt', dirtyAndUnpushed, async () => false)).toBe(false);
+    expect(await hasPublishableChanges(io, dirtyAndUnpushed, async () => true)).toBe(true);
+    expect(await hasPublishableChanges(io, dirtyAndUnpushed, async () => false)).toBe(false);
   });
 });
 
@@ -116,7 +120,7 @@ describe('makeNetDiffProbe — base-aware', () => {
       runGit: fakeGit(existing, diffCode),
       resolveDefault,
     });
-    expect(await baseAware('/wt')).toBe(false);
+    expect(await baseAware(io)).toBe(false);
     // It must not consult the repo default at all when an explicit base is given.
     expect(resolveDefault).not.toHaveBeenCalled();
 
@@ -126,13 +130,13 @@ describe('makeNetDiffProbe — base-aware', () => {
       runGit: fakeGit(existing, diffCode),
       resolveDefault,
     });
-    expect(await defaultOnly('/wt')).toBe(true);
+    expect(await defaultOnly(io)).toBe(true);
   });
 
   it('returns true when the branch has a real net diff vs its PR base', async () => {
     const existing = new Set([`origin/${FEATURE}`]);
     const probe = makeNetDiffProbe(FEATURE, { runGit: fakeGit(existing, () => 1) });
-    expect(await probe('/wt')).toBe(true);
+    expect(await probe(io)).toBe(true);
   });
 
   it('does NOT silently fall back to the default when the explicit base ref is missing', async () => {
@@ -142,7 +146,7 @@ describe('makeNetDiffProbe — base-aware', () => {
     const resolveDefault = vi.fn(async () => 'main');
     const runGit = fakeGit(existing, () => 1);
     const probe = makeNetDiffProbe(FEATURE, { runGit, resolveDefault });
-    expect(await probe('/wt')).toBeNull();
+    expect(await probe(io)).toBeNull();
     expect(resolveDefault).not.toHaveBeenCalled();
   });
 
@@ -150,7 +154,7 @@ describe('makeNetDiffProbe — base-aware', () => {
     const runGit: GitRunner = async (args) =>
       args[0] === 'rev-parse' ? { stdout: 'x\n', code: 0 } : { stdout: '', code: 129 };
     const probe = makeNetDiffProbe(FEATURE, { runGit });
-    expect(await probe('/wt')).toBeNull();
+    expect(await probe(io)).toBeNull();
   });
 });
 

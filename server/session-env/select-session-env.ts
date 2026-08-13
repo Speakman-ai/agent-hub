@@ -28,12 +28,57 @@ export function resolveSessionEnvBackend(opts: {
   configured: SessionEnvBackendChoice;
   /** Typically `probeSysboxCapability().available` (sysbox-capability.ts). */
   sysboxAvailable: boolean;
+  /**
+   * Typically `probeFirecrackerCapability().available`. Requires `/dev/kvm`,
+   * the VMM binary, and staged guest artifacts — see
+   * `firecracker/firecracker-capability.ts`.
+   */
+  firecrackerAvailable?: boolean;
+  /** Whether a usable docker daemon was found (`container` backend). */
+  dockerAvailable?: boolean;
+  /**
+   * Whether the Hub can dial container IPs (`container-ip` routing). When it
+   * cannot, a container env has to publish ports, which reintroduces the
+   * shared host pool and the declare-ports-before-start rule that the
+   * container backend exists to remove — so `auto` declines it. An explicit
+   * `container` still honors the request.
+   */
+  containerRoutingUsable?: boolean;
   /** Backends with a registered adapter. Defaults to the live registry. */
   registeredBackends?: ReadonlySet<SessionEnvKind>;
 }): SessionEnvKind {
   const registered = opts.registeredBackends ?? registeredSessionEnvBackends();
   const sysboxUsable = opts.sysboxAvailable && registered.has('sysbox');
   if (opts.configured === 'host') return 'host';
+  if (opts.configured === 'firecracker') {
+    if (opts.firecrackerAvailable !== true) {
+      throw new Error(
+        'sessionEnvAdapter is set to "firecracker" but this host cannot run microVMs ' +
+          '(needs /dev/kvm, the firecracker binary, and staged guest artifacts). ' +
+          'Enable nested virtualization on the instance or set sessionEnvAdapter to "auto".',
+      );
+    }
+    if (!registered.has('firecracker')) {
+      throw new Error(
+        'sessionEnvAdapter is set to "firecracker" but no firecracker adapter is registered in this build.',
+      );
+    }
+    return 'firecracker';
+  }
+  if (opts.configured === 'container') {
+    if (opts.dockerAvailable !== true) {
+      throw new Error(
+        'sessionEnvAdapter is set to "container" but no usable docker daemon was found. ' +
+          'Start docker or set sessionEnvAdapter to "host"/"auto".',
+      );
+    }
+    if (!registered.has('container')) {
+      throw new Error(
+        'sessionEnvAdapter is set to "container" but no container adapter is registered in this build.',
+      );
+    }
+    return 'container';
+  }
   if (opts.configured === 'sysbox') {
     if (!opts.sysboxAvailable) {
       throw new Error(
@@ -49,7 +94,12 @@ export function resolveSessionEnvBackend(opts: {
     }
     return 'sysbox';
   }
-  return sysboxUsable ? 'sysbox' : 'host';
+  // `auto` picks sysbox when available, else host. MicroVM and privileged
+  // container tiers require an explicit operator choice — agent CLIs still
+  // run host-side for auto, and a privileged DinD fallback is not safe to
+  // select implicitly.
+  if (sysboxUsable) return 'sysbox';
+  return 'host';
 }
 
 export interface CreateSessionEnvOpts {
@@ -58,6 +108,14 @@ export interface CreateSessionEnvOpts {
   /** Adapter-specific dependency overrides (tests, custom allocators). */
   hostDeps?: Omit<HostSessionEnvDeps, 'sessionId' | 'worktreePath'>;
   sysboxDeps?: Omit<SysboxSessionEnvDeps, 'sessionId' | 'worktreePath'>;
+  /**
+   * Layered over the defaults bound at registration time. The microVM backend
+   * needs host-wide resources (a slot pool, staged guest artifacts) that no
+   * per-session caller can supply, so unlike the other adapters it is
+   * registered with its dependencies already attached — see
+   * `firecracker/register-firecracker-backend.ts`.
+   */
+  firecrackerDeps?: Record<string, unknown>;
 }
 
 export type SessionEnvFactory = (opts: CreateSessionEnvOpts) => SessionEnv;
@@ -78,6 +136,17 @@ const backendRegistry = new Map<SessionEnvKind, SessionEnvFactory>([
       new SysboxSessionEnv({
         sessionId: opts.sessionId,
         worktreePath: opts.worktreePath,
+        isolation: 'sysbox-runc',
+        ...opts.sysboxDeps,
+      }),
+  ],
+  [
+    'container',
+    (opts) =>
+      new SysboxSessionEnv({
+        sessionId: opts.sessionId,
+        worktreePath: opts.worktreePath,
+        isolation: 'privileged',
         ...opts.sysboxDeps,
       }),
   ],

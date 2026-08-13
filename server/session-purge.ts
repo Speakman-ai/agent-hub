@@ -34,6 +34,8 @@
  * `getProjects()` defaults so callers in `heartbeat.ts` stay one-liners.
  */
 
+import { existsSync } from 'fs';
+import path from 'path';
 import { db as _db, stmts as _stmts } from './db.js';
 import {
   removeWorkspaceAsync as defaultRemoveWorkspace,
@@ -48,6 +50,15 @@ import {
 } from './browser-screenshot-store.js';
 import config from './config.js';
 import type { Project, Stmts } from './types.js';
+import {
+  createFirecrackerHostIo,
+  resolveFirecrackerExecConfig,
+} from './session-env/firecracker/firecracker-privileged-exec.js';
+import {
+  firecrackerHostPaths,
+  forgetPersistedFirecrackerDisks,
+} from './session-env/firecracker/register-firecracker-backend.js';
+import { sessionVmId } from './session-env/firecracker/firecracker-vm-args.js';
 import type Database from 'better-sqlite3';
 
 /** Row shape returned by `stmts.getExpiredArchivedSessions`. */
@@ -66,6 +77,12 @@ export interface PurgeDeps {
    */
   removeWorkspace: (workspacePath: string) => boolean | Promise<boolean>;
   cleanupStaleWorkspaces: typeof defaultCleanupStaleWorkspaces;
+  /**
+   * Delete persisted Firecracker workspace disks. Must succeed before the
+   * session row is hard-deleted — otherwise a transient helper failure leaves
+   * disks on disk with no row left to retry. Injectable for tests.
+   */
+  forgetPersistedFirecrackerDisks?: (sessionId: string) => Promise<void>;
 }
 
 export interface PurgeResult {
@@ -76,9 +93,34 @@ export interface PurgeResult {
 }
 
 /**
- * Default `PurgeDeps` wired to the production singletons. Tests construct
- * their own deps from a fresh in-memory DB.
+ * Forget Firecracker disks for a hard-purged session. No-op when no VM
+ * artifact exists (host/sysbox). Fail closed when an artifact exists but the
+ * local helper is missing — otherwise the row would vanish and leave disks.
+ * Exported for unit tests of the gating branches.
  */
+export async function forgetPersistedFirecrackerDisksForPurge(sessionId: string): Promise<void> {
+  const paths = firecrackerHostPaths();
+  const helper = paths.diskHelper ?? '/usr/local/lib/agent-hub/fc-prepare-disks.sh';
+  const vmDir = path.join(paths.runDir, sessionVmId(sessionId));
+  // Host/sysbox sessions (and installs that never provisioned Firecracker)
+  // leave no VM artifact. Do not invoke sudo/helper — a missing binary would
+  // otherwise fail closed and strand every archived row forever.
+  if (!existsSync(vmDir)) return;
+  const execCfg = resolveFirecrackerExecConfig(paths);
+  // Artifact present + no way to delete it must fail closed so the session
+  // row stays for retry. Skipping would orphan the workspace disk on disk.
+  if (execCfg.mode === 'local' && !existsSync(helper)) {
+    throw new Error(
+      `[Purge] Firecracker vm dir ${vmDir} exists but helper ${helper} is missing; ` +
+        `refusing to delete the session row until disks can be forgotten`,
+    );
+  }
+  await forgetPersistedFirecrackerDisks(sessionId, {
+    io: createFirecrackerHostIo(execCfg),
+    paths,
+  });
+}
+
 function defaultDeps(): PurgeDeps {
   return {
     db: _db!,
@@ -86,6 +128,7 @@ function defaultDeps(): PurgeDeps {
     getProjects: defaultGetProjects,
     removeWorkspace: defaultRemoveWorkspace,
     cleanupStaleWorkspaces: defaultCleanupStaleWorkspaces,
+    forgetPersistedFirecrackerDisks: forgetPersistedFirecrackerDisksForPurge,
   };
 }
 
@@ -104,7 +147,24 @@ export async function purgeExpiredArchivedSessions(
   let rowsDeleted = 0;
   let workspacesRemoved = 0;
 
+  const forgetDisks =
+    deps.forgetPersistedFirecrackerDisks ?? forgetPersistedFirecrackerDisksForPurge;
+
   for (const row of rows) {
+    // Soft archive keeps the Firecracker workspace disk; hard purge must
+    // delete it *before* the session row — a helper failure must leave the
+    // row so the next hourly tick can retry.
+    try {
+      await forgetDisks(row.id);
+    } catch (fcErr: unknown) {
+      const fcMsg = fcErr instanceof Error ? fcErr.message : String(fcErr);
+      console.error(
+        `[Purge] forgetPersistedFirecrackerDisks(${row.id}) failed; leaving row for retry:`,
+        fcMsg,
+      );
+      continue;
+    }
+
     if (row.worktree_path) {
       try {
         // `removeWorkspace` returns `true` only when something was actually

@@ -23,13 +23,22 @@ describe('GET /api/sessions/:sessionId/progress', () => {
   it('returns persisted steps in emit order with camelCase timing fields', async () => {
     const session = (await createSession()) as { id: string };
     const stmts = getStmts();
-    stmts.addSessionProgress.run(session.id, 'msg-1', 'Gather PR context', 'completed', 1000, 1500);
+    stmts.addSessionProgress.run(
+      session.id,
+      'msg-1',
+      'Gather PR context',
+      'completed',
+      1000,
+      1500,
+      null,
+    );
     stmts.addSessionProgress.run(
       session.id,
       'msg-1',
       'Analyze diff and files',
       'started',
       2000,
+      null,
       null,
     );
 
@@ -59,7 +68,7 @@ describe('GET /api/sessions/:sessionId/progress', () => {
     // these rows.
     const session = (await createSession()) as { id: string };
     const stmts = getStmts();
-    stmts.addSessionProgress.run(session.id, null, 'X', 'started', 1, null);
+    stmts.addSessionProgress.run(session.id, null, 'X', 'started', 1, null, null);
 
     // Sanity: rows exist
     expect((stmts.getSessionProgress.all(session.id) as unknown[]).length).toBe(1);

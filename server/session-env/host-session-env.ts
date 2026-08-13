@@ -19,6 +19,7 @@ import {
   SessionEnvDisposedError,
   SessionEnvDisposeOpts,
   SessionEnvExit,
+  SessionEnvDialTarget,
   SessionEnvPortMapping,
   SessionEnvProcess,
   SessionEnvPty,
@@ -28,6 +29,7 @@ import {
   resolveEnvRelativeCwd,
   systemSessionEnvClock,
 } from './session-env.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from './worktree-io.js';
 
 /**
  * Minimal `child_process.spawn`-shaped child. Keeps the adapter decoupled
@@ -147,6 +149,12 @@ interface LivePty {
 
 export class HostSessionEnv implements SessionEnv {
   readonly kind = 'host' as const;
+  /**
+   * There is no boundary to cross, so a port is reached on the host directly.
+   * That is the same contract as publishing — the Hub dials a host port the
+   * process is expected to bind — which keeps pool allocation in play here.
+   */
+  readonly portRouting = 'published-ports' as const;
   readonly sessionId: string;
   readonly createdAtMs: number;
 
@@ -201,6 +209,15 @@ export class HostSessionEnv implements SessionEnv {
 
   liveProcessCount(): number {
     return this.liveProcesses.size + this.livePtys.size;
+  }
+
+  async hasDetachedWorkload(): Promise<boolean> {
+    // Host adapter has no hidden boundary — Hub-tracked handles are complete.
+    return false;
+  }
+
+  retainAfterFailedEnsure(): boolean {
+    return false;
   }
 
   onDispose(cb: () => void): () => void {
@@ -372,6 +389,7 @@ export class HostSessionEnv implements SessionEnv {
       .then((hostPort) => {
         const resolved: SessionEnvPortMapping = {
           internalPort,
+          host: '127.0.0.1',
           hostPort,
           // No translation on the host adapter — the process binds the
           // allocated host port directly (steered via the injected PORT).
@@ -399,6 +417,20 @@ export class HostSessionEnv implements SessionEnv {
     return [...this.settledMappings.values()];
   }
 
+  /**
+   * Loopback, always: host processes bind directly on the host, so there is
+   * no boundary between the Hub and the port.
+   */
+  async resolveDialTarget(internalPort: number): Promise<SessionEnvDialTarget> {
+    this.#assertLive('resolveDialTarget');
+    const mapping = await this.mapPort(internalPort);
+    return {
+      host: '127.0.0.1',
+      port: mapping.hostPort,
+      url: `http://127.0.0.1:${mapping.hostPort}`,
+    };
+  }
+
   async mountWorktree(): Promise<SessionEnvWorktreeMount> {
     this.#assertLive('mountWorktree');
     if (!(await this.isDirectory(this.worktreePath))) {
@@ -407,8 +439,21 @@ export class HostSessionEnv implements SessionEnv {
       );
     }
     // Host adapter uses the worktree in place — no bind mount needed.
-    return { hostPath: this.worktreePath, envPath: this.worktreePath };
+    return {
+      hostPath: this.worktreePath,
+      envPath: this.worktreePath,
+      sharing: this.worktreeSharing,
+    };
   }
+
+  readonly worktreeSharing = 'host-shared' as const;
+
+  get worktreeIo(): SessionWorktreeIo {
+    this.#worktreeIo ??= new HostWorktreeIo(this.worktreePath);
+    return this.#worktreeIo;
+  }
+
+  #worktreeIo: SessionWorktreeIo | undefined;
 
   dispose(opts: SessionEnvDisposeOpts = {}): Promise<void> {
     if (this.#disposePromise) return this.#disposePromise;

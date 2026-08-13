@@ -16,8 +16,9 @@
  *     needs a non-empty `run` string. `name` defaults to `step <index>`.
  *   - `steps[].shell:` (or any other unknown step-level key) is rejected —
  *     the runner hard-codes `bash -euo pipefail -c`.
- *   - `timeout_minutes` may LOWER the system 4-hour cap but never raise it;
- *     out-of-range values error.
+ *   - `timeout_minutes` may LOWER the system 4-hour *pipeline* hang
+ *     limit but never raise it; out-of-range values error. It does not
+ *     cap the §13 active-time budget.
  *   - The file loader works against an arbitrary path (the "file lives at
  *     non-root location" criterion).
  */

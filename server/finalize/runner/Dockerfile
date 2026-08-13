@@ -25,6 +25,7 @@ ARG RUNNER_DOCKER_VERSION=28.0.4
 ARG RUNNER_COMPOSE_VERSION=2.38.2
 ARG RUNNER_BUILDX_VERSION=0.34.1
 ARG RUNNER_GH_VERSION=2.95.0
+ARG RUNNER_AWSCLI_VERSION=2.36.8
 ARG RUNNER_ENFORCE_VERSION_PINS=0
 
 # Run apt's download/verify step as root instead of the unprivileged `_apt` user.
@@ -35,12 +36,16 @@ ARG RUNNER_ENFORCE_VERSION_PINS=0
 # already runs as root. Must precede the first apt-get update.
 RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/00no-sandbox
 
+# iproute2 is not for CI: this image doubles as the privileged helper that
+# creates each microVM's tap device in the host network namespace, and `ip` is
+# the only tool that does it. See firecracker-privileged-exec.ts.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
     gnupg \
     iptables \
+    iproute2 \
     jq \
     lsb-release \
     python3 \
@@ -138,13 +143,43 @@ RUN set -e; \
     fi; \
     rm -rf /var/lib/apt/lists/*
 
+# AWS CLI v2, from AWS's official installer. Not available via apt: Ubuntu 24.04
+# (noble) dropped the `awscli` package, so a project declaring it in
+# `prEnv.devServer.aptPackages` gets "no candidate" and the whole apt batch
+# fails. Repo scripts that sync a database or fetch artifacts from S3 need it,
+# and GitHub's ubuntu-24.04 image ships it, so this is parity too.
+#
+# AWS keeps every published version at a stable URL indefinitely, so the exact
+# pin does not age out the way an apt pin does; the fallback to the unversioned
+# "latest" zip exists only for a transient CDN miss, and is refused under
+# RUNNER_ENFORCE_VERSION_PINS=1.
+ARG TARGETARCH
+RUN set -e; \
+    case "${TARGETARCH}" in \
+      arm64) AWS_ARCH=aarch64 ;; \
+      *)     AWS_ARCH=x86_64 ;; \
+    esac; \
+    cd /tmp; \
+    if curl -fsSL -o awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}-${RUNNER_AWSCLI_VERSION}.zip"; then \
+      echo "Pinned aws-cli=${RUNNER_AWSCLI_VERSION}"; \
+    elif [ "${RUNNER_ENFORCE_VERSION_PINS}" = "1" ]; then \
+      echo "ERROR: pinned aws-cli=${RUNNER_AWSCLI_VERSION} unavailable and RUNNER_ENFORCE_VERSION_PINS=1" >&2; exit 1; \
+    else \
+      echo "WARN: pinned aws-cli=${RUNNER_AWSCLI_VERSION} unavailable; falling back to latest. Bump RUNNER_AWSCLI_VERSION + runner-image-versions.ts." >&2; \
+      curl -fsSL -o awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip"; \
+    fi; \
+    unzip -q awscliv2.zip; \
+    ./aws/install; \
+    rm -rf /tmp/awscliv2.zip /tmp/aws
+
 # Record targeted vs installed toolchain versions in the build log (parity audit).
 RUN echo "Runner toolchain (targeted -> installed):" \
     && echo "  node:    ${RUNNER_NODE_VERSION} -> $(node --version 2>/dev/null || echo '?')" \
     && echo "  docker:  ${RUNNER_DOCKER_VERSION} -> $(docker --version 2>/dev/null || echo '?')" \
     && echo "  compose: ${RUNNER_COMPOSE_VERSION} -> $(docker compose version 2>/dev/null || echo '?')" \
     && echo "  buildx:  ${RUNNER_BUILDX_VERSION} -> $(docker buildx version 2>/dev/null || echo '?')" \
-    && echo "  gh:      ${RUNNER_GH_VERSION} -> $(gh --version 2>/dev/null | head -n1 || echo '?')"
+    && echo "  gh:      ${RUNNER_GH_VERSION} -> $(gh --version 2>/dev/null | head -n1 || echo '?')" \
+    && echo "  aws:     ${RUNNER_AWSCLI_VERSION} -> $(aws --version 2>/dev/null || echo '?')"
 
 # Cypress E2E browser.
 #   amd64 (GHA parity / prod): Google Chrome stable from Google's apt repo.
@@ -184,13 +219,45 @@ RUN chmod +x /usr/local/bin/runner-entrypoint.sh
 # Used by the `agent` entrypoint mode; harmless in `daemon` (job) containers.
 COPY runner-agent.mjs /usr/local/bin/runner-agent.mjs
 
-# Non-root runner user (GHA-style workspace path)
-RUN useradd -m -s /bin/bash runner \
+# Non-root runner user (GHA-style workspace path), pinned to uid/gid 1000.
+#
+# Left to itself `useradd` lands runner on 1001, because ubuntu:24.04 ships an
+# `ubuntu` account on 1000. That matters for session environments: the worktree
+# is bind-mounted from the Hub host and carries the Hub's uid — 1000 in every
+# supported deployment — so a mismatched container user gets an effectively
+# read-only workspace and git rejects it as "dubious ownership".
+#
+# It has to be fixed HERE because it cannot be fixed at runtime. The entrypoint
+# runs AS this account, and no mechanism can renumber the account a live process
+# is using: `usermod` refuses outright ("user runner is currently used by
+# process 1"), and rewriting /etc/passwd directly orphans the running uid, after
+# which every `sudo` fails with "you do not exist in the passwd database". At
+# build time nothing is running yet, so the same operation is safe.
+#
+# `ubuntu` is parked on a high id rather than deleted, in case the image depends
+# on it. GitHub's own runner images use 1001 for `runner`, but nothing keys off
+# the number, so matching the Hub host is the more useful invariant.
+RUN usermod -u 61000 ubuntu \
+    && groupmod -g 61000 ubuntu \
+    && groupadd -g 1000 runner \
+    && useradd -m -s /bin/bash -u 1000 -g runner runner \
     && usermod -aG docker runner \
     && mkdir -p /github/workspace \
     && chown runner:runner /github/workspace \
     && echo 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/runner \
     && chmod 0440 /etc/sudoers.d/runner
+
+# Prove --no-new-privs blocks sudo regain for the sudo-enabled runner account.
+# Without this gate, a repo-controlled smudge filter invoked after setpriv
+# --reuid=runner can `sudo -n` back to root inside the privileged helper.
+# Runs as root before USER runner so Vitest-as-runner cannot skip it.
+RUN set -eux; \
+    echo 'no_new_privs blocks sudo regain'; \
+    setpriv --reuid=runner --regid=runner --clear-groups -- sudo -n id -u | grep -qx 0; \
+    if setpriv --reuid=runner --regid=runner --clear-groups --no-new-privs -- sudo -n id -u; then \
+      echo 'FAIL: sudo regained root under --no-new-privs' >&2; \
+      exit 1; \
+    fi
 
 USER runner
 WORKDIR /github/workspace

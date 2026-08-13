@@ -24,8 +24,8 @@
  * base first; `defaultNetDiffProbe` keeps the auto-detect-default behavior for
  * callers with no resolved base.
  */
-import { execFile } from 'child_process';
-import { resolveDefaultBranch } from '../git-default-branch.js';
+import { resolveDefaultBranchIn } from '../git-default-branch.js';
+import type { SessionWorktreeIo } from '../session-env/worktree-io.js';
 
 const GIT_TIMEOUT_MS = 15_000;
 
@@ -34,30 +34,18 @@ interface GitResult {
   code: number;
 }
 
-/** Injectable `git` runner — real spawn by default, faked in tests. */
-export type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
+/** Injectable `git` runner — the session's own worktree by default, faked in tests. */
+export type GitRunner = (args: string[], io: SessionWorktreeIo) => Promise<GitResult>;
 
-const runGitReal: GitRunner = (args, cwd) =>
-  new Promise((resolve) => {
-    execFile(
-      'git',
-      args,
-      {
-        cwd,
-        timeout: GIT_TIMEOUT_MS,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
-      },
-      (err, stdout) => {
-        const code =
-          err && typeof (err as { code?: unknown }).code === 'number'
-            ? ((err as { code: number }).code as number)
-            : err
-              ? 1
-              : 0;
-        resolve({ stdout: stdout?.toString() ?? '', code });
-      },
-    );
+const runGitReal: GitRunner = async (args, io) => {
+  const { stdout, exitCode } = await io.git(args, {
+    timeoutMs: GIT_TIMEOUT_MS,
+    env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
   });
+  // A signal kill reports `null`; treat it as a generic failure rather than
+  // letting `code === 0` read as "identical".
+  return { stdout, code: exitCode ?? 1 };
+};
 
 /**
  * Ordered list of candidate base refs to diff HEAD against.
@@ -91,13 +79,13 @@ export function candidateBaseRefs(
  * A `null` result fails open: callers treat unpushed commits as publishable so
  * a detection miss can never strand real work behind a disabled button.
  */
-export type NetDiffProbe = (worktreePath: string) => Promise<boolean | null>;
+export type NetDiffProbe = (io: SessionWorktreeIo) => Promise<boolean | null>;
 
 export interface NetDiffProbeDeps {
   /** Injectable git runner (tests). */
   runGit?: GitRunner;
   /** Injectable default-branch resolver (tests). */
-  resolveDefault?: (cwd: string) => Promise<string | null>;
+  resolveDefault?: (io: SessionWorktreeIo) => Promise<string | null>;
 }
 
 /**
@@ -110,24 +98,24 @@ export function makeNetDiffProbe(
   deps: NetDiffProbeDeps = {},
 ): NetDiffProbe {
   const runGit = deps.runGit ?? runGitReal;
-  const resolveDefault = deps.resolveDefault ?? resolveDefaultBranch;
+  const resolveDefault = deps.resolveDefault ?? resolveDefaultBranchIn;
   const explicitBase = baseBranch ?? null;
-  return async (worktreePath) => {
+  return async (io) => {
     let resolvedDefault: string | null = null;
     if (!explicitBase) {
       try {
-        resolvedDefault = await resolveDefault(worktreePath);
+        resolvedDefault = await resolveDefault(io);
       } catch {
         resolvedDefault = null;
       }
     }
     const refs = candidateBaseRefs(explicitBase, resolvedDefault);
     for (const ref of refs) {
-      const exists = await runGit(['rev-parse', '--verify', '--quiet', ref], worktreePath);
+      const exists = await runGit(['rev-parse', '--verify', '--quiet', ref], io);
       if (exists.code !== 0 || !exists.stdout.trim()) continue;
       // Three-dot diff = merge-base(ref, HEAD)..HEAD — exactly the PR/Changes-pane
       // view. `--quiet` exits 0 when identical, 1 when differences exist.
-      const diff = await runGit(['diff', '--quiet', `${ref}...HEAD`], worktreePath);
+      const diff = await runGit(['diff', '--quiet', `${ref}...HEAD`], io);
       if (diff.code === 0) return false;
       if (diff.code === 1) return true;
       return null; // unexpected git error — undeterminable, fail open
@@ -177,12 +165,12 @@ export function isPublishableVerdict(
  * `isPublishableVerdict`).
  */
 export async function hasPublishableChanges(
-  worktreePath: string,
+  io: SessionWorktreeIo,
   changes: { hasUncommitted: boolean; hasUnpushed: boolean },
   probe: NetDiffProbe = defaultNetDiffProbe,
   opts: { explicitBase?: boolean } = {},
 ): Promise<boolean> {
   if (!changes.hasUnpushed) return false;
-  const net = await probe(worktreePath);
+  const net = await probe(io);
   return isPublishableVerdict(net, { explicitBase: opts.explicitBase ?? false });
 }

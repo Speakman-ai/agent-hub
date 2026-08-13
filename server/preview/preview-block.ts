@@ -407,6 +407,15 @@ export async function handlePreviewBlock(
   // ── Gate 1: project has a preview config? ───────────────────────────
   const devServerConfigured = isDevServerConfigured(project.prEnv?.devServer);
   if (!project.prEnv || !devServerConfigured) {
+    // Both gates below decline by broadcasting to the session's socket and
+    // nothing else, which reads as a start that silently did nothing: the API
+    // answers `{ok:true,started:true}`, no row is written, and the server log
+    // stays empty. Say so on the log too, so the reason survives a client that
+    // was not listening.
+    console.warn(
+      `[preview] declining start for session ${sessionId}: project "${project.id}" has ` +
+        (!project.prEnv ? 'no prEnv config' : 'no devServer.startCommand'),
+    );
     broadcast({
       type: 'agenthub_preview',
       kind: 'preview_unavailable',
@@ -424,6 +433,10 @@ export async function handlePreviewBlock(
 
   // ── Gate 2: runtime wired? ──────────────────────────────────────────
   if (!runtime) {
+    console.warn(
+      `[preview] declining start for session ${sessionId}: dev-server runtime is not wired ` +
+        `(project "${project.id}" is configured, so this is a server wiring bug)`,
+    );
     broadcast({
       type: 'agenthub_preview',
       kind: 'preview_unavailable',
@@ -462,6 +475,13 @@ export async function handlePreviewBlock(
     port = result.port;
     url = result.url;
   } catch (err) {
+    // A throw here means the preview never got as far as having a log to show,
+    // so `preview_failed` carries an empty tail and the WS event is the only
+    // record. Anyone reading the server log afterwards — the usual position
+    // when a user reports "start did nothing" — would see the start line and
+    // then silence, with the cause discarded.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[preview] start failed for session ${sessionId}: ${message}`);
     broadcast({
       type: 'agenthub_preview',
       kind: 'preview_failed',
@@ -470,7 +490,7 @@ export async function handlePreviewBlock(
       target: task.target,
       route: task.route,
       agentReason: task.reason,
-      error: err instanceof Error ? err.message : String(err),
+      error: message,
       logTail: [],
     } satisfies PreviewBroadcastEvent as unknown as Record<string, unknown>);
     return;

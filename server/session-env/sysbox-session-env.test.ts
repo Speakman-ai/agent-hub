@@ -4,7 +4,50 @@ import type { HostChildLike, HostPtyFactory, HostPtyLike } from './host-session-
 import { SessionEnvClock } from './session-env.js';
 import { describeSessionEnvContract } from './session-env-contract.js';
 import { SYSBOX_SESSION_WORKSPACE } from './sysbox-exec-args.js';
-import { SysboxRunResult, SysboxSessionEnv, SysboxSessionEnvDeps } from './sysbox-session-env.js';
+import {
+  SysboxRunResult,
+  SysboxSessionEnv,
+  SysboxSessionEnvDeps,
+  hasSysboxDetachedWorkloadFromProbeOutput,
+  isSysboxBaselineComm,
+  isSysboxDetachedWorkloadLine,
+} from './sysbox-session-env.js';
+
+describe('isSysboxBaselineComm / isSysboxDetachedWorkloadLine', () => {
+  it('treats dockerd/containerd as idle baseline but not bash/sleep workers', () => {
+    expect(isSysboxBaselineComm('dockerd')).toBe(true);
+    expect(isSysboxBaselineComm('containerd')).toBe(true);
+    expect(isSysboxBaselineComm('sleep')).toBe(false);
+    expect(isSysboxBaselineComm('bash')).toBe(false);
+    expect(isSysboxBaselineComm('node')).toBe(false);
+    expect(isSysboxBaselineComm('postgres')).toBe(false);
+  });
+
+  it('ignores entrypoint PID 1 sleep but counts user sleep jobs', () => {
+    expect(isSysboxDetachedWorkloadLine('1 sleep')).toBe(false);
+    expect(isSysboxDetachedWorkloadLine('42 sleep')).toBe(true);
+    expect(isSysboxDetachedWorkloadLine('7 bash')).toBe(true);
+    expect(isSysboxDetachedWorkloadLine('9 dockerd')).toBe(false);
+  });
+});
+
+describe('hasSysboxDetachedWorkloadFromProbeOutput', () => {
+  it('treats real idle finalize-runner output (sleep + probe ps) as idle', () => {
+    // Reproduced shape: entrypoint sleep infinity, plus this probe's sh/ps.
+    const idle = ['5', '1 0 sleep', '5 0 sh', '7 5 ps'].join('\n');
+    expect(hasSysboxDetachedWorkloadFromProbeOutput(idle)).toBe(false);
+  });
+
+  it('counts non-init user work alongside the probe rows', () => {
+    const busy = ['5', '1 0 sleep', '5 0 sh', '7 5 ps', '42 1 node'].join('\n');
+    expect(hasSysboxDetachedWorkloadFromProbeOutput(busy)).toBe(true);
+  });
+
+  it('fails closed on empty or malformed probe headers', () => {
+    expect(hasSysboxDetachedWorkloadFromProbeOutput('')).toBe(true);
+    expect(hasSysboxDetachedWorkloadFromProbeOutput('not-a-pid\n1 0 sleep')).toBe(true);
+  });
+});
 
 // ── Fakes ─────────────────────────────────────────────────────────
 
@@ -100,6 +143,10 @@ function makeEnv(
     sessionId: 'sess-1',
     worktreePath: '/wt/session-1',
     publishPorts: [5173],
+    // Pinned, not platform-derived: the default routing differs between a Mac
+    // dev box and Linux CI, which would make these assertions pass locally and
+    // fail (or silently exercise a different code path) in CI.
+    portRouting: 'published-ports',
     spawn: (command, args) => {
       const child = new FakeChild(nextPid++);
       spawnRecords.push({ command, args, child });
@@ -111,6 +158,10 @@ function makeEnv(
     },
     openPty: async () => pty,
     isDirectory: async () => true,
+    // Stubbed, not left to the real fs: the default hits disk, and that extra
+    // I/O turn lands after the fake-clock tests' `setTimeout(0)` yield, so the
+    // clock advances past the readiness sleep before it is even scheduled.
+    statWorkspaceOwner: async () => ({ uid: 1000, gid: 1000 }),
     baseEnv: { NODE_ENV: 'development' },
     dockerClientEnv: { PATH: '/usr/bin' },
     clock,
@@ -165,10 +216,66 @@ describeSessionEnvContract('sysbox adapter', {
 // ── Container lifecycle ───────────────────────────────────────────
 
 describe('SysboxSessionEnv container start', () => {
+  it('defers docker run under published-ports until ports are declared', async () => {
+    // SessionEnvManager.ensure → mountWorktree runs before preview mapPortsOut.
+    // Starting with an empty publish set makes later port declarations impossible.
+    const { env, runCalls } = makeEnv({ publishPorts: [] });
+    await env.mountWorktree();
+    expect(env.containerStarted).toBe(false);
+    expect(runCalls.some(isRunArgv)).toBe(false);
+
+    await env.mapPortsOut([5173]);
+    expect(env.containerStarted).toBe(true);
+    const run = runCalls.find(isRunArgv)!;
+    expect(run.some((a) => a.startsWith('127.0.0.1:') && a.endsWith(':5173'))).toBe(true);
+  });
+
+  it('reallocates a different host port after a Docker bind collision', async () => {
+    const allocated: number[] = [];
+    let nextHost = 4100;
+    let runAttempts = 0;
+    const { env, runCalls } = makeEnv(
+      {
+        publishPorts: [5173],
+        allocateHostPort: async () => {
+          const p = nextHost++;
+          allocated.push(p);
+          return p;
+        },
+        releaseHostPort: () => undefined,
+      },
+      (argv) => {
+        if (isRunArgv(argv)) {
+          runAttempts += 1;
+          if (runAttempts === 1) {
+            return {
+              ok: false,
+              stdout: '',
+              stderr: 'failed to bind host port: address already in use',
+            };
+          }
+        }
+        if (isDockerInfoProbe(argv)) return ok;
+        return ok;
+      },
+    );
+    await env.mountWorktree();
+    expect(env.containerStarted).toBe(true);
+    const runArgvs = runCalls.filter(isRunArgv);
+    expect(runArgvs.length).toBeGreaterThanOrEqual(2);
+    expect(runArgvs[0].some((a) => a.includes('4100:5173'))).toBe(true);
+    expect(runArgvs[1].some((a) => a.includes('4101:5173'))).toBe(true);
+    expect(allocated).toEqual([4100, 4101]);
+  });
+
   it('starts once on mountWorktree: labeled graph volume, sysbox run, dockerd probe', async () => {
     const { env, runCalls } = makeEnv();
     const mount = await env.mountWorktree();
-    expect(mount).toEqual({ hostPath: '/wt/session-1', envPath: SYSBOX_SESSION_WORKSPACE });
+    expect(mount).toEqual({
+      hostPath: '/wt/session-1',
+      envPath: SYSBOX_SESSION_WORKSPACE,
+      sharing: 'host-shared',
+    });
     expect(env.containerStarted).toBe(true);
 
     expect(runCalls[0].slice(0, 3)).toEqual(['docker', 'volume', 'create']);
@@ -191,6 +298,7 @@ describe('SysboxSessionEnv container start', () => {
     const mapped = await env.mapPort(5173);
     expect(mapped).toEqual({
       internalPort: 5173,
+      host: '127.0.0.1',
       hostPort: 4173,
       envPort: 5173,
       hostUrl: 'http://127.0.0.1:4173',
@@ -200,6 +308,24 @@ describe('SysboxSessionEnv container start', () => {
     const run = runCalls.find(isRunArgv)!.join(' ');
     expect(run).toContain('-p 127.0.0.1:4100:3000');
     expect(run).toContain('-p 127.0.0.1:4173:5173');
+  });
+
+  it('passes the worktree owner so the container can match its uid', async () => {
+    // Without these the bind mount is read-only to the session user and git
+    // refuses the checkout as "dubious ownership" — the session looks up but
+    // cannot edit, build, or commit anything.
+    const { runCalls } = await startedEnv({
+      statWorkspaceOwner: async () => ({ uid: 1000, gid: 1000 }),
+    });
+    const run = runCalls.find(isRunArgv)!.join(' ');
+    expect(run).toContain('-e AGENT_HUB_WORKSPACE_UID=1000');
+    expect(run).toContain('-e AGENT_HUB_WORKSPACE_GID=1000');
+  });
+
+  it('starts without owner env when the worktree owner cannot be read', async () => {
+    const { runCalls } = await startedEnv({ statWorkspaceOwner: async () => null });
+    const run = runCalls.find(isRunArgv)!.join(' ');
+    expect(run).not.toContain('AGENT_HUB_WORKSPACE_UID');
   });
 
   it('rejects mapPort for a new port once the container is running', async () => {
@@ -331,6 +457,9 @@ describe('SysboxSessionEnv.openPty', () => {
     const env = new SysboxSessionEnv({
       sessionId: 'sess-1',
       worktreePath: '/wt/session-1',
+      // Pin published-ports: Linux defaults to container-ip and would skip the
+      // ensureStarted path this test covers.
+      portRouting: 'published-ports',
       spawn: () => new FakeChild(1),
       runDocker: async (argv) => {
         fixture.runCalls.push(argv);
@@ -370,9 +499,11 @@ describe('SysboxSessionEnv.dispose', () => {
     const released: number[] = [];
     const fixture = await startedEnv({
       allocateHostPort: (internal) => internal + 1000,
-      releaseHostPort: (m) => released.push(m.hostPort),
+      releaseHostPort: (hostPort) => released.push(hostPort),
     });
     const { env, runCalls, clock } = fixture;
+    // Published ports are released once docker run claims them (start), not at dispose.
+    expect(released).toEqual([6173]);
     env.spawn('npm run dev');
 
     const disposed = env.dispose({ graceMs: 5000 });
@@ -389,7 +520,6 @@ describe('SysboxSessionEnv.dispose', () => {
     expect(volRm).toEqual(['docker', 'volume', 'rm', '-f', 'agenthub-session-sess-1-graph']);
     // rm happens after the grace race, volume rm after container rm.
     expect(runCalls.indexOf(rm)).toBeLessThan(runCalls.indexOf(volRm));
-    expect(released).toEqual([6173]);
     expect(env.disposed).toBe(true);
   });
 
@@ -410,5 +540,135 @@ describe('SysboxSessionEnv.dispose', () => {
     await fixture.env.dispose({ graceMs: 1 });
     expect(fixture.env.disposed).toBe(true);
     expect(warnings.some((w) => /removal failed/.test(w))).toBe(true);
+  });
+});
+
+// ── Container-IP routing ──────────────────────────────────────────
+
+const isInspectArgv = (argv: string[]) => argv[1] === 'inspect';
+
+/** Fixture whose docker fake answers `inspect` with a bridge address. */
+function containerIpEnv(overrides: Partial<SysboxSessionEnvDeps> = {}, ip = '172.17.0.5') {
+  return makeEnv(
+    { portRouting: 'container-ip', isolation: 'privileged', publishPorts: [], ...overrides },
+    (argv) => (isInspectArgv(argv) ? { ok: true, stdout: `${ip} `, stderr: '' } : undefined),
+  );
+}
+
+describe('SysboxSessionEnv — container-IP routing', () => {
+  it('publishes no ports and reports the container kind', async () => {
+    const { env, runCalls } = containerIpEnv();
+    await env.mountWorktree();
+
+    expect(env.kind).toBe('container');
+    const run = runCalls.find(isRunArgv)!;
+    expect(run).not.toContain('-p');
+    expect(run).toContain('--privileged');
+  });
+
+  it('maps a port that was never declared, after the container is running', async () => {
+    // The defect this removes: under published-ports routing, a port not
+    // named before `docker run` can never be reached, because publishes are
+    // fixed at container start. A session that adds a service mid-flight had
+    // to restart its whole environment.
+    const { env } = containerIpEnv();
+    await env.mountWorktree();
+
+    const mapping = await env.mapPort(8080);
+    expect(mapping).toEqual({
+      internalPort: 8080,
+      host: '172.17.0.5',
+      hostPort: 8080,
+      envPort: 8080,
+      hostUrl: 'http://172.17.0.5:8080',
+    });
+  });
+
+  it('dials the container address rather than loopback', async () => {
+    const { env } = containerIpEnv();
+    await env.mountWorktree();
+
+    await expect(env.resolveDialTarget(5173)).resolves.toEqual({
+      host: '172.17.0.5',
+      port: 5173,
+      url: 'http://172.17.0.5:5173',
+    });
+  });
+
+  it('consumes no host ports even when an allocator is supplied', async () => {
+    // Nothing is published, so the shared 4100–4999 pool must stay untouched
+    // — that pool's exhaustion and cross-session collisions are the reason
+    // this routing exists.
+    let allocations = 0;
+    const { env } = containerIpEnv({
+      allocateHostPort: (p) => {
+        allocations++;
+        return p + 1000;
+      },
+    });
+    await env.mountWorktree();
+    await env.mapPortsOut([5173, 8080, 5432]);
+
+    expect(allocations).toBe(0);
+    expect(env.listPortMappings().map((m) => m.hostUrl)).toEqual([
+      'http://172.17.0.5:5173',
+      'http://172.17.0.5:8080',
+      'http://172.17.0.5:5432',
+    ]);
+  });
+
+  it('fails the start when the container has no reachable address', async () => {
+    // Better to fail loudly here than to hand back an env whose every
+    // preview connection hangs against an empty host.
+    const { env, runCalls } = makeEnv(
+      { portRouting: 'container-ip', isolation: 'privileged', publishPorts: [] },
+      (argv) => (isInspectArgv(argv) ? { ok: true, stdout: '   ', stderr: '' } : undefined),
+    );
+
+    await expect(env.mountWorktree()).rejects.toThrow(/could not resolve a container ip/i);
+    // The unusable container must not be left behind to collide with a retry.
+    expect(runCalls.some((a) => a[1] === 'rm')).toBe(true);
+  });
+});
+
+describe('SysboxSessionEnv hasDetachedWorkload', () => {
+  const idleProbeStdout = ['5', '1 0 sleep', '5 0 sh', '7 5 ps'].join('\n');
+
+  it('queries container-ns PIDs via docker exec and excludes the probe itself', async () => {
+    const { env, runCalls } = await startedEnv({}, (argv) => {
+      if (argv[1] === 'exec' && argv.includes('sh') && argv.some((a) => a.includes('ps -eo'))) {
+        return { ok: true, stdout: idleProbeStdout, stderr: '' };
+      }
+      return undefined;
+    });
+    await expect(env.hasDetachedWorkload()).resolves.toBe(false);
+    const probe = runCalls.find((a) => a[1] === 'exec' && a.includes('sh'));
+    expect(probe?.slice(0, 4)).toEqual(['docker', 'exec', expect.any(String), 'sh']);
+    expect(probe?.at(-1)).toMatch(/printf.*\$\$.*ps -eo pid=,ppid=,comm=/);
+    expect(runCalls.some((a) => a[1] === 'top')).toBe(false);
+  });
+
+  it('treats non-init sleep and other user processes as busy', async () => {
+    const { env } = await startedEnv({}, (argv) => {
+      if (argv[1] === 'exec' && argv.includes('sh') && argv.some((a) => a.includes('ps -eo'))) {
+        return {
+          ok: true,
+          stdout: ['5', '1 0 sleep', '5 0 sh', '7 5 ps', '42 1 sleep', '9 1 node'].join('\n'),
+          stderr: '',
+        };
+      }
+      return undefined;
+    });
+    await expect(env.hasDetachedWorkload()).resolves.toBe(true);
+  });
+
+  it('fails closed when the namespace probe fails', async () => {
+    const { env } = await startedEnv({}, (argv) => {
+      if (argv[1] === 'exec' && argv.includes('sh') && argv.some((a) => a.includes('ps -eo'))) {
+        return { ok: false, stdout: '', stderr: 'no ps' };
+      }
+      return undefined;
+    });
+    await expect(env.hasDetachedWorkload()).resolves.toBe(true);
   });
 });

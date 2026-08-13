@@ -80,12 +80,19 @@ runtime being registered with the Docker daemon. It logs one line:
 Selection is controlled by `sessionEnvAdapter` in config.json or the
 `AGENT_HUB_SESSION_ENV_ADAPTER` env var:
 
-- `auto` (default) — sysbox when the probe passes, else host. A Linux host
-  degrading to the host adapter logs a **warning** (the server is running
-  without the intended isolation boundary).
+- `auto` (default) — sysbox when the probe passes, else host. MicroVM
+  (`firecracker`) and privileged DinD (`container`) are **never** picked by
+  `auto`. A Linux host degrading to the host adapter logs a **warning** (the
+  server is running without the intended isolation boundary).
 - `host` — force the host adapter (local dev, or debugging sysbox issues).
-- `sysbox` — force sysbox; if the probe fails, the Hub still falls back to
-  host with a loud warning rather than booting a runtime that cannot spawn.
+- `sysbox` — force sysbox; if the probe fails, the Hub **fails closed**
+  (sessions error until sysbox is fixed or the mode is changed to `auto`).
+- `container` — force privileged DinD; degrades to host with a warning when
+  Docker is unavailable.
+- `firecracker` — force microVM isolation (experimental; not auto-selected).
+  Requires `/dev/kvm` and staged guest artifacts; fails closed when the probe
+  fails. The VMM runs under the jailer by default. Agent CLI turns on the Hub
+  host are refused while this mode is active (env-owned guest worktree).
 
 Unknown values fall back to `auto` — a typo never forces a backend.
 

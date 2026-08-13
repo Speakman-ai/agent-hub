@@ -22,7 +22,10 @@ import { resolveShouldAutoMerge } from './auto-merge.js';
 import { mergeOrEnableGithubAutoMerge } from './github-auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
-import { resolveDefaultBranch } from './git-default-branch.js';
+import { resolveDefaultBranch, resolveDefaultBranchIn } from './git-default-branch.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
+import { sessionWorktreeIoFor } from './session-worktree-io.js';
+import { acquireFinalizeSource } from './finalize/session-source.js';
 import {
   applyGithubSpawnCredentials,
   resolveOAuthAppCredentials,
@@ -346,14 +349,13 @@ export const MAX_GIT_COMMIT_MESSAGE_CHARS = 27_000;
  *      pushed the same branch in between.
  *   2. Rebase rewrote history but `expectedRemoteSha` is null — either the
  *      branch is brand-new on origin OR the `ls-remote` lookup itself
- *      failed (network/auth). In both cases we fall back to bare
- *      `--force-with-lease`, which git treats as "expect the locally
- *      cached remote tip". For a brand-new branch that cache is empty, so
- *      the lease passes; for an `ls-remote` failure we accept the legacy
- *      stale-cache race instead of aborting the push — the rebase already
- *      validated the local tip is on top of origin/<base>, so the worst
- *      case is the original `(stale info)` rejection, which surfaces
- *      loudly and recovers on the next session.
+ *      failed (network/auth). Use `--force-with-lease=<branch>:` (empty
+ *      expect = remote must not have the ref). A bare `--force-with-lease`
+ *      is unsafe: the local `refs/remotes/origin/<branch>` cache can be a
+ *      phantom tip (e.g. Finalize staging seeded from `main`) even when
+ *      origin has never had the branch, which rejects with `(stale info)`.
+ *      If `ls-remote` failed but the remote ref actually exists, empty
+ *      expect refuses closed — better than racing a wrong cache.
  *   3. Rebase did NOT rewrite history: plain push, no lease — server-side
  *      fast-forward enforcement catches concurrent pushes.
  *
@@ -377,7 +379,7 @@ export function buildPushArgs(opts: {
   }
   const lease = expectedRemoteSha
     ? `--force-with-lease=${branch}:${expectedRemoteSha}`
-    : '--force-with-lease';
+    : `--force-with-lease=${branch}:`;
   return ['push', lease, '-u', 'origin', branch];
 }
 
@@ -480,9 +482,82 @@ export function isEligibleCheckFailureForAutoHeal(err: Error): boolean {
   return true;
 }
 
+/**
+ * Where a project's configured check / heal commands run.
+ *
+ * Pre-commit commands are formatters and linters: they need the project's
+ * toolchain and they rewrite the tree they are checking. Both of those live
+ * wherever the session's code lives, which under a microVM backend is inside
+ * the guest and not on this filesystem. Naming the target explicitly keeps the
+ * decision at the call site instead of burying a `cwd` that only happens to be
+ * right for host-shared sessions.
+ */
+export interface CheckCommandTarget {
+  /** Run one configured command, rejecting on non-zero exit. */
+  runCommand(
+    cmd: string,
+    logKind: RunShellCommandLogKind,
+    onChunk?: (chunk: string) => void,
+  ): Promise<void>;
+  /** `git add -A`, to pick up whatever a heal command just rewrote. */
+  stageAll(): Promise<void>;
+}
+
+export function hostCheckCommandTarget(cwd: string): CheckCommandTarget {
+  return {
+    runCommand: (cmd, logKind, onChunk) =>
+      runShellCommandStreaming(cmd, cwd, PRECOMMIT_CMD_TIMEOUT_MS, onChunk, { logKind }),
+    stageAll: async () => {
+      await execAsync('git add -A', { cwd });
+    },
+  };
+}
+
+/**
+ * Run the commands inside the session's own environment.
+ *
+ * Output arrives per-command rather than streamed: the worktree channel is
+ * request/response, so there is no incremental stdout to forward. The command
+ * still reaches the log, just all at once when it finishes.
+ */
+export function truncateStreamOutput(output: string, maxBytes: number): string {
+  const buf = Buffer.from(output, 'utf8');
+  if (buf.length <= maxBytes) return output;
+  return buf.subarray(0, maxBytes).toString('utf8');
+}
+
+export function guestCheckCommandTarget(io: SessionWorktreeIo): CheckCommandTarget {
+  return {
+    runCommand: async (cmd, logKind, onChunk) => {
+      const result = await io.exec(cmd, { timeoutMs: PRECOMMIT_CMD_TIMEOUT_MS });
+      const output = truncateStreamOutput(
+        `${result.stdout}${result.stderr}`,
+        STREAM_OUTPUT_MAX_BYTES,
+      );
+      if (output) onChunk?.(output);
+      if (result.exitCode === 0) return;
+      const code = result.exitCode;
+      // `failed (null)` is load-bearing, not cosmetic: it is what
+      // `isEligibleCheckFailureForAutoHeal` matches to rule a signal kill out
+      // of auto-heal.
+      const msg = `${shellCommandErrorPrefix(logKind)} failed (${code}): ${cmd}`.substring(0, 5000);
+      // Only a non-zero check exit is auto-heal eligible: a heal command that
+      // fails must not license another round, and a signal kill (null code) is
+      // a timeout or a reap, not a fixable lint. Same split as the host runner.
+      if (logKind === 'pre_commit' && typeof code === 'number') {
+        throw new CheckCommandFailedError(msg, { exitCode: code, logKind });
+      }
+      throw new Error(msg);
+    },
+    stageAll: async () => {
+      await io.git(['add', '-A']);
+    },
+  };
+}
+
 async function runProjectPreCommitCommands(
   project: Project,
-  cwd: string,
+  target: CheckCommandTarget,
   onChunk?: (chunk: string) => void,
 ): Promise<void> {
   const cmds = getProjectPreCommitCommands(project);
@@ -493,8 +568,7 @@ async function runProjectPreCommitCommands(
     checkCommands: cmds,
     healCommands: heal,
     maxRounds,
-    cwd,
-    timeoutMs: PRECOMMIT_CMD_TIMEOUT_MS,
+    target,
     onChunk,
     logKind: 'pre_commit',
     stageAfterHeal: heal.length > 0,
@@ -523,8 +597,7 @@ async function runConfiguredShellChecksWithHeal(opts: {
   checkCommands: string[];
   healCommands: string[];
   maxRounds: number;
-  cwd: string;
-  timeoutMs: number;
+  target: CheckCommandTarget;
   onChunk?: (chunk: string) => void;
   logKind: RunShellCommandLogKind;
   stageAfterHeal: boolean;
@@ -535,8 +608,7 @@ async function runConfiguredShellChecksWithHeal(opts: {
     checkCommands,
     healCommands,
     maxRounds,
-    cwd,
-    timeoutMs,
+    target,
     onChunk,
     logKind,
     stageAfterHeal,
@@ -555,7 +627,7 @@ async function runConfiguredShellChecksWithHeal(opts: {
       for (const cmd of checkCommands) {
         console.log(`${logLabel} (${projectId}) round ${round}/${cappedRounds}: ${cmd}`);
         onChunk?.(`\n$ ${cmd}\n`);
-        await runShellCommandStreaming(cmd, cwd, timeoutMs, onChunk, { logKind });
+        await target.runCommand(cmd, logKind, onChunk);
       }
       return;
     } catch (e) {
@@ -585,13 +657,13 @@ async function runConfiguredShellChecksWithHeal(opts: {
       for (const h of healCommands) {
         console.log(`${logLabel} heal (${projectId}): ${h}`);
         onChunk?.(`\n$ ${h}\n`);
-        await runShellCommandStreaming(h, cwd, timeoutMs, onChunk, { logKind: 'check_heal' });
+        await target.runCommand(h, 'check_heal', onChunk);
       }
 
       if (stageAfterHeal) {
         try {
           onChunk?.(`\n$ git add -A\n`);
-          await execAsync('git add -A', { cwd });
+          await target.stageAll();
         } catch (addErr: unknown) {
           const msg = addErr instanceof Error ? addErr.message : String(addErr);
           console.warn(`${logLabel} git add -A after heal failed (non-fatal): ${msg}`);
@@ -1321,55 +1393,49 @@ export interface WorktreeChanges {
   headSha: string;
 }
 
-export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges> {
-  const { stdout: status } = await execAsync('git status --porcelain', { cwd });
-  const hasUncommitted = !!status.trim();
+/**
+ * Detect uncommitted / unpushed work in a session worktree.
+ *
+ * Takes a {@link SessionWorktreeIo} rather than a path because under an
+ * `env-owned` env the worktree lives inside the session's microVM: the host
+ * directory is the boot-time seed, so host-side git would report a session
+ * that has been committing all day as clean. Callers holding only a host path
+ * (a project checkout, say) can wrap it in `new HostWorktreeIo(cwd)`.
+ */
+export async function checkWorktreeChanges(io: SessionWorktreeIo): Promise<WorktreeChanges> {
+  const status = await io.git(['status', '--porcelain'], { throwOnNonZero: true });
+  const hasUncommitted = !!status.stdout.trim();
 
   let hasUnpushed = false;
-  let hasUpstream = false;
-  try {
-    const { stdout: logOut } = await execAsync('git log @{upstream}..HEAD --oneline', {
-      cwd,
-    });
-    hasUpstream = true;
-    hasUnpushed = !!logOut.trim();
-  } catch {
-    // No upstream configured for this branch — fall through to default-branch
+  const upstreamLog = await io.git(['log', '@{upstream}..HEAD', '--oneline']);
+  const hasUpstream = upstreamLog.exitCode === 0;
+  if (hasUpstream) {
+    hasUnpushed = !!upstreamLog.stdout.trim();
+  } else {
+    // No upstream configured for this branch — fall back to default-branch
     // comparison so a fresh, never-pushed branch with local commits still
     // surfaces the "Create PR" banner.
-  }
-
-  if (!hasUpstream) {
-    const defaultBranch = await resolveDefaultBranch(cwd);
+    const defaultBranch = await resolveDefaultBranchIn(io);
     if (defaultBranch) {
       // Try both the local ref and the remote-tracking ref. Prefer
       // `origin/<default>` when available because the local default branch
       // may be stale or absent in a linked worktree.
       for (const ref of [`origin/${defaultBranch}`, defaultBranch]) {
-        try {
-          const { stdout: logOut2 } = await execAsync(`git log ${ref}..HEAD --oneline`, {
-            cwd,
-          });
-          hasUnpushed = !!logOut2.trim();
-          break;
-        } catch {
-          // ref not available — try next candidate
-        }
+        const log = await io.git(['log', `${ref}..HEAD`, '--oneline']);
+        if (log.exitCode !== 0) continue; // ref not available — try next candidate
+        hasUnpushed = !!log.stdout.trim();
+        break;
       }
     }
   }
 
-  const { stdout: branchOut } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd });
+  const branchOut = await io.git(['rev-parse', '--abbrev-ref', 'HEAD'], { throwOnNonZero: true });
 
-  let headSha = '';
-  try {
-    const { stdout: headOut } = await execAsync('git rev-parse HEAD', { cwd });
-    headSha = headOut.trim();
-  } catch {
-    // Brand-new branch with no commits yet — leave headSha empty.
-  }
+  // Brand-new branch with no commits yet — leave headSha empty.
+  const headOut = await io.git(['rev-parse', 'HEAD']);
+  const headSha = headOut.exitCode === 0 ? headOut.stdout.trim() : '';
 
-  return { hasUncommitted, hasUnpushed, branch: branchOut.trim(), headSha };
+  return { hasUncommitted, hasUnpushed, branch: branchOut.stdout.trim(), headSha };
 }
 
 // ─── Core commit + PR + review pipeline ─────────────────────────────
@@ -1547,6 +1613,78 @@ function sessionInstallCommand(project: Project): string | null {
   return typeof install === 'string' ? install : null;
 }
 
+/**
+ * Commit the session's dirty tree where that tree actually is.
+ *
+ * Only reached for `env-owned` sessions. Everything downstream of the commit
+ * — rebase, push, PR — works on committed history and `origin`, so it can run
+ * against a host checkout; this step cannot, because the edits and the
+ * project's toolchain exist only inside the guest.
+ *
+ * Dependency install is skipped rather than ported: the host version symlinks
+ * `node_modules` from the project checkout into the session clone, which is a
+ * host-filesystem trick with no meaning across the VM boundary. A microVM
+ * session provisions its own dependencies when the env starts.
+ */
+async function commitDirtyTreeInSessionEnv(args: {
+  io: SessionWorktreeIo;
+  project: Project;
+  message: string;
+  prLog: (text: string) => void;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { io, project, message, prLog } = args;
+
+  const identity = await io.git(['config', 'user.name']);
+  if (identity.exitCode !== 0) {
+    await io.git(['config', 'user.name', 'Agent Hub']);
+    await io.git(['config', 'user.email', 'agent@agent-hub.com']);
+  }
+
+  prLog('$ git add -A\n');
+  const staged = await io.git(['add', '-A']);
+  if (staged.exitCode !== 0) {
+    return { ok: false, error: staged.stderr.trim() || 'git add -A failed in the session env' };
+  }
+
+  try {
+    await runProjectPreCommitCommands(project, guestCheckCommandTarget(io), prLog);
+  } catch (preErr: unknown) {
+    return { ok: false, error: preErr instanceof Error ? preErr.message : String(preErr) };
+  }
+
+  // Pre-commit commands may have rewritten the tree; re-stage as the host path does.
+  prLog('$ git add -A\n');
+  const restaged = await io.git(['add', '-A']);
+  if (restaged.exitCode !== 0) {
+    return { ok: false, error: restaged.stderr.trim() || 'git add -A failed in the session env' };
+  }
+
+  prLog('$ git commit\n');
+  const committed = await io.git(['commit', '-m', message]);
+  if (committed.stdout) prLog(committed.stdout);
+  if (committed.exitCode !== 0) {
+    return {
+      ok: false,
+      error: committed.stderr.trim() || committed.stdout.trim() || 'git commit failed',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Publish a session's work, from wherever that work lives.
+ *
+ * A `host-shared` session goes straight through — the directory it was handed
+ * is the one holding the code. An `env-owned` (microVM) session does not: the
+ * path on this filesystem is the seed the guest was built from, frozen at boot.
+ * Publishing from it produced the quietest possible failure — a clean tree, so
+ * "nothing to publish", on a session that had been committing all day.
+ *
+ * So for those we commit inside the guest first, then stage the resulting
+ * history on the host and let the rest of the pipeline run unchanged against a
+ * real checkout with a real `origin`. Afterwards the session is moved onto
+ * whatever was pushed, so the guest and the remote agree.
+ */
 async function commitPushAndCreatePR(
   sessionId: string,
   agentId: string,
@@ -1555,6 +1693,90 @@ async function commitPushAndCreatePR(
   effectiveCwd: string,
   card: KanbanCardRow | undefined,
   options?: { autoMergeOverride?: boolean },
+): Promise<CommitPushPrResult> {
+  const io = await sessionWorktreeIoFor(sessionId, effectiveCwd);
+  if (io.sharing === 'host-shared') {
+    return publishFromCheckout(sessionId, agentId, project, agent, effectiveCwd, card, options);
+  }
+
+  const d = getDeps();
+  const prLog = (text: string) => d.broadcast({ type: 'create_pr_log', sessionId, text });
+
+  const changes = await checkWorktreeChanges(io);
+  if (changes.hasUncommitted) {
+    const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
+    const title = (card?.title ?? session?.name ?? '').trim() || 'Agent task completion';
+    const body = [
+      card?.description ? `\n${card.description}` : null,
+      `\nAgent: ${agent.name}`,
+      card?.priority ? `Priority: ${card.priority}` : null,
+      `\nCo-Authored-By: ${agent.name} <noreply@anthropic.com>`,
+    ]
+      .filter((line): line is string => line != null)
+      .join('\n');
+
+    const committed = await commitDirtyTreeInSessionEnv({
+      io,
+      project,
+      message: truncateForGitCommitMessage(`${title}\n${body}`),
+      prLog,
+    });
+    if (!committed.ok) {
+      console.error(`[auto-commit] Commit in session env failed: ${committed.error}`);
+      return {
+        ok: false,
+        error: committed.error,
+        code: 'commit_failed',
+        branch: changes.branch,
+      };
+    }
+  }
+
+  const source = await acquireFinalizeSource({
+    runId: `autogit-${sessionId}-${Date.now()}`,
+    sessionId,
+    worktreePath: effectiveCwd,
+    branch: changes.branch,
+    io,
+  });
+  try {
+    const result = await publishFromCheckout(
+      sessionId,
+      agentId,
+      project,
+      agent,
+      source.path,
+      card,
+      options,
+      // Judge the checkout we are publishing from. Resolving by session id
+      // would answer from the guest, which is the same history but not the
+      // thing whose push state we are about to act on.
+      new HostWorktreeIo(source.path),
+    );
+    if (result.ok) {
+      const synced = await source.syncBack(changes.branch);
+      if (!synced.synced) {
+        console.warn(
+          `[auto-commit] Session ${sessionId} left on its own commits after push: ${synced.reason}`,
+        );
+      }
+    }
+    return result;
+  } finally {
+    await source.release();
+  }
+}
+
+async function publishFromCheckout(
+  sessionId: string,
+  agentId: string,
+  project: Project,
+  agent: Agent,
+  effectiveCwd: string,
+  card: KanbanCardRow | undefined,
+  options?: { autoMergeOverride?: boolean },
+  /** Overrides how change state is read; set when publishing a staged checkout. */
+  changesIo?: SessionWorktreeIo,
 ): Promise<CommitPushPrResult> {
   const d = getDeps();
 
@@ -1648,7 +1870,9 @@ async function commitPushAndCreatePR(
     );
   }
 
-  const changes = await checkWorktreeChanges(effectiveCwd);
+  const changes = await checkWorktreeChanges(
+    changesIo ?? (await sessionWorktreeIoFor(sessionId, effectiveCwd)),
+  );
 
   if (!changes.hasUncommitted && !changes.hasUnpushed) {
     console.log(
@@ -1781,7 +2005,7 @@ async function commitPushAndCreatePR(
       prLog('$ git add -A\n');
       await execAsync('git add -A', { cwd: effectiveCwd });
       try {
-        await runProjectPreCommitCommands(project, effectiveCwd, prLog);
+        await runProjectPreCommitCommands(project, hostCheckCommandTarget(effectiveCwd), prLog);
       } catch (preErr: unknown) {
         const msg = preErr instanceof Error ? preErr.message : String(preErr);
         console.error(`[auto-commit] Pre-commit failed: ${msg}`);
@@ -2527,7 +2751,9 @@ export async function autoCommitAndPR(
         );
         return;
       }
-      const changes = await checkWorktreeChanges(effectiveCwd);
+      const changes = await checkWorktreeChanges(
+        await sessionWorktreeIoFor(sessionId, effectiveCwd),
+      );
       if (!changes.hasUncommitted && !changes.hasUnpushed) {
         return;
       }

@@ -38,17 +38,27 @@ import {
   type DevServerPortMapEntry,
 } from '../dev-server-config.js';
 import { applyPreviewDevInstallDefaults } from './preview-dev-install-env.js';
-import type { SessionEnv, SessionEnvExit, SessionEnvProcess } from '../session-env/session-env.js';
+import type {
+  SessionEnv,
+  SessionEnvExit,
+  SessionEnvPortMapping,
+  SessionEnvProcess,
+} from '../session-env/session-env.js';
+import type { SessionEnvPortRouting } from '../session-env/container-routing.js';
+import { isLoopbackHost } from '../loopback-host.js';
 import { createSessionEnv } from '../session-env/select-session-env.js';
 import { getSessionEnvSelection } from '../session-env/sysbox-capability.js';
 import {
   DEFAULT_PREVIEW_PORT_RANGE,
   DEV_SERVER_RUNTIME_KIND,
   ensureDevServerPreviewColumns,
+  ensureHostScopedPreviewPortUniqueness,
   WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
+  type PreviewDialScope,
 } from './preview-schema.js';
 import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-port-reclaim.js';
+import { isHostPortFree, type IsPortFreeFn } from './host-port-probe.js';
 import type { Clock, HealthFetchFn, PortRange } from './preview-runtime-primitives.js';
 import { parseDbTime, systemClock } from './preview-runtime-primitives.js';
 import { appendPreviewLogTailLine, DEFAULT_PREVIEW_LOG_TAIL_LINES } from './preview-log-tail.js';
@@ -137,6 +147,18 @@ export type CreateDevServerEnvFn = (opts: {
   allocateHostPort: (internalPort: number) => number;
 }) => SessionEnv;
 
+/**
+ * Resolve the environment the session already owns, if any.
+ *
+ * A containerized env *is* the session's isolation boundary, so the preview
+ * must run in the same one as the terminal — otherwise "start the dev server,
+ * then curl it from the terminal" fails, and the agent's tests run against a
+ * different Postgres than the preview serves. Returning null means the
+ * runtime creates its own env, which is correct for the host adapter where
+ * there is no boundary to share in the first place.
+ */
+export type ResolveSharedSessionEnvFn = (sessionId: string) => Promise<SessionEnv | null>;
+
 export interface DevServerRuntimeConfig {
   /** Host-port pool for primary ports. Default 4100–4999. */
   portRange?: PortRange;
@@ -177,6 +199,11 @@ export interface DevServerRuntimeDeps {
   /** {ok,status} health probe; throws are treated as "not up yet". */
   fetch: HealthFetchFn;
   createEnv?: CreateDevServerEnvFn;
+  /**
+   * Session-owned env lookup. When it yields an env, the preview runs inside
+   * the session's existing boundary instead of starting a second one.
+   */
+  resolveSharedEnv?: ResolveSharedSessionEnvFn;
   clock?: Clock;
   config?: DevServerRuntimeConfig;
   /**
@@ -192,10 +219,23 @@ export interface DevServerRuntimeDeps {
   /** Project resolver for `reap`'s TTL lookup + orphan detection. */
   getProject?: (projectId: string) => Project | null;
   /** Signal a pid (negative = process group). Used only for rows that
-   *  survived a Hub restart, where no live SessionEnv exists. */
-  kill?: (pid: number, signal: NodeJS.Signals) => void;
+   *  survived a Hub restart, where no live SessionEnv exists. Signal `0`
+   *  is a liveness check: it throws ESRCH when the process is gone. */
+  kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
+  /**
+   * Host-level port availability check, consulted before a port is
+   * handed out. Defaults to a real socket bind (`isHostPortFree`);
+   * tests inject a stub to stay hermetic.
+   */
+  isPortFree?: IsPortFreeFn;
   notifyLog?: DevServerNotifyLogFn;
   notifyStatus?: DevServerNotifyStatusFn;
+  /**
+   * Bump the session-owned env's activity clock when preview traffic keeps the
+   * group alive. Guest daemons are invisible to `liveProcessCount`, so without
+   * this the idle reaper can tear down a VM that is still serving a preview.
+   */
+  onSessionActivity?: (sessionId: string) => void;
   logger?: { log: (m: string) => void; warn: (m: string) => void; error: (m: string) => void };
 }
 
@@ -260,11 +300,23 @@ export interface BuildDevServerSpawnEnvResult {
  * validator already rejects user-supplied PORT). `envPort` is the port
  * the process must bind inside its env (host adapter: the allocated
  * host port; sysbox: the internal port).
+ *
+ * `upstreamHost` is the address the Hub's proxy will actually connect over,
+ * published as `AGENT_HUB_PREVIEW_HEALTH_HOST` so a dev server that gates on
+ * the `Host` header allows it. Under container-IP routing this is the session
+ * container's address, which is assigned at create time and therefore cannot be
+ * baked into any config: without it a Vite dev server allowlists only the
+ * static default and answers the proxy with its blocked-host 403 — *after* the
+ * readiness probe passed, because the probe sends `Host: localhost`. The result
+ * is a preview that reports ready and shows an error page, which reads as a bug
+ * in the app. A value pinned in `devServer.env` still wins; that is an operator
+ * deliberately naming the host.
  */
 export function buildDevServerSpawnEnv(opts: {
   config: DevServerConfig;
   projectSecrets: Record<string, string>;
   envPort: number;
+  upstreamHost?: string | null;
 }): BuildDevServerSpawnEnvResult {
   const env: Record<string, string> = { ...opts.config.env };
   const missingSecretKeys: string[] = [];
@@ -280,6 +332,10 @@ export function buildDevServerSpawnEnv(opts: {
   // defaulting NODE_ENV here keeps the Hub's NODE_ENV=production out of the
   // dev server's `npm ci` (which would otherwise omit devDependencies).
   applyPreviewDevInstallDefaults(env, (key) => key in opts.config.env);
+  const upstreamHost = opts.upstreamHost?.trim();
+  if (upstreamHost && !('AGENT_HUB_PREVIEW_HEALTH_HOST' in opts.config.env)) {
+    env.AGENT_HUB_PREVIEW_HEALTH_HOST = upstreamHost;
+  }
   env.PORT = String(opts.envPort);
   return { env, missingSecretKeys };
 }
@@ -294,6 +350,12 @@ interface ActiveDevServer {
   tail: string[];
   primaryHostPort: number;
   primaryUrl: string;
+  /**
+   * False when the env belongs to the session rather than to this preview.
+   * A shared env outlives the dev server — stopping the preview must not
+   * take the terminal's shell and the project's databases down with it.
+   */
+  ownsEnv: boolean;
   /** Set before dispose so the exit handler doesn't mark a stop as a crash. */
   stopping: boolean;
 }
@@ -312,6 +374,7 @@ export class DevServerRuntime {
   private readonly db: Database;
   private readonly fetch: HealthFetchFn;
   private readonly createEnv: CreateDevServerEnvFn;
+  private readonly resolveSharedEnv: ResolveSharedSessionEnvFn | null;
   private readonly clock: Clock;
   private readonly portRange: PortRange;
   private readonly readyTimeoutMs: number;
@@ -330,9 +393,11 @@ export class DevServerRuntime {
   private readonly sessionLockTimeoutMs: number;
   private readonly loadProjectEnv: DevServerRuntimeDeps['loadProjectEnv'];
   private readonly getProject: DevServerRuntimeDeps['getProject'];
-  private readonly killFn: (pid: number, signal: NodeJS.Signals) => void;
+  private readonly killFn: (pid: number, signal: NodeJS.Signals | 0) => void;
+  private readonly isPortFree: IsPortFreeFn;
   private readonly notifyLog: DevServerNotifyLogFn | null;
   private readonly notifyStatus: DevServerNotifyStatusFn | null;
+  private readonly onSessionActivity: ((sessionId: string) => void) | null;
   private readonly logger: NonNullable<DevServerRuntimeDeps['logger']>;
 
   private readonly active = new Map<string, ActiveDevServer>();
@@ -349,6 +414,7 @@ export class DevServerRuntime {
           worktreePath: opts.worktreePath,
           hostDeps: { allocateHostPort: opts.allocateHostPort },
         }));
+    this.resolveSharedEnv = deps.resolveSharedEnv ?? null;
     this.clock = deps.clock ?? systemClock;
     this.portRange = deps.config?.portRange ?? DEFAULT_PREVIEW_PORT_RANGE;
     this.readyTimeoutMs = deps.config?.readyTimeoutMs ?? DEFAULT_DEV_SERVER_READY_TIMEOUT_MS;
@@ -365,8 +431,10 @@ export class DevServerRuntime {
     this.loadProjectEnv = deps.loadProjectEnv;
     this.getProject = deps.getProject;
     this.killFn = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
+    this.isPortFree = deps.isPortFree ?? isHostPortFree;
     this.notifyLog = deps.notifyLog ?? null;
     this.notifyStatus = deps.notifyStatus ?? null;
+    this.onSessionActivity = deps.onSessionActivity ?? null;
     this.logger = deps.logger ?? {
       log: (m) => console.log(m),
       warn: (m) => console.warn(m),
@@ -382,6 +450,7 @@ export class DevServerRuntime {
     this.db.exec(WORKTREE_PREVIEWS_SCHEMA);
     this.db.exec(WORKTREE_PREVIEW_GROUPS_SCHEMA);
     ensureDevServerPreviewColumns(this.db);
+    ensureHostScopedPreviewPortUniqueness(this.db);
   }
 
   // ─── Public API ─────────────────────────────────────────────────────
@@ -451,18 +520,14 @@ export class DevServerRuntime {
     const entry = this.active.get(devServerId);
     if (entry) {
       entry.stopping = true;
-      try {
-        await entry.env.dispose({ graceMs: this.disposeGraceMs });
-      } catch (err) {
-        this.logger.warn(
-          `[dev-server] env dispose failed for ${devServerId}: ${(err as Error).message}`,
-        );
-      }
+      await this.releaseEnv(entry, devServerId);
       this.active.delete(devServerId);
     } else {
       // Restart-orphan: the row survived a Hub restart, so there is no
-      // live SessionEnv. Best-effort SIGTERM to the recorded pid's
-      // process group so the tree doesn't outlive the row.
+      // live SessionEnv to dispose. Signal the recorded pid directly,
+      // escalating to SIGKILL, because the row (and its port) is about
+      // to be deleted — a survivor here becomes the orphan that hijacks
+      // the next session allocated this port.
       const pidRow = this.db
         .prepare(
           `SELECT pid FROM worktree_preview_processes
@@ -470,19 +535,64 @@ export class DevServerRuntime {
         )
         .get(devServerId) as { pid: number } | undefined;
       if (pidRow?.pid) {
-        try {
-          this.killFn(-pidRow.pid, 'SIGTERM');
-        } catch {
-          try {
-            this.killFn(pidRow.pid, 'SIGTERM');
-          } catch {
-            // Already gone.
-          }
-        }
+        await this.terminateOrphanPid(pidRow.pid, devServerId);
       }
     }
     // FK ON DELETE CASCADE removes the process rows + frees the ports.
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(devServerId);
+  }
+
+  /**
+   * SIGTERM → grace → SIGKILL a pid that has no live `SessionEnv`.
+   *
+   * Signals the process group first (the spawn is a group leader, so
+   * this reaches `npm` → `vite` grandchildren) and falls back to the
+   * bare pid. Returns once the process is gone or the grace window has
+   * elapsed and SIGKILL has been sent.
+   */
+  /**
+   * SIGKILL a pid whose port reservation is being reclaimed. Routed
+   * through the injected `kill` so tests never signal a real process.
+   */
+  private readonly killReclaimedPid = (pid: number): void => {
+    for (const target of [-pid, pid]) {
+      try {
+        this.killFn(target, 'SIGKILL');
+        return;
+      } catch {
+        // ESRCH: already gone, or not a group leader — try the bare pid.
+      }
+    }
+  };
+
+  private async terminateOrphanPid(pid: number, devServerId: string): Promise<void> {
+    const signal = (sig: NodeJS.Signals | 0): boolean => {
+      for (const target of [-pid, pid]) {
+        try {
+          this.killFn(target, sig);
+          return true;
+        } catch {
+          // ESRCH on the group form is expected when the child was not a
+          // group leader; retry the bare pid before giving up.
+        }
+      }
+      return false;
+    };
+
+    if (!signal('SIGTERM')) return; // Already gone.
+
+    const deadline = this.clock.nowMs() + this.disposeGraceMs;
+    const pollMs = Math.max(1, Math.min(100, Math.floor(this.disposeGraceMs / 5)));
+    while (this.clock.nowMs() < deadline) {
+      await this.clock.sleep(pollMs);
+      if (!signal(0)) return; // Exited within the grace window.
+    }
+
+    if (signal('SIGKILL')) {
+      this.logger.warn(
+        `[dev-server] pid ${pid} for ${devServerId} ignored SIGTERM; sent SIGKILL before releasing its port`,
+      );
+    }
   }
 
   /** Stop every dev-server group owned by `sessionId`. Returns the count. */
@@ -538,14 +648,17 @@ export class DevServerRuntime {
   }
 
   /**
-   * Base URL the **Hub process itself** can use to reach the dev server's
-   * host port. Mirrors the health-check target (honors
-   * `AGENT_HUB_PREVIEW_HEALTH_HOST` when the Hub runs inside Docker)
+   * Base URL the **Hub process itself** can use to reach a dev server port,
    * rather than the client-facing proxy URL, which the server-side drive
    * browser cannot resolve.
+   *
+   * Mirrors the health-check target exactly, including the session's own dial
+   * host: pass `sessionId` whenever it is known, or a container-routed session
+   * resolves to the Hub-wide default and the drive browser screenshots
+   * whatever else happens to answer there.
    */
-  serverReachableUrlForPort(port: number): string {
-    return this.healthUrlBase(port);
+  serverReachableUrlForPort(port: number, sessionId?: string): string {
+    return this.probeUrlBase(sessionId ? this.getSessionUpstreamHost(sessionId) : null, port);
   }
 
   /** Alias matching the preview-react runtime surface. */
@@ -567,6 +680,43 @@ export class DevServerRuntime {
     if (internalPort === undefined) return row.port > 0 ? row.port : null;
     const match = this.getPorts(row.id).find((p) => p.internalPort === internalPort);
     return match && match.hostPort > 0 ? match.hostPort : null;
+  }
+
+  /**
+   * Host the preview proxy should dial for `sessionId`, or null to use the
+   * Hub-wide default.
+   *
+   * Loopback is only correct when the env publishes its ports onto the host.
+   * A container env under container-IP routing publishes nothing and answers
+   * on its own bridge address, so dialing loopback would reach either
+   * nothing or — worse — an unrelated process that happens to hold the port.
+   */
+  getSessionUpstreamHost(sessionId: string): string | null {
+    const row = this.getActiveBySessionId(sessionId);
+    if (!row) return null;
+    const env = this.active.get(row.id)?.env;
+    if (!env || env.disposed) return null;
+    // Every mapping in one env shares a dial host, so the first is enough.
+    const host = env.listPortMappings()[0]?.host;
+    if (!host) return null;
+    // A loopback mapping means the env publishes onto the host, and the Hub's
+    // own loopback is not necessarily the right way there: a Hub in a
+    // container must go via the docker-host gateway. Returning null hands
+    // that decision back to the Hub-wide default, which knows.
+    return isLoopbackHost(host) ? null : host;
+  }
+
+  /**
+   * The dial host worth telling the dev server about, or null.
+   *
+   * Same rule as {@link getSessionUpstreamHost}, applied to a mapping in hand
+   * during startup rather than to a row that is not `ready` yet — the allowlist
+   * has to be in the spawn env before the process starts, which is strictly
+   * before the proxy can ask where to dial.
+   */
+  private upstreamHostForDialHost(dialHost: string | null): string | null {
+    if (!dialHost || isLoopbackHost(dialHost)) return null;
+    return dialHost;
   }
 
   /** All port mappings for a group — primary first. */
@@ -623,6 +773,14 @@ export class DevServerRuntime {
           WHERE id = ? AND runtime = ? AND status IN ('starting','ready')`,
       )
       .run(devServerId, DEV_SERVER_RUNTIME_KIND);
+    const sessionId =
+      this.active.get(devServerId)?.sessionId ??
+      (
+        this.db
+          .prepare(`SELECT session_id AS sessionId FROM worktree_preview_groups WHERE id = ?`)
+          .get(devServerId) as { sessionId: string } | undefined
+      )?.sessionId;
+    if (sessionId) this.onSessionActivity?.(sessionId);
   }
 
   /**
@@ -703,8 +861,20 @@ export class DevServerRuntime {
     const cfg = parsed.value;
     const entries = resolveDevServerPortEntries(cfg);
     const names = uniquePortEntryNames(entries);
+    // Everything from here to the first health probe can take minutes (container
+    // create, apt packages, install, first compile) while emitting nothing at
+    // all. Mark the entry so a start that stalls can be told apart from one that
+    // was declined upstream or never arrived.
+    this.logger.log(
+      `[dev-server] starting ${project.id} for session ${sessionId}: ${JSON.stringify(cfg.startCommand)} (ports ${entries.map((e) => e.internalPort).join(', ')})`,
+    );
 
-    const reclaimed = reclaimFailedPortsInRange(this.db, this.portRange.min, this.portRange.max);
+    const reclaimed = reclaimFailedPortsInRange(
+      this.db,
+      this.portRange.min,
+      this.portRange.max,
+      this.killReclaimedPid,
+    );
     if (reclaimed > 0) {
       this.logger.log(`[dev-server] reclaimed ${reclaimed} failed preview port(s)`);
     }
@@ -717,47 +887,61 @@ export class DevServerRuntime {
       )
       .run(groupId, sessionId, project.id, DEV_SERVER_RUNTIME_KIND);
 
-    // Reserve every port row up-front (pool allocation for the primary,
-    // identity for extras). On any failure the group row is rolled back
-    // so the next start gets a clean slate.
-    const reserved: ReservedEntry[] = [];
+    // The env has to be resolved before any port is reserved: whether a
+    // reservation should draw from the host pool at all depends on how the
+    // env is reached (see `reserveRows`).
+    const reservedByInternal = new Map<number, number>();
+    let env: SessionEnv;
+    let ownsEnv = false;
     try {
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i];
-        const primary = entry.primary === true;
-        reserved.push(
-          primary
-            ? this.reservePooledRow(groupId, sessionId, names[i], entry.internalPort)
-            : this.reserveIdentityRow(groupId, sessionId, names[i], entry.internalPort),
-        );
+      // Prefer the session's own environment so the preview, the terminal,
+      // and anything the agent runs share one boundary.
+      const shared = this.resolveSharedEnv ? await this.resolveSharedEnv(sessionId) : null;
+      if (shared) {
+        env = shared;
+      } else {
+        ownsEnv = true;
+        env = this.createEnv({
+          sessionId,
+          worktreePath,
+          // Only ever called under published-ports routing, and only from
+          // `mapPortsOut` below — by which point `reserveRows` has filled the
+          // map. Container-IP routing publishes nothing and never calls this.
+          allocateHostPort: (internalPort) => {
+            const hostPort = reservedByInternal.get(internalPort);
+            if (hostPort === undefined) {
+              throw new Error(`No reserved host port for internal port ${internalPort}`);
+            }
+            return hostPort;
+          },
+        });
       }
     } catch (err) {
+      // Adapter construction can fail (for example, a selected sysbox
+      // backend becoming unavailable after the boot probe). Do not
+      // strand the group row on that failure path.
+      this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
+      throw err;
+    }
+
+    let reserved: ReservedEntry[];
+    try {
+      reserved = await this.reserveRows(groupId, sessionId, entries, names, env.portRouting);
+      for (const r of reserved) reservedByInternal.set(r.internalPort, r.hostPort);
+    } catch (err) {
+      // An env this call created has no other owner yet, so it must not
+      // outlive the failed start.
+      if (ownsEnv) {
+        await env.dispose({ graceMs: this.disposeGraceMs }).catch((disposeErr) => {
+          this.logger.warn(
+            `[dev-server] env dispose after failed reservation threw: ${(disposeErr as Error).message}`,
+          );
+        });
+      }
       this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
       throw err;
     }
     const primaryEntry = reserved.find((r) => r.primary)!;
-    const reservedByInternal = new Map(reserved.map((r) => [r.internalPort, r.hostPort]));
-
-    let env: SessionEnv;
-    try {
-      env = this.createEnv({
-        sessionId,
-        worktreePath,
-        allocateHostPort: (internalPort) => {
-          const hostPort = reservedByInternal.get(internalPort);
-          if (hostPort === undefined) {
-            throw new Error(`No reserved host port for internal port ${internalPort}`);
-          }
-          return hostPort;
-        },
-      });
-    } catch (err) {
-      // Adapter construction can fail (for example, a selected sysbox
-      // backend becoming unavailable after the boot probe). Do not
-      // strand the pre-reserved group/port rows on that failure path.
-      this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
-      throw err;
-    }
 
     const record: ActiveDevServer = {
       groupId,
@@ -772,11 +956,13 @@ export class DevServerRuntime {
         internalPort: primaryEntry.internalPort,
         primary: true,
       }),
+      ownsEnv,
       stopping: false,
     };
     this.active.set(groupId, record);
 
     let primaryEnvPort: number;
+    let primaryDialHost: string | null = null;
     try {
       await env.mountWorktree();
       // Establish every mapping through the env so a containerized adapter
@@ -788,6 +974,23 @@ export class DevServerRuntime {
       ];
       const mappings = await env.mapPortsOut(orderedInternalPorts);
       primaryEnvPort = mappings[0].envPort;
+      primaryDialHost = mappings[0].host;
+      // The env decides where a port actually answers, so it — not the
+      // reservation — is the authority. They diverge whenever the env was not
+      // created by this call: a session-owned env comes from the manager without
+      // the pooled allocator, so a published-ports adapter falls back to
+      // identity mapping while the reserved row still holds a pool number. The
+      // row feeds the health probe, the proxy, and the client URL, so leaving it
+      // stale means dialing a port nothing listens on — every preview times out
+      // or 502s, with the app itself perfectly healthy.
+      this.adoptEnvPortMappings(reserved, orderedInternalPorts, mappings, sessionId);
+      record.primaryHostPort = primaryEntry.hostPort;
+      record.primaryUrl = this.portClientUrl({
+        sessionId,
+        hostPort: primaryEntry.hostPort,
+        internalPort: primaryEntry.internalPort,
+        primary: true,
+      });
     } catch (err) {
       await this.rollbackStart(groupId, record);
       throw err;
@@ -810,6 +1013,10 @@ export class DevServerRuntime {
       config: cfg,
       projectSecrets,
       envPort: primaryEnvPort,
+      // Only when it is the env's own address. A loopback mapping means the
+      // Hub reaches the process over the gateway translation it already has
+      // configured, so overriding it here would name the wrong side.
+      upstreamHost: this.upstreamHostForDialHost(primaryDialHost),
     });
     if (missingSecretKeys.length > 0) {
       this.logger.warn(
@@ -903,43 +1110,178 @@ export class DevServerRuntime {
 
     const healthPath = cfg.healthPath ?? '/';
     const readyTimeoutMs = cfg.readyTimeoutMs ?? this.readyTimeoutMs;
-    void this.runHealthCheck(groupId, primaryEntry.hostPort, healthPath, readyTimeoutMs).catch(
-      (err) => {
-        this.logger.error(
-          `[dev-server ${groupId}] health check crashed: ${(err as Error).message}`,
-        );
-      },
-    );
+    void this.runHealthCheck(
+      groupId,
+      primaryDialHost,
+      primaryEntry.hostPort,
+      healthPath,
+      readyTimeoutMs,
+    ).catch((err) => {
+      this.logger.error(`[dev-server ${groupId}] health check crashed: ${(err as Error).message}`);
+    });
 
     return { devServerId: groupId, url: record.primaryUrl, port: primaryEntry.hostPort };
   }
 
-  /** Undo a partially-started group: dispose the env, drop the rows. */
+  /**
+   * Release the env behind a stopping dev server.
+   *
+   * An env this runtime created is disposed outright. A session-owned env is
+   * only relieved of *this* dev server's process — the session, its terminal,
+   * and its backing services keep running.
+   */
+  private async releaseEnv(record: ActiveDevServer, label: string): Promise<void> {
+    try {
+      if (record.ownsEnv) {
+        await record.env.dispose({ graceMs: this.disposeGraceMs });
+      } else {
+        record.proc?.kill('SIGTERM');
+      }
+    } catch (err) {
+      this.logger.warn(`[dev-server] env release failed for ${label}: ${(err as Error).message}`);
+    }
+  }
+
+  /** Undo a partially-started group: release the env, drop the rows. */
   private async rollbackStart(groupId: string, record: ActiveDevServer): Promise<void> {
     record.stopping = true;
-    try {
-      await record.env.dispose({ graceMs: this.disposeGraceMs });
-    } catch {
-      // Best-effort — the row delete below frees the ports either way.
-    }
+    await this.releaseEnv(record, groupId);
     this.active.delete(groupId);
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
   }
 
   /**
-   * Pool-allocated reservation for the primary port. Bounded retry on
-   * the shared `UNIQUE(port)` — the loser of a concurrent-start race
-   * reclaims failed holders and picks the next free port.
+   * Reserve one row per port entry, in the port space the env is reached in.
+   *
+   * Under **published-ports** routing the Hub dials a host port, so the
+   * primary draws from the shared pool (its number is injected as `PORT`) and
+   * extras take their configured port by identity. Both compete host-wide.
+   *
+   * Under **container-IP** routing nothing is published: the process binds its
+   * configured internal port inside the env's own network namespace and the
+   * Hub dials the env directly. A pooled host port would be worse than
+   * wasteful — it would be the wrong number to dial, which is precisely the
+   * bug this split fixes. Ports are namespaced per session, so there is no
+   * pool to draw from, no host-wide collision to lose, and no reason to probe
+   * the host for a squatter.
    */
-  private reservePooledRow(
+  private async reserveRows(
+    groupId: string,
+    sessionId: string,
+    entries: DevServerPortMapEntry[],
+    names: string[],
+    routing: SessionEnvPortRouting,
+  ): Promise<ReservedEntry[]> {
+    const reserved: ReservedEntry[] = [];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const primary = entry.primary === true;
+      if (routing === 'container-ip') {
+        reserved.push(
+          this.reserveEnvScopedRow(groupId, sessionId, names[i], entry.internalPort, primary),
+        );
+      } else if (primary) {
+        reserved.push(
+          await this.reservePooledRow(groupId, sessionId, names[i], entry.internalPort),
+        );
+      } else {
+        reserved.push(
+          await this.reserveIdentityRow(groupId, sessionId, names[i], entry.internalPort),
+        );
+      }
+    }
+    return reserved;
+  }
+
+  /**
+   * Rewrites reservations that the env did not honor, in place and in the row.
+   *
+   * A reservation is a request; `mapPortsOut` is the answer. An adapter is free
+   * to return something else — the identity fallback when it has no allocator is
+   * the case that happens in production — and everything downstream reads the
+   * row, so the row has to carry the answer.
+   *
+   * A rewrite can collide with another group's host-port reservation, in which
+   * case the UPDATE throws on the partial unique index. That is the correct
+   * outcome: two live previews cannot share one host port, and the caller
+   * rolls the start back rather than publishing a URL that serves the other
+   * session's app.
+   */
+  private adoptEnvPortMappings(
+    reserved: ReservedEntry[],
+    orderedInternalPorts: number[],
+    mappings: SessionEnvPortMapping[],
+    sessionId: string,
+  ): void {
+    for (let i = 0; i < orderedInternalPorts.length; i++) {
+      // `hostPort` is the port the Hub dials, which is the only one the row
+      // means. Not `envPort` — a publishing adapter translates, so the process
+      // binds its internal port while the Hub reaches it on another, and taking
+      // that one would break the case this is meant to protect.
+      const dialPort = mappings[i]?.hostPort;
+      if (dialPort === undefined) continue;
+      const entry = reserved.find((r) => r.internalPort === orderedInternalPorts[i]);
+      if (!entry || entry.hostPort === dialPort) continue;
+
+      const url = this.portClientUrl({
+        sessionId,
+        hostPort: dialPort,
+        internalPort: entry.internalPort,
+        primary: entry.primary,
+      });
+      this.db
+        .prepare(`UPDATE worktree_preview_processes SET port = ?, url = ? WHERE id = ?`)
+        .run(dialPort, url, entry.rowId);
+      this.logger.warn(
+        `[dev-server] ${entry.name}: env dials internal ${entry.internalPort} on ${dialPort}, ` +
+          `not the reserved ${entry.hostPort}; following the env`,
+      );
+      entry.hostPort = dialPort;
+    }
+  }
+
+  /**
+   * Reservation for a port living inside the session env. The dialed port is
+   * the internal port, and `UNIQUE(group_id, name)` is the only uniqueness
+   * that applies — a conflict there means this group already reserved the
+   * name, which is a programming error rather than a port race.
+   */
+  private reserveEnvScopedRow(
     groupId: string,
     sessionId: string,
     name: string,
     internalPort: number,
+    primary: boolean,
   ): ReservedEntry {
+    const inserted = this.tryInsertProcessRow(
+      groupId,
+      sessionId,
+      name,
+      internalPort,
+      internalPort,
+      primary,
+      'env',
+    );
+    if (!inserted) {
+      throw new Error(`Dev-server port entry "${name}" is already reserved for this preview group`);
+    }
+    return inserted;
+  }
+
+  /**
+   * Pool-allocated reservation for the primary port. Bounded retry on
+   * host-port uniqueness — the loser of a concurrent-start race
+   * reclaims failed holders and picks the next free port.
+   */
+  private async reservePooledRow(
+    groupId: string,
+    sessionId: string,
+    name: string,
+    internalPort: number,
+  ): Promise<ReservedEntry> {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      const hostPort = this.allocatePort();
+      const hostPort = await this.allocatePort();
       const inserted = this.tryInsertProcessRow(
         groupId,
         sessionId,
@@ -952,7 +1294,7 @@ export class DevServerRuntime {
       this.logger.warn(
         `[dev-server] port ${hostPort} conflict for ${name} on attempt ${attempt + 1}, retrying`,
       );
-      reclaimFailedPortHolder(this.db, hostPort);
+      reclaimFailedPortHolder(this.db, hostPort, this.killReclaimedPid);
     }
     throw new Error('unreachable: dev-server port retry loop exited without returning');
   }
@@ -964,12 +1306,12 @@ export class DevServerRuntime {
    * UNIQUE conflict after one reclaim attempt is a real cross-session
    * collision and fails the start loudly.
    */
-  private reserveIdentityRow(
+  private async reserveIdentityRow(
     groupId: string,
     sessionId: string,
     name: string,
     internalPort: number,
-  ): ReservedEntry {
+  ): Promise<ReservedEntry> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const inserted = this.tryInsertProcessRow(
         groupId,
@@ -979,8 +1321,23 @@ export class DevServerRuntime {
         internalPort,
         false,
       );
-      if (inserted) return inserted;
-      reclaimFailedPortHolder(this.db, internalPort);
+      if (inserted) {
+        // An extra port can't be steered via PORT, so the process will
+        // bind this exact number. If something already holds it the
+        // proxy would tunnel to that stranger instead — fail the start
+        // rather than serve someone else's app on this session's URL.
+        if (!(await this.isPortFree(internalPort))) {
+          this.db
+            .prepare(`DELETE FROM worktree_preview_processes WHERE id = ?`)
+            .run(inserted.rowId);
+          throw new Error(
+            `Dev-server port ${internalPort} ("${name}") is already in use by a process the Hub does not manage. ` +
+              'Stop whatever is listening on it, or change the portMap entry.',
+          );
+        }
+        return inserted;
+      }
+      reclaimFailedPortHolder(this.db, internalPort, this.killReclaimedPid);
     }
     throw new Error(
       `Dev-server port ${internalPort} ("${name}") is already in use by another preview or dev server`,
@@ -994,6 +1351,7 @@ export class DevServerRuntime {
     internalPort: number,
     hostPort: number,
     primary: boolean,
+    dialScope: PreviewDialScope = 'host',
   ): ReservedEntry | null {
     const rowId = randomUUID();
     const url = this.portClientUrl({ sessionId, hostPort, internalPort, primary });
@@ -1001,10 +1359,11 @@ export class DevServerRuntime {
       this.db
         .prepare(
           `INSERT INTO worktree_preview_processes
-             (id, group_id, name, pid, port, url, log_path, status, internal_port, is_primary)
-           VALUES (?, ?, ?, NULL, ?, ?, NULL, 'starting', ?, ?)`,
+             (id, group_id, name, pid, port, url, log_path, status, internal_port,
+              is_primary, dial_scope)
+           VALUES (?, ?, ?, NULL, ?, ?, NULL, 'starting', ?, ?, ?)`,
         )
-        .run(rowId, groupId, name, hostPort, url, internalPort, primary ? 1 : 0);
+        .run(rowId, groupId, name, hostPort, url, internalPort, primary ? 1 : 0, dialScope);
     } catch (err) {
       if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') return null;
       throw err;
@@ -1012,33 +1371,78 @@ export class DevServerRuntime {
     return { rowId, name, internalPort, hostPort, primary };
   }
 
-  private allocatePort(): number {
+  /**
+   * Next port that is free **both** in the pool table and on the host.
+   *
+   * The DB check alone is not enough: teardown paths exist that delete a
+   * process row without confirming the process died, so a port can read
+   * as free while an orphaned dev server still holds the socket. Handing
+   * that port out makes the proxy serve the orphan's app under this
+   * session's URL. Probing the socket demotes that from a silent
+   * wrong-app preview to "the allocator skipped a busy port".
+   */
+  private async allocatePort(): Promise<number> {
     const taken = new Set(
       (
         this.db
           .prepare(
+            // dial_scope: an env-scoped row's port is inside a container's
+            // network namespace, so it holds nothing on the host and must not
+            // subtract from the pool — otherwise a session serving 4200
+            // silently removes host port 4200 from every other session.
             `SELECT port FROM worktree_preview_processes
               WHERE port BETWEEN ? AND ?
-                AND status IN ('pending','starting','ready')`,
+                AND status IN ('pending','starting','ready')
+                AND dial_scope = 'host'`,
           )
           .all(this.portRange.min, this.portRange.max) as Array<{ port: number }>
       ).map((r) => r.port),
     );
+    const squatted: number[] = [];
     for (let p = this.portRange.min; p <= this.portRange.max; p++) {
-      if (!taken.has(p)) return p;
+      if (taken.has(p)) continue;
+      if (!(await this.isPortFree(p))) {
+        squatted.push(p);
+        continue;
+      }
+      if (squatted.length > 0) {
+        this.logger.warn(
+          `[dev-server] skipped ${squatted.length} untracked in-use port(s) before allocating ${p}: ${squatted.join(', ')}. ` +
+            'These are held by processes the Hub no longer tracks (orphaned dev servers); ' +
+            'stop them to return the ports to the pool.',
+        );
+      }
+      return p;
     }
     throw new Error(
-      `Dev-server port pool exhausted: all ports in [${this.portRange.min}, ${this.portRange.max}] are in use`,
+      `Dev-server port pool exhausted: all ports in [${this.portRange.min}, ${this.portRange.max}] are in use ` +
+        `(${taken.size} tracked by the Hub, ${squatted.length} held by untracked processes)`,
     );
+  }
+
+  /**
+   * Base URL for probing a dev server, given the host its env reports.
+   *
+   * `healthUrlBase` translates loopback for a Hub inside Docker
+   * (`AGENT_HUB_PREVIEW_HEALTH_HOST`). That translation is right for a
+   * published port and wrong for an env that answers on its own address:
+   * probing the docker-host gateway for a port nothing published reaches
+   * either nothing or an unrelated process holding that number, and the
+   * preview times out looking like a dev server that never booted.
+   */
+  private probeUrlBase(dialHost: string | null, port: number): string {
+    if (dialHost && !isLoopbackHost(dialHost)) return `http://${dialHost}:${port}`;
+    return this.healthUrlBase(port);
   }
 
   private async runHealthCheck(
     groupId: string,
+    dialHost: string | null,
     hostPort: number,
     healthPath: string,
     readyTimeoutMs: number,
   ): Promise<void> {
-    const healthUrl = `${this.healthUrlBase(hostPort)}${healthPath}`;
+    const healthUrl = `${this.probeUrlBase(dialHost, hostPort)}${healthPath}`;
     const startedAt = this.clock.nowMs();
     // Two-phase budget, carried over from the compose runtime's build-exit
     // rebase. Phase one is BUILD/BOOT: the dev server is installing deps or
@@ -1149,13 +1553,7 @@ export class DevServerRuntime {
     // health timeout can leave grandchildren alive; SessionEnv.dispose
     // owns the process-group SIGTERM → SIGKILL grace and port release.
     if (record && !record.env.disposed) {
-      try {
-        await record.env.dispose({ graceMs: this.disposeGraceMs });
-      } catch (err) {
-        this.logger.warn(
-          `[dev-server ${groupId}] env dispose after failure threw: ${(err as Error).message}`,
-        );
-      }
+      await this.releaseEnv(record, groupId);
     }
     this.logger.warn(`[dev-server ${groupId}] failed: ${reason}`);
     if (record && this.notifyStatus) {

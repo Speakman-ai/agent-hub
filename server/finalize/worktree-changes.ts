@@ -4,12 +4,18 @@
 import { checkWorktreeChanges, type WorktreeChanges } from '../auto-git.js';
 import { isPublishableVerdict, makeNetDiffProbe, type NetDiffProbe } from './net-diff.js';
 import type { FinalizeGateBase } from './resolve-base-branch.js';
+import type { SessionWorktreeIo } from '../session-env/worktree-io.js';
 
 export type CommittableChangesResult =
   | { ok: true; changes: WorktreeChanges }
   | {
       ok: false;
-      error: 'no_worktree' | 'no_committable_changes' | 'base_unresolved' | 'no_pushable_commits';
+      error:
+        | 'no_worktree'
+        | 'no_committable_changes'
+        | 'base_unresolved'
+        | 'no_pushable_commits'
+        | 'worktree_not_on_host';
       message: string;
     };
 
@@ -71,10 +77,10 @@ function noPushableCommitsMessage(changes: WorktreeChanges): string {
 }
 
 export async function getSessionCommittableChanges(
-  worktreePath: string | null | undefined,
+  io: SessionWorktreeIo | null | undefined,
   opts: CommittableChangesOptions = {},
 ): Promise<CommittableChangesResult> {
-  if (!worktreePath) {
+  if (!io) {
     return {
       ok: false,
       error: 'no_worktree',
@@ -82,7 +88,7 @@ export async function getSessionCommittableChanges(
     };
   }
   const base: FinalizeGateBase = opts.base ?? { kind: 'default' };
-  const changes = await checkWorktreeChanges(worktreePath);
+  const changes = await checkWorktreeChanges(io);
   if (!opts.requirePushableHead) {
     // Dirtiness is NOT committable work. Finalize reviews, tests, and pushes
     // commits; it never commits the working tree. Treating an uncommitted
@@ -112,7 +118,7 @@ export async function getSessionCommittableChanges(
   }
   const explicitBase = base.kind === 'explicit';
   const probe = opts.probe ?? makeNetDiffProbe(explicitBase ? base.baseBranch : null);
-  const net = await probe(worktreePath);
+  const net = await probe(io);
   // The ship gate must PROVE a net diff, so an undeterminable probe blocks here
   // whatever the base kind. `isPublishableVerdict` lets `null` through against a
   // default base, which is right for deciding whether to *offer* Finalize (a

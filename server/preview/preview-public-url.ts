@@ -59,10 +59,34 @@ export function resolveDevServerPortClientUrl(
   hostPort: number,
   internalPort: number,
   primary: boolean,
+  opts?: { useProxy?: boolean },
 ): string {
   const trimmed = typeof publicUrl === 'string' ? publicUrl.trim() : '';
-  if (!trimmed) return `http://localhost:${hostPort}`;
+  if (!trimmed && !opts?.useProxy) return `http://localhost:${hostPort}`;
   return devServerPortProxyPath(sessionId, internalPort, primary);
+}
+
+/**
+ * Rewrite a subdomain-mode request onto the equivalent path-prefix mount.
+ *
+ * Subdomain hostnames carry the routing information that the rest of the
+ * pipeline (auth middleware → session router → proxy handler) reads off
+ * the URL, so translating here keeps a single downstream code path. Both
+ * the HTTP middleware and the WebSocket upgrade listener call this — they
+ * previously built the URL inline and could only stay consistent by
+ * inspection.
+ */
+export function previewSubdomainRewrittenUrl(
+  target: { sessionId: string; internalPort: number | null },
+  reqUrl: string | undefined,
+): string {
+  const mount =
+    target.internalPort === null
+      ? previewProxyMountPath(target.sessionId)
+      : devServerPortProxyPath(target.sessionId, target.internalPort, false);
+  const original = reqUrl || '/';
+  const suffix = original.startsWith('/') ? original : `/${original}`;
+  return `${mount}${suffix}`;
 }
 
 /**

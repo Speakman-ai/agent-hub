@@ -1,5 +1,6 @@
 # Builds the server image and pushes it to public ECR, then optionally
-# restarts the dockerized dev sandbox (SSM pull :main digest check).
+# restarts the dockerized dev sandbox (SSM pull, digest checked against the
+# moving tag this run published).
 #
 # Called by `release-all.yml` after a semver tag is pushed. Also reachable
 # directly via `workflow_dispatch` for emergency image builds without a
@@ -104,6 +105,8 @@ jobs:
     timeout-minutes: 75
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      # The moving tag this run published, for the deploy job's digest assertion.
+      moving_tag: ${{ steps.tags.outputs.branch }}
     steps:
       # Reusable workflows inherit the *caller's* github.event_name (e.g.
       # workflow_dispatch when Release invokes us), not "workflow_call". Branching
@@ -137,13 +140,57 @@ jobs:
         run: |
           set -euo pipefail
           SHA_SHORT="$(git rev-parse --short=12 HEAD)"
-          BRANCH="${GITHUB_REF_NAME:-main}"
+          sanitize_docker_tag() {
+            local raw="$1"
+            local s
+            s="$(printf '%s' "$raw" | tr -c 'A-Za-z0-9_.-' '-')"
+            s="$(printf '%s' "$s" | sed -e 's/^[^A-Za-z0-9]*//' -e 's/[^A-Za-z0-9]*$//')"
+            while [[ "$s" == *--* ]]; do s="${s//--/-}"; done
+            if [[ -z "$s" ]]; then s="branch"; fi
+            printf '%s' "$s"
+          }
+          # Truncate the sanitized *base* first so the full SHA suffix always
+          # remains — truncating the combined string can drop the suffix and
+          # re-introduce collisions for long refs.
+          unique_docker_tag() {
+            local base suffix max_base
+            base="$(sanitize_docker_tag "$1")"
+            suffix="$2"
+            max_base=$((128 - 1 - ${#suffix}))
+            if (( max_base < 1 )); then max_base=1; fi
+            base="${base:0:max_base}"
+            base="$(printf '%s' "$base" | sed -e 's/[^A-Za-z0-9]*$//')"
+            if [[ -z "$base" ]]; then base="branch"; fi
+            printf '%s' "${base}-${suffix}"
+          }
+          # Preserve stable tags consumed by Terraform / installs (`:main`,
+          # exact semver). Only arbitrary refs get a collision-resistant suffix.
+          is_stable_docker_tag() {
+            local raw="$1"
+            local sanitized
+            sanitized="$(sanitize_docker_tag "$raw")"
+            [[ "$raw" == "$sanitized" ]] || return 1
+            [[ "$raw" == "main" ]] && return 0
+            [[ "$raw" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9_.-]+)?$ ]]
+          }
+          # A docker tag admits only [A-Za-z0-9_.-], so a branch like
+          # `preview/foo` cannot be one verbatim — buildx rejects the whole
+          # build with "invalid reference format" before a layer is built.
+          REF_NAME="${GITHUB_REF_NAME:-main}"
+          if is_stable_docker_tag "$REF_NAME"; then
+            BRANCH="$REF_NAME"
+          else
+            BRANCH="$(unique_docker_tag "$REF_NAME" "$SHA_SHORT")"
+          fi
           EXTRA_TAG=""
           if [[ -n "$INPUT_VERSION_TAG" ]]; then
             if [[ "$INPUT_VERSION_TAG" == refs/tags/* ]]; then
               EXTRA_TAG="${INPUT_VERSION_TAG#refs/tags/}"
             else
               EXTRA_TAG="$INPUT_VERSION_TAG"
+            fi
+            if ! is_stable_docker_tag "$EXTRA_TAG"; then
+              EXTRA_TAG="$(unique_docker_tag "$EXTRA_TAG" "$SHA_SHORT")"
             fi
           fi
 
@@ -262,12 +309,20 @@ jobs:
       # is reused, so a single-account setup only needs the push role configured.
       # The image PUSH (above) targets ECR_REGISTRY; this deploy step assumes the
       # target-account role and SSMs that instance. The target box runs the
-      # agenthub-server systemd unit and pulls ${ECR_PUBLIC_URI}:main (cross-account
-      # pull is fine — the registry is public), so the digest assertion still holds.
+      # agenthub-server systemd unit and pulls ${ECR_PUBLIC_URI}:${DEPLOY_TAG}
+      # (cross-account pull is fine — the registry is public), so the digest
+      # assertion still holds.
       AWS_ROLE_TO_ASSUME: ${{ vars.DOCKER_DEPLOY_ROLE_ARN || vars.ECR_PUSH_ROLE_ARN }}
       AWS_DEPLOY_REGION: ${{ vars.DOCKER_DEPLOY_REGION || 'us-east-2' }}
       DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}
       EXPECTED_DIGEST: ${{ needs.push.outputs.digest }}
+      # Assert against the moving tag this run actually published, not a literal
+      # `main`. A dispatch on any other ref publishes `<ref-name>` and the target
+      # host is pointed at that same tag, so the hardcoded `main` compared an
+      # unrelated (usually older) image and the job could only ever fail — the
+      # image was live and correct while CI reported a failed rollout. On a main
+      # build this resolves to `main`, unchanged.
+      DEPLOY_TAG: ${{ needs.push.outputs.moving_tag || 'main' }}
 
     steps:
       - name: Configure AWS credentials (OIDC)
@@ -291,6 +346,8 @@ jobs:
             SCRIPT=$(cat <<EOF
           set -euo pipefail
           DATA_ROOT="$DATA_ROOT"
+          EXPECTED_DIGEST="$EXPECTED_DIGEST"
+          DEPLOY_TAG="$DEPLOY_TAG"
           if [ -f "\$DATA_ROOT/data/config.json" ]; then
             sudo cp -a "\$DATA_ROOT/data/config.json" /tmp/agent-hub-config.json
           fi
@@ -302,9 +359,69 @@ jobs:
             sudo install -m 0600 -o 1000 -g 1000 /tmp/agent-hub-config.json "\$DATA_ROOT/data/config.json"
             sudo rm -f /tmp/agent-hub-config.json
           fi
+          sudo install -d -m 0755 /etc/agent-hub
+          printf '%s\n' "\$DEPLOY_TAG" | sudo tee /etc/agent-hub/image-tag >/dev/null
           sudo systemctl start agenthub-server
-          sleep 5
           sudo systemctl is-active agenthub-server
+
+          POLL_TIMEOUT=240
+          POLL_INTERVAL=5
+          POLL_DEADLINE=\$(( \$(date +%s) + POLL_TIMEOUT ))
+          LOCAL_DIGEST=""
+          CONTAINER_IMAGE_ID=""
+          LOCAL_IMAGE_ID=""
+          attempts=0
+          while :; do
+            attempts=\$(( attempts + 1 ))
+            LOCAL_DIGEST=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:\$DEPLOY_TAG \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
+              | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
+            CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' 2>/dev/null || true)
+            LOCAL_IMAGE_ID=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:\$DEPLOY_TAG --format '{{.Id}}' 2>/dev/null || true)
+
+            digest_ok="false"
+            container_ok="false"
+            if [ -z "\$EXPECTED_DIGEST" ] || [ "\$LOCAL_DIGEST" = "\$EXPECTED_DIGEST" ]; then
+              digest_ok="true"
+            fi
+            if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" = "\$LOCAL_IMAGE_ID" ]; then
+              container_ok="true"
+            fi
+
+            echo "wait_for_deploy attempt=\$attempts digest_ok=\$digest_ok container_ok=\$container_ok local_digest=\$LOCAL_DIGEST"
+
+            if [ "\$digest_ok" = "true" ] && [ "\$container_ok" = "true" ]; then
+              break
+            fi
+            if [ \$(date +%s) -ge \$POLL_DEADLINE ]; then
+              echo "wait_for_deploy: timed out after \${POLL_TIMEOUT}s (\$attempts attempts)" >&2
+              break
+            fi
+            sleep "\$POLL_INTERVAL"
+          done
+
+          if [ -z "\$EXPECTED_DIGEST" ]; then
+            echo "WARN: EXPECTED_DIGEST not provided by workflow; skipping digest assertion." >&2
+            echo "OK: agenthub-server restarted after reset (digest assertion skipped)."
+            exit 0
+          fi
+
+          if [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
+            echo "FATAL: host :\$DEPLOY_TAG digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
+            exit 1
+          fi
+
+          if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" != "\$LOCAL_IMAGE_ID" ]; then
+            echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :\$DEPLOY_TAG image-id (\$LOCAL_IMAGE_ID)" >&2
+            exit 1
+          fi
+
+          if [ -z "\$CONTAINER_IMAGE_ID" ] || [ -z "\$LOCAL_IMAGE_ID" ]; then
+            echo "FATAL: agenthub-server container not running after \${POLL_TIMEOUT}s" >&2
+            exit 1
+          fi
+
+          echo "OK: agenthub-server is running the just-pushed image after reset."
           EOF
           )
             COMMENT="CI fresh-setup reset on dev sandbox ${{ github.sha }}"
@@ -312,6 +429,9 @@ jobs:
             SCRIPT=$(cat <<EOF
           set -euo pipefail
           EXPECTED_DIGEST="$EXPECTED_DIGEST"
+          DEPLOY_TAG="$DEPLOY_TAG"
+          sudo install -d -m 0755 /etc/agent-hub
+          printf '%s\n' "\$DEPLOY_TAG" | sudo tee /etc/agent-hub/image-tag >/dev/null
           sudo systemctl restart agenthub-server
           sudo systemctl is-active agenthub-server
 
@@ -324,11 +444,11 @@ jobs:
           attempts=0
           while :; do
             attempts=\$(( attempts + 1 ))
-            LOCAL_DIGEST=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:main \
+            LOCAL_DIGEST=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:\$DEPLOY_TAG \
               --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
               | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
             CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' 2>/dev/null || true)
-            LOCAL_IMAGE_ID=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:main --format '{{.Id}}' 2>/dev/null || true)
+            LOCAL_IMAGE_ID=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:\$DEPLOY_TAG --format '{{.Id}}' 2>/dev/null || true)
 
             digest_ok="false"
             container_ok="false"
@@ -363,12 +483,12 @@ jobs:
           fi
 
           if [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
-            echo "FATAL: host :main digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
+            echo "FATAL: host :\$DEPLOY_TAG digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
             exit 1
           fi
 
           if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" != "\$LOCAL_IMAGE_ID" ]; then
-            echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :main image-id (\$LOCAL_IMAGE_ID)" >&2
+            echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :\$DEPLOY_TAG image-id (\$LOCAL_IMAGE_ID)" >&2
             exit 1
           fi
 
@@ -449,6 +569,6 @@ jobs:
             if [[ "$BOOL_RESET" == "true" ]]; then
               echo "**Reset mode** on instance \`$DEPLOY_INSTANCE_ID\`."
             else
-              echo "Restarted \`agenthub-server\` on \`$DEPLOY_INSTANCE_ID\` (pull picks up \`:main\`)."
+              echo "Restarted \`agenthub-server\` on \`$DEPLOY_INSTANCE_ID\` (pull picks up \`:$DEPLOY_TAG\`)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

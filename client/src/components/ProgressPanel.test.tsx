@@ -67,6 +67,20 @@ describe('mergeProgressEvent', () => {
     expect(next[0].status).toBe('failed');
     expect(next[0].finishedAt).toBe(200);
   });
+
+  it('attaches failure detail when closing a started step', () => {
+    const s1 = mergeProgressEvent([], { step: 'Session setup', status: 'started', startedAt: 1 });
+    const s2 = mergeProgressEvent(s1, {
+      step: 'Session setup',
+      status: 'failed',
+      startedAt: 1,
+      finishedAt: 5,
+      detail: '$ pip install -r requirements.txt (exit 1)\nModuleNotFoundError',
+    });
+    expect(s2!).toHaveLength(1);
+    expect(s2[0].status).toBe('failed');
+    expect(s2[0].detail).toContain('ModuleNotFoundError');
+  });
 });
 
 describe('formatElapsed', () => {
@@ -153,5 +167,35 @@ describe('ProgressPanel render', () => {
     expect(screen.queryAllByTestId('progress-step')).toHaveLength(0);
     // Summary is always present in the header
     expect(screen.getByText(/2\/2 done/)).toBeInTheDocument();
+  });
+
+  it('renders failure detail under a failed step', () => {
+    const steps = [
+      {
+        step: 'Session setup',
+        status: 'failed',
+        startedAt: 0,
+        finishedAt: 1000,
+        detail: '$ false (exit 1)\nboom',
+      },
+    ];
+    render(<ProgressPanel steps={steps} sessionRunning={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Progress/ }));
+    expect(screen.getByTestId('progress-step-detail').textContent).toContain('boom');
+  });
+
+  it('renders Launching session VM while started with no chat stream required', () => {
+    const steps = [
+      {
+        step: 'Launching session VM',
+        status: 'started',
+        startedAt: Date.now() - 1000,
+      },
+    ];
+    render(<ProgressPanel steps={steps} sessionRunning={false} />);
+    // Empty chat still shows Progress when session-progress WS events arrive.
+    expect(screen.getByTestId('progress-panel')).toBeInTheDocument();
+    expect(screen.getByText('Launching session VM')).toBeInTheDocument();
+    expect(screen.getByLabelText('in progress')).toBeInTheDocument();
   });
 });

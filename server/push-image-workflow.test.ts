@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import { readdirSync, readFileSync } from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
@@ -93,8 +94,115 @@ describe('ECR publish + push-image deploy contract', () => {
     // The SSM script must perform the equality check (anchor on the FATAL
     // line so a future refactor can't accidentally drop the assertion).
     expect(yml).toContain('LOCAL_REPO_DIGEST');
-    expect(yml).toContain('host :main digest');
+    expect(yml).toContain('host :\\$DEPLOY_TAG digest');
     expect(yml).toMatch(/!=\s+just-pushed digest/);
+  });
+
+  it('asserts against the moving tag it published rather than a literal main', () => {
+    // A dispatch on a non-main ref publishes `<ref-name>` and the target host is
+    // pointed at that same tag. Comparing a hardcoded `:main` there inspected an
+    // unrelated, usually older image, so the assertion could only fail: the image
+    // was live and correct while CI reported the rollout as broken.
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toMatch(/moving_tag:\s*\$\{\{\s*steps\.tags\.outputs\.branch\s*\}\}/);
+    expect(yml).toMatch(
+      /DEPLOY_TAG:\s*\$\{\{\s*needs\.push\.outputs\.moving_tag\s*\|\|\s*'main'\s*\}\}/,
+    );
+    expect(yml, 'the digest lookup must use the tag, not a literal').not.toMatch(
+      /docker image inspect \$\{ECR_PUBLIC_URI\}:main/,
+    );
+  });
+
+  /**
+   * Runs the workflow's tag sanitizer + BRANCH assignment, so this cannot drift
+   * from what CI does.
+   */
+  function computeBranchTag(refName: string, shaShort = 'abc123def456'): string {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    const start = yml.indexOf('sanitize_docker_tag() {');
+    const branchAssign = yml.indexOf('REF_NAME="${GITHUB_REF_NAME:-main}"', start);
+    expect(start, 'sanitize_docker_tag in Compute tags step').toBeGreaterThan(-1);
+    expect(branchAssign, 'REF_NAME assignment in Compute tags step').toBeGreaterThan(-1);
+    const endHelpers = yml.indexOf('echo "sha_short=', branchAssign);
+    const script = `${yml.slice(start, endHelpers)}SHA_SHORT="${shaShort}"
+REF_NAME="\${GITHUB_REF_NAME:-main}"
+if is_stable_docker_tag "$REF_NAME"; then
+  BRANCH="$REF_NAME"
+else
+  BRANCH="$(unique_docker_tag "$REF_NAME" "$SHA_SHORT")"
+fi
+printf '%s' "$BRANCH"`;
+    return execFileSync('bash', ['-c', script], {
+      env: { ...process.env, GITHUB_REF_NAME: refName },
+      encoding: 'utf8',
+    });
+  }
+
+  it('turns a slashed branch into a usable docker tag with a SHA suffix', () => {
+    expect(computeBranchTag('preview/session-owned-environment')).toBe(
+      'preview-session-owned-environment-abc123def456',
+    );
+  });
+
+  it('preserves stable main and semver tags without a SHA suffix', () => {
+    expect(computeBranchTag('main')).toBe('main');
+    expect(computeBranchTag('v1.2.3')).toBe('v1.2.3');
+    expect(computeBranchTag('1.2.3')).toBe('1.2.3');
+  });
+
+  it('suffixes non-stable refs so sanitize collisions cannot collide', () => {
+    expect(computeBranchTag('feature/a')).toBe('feature-a-abc123def456');
+    expect(computeBranchTag('feature-a', 'deadbeef0001')).toBe('feature-a-deadbeef0001');
+  });
+
+  it('produces a tag docker will accept for any ref name', () => {
+    const dockerTag = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+    for (const ref of ['feat/a b', 'release/v1.2.3', 'user@host/test', 'main']) {
+      expect(computeBranchTag(ref), ref).toMatch(dockerTag);
+    }
+  });
+
+  it('sanitizes invalid characters and collapses repeated dashes', () => {
+    expect(computeBranchTag('feat/@foo--bar')).toBe('feat-foo-bar-abc123def456');
+  });
+
+  it('truncates the base so the full SHA suffix always remains', () => {
+    const longRef = `release/${'a'.repeat(200)}`;
+    const tag = computeBranchTag(longRef);
+    expect(tag).toHaveLength(128);
+    expect(tag.endsWith('-abc123def456')).toBe(true);
+  });
+
+  it('falls back to branch when sanitization leaves nothing usable', () => {
+    expect(computeBranchTag('@@@')).toBe('branch-abc123def456');
+  });
+
+  it('reset path also writes image-tag and verifies digest', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    const resetStart = yml.indexOf('if [[ "$BOOL_RESET" == "true" ]]');
+    const resetEnd = yml.indexOf('CI fresh-setup reset');
+    expect(resetStart).toBeGreaterThan(-1);
+    expect(resetEnd).toBeGreaterThan(resetStart);
+    const resetBlock = yml.slice(resetStart, resetEnd);
+    expect(resetBlock).toContain('/etc/agent-hub/image-tag');
+    expect(resetBlock).toMatch(/LOCAL_DIGEST/);
+    expect(resetBlock).toMatch(/EXPECTED_DIGEST/);
+  });
+
+  it('writes the deploy tag before restarting systemd', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toContain('/etc/agent-hub/image-tag');
+    expect(yml).toMatch(/tee \/etc\/agent-hub\/image-tag/);
+  });
+
+  it('prints the tag it rolled out in the run summary', () => {
+    // The escapes elsewhere are deliberate — those lines are inside the
+    // heredoc sent to SSM, where expansion has to happen on the remote host.
+    // The summary is an ordinary step shell, so the same escape reaches the
+    // reader as the literal `$DEPLOY_TAG` and the summary stops naming which
+    // image actually went out.
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toMatch(/pull picks up \\`:\$DEPLOY_TAG\\`/);
   });
 
   // Regression guard for the dev-sandbox manual-deploy switch. The thin

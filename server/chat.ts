@@ -4,7 +4,12 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
-import { trackChild, killProcessGroup } from './process-groups.js';
+import { trackChild } from './process-groups.js';
+import {
+  wrapGuestChatProcess,
+  wrapHostChildProcess,
+  type ActiveChatProcess,
+} from './active-chat-process.js';
 import {
   buildEphemeralBackgroundBashHaltNotice,
   buildEphemeralBackgroundBashNotice,
@@ -43,6 +48,23 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { isDevServerConfigured } from './dev-server-config.js';
+import { getSessionEnvSelection } from './session-env/sysbox-capability.js';
+import type { SessionEnv } from './session-env/session-env.js';
+import { sessionTurnUsesEnvOwnedWorktree } from './session-env/workflow-session-env.js';
+import {
+  adaptSpawnEnvForGuest,
+  buildGuestCliCommand,
+  finalizeGuestSpawnEnv,
+  hostCwdToWorktreeRelative,
+  prepareGuestCliTurn,
+  writeGuestSystemPromptFile,
+} from './session-env/guest-cli-spawn.js';
+import { FIRECRACKER_GUEST_WORKSPACE } from './session-env/firecracker/firecracker-vm-args.js';
+import {
+  formatSessionStartupPromptSection,
+  getProjectSessionStartupCommands,
+  getSessionStartupStatus,
+} from './session-env/session-startup-hooks.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -232,6 +254,7 @@ import {
   PREVIEW_REACT_OP_SET,
   PREVIEW_DRIVE_OPS,
 } from './preview/preview-react.js';
+import { startSessionPreview } from './preview/start-session-preview.js';
 import {
   runTerminalReActStep,
   createTerminalReactRuntime,
@@ -426,7 +449,7 @@ export interface ChatHandlerDeps {
   broadcast: BroadcastFn;
   findAgent: (agentId: string) => AgentLookup | null;
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
-  activeProcesses: Map<string, ChildProcess>;
+  activeProcesses: Map<string, ActiveChatProcess>;
   autonomousProjects: Set<string>;
   getClaudeBin: () => string;
   getCursorBin: () => string;
@@ -448,14 +471,21 @@ export interface ChatHandlerDeps {
     githubRepo?: string | null,
     hostedBarePath?: string | null,
   ) => Promise<string>;
+  /**
+   * Ensure the session's SessionEnv is started. Required for env-owned
+   * backends (Firecracker) so chat CLI turns spawn inside the guest.
+   * Optional in tests that never exercise Firecracker.
+   */
+  ensureSessionEnv?: (sessionId: string) => Promise<SessionEnv>;
   drainQueue: (sessionId: string) => void;
   /**
    * Accessor for the managed dev-server runtime. Returns `null` when the
    * runtime has not been wired (e.g. tests of unrelated chat surface).
    * The accessor pattern matches `getClaudeBin` / `getCursorBin` — callers
    * don't need to know whether the runtime was constructed at process
-   * start. Only the observe side of the ReAct `preview` tool consults it;
-   * lifecycle stays on the REST start/stop surface.
+   * start. The ReAct `preview` tool uses it for observe/drive ops and for
+   * `op: "start"` (same boot path as `POST …/preview/start`). Stop stays
+   * on the REST / toolbar surface.
    */
   getDevServerRuntime?: () => DevServerRuntime | null;
   /**
@@ -594,8 +624,10 @@ interface ReActAction {
   schema?: Record<string, unknown>;
   direction?: string;
   condition?: string;
-  /** preview navigate — path within the preview app (must start with `/`). */
+  /** preview navigate / start — path within the preview app (must start with `/`). */
   route?: string;
+  /** preview start — optional reason recorded on the preview task. */
+  reason?: string;
   /** preview logs — tail line count. */
   tail?: number;
   /** terminal inject — single command line to run at an idle prompt. */
@@ -781,15 +813,28 @@ export function buildEnrichedPrompt(
   const browserProject = projectId ? findProject(projectId) : null;
   const browserToolsOn = effectiveBrowserToolsEnabled(agent as Agent, browserProject ?? undefined);
 
-  // Browser-automation awareness callout — surfaced near the top of the
-  // prompt so the model notices it has live Chromium access before any
-  // AGENTS.md / SOUL.md / skill description has a chance to claim "I
-  // cannot access URLs". The full operation list and egress caveats
-  // remain in the "ReAct Loop" section further down; this is just the
-  // attention-grabbing pointer that prevents capability refusals.
-  if (browserToolsOn && isFirstMessage) {
+  // Browser-automation awareness callout — every turn when tools are on.
+  // Surfaced near the top so the model notices live Chromium before any
+  // AGENTS.md / SOUL.md / engine default has a chance to claim "I cannot
+  // access URLs". Previously first-message-only for tokens; that caused
+  // mid-session refusals ("I don't have a browser") once the callout and
+  // ReAct Loop dropped off follow-up prompts. Keep this short and always-on;
+  // the long op list stays in the first-turn ReAct Loop (with a compact
+  // reminder on later turns).
+  if (browserToolsOn) {
     prompt += `\n\n## Browser Automation Available
-You have access to a real Chromium browser in this session. When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. The full operation list (\`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`) and the URL-egress caveats are in the **ReAct Loop** section further down — read them before driving sensitive pages.`;
+You have access to a real Chromium browser in this session. When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — not the generic browser tool (loopback is blocked there).`;
+  }
+
+  // Background session-startup hooks (venv / npm install in guest, etc.).
+  if (options.sessionId && projectId) {
+    const startupProject = findProject(projectId);
+    const startupCmds = startupProject ? getProjectSessionStartupCommands(startupProject) : [];
+    if (startupCmds.length > 0) {
+      prompt += formatSessionStartupPromptSection(getSessionStartupStatus(options.sessionId), {
+        commandsConfigured: true,
+      });
+    }
   }
 
   if (projectId) {
@@ -885,7 +930,7 @@ ${skillsList.join('\n')}`;
 - **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
       : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
     const previewToolLines = previewEnabledForPrompt
-      ? `\n- \`preview\` — observe and drive **this session's dev preview** after the human starts it via **Start preview** (field: \`op\` + operands). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. As with the \`browser\` tool, \`screenshot\` returns the absolute path of a saved image file to open with your file-reading tool. You cannot start or stop the preview — if none is running you'll get a "not running" observation; ask the human to start it.`
+      ? `\n- \`preview\` — observe, start, and drive **this session's dev preview** (field: \`op\` + operands). Lifecycle: \`start\` (optional \`route\`, \`reason\`) boots the same stack as the toolbar **Start preview** (first boot can take several minutes — poll \`state\`/\`logs\` until ready). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. As with the \`browser\` tool, \`screenshot\` returns the absolute path of a saved image file to open with your file-reading tool. You cannot stop the preview — ask the human to use **Stop preview**.`
       : '';
     const terminalToolLines = `\n- \`terminal\` — co-observe and take a turn on **this session's shared terminal** the human opened (field: \`op\`). \`state\` — is a shell running, is it at an idle prompt. \`read\` — the current terminal screen + scrollback. \`inject\` (\`command\`) — run ONE command line at an idle prompt through the shared single-writer queue; it lands only when the shell is output-quiet and no human keystrokes are in flight (turn-taking), otherwise it's deferred with a retryable reason. The command is one line (no embedded newlines; the trailing newline is added for you). You cannot open or kill the shell — if none is running, ask the human to open the **Terminal** tab. This is for deliberate co-observation, not your primary command path — use your normal Bash tool for scripted work.`;
 
@@ -924,7 +969,7 @@ The host executes actions, appends a compact observation + loaded context, and m
       ? `\n**You have a real Chromium browser in this session** — ops \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. Do not claim you lack a browser or web access; drive it with a \`browser\` action.`
       : `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array.`;
     const humanStartedLine = previewEnabledForPrompt
-      ? `\n\`preview\` and \`terminal\` act on what the human has already started (**Start preview** / the **Terminal** tab) — you cannot open either yourself, and you'll get a "not running" observation when none is up.`
+      ? `\n\`preview\` can boot via \`{"tool":"preview","op":"start"}\` (same as toolbar **Start preview**), then observe/drive; stop stays human-only. \`terminal\` acts on a shell the human opened (the **Terminal** tab) — you cannot open one yourself.`
       : `\n\`terminal\` acts on a shell the human has already opened (the **Terminal** tab) — you cannot open one yourself, and you'll get a "not running" observation when none is up.`;
     prompt += `\n\n## ReAct Loop (host tools)
 Still available mid-answer: emit a naked \`<agenthub:react>{"actions":[${exampleAction}]}</agenthub:react>\` block (valid JSON, never inside a code fence). Tools: ${toolNames.join(', ')}.${browserReminder}${humanStartedLine}`;
@@ -964,8 +1009,8 @@ The server moves the session's linked card to Done and appends an explanatory co
         }
 
         if (isDevServerConfigured(project.prEnv?.devServer)) {
-          prompt += `\n\n## Worktree preview (lifecycle is human-only)
-Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only the human starts or stops the dev preview using **Start preview** in the chat toolbar (first boot can take several minutes). Once it is running you can observe and drive it yourself with the ReAct \`preview\` tool — check \`{"tool":"preview","op":"state"}\`, read boot/runtime logs with \`"op":"logs"\`, and verify UI changes with \`"op":"screenshot"\` plus \`navigate\`/\`click\`/\`type\`. Your file edits may hot-reload the running preview automatically.`;
+          prompt += `\n\n## Worktree preview
+Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Start the managed preview yourself with ReAct \`{"tool":"preview","op":"start"}\` (optional \`route\` / \`reason\`), or ask the human to press **Start preview** (first boot can take several minutes). Stop remains human-only (**Stop preview**). Once starting/running, observe with \`"op":"state"\` / \`"op":"logs"\`, and verify UI with \`"op":"screenshot"\` plus \`navigate\`/\`click\`/\`type\`. Your file edits may hot-reload the running preview automatically.`;
         }
       }
     }
@@ -1519,6 +1564,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
         };
       }
       const route = typeof a.route === 'string' ? a.route.trim() : undefined;
+      const reason = typeof a.reason === 'string' ? a.reason.trim() : undefined;
       const target = (typeof a.target === 'string' ? a.target : undefined)?.trim() || undefined;
       const text = typeof a.text === 'string' ? a.text : undefined;
       const instruction = typeof a.instruction === 'string' ? a.instruction : undefined;
@@ -1541,6 +1587,12 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
           detail: 'preview navigate requires route starting with "/" (path within the preview app)',
         };
       }
+      if (op === 'start' && route !== undefined && !route.startsWith('/')) {
+        return {
+          error: 'malformed',
+          detail: 'preview start route must start with "/" when provided',
+        };
+      }
       if ((op === 'click' || op === 'type') && !target) {
         return { error: 'malformed', detail: `preview ${op} requires target` };
       }
@@ -1557,6 +1609,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
         tool: 'preview',
         op,
         route,
+        reason: reason || undefined,
         tail,
         target,
         text,
@@ -1868,6 +1921,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     resolveSlashSkill,
     createCursorChat: _createCursorChat,
     ensureWorktree,
+    ensureSessionEnv,
     drainQueue,
     getDevServerRuntime,
     getPtyHost,
@@ -2305,7 +2359,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           if (proc) {
             markSessionTermination(sessionId, 'chat_interrupt_queued');
             console.info(`[chat] chat_interrupt_queued: sending SIGTERM session=${sessionId}`);
-            killProcessGroup(proc, 'SIGTERM');
+            proc.kill('SIGTERM');
           }
           setTimeout(runExistingQueued, 100);
           broadcast({ type: 'interrupted', sessionId });
@@ -2393,7 +2447,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           if (proc) {
             markSessionTermination(sessionId, 'chat_interrupt');
             console.info(`[chat] chat_interrupt: sending SIGTERM session=${sessionId}`);
-            killProcessGroup(proc, 'SIGTERM');
+            proc.kill('SIGTERM');
           }
           broadcast({ type: 'interrupted', sessionId });
         }
@@ -2895,6 +2949,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
       const assistantMsgId = uuidv4();
+      // Seq is shared by host-emitted progress (VM launch) and later CLI
+      // stream events. Hoisted so Firecracker boot can persist a
+      // `progress_step` before the parser exists.
+      let seq = 0;
 
       let engineSessionId: string | null = session!.engine_session_id || null;
       const isNewEngineSession = !engineSessionId;
@@ -2927,6 +2985,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let baseBranchAdvanced: import('./worktree.js').BaseBranchAdvancedInfo | null = null;
 
       let effectiveCwd: string = project.cwd;
+      let sessionEnv: SessionEnv | null = null;
+      // Workflow (no-code) projects share project.cwd and must never boot a
+      // Firecracker VM — env-owned CLI turns wait on a worktree that never comes.
+      const envOwned = sessionTurnUsesEnvOwnedWorktree(
+        project as Project,
+        getSessionEnvSelection().adapter,
+      );
       const pinnedSpawnCwd =
         typeof msg._spawnCwd === 'string' && msg._spawnCwd.trim() !== ''
           ? msg._spawnCwd.trim()
@@ -2939,34 +3004,131 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         (session!.worktree_path || isNewEngineSession)
       ) {
         const priorWorktree = session!.worktree_path;
-        effectiveCwd = await ensureWorktree(
-          session!,
-          project.cwd,
-          agentId,
-          (project as ProjectWithCommands).commands?.install || null,
-          sessionPrBase,
-          (project as Project).repoUrl ?? null,
-          project.id,
-          (info) => {
-            baseBranchAdvanced = info;
-          },
-          (project as Project).githubRepo ?? null,
-          hostedBarePathForProject(project as Project),
-        );
-        session = stmts.getSession.get(sessionId) as SessionRow | undefined;
-        if (session) {
-          persistLegacyWikiHybridGateIfNeeded(session, sessionId);
-        }
-
-        if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
-          console.log(
-            `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
+        // After the first env-owned turn the host checkout is only a boot seed.
+        // Host-side fetch/rebase would mutate the stale seed while `/workspace`
+        // in the guest stays on the old history — skip maintenance and use the
+        // recorded path; guest worktreeIo owns the live tree.
+        if (envOwned && priorWorktree && !isNewEngineSession) {
+          effectiveCwd = priorWorktree;
+        } else {
+          effectiveCwd = await ensureWorktree(
+            session!,
+            project.cwd,
+            agentId,
+            (project as ProjectWithCommands).commands?.install || null,
+            sessionPrBase,
+            (project as Project).repoUrl ?? null,
+            project.id,
+            (info) => {
+              baseBranchAdvanced = info;
+            },
+            (project as Project).githubRepo ?? null,
+            hostedBarePathForProject(project as Project),
           );
+          session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+          if (session) {
+            persistLegacyWikiHybridGateIfNeeded(session, sessionId);
+          }
+
+          if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
+            console.log(
+              `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
+            );
+          }
         }
       } else if (!isNewEngineSession && !sessionUsesWorktree(session!) && session!.worktree_path) {
         console.log(
           `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
         );
+      }
+
+      if (envOwned) {
+        if (!ensureSessionEnv) {
+          const errText =
+            'Firecracker session environments require ensureSessionEnv — ' +
+            'the Hub server failed to wire SessionEnvManager into chat.';
+          console.error(`[chat] ${errText}`);
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          drainQueue(sessionId);
+          return;
+        }
+        try {
+          stmts.insertActiveTask.run(
+            sessionId,
+            assistantMsgId,
+            agentId,
+            null,
+            content,
+            engine,
+            model,
+          );
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('Failed to insert active_tasks row:', message);
+        }
+        recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+        // "Launching session VM" Progress is owned by SessionEnvManager so
+        // workspace/ensure, terminal, and preview share the same indicator.
+        // Flip the live tail now so SessionTail is not stuck on a blank
+        // "Waiting for first event…" while ensureSessionEnv runs (or returns
+        // an already-warm env from workspace ensure).
+        broadcast({
+          type: 'thinking',
+          messageId: assistantMsgId,
+          sessionId,
+          agentId: agent.id,
+          agentName: agent.name,
+          agentColor: agent.color ?? null,
+          engine,
+          model,
+        });
+        try {
+          sessionEnv = await ensureSessionEnv(sessionId);
+        } catch (err: unknown) {
+          const errText =
+            `Failed to start session environment for env-owned CLI turn: ` +
+            (err instanceof Error ? err.message : String(err));
+          console.error(`[chat] ${errText}`);
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          drainQueue(sessionId);
+          return;
+        }
+      } else if (
+        ensureSessionEnv &&
+        getProjectSessionStartupCommands(project as ProjectWithCommands).length > 0
+      ) {
+        // Host / sysbox / container: SessionEnvManager.ensure is what starts
+        // project sessionStartupCommands. Without it, the enriched prompt
+        // advertises a permanent "pending" setup that never runs.
+        try {
+          sessionEnv = await ensureSessionEnv(sessionId);
+        } catch (err: unknown) {
+          console.warn(
+            `[chat] session startup ensure failed (${sessionId}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
       }
 
       // Surface base-branch drift (umbrella moved while this card was
@@ -3086,10 +3248,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: err.message,
           });
+          // Env-owned turns insert active_tasks before ensure/auth — clear it
+          // or the session stays "busy" forever and the queue never drains.
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
           maybeFinalizeAutoReviewSession(
             { stmts, broadcast },
             { sessionId, agentId, error: err.message },
           );
+          drainQueue(sessionId);
           return;
         }
         throw err;
@@ -3110,10 +3279,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: errText,
           });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
           maybeFinalizeAutoReviewSession(
             { stmts, broadcast },
             { sessionId, agentId, error: errText },
           );
+          drainQueue(sessionId);
           return;
         }
       }
@@ -3209,16 +3383,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       let imagePromptSuffix = '';
       if (images && images.length > 0) {
-        const imgCwd = session!.worktree_path || project.cwd;
-        const imgDir = path.join(imgCwd, '.agent-hub-images');
-        mkdirSync(imgDir, { recursive: true });
         const imgPaths: string[] = [];
-        for (const img of images as unknown as ImageRef[]) {
-          const srcPath = path.join(uploadsDir, img.filename);
-          if (existsSync(srcPath)) {
-            const destPath = path.join(imgDir, img.filename);
-            writeFileSync(destPath, readFileSync(srcPath));
-            imgPaths.push(destPath);
+        if (sessionEnv && envOwned) {
+          const imgDirRel = '.agent-hub-images';
+          await sessionEnv.worktreeIo.exec(`mkdir -p ${imgDirRel}`, { cwd: '.' });
+          for (const img of images as unknown as ImageRef[]) {
+            const srcPath = path.join(uploadsDir, img.filename);
+            if (existsSync(srcPath)) {
+              const destRel = `${imgDirRel}/${img.filename}`;
+              await sessionEnv.worktreeIo.writeFile(destRel, readFileSync(srcPath));
+              imgPaths.push(`${FIRECRACKER_GUEST_WORKSPACE}/${destRel}`);
+            }
+          }
+        } else {
+          const imgCwd = session!.worktree_path || project.cwd;
+          const imgDir = path.join(imgCwd, '.agent-hub-images');
+          mkdirSync(imgDir, { recursive: true });
+          for (const img of images as unknown as ImageRef[]) {
+            const srcPath = path.join(uploadsDir, img.filename);
+            if (existsSync(srcPath)) {
+              const destPath = path.join(imgDir, img.filename);
+              writeFileSync(destPath, readFileSync(srcPath));
+              imgPaths.push(destPath);
+            }
           }
         }
         if (imgPaths.length > 0) {
@@ -3516,7 +3703,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const parser = createStreamParser(engine);
       let finalText = '';
       let partialFallback = '';
-      let seq = 0;
       let errorOutput = '';
       // Accumulates error payloads that arrive on *stdout* (as JSONL for Codex /
       // Gemini) so the close handler can surface a meaningful message even when
@@ -3540,6 +3726,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               agentHooks: agent.hooks,
               includeSystemHooks: isWorktree,
             });
+            // Env-owned: host writes land on the seed only — mirror settings into
+            // the live guest tree so Claude inside the VM sees the hooks.
+            if (sessionEnv && envOwned) {
+              const settingsHost = path.join(effectiveCwd, '.claude', 'settings.json');
+              if (existsSync(settingsHost)) {
+                await sessionEnv.worktreeIo.exec(`mkdir -p .claude`, { cwd: '.' });
+                await sessionEnv.worktreeIo.writeFile(
+                  '.claude/settings.json',
+                  readFileSync(settingsHost),
+                );
+              }
+            }
           } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);
             console.warn(`[chat] Failed to write hooks config: ${message}`);
@@ -3692,6 +3890,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // AGENT_HUB_PUBLIC_URL (config `publicUrl`). See resolveAgentHubApiBaseForSpawn.
         base.AGENT_HUB_URL = resolveAgentHubApiBaseForSpawn(config);
         base.PROJECT_ID = project.id;
+        {
+          const setup = getSessionStartupStatus(sessionId);
+          if (setup && setup.status !== 'skipped') {
+            base.AGENT_HUB_SESSION_SETUP_STATUS = setup.status;
+            base.AGENT_HUB_SESSION_SETUP_PATH = setup.statusPath;
+          }
+        }
         // Active-PR awareness for the spawned process — companion to the
         // `## Active Pull Request` system-prompt block (see buildEnrichedPrompt).
         // Scripts and skills that key off env vars (e.g. a future "before you
@@ -3738,65 +3943,236 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
 
-      // Pre-spawn cwd guard. Node's child_process.spawn reports ENOENT against
-      // the *command* when the cwd doesn't exist, which historically surfaced
-      // as the misleading "binary not found at <bin>" error even though the bin
-      // itself was fine. Catch this case up front: auto-create the directory
-      // when possible (recoverable) or fail with a precise, actionable message.
-      const ensureCwd = ensureSpawnCwd(effectiveCwd);
-      if (ensureCwd.status === 'auto-created') {
-        console.warn(`[chat] auto-created missing cwd for session ${sessionId}: ${effectiveCwd}`);
-      } else if (ensureCwd.status === 'failed') {
-        const errText =
-          `Working directory does not exist and could not be created: ${effectiveCwd}. ` +
-          `Update the project's "cwd" in Settings or create the directory. ` +
-          `(${ensureCwd.reason})`;
-        console.error(`[chat] ${errText}`);
-        saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
-        broadcast({
-          type: 'error',
-          messageId: assistantMsgId,
-          sessionId,
-          error: errText,
-        });
-        try {
-          stmts.deleteActiveTask.run(sessionId);
-        } catch {}
-        // The turn never spawned (bad cwd) — leave the cache out of `working`.
-        recomputeSessionState(stmts, sessionId, { agentId, broadcast });
-        drainQueue(sessionId);
-        return;
+      // Pre-spawn cwd guard (host path). Env-owned turns use the guest
+      // worktree; the host seed is only checked when we still spawn on host.
+      if (!envOwned) {
+        const ensureCwd = ensureSpawnCwd(effectiveCwd);
+        if (ensureCwd.status === 'auto-created') {
+          console.warn(`[chat] auto-created missing cwd for session ${sessionId}: ${effectiveCwd}`);
+        } else if (ensureCwd.status === 'failed') {
+          const errText =
+            `Working directory does not exist and could not be created: ${effectiveCwd}. ` +
+            `Update the project's "cwd" in Settings or create the directory. ` +
+            `(${ensureCwd.reason})`;
+          console.error(`[chat] ${errText}`);
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          drainQueue(sessionId);
+          return;
+        }
       }
 
       const cliTurnStartMs = Date.now();
-      // Open stdin as a pipe only when the engine branch staged a
-      // `stdinPrompt` (currently codex-cli using the `-` sentinel).
-      // Every other engine leaves stdin closed so an over-eager CLI
-      // never blocks on a read that will never come.
-      const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
-      const proc = spawn(bin, args, {
-        cwd: effectiveCwd,
-        env: spawnEnv,
-        stdio: [childStdin, 'pipe', 'pipe'],
-        // Run as its own process-group leader so killProcessGroup(proc) reaches
-        // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
-        detached: true,
-      });
-      // Feed the prompt to the child once the pipe is open. We
-      // explicitly call `.end()` so the child sees EOF and codex's
-      // `exec -` finalizes the prompt buffer. If the write fails (e.g.
-      // the child died between spawn and write) we swallow the error
-      // — the close handler picks up the exit code and surfaces a
-      // sane message.
-      if (stdinPrompt !== null && proc.stdin) {
+
+      type CliIo = {
+        onSpawned: (cb: () => void) => void;
+        onStdout: (cb: (chunk: string) => void) => void;
+        onStderr: (cb: (chunk: string) => void) => void;
+        onClose: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void;
+        onError: (cb: (err: Error) => void) => void;
+      };
+
+      let cliIo: CliIo;
+      let activeHandle: ActiveChatProcess;
+      let spawnPid: number | null = null;
+      /** Absolute path used for host-side diff enrichment; guest uses seed path. */
+      const hostDiffCwd = effectiveCwd;
+
+      if (envOwned && sessionEnv) {
+        let guestBin = bin;
+        let guestArgs = [...args];
+        let guestEnv: Record<string, string>;
+        let guestCwdRel = '.';
         try {
-          proc.stdin.end(stdinPrompt, 'utf8');
-        } catch (err) {
-          console.error(
-            `[chat] failed to write stdin prompt for ${engine} (${sessionId}):`,
-            err instanceof Error ? err.message : err,
-          );
+          const prepared = await prepareGuestCliTurn({
+            env: sessionEnv,
+            engine,
+            hostBin: bin,
+            hostHome: typeof spawnEnv.HOME === 'string' ? spawnEnv.HOME : undefined,
+          });
+          guestBin = prepared.guestBin;
+          const adapted = adaptSpawnEnvForGuest(spawnEnv, {
+            guestHome: prepared.guestHome,
+            guestSkillsRoot: prepared.guestSkillsRoot,
+          });
+          guestEnv = finalizeGuestSpawnEnv(adapted, prepared.skillScriptDirs, prepared.guestHome, {
+            spawnGuardsDir: prepared.spawnGuardsDir,
+          });
+          const hostWorktree = session!.worktree_path || effectiveCwd;
+          guestCwdRel = hostCwdToWorktreeRelative(effectiveCwd, hostWorktree);
+
+          if (engine === 'claude-code') {
+            const idx = guestArgs.indexOf('--system-prompt-file');
+            if (idx >= 0 && typeof guestArgs[idx + 1] === 'string') {
+              if (systemPromptFileCleanup) {
+                systemPromptFileCleanup();
+                systemPromptFileCleanup = null;
+              }
+              const guestPrompt = await writeGuestSystemPromptFile(
+                sessionEnv,
+                sessionId,
+                enrichedPrompt,
+              );
+              guestArgs[idx + 1] = guestPrompt.guestPath;
+              systemPromptFileCleanup = () => {
+                void guestPrompt.cleanup();
+              };
+            }
+          }
+
+          const command = buildGuestCliCommand(guestBin, guestArgs);
+          const guestProc = sessionEnv.spawn(command, {
+            cwd: guestCwdRel,
+            env: guestEnv,
+            name: `chat:${engine}`,
+          });
+          spawnPid = guestProc.pid;
+          activeHandle = wrapGuestChatProcess((signal) => guestProc.kill(signal));
+
+          let spawned = false;
+          const spawnWaiters: Array<() => void> = [];
+          const markSpawned = () => {
+            if (spawned) return;
+            spawned = true;
+            for (const w of spawnWaiters) w();
+            spawnWaiters.length = 0;
+          };
+          // Guest `started` frame may arrive after we subscribe; also treat
+          // first stdout/stderr as evidence the process is up.
+          const unsubStarted = guestProc.onStdout(() => {
+            markSpawned();
+          });
+          unsubStarted();
+
+          let errorSubs: Array<(err: Error) => void> = [];
+          let closeSubs: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
+          guestProc.onExit((result) => {
+            if (result.error) {
+              for (const cb of errorSubs) cb(result.error);
+            }
+            for (const cb of closeSubs) cb(result.code, result.signal);
+          });
+
+          cliIo = {
+            onSpawned: (cb) => {
+              if (spawned || guestProc.pid != null) {
+                spawned = true;
+                cb();
+                return;
+              }
+              spawnWaiters.push(cb);
+              // Poll pid briefly — createVmAgentProcess sets pid on started frame.
+              const t = setInterval(() => {
+                if (guestProc.pid != null) {
+                  clearInterval(t);
+                  markSpawned();
+                }
+              }, 20);
+              setTimeout(() => clearInterval(t), 30_000).unref?.();
+            },
+            onStdout: (cb) => {
+              guestProc.onStdout((chunk) => {
+                markSpawned();
+                cb(chunk);
+              });
+            },
+            onStderr: (cb) => {
+              guestProc.onStderr((chunk) => {
+                markSpawned();
+                cb(chunk);
+              });
+            },
+            onClose: (cb) => {
+              closeSubs.push(cb);
+            },
+            onError: (cb) => {
+              errorSubs.push(cb);
+            },
+          };
+
+          if (stdinPrompt !== null) {
+            try {
+              guestProc.writeStdin?.(stdinPrompt);
+              guestProc.endStdin?.();
+            } catch (err) {
+              console.error(
+                `[chat] failed to write stdin prompt for ${engine} (${sessionId}):`,
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+        } catch (err: unknown) {
+          const errText =
+            `Failed to spawn ${engine} in session environment: ` +
+            (err instanceof Error ? err.message : String(err));
+          console.error(`[chat] ${errText}`);
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          drainQueue(sessionId);
+          return;
         }
+      } else {
+        // Open stdin as a pipe only when the engine branch staged a
+        // `stdinPrompt` (currently codex-cli using the `-` sentinel).
+        // Every other engine leaves stdin closed so an over-eager CLI
+        // never blocks on a read that will never come.
+        const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
+        const proc = spawn(bin, args, {
+          cwd: effectiveCwd,
+          env: spawnEnv,
+          stdio: [childStdin, 'pipe', 'pipe'],
+          // Run as its own process-group leader so killProcessGroup(proc) reaches
+          // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
+          detached: true,
+        });
+        if (stdinPrompt !== null && proc.stdin) {
+          try {
+            proc.stdin.end(stdinPrompt, 'utf8');
+          } catch (err) {
+            console.error(
+              `[chat] failed to write stdin prompt for ${engine} (${sessionId}):`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+        spawnPid = proc.pid ?? null;
+        activeHandle = wrapHostChildProcess(proc);
+        cliIo = {
+          onSpawned: (cb) => {
+            proc.once('spawn', cb);
+          },
+          onStdout: (cb) => {
+            proc.stdout?.on('data', (chunk: Buffer) => cb(chunk.toString()));
+          },
+          onStderr: (cb) => {
+            proc.stderr?.on('data', (chunk: Buffer) => cb(chunk.toString()));
+          },
+          onClose: (cb) => {
+            proc.on('close', (code, signal) => cb(code, signal));
+          },
+          onError: (cb) => {
+            proc.on('error', cb);
+          },
+        };
+        trackChild(proc);
       }
 
       const S = stmts;
@@ -3832,22 +4208,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // records it came from can go. Node emits `spawn` before any stdout data,
       // so this can never race ahead of a shell THIS turn starts. A spawn that
       // fails emits `error` instead and leaves the records for the next attempt.
-      proc.once('spawn', () => clearEphemeralBackgroundBash(sessionId));
+      cliIo.onSpawned(() => clearEphemeralBackgroundBash(sessionId));
 
-      activeProcesses.set(sessionId, proc);
+      activeProcesses.set(sessionId, activeHandle);
       if (turnStartLockHeld) {
         releaseSessionWorktreeLock(sessionId, 'turn-start');
         turnStartLockHeld = false;
       }
-      trackChild(proc);
       // NOTE: `sessions.last_turn_error` is intentionally NOT cleared here.
       // Clearing at spawn would reopen the Finalize automation gate while a
       // recovery turn is still in flight (a parked ready_to_push run could
       // auto-push mid-recovery). The flag clears only in the close handler,
       // after this turn has verifiably ended cleanly. See server/turn-error.ts.
-      if (proc.pid) {
+      if (spawnPid) {
         try {
-          S.updateActiveTaskPid.run(proc.pid, sessionId);
+          S.updateActiveTaskPid.run(spawnPid, sessionId);
         } catch {}
       }
 
@@ -3996,6 +4371,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 'started',
                 event.startedAt,
                 null,
+                event.detail ?? null,
               );
             } else {
               // `completed` / `failed` — close the most recent open row for
@@ -4006,6 +4382,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               const info = S.completeSessionProgress.run(
                 event.status,
                 finishedAt,
+                event.detail ?? null,
                 sessionId,
                 event.step,
               );
@@ -4017,6 +4394,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   event.status,
                   event.startedAt,
                   finishedAt,
+                  event.detail ?? null,
                 );
               }
             }
@@ -4032,6 +4410,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             status: event.status,
             startedAt: event.startedAt,
             finishedAt: event.finishedAt ?? null,
+            detail: event.detail ?? null,
           });
         }
 
@@ -4099,24 +4478,26 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const codexFileChangeToolUseIds = new Set<string>();
 
       function handleParsedEvents(events: StreamEvent[]): void {
+        // Codex file-change enrichment reads the host seed checkout; under
+        // env-owned sharing the live edits exist only in the guest, so skip.
         const enriched =
-          engine === 'codex-cli'
-            ? enrichCodexFileChangeDiffs(events, effectiveCwd, {
+          engine === 'codex-cli' && !envOwned
+            ? enrichCodexFileChangeDiffs(events, hostDiffCwd, {
                 fileChangeToolUseIds: codexFileChangeToolUseIds,
               })
             : events;
         for (const event of enriched) handleEvent(event);
       }
 
-      proc.stdout!.on('data', (chunk: Buffer) => {
-        handleParsedEvents(parser.feed(chunk));
+      cliIo.onStdout((chunk: string) => {
+        handleParsedEvents(parser.feed(Buffer.from(chunk)));
       });
 
-      proc.stderr!.on('data', (chunk: Buffer) => {
-        errorOutput += chunk.toString();
+      cliIo.onStderr((chunk: string) => {
+        errorOutput += chunk;
       });
 
-      proc.on('close', async (code: number | null, signal: NodeJS.Signals | null) => {
+      cliIo.onClose(async (code: number | null, signal: NodeJS.Signals | null) => {
         activeProcesses.delete(sessionId);
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
@@ -5040,6 +5421,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     {
                       op: opName,
                       route: action.route,
+                      reason: action.reason,
                       tail: action.tail,
                       target: action.target,
                       text: action.text,
@@ -5051,6 +5433,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     {
                       runtime: resolvePreviewReactRuntime(sessionId, [getDevServerRuntime?.()]),
                       launchOpts: browserLaunchOpts,
+                      startPreview: async ({ route, reason }) =>
+                        startSessionPreview({
+                          sessionId,
+                          body: { route, reason },
+                          broadcast,
+                          findAgent,
+                          getDevServerRuntime,
+                          getSession: (id) => stmts.getSession.get(id) as SessionRow | undefined,
+                          routing: {
+                            publicUrl: config.publicUrl,
+                            subdomainBase: config.previewSubdomainBase,
+                          },
+                        }),
                     },
                   );
                 } catch (err: unknown) {
@@ -5515,10 +5910,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
 
         if (previewDetection.task && !previewAlreadyRunning) {
-          // Preview boot is user-initiated only (POST …/preview/start). Agent
-          // `<agenthub:preview>` blocks are ignored so sessions never spin
-          // docker/npm stacks on their own. Do not broadcast preview_failed when
-          // the user already has a running preview — that would clobber Ready UI.
+          // Agent `<agenthub:preview>` XML blocks are ignored — use ReAct
+          // `{"tool":"preview","op":"start"}` instead. Do not broadcast
+          // preview_failed when the user already has a running preview —
+          // that would clobber Ready UI.
           try {
             broadcast({
               type: 'agenthub_preview',
@@ -5526,7 +5921,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               sessionId,
               previewId: '',
               error:
-                '**Preview not started:** only the human can boot a preview via **Start preview** in the chat toolbar. Do not emit `<agenthub:preview>` — the host ignores agent-initiated preview requests.',
+                '**Preview not started:** do not emit `<agenthub:preview>` — the host ignores that XML. Start the preview with ReAct `{"tool":"preview","op":"start"}`, or ask the human to press **Start preview**.',
               logTail: [],
             });
           } catch (err) {
@@ -5759,7 +6154,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         await runWorktreeAutoCommitAndDrainTail(true);
       });
 
-      proc.on('error', (err: Error) => {
+      cliIo.onError((err: Error) => {
         spawnErrored = true;
         activeProcesses.delete(sessionId);
         // Also clean up the per-spawn system-prompt temp file when

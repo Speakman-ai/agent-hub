@@ -55,6 +55,15 @@ describe('resolveDevServerPortClientUrl', () => {
       resolveDevServerPortClientUrl('https://hub.example.com', 'sess-1', 8787, 8787, false),
     ).toBe('/api/sessions/sess-1/preview/proxy/p/8787');
   });
+
+  it('uses the proxy path for env-scoped dial even without publicUrl', () => {
+    expect(
+      resolveDevServerPortClientUrl(null, 'sess-1', 4180, 8787, false, { useProxy: true }),
+    ).toBe('/api/sessions/sess-1/preview/proxy/p/8787');
+    expect(
+      resolveDevServerPortClientUrl('   ', 'sess-1', 4100, 5173, true, { useProxy: true }),
+    ).toBe('/api/sessions/sess-1/preview/proxy');
+  });
 });
 
 describe('previewUpstreamPath', () => {

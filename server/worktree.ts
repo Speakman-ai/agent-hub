@@ -1644,6 +1644,18 @@ async function setupDependencies(
   installCommand: string | null,
   options: SetupDependenciesOptions,
 ): Promise<void> {
+  // Firecracker seeds the guest from a tar of this clone. Host `node_modules`
+  // (symlink from the project checkout, or a background `npm install`) is
+  // useless inside the VM and races the snapshot ("file changed as we read
+  // it"). The guest provisions its own deps after boot.
+  if (config.sessionEnvAdapter === 'firecracker') {
+    console.log(
+      `[Workspace] Skipping host dependency install for ${cloneDir} ` +
+        `(sessionEnvAdapter=firecracker; guest provisions its own deps)`,
+    );
+    return;
+  }
+
   const nodeModulesDirs: NodeModulesEntry[] = [];
 
   const rootNM = path.join(sourceDir, 'node_modules');

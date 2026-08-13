@@ -121,6 +121,20 @@ describe('Projects', () => {
       expect(res.body.preCommitCommands).toEqual(['npm run lint']);
     });
 
+    it('creates project with sessionStartupCommands', async () => {
+      const res = await request
+        .post('/api/projects')
+        .send({
+          id: 'proj-startup-create',
+          name: 'Startup Project',
+          cwd: '/tmp',
+          sessionStartupCommands: ['  python3 -m venv .venv  ', ''],
+        })
+        .expect(201);
+
+      expect(res.body.sessionStartupCommands).toEqual(['python3 -m venv .venv']);
+    });
+
     it('creates project with checkHealCommands and checkHealMaxRounds', async () => {
       const res = await request
         .post('/api/projects')
@@ -724,6 +738,24 @@ describe('Projects', () => {
         .send({ preCommitCommands: [] })
         .expect(200);
       expect(cleared.body.preCommitCommands).toBeUndefined();
+    });
+
+    it('updates sessionStartupCommands and clears when empty array', async () => {
+      const proj = await createProject();
+      const withHooks = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ sessionStartupCommands: ['  echo hi  ', 'pip install -r requirements.txt'] })
+        .expect(200);
+      expect(withHooks.body.sessionStartupCommands).toEqual([
+        'echo hi',
+        'pip install -r requirements.txt',
+      ]);
+
+      const cleared = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ sessionStartupCommands: [] })
+        .expect(200);
+      expect(cleared.body.sessionStartupCommands).toBeUndefined();
     });
 
     it('updates checkHealCommands / checkHealMaxRounds and clears heal list with empty array', async () => {

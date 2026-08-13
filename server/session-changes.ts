@@ -8,15 +8,17 @@
  * uncommitted edits (the total session delta) — newly created files that
  * git doesn't track yet are surfaced separately as `added`.
  *
- * This module is pure git plumbing with an injectable {@link GitExec} so
- * tests never spawn a real `git` (they pass canned output). The default
- * exec is execFile-based; it tolerates `git diff --no-index`'s exit code 1
- * (which simply means "differences found"), unlike the throw-on-nonzero
- * wrappers in worktree.ts / auto-git.ts.
+ * Every command runs through the session's {@link SessionWorktreeIo}, not a
+ * host path: under a microVM env the worktree lives on the guest's disk and
+ * the host directory is a boot-time seed, so host-side git would report the
+ * session as empty. The {@link GitExec} seam stays injectable so tests never
+ * spawn a real `git` (they pass canned output). It tolerates `git diff
+ * --no-index`'s exit code 1 (which simply means "differences found"), unlike
+ * the throw-on-nonzero wrappers in worktree.ts / auto-git.ts.
  */
-import { execFile } from 'child_process';
 import path from 'path';
-import { resolveDefaultBranch } from './git-default-branch.js';
+import { resolveDefaultBranchIn } from './git-default-branch.js';
+import type { SessionWorktreeIo } from './session-env/worktree-io.js';
 
 /** Thrown when a caller-supplied path is absolute or escapes the worktree.
  * Callers (the route layer) map this to a 400 rather than a 500. */
@@ -28,24 +30,40 @@ export class UnsafePathError extends Error {
 }
 
 /**
- * Resolve a caller-supplied path against the worktree root, rejecting
- * absolute paths and `..` traversal that would escape it.
+ * Normalize a caller-supplied worktree-relative path, rejecting absolute
+ * paths and `..` traversal that would escape the worktree.
  *
- * Returns the normalized worktree-relative path (forward-slashed, matching
- * git's own output), or `null` when the path is unsafe. This is the choke
- * point that stops the per-file diff endpoint from becoming an arbitrary
- * server file-read primitive via `git diff --no-index /etc/passwd`.
+ * Returns the normalized path (forward-slashed, matching git's own output),
+ * or `null` when the path is unsafe. This is the choke point that stops the
+ * per-file diff endpoint from becoming an arbitrary server file-read
+ * primitive via `git diff --no-index /etc/passwd`.
+ *
+ * Deliberately takes no root: containment is a property of the path itself,
+ * and the root is not knowable under an `env-owned` env, where the worktree
+ * lives inside the guest and has no host path at all.
  */
-export function resolveWorktreeRelativePath(worktreePath: string, file: string): string | null {
+export function resolveWorktreeRelativePath(file: string): string | null {
   if (!file || typeof file !== 'string') return null;
   if (path.isAbsolute(file) || file.startsWith('\\')) return null;
-  const root = path.resolve(worktreePath);
-  const resolved = path.resolve(root, file);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
-  const rel = path.relative(root, resolved);
-  if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return null;
+  let rel = path.normalize(file);
+  // `normalize` keeps a trailing separator ("src/" → "src/"); git never emits
+  // one, so drop it to keep these paths comparable with git output.
+  while (rel.length > 1 && rel.endsWith(path.sep)) rel = rel.slice(0, -1);
+  if (!rel || rel === '.' || rel === '..') return null;
+  if (rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return null;
   // Normalize separators to match git's forward-slash output on all platforms.
   return rel.split(path.sep).join('/');
+}
+
+/**
+ * Hub-owned paths that can appear dirty in a session worktree but are not
+ * session/agent code changes (e.g. session-startup status). Exclude them from
+ * the Changes pane / badge so the count matches "diff vs base branch of what
+ * you would ship", not platform bookkeeping.
+ */
+export function isHubManagedChangePath(file: string): boolean {
+  const rel = resolveWorktreeRelativePath(file) ?? file.replaceAll('\\', '/');
+  return rel === '.agent-hub-runtime' || rel.startsWith('.agent-hub-runtime/');
 }
 
 /** Git's empty-tree object hash — used as the base when no real base ref
@@ -118,45 +136,39 @@ export interface GitExecResult {
   code: number;
 }
 
-export type GitExec = (args: string[], opts: { cwd: string }) => Promise<GitExecResult>;
+/**
+ * Run git in the session worktree. Takes no `cwd`: every command here runs at
+ * the worktree root, and under an `env-owned` env there is no host directory
+ * to name anyway.
+ */
+export type GitExec = (args: string[]) => Promise<GitExecResult>;
 
-/** Default exec: spawns `git` via execFile, never prompts, and resolves
- * (rather than rejects) on the expected non-zero exits used by diff. */
-export const defaultGitExec: GitExec = (args, { cwd }) =>
-  new Promise((resolve) => {
-    execFile(
-      'git',
-      args,
-      {
-        cwd,
-        timeout: GIT_TIMEOUT_MS,
-        maxBuffer: GIT_MAX_BUFFER,
-        env: {
-          ...process.env,
-          GIT_TERMINAL_PROMPT: '0',
-          GIT_OPTIONAL_LOCKS: '0',
-        },
-      },
-      (err, stdout, stderr) => {
-        const code =
-          err && typeof (err as { code?: unknown }).code === 'number'
-            ? ((err as { code: number }).code as number)
-            : err
-              ? 1
-              : 0;
-        resolve({ stdout: stdout?.toString() ?? '', stderr: stderr?.toString() ?? '', code });
-      },
-    );
-  });
+/**
+ * The default exec, bound to one session's worktree. Never prompts, and
+ * resolves (rather than rejects) on the expected non-zero exits used by diff.
+ */
+export function gitExecForWorktree(io: SessionWorktreeIo): GitExec {
+  return async (args) => {
+    const { stdout, stderr, exitCode } = await io.git(args, {
+      timeoutMs: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
+      env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
+    });
+    // A signal kill reports `null`; treat it as a generic failure so callers
+    // that only inspect `code` cannot mistake it for success.
+    return { stdout, stderr, code: exitCode ?? 1 };
+  };
+}
 
 export interface ComputeChangesOptions {
-  worktreePath: string;
+  /** The session's worktree, wherever it physically lives. */
+  io: SessionWorktreeIo;
   /** Preferred base branch — typically the session's resolved PR base
    * (card → epic → repo default, via resolveFinalizeBaseBranchForCard).
    * Falls back to the repo's resolved default branch when null/undefined. */
   baseBranch?: string | null;
   exec?: GitExec;
-  resolveBaseBranch?: (cwd: string) => Promise<string | null>;
+  resolveBaseBranch?: (io: SessionWorktreeIo) => Promise<string | null>;
 }
 
 /** Map a `git diff --name-status` letter to our status enum. */
@@ -272,15 +284,18 @@ function assertGitOk(label: string, result: GitExecResult): void {
  */
 async function untrackedNumstat(
   exec: GitExec,
-  cwd: string,
   file: string,
 ): Promise<{ additions: number; binary: boolean }> {
   try {
     // `--no-index` exits 1 when differences exist — expected, not an error.
-    const r = await exec(
-      ['diff', '--no-index', '--numstat', '--', '/dev/null', noIndexOperand(file)],
-      { cwd },
-    );
+    const r = await exec([
+      'diff',
+      '--no-index',
+      '--numstat',
+      '--',
+      '/dev/null',
+      noIndexOperand(file),
+    ]);
     const line = r.stdout.split('\n').find((l) => l.trim().length > 0) ?? '';
     const [addsRaw, delsRaw] = line.split('\t');
     if (addsRaw === undefined || delsRaw === undefined) return { additions: 0, binary: false };
@@ -291,8 +306,8 @@ async function untrackedNumstat(
   }
 }
 
-async function revParse(exec: GitExec, cwd: string, ref: string): Promise<string | null> {
-  const r = await exec(['rev-parse', '--verify', '--quiet', ref], { cwd });
+async function revParse(exec: GitExec, ref: string): Promise<string | null> {
+  const r = await exec(['rev-parse', '--verify', '--quiet', ref]);
   const sha = r.stdout.trim();
   return r.code === 0 && sha ? sha : null;
 }
@@ -300,18 +315,14 @@ async function revParse(exec: GitExec, cwd: string, ref: string): Promise<string
 /** Resolve the SHA the session diff should be anchored against: the
  * merge-base of the best-available base ref and HEAD, falling back to the
  * base ref itself, then to the empty tree. */
-async function resolveBaseSha(
-  exec: GitExec,
-  cwd: string,
-  baseBranch: string | null,
-): Promise<string | null> {
+async function resolveBaseSha(exec: GitExec, baseBranch: string | null): Promise<string | null> {
   const candidates = baseBranch
     ? [`origin/${baseBranch}`, baseBranch]
     : ['origin/HEAD', 'origin/main', 'origin/master', 'main', 'master'];
   for (const ref of candidates) {
-    const sha = await revParse(exec, cwd, ref);
+    const sha = await revParse(exec, ref);
     if (!sha) continue;
-    const mb = await exec(['merge-base', sha, 'HEAD'], { cwd });
+    const mb = await exec(['merge-base', sha, 'HEAD']);
     const mbSha = mb.stdout.trim();
     if (mb.code === 0 && mbSha) return mbSha;
     return sha;
@@ -353,12 +364,12 @@ async function mapLimit<T, R>(
  * that invariant — anything that doesn't resolve inside the worktree is
  * dropped. Returns the normalized paths not already present in `alreadySeen`.
  */
-function normalizeUntracked(cwd: string, lsFilesZ: string, alreadySeen: Set<string>): string[] {
+function normalizeUntracked(lsFilesZ: string, alreadySeen: Set<string>): string[] {
   const out: string[] = [];
   const seen = new Set(alreadySeen);
   for (const raw of lsFilesZ.split('\0')) {
     if (!raw) continue;
-    const safe = resolveWorktreeRelativePath(cwd, raw);
+    const safe = resolveWorktreeRelativePath(raw);
     if (!safe || seen.has(safe)) continue;
     seen.add(safe);
     out.push(safe);
@@ -378,26 +389,27 @@ function normalizeUntracked(cwd: string, lsFilesZ: string, alreadySeen: Set<stri
 export async function listSessionChangedPaths(
   opts: ComputeChangesOptions,
 ): Promise<Map<string, { untracked: boolean }>> {
-  const exec = opts.exec ?? defaultGitExec;
-  const resolveBase = opts.resolveBaseBranch ?? resolveDefaultBranch;
-  const cwd = opts.worktreePath;
+  const exec = opts.exec ?? gitExecForWorktree(opts.io);
+  const resolveBase = opts.resolveBaseBranch ?? resolveDefaultBranchIn;
 
-  const baseBranch = opts.baseBranch ?? (await resolveBase(cwd)) ?? null;
-  const baseSha = (await resolveBaseSha(exec, cwd, baseBranch)) ?? EMPTY_TREE_SHA;
+  const baseBranch = opts.baseBranch ?? (await resolveBase(opts.io)) ?? null;
+  const baseSha = (await resolveBaseSha(exec, baseBranch)) ?? EMPTY_TREE_SHA;
 
   const [nameStatusRes, untrackedRes] = await Promise.all([
-    exec(['diff', '-M', '-z', '--name-status', baseSha], { cwd }),
-    exec(['ls-files', '--others', '--exclude-standard', '-z'], { cwd }),
+    exec(['diff', '-M', '-z', '--name-status', baseSha]),
+    exec(['ls-files', '--others', '--exclude-standard', '-z']),
   ]);
   assertGitOk('diff --name-status', nameStatusRes);
   assertGitOk('ls-files --others', untrackedRes);
 
   const membership = new Map<string, { untracked: boolean }>();
   for (const s of parseNameStatusZ(nameStatusRes.stdout)) {
+    if (isHubManagedChangePath(s.path)) continue;
     membership.set(s.path, { untracked: false });
   }
   const seen = new Set(membership.keys());
-  for (const p of normalizeUntracked(cwd, untrackedRes.stdout, seen)) {
+  for (const p of normalizeUntracked(untrackedRes.stdout, seen)) {
+    if (isHubManagedChangePath(p)) continue;
     membership.set(p, { untracked: true });
   }
   return membership;
@@ -410,21 +422,20 @@ export async function listSessionChangedPaths(
 export async function computeSessionChanges(
   opts: ComputeChangesOptions,
 ): Promise<SessionChangesSummary> {
-  const exec = opts.exec ?? defaultGitExec;
-  const resolveBase = opts.resolveBaseBranch ?? resolveDefaultBranch;
-  const cwd = opts.worktreePath;
+  const exec = opts.exec ?? gitExecForWorktree(opts.io);
+  const resolveBase = opts.resolveBaseBranch ?? resolveDefaultBranchIn;
 
-  const baseBranch = opts.baseBranch ?? (await resolveBase(cwd)) ?? null;
-  const baseSha = (await resolveBaseSha(exec, cwd, baseBranch)) ?? EMPTY_TREE_SHA;
+  const baseBranch = opts.baseBranch ?? (await resolveBase(opts.io)) ?? null;
+  const baseSha = (await resolveBaseSha(exec, baseBranch)) ?? EMPTY_TREE_SHA;
 
   const [branchRes, headRes, statusRes, nameStatusRes, numstatRes, untrackedRes] =
     await Promise.all([
-      exec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd }),
-      exec(['rev-parse', 'HEAD'], { cwd }),
-      exec(['status', '--porcelain'], { cwd }),
-      exec(['diff', '-M', '-z', '--name-status', baseSha], { cwd }),
-      exec(['diff', '-M', '-z', '--numstat', baseSha], { cwd }),
-      exec(['ls-files', '--others', '--exclude-standard', '-z'], { cwd }),
+      exec(['rev-parse', '--abbrev-ref', 'HEAD']),
+      exec(['rev-parse', 'HEAD']),
+      exec(['status', '--porcelain']),
+      exec(['diff', '-M', '-z', '--name-status', baseSha]),
+      exec(['diff', '-M', '-z', '--numstat', baseSha]),
+      exec(['ls-files', '--others', '--exclude-standard', '-z']),
     ]);
 
   // Surface a real git failure instead of silently returning an empty/partial
@@ -449,6 +460,7 @@ export async function computeSessionChanges(
   const seen = new Set<string>();
 
   for (const s of statuses) {
+    if (isHubManagedChangePath(s.path)) continue;
     const stat = numstat.get(s.path);
     files.push({
       path: s.path,
@@ -468,7 +480,9 @@ export async function computeSessionChanges(
   // is an all-add patch) so the UI doesn't show "+0 −0" for new text files.
   // Paths are normalized through the worktree-safety helper before any are
   // handed to git, since they feed `--no-index` spawns.
-  const untrackedToAdd = normalizeUntracked(cwd, untrackedRes.stdout, seen);
+  const untrackedToAdd = normalizeUntracked(untrackedRes.stdout, seen).filter(
+    (p) => !isHubManagedChangePath(p),
+  );
   // Bound the per-file numstat probes: untracked respects .gitignore so this
   // is normally a handful of files, but cap it so a pathological set can't
   // spawn hundreds of git processes. Files past the cap fall back to 0/0.
@@ -476,7 +490,7 @@ export async function computeSessionChanges(
   // Bounded concurrency: process all targets but never more than
   // UNTRACKED_NUMSTAT_CONCURRENCY git spawns in flight at once.
   const untrackedStats = await mapLimit(numstatTargets, UNTRACKED_NUMSTAT_CONCURRENCY, (p) =>
-    untrackedNumstat(exec, cwd, p),
+    untrackedNumstat(exec, p),
   );
   const untrackedStatByPath = new Map(numstatTargets.map((p, i) => [p, untrackedStats[i]]));
   for (const p of untrackedToAdd) {
@@ -518,15 +532,14 @@ export interface ComputeFileDiffOptions extends ComputeChangesOptions {
  * `tooLarge` (with an empty body) when the patch exceeds the byte cap.
  */
 export async function computeFileDiff(opts: ComputeFileDiffOptions): Promise<FileDiffResult> {
-  const exec = opts.exec ?? defaultGitExec;
-  const resolveBase = opts.resolveBaseBranch ?? resolveDefaultBranch;
-  const cwd = opts.worktreePath;
+  const exec = opts.exec ?? gitExecForWorktree(opts.io);
+  const resolveBase = opts.resolveBaseBranch ?? resolveDefaultBranchIn;
 
   // Defense-in-depth: never hand an unvalidated path to git. Even though the
   // route also verifies membership in the changed-file set, this primitive
   // must be safe on its own — an absolute or `..`-traversal path would
   // otherwise turn `git diff --no-index` into a server file-read oracle.
-  const file = resolveWorktreeRelativePath(cwd, opts.file);
+  const file = resolveWorktreeRelativePath(opts.file);
   if (!file) throw new UnsafePathError(opts.file);
 
   let unifiedDiff: string;
@@ -536,15 +549,15 @@ export async function computeFileDiff(opts: ComputeFileDiffOptions): Promise<Fil
     // anything else (e.g. 128 when the file vanished after the membership
     // check, or the repo went invalid) is fatal and must surface, not be
     // treated as an empty diff.
-    const r = await exec(['diff', '--no-index', '--', '/dev/null', noIndexOperand(file)], { cwd });
+    const r = await exec(['diff', '--no-index', '--', '/dev/null', noIndexOperand(file)]);
     if (r.code !== 0 && r.code !== 1) throw new GitCommandError('diff --no-index', r);
     unifiedDiff = r.stdout;
   } else {
-    const baseBranch = opts.baseBranch ?? (await resolveBase(cwd)) ?? null;
-    const baseSha = (await resolveBaseSha(exec, cwd, baseBranch)) ?? EMPTY_TREE_SHA;
+    const baseBranch = opts.baseBranch ?? (await resolveBase(opts.io)) ?? null;
+    const baseSha = (await resolveBaseSha(exec, baseBranch)) ?? EMPTY_TREE_SHA;
     // Plain `git diff` (no --exit-code) returns 0 even with differences, so a
     // non-zero exit is always a real failure — don't return it as an empty diff.
-    const r = await exec(['diff', '-M', baseSha, '--', file], { cwd });
+    const r = await exec(['diff', '-M', baseSha, '--', file]);
     if (r.code !== 0) throw new GitCommandError('diff', r);
     unifiedDiff = r.stdout;
   }

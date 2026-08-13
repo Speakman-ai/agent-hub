@@ -82,7 +82,7 @@ import type {
 } from '../types.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
-import { getWorkflowWorkspaceDir } from '../project-mode.js';
+import { getProjectMode, getWorkflowWorkspaceDir } from '../project-mode.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -415,6 +415,7 @@ interface OnboardBody {
     color?: string;
     githubRepo?: { owner: string; repo: string };
     preCommitCommands?: unknown;
+    sessionStartupCommands?: unknown;
     checkHealCommands?: unknown;
     checkHealMaxRounds?: unknown;
   };
@@ -448,7 +449,7 @@ interface ProjectCommands {
   lint: string | null;
 }
 
-/** Normalize `preCommitCommands` from JSON bodies (POST/PATCH/onboard). */
+/** Normalize string-command lists from JSON bodies (POST/PATCH/onboard). */
 function normalizePreCommitCommands(value: unknown): string[] {
   if (value == null) return [];
   if (!Array.isArray(value)) return [];
@@ -457,6 +458,9 @@ function normalizePreCommitCommands(value: unknown): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+/** Same shape as pre-commit — reused for `sessionStartupCommands`. */
+const normalizeSessionStartupCommands = normalizePreCommitCommands;
 
 /** Persisted 1–5; invalid values yield `undefined` (caller returns 400 when the field was explicit). */
 function normalizeCheckHealMaxRounds(value: unknown): number | undefined {
@@ -1673,6 +1677,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       color,
       commands,
       preCommitCommands,
+      sessionStartupCommands,
       checkHealCommands,
       checkHealMaxRounds,
       mode,
@@ -1685,6 +1690,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       color?: string;
       commands?: ProjectCommands;
       preCommitCommands?: unknown;
+      sessionStartupCommands?: unknown;
       checkHealCommands?: unknown;
       checkHealMaxRounds?: unknown;
       mode?: unknown;
@@ -1801,6 +1807,10 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     }
     const pcCreate = normalizePreCommitCommands(preCommitCommands);
     if (pcCreate.length) (project as Record<string, unknown>).preCommitCommands = pcCreate;
+    const startupCreate = normalizeSessionStartupCommands(sessionStartupCommands);
+    if (startupCreate.length) {
+      (project as Record<string, unknown>).sessionStartupCommands = startupCreate;
+    }
     const healCreate = normalizePreCommitCommands(checkHealCommands);
     if (healCreate.length) (project as Record<string, unknown>).checkHealCommands = healCreate;
     if ((req.body as Record<string, unknown>).checkHealMaxRounds !== undefined) {
@@ -1982,6 +1992,44 @@ This workspace has no git repo and no PR automation — your job is planning, or
   router.patch('/api/projects/:projectId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    // Mode validation MUST run before any in-place mutation of the shared
+    // project object. A mixed PATCH like `{ cwd, mode }` used to rewrite cwd
+    // first, then 409 on the mode guard — leaving the rejected cwd live in
+    // memory (and later persisted by an unrelated save).
+    let pendingMode: ProjectMode | 'clear' | undefined;
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'mode')) {
+      const rawMode = (req.body as Record<string, unknown>).mode;
+      if (rawMode === null || rawMode === undefined || rawMode === '') {
+        pendingMode = 'clear';
+      } else if (rawMode === 'dev' || rawMode === 'workflow') {
+        pendingMode = rawMode;
+      } else {
+        return res.status(400).json({ error: 'mode must be "dev", "workflow", or null' });
+      }
+      // Mode drives SessionEnv adapter + worktree routing (workflow → host /
+      // project.cwd; dev → possibly Firecracker env-owned). A live session may
+      // already hold a warm env on the old adapter — flipping mode would split
+      // chat onto one filesystem while terminal/preview keep another. Reject
+      // until every live session is archived/deleted.
+      const nextEffective: ProjectMode = pendingMode === 'clear' ? 'dev' : pendingMode;
+      if (nextEffective !== getProjectMode(project)) {
+        let liveSessionCount = 0;
+        for (const agent of project.agents) {
+          liveSessionCount += (stmts.getSessions.all(agent.id) as Array<{ id: string }>).length;
+        }
+        if (liveSessionCount > 0) {
+          return res.status(409).json({
+            error:
+              `Cannot change project mode while ${liveSessionCount} live session(s) exist. ` +
+              'Archive or delete them first so session environments are not split across adapters.',
+            code: 'mode_change_blocked_by_sessions',
+            liveSessionCount,
+          });
+        }
+      }
+    }
+
     const allowed = ['name', 'cwd', 'color', 'defaultReviewer', 'githubRepo'] as const;
     for (const key of allowed) {
       if ((req.body as Record<string, unknown>)[key] !== undefined)
@@ -2044,6 +2092,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
       const pc = normalizePreCommitCommands(rawPc);
       if (pc.length) (project as Record<string, unknown>).preCommitCommands = pc;
       else delete (project as Record<string, unknown>).preCommitCommands;
+    }
+    if ((req.body as Record<string, unknown>).sessionStartupCommands !== undefined) {
+      const rawSu = (req.body as Record<string, unknown>).sessionStartupCommands;
+      const su = normalizeSessionStartupCommands(rawSu);
+      if (su.length) (project as Record<string, unknown>).sessionStartupCommands = su;
+      else delete (project as Record<string, unknown>).sessionStartupCommands;
     }
     if ((req.body as Record<string, unknown>).checkHealCommands !== undefined) {
       const rawH = (req.body as Record<string, unknown>).checkHealCommands;
@@ -2330,14 +2384,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
         }
       }
     }
-    if (Object.prototype.hasOwnProperty.call(req.body as object, 'mode')) {
-      const rawMode = (req.body as Record<string, unknown>).mode;
-      if (rawMode === null || rawMode === undefined || rawMode === '') {
+    if (pendingMode !== undefined) {
+      if (pendingMode === 'clear') {
         delete (project as Record<string, unknown>).mode;
-      } else if (rawMode === 'dev' || rawMode === 'workflow') {
-        (project as Record<string, unknown>).mode = rawMode as ProjectMode;
       } else {
-        return res.status(400).json({ error: 'mode must be "dev", "workflow", or null' });
+        (project as Record<string, unknown>).mode = pendingMode;
       }
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'awsEnabled')) {
@@ -2889,6 +2940,10 @@ This workspace has no git repo and no PR automation — your job is planning, or
     }
     const pcOnboard = normalizePreCommitCommands(projectData.preCommitCommands);
     if (pcOnboard.length) (project as Record<string, unknown>).preCommitCommands = pcOnboard;
+    const startupOnboard = normalizeSessionStartupCommands(projectData.sessionStartupCommands);
+    if (startupOnboard.length) {
+      (project as Record<string, unknown>).sessionStartupCommands = startupOnboard;
+    }
     const healOnboard = normalizePreCommitCommands(projectData.checkHealCommands);
     if (healOnboard.length) (project as Record<string, unknown>).checkHealCommands = healOnboard;
     if (projectData.checkHealMaxRounds !== undefined) {

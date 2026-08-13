@@ -32,6 +32,7 @@ import {
   shouldEnableAutoMergeForAutomation,
 } from './automation.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import { resolveFinalizeGateBase } from './resolve-base-branch.js';
 import { flakeGateBlocksAutoPush, parseFlakeGate } from './flake-recovery.js';
 import { sessionBlocksFinalize } from '../project-mode-guards.js';
@@ -243,10 +244,19 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
   });
   // Fail closed for auto-start: an unresolved authoritative base or an empty
   // net diff vs the real target must not silently kick off Finalize.
-  const committable = await getSessionCommittableChanges(ctx.session.worktree_path!, {
-    base: gateBase,
-  });
+  const committable = await getSessionCommittableChanges(
+    await sessionWorktreeIoFor(sessionId, ctx.session.worktree_path!),
+    { base: gateBase },
+  );
   if (!committable.ok) return;
+
+  // Re-check after the await above. End-of-turn auto-start can overlap the
+  // first run's push: the entry hasPushed gate passes, then push marks the
+  // session pushed while we are still probing the worktree. Without this
+  // second look, agent_block opens a *new* run keyed on the post-review HEAD
+  // (idempotency uses kickoff HEAD, not the pushed row's original SHA) and
+  // re-enters rebase/review hell on an already-shipped session.
+  if (sessionPostFinalizePushBlocksAutomation(sessionId, 'auto-start')) return;
 
   const latest = routeDeps.stmts.getLatestFinalizeRunForSession.get(sessionId) as
     | FinalizeRunRow
@@ -255,6 +265,7 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
     void maybeAutoPushReadyFinalizeRun({ sessionId, runId: latest.id });
     return;
   }
+  if (latest?.status === 'pushed') return;
 
   const started = await startFinalizeRunBackground(routeDeps, {
     project: ctx.project,

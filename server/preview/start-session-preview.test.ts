@@ -55,6 +55,20 @@ describe('startSessionPreview', () => {
     expect(handlePreviewBlock).not.toHaveBeenCalled();
   });
 
+  it('returns 404 for a soft-deleted session', async () => {
+    // The row survives deletion, so this path used to be accepted and then fail
+    // deep in the env manager as "has no workspace yet, wait for provisioning" —
+    // a provisioning step that is not running for a deleted session.
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast: vi.fn(),
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getSession: () => ({ ...session, deleted_at: '2026-08-06 20:54:48' }) as SessionRow,
+    });
+    expect(result).toEqual({ ok: false, error: 'Session not found', statusCode: 404 });
+    expect(handlePreviewBlock).not.toHaveBeenCalled();
+  });
+
   it('adapts the managed dev-server runtime and preserves the worktree cwd', async () => {
     const broadcast = vi.fn();
     const runtime = {
@@ -77,6 +91,36 @@ describe('startSessionPreview', () => {
     expect(deps).toMatchObject({ broadcast, project, worktreePath: '/tmp/wt' });
     await deps!.runtime!.startPreview('sess-1', project, '/tmp/wt');
     expect(runtime.start).toHaveBeenCalledWith('sess-1', project, '/tmp/wt');
+  });
+
+  it('refuses to start when the deployment can only serve a path-prefix preview', async () => {
+    // Starting anyway produces a preview that boots, reports ready, and
+    // then white-screens or never hot-reloads — a deployment problem that
+    // looks like an application bug.
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast: vi.fn(),
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getSession: () => session,
+      routing: { publicUrl: 'https://hub.example.com', subdomainBase: null },
+    });
+    expect(result).toMatchObject({ ok: false, statusCode: 501 });
+    expect(handlePreviewBlock).not.toHaveBeenCalled();
+  });
+
+  it('starts normally when subdomain routing is configured', async () => {
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast: vi.fn(),
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getDevServerRuntime: () => null,
+      getSession: () => session,
+      routing: {
+        publicUrl: 'https://hub.example.com',
+        subdomainBase: 'preview.hub.example.com',
+      },
+    });
+    expect(result).toEqual({ ok: true, started: true });
   });
 
   it('returns 409 before worktree provisioning finishes', async () => {

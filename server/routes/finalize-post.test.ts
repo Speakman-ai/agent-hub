@@ -26,6 +26,21 @@ const { userCanReadSession, userOwnsSession } = vi.hoisted(() => ({
 
 const execFileAsyncMock = vi.hoisted(() => vi.fn());
 
+/**
+ * Worktree git now runs through `HostWorktreeIo`, i.e. `promisify(execFile)`
+ * with an argv array — so fakes receive `(file, args)`, not a command string.
+ */
+function gitArgv(args: unknown): string[] {
+  return Array.isArray(args) ? (args as string[]) : [];
+}
+
+/** A non-zero git exit, in the shape `execFile` actually rejects with. */
+function gitExit(code: number, stdout = ''): Promise<never> {
+  return Promise.reject(
+    Object.assign(new Error(`git exited ${code}`), { code, stdout, stderr: '' }),
+  );
+}
+
 // The Finalize gate's net-diff probe calls `execFile` with a callback (it does
 // not go through the promisified path below), so the fake has to invoke it or
 // the kickoff hangs. Canned answers: the base ref resolves, and HEAD differs
@@ -147,7 +162,13 @@ beforeEach(() => {
   userOwnsSession.mockReturnValue(true);
   cancelSessionChatRun.mockReset();
   execFileAsyncMock.mockReset();
-  execFileAsyncMock.mockResolvedValue({ stdout: 'deadbeef\n', stderr: '' });
+  // Default: every ref resolves, and `diff --quiet` exits 1 — the branch has a
+  // real net diff against its base, so the Finalize gate has something to ship.
+  execFileAsyncMock.mockImplementation(async (_file: unknown, args: unknown) => {
+    const argv = gitArgv(args);
+    if (argv[0] === 'diff' && argv.includes('--quiet')) return gitExit(1);
+    return { stdout: 'deadbeef\n', stderr: '' };
+  });
   dbGetSession.mockReset();
 });
 
@@ -264,8 +285,8 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       worktree_branch: 'feature/x',
     });
     // `git status --porcelain` reports edits; `git log <upstream>..HEAD` is empty.
-    execFileAsyncMock.mockImplementation(async (cmd: string) =>
-      typeof cmd === 'string' && cmd.includes('git log')
+    execFileAsyncMock.mockImplementation(async (_file: unknown, args: unknown) =>
+      gitArgv(args)[0] === 'log'
         ? { stdout: '', stderr: '' }
         : { stdout: ' M server/index.ts\n', stderr: '' },
     );
@@ -306,6 +327,39 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       .expect(409);
 
     expect(res.body).toMatchObject({ error: 'session_finalized_pushed' });
+    expect(runFinalize).not.toHaveBeenCalled();
+  });
+
+  it('409 when push lands after the entry post-push check (inner kickoff TOCTOU)', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    // Entry gate is clean; a sibling push marks the session pushed while
+    // kickoff is still resolving the worktree / HEAD.
+    let pushedLookups = 0;
+    stmts.getPushedFinalizeRunForSession.get.mockImplementation(() => {
+      pushedLookups += 1;
+      if (pushedLookups === 1) return undefined;
+      return { id: 'run-pushed', status: 'pushed' };
+    });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({ mode: 'full' })
+      .expect(409);
+
+    expect(res.body).toMatchObject({ error: 'session_finalized_pushed' });
+    expect(pushedLookups).toBeGreaterThan(1);
     expect(runFinalize).not.toHaveBeenCalled();
   });
 

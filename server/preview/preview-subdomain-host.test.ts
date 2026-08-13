@@ -23,20 +23,35 @@ describe('parsePreviewSubdomainHost', () => {
     expect(parsePreviewSubdomainHost([BASE], BASE)).toBeNull();
   });
 
-  it('returns the session id on a clean match', () => {
-    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, BASE)).toBe(SID);
+  it('returns the session id and the primary port on a clean match', () => {
+    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, BASE)).toEqual({
+      sessionId: SID,
+      internalPort: null,
+    });
   });
 
   it('lower-cases both the host and base for the comparison', () => {
     // Host headers are case-insensitive per RFC 7230 §5.4; mismatched
     // casing must not gate dispatch.
-    expect(parsePreviewSubdomainHost(`${SID.toUpperCase()}.${BASE.toUpperCase()}`, BASE)).toBe(SID);
-    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, BASE.toUpperCase())).toBe(SID);
+    expect(parsePreviewSubdomainHost(`${SID.toUpperCase()}.${BASE.toUpperCase()}`, BASE)).toEqual({
+      sessionId: SID,
+      internalPort: null,
+    });
+    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, BASE.toUpperCase())).toEqual({
+      sessionId: SID,
+      internalPort: null,
+    });
   });
 
   it('strips a trailing :port from both arguments', () => {
-    expect(parsePreviewSubdomainHost(`${SID}.${BASE}:8443`, BASE)).toBe(SID);
-    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, `${BASE}:443`)).toBe(SID);
+    expect(parsePreviewSubdomainHost(`${SID}.${BASE}:8443`, BASE)).toEqual({
+      sessionId: SID,
+      internalPort: null,
+    });
+    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, `${BASE}:443`)).toEqual({
+      sessionId: SID,
+      internalPort: null,
+    });
   });
 
   it('returns null when the host does not end in the configured base', () => {
@@ -77,8 +92,45 @@ describe('parsePreviewSubdomainHost', () => {
   it('handles base with leading or trailing dots gracefully', () => {
     // Operators have been known to write `base.com.` (FQDN with root
     // dot) or `.base.com` in config; normalise both ends defensively.
-    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, `.${BASE}`)).toBe(SID);
-    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, `${BASE}.`)).toBe(SID);
+    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, `.${BASE}`)).toEqual({
+      sessionId: SID,
+      internalPort: null,
+    });
+    expect(parsePreviewSubdomainHost(`${SID}.${BASE}`, `${BASE}.`)).toEqual({
+      sessionId: SID,
+      internalPort: null,
+    });
+  });
+
+  it('resolves the <port>--<sid> form to that extra port', () => {
+    // A multi-port app (frontend + API) only works end-to-end when every
+    // port renders at `/`; under a path prefix the extra port hits the
+    // same absolute-asset-URL wall the primary used to.
+    expect(parsePreviewSubdomainHost(`8787--${SID}.${BASE}`, BASE)).toEqual({
+      sessionId: SID,
+      internalPort: 8787,
+    });
+    expect(parsePreviewSubdomainHost(`3000--${SID}.${BASE}`, BASE)).toEqual({
+      sessionId: SID,
+      internalPort: 3000,
+    });
+  });
+
+  it('rejects malformed port prefixes rather than falling back to the primary', () => {
+    // Silently treating `0080--<sid>` as the primary port would route a
+    // request meant for one upstream to a different one.
+    for (const label of [
+      `0--${SID}`,
+      `0080--${SID}`,
+      `65536--${SID}`,
+      `999999--${SID}`,
+      `abc--${SID}`,
+      `--${SID}`,
+      `8787--${SID}--extra`,
+      `8787--not-a-uuid`,
+    ]) {
+      expect(parsePreviewSubdomainHost(`${label}.${BASE}`, BASE)).toBeNull();
+    }
   });
 
   it('handles IPv6-in-Host (port-stripping safety)', () => {
@@ -111,9 +163,28 @@ describe('buildPreviewSubdomainHost', () => {
     expect(buildPreviewSubdomainHost('not-a-uuid', BASE)).toBeNull();
   });
 
-  it('round-trips with the parser', () => {
-    const host = buildPreviewSubdomainHost(SID, BASE);
-    expect(host).not.toBeNull();
-    expect(parsePreviewSubdomainHost(host!, BASE)).toBe(SID);
+  it('builds <port>--<sid>.<base> when an internal port is given', () => {
+    expect(buildPreviewSubdomainHost(SID, BASE, 8787)).toBe(`8787--${SID}.${BASE}`);
+  });
+
+  it('returns null for a port outside the valid range', () => {
+    expect(buildPreviewSubdomainHost(SID, BASE, 0)).toBeNull();
+    expect(buildPreviewSubdomainHost(SID, BASE, 65536)).toBeNull();
+  });
+
+  it('round-trips with the parser, with and without a port', () => {
+    const primary = buildPreviewSubdomainHost(SID, BASE);
+    expect(primary).not.toBeNull();
+    expect(parsePreviewSubdomainHost(primary!, BASE)).toEqual({
+      sessionId: SID,
+      internalPort: null,
+    });
+
+    const extra = buildPreviewSubdomainHost(SID, BASE, 8787);
+    expect(extra).not.toBeNull();
+    expect(parsePreviewSubdomainHost(extra!, BASE)).toEqual({
+      sessionId: SID,
+      internalPort: 8787,
+    });
   });
 });

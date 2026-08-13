@@ -24,9 +24,12 @@
  *     providing one is an error.
  *   - `steps[].name` is optional and defaults to `step <index>` (1-indexed),
  *     matching what a human would write in a worklog.
- *   - `timeout_minutes` is optional. The runtime cap is 4 hours. The config
- *     may LOWER the cap (e.g. fast-fail at 10 minutes) but never RAISE it —
- *     and the floor is 1 minute. Out-of-range values error.
+ *   - `timeout_minutes` is optional. It is the **pipeline wall-clock**
+ *     cap (kill a hung job/step). The runtime ceiling is 4 hours. The
+ *     config may LOWER that hang limit (e.g. fast-fail at 10 minutes)
+ *     but never RAISE it — and the floor is 1 minute. Out-of-range
+ *     values error. This field does **not** cap the §13 active-time
+ *     budget (agent/reviewer turns); that stays at the 4-hour default.
  *   - Unknown top-level, job-level, and step-level keys are a HARD ERROR
  *     rather than a silent ignore, so an author can't believe they enabled a
  *     feature the runner ignored. In particular, an `autofix:` field is

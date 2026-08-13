@@ -524,8 +524,19 @@ describe('ReAct block parse — preview tool', () => {
     expect(parsed.actions[0]).toMatchObject({ route: '/settings' });
   });
 
-  it('rejects unsupported preview ops — including lifecycle verbs', () => {
-    for (const op of ['start', 'stop', 'restart', 'boot']) {
+  it('accepts preview start and rejects other lifecycle verbs', () => {
+    const start = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"preview","op":"start","route":"/app","reason":"verify UI"}]}</agenthub:react>',
+    );
+    if ('error' in start) throw new Error(start.detail);
+    expect(start.actions[0]).toMatchObject({
+      tool: 'preview',
+      op: 'start',
+      route: '/app',
+      reason: 'verify UI',
+    });
+
+    for (const op of ['stop', 'restart', 'boot']) {
       const parsed = parseReActBlock(
         `<agenthub:react>{"actions":[{"tool":"preview","op":"${op}"}]}</agenthub:react>`,
       );
@@ -533,6 +544,16 @@ describe('ReAct block parse — preview tool', () => {
       if ('error' in parsed) {
         expect(parsed.detail).toMatch(/supported preview operation/);
       }
+    }
+  });
+
+  it('rejects preview start with a non-path route', () => {
+    const parsed = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"preview","op":"start","route":"https://example.com"}]}</agenthub:react>',
+    );
+    expect(parsed).toMatchObject({ error: 'malformed' });
+    if ('error' in parsed) {
+      expect(parsed.detail).toMatch(/start route must start with "\/"/);
     }
   });
 

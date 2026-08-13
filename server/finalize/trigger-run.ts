@@ -18,6 +18,7 @@ import type {
 import { computeIdempotencyKey, runFinalize } from './orchestrator.js';
 import { buildOrchestratorDeps } from './orchestrator-deps.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import {
   resolveFinalizeBaseBranchForCard,
   resolveFinalizeGateBase,
@@ -32,6 +33,11 @@ import {
   tryAcquireSessionWorktreeLock,
   waitForSessionWorktreeLockRelease,
 } from '../session-worktree-lock.js';
+import {
+  hasPushedFinalizeRun,
+  POST_FINALIZE_PUSH_LOCK_ERROR,
+  POST_FINALIZE_PUSH_LOCK_MESSAGE,
+} from './post-push-session-lock.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -132,6 +138,7 @@ export type TriggerFinalizeRunResult =
       body: { ok: true; run_id: null; status: string; message: string; card_id: string };
     }
   | { httpStatus: 409; body: { error: string; run_id: string; status: string; message: string } }
+  | { httpStatus: 409; body: { error: string; message: string } }
   | {
       httpStatus: 400;
       body: { error: string; message: string };
@@ -173,30 +180,61 @@ async function kickoffFinalizeRunBody(
     return { kind: 'error', error: 'no_branch', message: 'Session has no worktree_branch.' };
   }
 
+  // Defense in depth for the post-push lock. HTTP kickoff already checks this
+  // before calling in; automation can still race past its entry gate while a
+  // sibling push marks the session pushed — refuse any kickoff once a pushed
+  // finalize_runs row exists for the session. Re-check after every await below
+  // (and again after the kickoff claim): push does not share this function's
+  // early return, so a TOCTOU across worktree I/O would otherwise start a new
+  // agent_block run on an already-shipped session.
+  const refuseIfPushed = (): { kind: 'error'; error: string; message: string } | null => {
+    if (!hasPushedFinalizeRun(stmts, session.id)) return null;
+    return {
+      kind: 'error',
+      error: POST_FINALIZE_PUSH_LOCK_ERROR,
+      message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
+    };
+  };
+  {
+    const blocked = refuseIfPushed();
+    if (blocked) return blocked;
+  }
+
   const gateBase = resolveFinalizeGateBase({
     card,
     worktreePath: session.worktree_path,
     getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
-  const committable = await getSessionCommittableChanges(session.worktree_path, {
-    base: gateBase,
-  });
+  const io = await sessionWorktreeIoFor(session.id, session.worktree_path);
+  {
+    const blocked = refuseIfPushed();
+    if (blocked) return blocked;
+  }
+  const committable = await getSessionCommittableChanges(io, { base: gateBase });
   if (!committable.ok) {
     return { kind: 'error', error: committable.error, message: committable.message };
   }
+  {
+    const blocked = refuseIfPushed();
+    if (blocked) return blocked;
+  }
 
+  // Read from the session, not its recorded path: the head this resolves
+  // becomes the run's idempotency key and the sha the gates are judged
+  // against, so a stale read here mislabels the entire run.
   let headSha: string;
   try {
-    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
-      cwd: session.worktree_path,
-      timeout: 30_000,
-      maxBuffer: 1 * 1024 * 1024,
-    });
-    headSha = stdout.trim();
+    const head = await io.git(['rev-parse', 'HEAD'], { timeoutMs: 30_000 });
+    if (head.exitCode !== 0) throw new Error(head.stderr.trim() || 'git rev-parse HEAD failed');
+    headSha = head.stdout.trim();
     if (!headSha) throw new Error('empty rev-parse output');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { kind: 'error', error: 'no_head_sha', message: `Could not resolve HEAD: ${msg}` };
+  }
+  {
+    const blocked = refuseIfPushed();
+    if (blocked) return blocked;
   }
 
   // Resolve which attempt this kickoff opens. Each explicit user click of
@@ -258,6 +296,17 @@ async function kickoffFinalizeRunBody(
     return { kind: 'in_flight', runId: '', status: 'queued' };
   }
 
+  // Claim held: combine with the pushed predicate before launching. A sibling
+  // push can land between the last refuseIfPushed and claim insert; without
+  // this check we would still start a fresh run.
+  {
+    const blocked = refuseIfPushed();
+    if (blocked) {
+      stmts.deleteFinalizeKickoffClaim.run(claimKey);
+      return blocked;
+    }
+  }
+
   let shouldReleaseClaim = true;
   let runFinalizeStarted = false;
   try {
@@ -268,6 +317,10 @@ async function kickoffFinalizeRunBody(
       worktreePath: session.worktree_path,
       getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });
+    {
+      const blocked = refuseIfPushed();
+      if (blocked) return blocked;
+    }
     // Cancellation handle: the orchestrator honors this signal at every
     // awaitable boundary. We register it under the run's id (once visible)
     // so the HTTP cancel route can trip it across call stacks, halting the
@@ -446,6 +499,14 @@ export async function triggerFinalizeRun(
 
   switch (outcome.kind) {
     case 'error':
+      // Match the HTTP pre-check for the post-push lock so a TOCTOU refuse
+      // inside kickoff surfaces the same 409 clients already handle.
+      if (outcome.error === POST_FINALIZE_PUSH_LOCK_ERROR) {
+        return {
+          httpStatus: 409,
+          body: { error: outcome.error, message: outcome.message },
+        };
+      }
       return {
         httpStatus: 400,
         body: { error: outcome.error, message: outcome.message },

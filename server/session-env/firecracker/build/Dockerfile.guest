@@ -1,0 +1,137 @@
+# Guest filesystem for a session microVM.
+#
+# Built from the *same* finalize runner image CI uses, so a command a session
+# runs and a command the gate runs execute against the same toolchain. The
+# alternative — a purpose-built minimal guest — reintroduces exactly the
+# "works in my session, fails in CI" gap the shared image was created to close.
+#
+# What a VM guest needs that a container does not:
+#   - a real init (systemd) to supervise dockerd and the agent
+#   - a kernel-facing boot path: fstab, machine-id, console, networking
+#   - socat, because Node cannot speak AF_VSOCK (see the bridge unit)
+
+ARG RUNNER_IMAGE=agent-hub/finalize-runner:ubuntu-24.04
+FROM ${RUNNER_IMAGE}
+
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      systemd \
+      systemd-sysv \
+      dbus \
+      socat \
+      iproute2 \
+      iputils-ping \
+      ca-certificates \
+      udev \
+    && rm -rf /var/lib/apt/lists/*
+
+# The workspace disk is mounted by workspace.mount, not fstab, so systemd
+# orders it against the agent that depends on it. Only the root device belongs
+# here; the kernel cmdline already passes `root=/dev/vda`.
+RUN printf '/dev/vda / ext4 rw,relatime 0 1\n' > /etc/fstab \
+    && mkdir -p /workspace \
+    && chown 1000:1000 /workspace
+
+# node-pty for the agent's terminal support. Native addons cannot be bundled,
+# so it is installed here against the guest's own Node — an addon built for a
+# different ABI fails at load, not at build. It goes in the same directory the
+# agent bundle lands in (/usr/local/lib/agent-hub/vm-agent.mjs) because that is
+# where Node's resolver looks first when the bundle imports `node-pty`.
+RUN mkdir -p /usr/local/lib/agent-hub \
+    && cd /usr/local/lib/agent-hub \
+    && npm install --no-package-lock --no-audit --no-fund node-pty \
+    && npm cache clean --force
+
+# A baked-in machine-id would make every session VM identical to systemd and
+# to anything that keys off it. Empty means "generate on first boot".
+RUN rm -f /etc/machine-id /var/lib/dbus/machine-id \
+    && touch /etc/machine-id
+
+# Units that only make sense on real hardware or a cloud instance. Left
+# enabled they add seconds of boot time waiting on devices and metadata
+# endpoints that do not exist in a Firecracker guest.
+#
+# systemd-udev-trigger.service is emphatically NOT in this list. It replays
+# `add` uevents for devices that already existed when udevd started, which is
+# every device in a microVM. Masking it means no `.device` units are ever
+# created, so workspace.mount waits the full DefaultDeviceTimeoutSec on
+# /dev/vdb and then fails — taking the agent and the vsock bridge with it and
+# leaving a VM that boots, pings, and answers nothing.
+RUN systemctl mask \
+      systemd-random-seed.service \
+      e2scrub_reap.service \
+      apt-daily.timer \
+      apt-daily-upgrade.timer \
+      man-db.timer \
+      motd-news.timer \
+    || true
+
+# Firecracker exposes no RTC — the `IO write @ 0x70` errors on the console are
+# the guest failing to read a CMOS clock that is not there. Without NTP the
+# clock starts at whatever timestamp systemd finds on disk and never advances
+# to real time, which breaks TLS certificate validation for every `npm
+# install` and `docker pull` a session makes.
+RUN systemctl unmask systemd-timesyncd.service 2>/dev/null || true
+RUN systemctl enable systemd-timesyncd.service 2>/dev/null || true
+
+# eth0 is configured statically from the kernel cmdline (`ip=`), so no
+# DHCP client should race it.
+RUN systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
+
+# NOTE: /etc/resolv.conf is deliberately *not* written here. Docker bind-mounts
+# it over during build, so a RUN cannot modify it and the export drops it as an
+# empty file — which reads as "no DNS" rather than as an error, leaving a guest
+# that routes fine and resolves nothing. build-guest-artifacts.sh writes the
+# default into the assembled rootfs instead, and agent-hub-resolv.service
+# overrides it at boot from the host-supplied cmdline.
+
+# Serial console: this is the only way to see a guest that fails before the
+# agent starts, which is precisely when you need it most.
+RUN systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
+
+# dockerd inside the guest — a session bringing up its own postgres and
+# mailhog is the motivating case for VM-level isolation.
+RUN systemctl enable docker.service 2>/dev/null || true
+
+# Agent engine CLIs — chat turns under env-owned Firecracker run *inside* the
+# guest, so these must exist on PATH here (mirrors server/Dockerfile runtime).
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex \
+    && command -v claude \
+    && command -v gemini \
+    && command -v codex
+
+# Cursor Agent + Grok install into the workspace user's ~/.local/bin.
+# finalize-runner uses uid 1000 as `runner`.
+#
+# Order matters: both installers expose an `agent` shim. Install Grok first,
+# then Cursor, then force `agent` → Cursor's binary so cursor-agent sessions
+# do not silently invoke Grok (which leaves the UI on "Waiting…" forever).
+# Pin GROK_BIN_DIR to ~/.local/bin so the baked binary is on the same PATH
+# Cursor uses. Runtime discovery still searches ~/.grok/bin as a fallback
+# (xAI's installer default when GROK_BIN_DIR is unset).
+RUN if id runner >/dev/null 2>&1; then \
+      su - runner -c 'export GROK_BIN_DIR="$HOME/.local/bin"; curl -fsSL https://x.ai/cli/install.sh | bash' ; \
+      su - runner -c 'curl -fsSL https://cursor.com/install | bash' ; \
+      su - runner -c 'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; \
+        target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
+        test -n "$target" && test -x "$target"; \
+        ln -sfn "$target" "$HOME/.local/bin/agent"; \
+        command -v agent; command -v cursor-agent; command -v grok' ; \
+    else \
+      export GROK_BIN_DIR="$HOME/.local/bin"; \
+      curl -fsSL https://x.ai/cli/install.sh | bash ; \
+      curl -fsSL https://cursor.com/install | bash ; \
+      export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; \
+      target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
+      ln -sfn "$target" "$HOME/.local/bin/agent"; \
+    fi
+
+# `Delegate=yes` so containers started inside the guest get their own cgroup
+# subtree rather than fighting systemd for the root one.
+RUN mkdir -p /etc/systemd/system/docker.service.d \
+    && printf '[Service]\nDelegate=yes\n' \
+       > /etc/systemd/system/docker.service.d/delegate.conf
+
+CMD ["/sbin/init"]

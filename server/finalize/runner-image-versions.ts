@@ -50,6 +50,14 @@ export interface RunnerImageVersions {
   buildx: string;
   /** GitHub CLI (`gh`). */
   githubCli: string;
+  /**
+   * AWS CLI v2, from AWS's official installer zip — Ubuntu 24.04 (noble)
+   * dropped the `awscli` apt package entirely, so `aptPackages: ['awscli']`
+   * cannot resolve and repo scripts that shell out to `aws` (Survey Tracker's
+   * `sync_db_from_aws`) fail with "command not found". GitHub's ubuntu-24.04
+   * image ships it, so baking it in is parity as well as a fix.
+   */
+  awsCli: string;
 }
 
 /**
@@ -62,6 +70,7 @@ export const RUNNER_IMAGE_VERSIONS: RunnerImageVersions = {
   compose: '2.38.2',
   buildx: '0.34.1',
   githubCli: '2.95.0',
+  awsCli: '2.36.8',
 };
 
 /**

@@ -1,7 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import os from 'os';
+import path from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { evaluateFinalizeShipGate, findLatestFinalizeRunForHead } from './ship-gate.js';
 import { computeIdempotencyKey } from './finalize-keys.js';
+import { setSessionWorktreeIoResolver } from '../session-worktree-io.js';
+import { fakeEnvOwnedIo } from '../test/fake-worktree-io.js';
 import type { FinalizeRunRow, SessionRow } from '../types.js';
+
+const tempDirs: string[] = [];
+afterEach(() => {
+  setSessionWorktreeIoResolver(null);
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 function session(overrides: Partial<SessionRow> = {}): SessionRow {
   return {
@@ -25,6 +36,97 @@ describe('evaluateFinalizeShipGate', () => {
       },
       { session: session(), projectId: 'proj', headSha: 'abc' },
     );
+    expect(gate.allowed).toBe(true);
+    expect(gate.code).toBe('no_finalize_config');
+  });
+
+  it('gates on the host seed when the guest cannot answer', async () => {
+    // Observed on the dev sandbox: the guest lookup came back empty for a
+    // ci.yaml that was demonstrably on the guest disk, and because the lookup
+    // failure was read as "no CI configured" the gate answered `allowed` for a
+    // Finalize-gated project. An unreachable or wrong answer from the guest is
+    // not evidence of absence, and the seed the session was cloned from still
+    // proves the project is gated.
+    const seeded = mkdtempSync(path.join(os.tmpdir(), 'ship-gate-'));
+    mkdirSync(path.join(seeded, '.agent-hub'), { recursive: true });
+    writeFileSync(path.join(seeded, '.agent-hub/ci.yaml'), 'jobs: {}\n');
+    tempDirs.push(seeded);
+    setSessionWorktreeIoResolver(async () => fakeEnvOwnedIo({ files: {} }));
+
+    const gate = await evaluateFinalizeShipGate(
+      {
+        stmts: {
+          getActiveFinalizeRunForSession: { get: vi.fn(() => undefined) },
+          getFinalizeRunByIdempotencyKey: { get: vi.fn(() => undefined) },
+        } as never,
+      },
+      {
+        session: session({ worktree_path: seeded }),
+        projectId: 'proj',
+        headSha: 'abc123',
+      },
+    );
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.code).toBe('must_use_finalize');
+  });
+
+  it('assumes Finalize is configured when the worktree lookup throws', async () => {
+    // A microVM that will not boot must not read as "this project has no CI".
+    setSessionWorktreeIoResolver(async () => {
+      throw new Error('guest agent did not answer');
+    });
+
+    const gate = await evaluateFinalizeShipGate(
+      {
+        stmts: {
+          getActiveFinalizeRunForSession: { get: vi.fn(() => undefined) },
+          getFinalizeRunByIdempotencyKey: { get: vi.fn(() => undefined) },
+        } as never,
+      },
+      { session: session({ worktree_path: '/nonexistent-seed' }), projectId: 'proj', headSha: 'a' },
+    );
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.code).toBe('must_use_finalize');
+  });
+
+  it('finds ci.yaml in a guest worktree and still gates', async () => {
+    // The default lookup used to stat the host path. A microVM session keeps
+    // the repo in the guest, so that stat missed and the gate reported the
+    // project as unconfigured — letting the agent push straight past Finalize
+    // on exactly the projects that require it. No `ciConfigExists` override
+    // here on purpose: the default path is what regressed.
+    const io = fakeEnvOwnedIo({ files: { '.agent-hub/ci.yaml': 'jobs: {}\n' } });
+    setSessionWorktreeIoResolver(async () => io);
+
+    const gate = await evaluateFinalizeShipGate(
+      {
+        stmts: {
+          getActiveFinalizeRunForSession: { get: vi.fn(() => undefined) },
+          getFinalizeRunByIdempotencyKey: { get: vi.fn(() => undefined) },
+        } as never,
+      },
+      { session: session(), projectId: 'proj', headSha: 'abc123' },
+    );
+
+    expect(gate.allowed).toBe(false);
+    expect(gate.code).toBe('must_use_finalize');
+  });
+
+  it('opens the gate when the worktree genuinely has no ci.yaml', async () => {
+    setSessionWorktreeIoResolver(async () => fakeEnvOwnedIo({ files: {} }));
+
+    const gate = await evaluateFinalizeShipGate(
+      {
+        stmts: {
+          getActiveFinalizeRunForSession: { get: vi.fn() },
+          getFinalizeRunByIdempotencyKey: { get: vi.fn() },
+        } as never,
+      },
+      { session: session(), projectId: 'proj', headSha: 'abc123' },
+    );
+
     expect(gate.allowed).toBe(true);
     expect(gate.code).toBe('no_finalize_config');
   });

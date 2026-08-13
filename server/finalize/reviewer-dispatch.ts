@@ -1460,7 +1460,8 @@ worktree for project \`${project.id}\` (${projectName}), card
 
 **No GitHub PR exists yet.** Do NOT call \`gh\`, the GitHub API, or any
 HTTP endpoint to fetch PR data — there is nothing to fetch. The diff
-below is the complete input.
+below is the complete input. Missing PR number / repo / dispatch
+metadata is expected. Do **not** refuse the review or ask for a PR URL.
 
 ## The ticket this change must satisfy
 
@@ -1538,9 +1539,11 @@ avoid blocking is the failure mode this rubric exists to prevent.
 
 ## Output contract
 
-Return your result as a single JSON object — no prose around it:
+Write a short prose review, then end the turn with this block and nothing
+after it:
 
-\`\`\`json
+\`\`\`
+<agenthub:review-verdict>
 {
   "verdict": "approved" | "changes_requested",
   "threads": [
@@ -1552,6 +1555,7 @@ Return your result as a single JSON object — no prose around it:
     }
   ]
 }
+</agenthub:review-verdict>
 \`\`\`
 
 - \`threads\` may be empty when there is genuinely nothing worth noting.
@@ -1559,7 +1563,6 @@ Return your result as a single JSON object — no prose around it:
 - Prefix every \`body\` with \`**[N/10]**\` (the severity score) so the
   side-panel UI can sort and filter.
 
-The host parses this JSON, persists each thread to \`reviewer_threads\`,
-and uses the verdict to gate the next phase. Anything outside the JSON
-block is discarded.`;
+The host parses the verdict block, persists each thread to
+\`reviewer_threads\`, and uses the verdict to gate the next phase.`;
 }

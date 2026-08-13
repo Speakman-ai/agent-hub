@@ -9,17 +9,23 @@
  *
  * `devServer.aptPackages` names those packages. This module turns them into an
  * `apt-get install` command and runs it **inside the session's SessionEnv,
- * before `startCommand`** — but only when the env is the sysbox backend (an
- * isolated, rootless per-session container). On the host backend the install
- * is refused with a loud warning: apt needs root and would mutate the shared
- * Hub host, the exact unsafe thing this whole feature exists to avoid.
+ * before `startCommand`** — but only when the env is a per-session container
+ * (`sysbox` or `container`), where root is confined to that container and the
+ * filesystem it mutates dies with the session. On the `host` backend the
+ * install is refused with a loud warning: apt needs root and would mutate the
+ * shared Hub host, the exact unsafe thing this whole feature exists to avoid.
  *
  * The command builder is pure and independently tested; the package names are
  * charset-validated upstream by `dev-server-config.ts`, so no shell
  * metacharacter can reach the interpolated command here.
  */
 
-import type { SessionEnv, SessionEnvExit, SessionEnvProcess } from '../session-env/session-env.js';
+import type {
+  SessionEnv,
+  SessionEnvExit,
+  SessionEnvKind,
+  SessionEnvProcess,
+} from '../session-env/session-env.js';
 
 /** Stream label used for system-deps log lines in the preview log tail. */
 export const SYSTEM_DEPS_PROCESS_NAME = 'system-deps';
@@ -31,17 +37,47 @@ export const SYSTEM_DEPS_PROCESS_NAME = 'system-deps';
  * common cache-staleness footgun). `--no-install-recommends` keeps the layer
  * lean; `DEBIAN_FRONTEND=noninteractive` avoids tzdata-style prompts hanging
  * the boot. Package names are pre-validated (see `APT_PACKAGE_RE`).
+ *
+ * The container backends exec as a non-root sudoer (`runner`), so apt is
+ * elevated at runtime rather than at build time: `id -u` decides, which keeps
+ * the one command correct on an image that execs as root and on one that does
+ * not. `env` carries `DEBIAN_FRONTEND` through sudo — a bare `VAR=x sudo …`
+ * assignment does not survive sudo's environment reset.
  */
 export function buildAptInstallCommand(packages: readonly string[]): string | null {
   if (packages.length === 0) return null;
   const list = packages.join(' ');
   return (
-    `apt-get update && ` +
-    `DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${list}`
+    `apt_sudo=''; [ "$(id -u)" -eq 0 ] || apt_sudo='sudo -n'; ` +
+    `$apt_sudo apt-get update && ` +
+    `$apt_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${list}`
   );
 }
 
 export type SystemDepsSkipReason = 'no-packages' | 'host-backend';
+
+/**
+ * Backends that can run `apt-get` safely. The predicate keys on the property
+ * that actually makes the install safe — root is confined to a container whose
+ * filesystem is discarded with the session — rather than naming a single
+ * backend. `container` was added after this module shipped; gating on
+ * `kind === 'sysbox'` alone silently skipped the install on every Hub whose
+ * host lacks the sysbox runtime, which is the common deployment.
+ */
+function canInstallSystemDeps(kind: SessionEnvKind): boolean {
+  switch (kind) {
+    case 'sysbox':
+    case 'container':
+    case 'firecracker':
+      return true;
+    case 'host':
+      return false;
+    default: {
+      const _exhaustive: never = kind;
+      return _exhaustive;
+    }
+  }
+}
 
 export interface InstallSystemDepsResult {
   /** True only when the apt command actually ran to completion in the env. */
@@ -141,13 +177,14 @@ export async function installDevServerSystemDeps(
   const command = buildAptInstallCommand(opts.aptPackages);
   if (command === null) return { ran: false, skipped: 'no-packages' };
 
-  if (opts.env.kind !== 'sysbox') {
+  if (!canInstallSystemDeps(opts.env.kind)) {
     const msg =
       `[${SYSTEM_DEPS_PROCESS_NAME}] skipped apt install of ` +
       `${opts.aptPackages.length} package(s) — this session runs on the ` +
       `"${opts.env.kind}" backend, which cannot install OS packages safely ` +
       `(apt needs root and would mutate the shared host). Run the Hub with ` +
-      `the sysbox session backend, or bake these packages into a compose image.`;
+      `a per-session container backend, or bake these packages into a ` +
+      `compose image.`;
     opts.logger?.warn(msg);
     opts.onLine?.(msg, 'stderr');
     return { ran: false, skipped: 'host-backend' };

@@ -35,6 +35,7 @@ import {
   lastFinalAssistantTextIndex,
   isSupersededPartialText,
 } from '@shared/utils/assistantTextPartials';
+import { latestSessionEnvLaunch } from '@shared/utils/sessionEnvLaunch';
 import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
 import { extractCredentialRequestBlocks } from '../utils/credentialRequests';
 import AskUserQuestion from './AskUserQuestion';
@@ -171,6 +172,7 @@ function SessionTail({
   const effectiveEvents = events !== undefined ? events : localEvents;
   const blocks = useMemo(() => eventsToBlocks(effectiveEvents ?? []), [effectiveEvents]);
   const hasEvents = !!effectiveEvents && effectiveEvents.length > 0;
+  const envLaunch = useMemo(() => latestSessionEnvLaunch(effectiveEvents), [effectiveEvents]);
 
   const timelineFetchPending =
     !streaming &&
@@ -351,6 +353,8 @@ function SessionTail({
     blocks.length === 0 &&
     !streamingFallbackText &&
     !hasBrowserActivity &&
+    envLaunch?.status !== 'started' &&
+    envLaunch?.status !== 'failed' &&
     (!streaming || message?.content)
   ) {
     return null;
@@ -400,6 +404,18 @@ function SessionTail({
                 parentSessionActive={parentSessionActive}
                 onOpenSession={onOpenSession}
               />
+            ) : envLaunch?.status === 'started' ? (
+              <div
+                className="flex items-center gap-2 text-xs text-sky-300"
+                data-testid="session-env-launching"
+              >
+                <Loader2 size={14} className="animate-spin shrink-0 text-sky-400" />
+                <span>Launching session VM…</span>
+              </div>
+            ) : envLaunch?.status === 'failed' ? (
+              <span className="text-xs text-rose-400" data-testid="session-env-launch-failed">
+                Session VM failed to start
+              </span>
             ) : (
               <span className="text-xs text-gray-500 italic">Waiting for first event…</span>
             )}

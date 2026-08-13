@@ -7,7 +7,7 @@ import {
   resolveSessionEnvBackend,
   unregisterSessionEnvBackend,
 } from './select-session-env.js';
-import { SessionEnv } from './session-env.js';
+import { SessionEnv, type SessionEnvKind } from './session-env.js';
 import { SysboxSessionEnv } from './sysbox-session-env.js';
 
 // Config coercion (`coerceSessionEnvAdapterMode`) and the capability probe
@@ -97,6 +97,77 @@ describe('resolveSessionEnvBackend', () => {
 
   it('defaults registeredBackends to the live registry (host + sysbox)', () => {
     expect(resolveSessionEnvBackend({ configured: 'auto', sysboxAvailable: true })).toBe('sysbox');
+  });
+
+  const withFirecracker = (kinds: SessionEnvKind[]): ReadonlySet<SessionEnvKind> => new Set(kinds);
+
+  it('auto skips microVM even when every tier is available', () => {
+    // MicroVM requires an explicit operator choice — auto never picks it.
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'auto',
+        sysboxAvailable: true,
+        dockerAvailable: true,
+        containerRoutingUsable: true,
+        firecrackerAvailable: true,
+        registeredBackends: withFirecracker(['host', 'sysbox', 'container', 'firecracker']),
+      }),
+    ).toBe('sysbox');
+  });
+
+  it('auto falls through to sysbox when the host cannot boot VMs', () => {
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'auto',
+        sysboxAvailable: true,
+        firecrackerAvailable: false,
+        registeredBackends: withFirecracker(['host', 'sysbox', 'firecracker']),
+      }),
+    ).toBe('sysbox');
+  });
+
+  it('auto ignores firecracker when the adapter is not registered', () => {
+    // Registration is conditional on the capability probe, so an unregistered
+    // backend means a VM would not actually start here.
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'auto',
+        sysboxAvailable: true,
+        firecrackerAvailable: true,
+        registeredBackends: withFirecracker(['host', 'sysbox']),
+      }),
+    ).toBe('sysbox');
+  });
+
+  it('explicit firecracker throws rather than silently degrading', () => {
+    expect(() =>
+      resolveSessionEnvBackend({
+        configured: 'firecracker',
+        sysboxAvailable: true,
+        firecrackerAvailable: false,
+        registeredBackends: withFirecracker(['host', 'sysbox', 'firecracker']),
+      }),
+    ).toThrow(/cannot run microVMs/);
+
+    expect(() =>
+      resolveSessionEnvBackend({
+        configured: 'firecracker',
+        sysboxAvailable: true,
+        firecrackerAvailable: true,
+        registeredBackends: withFirecracker(['host', 'sysbox']),
+      }),
+    ).toThrow(/no firecracker adapter is registered/);
+  });
+
+  it('explicit firecracker resolves when available and registered', () => {
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'firecracker',
+        sysboxAvailable: false,
+        firecrackerAvailable: true,
+        registeredBackends: withFirecracker(['host', 'firecracker']),
+      }),
+    ).toBe('firecracker');
   });
 });
 

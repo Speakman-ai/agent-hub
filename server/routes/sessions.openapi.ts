@@ -508,6 +508,14 @@ registerPath({
   },
 });
 
+const BulkArchiveResponse = z.object({
+  ok: z.boolean(),
+  archived: z.number().int(),
+  deleted: z.number().int(),
+  failed: z.number().int(),
+  archivedIds: z.array(z.string()),
+});
+
 // DELETE /api/agents/:agentId/sessions
 registerPath({
   method: 'delete',
@@ -517,10 +525,13 @@ registerPath({
   request: { params: agentIdParams },
   responses: {
     200: {
-      description: 'Archive counts.',
-      content: jsonContent(
-        z.object({ ok: z.literal(true), archived: z.number().int(), deleted: z.number().int() }),
-      ),
+      description:
+        'Archive result. `ok` is false when any teardown failed; `archivedIds` is the authoritative removed set.',
+      content: jsonContent(BulkArchiveResponse),
+    },
+    500: {
+      description: 'Every candidate teardown failed; nothing was archived.',
+      content: jsonContent(BulkArchiveResponse),
     },
   },
 });
@@ -536,10 +547,13 @@ registerPath({
   request: { params: agentIdParams },
   responses: {
     200: {
-      description: 'Archive counts.',
-      content: jsonContent(
-        z.object({ ok: z.literal(true), archived: z.number().int(), deleted: z.number().int() }),
-      ),
+      description:
+        'Archive result. `ok` is false when any teardown failed; `archivedIds` is the authoritative removed set.',
+      content: jsonContent(BulkArchiveResponse),
+    },
+    500: {
+      description: 'Every candidate teardown failed; nothing was archived.',
+      content: jsonContent(BulkArchiveResponse),
     },
   },
 });
@@ -555,10 +569,13 @@ registerPath({
   request: { params: agentIdParams },
   responses: {
     200: {
-      description: 'Archive counts.',
-      content: jsonContent(
-        z.object({ ok: z.literal(true), archived: z.number().int(), deleted: z.number().int() }),
-      ),
+      description:
+        'Archive result. `ok` is false when any teardown failed; `archivedIds` is the authoritative removed set.',
+      content: jsonContent(BulkArchiveResponse),
+    },
+    500: {
+      description: 'Every candidate teardown failed; nothing was archived.',
+      content: jsonContent(BulkArchiveResponse),
     },
   },
 });

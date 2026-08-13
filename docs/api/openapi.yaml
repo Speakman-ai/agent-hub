@@ -21014,7 +21014,7 @@ paths:
           in: path
       responses:
         "200":
-          description: Archive counts.
+          description: Archive result. `ok` is false when any teardown failed; `archivedIds` is the authoritative removed set.
           content:
             application/json:
               schema:
@@ -21022,16 +21022,47 @@ paths:
                 properties:
                   ok:
                     type: boolean
-                    enum:
-                      - true
                   archived:
                     type: integer
                   deleted:
                     type: integer
+                  failed:
+                    type: integer
+                  archivedIds:
+                    type: array
+                    items:
+                      type: string
                 required:
                   - ok
                   - archived
                   - deleted
+                  - failed
+                  - archivedIds
+        "500":
+          description: Every candidate teardown failed; nothing was archived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                  failed:
+                    type: integer
+                  archivedIds:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - ok
+                  - archived
+                  - deleted
+                  - failed
+                  - archivedIds
   /api/agents/{agentId}/sessions/pushed:
     delete:
       tags:
@@ -21048,7 +21079,7 @@ paths:
           in: path
       responses:
         "200":
-          description: Archive counts.
+          description: Archive result. `ok` is false when any teardown failed; `archivedIds` is the authoritative removed set.
           content:
             application/json:
               schema:
@@ -21056,16 +21087,47 @@ paths:
                 properties:
                   ok:
                     type: boolean
-                    enum:
-                      - true
                   archived:
                     type: integer
                   deleted:
                     type: integer
+                  failed:
+                    type: integer
+                  archivedIds:
+                    type: array
+                    items:
+                      type: string
                 required:
                   - ok
                   - archived
                   - deleted
+                  - failed
+                  - archivedIds
+        "500":
+          description: Every candidate teardown failed; nothing was archived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                  failed:
+                    type: integer
+                  archivedIds:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - ok
+                  - archived
+                  - deleted
+                  - failed
+                  - archivedIds
   /api/agents/{agentId}/sessions/merged:
     delete:
       tags:
@@ -21082,7 +21144,7 @@ paths:
           in: path
       responses:
         "200":
-          description: Archive counts.
+          description: Archive result. `ok` is false when any teardown failed; `archivedIds` is the authoritative removed set.
           content:
             application/json:
               schema:
@@ -21090,16 +21152,47 @@ paths:
                 properties:
                   ok:
                     type: boolean
-                    enum:
-                      - true
                   archived:
                     type: integer
                   deleted:
                     type: integer
+                  failed:
+                    type: integer
+                  archivedIds:
+                    type: array
+                    items:
+                      type: string
                 required:
                   - ok
                   - archived
                   - deleted
+                  - failed
+                  - archivedIds
+        "500":
+          description: Every candidate teardown failed; nothing was archived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  archived:
+                    type: integer
+                  deleted:
+                    type: integer
+                  failed:
+                    type: integer
+                  archivedIds:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - ok
+                  - archived
+                  - deleted
+                  - failed
+                  - archivedIds
   /api/sessions/{sessionId}:
     get:
       tags:
@@ -36922,6 +37015,8 @@ paths:
                         - repo
                       description: GitHub repository selected during onboarding.
                     preCommitCommands:
+                      nullable: true
+                    sessionStartupCommands:
                       nullable: true
                     checkHealCommands:
                       nullable: true

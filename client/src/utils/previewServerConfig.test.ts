@@ -34,15 +34,38 @@ describe('buildPreviewServerConfig', () => {
       // No base/override, but the upstream host the Hub proxy connects over is
       // always allowed (Vite still also allows loopback).
       allowedHosts: ['host.docker.internal'],
-      hmr: { protocol: 'wss', clientPort: 443 },
       watch: { usePolling: true, interval: 300, ignored: PREVIEW_WATCH_IGNORED },
     });
+    // No `hmr` block by default: Vite's client infers host/port/protocol from
+    // the location it was served from, which is already right behind a
+    // same-origin proxy. Pinning wss:443 broke every non-TLS-on-443 Hub.
+    expect(cfg!.hmr).toBeUndefined();
     // Same-origin /api proxied over loopback to the nested API by default.
     expect(cfg!.proxy['/api']).toEqual({ target: 'http://127.0.0.1:3051', ws: true });
     expect(cfg!.proxy['/uploads']).toBe('http://127.0.0.1:3051');
     expect(cfg!.proxy['/design-files']).toBe('http://127.0.0.1:3051');
     // The nested app's live WebSocket (/ws) must be upgraded to the server too.
     expect(cfg!.proxy['/ws']).toEqual({ target: 'http://127.0.0.1:3051', ws: true });
+  });
+
+  it('emits an hmr block only when an operator overrides the transport', () => {
+    expect(
+      buildPreviewServerConfig({
+        AGENT_HUB_PREVIEW: '1',
+        AGENT_HUB_PREVIEW_HMR_CLIENT_PORT: '8443',
+      })!.hmr,
+    ).toEqual({ clientPort: 8443 });
+    expect(
+      buildPreviewServerConfig({ AGENT_HUB_PREVIEW: '1', AGENT_HUB_PREVIEW_HMR_PROTOCOL: 'ws' })!
+        .hmr,
+    ).toEqual({ protocol: 'ws' });
+    expect(
+      buildPreviewServerConfig({
+        AGENT_HUB_PREVIEW: '1',
+        AGENT_HUB_PREVIEW_HMR_PROTOCOL: 'wss',
+        AGENT_HUB_PREVIEW_HMR_CLIENT_PORT: '443',
+      })!.hmr,
+    ).toEqual({ protocol: 'wss', clientPort: 443 });
   });
 
   it('binds the PORT the dev-server runtime injects, not a fixed port', () => {

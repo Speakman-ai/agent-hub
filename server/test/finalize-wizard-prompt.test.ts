@@ -149,7 +149,9 @@ describe('finalize-wizard kickoff prompt', () => {
     // The agent still can't emit a banned field; the prompt enumerates the
     // constraints and the env/matrix rules.
     expect(prompt).toMatch(/`on:` must be `finalize`\/`manual`/);
-    expect(prompt).toMatch(/`timeout_minutes` in `\[1, 240\]`/);
+    expect(prompt).toMatch(
+      /`timeout_minutes` in `\[1, 240\]` \(pipeline wall-clock hang limit, not the 4-hour active-time budget\)/,
+    );
     expect(prompt).toMatch(/Never\*\* propose `shell:`, `uses:`, or `with:`/);
     expect(prompt).toMatch(
       /`env:` \(top\/job\/step\) and `matrix\.include` \(job-level\) are first-class/,

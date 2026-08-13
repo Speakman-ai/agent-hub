@@ -1,0 +1,21 @@
+[Unit]
+Description=Agent Hub session workspace
+# Firecracker ships neither virtio-fs nor 9p, so the worktree arrives as a
+# block device (the second drive in the VM config) rather than a bind mount.
+DefaultDependencies=no
+After=local-fs-pre.target
+Before=local-fs.target umount.target
+Conflicts=umount.target
+
+[Mount]
+What=/dev/vdb
+Where=/workspace
+Type=ext4
+# `nofail` is deliberately absent: a session whose worktree failed to mount
+# would boot into an empty /workspace and quietly run against nothing.
+# The short device timeout keeps a genuinely absent disk from costing the
+# default 90s before anyone finds out.
+Options=rw,noatime,x-systemd.device-timeout=15s
+
+[Install]
+WantedBy=local-fs.target

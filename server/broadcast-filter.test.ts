@@ -253,6 +253,47 @@ describe('shouldDeliverBroadcast', () => {
     expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(true);
     expect(deps.getSessionOwner).not.toHaveBeenCalled();
   });
+
+  it('SKIPS session-event / session-progress for a non-owner on a private session', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u2', role: 'User' };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+      isSharedReadableSession: () => false,
+    });
+    expect(shouldDeliverBroadcast({ type: 'session-event', sessionId: 's1' }, stamp, deps)).toBe(
+      false,
+    );
+    expect(shouldDeliverBroadcast({ type: 'session-progress', sessionId: 's1' }, stamp, deps)).toBe(
+      false,
+    );
+  });
+
+  it('delivers session-progress to non-owners when the session is shared-readable', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u2', role: 'User' };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+      isSharedReadableSession: () => true,
+    });
+    expect(shouldDeliverBroadcast({ type: 'session-progress', sessionId: 's1' }, stamp, deps)).toBe(
+      true,
+    );
+  });
+
+  it('delivers session-progress to the session owner', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u1', role: 'User' };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+    });
+    expect(shouldDeliverBroadcast({ type: 'session-progress', sessionId: 's1' }, stamp, deps)).toBe(
+      true,
+    );
+  });
 });
 
 describe('shouldDeliverSessionScopedBroadcast', () => {

@@ -83,18 +83,55 @@ import {
 } from './replays/rum-lifecycle-reconciler.js';
 import config, { refreshShellPath } from './config.js';
 import {
+  beginSessionEnvSelection,
   getSessionEnvSelection,
   initSessionEnvSelection,
   logSessionEnvSelection,
+  whenSessionEnvSelectionReady,
 } from './session-env/sysbox-capability.js';
-import { createSessionEnv } from './session-env/select-session-env.js';
 import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
+import { probeFirecrackerCapability } from './session-env/firecracker/firecracker-capability.js';
+import { reconcileFirecrackerHost } from './session-env/firecracker/firecracker-slots.js';
+import {
+  createFirecrackerHostIo,
+  stopStaleFirecrackerVmms,
+  createHelperCapabilityDeps,
+  resolveFirecrackerExecConfig,
+} from './session-env/firecracker/firecracker-privileged-exec.js';
+import {
+  firecrackerExecDefaults,
+  firecrackerHostPaths,
+  forgetPersistedFirecrackerDisks,
+  registerFirecrackerBackend,
+  unregisterFirecrackerBackend,
+} from './session-env/firecracker/register-firecracker-backend.js';
+import { SessionEnvManager } from './session-env/session-env-manager.js';
+import { worktreeSharingForKind } from './session-env/session-env.js';
+import {
+  allocateEphemeralHostPort,
+  releaseEphemeralHostPort,
+} from './session-env/ephemeral-host-port.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
+import { setSessionWorktreeIoResolver } from './session-worktree-io.js';
+import { getProjectSessionStartupCommands } from './session-env/session-startup-hooks.js';
+import {
+  emitSessionStartupProgress,
+  emitSessionEnvLaunchProgress,
+} from './session-env/session-env-progress.js';
+import {
+  describeSessionEnvPortRouting,
+  resolveSessionEnvPortRouting,
+} from './session-env/container-routing.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
-import { sessionUsesWorktree } from './project-mode.js';
+import { getProjectMode, sessionUsesWorktree } from './project-mode.js';
+import {
+  resolveSessionEnvAdapterForProject,
+  resolveSessionWorktreePath,
+} from './session-env/workflow-session-env.js';
 import { isSessionWorktreeLocked } from './session-worktree-lock.js';
 import {
   ensureSessionWorkspace,
@@ -248,6 +285,11 @@ import {
 import createChatHandler, { type ChatHandlerDeps, type WebSocketLike } from './chat.js';
 
 import { createPreviewRuntimes } from './preview/preview-runtime-setup.js';
+import {
+  DEFAULT_DEV_SERVER_PORT_ENTRY,
+  resolveDevServerPortEntries,
+} from './preview/dev-server-runtime.js';
+import { parseDevServerConfig } from './dev-server-config.js';
 import { createBackgroundShellRuntime } from './background-shells/background-shell-runtime-setup.js';
 import {
   BackgroundShellWatcher,
@@ -264,9 +306,11 @@ import { PtySession } from './terminal/pty-session.js';
 import { buildTerminalShellEnv } from './terminal/terminal-shell-env.js';
 import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
+import { previewSubdomainRewrittenUrl } from './preview/preview-public-url.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { PREVIEW_REAPER_CRON } from './preview/preview-runtime-primitives.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
+import { reapFinalizeSourceCheckouts } from './finalize/session-source.js';
 import { runStuckRunReaper, STUCK_RUN_REAPER_CRON } from './finalize/stuck-run-reaper.js';
 import {
   runRunnerJobLogReaper,
@@ -855,13 +899,11 @@ app.use(
 app.use((req, _res, next) => {
   const base = config.previewSubdomainBase;
   if (!base) return next();
-  const sessionId = parsePreviewSubdomainHost(req.headers.host, base);
-  if (!sessionId) return next();
+  const target = parsePreviewSubdomainHost(req.headers.host, base);
+  if (!target) return next();
   // Preserve the original suffix (query string included). Express
   // strips the host from req.url already, so it's just `/some/path?q=v`.
-  const original = req.url || '/';
-  const suffix = original.startsWith('/') ? original : `/${original}`;
-  req.url = `/api/sessions/${encodeURIComponent(sessionId)}/preview/proxy${suffix}`;
+  req.url = previewSubdomainRewrittenUrl(target, req.url);
   // Mark so `authMiddleware` can choose the right cookie Path scope
   // (Path=/ on the subdomain origin vs. the proxy mount path on the
   // main Hub origin) and downstream handlers can pick the right CSP
@@ -986,7 +1028,10 @@ if (existsSync(CLIENT_DIST) && existsSync(path.join(CLIENT_DIST, 'index.html')))
 // "session is still streaming" guard on `POST /api/sessions/:id/create-pr`
 // without spinning up a real CLI. Production code should keep using the
 // existing call sites (`activeProcesses.set` / `.get` / `.delete`) below.
-export const activeProcesses = new Map<string, ChildProcess>();
+export const activeProcesses = new Map<
+  string,
+  import('./active-chat-process.js').ActiveChatProcess
+>();
 
 // ─── Preview runtime ────────────────────────────────────────────────────
 //
@@ -999,13 +1044,38 @@ const previewUrlBase = createPreviewUrlBase(config.publicUrl);
 const { devServerRuntime } = createPreviewRuntimes({
   db: getDb(),
   getProject: (id) => findProject(id) ?? null,
+  // Containerized sessions must run their preview in the boundary the
+  // session already owns; on the host adapter there is no boundary, so the
+  // runtime keeps its own env and its reserved-port allocator.
+  resolveSharedEnv: async (sessionId) => {
+    await whenSessionEnvSelectionReady();
+    if (getSessionEnvSelection().adapter === 'host') return null;
+    return sessionEnvManager.ensure(sessionId);
+  },
+  onSessionActivity: (sessionId) => {
+    sessionEnvManager.get(sessionId)?.touch();
+  },
   devServerConfig: {
     urlBase: previewUrlBase,
-    // Per-entry proxy URL: primary keeps the root mount, extra ports
-    // resolve to their `/p/<internalPort>` sub-mount (path mode in prod;
-    // direct loopback host port locally).
-    portClientUrl: ({ sessionId, hostPort, internalPort, primary }) =>
-      resolveDevServerPortClientUrl(config.publicUrl, sessionId, hostPort, internalPort, primary),
+    // Per-entry proxy URL: primary keeps the root mount, extra ports resolve to
+    // their `/p/<internalPort>` sub-mount. Env-scoped dial targets never use
+    // localhost — the Hub proxy reaches container / guest IPs instead.
+    portClientUrl: ({ sessionId, hostPort, internalPort, primary }) => {
+      const selection = getSessionEnvSelection();
+      const routing = resolveSessionEnvPortRouting();
+      const useProxy =
+        selection.adapter === 'firecracker' ||
+        selection.adapter === 'sysbox' ||
+        (selection.adapter === 'container' && routing === 'container-ip');
+      return resolveDevServerPortClientUrl(
+        config.publicUrl,
+        sessionId,
+        hostPort,
+        internalPort,
+        primary,
+        { useProxy },
+      );
+    },
     ...(previewHealthHost
       ? { healthUrlBase: (port: number) => `http://${previewHealthHost}:${port}` }
       : {}),
@@ -1153,16 +1223,130 @@ const backgroundShellWatcher = new BackgroundShellWatcher({
       .all() as BackgroundShellRow[],
 });
 
-// One persistent terminal shell per Agent Hub session. When a managed dev
-// server is active, its SessionEnv is the terminal's isolation boundary too —
-// crucially, both enter the same Sysbox container and see the same backing
-// services. The universally-available host adapter can also open a standalone
-// terminal before a dev server exists. Sysbox cannot add published ports after
-// its container starts, so a terminal-first standalone Sysbox env would make a
-// later dev-server start impossible; require the managed env in that mode and
-// return an actionable attach error instead of creating a conflicting second
-// container.
-const terminalOwnedEnvs = new Map<string, ReturnType<typeof createSessionEnv>>();
+// The session's environment, owned by the session rather than by whichever
+// feature happened to start first. Preview, terminal, and session commands
+// all resolve the same env from here, so they share one filesystem, one set
+// of backing services, and one network.
+// Opened once the boot GC sweep settles. Creating an env before then races the
+// sweep, which would delete the new container as a leak — see
+// SessionEnvManagerDeps.bootSweep.
+let openSessionEnvBootGate: () => void = () => {};
+const sessionEnvBootSweep = new Promise<void>((resolve) => {
+  openSessionEnvBootGate = resolve;
+});
+
+const sessionEnvManager = new SessionEnvManager({
+  bootSweep: sessionEnvBootSweep,
+  resolveWorktree: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) return null;
+    const project = findAgent(session.agent_id)?.project;
+    return resolveSessionWorktreePath({
+      worktreePath: session.worktree_path,
+      useWorktree: session.use_worktree,
+      deletedAt: session.deleted_at,
+      projectCwd: project?.cwd ?? null,
+      projectMode: getProjectMode(project),
+    });
+  },
+  // Workflow projects never get a VM — shared project.cwd on the host only.
+  resolveAdapter: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    const project = session ? findAgent(session.agent_id)?.project : null;
+    return resolveSessionEnvAdapterForProject(project, getSessionEnvSelection().adapter);
+  },
+  resolveStartupCommands: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session || session.deleted_at) return [];
+    const project = findAgent(session.agent_id)?.project;
+    if (!project) return [];
+    return getProjectSessionStartupCommands(project);
+  },
+  onStartupProgress: (update) => {
+    emitSessionStartupProgress({
+      stmts: stmts!,
+      broadcast,
+      sessionId: update.sessionId,
+      status: update.stepStatus,
+      startedAt: update.startedAt,
+      finishedAt: update.finishedAt,
+      detail: update.detail,
+    });
+  },
+  onEnvLaunchProgress: (update) => {
+    emitSessionEnvLaunchProgress({
+      stmts: stmts!,
+      broadcast,
+      sessionId: update.sessionId,
+      status: update.status,
+      startedAt: update.startedAt,
+      finishedAt: update.finishedAt,
+    });
+  },
+  resolvePublishPorts: (sessionId) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session || session.deleted_at) return null;
+    const project = findAgent(session.agent_id)?.project;
+    if (!project) return null;
+    const parsed = parseDevServerConfig(project.prEnv?.devServer ?? {});
+    if (!parsed.ok) return [DEFAULT_DEV_SERVER_PORT_ENTRY.internalPort];
+    return resolveDevServerPortEntries(parsed.value).map((e) => e.internalPort);
+  },
+  // Published-ports adapters need unique host ports per session; identity
+  // mapping (internal===host) collides when two sessions share port 5173.
+  allocateHostPort: () => allocateEphemeralHostPort(),
+  releaseHostPort: (hostPort) => releaseEphemeralHostPort(hostPort),
+});
+
+// allocateEphemeralHostPort / releaseEphemeralHostPort live in
+// session-env/ephemeral-host-port.ts (in-process reservation until Docker binds).
+
+/**
+ * Read/write access to a session's worktree, wherever it lives.
+ *
+ * Under a `host-shared` backend the host directory is authoritative, so this
+ * answers from it directly — reading the Changes pane must not boot a
+ * container. Under `env-owned` (microVM) the guest holds the only current copy,
+ * so the env has to be running and we `ensure` it.
+ *
+ * `ensure` can therefore boot a VM to answer a read. That is deliberate: the
+ * alternative is reporting a session as having no changes because its env is
+ * idle, which is the stale-read bug this seam exists to remove. The cost is
+ * bounded because the read surfaces are session-scoped — the Changes badge
+ * refreshes on activation and on this session's own turn events, not on a
+ * background sweep — so an actively-running session already has a live env and
+ * this is a no-op for it.
+ *
+ * Returns null when the session has no worktree at all.
+ */
+async function resolveSessionWorktreeIo(sessionId: string): Promise<SessionWorktreeIo | null> {
+  await whenSessionEnvSelectionReady();
+  const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+  if (!session) return null;
+  const project = findAgent(session.agent_id)?.project;
+  const worktreePath = resolveSessionWorktreePath({
+    worktreePath: session.worktree_path,
+    useWorktree: session.use_worktree,
+    deletedAt: session.deleted_at,
+    projectCwd: project?.cwd ?? null,
+    projectMode: getProjectMode(project),
+  });
+  if (!worktreePath) return null;
+  const adapter = resolveSessionEnvAdapterForProject(project, getSessionEnvSelection().adapter);
+  if (worktreeSharingForKind(adapter) === 'host-shared') {
+    return new HostWorktreeIo(worktreePath);
+  }
+  return (await sessionEnvManager.ensure(sessionId)).worktreeIo;
+}
+
+// Modules below the route layer (chat-turn hooks, auto-commit) reach the
+// worktree through this registry rather than a threaded dependency.
+setSessionWorktreeIoResolver(resolveSessionWorktreeIo);
+
+// One persistent terminal shell per Agent Hub session, in the session's own
+// environment. It no longer depends on a dev server having been started:
+// under container-IP routing a port can be published at any time, so there is
+// nothing to declare up front and no reason to make a shell wait on a preview.
 export const ptyHost = new PtyHost({
   createSession: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
@@ -1170,46 +1354,15 @@ export const ptyHost = new PtyHost({
     const found = findAgent(session.agent_id);
     if (!found) throw new Error('Session agent not found');
 
-    let env = devServerRuntime.getSessionEnvBySessionId(sessionId);
-    let ownsEnv = false;
-    if (!env) {
-      const worktreePath =
-        session.worktree_path ?? (Number(session.use_worktree) === 1 ? null : found.project.cwd);
-      if (!worktreePath) {
-        throw new Error(
-          'Session workspace is not ready; start the session before opening terminal',
-        );
-      }
-      const adapter = getSessionEnvSelection().adapter;
-      if (adapter === 'sysbox') {
-        throw new Error('Start the session dev server before opening its terminal in Sysbox mode');
-      }
-      env = createSessionEnv(adapter, { sessionId, worktreePath });
-      terminalOwnedEnvs.set(sessionId, env);
-      ownsEnv = true;
-    }
-
-    const ptySession = new PtySession({
+    return new PtySession({
       sessionId,
-      env,
+      // Resolved on first attach: starting a container takes seconds, and
+      // the env may already exist because the preview started it.
+      env: () => sessionEnvManager.ensure(sessionId),
       // Same project AWS profiles the agent's spawns get, so `aws --profile
       // <name>` in the Terminal tab resolves instead of erroring out.
-      shellEnv: buildTerminalShellEnv(found.project, { envKind: env.kind }),
+      shellEnv: (env) => buildTerminalShellEnv(found.project, { envKind: env.kind }),
     });
-    if (ownsEnv) {
-      ptySession.onExit(() => {
-        if (terminalOwnedEnvs.get(sessionId) !== env) return;
-        terminalOwnedEnvs.delete(sessionId);
-        void env.dispose().catch((err: unknown) => {
-          console.warn(
-            `[terminal] failed to dispose standalone env for ${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        });
-      });
-    }
-    return ptySession;
   },
 });
 
@@ -1235,6 +1388,12 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     () => {
       void devServerRuntime.reap(Date.now()).catch((err: unknown) => {
         console.warn('[dev-server-reaper] tick failed:', (err as Error).message);
+      });
+      // Session environments outlive their previews, so the dev-server reaper
+      // above never releases them. A container holding a database and an
+      // image cache is not free; reclaim the ones nobody has touched.
+      void sessionEnvManager.reap(Date.now()).catch((err: unknown) => {
+        console.warn('[session-env-reaper] tick failed:', (err as Error).message);
       });
     },
     { name: 'preview-reaper' },
@@ -1268,6 +1427,35 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       { name: 'finalize-reaper' },
     );
   }
+
+  // Staging checkouts for sessions whose worktree lives in their own env. Kept
+  // separate from the container reaper above because the retention rule is
+  // different: a run parked at `ready_to_push` has `ended_at` set but still
+  // holds the only copy of the commits it validated, so it must survive until
+  // the push lands. Not docker-gated — staging is plain git on disk.
+  cron.schedule(
+    FINALIZE_REAPER_CRON,
+    () => {
+      void reapFinalizeSourceCheckouts({
+        retainRunIds: () =>
+          new Set(
+            (
+              getDb()
+                .prepare(
+                  `SELECT id FROM finalize_runs
+                    WHERE ended_at IS NULL
+                       OR status IN ('ready_to_push', 'pushing')
+                       OR (status = 'infra_error' AND phase = 'push' AND validated_head_sha IS NOT NULL)`,
+                )
+                .all() as Array<{ id: string }>
+            ).map((r) => r.id),
+          ),
+      }).catch((err) => {
+        console.warn('[finalize-source] reap tick failed:', (err as Error).message);
+      });
+    },
+    { name: 'finalize-source-reaper' },
+  );
 
   // Runtime stuck-run reaper — steady-state analog to boot-recovery. boot only
   // fails stuck run ROWS on Hub start; an autonomous (`agent_block`) run whose
@@ -1494,8 +1682,29 @@ export const routeDeps: RouteDeps = {
   restoreAutonomousCrons,
   scheduleAll,
   getDevServerRuntime: () => devServerRuntime,
+  touchSessionEnv: (sessionId) => {
+    sessionEnvManager.get(sessionId)?.touch();
+  },
   getBackgroundShellRuntime: () => backgroundShellRuntime,
   getBackgroundShellWatcher: () => backgroundShellWatcher,
+  disposeSessionEnv: async (sessionId: string, opts: { forgetWorkspace?: boolean } = {}) => {
+    // Soft archive must keep the Firecracker workspace disk — it is the only
+    // authoritative copy of guest work. Hard purge passes forgetWorkspace.
+    const forgetWorkspace = opts.forgetWorkspace === true;
+    await sessionEnvManager.dispose(sessionId, { forgetWorkspace });
+    if (!forgetWorkspace) return;
+    // Idle reap / Hub restart leave the workspace disk. Proven deletion must
+    // run whenever the session can own Firecracker artifacts — not only when
+    // this boot selected the firecracker adapter (a fallback boot still needs
+    // to clean disks created earlier).
+    const paths = firecrackerHostPaths();
+    const execCfg = resolveFirecrackerExecConfig(paths);
+    await forgetPersistedFirecrackerDisks(sessionId, {
+      io: createFirecrackerHostIo(execCfg),
+      paths,
+    });
+  },
+  getSessionWorktreeIo: resolveSessionWorktreeIo,
   provisionSessionWorkspace: async (sessionId: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {
@@ -1508,6 +1717,10 @@ export const routeDeps: RouteDeps = {
     const { project, agent } = found;
     const installCommand =
       (project as { commands?: { install?: string | null } }).commands?.install ?? null;
+    // Side-effect-free: only materialize the host seed worktree. Firecracker /
+    // container boots happen later via chat / ensureSessionEnv so creating a
+    // session (or opening Finalize setup) does not pay for a VM that may never
+    // run a turn.
     return ensureWorktree(
       session,
       project.cwd,
@@ -1734,6 +1947,7 @@ attachDefaultPreviewProxyUpgrade(
         },
         internalPort,
       ),
+    getSessionPreviewHost: (sessionId) => devServerRuntime.getSessionUpstreamHost(sessionId),
   },
   { subdomainBase: config.previewSubdomainBase },
 );
@@ -1754,6 +1968,10 @@ const chatHandler = createChatHandler({
   createCursorChat: undefined,
   ensureWorktree,
   drainQueue: (sessionId: string) => drainQueue(sessionId),
+  ensureSessionEnv: async (sessionId: string) => {
+    await whenSessionEnvSelectionReady();
+    return sessionEnvManager.ensure(sessionId);
+  },
   rescheduleCron,
   getDevServerRuntime: () => devServerRuntime,
   getPtyHost: () => ptyHost,
@@ -2158,16 +2376,13 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       terminalShutdownStarted = true;
       terminalWebSocket.close();
       ptyHost.disposeAll();
-      for (const [sessionId, env] of terminalOwnedEnvs) {
-        terminalOwnedEnvs.delete(sessionId);
-        void env.dispose().catch((err: unknown) => {
-          console.warn(
-            `[terminal] shutdown dispose failed for ${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        });
-      }
+      void sessionEnvManager.disposeAll().catch((err: unknown) => {
+        console.warn(
+          `[session-env] shutdown dispose failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
     }
     // Best-effort: flush any records still pending in the log write queue so a
     // graceful restart doesn't lose the tail of a burst.
@@ -2199,28 +2414,105 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
   process.on('SIGHUP', () => markActiveSessionsForShutdown('SIGHUP'));
   installShutdownHandlers();
 
+  // Close the adapter-selection gate before accept() — early HTTP must wait
+  // for the probe rather than caching the host fallback.
+  beginSessionEnvSelection();
   server.listen(PORT, HOST, () => {
     const actualPort = (server.address() as AddressInfo).port;
     setActualPort(actualPort);
     console.log(`Agent Hub server running on http://localhost:${actualPort} (bind ${HOST})`);
     console.log(`Loaded ${getProjects().length} projects, ${allAgents().length} agents`);
 
-    // SessionEnv adapter selection: probe sysbox availability once at boot
-    // and cache the host/sysbox choice for the per-session env runtime.
-    // Best-effort — a probe failure must not block boot.
-    void initSessionEnvSelection(config.sessionEnvAdapter)
+    // SessionEnv adapter selection: probe sysbox and docker once at boot and
+    // cache the choice for the per-session env runtime. Best-effort — a probe
+    // failure must not block boot.
+    const previewRouting = resolveSessionEnvPortRouting();
+    const sessionDocker = resolveDockerAvailability();
+    console.log(`[session-env] port routing: ${describeSessionEnvPortRouting()}`);
+
+    // The microVM backend is registered only when the host can actually boot
+    // one, so `registeredBackends.has('firecracker')` stays a truthful answer
+    // to "would a VM start here" rather than "was this build compiled with
+    // the adapter".
+    const firecrackerPaths = firecrackerHostPaths();
+    const firecrackerExec = resolveFirecrackerExecConfig(firecrackerPaths);
+    const firecrackerProbe = probeFirecrackerCapability({
+      artifactPaths: [firecrackerPaths.kernelPath, firecrackerPaths.baseRootfsPath],
+      // In docker mode the Hub container has neither /dev/kvm nor the VMM
+      // binary, so ask the helper what *it* can see.
+      ...(firecrackerExec.mode === 'docker' ? createHelperCapabilityDeps(firecrackerExec) : {}),
+    });
+    console.log(
+      `[session-env] microVM probe (${firecrackerExec.mode}): ` +
+        (firecrackerProbe.available
+          ? `available, ${firecrackerProbe.version}`
+          : `unavailable — ${firecrackerProbe.reason}`),
+    );
+    if (firecrackerProbe.available) {
+      const fcDefaults = firecrackerExecDefaults(firecrackerExec);
+      console.log(
+        `[session-env] firecracker exec=${firecrackerExec.mode} jailer=${fcDefaults.useJailer ? 'on' : 'off'}`,
+      );
+      registerFirecrackerBackend({
+        paths: firecrackerPaths,
+        ...fcDefaults,
+      });
+    }
+
+    void initSessionEnvSelection(
+      config.sessionEnvAdapter,
+      undefined,
+      {
+        dockerAvailable: sessionDocker.enabled,
+        routing: previewRouting,
+        detail: sessionDocker.enabled ? describeSessionEnvPortRouting() : sessionDocker.reason,
+      },
+      firecrackerProbe,
+    )
       .then((selection) => {
         logSessionEnvSelection(selection);
         // Boot GC sweep: session envs live only in Hub memory, so every
         // labeled session container/volume from a previous run is a leak.
-        // Only meaningful where sysbox is in play — the probe passing means
-        // docker is reachable.
-        if (selection.adapter === 'sysbox') {
+        // Both container backends label identically, so one sweep covers them.
+        if (selection.adapter === 'sysbox' || selection.adapter === 'container') {
           return reconcileSysboxSessionEnvs().then(() => undefined);
+        }
+        if (selection.adapter === 'firecracker') {
+          // The VM equivalent: a tap left behind by a previous process keeps
+          // its name occupied, and the first session after a restart then
+          // fails to create it.
+          return reconcileFirecrackerHost({
+            run: (argv) => createFirecrackerHostIo(firecrackerExec).run(argv),
+            stopStaleVmms: () => stopStaleFirecrackerVmms(firecrackerExec),
+          }).then((result) => {
+            if (result.deletedTaps.length > 0) {
+              console.log(
+                `[session-env] swept ${result.deletedTaps.length} stale microVM tap(s): ${result.deletedTaps.join(', ')}`,
+              );
+            }
+            // Without guest NAT, apt/npm/pip die with "Temporary failure
+            // resolving …". Drop the backend so `auto` cannot select a path
+            // that cannot reach the network; an explicit firecracker force
+            // still fails loud at session start when ensureNat runs again.
+            if (!result.natReady) {
+              console.error(
+                '[session-env] Firecracker guest NAT is not ready — unregistering firecracker backend',
+              );
+              unregisterFirecrackerBackend();
+            } else if (!result.bridgeReady) {
+              console.error(
+                '[session-env] Firecracker bridge is not ready — unregistering firecracker backend',
+              );
+              unregisterFirecrackerBackend();
+            }
+          });
         }
         return undefined;
       })
-      .catch((e) => console.error('[session-env] capability probe failed:', (e as Error).message));
+      .catch((e) => console.error('[session-env] capability probe failed:', (e as Error).message))
+      // Always open the gate, including on a failed probe or sweep: a session
+      // env that can never start is worse than one started without the sweep.
+      .finally(() => openSessionEnvBootGate());
 
     // Hosted-git notify hooks embed this process's port — refresh on every
     // boot so post-receive notifications reach the current process.

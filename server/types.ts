@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction, Router } from 'express';
 import type Database from 'better-sqlite3';
 import type { DevServerConfig } from './dev-server-config.js';
+import type { SessionWorktreeIo } from './session-env/worktree-io.js';
 
 export type { DevServerConfig, DevServerPortMapEntry } from './dev-server-config.js';
 
@@ -1036,6 +1037,8 @@ export interface SessionProgressRow {
   started_at: number;
   /** Epoch ms when the step finished (completed or failed). Null while in-flight. */
   finished_at: number | null;
+  /** Optional failure / diagnostic text (e.g. session-setup stdout/stderr). */
+  detail: string | null;
   created_at: string;
 }
 
@@ -3238,6 +3241,15 @@ export interface Project {
    */
   preCommitCommands?: string[];
   /**
+   * Shell commands run inside the session environment after every SessionEnv
+   * boot (Firecracker / container / host), in the worktree cwd. Started in the
+   * background so chat/terminal are not blocked; status is written to
+   * session-startup status file (outside the git worktree) and injected into the agent
+   * prompt. Scripts should be idempotent (`[ -d .venv ] || python3 -m venv .venv`).
+   * Web client: Settings → Project Settings. Mobile does not expose this yet.
+   */
+  sessionStartupCommands?: string[];
+  /**
    * When non-empty, a non-zero exit from `preCommitCommands` may run these
    * fixers (e.g. `npm run lint:fix`, `npm run format`) and re-run the failed
    * check suite, capped by `checkHealMaxRounds`.
@@ -3605,15 +3617,21 @@ export interface AppConfig {
   /**
    * Which SessionEnv backend runs per-session dev environments (dev server,
    * PTY host, port mapping). `auto` (the default) probes the host at boot and
-   * picks the sysbox adapter when sysbox-runc is installed and registered
-   * with Docker, else the host adapter. `host` / `sysbox` force a backend;
-   * a forced `sysbox` that fails the capability probe falls back to host
-   * with a logged warning. Configure via `sessionEnvAdapter` in config.json
-   * or env `AGENT_HUB_SESSION_ENV_ADAPTER`. Probe + selection logic:
-   * server/session-env/sysbox-capability.ts; host install:
+   * picks `sysbox` when sysbox-runc is installed and registered with Docker,
+   * else `host`. MicroVM (`firecracker`) and privileged DinD (`container`) are
+   * never selected by `auto` — they require an explicit operator choice
+   * (agent CLIs still run host-side under `auto`, and privileged DinD is not
+   * a safe implicit fallback). Forced `sysbox` / `firecracker` fail closed
+   * when the probe fails (sessions error until the host is fixed or the mode
+   * is changed); forced `container` may degrade to `host` with a logged
+   * warning. Firecracker runs the VMM under the jailer by default. Configure
+   * via `sessionEnvAdapter` in config.json or env
+   * `AGENT_HUB_SESSION_ENV_ADAPTER`. Probe + selection:
+   * server/session-env/sysbox-capability.ts and
+   * server/session-env/firecracker/firecracker-capability.ts; host install:
    * docs/deployment/SYSBOX-HOST-SETUP.md.
    */
-  sessionEnvAdapter: 'auto' | 'host' | 'sysbox';
+  sessionEnvAdapter: 'auto' | 'host' | 'sysbox' | 'container' | 'firecracker';
   /**
    * When false (the default), a successful push to GitHub parks the linked
    * kanban card in **Review**; only the PR-merge moves it to **Done**. This is
@@ -3867,6 +3885,8 @@ export interface ProgressStepEvent extends BaseStreamEvent {
   startedAt: number;
   /** Epoch ms when the step reached `completed` or `failed`. Absent for `started`. */
   finishedAt?: number;
+  /** Optional failure / diagnostic text shown under the Progress panel step. */
+  detail?: string;
 }
 
 /**
@@ -4098,7 +4118,7 @@ export interface RouteDeps {
     skillCredentialMerge?: { ownerId: string | null; agentId: string; project: Project },
   ) => Promise<string>;
   DEFAULT_MODEL: string;
-  activeProcesses: Map<string, import('child_process').ChildProcess>;
+  activeProcesses: Map<string, import('./active-chat-process.js').ActiveChatProcess>;
   getProjectDataDir: (projectId: string) => string;
   ensureDocsAgents: () => void;
   retireIntakeAgents: () => void;
@@ -4130,6 +4150,8 @@ export interface RouteDeps {
    * `createPreviewRuntimes` boot). The session archive/delete handlers
    * call `stopBySessionId` so the deleted session's preview is torn down.
    */
+  /** Bump a live SessionEnv idle clock (preview proxy / workload activity). */
+  touchSessionEnv?: (sessionId: string) => void;
   getDevServerRuntime?: () => {
     stopBySessionId: (sessionId: string) => Promise<number>;
   } | null;
@@ -4158,6 +4180,20 @@ export interface RouteDeps {
    * extends this with the same getter for the cancel-watch endpoint.
    */
   getBackgroundShellWatcher?: () => { forgetSession: (sessionId: string) => void } | null;
+  /**
+   * Tear down the session's environment (container, ports, processes). Called
+   * when a session ends — the env deliberately survives an individual preview
+   * or terminal exiting, so this is the only place it gets released.
+   */
+  disposeSessionEnv?: (sessionId: string, opts?: { forgetWorkspace?: boolean }) => Promise<void>;
+  /**
+   * Read/write the session's worktree, wherever it physically lives. The only
+   * correct way to reach worktree contents: under a microVM env the worktree is
+   * on the guest's disk and `session.worktree_path` is the boot-time seed, so
+   * host `fs` / `git` would describe a session that has been committing all day
+   * as empty. Resolves to null when the session has no worktree.
+   */
+  getSessionWorktreeIo?: (sessionId: string) => Promise<SessionWorktreeIo | null>;
   /**
    * Clone or attach the session git worktree before the first chat turn.
    * Wired from `index.ts` (`ensureWorktree`). Used by

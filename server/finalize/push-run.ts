@@ -7,6 +7,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import { execFile } from 'child_process';
+import { access } from 'fs/promises';
 import { promisify } from 'util';
 import type {
   FinalizeRunRow,
@@ -25,6 +26,9 @@ import type { CardLifecycle } from './card-lifecycle.js';
 import { NOOP_CARD_LIFECYCLE } from './card-lifecycle.js';
 import { createPushAndCreatePr } from './push-and-create-pr.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { sessionWorktreeIoFor } from '../session-worktree-io.js';
+import { acquireFinalizeSource } from './session-source.js';
+import type { FinalizeSource } from './session-source.js';
 import {
   resolveFinalizeBaseBranchForCard,
   resolveFinalizeGateBase,
@@ -55,6 +59,59 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Directory holding the commits this run will push.
+ *
+ * Prefer the staging checkout recorded on the run (env-owned / Firecracker).
+ * After a failed auto-push the source reaper may delete that directory while
+ * the run row still points at it — rematerialise from the session rather than
+ * failing `git rev-parse` with `spawn git ENOENT` (missing cwd).
+ */
+async function ensurePushSourcePath(args: {
+  deps: Pick<RouteDeps, 'stmts'>;
+  run: FinalizeRunRow;
+  session: SessionRow;
+}): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
+  const { deps, run, session } = args;
+  const recorded = runSourcePath(run, session);
+  if (recorded && (await pathExists(recorded))) {
+    return { ok: true, path: recorded };
+  }
+  if (!session.worktree_path || !session.worktree_branch) {
+    return { ok: false, message: 'Session has no worktree.' };
+  }
+  try {
+    const source = await acquireFinalizeSource({
+      runId: run.id,
+      sessionId: session.id,
+      worktreePath: session.worktree_path,
+      branch: session.worktree_branch,
+    });
+    try {
+      deps.stmts.updateFinalizeRunWorktreePath.run(source.path, run.id);
+    } catch {
+      /* best-effort — in-memory path below is enough for this push */
+    }
+    run.worktree_path = source.path;
+    return { ok: true, path: source.path };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      message: `Could not restore the finalize source checkout: ${msg}`,
+    };
+  }
+}
+
 export type FinalizePushOutcome =
   | { ok: true; prUrl: string }
   | { ok: false; httpStatus: number; error: string; message: string };
@@ -69,7 +126,10 @@ export function resolvePushGateBaseline(run: FinalizeRunRow, currentHead: string
 }
 
 function finalizePhasePassed(run: FinalizeRunRow | undefined): run is FinalizeRunRow {
-  return run?.status === 'ready_to_push' || run?.status === 'pushed';
+  if (!run) return false;
+  if (run.status === 'ready_to_push' || run.status === 'pushed') return true;
+  // Push-step infra failure after gates still carries validated_head_sha.
+  return run.status === 'infra_error' && !!run.validated_head_sha;
 }
 
 function resolveSessionPushGateSignals(args: {
@@ -159,6 +219,113 @@ async function resolvePushBranch(
   return current ?? storedBranch;
 }
 
+/**
+ * The directory holding the commits this run validated.
+ *
+ * Normally the session's own worktree. When the session runs in its own env
+ * the orchestrator materialized a staging checkout and recorded it on the run
+ * row — pushing from the session's recorded path would ship the tree the env
+ * booted from, which is not what any of the gates looked at.
+ */
+function runSourcePath(run: FinalizeRunRow, session: SessionRow): string | null {
+  return run.worktree_path ?? session.worktree_path ?? null;
+}
+
+type SessionMoveCheck =
+  | { status: 'shared' }
+  | { status: 'ok'; moved: boolean }
+  | { status: 'unverified'; reason: string };
+
+/**
+ * Did the session commit more work after this run materialized its source?
+ *
+ * The plain head comparison the push gate makes cannot answer this for a
+ * staged run: the staging copy is frozen at the validated commit, so it always
+ * matches. Ask the session directly instead, against the head recorded when
+ * the copy was taken.
+ *
+ * Fail closed: an unreadable materialization marker, guest HEAD failure, or
+ * thrown source lookup is not proof the session stood still — treating it as
+ * "ok to push" can ship a stale staging checkout.
+ */
+async function sessionMovedSinceMaterialize(
+  run: FinalizeRunRow,
+  session: SessionRow,
+  sourcePath: string,
+): Promise<SessionMoveCheck> {
+  if (!session.worktree_path || sourcePath === session.worktree_path) {
+    return { status: 'shared' };
+  }
+  try {
+    const source = await acquireFinalizeSource({
+      runId: run.id,
+      sessionId: session.id,
+      worktreePath: session.worktree_path,
+      branch: session.worktree_branch ?? 'HEAD',
+    });
+    const materializedFrom = await source.sessionHeadAtMaterialize();
+    if (!materializedFrom) {
+      return {
+        status: 'unverified',
+        reason: 'staging checkout has no recorded session HEAD from materialize',
+      };
+    }
+    const io = await sessionWorktreeIoFor(session.id, session.worktree_path);
+    const head = await io.git(['rev-parse', 'HEAD']);
+    if (head.exitCode !== 0) {
+      return {
+        status: 'unverified',
+        reason:
+          `could not read current session HEAD: ` +
+          (head.stderr.trim() || head.stdout.trim() || `exit ${head.exitCode}`),
+      };
+    }
+    return { status: 'ok', moved: head.stdout.trim() !== materializedFrom };
+  } catch (err) {
+    return {
+      status: 'unverified',
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Move the session's own worktree onto what was just pushed.
+ *
+ * Only does anything for a staged run: a rebase during Finalize rewrote the
+ * commits, and a session left pointing at the pre-rebase history would show
+ * its own branch as diverged from the PR that was just opened from it.
+ * Best-effort by design — the push already succeeded, so a sync failure is
+ * worth a log line and nothing more.
+ */
+async function syncSessionAfterPush(
+  run: FinalizeRunRow,
+  session: SessionRow,
+  branch: string,
+): Promise<void> {
+  if (!run.worktree_path || run.worktree_path === session.worktree_path) return;
+  if (!session.worktree_path) return;
+  try {
+    const source = await acquireFinalizeSource({
+      runId: run.id,
+      sessionId: session.id,
+      worktreePath: session.worktree_path,
+      branch,
+    });
+    const result = await source.syncBack(branch);
+    if (!result.synced) {
+      console.warn(
+        `[finalize-push] session=${session.id} still points at its pre-push commits: ${result.reason}`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[finalize-push] could not move session=${session.id} onto ${branch}: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 export interface RunFinalizePushArgs {
   deps: RouteDeps;
   project: Project;
@@ -217,7 +384,8 @@ async function executePush(args: {
     buildOrchestratorDeps(deps, card, project.id).cardLifecycle ??
     NOOP_CARD_LIFECYCLE;
 
-  if (!session.worktree_path || !session.worktree_branch) {
+  const sourcePath = runSourcePath(run, session);
+  if (!sourcePath || !session.worktree_branch) {
     return {
       ok: false,
       httpStatus: 400,
@@ -243,7 +411,7 @@ async function executePush(args: {
   try {
     const baseBranch = await resolveFinalizeBaseBranchForCard({
       card,
-      worktreePath: session.worktree_path,
+      worktreePath: sourcePath,
       getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });
     // Native-PR author attribution is only required for Agent Hub-hosted PR
@@ -261,7 +429,7 @@ async function executePush(args: {
         : null;
     pushResult = await pushFn({
       runId: run.id,
-      worktreePath: session.worktree_path,
+      worktreePath: sourcePath,
       branch: pushBranch,
       baseBranch,
       headSha: validatedHeadSha,
@@ -397,6 +565,8 @@ async function executePush(args: {
     bypassedGates,
   });
 
+  await syncSessionAfterPush(run, session, pushBranch);
+
   return { ok: true, prUrl: pushResult.prUrl };
 }
 
@@ -429,7 +599,13 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
-  if (!force && run.status !== 'ready_to_push') {
+  // Allow a retry after the push step itself failed (auto-push / lease /
+  // remote blip). Gates already passed — `validated_head_sha` is the proof —
+  // so requiring a full Finalize re-run would only re-burn CI for a ship
+  // that already cleared review + checks.
+  const pushRetryable =
+    run.status === 'infra_error' && run.phase === 'push' && !!run.validated_head_sha;
+  if (!force && run.status !== 'ready_to_push' && !pushRetryable) {
     return {
       ok: false,
       httpStatus: 409,
@@ -465,10 +641,10 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
   // worktree and an empty HEAD; without this the dirty-worktree shortcut passes
   // the gate and pushes a branch identical to base (zero-diff PR, then a
   // zero-diff merge under auto-merge automation).
-  const committable = await getSessionCommittableChanges(session.worktree_path, {
-    base: gateBase,
-    requirePushableHead: true,
-  });
+  const committable = await getSessionCommittableChanges(
+    await sessionWorktreeIoFor(session.id, session.worktree_path),
+    { base: gateBase, requirePushableHead: true },
+  );
   if (!committable.ok) {
     return {
       ok: false,
@@ -478,9 +654,20 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
+  const ensured = await ensurePushSourcePath({ deps, run, session });
+  if (!ensured.ok) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      error: 'no_worktree',
+      message: ensured.message,
+    };
+  }
+  const sourcePath = ensured.path;
+
   let currentHead: string;
   try {
-    currentHead = await resolveHead(session.worktree_path);
+    currentHead = await resolveHead(sourcePath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -491,6 +678,38 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
+  if (!force) {
+    const moveCheck = await sessionMovedSinceMaterialize(run, session, sourcePath);
+    switch (moveCheck.status) {
+      case 'shared':
+        break;
+      case 'ok':
+        if (moveCheck.moved) {
+          return {
+            ok: false,
+            httpStatus: 409,
+            error: 'head_sha_moved',
+            message:
+              'HEAD changed since checks passed. Click Finalize Code Changes again to re-run review and tests.',
+          };
+        }
+        break;
+      case 'unverified':
+        return {
+          ok: false,
+          httpStatus: 409,
+          error: 'session_head_unverified',
+          message:
+            `Could not verify the session still matches the materialized checkout ` +
+            `(${moveCheck.reason}). Click Finalize Code Changes again.`,
+        };
+      default: {
+        const _exhaustive: never = moveCheck;
+        return _exhaustive;
+      }
+    }
+  }
+
   // Serialize the whole check-through-landing sequence on (project, base).
   // The drift check alone is check-then-act: two runs can both read the same
   // base as clean and both land on it. Holding this lock means the second run
@@ -499,7 +718,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
   // takes the same lock around push + auto-merge before calling in here.
   const lockBaseBranch = await resolveFinalizeBaseBranchForCard({
     card,
-    worktreePath: session.worktree_path,
+    worktreePath: sourcePath,
     getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
   const lock = await acquirePushLock({
@@ -565,7 +784,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     // to remain an escape hatch), but it is logged and carried into the
     // timeline entry so the push is never silently stale.
     const drift = await inspectBaseDrift({
-      worktreePath: session.worktree_path,
+      worktreePath: sourcePath,
       baseBranch: lockBaseBranch,
       validatedBaseSha: run.validated_base_sha ?? null,
       headSha: validatedHeadSha,
@@ -589,7 +808,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
       );
     }
 
-    if (run.status === 'ready_to_push') {
+    if (run.status === 'ready_to_push' || pushRetryable) {
       const claim = deps.stmts.claimFinalizeRunPush.run(run.id, validatedHeadSha);
       if (claim.changes === 0) {
         const fresh = deps.stmts.getFinalizeRun.get(run.id) as FinalizeRunRow | undefined;
@@ -669,7 +888,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     }
 
     const pushBranch = await resolvePushBranch(
-      session.worktree_path,
+      sourcePath,
       session.worktree_branch,
       `run=${run.id}`,
       args.resolveCurrentBranch ?? defaultResolveCurrentBranch,
@@ -743,10 +962,10 @@ export async function runSessionPushToGithub(
   // worktree and an empty HEAD; without this the dirty-worktree shortcut passes
   // the gate and pushes a branch identical to base (zero-diff PR, then a
   // zero-diff merge under auto-merge automation).
-  const committable = await getSessionCommittableChanges(session.worktree_path, {
-    base: gateBase,
-    requirePushableHead: true,
-  });
+  const committable = await getSessionCommittableChanges(
+    await sessionWorktreeIoFor(session.id, session.worktree_path),
+    { base: gateBase, requirePushableHead: true },
+  );
   if (!committable.ok) {
     return {
       ok: false,
@@ -756,11 +975,35 @@ export async function runSessionPushToGithub(
     };
   }
 
-  let currentHead: string;
+  const runId = `session-push-${uuidv4()}`;
+  // This path pushes the session's own commits with no rebase, so the staging
+  // copy (when there is one) is a read-only hand-off to git and is dropped
+  // again below — nothing to carry back into the session afterwards.
+  let source: FinalizeSource;
   try {
-    currentHead = await resolveHead(session.worktree_path);
+    source = await acquireFinalizeSource({
+      runId,
+      sessionId: session.id,
+      worktreePath: session.worktree_path,
+      branch: session.worktree_branch,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      httpStatus: 500,
+      error: 'no_worktree',
+      message: `Could not read the session's code to push: ${msg}`,
+    };
+  }
+  const sourcePath = source.path;
+
+  let currentHead: string;
+  try {
+    currentHead = await resolveHead(sourcePath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await source.release();
     return {
       ok: false,
       httpStatus: 400,
@@ -770,18 +1013,17 @@ export async function runSessionPushToGithub(
   }
 
   const pushBranch = await resolvePushBranch(
-    session.worktree_path,
+    sourcePath,
     session.worktree_branch,
     `session=${session.id}`,
     args.resolveCurrentBranch ?? defaultResolveCurrentBranch,
   );
 
   const pushFn = args.pushAndCreatePr ?? createPushAndCreatePr({ config: deps.config });
-  const runId = `session-push-${uuidv4()}`;
   try {
     const baseBranch = await resolveFinalizeBaseBranchForCard({
       card,
-      worktreePath: session.worktree_path,
+      worktreePath: sourcePath,
       getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });
     // See above: native-PR attribution applies only to Agent Hub-hosted rows;
@@ -792,7 +1034,7 @@ export async function runSessionPushToGithub(
         : null;
     const pushResult = await pushFn({
       runId,
-      worktreePath: session.worktree_path,
+      worktreePath: sourcePath,
       branch: pushBranch,
       baseBranch,
       headSha: currentHead,
@@ -837,5 +1079,7 @@ export async function runSessionPushToGithub(
       error: 'github_push_5xx',
       message: `Push failed: ${msg}`,
     };
+  } finally {
+    await source.release();
   }
 }

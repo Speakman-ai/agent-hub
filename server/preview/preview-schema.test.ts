@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import {
+  WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
   DEV_SERVER_RUNTIME_KIND,
   dropComposePreviewColumns,
+  deleteEnvScopedPreviewRows,
   deleteOrphanedNonDevServerPreviewRows,
+  ensureHostScopedPreviewPortUniqueness,
 } from './preview-schema.js';
 
 /**
@@ -126,6 +129,242 @@ describe('dropComposePreviewColumns', () => {
 
     const rows = db.prepare(`SELECT id, runtime FROM worktree_preview_groups`).all();
     expect(rows).toEqual([{ id: 'ds-1', runtime: DEV_SERVER_RUNTIME_KIND }]);
+    db.close();
+  });
+});
+
+describe('ensureHostScopedPreviewPortUniqueness', () => {
+  /**
+   * One group + one process per call. The rebuilt table carries the FK to
+   * `worktree_preview_groups`, so the parent has to exist; a separate group
+   * per row is also what makes these inserts model *different sessions*
+   * rather than one group reusing a port.
+   */
+  function insertProcess(
+    db: Database.Database,
+    id: string,
+    port: number,
+    dialScope: 'host' | 'env',
+  ): void {
+    db.prepare(
+      `INSERT INTO worktree_preview_groups (id, session_id, project_id, status)
+       VALUES (?, ?, 'proj', 'ready')`,
+    ).run(`group-${id}`, `session-${id}`);
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, port, url, status, is_primary, dial_scope)
+       VALUES (?, ?, ?, ?, 'http://localhost/', 'ready', 1, ?)`,
+    ).run(id, `group-${id}`, `web-${id}`, port, dialScope);
+  }
+
+  it('lets two sessions serve the same port inside their own containers', () => {
+    // The reason this migration exists. Ports inside a session container are
+    // namespaced by that container, so two sessions both running an Angular
+    // dev server on 4200 is normal — under the old global UNIQUE(port) the
+    // second session's preview failed to start for no reason.
+    const db = openLegacyDb();
+    ensureHostScopedPreviewPortUniqueness(db);
+
+    insertProcess(db, 'a', 4200, 'env');
+    expect(() => insertProcess(db, 'b', 4200, 'env')).not.toThrow();
+    db.close();
+  });
+
+  it('still rejects two host-dialed rows on one port', () => {
+    // Host ports remain a single shared resource: two processes cannot both
+    // bind 4101 on the Hub's machine, and the allocator relies on the DB
+    // saying so.
+    const db = openLegacyDb();
+    ensureHostScopedPreviewPortUniqueness(db);
+
+    insertProcess(db, 'a', 4101, 'host');
+    expect(() => insertProcess(db, 'b', 4101, 'host')).toThrow(/UNIQUE/i);
+    db.close();
+  });
+
+  it('carries existing rows through the table rebuild and defaults them to host', () => {
+    // Rows written before dial_scope existed were all host-published, so
+    // defaulting them to 'host' preserves the constraint they were created
+    // under. Losing them would strand live previews the Hub still manages.
+    const db = openLegacyDb();
+    insertGroup(db, 'ds-1', DEV_SERVER_RUNTIME_KIND, 4100);
+
+    ensureHostScopedPreviewPortUniqueness(db);
+
+    expect(db.prepare(`SELECT id, port, dial_scope FROM worktree_preview_processes`).all()).toEqual(
+      [{ id: 'ds-1:web', port: 4100, dial_scope: 'host' }],
+    );
+    db.close();
+  });
+
+  it('drops the old column-level UNIQUE rather than leaving it in force', () => {
+    // SQLite cannot remove a column constraint in place, so a partial index
+    // alone would not help: the original UNIQUE would keep rejecting the
+    // second env-scoped row. This asserts the rebuild actually happened.
+    const db = openLegacyDb();
+    ensureHostScopedPreviewPortUniqueness(db);
+
+    const sql = (
+      db
+        .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
+        .get('worktree_preview_processes') as { sql: string }
+    ).sql;
+    expect(sql).not.toMatch(/port\s+INTEGER\s+NOT\s+NULL\s+UNIQUE/i);
+    db.close();
+  });
+
+  it('keeps the group/name uniqueness the rebuild is not allowed to lose', () => {
+    const db = openLegacyDb();
+    ensureHostScopedPreviewPortUniqueness(db);
+
+    db.prepare(
+      `INSERT INTO worktree_preview_groups (id, session_id, project_id, status)
+       VALUES ('g1', 'session-g1', 'proj', 'ready')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, port, url, status, is_primary, dial_scope)
+       VALUES ('p1', 'g1', 'web', 4200, 'http://localhost/', 'ready', 1, 'env')`,
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO worktree_preview_processes
+             (id, group_id, name, port, url, status, is_primary, dial_scope)
+           VALUES ('p2', 'g1', 'web', 4300, 'http://localhost/', 'ready', 0, 'env')`,
+        )
+        .run(),
+    ).toThrow(/UNIQUE/i);
+    db.close();
+  });
+
+  it('is idempotent across repeated boots', () => {
+    const db = openLegacyDb();
+    ensureHostScopedPreviewPortUniqueness(db);
+    expect(() => ensureHostScopedPreviewPortUniqueness(db)).not.toThrow();
+
+    insertProcess(db, 'a', 4200, 'env');
+    expect(() => insertProcess(db, 'b', 4200, 'env')).not.toThrow();
+    db.close();
+  });
+
+  it('is a no-op on a fresh database that already ships the new shape', () => {
+    const db = new Database(':memory:');
+    db.exec(WORKTREE_PREVIEW_GROUPS_SCHEMA);
+
+    expect(() => ensureHostScopedPreviewPortUniqueness(db)).not.toThrow();
+    insertProcess(db, 'a', 4200, 'env');
+    expect(() => insertProcess(db, 'b', 4200, 'env')).not.toThrow();
+    expect(() => insertProcess(db, 'c', 4101, 'host')).not.toThrow();
+    expect(() => insertProcess(db, 'd', 4101, 'host')).toThrow(/UNIQUE/i);
+    db.close();
+  });
+});
+
+describe('deleteEnvScopedPreviewRows', () => {
+  /** Group + one process row, with the `worktree_previews` companion row. */
+  function seed(
+    db: Database.Database,
+    id: string,
+    port: number,
+    dialScope: 'host' | 'env',
+    opts: { extraHostRow?: boolean } = {},
+  ): void {
+    db.prepare(
+      `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, runtime)
+       VALUES (?, ?, 'proj', 'ready', '${DEV_SERVER_RUNTIME_KIND}')`,
+    ).run(`group-${id}`, `session-${id}`);
+    db.prepare(
+      `INSERT INTO worktree_previews (id, session_id, project_id, port, url, status)
+       VALUES (?, ?, 'proj', ?, 'http://localhost/', 'ready')`,
+    ).run(`group-${id}`, `session-${id}`, port);
+    db.prepare(
+      `INSERT INTO worktree_preview_processes
+         (id, group_id, name, port, url, status, is_primary, dial_scope)
+       VALUES (?, ?, ?, ?, 'http://localhost/', 'ready', 1, ?)`,
+    ).run(id, `group-${id}`, `web-${id}`, port, dialScope);
+    if (opts.extraHostRow) {
+      db.prepare(
+        `INSERT INTO worktree_preview_processes
+           (id, group_id, name, port, url, status, is_primary, dial_scope)
+         VALUES (?, ?, ?, ?, 'http://localhost/', 'ready', 0, 'host')`,
+      ).run(`${id}-api`, `group-${id}`, `api-${id}`, port + 1);
+    }
+  }
+
+  function freshDb(): Database.Database {
+    const db = openLegacyDb();
+    // openLegacyDb models only the group/process tables; the sweep also clears
+    // the legacy single-row companion, so it has to exist here.
+    db.exec(WORKTREE_PREVIEWS_SCHEMA);
+    ensureHostScopedPreviewPortUniqueness(db);
+    return db;
+  }
+
+  // The bug: a Hub restart destroys every session container, but its preview
+  // rows persist, so the Hub came back advertising a ready preview whose
+  // upstream was gone and the proxy 502'd until someone restarted it by hand.
+  it('removes rows whose upstream lived in a session container', () => {
+    const db = freshDb();
+    seed(db, 'env-1', 4200, 'env');
+
+    expect(deleteEnvScopedPreviewRows(db)).toBe(1);
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_processes`).get()).toEqual({
+      n: 0,
+    });
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get()).toEqual({ n: 0 });
+    // The legacy companion row is cleared too, or the UI keeps rendering it.
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM worktree_previews`).get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  it('leaves host-published rows alone', () => {
+    // Those are reclaimed by liveness, not by assumption: a host port may be
+    // held by a process this Hub never spawned.
+    const db = freshDb();
+    seed(db, 'host-1', 4101, 'host');
+
+    expect(deleteEnvScopedPreviewRows(db)).toBe(0);
+    expect(db.prepare(`SELECT id FROM worktree_preview_processes`).all()).toEqual([
+      { id: 'host-1' },
+    ]);
+    db.close();
+  });
+
+  it('keeps a group that still has a host-dialed process', () => {
+    const db = freshDb();
+    seed(db, 'mixed-1', 4200, 'env', { extraHostRow: true });
+
+    // The env row goes; the group survives because a host row still needs it.
+    expect(deleteEnvScopedPreviewRows(db)).toBe(0);
+    expect(db.prepare(`SELECT id FROM worktree_preview_processes`).all()).toEqual([
+      { id: 'mixed-1-api' },
+    ]);
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get()).toEqual({ n: 1 });
+    db.close();
+  });
+
+  it('frees the ports for a fresh start on the same numbers', () => {
+    const db = freshDb();
+    seed(db, 'env-1', 4200, 'env');
+    deleteEnvScopedPreviewRows(db);
+
+    expect(() => seed(db, 'env-2', 4200, 'env')).not.toThrow();
+    db.close();
+  });
+
+  it('is a no-op on a database with no previews', () => {
+    const db = freshDb();
+    expect(deleteEnvScopedPreviewRows(db)).toBe(0);
+    db.close();
+  });
+
+  it('is idempotent across repeated boots', () => {
+    const db = freshDb();
+    seed(db, 'env-1', 4200, 'env');
+
+    expect(deleteEnvScopedPreviewRows(db)).toBe(1);
+    expect(deleteEnvScopedPreviewRows(db)).toBe(0);
     db.close();
   });
 });

@@ -1,22 +1,29 @@
 /**
  * Sysbox capability probe + SessionEnv adapter selection.
  *
- * Per-session dev environments run behind a `SessionEnv` boundary with two
- * backends: the HOST adapter (direct host processes — the local-dev/Mac path)
- * and the SYSBOX adapter (per-session rootless container via sysbox-runc —
- * the default boundary on a self-hosted Linux server). This module decides
- * which backend the Hub uses at boot:
+ * Per-session dev environments run behind a `SessionEnv` boundary with three
+ * backends: HOST (direct host processes — the local-dev/Mac path), SYSBOX
+ * (per-session container via sysbox-runc, the strongest boundary), and
+ * CONTAINER (per-session privileged DinD container, the boundary available on
+ * any Docker host). This module decides which backend the Hub uses at boot:
  *
  *   1. `probeSysboxCapability()` checks the host: Linux, kernel >= 5.12
  *      (idmapped-mounts baseline for non-shiftfs distros; >= 5.19 removes the
  *      shiftfs dependency entirely), unprivileged user namespaces enabled,
  *      the `sysbox-runc` binary installed, and the runtime registered with
  *      the Docker daemon.
- *   2. `selectSessionEnvAdapter()` maps the probe + the `sessionEnvAdapter`
- *      config (`auto` | `host` | `sysbox`) to a selection. `auto` picks
- *      sysbox when available, else host. A forced `sysbox` that the probe
- *      rejects falls back to host with a loud warning rather than producing
- *      a runtime that cannot spawn.
+ *   2. `selectSessionEnvAdapter()` maps the probes + the `sessionEnvAdapter`
+ *      config (`auto` | `host` | `sysbox` | `container`) to a selection.
+ *      `auto` walks sysbox, then host (microVM and privileged container
+ *      require an explicit config choice). A forced backend the probe rejects
+ *      falls back to host with
+ *      a loud warning rather than producing a runtime that cannot spawn.
+ *
+ * Ordering matters because falling through to `host` means sessions have no
+ * boundary at all — they share the Hub's filesystem, ports, and process
+ * table. That used to be the outcome on every machine without sysbox, which
+ * is most of them. The container backend exists so the fallback is a weaker
+ * boundary rather than none.
  *
  * Host install doc + script: docs/deployment/SYSBOX-HOST-SETUP.md and
  * ops/scripts/setup-sysbox-host.sh.
@@ -24,15 +31,18 @@
 import { execFile } from 'child_process';
 import { readFile } from 'fs/promises';
 import os from 'os';
+import type { SessionEnvPortRouting } from './container-routing.js';
 
-export type SessionEnvAdapterKind = 'host' | 'sysbox';
-/** Operator intent: `auto` probes, `host`/`sysbox` force a backend. */
-export type SessionEnvAdapterMode = 'auto' | 'host' | 'sysbox';
+export type SessionEnvAdapterKind = 'host' | 'sysbox' | 'container' | 'firecracker';
+/** Operator intent: `auto` probes, the rest force a backend. */
+export type SessionEnvAdapterMode = 'auto' | 'host' | 'sysbox' | 'container' | 'firecracker';
 
 export const SESSION_ENV_ADAPTER_MODES: readonly SessionEnvAdapterMode[] = [
   'auto',
   'host',
   'sysbox',
+  'container',
+  'firecracker',
 ];
 
 export function coerceSessionEnvAdapterMode(raw: unknown): SessionEnvAdapterMode {
@@ -204,10 +214,93 @@ function finalize(checks: SysboxCheck[]): SysboxProbeResult {
   return { available: missing.length === 0, checks, missing };
 }
 
+/**
+ * What the `container` backend needs: a docker daemon, and a route from the
+ * Hub to container IPs. Without the latter a container env has to publish
+ * ports, which drags back the shared host pool and the declare-before-start
+ * rule — so `auto` skips it and only an explicit request honors it.
+ */
+export interface ContainerCapability {
+  dockerAvailable: boolean;
+  routing: SessionEnvPortRouting;
+  /** Human-readable detail for the boot log when the backend is skipped. */
+  detail?: string;
+}
+
+/**
+ * What the `firecracker` backend needs, as reported by
+ * `firecracker/firecracker-capability.ts`: KVM, the VMM binary, and staged
+ * guest artifacts.
+ */
+export interface FirecrackerCapabilitySummary {
+  available: boolean;
+  /** Why it is unavailable, for the boot log. Empty when available. */
+  reason: string;
+}
+
 export function selectSessionEnvAdapter(
   mode: SessionEnvAdapterMode,
   probe: SysboxProbeResult,
+  container: ContainerCapability = { dockerAvailable: false, routing: 'published-ports' },
+  firecracker: FirecrackerCapabilitySummary = { available: false, reason: 'not probed' },
 ): SessionEnvSelection {
+  const containerUsable = container.dockerAvailable && container.routing === 'container-ip';
+  const containerDetail =
+    container.detail ??
+    (!container.dockerAvailable
+      ? 'no usable docker daemon'
+      : 'container IPs are not routable from the Hub');
+
+  if (mode === 'firecracker') {
+    if (firecracker.available) {
+      return {
+        adapter: 'firecracker',
+        mode,
+        forced: true,
+        fellBack: false,
+        reason:
+          'forced by config (sessionEnvAdapter=firecracker); probe passed — ' +
+          'experimental backend (not auto-selected; jailer on by default with staged chroot)',
+        probe,
+      };
+    }
+    // No fallback. `resolveSessionEnvBackend` throws for this exact case, so
+    // reporting a container or host fallback here would describe a run that
+    // never happens — and an operator who wrote "firecracker" asked for a
+    // hardware boundary, which a container does not provide. `auto` is the
+    // mode that degrades; this one is a demand.
+    return {
+      adapter: 'firecracker',
+      mode,
+      forced: true,
+      fellBack: false,
+      reason:
+        `microVM backend forced by config but unavailable — sessions will fail until ` +
+        `this is fixed (set sessionEnvAdapter=auto to degrade instead): ${firecracker.reason}`,
+      probe,
+    };
+  }
+
+  if (mode === 'container') {
+    if (container.dockerAvailable) {
+      return {
+        adapter: 'container',
+        mode,
+        forced: true,
+        fellBack: false,
+        reason: 'forced by config (sessionEnvAdapter=container)',
+        probe,
+      };
+    }
+    return {
+      adapter: 'host',
+      mode,
+      forced: false,
+      fellBack: true,
+      reason: `container backend forced by config but unavailable — falling back to host adapter: ${containerDetail}`,
+      probe,
+    };
+  }
   if (mode === 'host') {
     return {
       adapter: 'host',
@@ -229,22 +322,34 @@ export function selectSessionEnvAdapter(
         probe,
       };
     }
+    // Fail closed — same contract as forced firecracker. Degrading to the
+    // privileged container would grant `--privileged --cgroupns=host` after
+    // the operator asked for sysbox; falling to host would silently drop
+    // isolation. Sessions fail until sysbox is fixed or the mode is changed.
     return {
-      adapter: 'host',
+      adapter: 'sysbox',
       mode,
-      forced: false,
-      fellBack: true,
-      reason: `sysbox forced by config but unavailable — falling back to host adapter: ${probe.missing.join('; ')}`,
+      forced: true,
+      fellBack: false,
+      reason:
+        `sysbox forced by config but unavailable — sessions will fail until ` +
+        `this is fixed (set sessionEnvAdapter=auto to degrade instead): ${probe.missing.join('; ')}`,
       probe,
     };
   }
+  // `auto`: sysbox when the probe passes, else host. MicroVM and privileged
+  // container are never picked implicitly — agent CLIs still run host-side
+  // for auto, and privileged DinD is not a safe automatic fallback.
   if (probe.available) {
     return {
       adapter: 'sysbox',
       mode,
       forced: false,
       fellBack: false,
-      reason: 'sysbox available (auto)',
+      reason:
+        `sysbox available (auto); microVM and privileged container skipped for safety ` +
+        `(microVM: ${firecracker.available ? 'available but not auto-selected' : firecracker.reason}; ` +
+        `container: ${containerUsable ? 'available but not auto-selected' : containerDetail})`,
       probe,
     };
   }
@@ -253,7 +358,9 @@ export function selectSessionEnvAdapter(
     mode,
     forced: false,
     fellBack: false,
-    reason: `sysbox unavailable (auto) — using host adapter: ${probe.missing.join('; ')}`,
+    reason:
+      `sysbox unavailable (${probe.missing.join('; ')}); microVM and privileged container ` +
+      `skipped for safety (microVM: ${firecracker.reason}; container: ${containerDetail}) — using host adapter`,
     probe,
   };
 }
@@ -277,7 +384,10 @@ export function logSessionEnvSelection(
   const line = `[session-env] adapter=${selection.adapter} (mode=${selection.mode}) — ${selection.reason}`;
   const degradedOnLinux =
     platform === 'linux' && selection.adapter === 'host' && selection.mode !== 'host';
-  if (selection.fellBack || degradedOnLinux) {
+  // Forced sysbox/firecracker stay selected when unavailable (fail closed) —
+  // still warn so operators notice sessions will not start.
+  const forcedUnavailable = selection.forced && selection.reason.includes('unavailable');
+  if (selection.fellBack || degradedOnLinux || forcedUnavailable) {
     logger.warn(line);
   } else {
     logger.log(line);
@@ -286,14 +396,56 @@ export function logSessionEnvSelection(
 
 let cachedSelection: SessionEnvSelection | null = null;
 
+let selectionReadyResolve: (() => void) | null = null;
+/** Open until {@link beginSessionEnvSelection} closes the gate for a real boot. */
+let selectionReady: Promise<void> = Promise.resolve();
+
+function armSelectionReadyGate(): void {
+  selectionReady = new Promise<void>((resolve) => {
+    selectionReadyResolve = resolve;
+  });
+}
+
+function releaseSelectionReadyGate(): void {
+  selectionReadyResolve?.();
+  selectionReadyResolve = null;
+}
+
+/**
+ * Close the selection gate before the HTTP server accepts traffic. Pair with
+ * {@link initSessionEnvSelection} so early preview/worktree resolvers cannot
+ * observe the host fallback while the probe is still running.
+ */
+export function beginSessionEnvSelection(): void {
+  if (cachedSelection !== null) return;
+  if (selectionReadyResolve !== null) return;
+  armSelectionReadyGate();
+}
+
 /** Probe the host and cache the adapter selection. Called once at boot. */
 export async function initSessionEnvSelection(
   mode: SessionEnvAdapterMode,
   deps?: SysboxProbeDeps,
+  container?: ContainerCapability,
+  firecracker?: FirecrackerCapabilitySummary,
 ): Promise<SessionEnvSelection> {
-  const probe = await probeSysboxCapability(deps);
-  cachedSelection = selectSessionEnvAdapter(mode, probe);
-  return cachedSelection;
+  try {
+    const probe = await probeSysboxCapability(deps);
+    cachedSelection = selectSessionEnvAdapter(mode, probe, container, firecracker);
+    return cachedSelection;
+  } finally {
+    releaseSelectionReadyGate();
+  }
+}
+
+/**
+ * Resolves once {@link initSessionEnvSelection} has cached a decision (or
+ * failed). Callers that choose a backend from {@link getSessionEnvSelection}
+ * must await this first on the boot path.
+ */
+export function whenSessionEnvSelectionReady(): Promise<void> {
+  if (cachedSelection !== null) return Promise.resolve();
+  return selectionReady;
 }
 
 /**
@@ -317,4 +469,7 @@ export function getSessionEnvSelection(): SessionEnvSelection {
 /** Test-only: clear the cached boot selection. */
 export function resetSessionEnvSelectionForTest(): void {
   cachedSelection = null;
+  // Leave the gate open — most unit tests never call begin/init.
+  releaseSelectionReadyGate();
+  selectionReady = Promise.resolve();
 }

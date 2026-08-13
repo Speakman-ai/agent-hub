@@ -1,0 +1,143 @@
+import { mkdtemp, mkdir, writeFile } from 'fs/promises';
+import os from 'os';
+import path from 'path';
+import { describe, it, expect } from 'vitest';
+import type { SessionEnv } from './session-env.js';
+import {
+  adaptSpawnEnvForGuest,
+  buildGuestCliCommand,
+  finalizeGuestSpawnEnv,
+  guestEngineBinCandidates,
+  GUEST_CLI_HOME,
+  GUEST_RUNTIME_ROOT,
+  GUEST_SKILLS_ROOT,
+  GUEST_SPAWN_GUARDS_DIR,
+  hostCwdToWorktreeRelative,
+  shellQuote,
+  stageGuestCliHome,
+} from './guest-cli-spawn.js';
+
+describe('shellQuote / buildGuestCliCommand', () => {
+  it('quotes args for sh -c', () => {
+    expect(shellQuote("it's")).toBe(`'it'\\''s'`);
+    expect(buildGuestCliCommand('/usr/bin/claude', ['--print', 'hello world'])).toBe(
+      `'/usr/bin/claude' '--print' 'hello world'`,
+    );
+  });
+});
+
+describe('guestEngineBinCandidates', () => {
+  it('prefers the staged CLI HOME local bin before runner/system paths', () => {
+    expect(guestEngineBinCandidates('claude', GUEST_CLI_HOME)[0]).toBe(
+      `${GUEST_CLI_HOME}/.local/bin/claude`,
+    );
+    expect(guestEngineBinCandidates('gemini', GUEST_CLI_HOME)).toContain(
+      '/home/runner/.local/bin/gemini',
+    );
+  });
+
+  it('puts cursor-agent ahead of agent so Grok cannot shadow Cursor', () => {
+    const c = guestEngineBinCandidates('agent', GUEST_CLI_HOME);
+    expect(c[0]).toBe(`${GUEST_CLI_HOME}/.local/bin/cursor-agent`);
+    expect(c).toContain(`${GUEST_CLI_HOME}/.local/bin/agent`);
+  });
+
+  it('prefers ~/.grok/bin/grok from the xAI installer', () => {
+    const c = guestEngineBinCandidates('grok', GUEST_CLI_HOME);
+    expect(c[0]).toBe(`${GUEST_CLI_HOME}/.grok/bin/grok`);
+    expect(c).toContain('/home/runner/.grok/bin/grok');
+  });
+});
+
+describe('hostCwdToWorktreeRelative', () => {
+  it('maps nested cwd under the worktree', () => {
+    expect(hostCwdToWorktreeRelative('/wt/server', '/wt')).toBe('server');
+    expect(hostCwdToWorktreeRelative('/wt', '/wt')).toBe('.');
+  });
+
+  it('rejects escape', () => {
+    expect(() => hostCwdToWorktreeRelative('/other', '/wt')).toThrow(/outside/);
+  });
+});
+
+describe('adaptSpawnEnvForGuest / finalizeGuestSpawnEnv', () => {
+  it('remaps HOME outside the worktree and prepends spawn guards on PATH', () => {
+    expect(GUEST_CLI_HOME.startsWith(GUEST_RUNTIME_ROOT)).toBe(true);
+    expect(GUEST_SKILLS_ROOT.startsWith(GUEST_RUNTIME_ROOT)).toBe(true);
+    expect(GUEST_CLI_HOME.includes('/workspace')).toBe(false);
+
+    const adapted = adaptSpawnEnvForGuest(
+      {
+        HOME: '/host/home',
+        ANTHROPIC_API_KEY: 'sk-test',
+        AGENT_HUB_SKILLS_DIR: '/host/skills/agent-hub',
+        AWS_CONFIG_FILE: '/host/aws/config',
+        AGENT_HUB_URL: 'http://10.0.0.1:3051',
+        AGENT_HUB_PROTECT_SESSION_BRANCH: '1',
+        AGENT_HUB_REAL_GIT: '/host/usr/bin/git',
+      },
+      {
+        guestHome: GUEST_CLI_HOME,
+        guestSkillsRoot: GUEST_SKILLS_ROOT,
+      },
+    );
+    expect(adapted.HOME).toBe(GUEST_CLI_HOME);
+    expect(adapted.ANTHROPIC_API_KEY).toBe('sk-test');
+    expect(adapted.AGENT_HUB_URL).toBe('http://10.0.0.1:3051');
+    expect(adapted.AWS_CONFIG_FILE).toBeUndefined();
+    expect(adapted.AGENT_HUB_SKILLS_DIR).toBe(`${GUEST_SKILLS_ROOT}/agent-hub`);
+    expect(adapted.AGENT_HUB_REAL_GIT).toBe('/usr/bin/git');
+    expect(adapted.AGENT_HUB_REAL_GH).toBe('/usr/bin/gh');
+    expect(adapted.AGENT_HUB_PROTECT_SESSION_BRANCH).toBe('1');
+    expect(adapted.AGENT_CLI_CREDENTIAL_STORE).toBe('file');
+
+    const final = finalizeGuestSpawnEnv(
+      adapted,
+      [`${GUEST_SKILLS_ROOT}/agent-hub/scripts`],
+      GUEST_CLI_HOME,
+      { spawnGuardsDir: GUEST_SPAWN_GUARDS_DIR },
+    );
+    expect(final.PATH!.startsWith(`${GUEST_SPAWN_GUARDS_DIR}:`)).toBe(true);
+    expect(final.PATH).toContain(`${GUEST_CLI_HOME}/.local/bin`);
+    expect(final.PATH).toContain(`${GUEST_SKILLS_ROOT}/agent-hub/scripts`);
+    expect(final.PATH).toContain('/usr/local/bin');
+  });
+});
+
+describe('stageGuestCliHome — Cursor auth sync', () => {
+  it('copies Cursor auth/config files from the host HOME into the staged guest HOME', async () => {
+    const hostHome = await mkdtemp(path.join(os.tmpdir(), 'ah-host-home-'));
+    await mkdir(path.join(hostHome, '.cursor'), { recursive: true });
+    await mkdir(path.join(hostHome, '.config', 'cursor'), { recursive: true });
+    await writeFile(path.join(hostHome, '.cursor', 'auth.json'), '{"token":"cursor-oauth"}');
+    await writeFile(
+      path.join(hostHome, '.cursor', 'cli-config.json'),
+      JSON.stringify({ authInfo: { email: 'a@b.c' } }),
+    );
+    await writeFile(path.join(hostHome, '.cursor', 'argv.json'), '{}');
+    await writeFile(path.join(hostHome, '.config', 'cursor', 'auth.json'), '{"legacy":true}');
+
+    const written = new Map<string, string>();
+    const env = {
+      writeGuestFile: async (guestPath: string, contents: Buffer) => {
+        written.set(guestPath, contents.toString('utf8'));
+      },
+      worktreeIo: {
+        exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      },
+    } as unknown as SessionEnv;
+
+    const home = await stageGuestCliHome(env, hostHome);
+    expect(home).toBe(GUEST_CLI_HOME);
+    expect(written.get(`${GUEST_CLI_HOME}/.cursor/auth.json`)).toContain('cursor-oauth');
+    expect(written.get(`${GUEST_CLI_HOME}/.cursor/cli-config.json`)).toContain('authInfo');
+    expect(written.get(`${GUEST_CLI_HOME}/.cursor/argv.json`)).toBe('{}');
+    expect(written.get(`${GUEST_CLI_HOME}/.config/cursor/auth.json`)).toContain('legacy');
+
+    // Reuse path: a second stage with the same host HOME still lands the files
+    // (idempotent overwrite) so a later chat turn keeps working credentials.
+    written.clear();
+    await stageGuestCliHome(env, hostHome);
+    expect(written.get(`${GUEST_CLI_HOME}/.cursor/auth.json`)).toContain('cursor-oauth');
+  });
+});

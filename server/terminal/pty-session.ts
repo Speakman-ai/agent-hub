@@ -57,8 +57,13 @@ export interface PtySessionExit {
 
 export interface PtySessionDeps {
   sessionId: string;
-  /** Isolation boundary the PTY is opened in (host or sysbox adapter). */
-  env: SessionEnv;
+  /**
+   * Isolation boundary the PTY is opened in. A thunk defers resolution to
+   * first attach, so creating a session stays synchronous even when the
+   * environment has to be started (a container boot takes seconds, and
+   * `PtyHost.ensure` must not block on it).
+   */
+  env: SessionEnv | (() => Promise<SessionEnv>);
   /** Shell program. Default: the env's login shell (`SHELL` / `/bin/bash`). */
   shell?: string;
   /** Shell args. Default `['-l']` — a login shell that reads the profile. */
@@ -69,7 +74,9 @@ export interface PtySessionDeps {
    * Extra env merged over the adapter's base env for the shell. An `undefined`
    * value unsets the inherited variable (see `terminal-shell-env.ts`).
    */
-  shellEnv?: Record<string, string | undefined>;
+  shellEnv?:
+    | Record<string, string | undefined>
+    | ((env: SessionEnv) => Record<string, string | undefined>);
   /** Initial PTY geometry before the first viewer resizes it. */
   cols?: number;
   rows?: number;
@@ -197,11 +204,11 @@ export interface InjectAtIdleOpts {
 export class PtySession {
   readonly sessionId: string;
 
-  readonly #env: SessionEnv;
+  readonly #resolveEnv: () => Promise<SessionEnv>;
   readonly #shell?: string;
   readonly #shellArgs: string[];
   readonly #cwd?: string;
-  readonly #shellEnv?: Record<string, string | undefined>;
+  readonly #shellEnv?: PtySessionDeps['shellEnv'];
   readonly #initialCols: number;
   readonly #initialRows: number;
   readonly #scrollback: number;
@@ -241,7 +248,8 @@ export class PtySession {
 
   constructor(deps: PtySessionDeps) {
     this.sessionId = deps.sessionId;
-    this.#env = deps.env;
+    const env = deps.env;
+    this.#resolveEnv = typeof env === 'function' ? env : () => Promise.resolve(env);
     this.#shell = deps.shell;
     this.#shellArgs = deps.shellArgs ?? ['-l'];
     this.#cwd = deps.cwd;
@@ -309,11 +317,12 @@ export class PtySession {
     });
     let pty: SessionEnvPty;
     try {
-      pty = await this.#env.openPty({
+      const env = await this.#resolveEnv();
+      pty = await env.openPty({
         command: this.#shell,
         args: this.#shellArgs,
         cwd: this.#cwd,
-        env: this.#shellEnv,
+        env: typeof this.#shellEnv === 'function' ? this.#shellEnv(env) : this.#shellEnv,
         cols: this.#initialCols,
         rows: this.#initialRows,
       });

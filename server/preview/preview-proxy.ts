@@ -19,6 +19,7 @@ import { parsePreviewSubdomainHost } from './preview-subdomain-host.js';
 import {
   devServerPortProxyPath,
   previewProxyMountPath,
+  previewSubdomainRewrittenUrl,
   previewUpstreamPathForMount,
   resolvePreviewUpstreamHost,
 } from './preview-public-url.js';
@@ -30,6 +31,12 @@ export type PreviewProxyDeps = {
    * so the request reaches that mapped extra port rather than the primary.
    */
   getSessionPreviewPort: (sessionId: string, internalPort?: number) => number | null;
+  /**
+   * Upstream host for a session, when it is not the Hub-wide default.
+   * A container env under container-IP routing answers on its own bridge
+   * address rather than loopback; returning null keeps the default.
+   */
+  getSessionPreviewHost?: (sessionId: string) => string | null;
   userOwnsSession: (req: AuthenticatedRequest, sessionId: string) => boolean;
   /**
    * Public URL of the Hub UI that's expected to iframe the preview
@@ -41,6 +48,12 @@ export type PreviewProxyDeps = {
    * path-prefix deployment.
    */
   parentPublicUrl?: string | null;
+  /**
+   * Called when a preview HTTP request is accepted for proxying. Keeps the
+   * session environment's idle clock alive while a browser is actively using
+   * the preview (daemonized DBs alone are not Hub-tracked handles).
+   */
+  onProxyActivity?: (sessionId: string) => void;
 };
 
 const HOP_BY_HOP = new Set([
@@ -104,6 +117,14 @@ function copyHeaders(src: IncomingMessage): Record<string, string | string[]> {
  * of the proxy mount; the browser then receives the Hub SPA fallback
  * HTML in place of each asset and the preview iframe goes white with
  * "Manifest: Line 1, column 1, Syntax error" in the console.
+ *
+ * Bodies that are not HTML *documents* are returned byte-identical.
+ * `content-type: text/html` is not a promise of a document: Survey
+ * Tracker's `/health` answers `text/html` with the body `OK`, and an
+ * unconditionally-compressing upstream delivers a document as binary.
+ * Prepending a tag to either corrupts the response, and now that API
+ * traffic flows through the `/p/<port>` sub-mount those bodies are
+ * routine rather than hypothetical.
  */
 export function injectHtmlPreviewBaseHref(
   html: string,
@@ -122,16 +143,47 @@ export function injectHtmlPreviewBaseHref(
   if (/<head[\s>]/i.test(html)) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
   }
-  return `${baseTag}${html}`;
+  // A document may omit `<head>` entirely (it is an optional tag). The parser
+  // opens an implied head, so a `<base>` placed directly after `<html>` still
+  // lands there and asset resolution is fixed as intended.
+  if (/<html[\s>]/i.test(html)) {
+    return html.replace(/<html([^>]*)>/i, `<html$1>${baseTag}`);
+  }
+  return html;
 }
 
-function upstreamRequestHeaders(
+/**
+ * Should this upstream response body be buffered and rewritten?
+ *
+ * Only an HTML content type qualifies, and only when the body is not
+ * compressed — `injectHtmlPreviewBaseHref` edits text, and editing a gzip
+ * stream as text corrupts it. Whether the body is really a *document* is
+ * decided later by the injector, which leaves non-documents untouched.
+ */
+export function shouldRewriteHtmlResponse(
+  contentType: string | string[] | undefined,
+  contentEncoding: string | string[] | undefined,
+): boolean {
+  if (!String(contentType ?? '').includes('text/html')) return false;
+  const encoding = String(contentEncoding ?? '')
+    .trim()
+    .toLowerCase();
+  return encoding === '' || encoding === 'identity';
+}
+
+export function upstreamRequestHeaders(
   req: IncomingMessage,
+  host: string,
   port: number,
 ): Record<string, string | string[]> {
   const headers = copyHeaders(req);
-  const upstreamHost = resolvePreviewUpstreamHost();
-  headers.host = `${upstreamHost}:${port}`;
+  headers.host = `${host}:${port}`;
+  // Ask the upstream for an identity encoding. We rewrite `<base href>` into
+  // HTML documents, which requires reading the body as text — a gzipped body
+  // would be edited as binary garbage. The upstream is a dev server one hop
+  // away over a container-local network, so giving up wire compression on that
+  // hop costs nothing; the Hub still compresses its own response to the client.
+  delete headers['accept-encoding'];
   return headers;
 }
 
@@ -199,14 +251,14 @@ function proxyHttp(
   port: number,
   parentPublicUrl?: string | null,
   internalPort?: number,
+  upstreamHost: string = resolvePreviewUpstreamHost(),
 ): void {
-  const upstreamHost = resolvePreviewUpstreamHost();
   const mount =
     internalPort === undefined
       ? previewProxyMountPath(sessionId)
       : devServerPortProxyPath(sessionId, internalPort, false);
   const path = previewUpstreamPathForMount(req.originalUrl, mount);
-  const headers = upstreamRequestHeaders(req, port);
+  const headers = upstreamRequestHeaders(req, upstreamHost, port);
 
   const proxyReq = http.request(
     {
@@ -218,8 +270,10 @@ function proxyHttp(
     },
     (proxyRes) => {
       const responseHeaders = copyHeaders(proxyRes);
-      const contentType = String(proxyRes.headers['content-type'] ?? '');
-      const shouldRewriteHtml = contentType.includes('text/html');
+      const shouldRewriteHtml = shouldRewriteHtmlResponse(
+        proxyRes.headers['content-type'],
+        proxyRes.headers['content-encoding'],
+      );
 
       // CSP frame-ancestors so the iframe is embeddable by the Hub UI.
       // Applied to ALL response types (HTML, JS, CSS, images) so the
@@ -240,10 +294,13 @@ function proxyHttp(
       const chunks: Buffer[] = [];
       proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
       proxyRes.on('end', () => {
-        let body = Buffer.concat(chunks);
-        const text = body.toString('utf8');
+        const original = Buffer.concat(chunks);
+        const text = original.toString('utf8');
         const rewritten = injectHtmlPreviewBaseHref(text, sessionId, internalPort);
-        body = Buffer.from(rewritten, 'utf8');
+        // On a no-op, forward the original bytes rather than the re-encoded
+        // string: a body in any non-UTF-8 charset would not survive the
+        // round-trip, and a non-document has no reason to be touched at all.
+        const body = rewritten === text ? original : Buffer.from(rewritten, 'utf8');
         delete responseHeaders['content-length'];
         responseHeaders['content-length'] = String(body.length);
         if (!res.headersSent) {
@@ -281,6 +338,26 @@ function proxyHttp(
     req.method !== 'HEAD'
   ) {
     const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    const bodyBytes = Buffer.byteLength(bodyStr);
+    delete headers['transfer-encoding'];
+    delete headers['Transfer-Encoding'];
+    // http.request already applied the original headers (including a possible
+    // Transfer-Encoding: chunked). Mutating the local object is not enough —
+    // clear it on the ClientRequest or compliant upstreams reject dual framing.
+    proxyReq.removeHeader('transfer-encoding');
+    if (typeof req.body === 'string') {
+      const contentType = req.headers['content-type'];
+      if (contentType !== undefined) {
+        headers['content-type'] = contentType;
+      }
+    } else {
+      headers['content-type'] = 'application/json';
+    }
+    headers['content-length'] = String(bodyBytes);
+    proxyReq.setHeader('content-length', String(bodyBytes));
+    if (headers['content-type']) {
+      proxyReq.setHeader('content-type', headers['content-type'] as string);
+    }
     proxyReq.end(bodyStr);
   } else {
     req.pipe(proxyReq);
@@ -292,8 +369,12 @@ function denyUpgrade(socket: Duplex, statusLine: string): void {
   socket.destroy();
 }
 
-function buildUpgradeRequestLines(req: IncomingMessage, path: string, port: number): string {
-  const upstreamHost = resolvePreviewUpstreamHost();
+function buildUpgradeRequestLines(
+  req: IncomingMessage,
+  path: string,
+  upstreamHost: string,
+  port: number,
+): string {
   const lines = [`${req.method ?? 'GET'} ${path} HTTP/${req.httpVersion || '1.1'}`];
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
@@ -335,7 +416,7 @@ export function handlePreviewProxyUpgrade(
     return;
   }
 
-  const upstreamHost = resolvePreviewUpstreamHost();
+  const upstreamHost = deps.getSessionPreviewHost?.(sessionId) ?? resolvePreviewUpstreamHost();
   const mount =
     internalPort == null
       ? previewProxyMountPath(sessionId)
@@ -343,7 +424,7 @@ export function handlePreviewProxyUpgrade(
   const path = previewUpstreamPathForMount(req.url, mount);
 
   const proxySocket = net.connect({ host: upstreamHost, port }, () => {
-    proxySocket.write(buildUpgradeRequestLines(req, path, port));
+    proxySocket.write(buildUpgradeRequestLines(req, path, upstreamHost, port));
     if (head.length > 0) proxySocket.write(head);
     socket.pipe(proxySocket);
     proxySocket.pipe(socket);
@@ -381,11 +462,9 @@ export function attachPreviewProxyUpgrade(
     // and HTTP code paths can't drift.
     const base = opts?.subdomainBase ?? null;
     if (base) {
-      const subSid = parsePreviewSubdomainHost(req.headers.host, base);
-      if (subSid && !parsePreviewProxySessionId(req.url)) {
-        const original = req.url || '/';
-        const suffix = original.startsWith('/') ? original : `/${original}`;
-        req.url = `/api/sessions/${encodeURIComponent(subSid)}/preview/proxy${suffix}`;
+      const target = parsePreviewSubdomainHost(req.headers.host, base);
+      if (target && !parsePreviewProxySessionId(req.url)) {
+        req.url = previewSubdomainRewrittenUrl(target, req.url);
       }
     }
     if (!parsePreviewProxySessionId(req.url)) return;
@@ -411,20 +490,36 @@ export function createPreviewProxyHandler(deps: PreviewProxyDeps): RequestHandle
       res.status(503).send('No active preview for this session');
       return;
     }
-    proxyHttp(req, res, sessionId, port, deps.parentPublicUrl, internalPort ?? undefined);
+    try {
+      deps.onProxyActivity?.(sessionId);
+    } catch {
+      // Idle-clock bumps must not break the preview response.
+    }
+    proxyHttp(
+      req,
+      res,
+      sessionId,
+      port,
+      deps.parentPublicUrl,
+      internalPort ?? undefined,
+      deps.getSessionPreviewHost?.(sessionId) ?? resolvePreviewUpstreamHost(),
+    );
   };
 }
 
 /** Default wiring for `index.ts` — same port lookup as the HTTP proxy routes. */
 export function attachDefaultPreviewProxyUpgrade(
   server: Server,
-  lookup: Pick<PreviewProxyDeps, 'getSessionPreviewPort'>,
+  lookup: Pick<PreviewProxyDeps, 'getSessionPreviewPort' | 'getSessionPreviewHost'>,
   opts?: { subdomainBase?: string | null },
 ): void {
   attachPreviewProxyUpgrade(
     server,
     {
       getSessionPreviewPort: lookup.getSessionPreviewPort,
+      ...(lookup.getSessionPreviewHost
+        ? { getSessionPreviewHost: lookup.getSessionPreviewHost }
+        : {}),
       userOwnsSession: defaultUserOwnsSession,
     },
     opts,

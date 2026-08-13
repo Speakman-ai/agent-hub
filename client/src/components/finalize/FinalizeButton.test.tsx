@@ -413,6 +413,29 @@ describe('FinalizeButton', () => {
     expect(await screen.findByTestId('finalize-push-to-github-button')).toBeInTheDocument();
   });
 
+  it('shows Push to Agent Hub for hosted projects even without GitHub OAuth', async () => {
+    (fetchMock as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ connected: false }) as any,
+    });
+    render(<FinalizeButton {...baseProps} hosted />);
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    expect(pushBtn).toBeInTheDocument();
+    expect(pushBtn).toHaveTextContent('Push to Agent Hub');
+  });
+
+  it('hides Push for GitHub-backed projects when GitHub is not connected', async () => {
+    (fetchMock as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ connected: false }) as any,
+    });
+    render(<FinalizeButton {...baseProps} hosted={false} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('finalize-push-to-github-button')).not.toBeInTheDocument();
+  });
+
   it('pushes without a confirm when both phases passed on the same commit', async () => {
     window.confirm = vi.fn(() => true);
     setHookState({
@@ -445,6 +468,52 @@ describe('FinalizeButton', () => {
     fireEvent.click(pushBtn as any);
     await waitFor(() => {
       expect(api.pushFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-ready');
+    });
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it('treats push-step infra_error with validated_head_sha as still finalized', async () => {
+    // Auto-push can fail after gates (stale lease, etc.) and leave the run at
+    // infra_error while validated_head_sha remains — Push must not warn that
+    // Finalize never ran.
+    window.confirm = vi.fn(() => true);
+    setHookState({
+      run: {
+        id: 'run-push-fail',
+        status: 'infra_error',
+        phase: 'push',
+        mode: 'full',
+        validated_head_sha: 'sha1',
+      },
+      status: 'infra_error',
+      phase: 'push',
+      isActive: false,
+      isTerminal: true,
+      phases: {
+        checks: {
+          run_id: 'run-push-fail',
+          status: 'infra_error',
+          mode: 'full',
+          validated_head_sha: 'sha1',
+        },
+        review: {
+          run_id: 'run-push-fail',
+          status: 'infra_error',
+          mode: 'full',
+          validated_head_sha: 'sha1',
+        },
+      },
+    });
+    (api.pushFinalizeRun as any).mockResolvedValue({
+      ok: true,
+      pr_url: '/projects/proj-1/pulls/1',
+    } as any);
+    render(<FinalizeButton {...baseProps} />);
+    expect(screen.getByTestId('finalize-button').textContent).toMatch(/Finalized/);
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    fireEvent.click(pushBtn as any);
+    await waitFor(() => {
+      expect(api.pushFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-push-fail');
     });
     expect(window.confirm).not.toHaveBeenCalled();
   });

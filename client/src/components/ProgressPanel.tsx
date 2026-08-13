@@ -60,12 +60,24 @@ export default function ProgressPanel({ steps, sessionRunning, className }: any)
           {steps.map((s: any, i: any) => (
             <li
               key={`${s.step}-${s.startedAt}-${i}`}
-              className="flex items-center gap-2 text-gray-300"
+              className="space-y-1 text-gray-300"
               data-testid="progress-step"
             >
-              <StatusIcon status={s.status} />
-              <span className="truncate">{s.step}</span>
-              <span className="ml-auto text-xs text-gray-500 tabular-nums">{formatElapsed(s)}</span>
+              <div className="flex items-center gap-2">
+                <StatusIcon status={s.status} />
+                <span className="truncate">{s.step}</span>
+                <span className="ml-auto text-xs text-gray-500 tabular-nums">
+                  {formatElapsed(s)}
+                </span>
+              </div>
+              {typeof s.detail === 'string' && s.detail.trim() && s.status === 'failed' ? (
+                <pre
+                  className="ml-6 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-rose-950/40 px-2 py-1 text-xs text-rose-200/90"
+                  data-testid="progress-step-detail"
+                >
+                  {s.detail}
+                </pre>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -122,6 +134,7 @@ export function computeSummary(steps: any) {
  */
 export function mergeProgressEvent(steps: any, evt: any) {
   if (!evt || typeof evt.step !== 'string') return steps;
+  const detail = typeof evt.detail === 'string' && evt.detail.trim() ? evt.detail : undefined;
   if (evt.status === 'started') {
     return [
       ...steps,
@@ -130,6 +143,7 @@ export function mergeProgressEvent(steps: any, evt: any) {
         status: 'started',
         startedAt: evt.startedAt ?? Date.now(),
         finishedAt: undefined,
+        ...(detail ? { detail } : {}),
       },
     ];
   }
@@ -149,6 +163,7 @@ export function mergeProgressEvent(steps: any, evt: any) {
         status: evt.status,
         startedAt: evt.startedAt ?? Date.now(),
         finishedAt: evt.finishedAt ?? evt.startedAt ?? Date.now(),
+        ...(detail ? { detail } : {}),
       },
     ];
   }
@@ -157,6 +172,7 @@ export function mergeProgressEvent(steps: any, evt: any) {
     ...next[found],
     status: evt.status,
     finishedAt: evt.finishedAt ?? Date.now(),
+    ...(detail ? { detail } : {}),
   };
   return next;
 }

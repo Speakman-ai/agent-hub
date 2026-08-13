@@ -34,6 +34,7 @@ import {
   SessionEnvDisposedError,
   SessionEnvDisposeOpts,
   SessionEnvExit,
+  SessionEnvDialTarget,
   SessionEnvPortMapping,
   SessionEnvProcess,
   SessionEnvPty,
@@ -43,20 +44,27 @@ import {
   resolveEnvRelativeCwd,
   systemSessionEnvClock,
 } from './session-env.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from './worktree-io.js';
 import {
   SYSBOX_EXEC_USER,
   SYSBOX_SESSION_WORKSPACE,
   buildCreateSysboxGraphVolumeArgv,
   buildExecSysboxPtyArgs,
   buildExecSysboxSpawnArgv,
+  buildInspectContainerIpArgv,
   buildRemoveSysboxGraphVolumeArgv,
   buildStartSysboxContainerArgv,
+  workspaceOwnerEnv,
+  type WorkspaceOwner,
   buildStopSysboxContainerArgv,
   buildSysboxKillArgv,
+  parseContainerIp,
   resolveSysboxSessionImage,
   sysboxSessionContainerName,
   sysboxSpawnPidFile,
+  type ContainerIsolation,
 } from './sysbox-exec-args.js';
+import { resolveSessionEnvPortRouting, type SessionEnvPortRouting } from './container-routing.js';
 
 export interface SysboxRunResult {
   ok: boolean;
@@ -66,6 +74,70 @@ export interface SysboxRunResult {
 
 /** One-shot docker invocation (lifecycle ops, kills). Resolves, never rejects. */
 export type SysboxRunFn = (argv: string[]) => Promise<SysboxRunResult>;
+
+/** True when container-ns `comm` is Sysbox/entrypoint baseline, not user work. */
+export function isSysboxBaselineComm(comm: string): boolean {
+  const c = comm.toLowerCase();
+  if (!c) return true;
+  // Do NOT treat bash/sh as baseline — user jobs like `bash worker.sh` must
+  // keep the env alive. `sleep` is handled separately for PID 1 only.
+  return /^(pause|dockerd|containerd|containerd-shim|containerd-shim-runc-v2|runc|entrypoint\.sh|docker-init|docker-proxy)$/.test(
+    c,
+  );
+}
+
+/**
+ * Parse one `pid comm` line from the container PID namespace.
+ * Returns true when the process is detached user work the idle reaper must respect.
+ */
+export function isSysboxDetachedWorkloadLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 2) return false;
+  const pid = parts[0]!;
+  const comm = parts.slice(1).join(' ');
+  if (isSysboxBaselineComm(comm)) return false;
+  // Entrypoint ends with `exec sleep infinity` → PID 1. User `sleep 3600` has
+  // a different pid and must still count as busy.
+  if (/^sleep$/i.test(comm) && pid === '1') return false;
+  return true;
+}
+
+/**
+ * Decide whether a container-ns `ps` dump shows detached user work.
+ *
+ * `stdout` is the probe shape from {@link SysboxSessionEnv.hasDetachedWorkload}:
+ * first line = probe shell PID (`$$`), remaining lines = `pid ppid comm`.
+ * The probe shell and its children (`ps`, etc.) are excluded so an otherwise
+ * idle entrypoint is not kept forever.
+ */
+export function hasSysboxDetachedWorkloadFromProbeOutput(stdout: string): boolean {
+  const lines = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return true; // fail closed — empty probe is unexpected
+  const selfPid = lines[0]!;
+  if (!/^\d+$/.test(selfPid)) return true;
+
+  const rows: Array<{ pid: string; ppid: string; comm: string }> = [];
+  for (const line of lines.slice(1)) {
+    const parts = line.split(/\s+/);
+    if (parts.length < 3) continue;
+    const pid = parts[0]!;
+    const ppid = parts[1]!;
+    const comm = parts.slice(2).join(' ');
+    rows.push({ pid, ppid, comm });
+  }
+
+  const childPids = new Set(rows.filter((r) => r.ppid === selfPid).map((r) => r.pid));
+  for (const row of rows) {
+    if (row.pid === selfPid || row.ppid === selfPid || childPids.has(row.pid)) continue;
+    if (isSysboxDetachedWorkloadLine(`${row.pid} ${row.comm}`)) return true;
+  }
+  return false;
+}
 
 const RUN_TIMEOUT_MS = 120_000;
 
@@ -113,6 +185,18 @@ async function defaultIsDirectory(path: string): Promise<boolean> {
   }
 }
 
+async function defaultStatWorkspaceOwner(path: string): Promise<WorkspaceOwner | null> {
+  try {
+    const info = await stat(path);
+    return { uid: info.uid, gid: info.gid };
+  } catch {
+    // Unreadable ownership is not fatal: the container still starts, it just
+    // keeps the image's default ids. The mount may then be read-only, which
+    // surfaces as a normal permission error rather than a failed start.
+    return null;
+  }
+}
+
 export interface SysboxSessionEnvDeps {
   sessionId: string;
   /** The session worktree checkout as the Hub sees it (bind-mounted in). */
@@ -122,8 +206,20 @@ export interface SysboxSessionEnvDeps {
    * container start (docker cannot add publishes to a running container).
    * Comes from the dev-server config's `portMap`; `mapPort()` calls made
    * before the container starts extend this set.
+   *
+   * Ignored under `container-ip` routing, which publishes nothing.
    */
   publishPorts?: number[];
+  /**
+   * Isolation runtime. Defaults to `sysbox-runc`, matching the historical
+   * behavior of this adapter; the `container` backend passes `privileged`.
+   */
+  isolation?: ContainerIsolation;
+  /**
+   * How the Hub reaches ports inside the container. Defaults to the
+   * platform-derived routing — see `container-routing.ts`.
+   */
+  portRouting?: SessionEnvPortRouting;
   /** Session container image. Default {@link resolveSysboxSessionImage}. */
   image?: string;
   /** Extra container env at `docker run` (image env is the base). */
@@ -138,11 +234,14 @@ export interface SysboxSessionEnvDeps {
   openPty?: HostPtyFactory;
   /** Host-port allocator (the 4100–4999 pool in production). Default identity. */
   allocateHostPort?: (internalPort: number) => number | Promise<number>;
-  releaseHostPort?: (mapping: SessionEnvPortMapping) => void;
+  /** Release a port reserved by {@link allocateHostPort} after Docker claims it (or start fails). */
+  releaseHostPort?: (hostPort: number) => void;
   /** Env for the docker CLIENT processes on the host. Default process.env. */
   dockerClientEnv?: Record<string, string | undefined>;
   clock?: SessionEnvClock;
   isDirectory?: (path: string) => Promise<boolean>;
+  /** Reads the worktree's numeric owner so the container can match it. */
+  statWorkspaceOwner?: (path: string) => Promise<WorkspaceOwner | null>;
   /** Inner-dockerd readiness poll bounds. */
   readyTimeoutMs?: number;
   readyPollMs?: number;
@@ -165,10 +264,12 @@ interface LivePty {
 }
 
 export class SysboxSessionEnv implements SessionEnv {
-  readonly kind = 'sysbox' as const;
+  readonly kind: 'sysbox' | 'container';
   readonly sessionId: string;
   readonly createdAtMs: number;
   readonly containerName: string;
+  readonly isolation: ContainerIsolation;
+  readonly portRouting: SessionEnvPortRouting;
 
   #disposed = false;
   #disposePromise: Promise<void> | null = null;
@@ -184,10 +285,11 @@ export class SysboxSessionEnv implements SessionEnv {
   private readonly runDocker: SysboxRunFn;
   private readonly ptyFactory: HostPtyFactory;
   private readonly allocateHostPort: (internalPort: number) => number | Promise<number>;
-  private readonly releaseHostPort: ((mapping: SessionEnvPortMapping) => void) | null;
+  private readonly releaseHostPort: ((hostPort: number) => void) | null;
   private readonly dockerClientEnv: Record<string, string | undefined>;
   private readonly clock: SessionEnvClock;
   private readonly isDirectory: (path: string) => Promise<boolean>;
+  private readonly statWorkspaceOwner: (path: string) => Promise<WorkspaceOwner | null>;
   private readonly readyTimeoutMs: number;
   private readonly readyPollMs: number;
   private readonly logger: { warn: (msg: string) => void };
@@ -201,10 +303,15 @@ export class SysboxSessionEnv implements SessionEnv {
   private readonly livePtys = new Set<LivePty>();
   private readonly disposeHooks = new Set<() => void>();
   private spawnSeq = 0;
+  /** Cached container address under container-IP routing. */
+  #containerIp: string | null = null;
 
   constructor(deps: SysboxSessionEnvDeps) {
     this.sessionId = deps.sessionId;
     this.worktreePath = deps.worktreePath;
+    this.isolation = deps.isolation ?? 'sysbox-runc';
+    this.kind = this.isolation === 'sysbox-runc' ? 'sysbox' : 'container';
+    this.portRouting = deps.portRouting ?? resolveSessionEnvPortRouting();
     this.containerName = sysboxSessionContainerName(deps.sessionId);
     this.image = deps.image ?? resolveSysboxSessionImage();
     this.containerEnv = deps.containerEnv ?? {};
@@ -217,6 +324,7 @@ export class SysboxSessionEnv implements SessionEnv {
     this.dockerClientEnv = deps.dockerClientEnv ?? process.env;
     this.clock = deps.clock ?? systemSessionEnvClock;
     this.isDirectory = deps.isDirectory ?? defaultIsDirectory;
+    this.statWorkspaceOwner = deps.statWorkspaceOwner ?? defaultStatWorkspaceOwner;
     this.readyTimeoutMs = deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     this.readyPollMs = deps.readyPollMs ?? DEFAULT_READY_POLL_MS;
     this.logger = deps.logger ?? { warn: (msg) => console.warn(msg) };
@@ -243,7 +351,36 @@ export class SysboxSessionEnv implements SessionEnv {
   }
 
   liveProcessCount(): number {
+    // Count real workloads only. Treating the container boundary itself as a
+    // live process disabled idle reaping for every started env.
     return this.liveProcesses.size + this.livePtys.size;
+  }
+
+  async hasDetachedWorkload(): Promise<boolean> {
+    if (!this.#started) return false;
+    // `docker top` reports *host* PIDs, so entrypoint `sleep infinity` is never
+    // PID 1 there and would look like forever-busy user work. Query the
+    // container PID namespace instead. Fail closed on inspect errors. Subtract
+    // the Sysbox / entrypoint baseline and this probe's own shell + children
+    // (`ps`) so a healthy idle env can be reaped.
+    try {
+      const res = await this.runDocker([
+        'docker',
+        'exec',
+        this.containerName,
+        'sh',
+        '-c',
+        'printf "%s\\n" "$$"; ps -eo pid=,ppid=,comm= --no-headers',
+      ]);
+      if (!res.ok) return true;
+      return hasSysboxDetachedWorkloadFromProbeOutput(res.stdout);
+    } catch {
+      return true;
+    }
+  }
+
+  retainAfterFailedEnsure(): boolean {
+    return false;
   }
 
   onDispose(cb: () => void): () => void {
@@ -277,60 +414,156 @@ export class SysboxSessionEnv implements SessionEnv {
       );
     }
 
-    // Settle every declared port's host allocation before `docker run` —
-    // publishes are fixed at container start.
-    const ports = await Promise.all(
-      [...this.declaredPorts]
-        .sort((a, b) => a - b)
-        .map(async (internalPort) => {
-          const mapping = await this.mapPortPreStart(internalPort);
-          return { internalPort, hostPort: mapping.hostPort };
-        }),
-    );
+    // Under container-IP routing nothing is published: the Hub dials the
+    // container directly, so ports need no host-side allocation and need not
+    // be known before start. Otherwise settle every declared port's host
+    // allocation first, because publishes are fixed at `docker run` time.
+    let ports =
+      this.portRouting === 'container-ip'
+        ? ([] as { internalPort: number; hostPort: number }[])
+        : await Promise.all(
+            [...this.declaredPorts]
+              .sort((a, b) => a - b)
+              .map(async (internalPort) => {
+                const mapping = await this.mapPortPreStart(internalPort);
+                return { internalPort, hostPort: mapping.hostPort };
+              }),
+          );
 
-    const volume = await this.runDocker(
-      buildCreateSysboxGraphVolumeArgv({
-        containerName: this.containerName,
-        sessionId: this.sessionId,
-      }),
-    );
-    if (!volume.ok) {
+    let portsReleased = false;
+    const releasePorts = () => {
+      if (portsReleased) return;
+      portsReleased = true;
+      for (const p of ports) this.releaseHostPort?.(p.hostPort);
+    };
+
+    const maxStartAttempts = this.portRouting === 'published-ports' ? 3 : 1;
+    let lastStartErr: unknown;
+    for (let attempt = 0; attempt < maxStartAttempts; attempt++) {
+      // Re-allocate host ports on retry after a bind collision.
+      if (attempt > 0) {
+        releasePorts();
+        portsReleased = false;
+        if (this.portRouting === 'published-ports') {
+          ports.length = 0;
+          const fresh = await Promise.all(
+            [...this.declaredPorts]
+              .sort((a, b) => a - b)
+              .map(async (internalPort) => {
+                // Clear both caches — portMappings holds the resolved Promise
+                // that mapPortPreStart returns first, so deleting only
+                // settledMappings still reuses the collided host port.
+                this.settledMappings.delete(internalPort);
+                this.portMappings.delete(internalPort);
+                const mapping = await this.mapPortPreStart(internalPort);
+                return { internalPort, hostPort: mapping.hostPort };
+              }),
+          );
+          ports.push(...fresh);
+        }
+      }
+
+      try {
+        const volume = await this.runDocker(
+          buildCreateSysboxGraphVolumeArgv({
+            containerName: this.containerName,
+            sessionId: this.sessionId,
+          }),
+        );
+        if (!volume.ok) {
+          throw new Error(
+            `Failed to create sysbox graph volume for session ${this.sessionId}: ${volume.stderr.trim() || volume.stdout.trim()}`,
+          );
+        }
+
+        const owner = await this.statWorkspaceOwner(this.worktreePath);
+
+        const run = await this.runDocker(
+          buildStartSysboxContainerArgv({
+            sessionId: this.sessionId,
+            containerName: this.containerName,
+            image: this.image,
+            worktreePath: this.worktreePath,
+            ports,
+            isolation: this.isolation,
+            env: { ...this.containerEnv, ...workspaceOwnerEnv(owner) },
+          }),
+        );
+        // Docker now owns the published ports (or the attempt failed). Drop the
+        // Hub-side reservation so the numbers can be reused after stop / retry.
+        releasePorts();
+        if (!run.ok) {
+          const detail = run.stderr.trim() || run.stdout.trim();
+          // Best-effort cleanup so a retry does not hit name/volume collisions.
+          await this.runDocker(buildStopSysboxContainerArgv(this.containerName));
+          await this.runDocker(buildRemoveSysboxGraphVolumeArgv(this.containerName));
+          if (
+            attempt + 1 < maxStartAttempts &&
+            /address already in use|port is already allocated|bind: address already in use/i.test(
+              detail,
+            )
+          ) {
+            lastStartErr = new Error(
+              `Failed to start sysbox session container ${this.containerName}: ${detail}`,
+            );
+            continue;
+          }
+          throw new Error(
+            `Failed to start sysbox session container ${this.containerName}: ${detail}`,
+          );
+        }
+
+        try {
+          await this.#waitForInnerDocker();
+          if (this.portRouting === 'container-ip') {
+            this.#containerIp = await this.#readContainerIp();
+          }
+        } catch (err) {
+          // A started-but-unready container is not usable and would make the
+          // retry hit a name collision. Remove both resources before surfacing
+          // the readiness error; the boot reconcile remains the crash backstop.
+          await this.runDocker(buildStopSysboxContainerArgv(this.containerName));
+          await this.runDocker(buildRemoveSysboxGraphVolumeArgv(this.containerName));
+          throw err;
+        }
+        this.#started = true;
+        this.touch();
+        return;
+      } catch (err) {
+        lastStartErr = err;
+        releasePorts();
+        if (attempt + 1 >= maxStartAttempts) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (
+          !/address already in use|port is already allocated|bind: address already in use/i.test(
+            msg,
+          )
+        ) {
+          throw err;
+        }
+      }
+    }
+    throw lastStartErr instanceof Error
+      ? lastStartErr
+      : new Error(`Failed to start sysbox session container ${this.containerName}`);
+  }
+
+  /**
+   * Read the container's bridge address — the Hub's only route in under
+   * container-IP routing. Failing here fails the start: a container with no
+   * reachable address would accept processes and then silently refuse every
+   * preview connection.
+   */
+  async #readContainerIp(): Promise<string> {
+    const res = await this.runDocker(buildInspectContainerIpArgv(this.containerName));
+    const ip = res.ok ? parseContainerIp(res.stdout) : null;
+    if (!ip) {
       throw new Error(
-        `Failed to create sysbox graph volume for session ${this.sessionId}: ${volume.stderr.trim() || volume.stdout.trim()}`,
+        `Could not resolve a container IP for ${this.containerName}: ` +
+          `${res.stderr.trim() || res.stdout.trim() || 'no address on any attached network'}`,
       );
     }
-
-    const run = await this.runDocker(
-      buildStartSysboxContainerArgv({
-        sessionId: this.sessionId,
-        containerName: this.containerName,
-        image: this.image,
-        worktreePath: this.worktreePath,
-        ports,
-        env: this.containerEnv,
-      }),
-    );
-    if (!run.ok) {
-      // Best-effort cleanup so a retry does not hit name/volume collisions.
-      await this.runDocker(buildStopSysboxContainerArgv(this.containerName));
-      await this.runDocker(buildRemoveSysboxGraphVolumeArgv(this.containerName));
-      throw new Error(
-        `Failed to start sysbox session container ${this.containerName}: ${run.stderr.trim() || run.stdout.trim()}`,
-      );
-    }
-
-    try {
-      await this.#waitForInnerDocker();
-    } catch (err) {
-      // A started-but-unready container is not usable and would make the
-      // retry hit a name collision. Remove both resources before surfacing
-      // the readiness error; the boot reconcile remains the crash backstop.
-      await this.runDocker(buildStopSysboxContainerArgv(this.containerName));
-      await this.runDocker(buildRemoveSysboxGraphVolumeArgv(this.containerName));
-      throw err;
-    }
-    this.#started = true;
-    this.touch();
+    return ip;
   }
 
   /**
@@ -541,6 +774,12 @@ export class SysboxSessionEnv implements SessionEnv {
     this.#assertLive('mapPort');
     const existing = this.portMappings.get(internalPort);
     if (existing) return existing;
+    if (this.portRouting === 'container-ip') {
+      // Nothing is published, so a port needs no host allocation and no
+      // advance declaration — it becomes reachable the instant something
+      // binds it inside the container.
+      return this.mapPortViaContainerIp(internalPort);
+    }
     if (this.#started || this.#startPromise) {
       // Publishes are fixed at `docker run` — an undeclared port cannot be
       // added to a running container.
@@ -554,6 +793,53 @@ export class SysboxSessionEnv implements SessionEnv {
     return this.mapPortPreStart(internalPort);
   }
 
+  /**
+   * Mapping under container-IP routing: the process binds the port it was
+   * configured with, and the Hub dials that same port on the container's own
+   * address. There is no translation and no host-side reservation.
+   */
+  private mapPortViaContainerIp(internalPort: number): Promise<SessionEnvPortMapping> {
+    const mapping = Promise.resolve()
+      .then(() => this.ensureStarted())
+      .then(() => {
+        const host = this.#containerIp;
+        if (!host) {
+          throw new Error(
+            `Session container ${this.containerName} has no resolved IP for port ${internalPort}`,
+          );
+        }
+        const resolved: SessionEnvPortMapping = {
+          internalPort,
+          host,
+          // No host port is consumed; report the internal number so callers
+          // that log or display a "port" see the one the app actually binds.
+          hostPort: internalPort,
+          envPort: internalPort,
+          hostUrl: `http://${host}:${internalPort}`,
+        };
+        this.settledMappings.set(internalPort, resolved);
+        return resolved;
+      });
+    this.portMappings.set(internalPort, mapping);
+    mapping.catch(() => {
+      this.portMappings.delete(internalPort);
+    });
+    return mapping;
+  }
+
+  async resolveDialTarget(internalPort: number): Promise<SessionEnvDialTarget> {
+    this.#assertLive('resolveDialTarget');
+    const mapping = await this.mapPort(internalPort);
+    const host = this.portRouting === 'container-ip' ? this.#containerIp : '127.0.0.1';
+    if (!host) {
+      throw new Error(
+        `Session container ${this.containerName} has no resolved IP for port ${internalPort}`,
+      );
+    }
+    const port = this.portRouting === 'container-ip' ? mapping.internalPort : mapping.hostPort;
+    return { host, port, url: `http://${host}:${port}` };
+  }
+
   private mapPortPreStart(internalPort: number): Promise<SessionEnvPortMapping> {
     const existing = this.portMappings.get(internalPort);
     if (existing) return existing;
@@ -563,6 +849,7 @@ export class SysboxSessionEnv implements SessionEnv {
       .then((hostPort) => {
         const resolved: SessionEnvPortMapping = {
           internalPort,
+          host: '127.0.0.1',
           hostPort,
           // Container translation publishes hostPort → internalPort, so the
           // in-container process must bind the internal side of the mapping.
@@ -584,10 +871,18 @@ export class SysboxSessionEnv implements SessionEnv {
 
   async mapPortsOut(internalPorts?: number[]): Promise<SessionEnvPortMapping[]> {
     if (internalPorts === undefined) return this.listPortMappings();
-    // Idempotent per internal port: repeated ports collapse to one publish
-    // while the result keeps input order. All ports must be declared before
-    // the container starts — `mapPort` rejects an undeclared port post-start.
-    return Promise.all(internalPorts.map((p) => this.mapPort(p)));
+    // Idempotent per internal port: repeated ports collapse to one mapping
+    // while the result keeps input order. Under published-ports routing every
+    // port must be declared before the container starts; `mapPort` rejects an
+    // undeclared port post-start.
+    const mappings = await Promise.all(internalPorts.map((p) => this.mapPort(p)));
+    // mountWorktree may have deferred docker run so publishes could still be
+    // declared. Start now that this batch is recorded — preview spawn requires
+    // a running container, and `-p` flags are fixed at `docker run`.
+    if (this.portRouting === 'published-ports') {
+      await this.ensureStarted();
+    }
+    return mappings;
   }
 
   listPortMappings(): SessionEnvPortMapping[] {
@@ -596,11 +891,35 @@ export class SysboxSessionEnv implements SessionEnv {
 
   async mountWorktree(): Promise<SessionEnvWorktreeMount> {
     this.#assertLive('mountWorktree');
-    // The bind mount happens at container start; ensureStarted is idempotent.
-    await this.ensureStarted();
-    this.#assertLive('mountWorktree');
-    return { hostPath: this.worktreePath, envPath: SYSBOX_SESSION_WORKSPACE };
+    // Under published-ports, `-p` mappings are fixed at `docker run`. Starting
+    // here (from SessionEnvManager.ensure / terminal attach) with an empty
+    // publish set makes a later preview `mapPortsOut` impossible. Defer the
+    // start until ports are declared or spawn/ensureStarted runs explicitly.
+    const deferStart =
+      this.portRouting === 'published-ports' &&
+      this.declaredPorts.size === 0 &&
+      !this.#started &&
+      !this.#startPromise;
+    if (!deferStart) {
+      await this.ensureStarted();
+      this.#assertLive('mountWorktree');
+    }
+    return {
+      hostPath: this.worktreePath,
+      envPath: SYSBOX_SESSION_WORKSPACE,
+      sharing: this.worktreeSharing,
+    };
   }
+
+  /** Bind mount, so the container and the Hub write the same bytes. */
+  readonly worktreeSharing = 'host-shared' as const;
+
+  get worktreeIo(): SessionWorktreeIo {
+    this.#worktreeIo ??= new HostWorktreeIo(this.worktreePath);
+    return this.#worktreeIo;
+  }
+
+  #worktreeIo: SessionWorktreeIo | undefined;
 
   dispose(opts: SessionEnvDisposeOpts = {}): Promise<void> {
     if (this.#disposePromise) return this.#disposePromise;
@@ -656,7 +975,7 @@ export class SysboxSessionEnv implements SessionEnv {
     for (const pending of this.portMappings.values()) {
       try {
         const mapping = await pending;
-        this.releaseHostPort?.(mapping);
+        this.releaseHostPort?.(mapping.hostPort);
       } catch {
         // Allocation failed — nothing to release.
       }

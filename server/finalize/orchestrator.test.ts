@@ -2364,52 +2364,27 @@ describe('runFinalize — §13 budget integration', () => {
     expect(timeoutInsert).toBeDefined();
   });
 
-  it('clamps the cap to ci.yaml timeout_minutes (lower than dep budget)', async () => {
-    // ci.yaml says 1 minute; dep budget injected at 60s. After parse the
-    // orchestrator narrows to 60s (lesser of the two — ci can lower).
-    // We burn 70s of active time during rebase and then the loop guard
-    // should trip on the next iteration.
-    const ciLowered = {
+  it('does not lower the §13 active-time budget from ci.yaml timeout_minutes', async () => {
+    // timeout_minutes is the pipeline WALL-CLOCK hang limit. A 1-minute
+    // CI cap must not park the run after 70s of rebase/agent processing
+    // against a 3600s active-time budget (the failure that parked
+    // surveytracker Finalize at Budget 1800s / Consumed 1947s).
+    const ciPipelineCap = {
       ok: true as const,
       config: { ...CI_OK.config, timeoutMinutes: 1 as const },
     };
-    const { deps, stmts } = makeDeps({
-      loadCiConfigFromFile: fakeRunCi(ciLowered) as never,
+    const { deps } = makeDeps({
+      loadCiConfigFromFile: fakeRunCi(ciPipelineCap) as never,
       runRebasePhase: vi
         .fn()
         .mockImplementation(async (depArg: { stmts: OrchestratorDeps['stmts'] }) => {
-          // 70 seconds — more than the ci-lowered 60s cap.
           depArg.stmts.updateFinalizeRunActiveSeconds.run(70, 'run-1');
           return REBASE_OK;
         }) as never,
-      runJobPhase: fakeRunSteps({
-        status: 'failure',
-        stepResults: [],
-        activeSecondsBilled: 5,
-        failedStep: {
-          index: 1,
-          name: 'lint',
-          run: 'npm run lint',
-          exitCode: 2,
-          outputTail: ['lint failed'],
-        },
-      }),
-      dispatchFixMessage: fakeDispatchFix(FIX_TURN_ENDED),
-      // Dep budget is generous; the ci.yaml value should win because it
-      // is the narrower of the two.
       budgetSeconds: 3600,
     });
     const result = await runFinalize(deps, baseOpts());
-    expect(result.kind).toBe('failed');
-    if (result.kind === 'failed') {
-      expect(result.status).toBe('timed_out');
-      expect(result.failureReason).toBe('timeout');
-    }
-    // Detail string reflects the narrowed cap (60s = 1 minute).
-    if (result.kind === 'failed') {
-      expect(result.detail).toMatch(/60s/);
-    }
-    void stmts;
+    expect(result.kind).toBe('ready_to_push');
   });
 
   it('shares the budget with the retry parent — the retry does NOT get a fresh 60 min', async () => {

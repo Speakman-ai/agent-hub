@@ -22,8 +22,12 @@
  *
  * Cap rules (§13):
  *
- *   - Hard ceiling 4 hours at v0. `timeout_minutes` in ci.yaml may
- *     lower the cap (e.g. fast-fail at 10 min) but cannot raise it.
+ *   - Hard ceiling 4 hours at v0. Tests (and only tests) inject a lower
+ *     cap via `OrchestratorDeps.budgetSeconds`.
+ *   - `timeout_minutes` in ci.yaml is the **pipeline wall-clock** cap
+ *     (kill a hung job/step). It does **not** lower this active-time
+ *     budget — a 30-minute CI hang limit must not park the fix-dispatch
+ *     loop after 30 minutes of agent processing.
  *   - The cap is **shared across the original run and its one infra
  *     retry**. The retry does NOT get a fresh budget — see
  *     {@link getRunFamilyActiveSeconds}.
@@ -71,10 +75,11 @@ export const FINALIZE_TERMINAL_STATUSES: ReadonlyArray<FinalizeRunStatus> = [
 ];
 
 /**
- * Compute the effective budget for a run given ci.yaml's optional
- * `timeout_minutes`. Clamps to {@link FINALIZE_BUDGET_HARD_CEILING_SECONDS}
- * — the hard ceiling is the only thing this function will not let you
- * exceed.
+ * Convert a minute-valued cap to seconds, clamped to
+ * {@link FINALIZE_BUDGET_HARD_CEILING_SECONDS}. Used by tests and any
+ * future explicit active-time override. Pipeline `timeout_minutes` is
+ * **not** fed through here by the orchestrator (that field is wall-clock
+ * for jobs/steps only).
  *
  *   - `null` / `undefined` → default budget (hard ceiling at v0).
  *   - Positive integer ≤ ceiling minutes → that many minutes, in seconds.
@@ -84,7 +89,7 @@ export const FINALIZE_TERMINAL_STATUSES: ReadonlyArray<FinalizeRunStatus> = [
  *     defensive fallback).
  */
 export function resolveBudgetSeconds(args: {
-  /** ci.yaml's `timeout_minutes`. The parser clamps to [1, ceiling minutes]. */
+  /** Minute-valued cap to convert. The parser clamps to [1, ceiling minutes]. */
   ciTimeoutMinutes?: number | null;
 }): number {
   const raw = args.ciTimeoutMinutes;

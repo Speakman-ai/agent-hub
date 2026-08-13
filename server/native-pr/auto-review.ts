@@ -262,9 +262,9 @@ export async function maybeRunPrAutoReview(
       `POST \`$AGENT_HUB_URL/api/projects/${project.id}/pulls/${pr.number}/reviews\` with ` +
       `\`X-API-Key: $AGENT_HUB_API_KEY\` and JSON body:\n` +
       `\`{"state": "approved" | "changes_requested", "body": "<your findings>", "reviewer": ${JSON.stringify(reviewer.name)}}\`\n\n` +
-      `Use your severity rubric: blocking findings (7+) → changes_requested with file:line specifics; ` +
-      `otherwise approved (non-blocking notes welcome in the body). You are READ-ONLY: never edit ` +
-      `code, never push, never merge.`;
+      `Use your severity rubric: any finding scoring > 3 is a BLOCKER → changes_requested with ` +
+      `file:line specifics; otherwise approved (non-blocking notes welcome in the body). You are ` +
+      `READ-ONLY: never edit code, never push, never merge.`;
 
     deps.stmts.insertBackgroundTask.run(taskId, sessionId, reviewer.id, prompt);
     deps.handleChat(null, {

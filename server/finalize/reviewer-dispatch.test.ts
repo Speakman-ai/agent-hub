@@ -918,6 +918,8 @@ describe('buildLocalDiffReviewerPrompt', () => {
     expect(prompt).toContain('Pre-PR Code Review (Local Diff)');
     expect(prompt).toContain('No GitHub PR exists yet');
     expect(prompt).toContain('Do NOT call');
+    expect(prompt).toContain('Do **not** refuse the review or ask for a PR URL');
+    expect(prompt).toContain('<agenthub:review-verdict>');
     expect(prompt).toContain(fakeInputs.baseSha);
     expect(prompt).toContain(fakeInputs.headSha);
     expect(prompt).toContain('server/foo.ts');

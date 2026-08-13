@@ -97,6 +97,7 @@ import {
   listSessionChangedPaths,
   resolveWorktreeRelativePath,
 } from '../session-changes.js';
+import { HostWorktreeIo, type SessionWorktreeIo } from '../session-env/worktree-io.js';
 import { closeBrowserSession } from '../browser.js';
 import {
   normalizeOrchestrationMetaInput,
@@ -461,23 +462,44 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   }
 
-  /** Tear down any preview group owned by `sessionId`. */
-  async function stopPreviewsForSession(sessionId: string): Promise<void> {
+  /**
+   * Stop only the session's running **dev preview** (compose / node process).
+   *
+   * Must not dispose the session env, kill background shells, or clear Bash
+   * notices — those belong to the session, not the preview. Disposing the env
+   * here is what made "Stop preview" feel like ending the session and wiping
+   * in-env changes (Firecracker/container disk reset to the host seed).
+   */
+  async function stopPreviewOnlyForSession(sessionId: string): Promise<void> {
+    const devServerRuntime = deps.getDevServerRuntime?.();
+    if (!devServerRuntime) return;
+    try {
+      await devServerRuntime.stopBySessionId(sessionId);
+    } catch (err: unknown) {
+      console.warn(
+        `[sessions] dev-server stopBySessionId failed (${sessionId}):`,
+        (err as Error).message,
+      );
+    }
+  }
+
+  /**
+   * Full session runtime teardown for archive/delete: preview, background
+   * shells, ephemeral Bash notices, and the session environment itself.
+   *
+   * Soft archive keeps the Firecracker workspace disk (`forgetWorkspace:
+   * false`) so restore can reattach. Hard purge must pass
+   * `forgetWorkspace: true`. Dispose failures propagate — callers must not
+   * archive/delete until resource teardown is proven.
+   */
+  async function teardownSessionRuntime(
+    sessionId: string,
+    opts: { forgetWorkspace?: boolean } = {},
+  ): Promise<void> {
     // The session will never take another turn, so nothing will consume its
     // pending native-background-Bash notice. Drop it rather than leak the rows.
     clearEphemeralBackgroundBash(sessionId);
-    const devServerRuntime = deps.getDevServerRuntime?.();
-    const tasks: Promise<unknown>[] = [];
-    if (devServerRuntime) {
-      tasks.push(
-        devServerRuntime.stopBySessionId(sessionId).catch((err: unknown) => {
-          console.warn(
-            `[sessions] dev-server stopBySessionId failed (${sessionId}):`,
-            (err as Error).message,
-          );
-        }),
-      );
-    }
+    const tasks: Promise<unknown>[] = [stopPreviewOnlyForSession(sessionId)];
     const backgroundShellRuntime = deps.getBackgroundShellRuntime?.();
     if (backgroundShellRuntime) {
       // Drop the watcher's in-memory pending wakes before the kill. The
@@ -501,14 +523,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         }),
       );
     }
+    if (deps.disposeSessionEnv) {
+      tasks.push(
+        deps.disposeSessionEnv(sessionId, {
+          forgetWorkspace: opts.forgetWorkspace === true,
+        }),
+      );
+    }
     await Promise.all(tasks);
-  }
-
-  /** Fire-and-forget variant for bulk archive loops. */
-  function stopPreviewsBestEffort(sessionId: string): void {
-    void stopPreviewsForSession(sessionId).catch((err) => {
-      console.warn(`[sessions] preview teardown failed (${sessionId}):`, (err as Error).message);
-    });
   }
 
   const router = Router();
@@ -916,6 +938,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       status: r.status,
       startedAt: r.started_at,
       finishedAt: r.finished_at ?? undefined,
+      ...(r.detail ? { detail: r.detail } : {}),
     }));
     res.json({ sessionId: req.params.sessionId, steps });
   });
@@ -1031,7 +1054,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
     }
     try {
-      const changes = await checkWorktreeChanges(session.worktree_path);
+      const io = await sessionWorktreeIo(session);
+      if (!io) return res.status(404).json({ error: 'Session has no worktree' });
+      const changes = await checkWorktreeChanges(io);
       // `committable` gates the Finalize/Push buttons. Refine bare unpushed
       // reachability with a net-diff probe so a branch that adds nothing to base
       // (already integrated / net-zero commits) doesn't offer Finalize for an
@@ -1053,7 +1078,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       } else {
         const explicitBase = gateBase.kind === 'explicit';
         committable = await hasPublishableChanges(
-          session.worktree_path,
+          io,
           changes,
           makeNetDiffProbe(explicitBase ? gateBase.baseBranch : null),
           { explicitBase },
@@ -1075,6 +1100,18 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // ── Session code-diff pane ────────────────────────────────────────
   // Total session delta (committed + uncommitted + untracked) vs the
   // merge-base with the base branch. Powers the web "Changes" pane.
+
+  /**
+   * The session's worktree, wherever it lives. Falls back to the host path for
+   * embedders whose wiring predates the seam (tests mount this router with a
+   * partial `deps`); that fallback is correct for every `host-shared` backend
+   * and is exactly what this code did before.
+   */
+  async function sessionWorktreeIo(session: SessionRow): Promise<SessionWorktreeIo | null> {
+    if (!session.worktree_path) return null;
+    if (deps.getSessionWorktreeIo) return await deps.getSessionWorktreeIo(session.id);
+    return new HostWorktreeIo(session.worktree_path);
+  }
 
   // Resolve the branch a session should be diffed against. Uses the same
   // card → epic → repo-default chain as Finalize / auto-git so the Changes
@@ -1116,11 +1153,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
     }
     try {
+      const io = await sessionWorktreeIo(session);
+      if (!io) return res.status(404).json({ error: 'Session has no worktree' });
       const baseBranch = await resolveSessionDiffBase(session);
-      const summary = await computeSessionChanges({
-        worktreePath: session.worktree_path,
-        baseBranch,
-      });
+      const summary = await computeSessionChanges({ io, baseBranch });
       res.json(summary);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1142,25 +1178,24 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     // Reject absolute / out-of-worktree paths up front with a clear 400 — the
     // `git diff --no-index` path would otherwise be a server file-read oracle.
-    const safeFile = resolveWorktreeRelativePath(session.worktree_path, file);
+    const safeFile = resolveWorktreeRelativePath(file);
     if (!safeFile) return res.status(400).json({ error: 'invalid file path' });
     try {
+      const io = await sessionWorktreeIo(session);
+      if (!io) return res.status(404).json({ error: 'Session has no worktree' });
       const baseBranch = await resolveSessionDiffBase(session);
       // Authorization is membership-based: only diff a path git itself reports
       // as changed for this session. We gate against the UNTRUNCATED change set
       // (not the capped UI list) so a file past MAX_CHANGED_FILES is still
       // diffable. The `untracked` flag is derived server-side here — never
       // trusted from the client query string.
-      const membership = await listSessionChangedPaths({
-        worktreePath: session.worktree_path,
-        baseBranch,
-      });
+      const membership = await listSessionChangedPaths({ io, baseBranch });
       const entry = membership.get(safeFile);
       if (!entry) {
         return res.status(404).json({ error: 'file is not part of this session’s changes' });
       }
       const result = await computeFileDiff({
-        worktreePath: session.worktree_path,
+        io,
         baseBranch,
         file: safeFile,
         untracked: entry.untracked,
@@ -1190,11 +1225,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(events);
   });
 
-  router.delete('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
+  router.delete('/api/agents/:agentId/sessions', async (req: Request, res: Response) => {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
-    let archived = 0;
+    const archivedIds: string[] = [];
+    let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
       const proc = activeProcesses.get(session.id);
@@ -1209,21 +1245,40 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         activeProcesses.delete(session.id);
       }
       closeBrowserBestEffort(session.id);
-      stopPreviewsBestEffort(session.id);
+      // Same fail-closed contract as single-session archive: never hide the
+      // row while a Firecracker VMM / workload may still be running.
+      try {
+        await teardownSessionRuntime(session.id, { forgetWorkspace: false });
+      } catch (err: unknown) {
+        failed++;
+        console.error(
+          `[sessions] refuse bulk archive; runtime teardown failed (${session.id}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        continue;
+      }
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
       cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
-      archived++;
+      archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
       } catch {
         /* best-effort */
       }
     }
-    // `deleted` mirrors `archived` for older clients that only read `deleted`.
-    res.json({ ok: true, archived, deleted: archived });
+    const archived = archivedIds.length;
+    // Partial failure is not ok — clients must not optimistically drop sessions
+    // that stayed live. `archivedIds` is the authoritative removed set.
+    res.status(failed > 0 && archived === 0 ? 500 : 200).json({
+      ok: failed === 0,
+      archived,
+      deleted: archived,
+      failed,
+      archivedIds,
+    });
   });
 
   // Bulk soft-delete (archive) only the sessions whose resolved lifecycle state
@@ -1233,30 +1288,47 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // resolve to `pushed` (live activity outranks the settled push state), but we
   // keep the explicit guard as defence-in-depth so a racing process is never
   // archived out from under itself.
-  router.delete('/api/agents/:agentId/sessions/pushed', (req: Request, res: Response) => {
+  router.delete('/api/agents/:agentId/sessions/pushed', async (req: Request, res: Response) => {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
-    let archived = 0;
+    const archivedIds: string[] = [];
+    let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
       if (computeSessionState(stmts, session.id) !== 'pushed') continue;
       closeBrowserBestEffort(session.id);
-      stopPreviewsBestEffort(session.id);
+      try {
+        await teardownSessionRuntime(session.id, { forgetWorkspace: false });
+      } catch (err: unknown) {
+        failed++;
+        console.error(
+          `[sessions] refuse bulk archive (pushed); runtime teardown failed (${session.id}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        continue;
+      }
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
       cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
-      archived++;
+      archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
       } catch {
         /* best-effort */
       }
     }
-    res.json({ ok: true, archived, deleted: archived });
+    const archived = archivedIds.length;
+    res.status(failed > 0 && archived === 0 ? 500 : 200).json({
+      ok: failed === 0,
+      archived,
+      deleted: archived,
+      failed,
+      archivedIds,
+    });
   });
 
   // Bulk soft-delete (archive) only the sessions whose resolved lifecycle state
@@ -1269,30 +1341,47 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // process can never resolve to `merged` (live activity outranks the settled
   // merged marker), but we keep the explicit guard as defence-in-depth so a
   // racing process is never archived out from under itself.
-  router.delete('/api/agents/:agentId/sessions/merged', (req: Request, res: Response) => {
+  router.delete('/api/agents/:agentId/sessions/merged', async (req: Request, res: Response) => {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
-    let archived = 0;
+    const archivedIds: string[] = [];
+    let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
       if (computeSessionState(stmts, session.id) !== 'merged') continue;
       closeBrowserBestEffort(session.id);
-      stopPreviewsBestEffort(session.id);
+      try {
+        await teardownSessionRuntime(session.id, { forgetWorkspace: false });
+      } catch (err: unknown) {
+        failed++;
+        console.error(
+          `[sessions] refuse bulk archive (merged); runtime teardown failed (${session.id}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        continue;
+      }
       // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
       // agent via `getSession`, and keeping it ahead of the archive removes any
       // dependency on whether `getSession` filters `deleted_at` rows.
       cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
-      archived++;
+      archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
       } catch {
         /* best-effort */
       }
     }
-    res.json({ ok: true, archived, deleted: archived });
+    const archived = archivedIds.length;
+    res.status(failed > 0 && archived === 0 ? 500 : 200).json({
+      ok: failed === 0,
+      archived,
+      deleted: archived,
+      failed,
+      archivedIds,
+    });
   });
 
   // Single-session DELETE is a *soft* delete (archive). The row is marked with
@@ -1323,7 +1412,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     closeBrowserBestEffort(sessionId);
-    await stopPreviewsForSession(sessionId);
+    try {
+      // Soft archive: stop the env but keep the workspace disk for restore.
+      await teardownSessionRuntime(sessionId, { forgetWorkspace: false });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[sessions] refuse archive; runtime teardown failed (${sessionId}):`, message);
+      return res.status(500).json({
+        error: `Failed to tear down session environment: ${message}`,
+      });
+    }
 
     // Cleanup runs BEFORE the soft-delete so it can resolve the card's owning
     // agent without depending on whether `getSession` filters archived rows.
@@ -1594,7 +1692,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
           let changes;
           try {
-            changes = await checkWorktreeChanges(current.worktree_path);
+            const io = await sessionWorktreeIo(current);
+            if (!io) throw new Error('Session has no worktree');
+            changes = await checkWorktreeChanges(io);
           } catch (err: unknown) {
             return res.status(409).json({
               error: 'Unable to verify that the session worktree is clean',
@@ -2092,7 +2192,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
           return res.status(404).json({ error: 'Session not found' });
         }
-        await stopPreviewsForSession(sessionId);
+        await stopPreviewOnlyForSession(sessionId);
         deps.broadcast({
           type: 'agenthub_preview',
           kind: 'preview_stopped',
@@ -2178,6 +2278,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
             | StartSessionPreviewDeps['getDevServerRuntime']
             | undefined,
           getSession: (id) => stmts.getSession.get(id) as SessionRow | undefined,
+          routing: {
+            publicUrl: config.publicUrl,
+            subdomainBase: config.previewSubdomainBase,
+          },
         });
         if (!result.ok) {
           return res.status(result.statusCode).json({ error: result.error });
@@ -2256,12 +2360,20 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         },
         internalPort,
       ),
+    getSessionPreviewHost: (sessionId) => {
+      const runtime = deps.getDevServerRuntime?.() as
+        | { getSessionUpstreamHost?: (id: string) => string | null }
+        | null
+        | undefined;
+      return runtime?.getSessionUpstreamHost?.(sessionId) ?? null;
+    },
     userOwnsSession,
     // CSP frame-ancestors source for cross-origin iframe loads in
     // subdomain mode. `config.publicUrl` is normally
     // `https://agenthub.example.com`; the proxy uses its origin
     // (scheme + host) and falls back to 'self' when unset.
     parentPublicUrl: config.publicUrl,
+    onProxyActivity: (sessionId) => deps.touchSessionEnv?.(sessionId),
   });
   router.all('/api/sessions/:sessionId/preview/proxy', requireRole('User'), previewProxyHandler);
   router.all('/api/sessions/:sessionId/preview/proxy/*', requireRole('User'), previewProxyHandler);
