@@ -151,15 +151,21 @@ mount -o loop -- "${WORKSPACE_OUT}" "${MOUNT_DIR}"
 # safe.directory / dubious-ownership when the tar stream lands uid-1000 files
 # into a root-mounted image (Docker helper path).
 chown "${WORKSPACE_UID}:${WORKSPACE_GID}" "${MOUNT_DIR}"
+# Drop to the workspace uid *and* set no_new_privs. The Finalize helper image
+# grants uid 1000 (`runner`) passwordless sudo, and the container is launched
+# --privileged — without no_new_privs a repo-controlled smudge filter can
+# `sudo -n` back to root. setpriv is required (runuser alone cannot set this).
 run_as_workspace() {
-  if command -v setpriv >/dev/null 2>&1; then
-    setpriv --reuid="${WORKSPACE_UID}" --regid="${WORKSPACE_GID}" --clear-groups -- "$@"
-  elif command -v runuser >/dev/null 2>&1; then
-    runuser -u "#${WORKSPACE_UID}" -- "$@"
-  else
-    echo "fc-prepare-disks: need setpriv or runuser to drop privileges for git" >&2
+  if ! command -v setpriv >/dev/null 2>&1; then
+    echo "fc-prepare-disks: setpriv required to drop privileges with no_new_privs" >&2
     exit 1
   fi
+  setpriv \
+    --reuid="${WORKSPACE_UID}" \
+    --regid="${WORKSPACE_GID}" \
+    --clear-groups \
+    --no-new-privs \
+    -- "$@"
 }
 
 # Archive the worktree through an O_NOFOLLOW directory walk so a symlink swap

@@ -614,11 +614,39 @@ describe('fc-prepare-disks.sh worktree copy', () => {
   it('runs worktree materialization as the workspace uid (not root git)', () => {
     const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
     expect(src).toMatch(/run_as_workspace\(\)/);
-    expect(src).toMatch(/setpriv --reuid="\$\{WORKSPACE_UID\}"/);
+    expect(src).toMatch(/setpriv \\/);
+    expect(src).toMatch(/--reuid="\$\{WORKSPACE_UID\}"/);
+    expect(src).toMatch(/--no-new-privs/);
     expect(src).toMatch(/run_as_workspace python3 -/);
+    // runuser alone cannot set no_new_privs — must not be a fallback path.
+    expect(src).not.toMatch(/runuser -u/);
     // Root still owns mount/mkfs; only the copy/git path drops privileges.
     expect(src).toMatch(/mount -o loop/);
   });
+
+  it.skipIf(process.platform !== 'linux' || process.getuid?.() !== 0)(
+    'no_new_privs blocks sudo regain after setpriv drop (smudge-filter class)',
+    () => {
+      // Mirrors the reviewer reproduction: without --no-new-privs, a uid-1000
+      // process in the helper image can `sudo -n` back to root. We require the
+      // flag and prove sudo fails under it when running as root in CI/linux.
+      const blocked = spawnSync(
+        'setpriv',
+        [
+          '--reuid=65534',
+          '--regid=65534',
+          '--clear-groups',
+          '--no-new-privs',
+          '--',
+          'sudo',
+          '-n',
+          'true',
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(blocked.status, `${blocked.stdout}\n${blocked.stderr}`).not.toBe(0);
+    },
+  );
 
   it.skipIf(process.platform !== 'linux')(
     'dirty restore does not follow an intermediate source symlink outside the worktree',

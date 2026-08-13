@@ -17,7 +17,7 @@
  */
 import './test/setup.js';
 
-import { mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, utimesSync, mkdtempSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { homedir } from 'os';
@@ -30,8 +30,10 @@ import {
   cleanupAllProjectWorkspaces,
   pruneOrphanedSessionEvents,
   runWorkspacePurge,
+  forgetPersistedFirecrackerDisksForPurge,
   type PurgeDeps,
 } from './session-purge.js';
+import { sessionVmId } from './session-env/firecracker/firecracker-vm-args.js';
 import { browserScreenshotDirForSession } from './browser-screenshot-store.js';
 import config from './config.js';
 import type { Project } from './types.js';
@@ -261,6 +263,58 @@ describe('purgeExpiredArchivedSessions', () => {
     expect(result.rowsDeleted).toBe(1);
     expect(existsSync(worktreePath)).toBe(false);
     expect(getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id)).toBeUndefined();
+  });
+});
+
+describe('forgetPersistedFirecrackerDisksForPurge gating', () => {
+  it('is a no-op when no vm artifact exists', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-purge-absent-'));
+    const prevRun = process.env.AGENT_HUB_FIRECRACKER_RUN_DIR;
+    try {
+      process.env.AGENT_HUB_FIRECRACKER_RUN_DIR = path.join(base, 'vms');
+      mkdirSync(process.env.AGENT_HUB_FIRECRACKER_RUN_DIR, { recursive: true });
+      await expect(
+        forgetPersistedFirecrackerDisksForPurge('sess-no-disk'),
+      ).resolves.toBeUndefined();
+    } finally {
+      if (prevRun === undefined) delete process.env.AGENT_HUB_FIRECRACKER_RUN_DIR;
+      else process.env.AGENT_HUB_FIRECRACKER_RUN_DIR = prevRun;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a vm artifact exists but the local helper is missing', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-purge-gate-'));
+    const runDir = path.join(base, 'vms');
+    mkdirSync(runDir, { recursive: true });
+    const prevRun = process.env.AGENT_HUB_FIRECRACKER_RUN_DIR;
+    const prevHelper = process.env.AGENT_HUB_FIRECRACKER_DISK_HELPER;
+    const prevMode = process.env.AGENT_HUB_FIRECRACKER_EXEC_MODE;
+    const prevImage = process.env.AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE;
+    try {
+      process.env.AGENT_HUB_FIRECRACKER_RUN_DIR = runDir;
+      process.env.AGENT_HUB_FIRECRACKER_EXEC_MODE = 'local';
+      delete process.env.AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE;
+      process.env.AGENT_HUB_FIRECRACKER_DISK_HELPER = path.join(
+        base,
+        'missing-fc-prepare-disks.sh',
+      );
+      mkdirSync(path.join(runDir, sessionVmId('sess-orphan-disk')), { recursive: true });
+
+      await expect(forgetPersistedFirecrackerDisksForPurge('sess-orphan-disk')).rejects.toThrow(
+        /helper .* is missing/,
+      );
+    } finally {
+      if (prevRun === undefined) delete process.env.AGENT_HUB_FIRECRACKER_RUN_DIR;
+      else process.env.AGENT_HUB_FIRECRACKER_RUN_DIR = prevRun;
+      if (prevHelper === undefined) delete process.env.AGENT_HUB_FIRECRACKER_DISK_HELPER;
+      else process.env.AGENT_HUB_FIRECRACKER_DISK_HELPER = prevHelper;
+      if (prevMode === undefined) delete process.env.AGENT_HUB_FIRECRACKER_EXEC_MODE;
+      else process.env.AGENT_HUB_FIRECRACKER_EXEC_MODE = prevMode;
+      if (prevImage === undefined) delete process.env.AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE;
+      else process.env.AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE = prevImage;
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 

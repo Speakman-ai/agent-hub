@@ -93,10 +93,12 @@ export interface PurgeResult {
 }
 
 /**
- * Default `PurgeDeps` wired to the production singletons. Tests construct
- * their own deps from a fresh in-memory DB.
+ * Forget Firecracker disks for a hard-purged session. No-op when no VM
+ * artifact exists (host/sysbox). Fail closed when an artifact exists but the
+ * local helper is missing — otherwise the row would vanish and leave disks.
+ * Exported for unit tests of the gating branches.
  */
-async function defaultForgetPersistedFirecrackerDisks(sessionId: string): Promise<void> {
+export async function forgetPersistedFirecrackerDisksForPurge(sessionId: string): Promise<void> {
   const paths = firecrackerHostPaths();
   const helper = paths.diskHelper ?? '/usr/local/lib/agent-hub/fc-prepare-disks.sh';
   const vmDir = path.join(paths.runDir, sessionVmId(sessionId));
@@ -105,12 +107,13 @@ async function defaultForgetPersistedFirecrackerDisks(sessionId: string): Promis
   // otherwise fail closed and strand every archived row forever.
   if (!existsSync(vmDir)) return;
   const execCfg = resolveFirecrackerExecConfig(paths);
+  // Artifact present + no way to delete it must fail closed so the session
+  // row stays for retry. Skipping would orphan the workspace disk on disk.
   if (execCfg.mode === 'local' && !existsSync(helper)) {
-    console.warn(
+    throw new Error(
       `[Purge] Firecracker vm dir ${vmDir} exists but helper ${helper} is missing; ` +
-        `skipping disk forget so the 24h session purge can proceed`,
+        `refusing to delete the session row until disks can be forgotten`,
     );
-    return;
   }
   await forgetPersistedFirecrackerDisks(sessionId, {
     io: createFirecrackerHostIo(execCfg),
@@ -125,7 +128,7 @@ function defaultDeps(): PurgeDeps {
     getProjects: defaultGetProjects,
     removeWorkspace: defaultRemoveWorkspace,
     cleanupStaleWorkspaces: defaultCleanupStaleWorkspaces,
-    forgetPersistedFirecrackerDisks: defaultForgetPersistedFirecrackerDisks,
+    forgetPersistedFirecrackerDisks: forgetPersistedFirecrackerDisksForPurge,
   };
 }
 
@@ -145,7 +148,7 @@ export async function purgeExpiredArchivedSessions(
   let workspacesRemoved = 0;
 
   const forgetDisks =
-    deps.forgetPersistedFirecrackerDisks ?? defaultForgetPersistedFirecrackerDisks;
+    deps.forgetPersistedFirecrackerDisks ?? forgetPersistedFirecrackerDisksForPurge;
 
   for (const row of rows) {
     // Soft archive keeps the Firecracker workspace disk; hard purge must
