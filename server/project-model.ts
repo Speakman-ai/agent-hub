@@ -625,9 +625,10 @@ function writeReviewerIdentityFile(
 /**
  * Ensures every project that has GitHub integration (a `githubRepo` set) gets a
  * dedicated Reviewer agent. The Reviewer is the single, project-wide review
- * advisor used by the Finalize review phase: it inspects the local diff and
- * emits an in-session verdict (it does NOT post formal reviews to GitHub). It
- * is deliberately decoupled from autonomous-mode dispatch.
+ * advisor for Finalize (local-diff in-session verdict) and Hub-hosted PR
+ * auto-review / Request review (formal native review via the Hub API). The
+ * standing prompt is mode-aware; it is deliberately decoupled from
+ * autonomous-mode dispatch.
  *
  * Also rewrites standing prompts that still tell the model to fetch a PR and
  * abort when none exists — that seed parked Finalize at review with no verdict.

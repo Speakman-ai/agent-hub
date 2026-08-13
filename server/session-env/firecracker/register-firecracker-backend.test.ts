@@ -64,4 +64,21 @@ describe('forgetPersistedFirecrackerDisks', () => {
       'ahvm-sess-1',
     ]);
   });
+
+  it('fails closed when privileged clean cannot be proven', async () => {
+    const run = vi.fn().mockResolvedValue({ ok: false, stdout: '', stderr: 'permission denied' });
+    const io = { run } as unknown as FirecrackerHostIo;
+    await expect(
+      forgetPersistedFirecrackerDisks('sess-1', {
+        io,
+        paths: {
+          kernelPath: '/k',
+          baseRootfsPath: '/r',
+          runDir: '/vms',
+          controlDir: '/c',
+          diskHelper: '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
+        },
+      }),
+    ).rejects.toThrow(/permission denied/);
+  });
 });

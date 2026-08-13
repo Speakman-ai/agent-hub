@@ -415,6 +415,7 @@ interface OnboardBody {
     color?: string;
     githubRepo?: { owner: string; repo: string };
     preCommitCommands?: unknown;
+    sessionStartupCommands?: unknown;
     checkHealCommands?: unknown;
     checkHealMaxRounds?: unknown;
   };

@@ -132,11 +132,8 @@ export async function forgetPersistedFirecrackerDisks(
   const helper = paths.diskHelper ?? '/usr/local/lib/agent-hub/fc-prepare-disks.sh';
   const cleaned = await io.run([helper, 'clean', '--vm-id', sessionVmId(sessionId)]);
   if (!cleaned.ok) {
-    console.warn(
-      `[firecracker] failed to forget workspace for ${sessionId}: ${
-        cleaned.stderr.trim() || cleaned.stdout.trim()
-      }`,
-    );
+    const detail = cleaned.stderr.trim() || cleaned.stdout.trim() || 'unknown error';
+    throw new Error(`[firecracker] failed to forget workspace for ${sessionId}: ${detail}`);
   }
 }
 

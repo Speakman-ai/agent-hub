@@ -108,26 +108,21 @@ RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex \
 # Order matters: both installers expose an `agent` shim. Install Grok first,
 # then Cursor, then force `agent` → Cursor's binary so cursor-agent sessions
 # do not silently invoke Grok (which leaves the UI on "Waiting…" forever).
+# Pin GROK_BIN_DIR to ~/.local/bin so the baked binary is on the same PATH
+# Cursor uses. Runtime discovery still searches ~/.grok/bin as a fallback
+# (xAI's installer default when GROK_BIN_DIR is unset).
 RUN if id runner >/dev/null 2>&1; then \
-      su - runner -c 'curl -fsSL https://x.ai/cli/install.sh | bash' ; \
+      su - runner -c 'GROK_BIN_DIR="$HOME/.local/bin" curl -fsSL https://x.ai/cli/install.sh | bash' ; \
       su - runner -c 'curl -fsSL https://cursor.com/install | bash' ; \
       su - runner -c 'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; \
-        mkdir -p "$HOME/.local/bin"; \
-        if [ -x "$HOME/.grok/bin/grok" ] && [ ! -e "$HOME/.local/bin/grok" ]; then \
-          ln -sfn "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"; \
-        fi; \
         target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
         test -n "$target" && test -x "$target"; \
         ln -sfn "$target" "$HOME/.local/bin/agent"; \
         command -v agent; command -v cursor-agent; command -v grok' ; \
     else \
-      curl -fsSL https://x.ai/cli/install.sh | bash ; \
+      GROK_BIN_DIR="$HOME/.local/bin" curl -fsSL https://x.ai/cli/install.sh | bash ; \
       curl -fsSL https://cursor.com/install | bash ; \
       export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; \
-      mkdir -p "$HOME/.local/bin"; \
-      if [ -x "$HOME/.grok/bin/grok" ] && [ ! -e "$HOME/.local/bin/grok" ]; then \
-        ln -sfn "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"; \
-      fi; \
       target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
       ln -sfn "$target" "$HOME/.local/bin/agent"; \
     fi
