@@ -33,6 +33,11 @@ import {
   tryAcquireSessionWorktreeLock,
   waitForSessionWorktreeLockRelease,
 } from '../session-worktree-lock.js';
+import {
+  hasPushedFinalizeRun,
+  POST_FINALIZE_PUSH_LOCK_ERROR,
+  POST_FINALIZE_PUSH_LOCK_MESSAGE,
+} from './post-push-session-lock.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -172,6 +177,18 @@ async function kickoffFinalizeRunBody(
   }
   if (!session.worktree_branch) {
     return { kind: 'error', error: 'no_branch', message: 'Session has no worktree_branch.' };
+  }
+
+  // Defense in depth for the post-push lock. HTTP kickoff already checks this
+  // before calling in; automation can still race past its entry gate while a
+  // sibling push marks the session pushed — refuse any kickoff once a pushed
+  // finalize_runs row exists for the session.
+  if (hasPushedFinalizeRun(stmts, session.id)) {
+    return {
+      kind: 'error',
+      error: POST_FINALIZE_PUSH_LOCK_ERROR,
+      message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
+    };
   }
 
   const gateBase = resolveFinalizeGateBase({

@@ -33,8 +33,18 @@ vi.mock('./automation.js', () => ({
   shouldAutoPushAfterReady: () => true,
   shouldEnableAutoMergeForAutomation: () => false,
 }));
+
+/** Mutable so the TOCTOU test can flip the pushed row mid-probe. */
+let onCommittableProbe: (() => void) | null = null;
+const getSessionCommittableChanges = vi.fn(async () => {
+  onCommittableProbe?.();
+  return { ok: true as const };
+});
 vi.mock('./worktree-changes.js', () => ({
-  getSessionCommittableChanges: async () => ({ ok: true }),
+  getSessionCommittableChanges: (...args: unknown[]) => getSessionCommittableChanges(...args),
+}));
+vi.mock('../session-worktree-io.js', () => ({
+  sessionWorktreeIoFor: async () => ({}),
 }));
 
 import {
@@ -77,6 +87,8 @@ describe('finalize automation — level drives end-of-turn auto-fire', () => {
   beforeEach(() => {
     startFinalizeRunBackground.mockClear();
     runFinalizePush.mockClear();
+    getSessionCommittableChanges.mockClear();
+    onCommittableProbe = null;
     mockCard = { id: 'c1' };
   });
 
@@ -121,5 +133,33 @@ describe('finalize automation — level drives end-of-turn auto-fire', () => {
     wireRouteDeps(makeSession({ auto_ship_on_complete: 1 }), { status: 'pushed' });
     await maybeAutoPushReadyFinalizeRun({ sessionId: 's1', runId: 'run1' });
     expect(runFinalizePush).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-start when push lands during the post-entry worktree probe (TOCTOU)', async () => {
+    // Mirrors ryan-portfolio session 4e18eec9: end-of-turn auto-start overlapped
+    // the first run's push. Entry hasPushed was false; by the time kickoff would
+    // run, a pushed row existed — must not open a new agent_block attempt.
+    const session = makeSession({ auto_ship_on_complete: 1 });
+    let pushed: FinalizeRunRow | undefined;
+    onCommittableProbe = () => {
+      pushed = { id: 'pushed', status: 'pushed' } as FinalizeRunRow;
+    };
+    setFinalizeAutomationRouteDeps({
+      stmts: {
+        getSession: { get: () => session },
+        getLatestFinalizeRunForSession: {
+          get: () => pushed ?? ({ id: 'run-inflight', status: 'running_checks' } as FinalizeRunRow),
+        },
+        getPushedFinalizeRunForSession: { get: () => pushed },
+        getFinalizeRun: { get: () => undefined },
+      },
+      findAgent: () => ({ project: { id: 'p1' } }),
+      broadcast: vi.fn(),
+      config: {},
+    } as unknown as RouteDeps);
+
+    await maybeAutoStartFinalizeForSession('s1');
+    expect(getSessionCommittableChanges).toHaveBeenCalled();
+    expect(startFinalizeRunBackground).not.toHaveBeenCalled();
   });
 });
