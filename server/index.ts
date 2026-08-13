@@ -328,6 +328,10 @@ import type {
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
 const execAsync = promisify(exec);
 const PORT: number = config.port;
+// Bind address for the HTTP listener. Defaults to `0.0.0.0` (all interfaces),
+// which is what LAN / server deployments want. Set AGENT_HUB_HOST=127.0.0.1
+// (or `host` in config.json) to restrict the API to loopback on shared hosts.
+const HOST: string = config.host;
 
 let CLAUDE_BIN: string = config.claudeBin;
 let CURSOR_BIN: string = config.cursorBin;
@@ -2195,10 +2199,10 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
   process.on('SIGHUP', () => markActiveSessionsForShutdown('SIGHUP'));
   installShutdownHandlers();
 
-  server.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, HOST, () => {
     const actualPort = (server.address() as AddressInfo).port;
     setActualPort(actualPort);
-    console.log(`Agent Hub server running on http://localhost:${actualPort}`);
+    console.log(`Agent Hub server running on http://localhost:${actualPort} (bind ${HOST})`);
     console.log(`Loaded ${getProjects().length} projects, ${allAgents().length} agents`);
 
     // SessionEnv adapter selection: probe sysbox availability once at boot
