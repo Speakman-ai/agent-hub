@@ -229,4 +229,25 @@ describe('buildAuthenticatedModelConfig', () => {
     expect(out.engineValidModels['cursor-agent']).toEqual(['cursor-grok-4.5-high']);
     expect(out.engineDefaultModels['cursor-agent']).toBe('cursor-grok-4.5-high');
   });
+
+  it('advertises Cursor Grok 4.6 with the exact CLI slug and keeps it as the default', () => {
+    const cfg = makeConfig();
+    cfg.engineValidModels['cursor-agent'] = [
+      'cursor-grok-4.6-high',
+      'composer-2.5',
+      'gpt-5.3-codex-high',
+    ];
+    cfg.engineDefaultModels['cursor-agent'] = 'cursor-grok-4.6-high';
+
+    const out = buildAuthenticatedModelConfig(cfg, {
+      'claude-code': false,
+      'cursor-agent': true,
+      'gemini-cli': false,
+      'codex-cli': false,
+      'grok-cli': false,
+    });
+
+    expect(out.engineValidModels['cursor-agent']).toEqual(['cursor-grok-4.6-high', 'composer-2.5']);
+    expect(out.engineDefaultModels['cursor-agent']).toBe('cursor-grok-4.6-high');
+  });
 });

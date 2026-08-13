@@ -21,6 +21,7 @@ export const ENGINE_MODELS: Record<string, any> = {
         { id: 'claude-sonnet-5', label: 'Sonnet', short: 'Sonnet' },
     ],
     'cursor-agent': [
+        { id: 'cursor-grok-4.6-high', label: 'Cursor Grok 4.6', short: 'Grok 4.6' },
         { id: 'composer-2.5', label: 'Composer 2.5', short: 'Composer 2.5' },
         { id: 'cursor-grok-4.5-high', label: 'Cursor Grok 4.5', short: 'Grok 4.5' },
     ],
@@ -39,6 +40,7 @@ export const ENGINE_MODELS: Record<string, any> = {
     // Grok Build CLI — xAI. Keep in sync with server/config.ts →
     // engineValidModels['grok-cli'].
     'grok-cli': [
+        { id: 'grok-4.6', label: 'Grok 4.6', short: '4.6' },
         { id: 'grok-4.5', label: 'Grok 4.5', short: '4.5' },
         { id: 'grok-build', label: 'Grok Build', short: 'Build' },
         { id: 'grok-composer-2.5-fast', label: 'Composer 2.5 Fast', short: 'Composer' },
@@ -46,9 +48,9 @@ export const ENGINE_MODELS: Record<string, any> = {
 };
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
     'claude-code': 'claude-opus-5',
-    'cursor-agent': 'composer-2.5',
+    'cursor-agent': 'cursor-grok-4.6-high',
     'codex-cli': 'gpt-5.6-sol',
-    'grok-cli': 'grok-4.5',
+    'grok-cli': 'grok-4.6',
 };
 // Display labels for models that are no longer selectable but may still appear
 // on historical sessions/crons. Kept OUT of ENGINE_MODELS so the picker never

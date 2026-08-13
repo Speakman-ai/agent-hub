@@ -235,6 +235,30 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
     ]);
   });
 
+  it('keeps cursor-grok-4.6-high when a config lists it (Cursor CLI slug)', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dataDir = path.join(
+      os.tmpdir(),
+      `agent-hub-cursor-46-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+    writeConfigAndImport(dataDir, {
+      engineValidModels: {
+        ...nonCursorValid,
+        'cursor-agent': ['auto', 'cursor-grok-4.6-high', 'composer-2.5'],
+      },
+      engineDefaultModels: { ...nonCursorDefaults, 'cursor-agent': 'cursor-grok-4.6-high' },
+    });
+
+    const mod = await import('./config.js');
+    expect(mod.default.engineValidModels['cursor-agent']).toEqual([
+      'cursor-grok-4.6-high',
+      'composer-2.5',
+    ]);
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('cursor-grok-4.6-high');
+  });
+
   it('coerces a stale engineDefaultModels["cursor-agent"] to a value in the filtered list', async () => {
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
@@ -274,10 +298,29 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
 
     const mod = await import('./config.js');
     expect(mod.default.engineValidModels['cursor-agent']).toEqual([
+      'cursor-grok-4.6-high',
       'composer-2.5',
       'cursor-grok-4.5-high',
     ]);
-    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2.5');
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('cursor-grok-4.6-high');
+  });
+
+  it('defaults cursor-agent to cursor-grok-4.6-high with no config.json', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dataDir = path.join(
+      os.tmpdir(),
+      `agent-hub-cursor-builtin-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({}), 'utf8');
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+
+    const mod = await import('./config.js');
+    const valid = mod.default.engineValidModels['cursor-agent'];
+    expect(valid[0]).toBe('cursor-grok-4.6-high');
+    expect(valid).toContain('composer-2.5');
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('cursor-grok-4.6-high');
   });
 });
 
@@ -936,21 +979,23 @@ describe('config.ts — grok-cli default model list', () => {
     return dir;
   }
 
-  it('defaults grok-cli to grok-4.5 and lists it first (now powers Grok Build)', async () => {
-    // Regression: the list predated grok-4.5 (shipped 2026-07-08) so users
-    // could not select the model that now backs Grok Build upstream.
+  it('defaults grok-cli to grok-4.6 and lists it first (current Grok Build model)', async () => {
+    // Regression: the list predated grok-4.6 (shipped 2026-08-07) so users
+    // could not select the model that now backs Grok Build upstream. grok-4.5
+    // stays selectable for sessions/agents pinned to it.
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
     process.env.AGENT_HUB_DATA_DIR = freshDataDirNoConfig('default');
     const mod = await import('./config.js');
     const valid = mod.default.engineValidModels['grok-cli'];
-    expect(valid[0]).toBe('grok-4.5');
+    expect(valid[0]).toBe('grok-4.6');
+    expect(valid).toContain('grok-4.5');
     expect(valid).toContain('grok-build');
     expect(valid).toContain('grok-composer-2.5-fast');
-    expect(mod.default.engineDefaultModels['grok-cli']).toBe('grok-4.5');
+    expect(mod.default.engineDefaultModels['grok-cli']).toBe('grok-4.6');
   });
 
-  it('resolveGrokSpawnModel passes grok-4.5 through when allowlisted', async () => {
+  it('resolveGrokSpawnModel passes grok-4.6 / grok-4.5 through when allowlisted', async () => {
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
     process.env.AGENT_HUB_DATA_DIR = freshDataDirNoConfig('spawn');
@@ -959,8 +1004,9 @@ describe('config.ts — grok-cli default model list', () => {
       engineValidModels: mod.default.engineValidModels,
       engineDefaultModels: mod.default.engineDefaultModels,
     };
+    expect(mod.resolveGrokSpawnModel('grok-4.6', cfg)).toBe('grok-4.6');
     expect(mod.resolveGrokSpawnModel('grok-4.5', cfg)).toBe('grok-4.5');
-    // An unknown id still falls back to the grok-4.5 default.
-    expect(mod.resolveGrokSpawnModel('grok-9-imaginary', cfg)).toBe('grok-4.5');
+    // An unknown id still falls back to the grok-4.6 default.
+    expect(mod.resolveGrokSpawnModel('grok-9-imaginary', cfg)).toBe('grok-4.6');
   });
 });
