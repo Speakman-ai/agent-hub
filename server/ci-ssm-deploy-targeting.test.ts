@@ -7,9 +7,9 @@ import { describe, expect, it } from 'vitest';
  *   AccessDeniedException ... not authorized to perform: ssm:SendCommand
  *   on resource: arn:aws:ec2:<region>:<acct>:instance/i-<new sandbox>
  *
- * The deploy target is configured twice — the DOCKER_DEPLOY_INSTANCE_ID repo
- * Variable read by the rollout workflow, and the Terraform inputs that scope the
- * CI role's SSM grant. Both live in private stores (repo Variables, the
+ * The deploy targets are configured twice — the DOCKER_DEPLOY_INSTANCE_ID /
+ * DOCKER_DEPLOY_DEV_INSTANCE_ID repo Variables read by rollout workflows, and
+ * the Terraform inputs that scope the CI role's SSM grant. Both live in private stores (repo Variables, the
  * PROD_TFVARS secret), so nothing in-tree could diff them. When the sandbox was
  * rebuilt, the Variable moved to the new instance and the IAM policy kept naming
  * the old one, so every release failed at the SSM step.
@@ -23,10 +23,10 @@ import { describe, expect, it } from 'vitest';
  * which is what actually happened: the Variable moved to the new sandbox, the
  * tfvars kept the old id, "at least one target resolved" stayed true, and the
  * apply shipped a policy that could never authorise the rollout. So the release
- * pipeline now feeds Terraform the very same repo Variable the rollout reads
- * (TF_VAR_ci_ssm_expected_deploy_instance_id) and the plan asserts the resolved
- * grant contains it. The two stores are diffed at plan time, in the one place
- * that sees both.
+ * pipeline now feeds Terraform both repo Variables the rollout workflows read
+ * (TF_VAR_ci_ssm_expected_deploy_instance_ids) and the plan asserts the resolved
+ * grant contains every non-empty target. The two stores are diffed at plan time,
+ * in the one place that sees both.
  */
 
 const repoRoot = path.join(__dirname, '..');
@@ -139,7 +139,7 @@ describe('ops/terraform CI SSM deploy targeting', () => {
 });
 
 describe('ops/terraform plan-time guard: the grant must cover the rollout target', () => {
-  it('declares ci_ssm_expected_deploy_instance_id as an optional string', () => {
+  it('keeps the singular expected target as an optional compatibility input', () => {
     const tf = read(variablesTfPath);
     const block = tf.match(/variable "ci_ssm_expected_deploy_instance_id" \{([\s\S]*?)\n\}/);
     expect(block, 'ci_ssm_expected_deploy_instance_id variable must exist').toBeTruthy();
@@ -148,9 +148,16 @@ describe('ops/terraform plan-time guard: the grant must cover the rollout target
     // necessarily know the repo Variable, and this must not become a required
     // input that breaks every existing workspace.
     expect(block![1], 'must be opt-in').toMatch(/default\s*=\s*""/);
-    expect(block![1], 'must point the reader at the repo Variable it mirrors').toContain(
-      'DOCKER_DEPLOY_INSTANCE_ID',
-    );
+  });
+
+  it('declares a complete optional list of expected runtime targets', () => {
+    const tf = read(variablesTfPath);
+    const block = tf.match(/variable "ci_ssm_expected_deploy_instance_ids" \{([\s\S]*?)\n\}/);
+    expect(block, 'ci_ssm_expected_deploy_instance_ids variable must exist').toBeTruthy();
+    expect(block![1]).toMatch(/type\s*=\s*list\(string\)/);
+    expect(block![1], 'must be opt-in for local plans').toMatch(/default\s*=\s*\[\]/);
+    expect(block![1]).toContain('DOCKER_DEPLOY_INSTANCE_ID');
+    expect(block![1]).toContain('DOCKER_DEPLOY_DEV_INSTANCE_ID');
   });
 
   it('is an assertion input only — it must never widen the grant', () => {
@@ -176,21 +183,27 @@ describe('ops/terraform plan-time guard: the grant must cover the rollout target
     );
   });
 
-  it('asserts at plan time that the resolved set contains the expected instance', () => {
+  it('fails coverage when the DEV target is missing even if the release target is covered', () => {
     const tf = read(iamTfPath);
-    const covered = tf.match(/ci_ssm_expected_covered\s*=\s*([\s\S]*?)\n\s*\)/);
-    expect(covered, 'ci_ssm_expected_covered local must exist').toBeTruthy();
-    expect(covered![1], 'containment is the assertion').toMatch(/contains\(/);
-    expect(covered![1]).toContain('local.ci_ssm_target_instance_ids');
-    // An unset expected id must pass, not fail closed — see the opt-in default.
-    expect(covered![1], 'an empty expected id must short-circuit to true').toMatch(
-      /ci_ssm_expected_instance_id\s*==\s*""/,
+    const expected = tf.match(
+      /ci_ssm_expected_instance_ids\s*=\s*([\s\S]*?)\n\s*ci_ssm_missing_expected_instance_ids/,
     );
-    // Polarity matters and is invisible to a shape-only assertion: an inverted
-    // condition would pass every other test in this file while failing the plan
-    // on exactly the correct configurations.
-    expect(covered![1], 'the condition must not be negated').not.toMatch(/!\s*contains\(/);
-    expect(covered![1]).not.toMatch(/ci_ssm_expected_instance_id\s*!=\s*""/);
+    expect(expected, 'the complete expected-target local must exist').toBeTruthy();
+    expect(expected![1]).toContain('var.ci_ssm_expected_deploy_instance_ids');
+
+    const missing = tf.match(
+      /ci_ssm_missing_expected_instance_ids\s*=\s*([\s\S]*?)\n\s*ci_ssm_expected_covered/,
+    );
+    expect(missing, 'the guard must calculate every missing target').toBeTruthy();
+    expect(missing![1]).toContain('setsubtract(');
+    expect(missing![1]).toContain('local.ci_ssm_expected_instance_ids');
+    expect(missing![1]).toContain('local.ci_ssm_target_instance_ids');
+
+    const covered = tf.match(/ci_ssm_expected_covered\s*=\s*(.+)/);
+    expect(covered, 'ci_ssm_expected_covered local must exist').toBeTruthy();
+    expect(covered![1], 'coverage requires no missing runtime targets').toMatch(
+      /length\(local\.ci_ssm_missing_expected_instance_ids\)\s*==\s*0/,
+    );
   });
 
   it('hangs the guard on a resource that exists even when the grant does not', () => {
@@ -199,12 +212,12 @@ describe('ops/terraform plan-time guard: the grant must cover the rollout target
       /resource "terraform_data" "ci_ssm_deploy_target_guard" \{([\s\S]*?)\n\}/,
     );
     expect(guard, 'the guard resource must exist').toBeTruthy();
-    // Keyed on the expected id, NOT on ci_ssm_deploy_enabled: turning the
+    // Keyed on the expected ids, NOT on ci_ssm_deploy_enabled: turning the
     // feature off drops the grant entirely, which breaks the rollout in exactly
     // the same AccessDenied way. A guard that vanishes with the policy could not
     // catch that.
-    expect(guard![1], 'guard must be keyed on the expected id').toMatch(
-      /count\s*=\s*local\.ci_ssm_expected_instance_id\s*!=\s*""\s*\?\s*1\s*:\s*0/,
+    expect(guard![1], 'guard must be keyed on the expected targets').toMatch(
+      /count\s*=\s*length\(local\.ci_ssm_expected_instance_ids\)\s*>\s*0\s*\?\s*1\s*:\s*0/,
     );
     const conditions = [...guard![1].matchAll(/condition\s*=\s*(.+)/g)].map((m) => m[1]);
     expect(conditions.some((c) => c.includes('ci_ssm_deploy_enabled'))).toBe(true);
@@ -222,7 +235,7 @@ describe('ops/terraform plan-time guard: the grant must cover the rollout target
     // this resource, so the preconditions are guaranteed to be evaluated in the
     // scenario they exist for — rather than relying on whether Terraform
     // evaluates preconditions for a no-op resource.
-    expect(input![1]).toContain('local.ci_ssm_expected_instance_id');
+    expect(input![1]).toContain('local.ci_ssm_expected_instance_ids');
     expect(input![1]).toContain('local.ci_ssm_target_instance_ids');
   });
 
@@ -239,13 +252,17 @@ describe('ops/terraform plan-time guard: the grant must cover the rollout target
     // The operator cannot see either store from the plan output, so the message
     // has to carry the actual ids — that is the difference between this and the
     // bare IAM denial it replaces.
-    expect(joined, 'must interpolate the expected id').toContain(
-      '${local.ci_ssm_expected_instance_id}',
+    expect(joined, 'must interpolate every expected id').toContain(
+      'local.ci_ssm_expected_instance_ids',
+    );
+    expect(joined, 'must identify the subset absent from the grant').toContain(
+      'local.ci_ssm_missing_expected_instance_ids',
     );
     expect(joined, 'must interpolate what actually resolved').toContain(
       'local.ci_ssm_target_instance_ids',
     );
     expect(joined).toContain('DOCKER_DEPLOY_INSTANCE_ID');
+    expect(joined).toContain('DOCKER_DEPLOY_DEV_INSTANCE_ID');
     expect(joined).toContain('ci_ssm_deploy_instance_tags');
     expect(joined, 'the disabled-feature case must name the flag').toContain(
       'enable_ci_ssm_deploy_after_ecr_push',
@@ -258,24 +275,24 @@ describe('ops/terraform plan-time guard: the grant must cover the rollout target
       expect(
         example,
         `${env}.tfvars.example must document the guard so operators know CI supplies it`,
-      ).toContain('ci_ssm_expected_deploy_instance_id');
+      ).toContain('ci_ssm_expected_deploy_instance_ids');
       expect(example).not.toMatch(/i-[a-f0-9]{8,}/);
     }
   });
 });
 
-describe('release-all.yml feeds Terraform the rollout target', () => {
+describe('release-all.yml feeds Terraform every rollout target', () => {
   const yml = read(releaseWorkflowPath);
   const tfJob = yml.match(/\n {2}terraform-apply:\n([\s\S]*?)\n {2}[a-z][a-z-]*:\n/);
 
-  it('injects the expected id from the same repo Variable the rollout SSMs', () => {
+  it('injects both repo Variables into the expected target list', () => {
     expect(tfJob, 'terraform-apply job must exist').toBeTruthy();
-    // This is what makes it a single source of truth rather than a third place
-    // to keep in sync: the value comes from vars.DOCKER_DEPLOY_INSTANCE_ID, the
-    // exact expression ecr-publish-rollout-docker-dev.yml resolves its target
-    // from. Hardcoding it, or adding it to PROD_TFVARS, would just move the drift.
-    expect(tfJob![1]).toMatch(
-      /TF_VAR_ci_ssm_expected_deploy_instance_id:\s*\$\{\{\s*vars\.DOCKER_DEPLOY_INSTANCE_ID\s*\}\}/,
+    const line = tfJob![1].match(/^\s*TF_VAR_ci_ssm_expected_deploy_instance_ids:\s*(.+)$/m);
+    expect(line, 'Terraform must receive the full runtime target list').toBeTruthy();
+    expect(line![1]).toContain('${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}');
+    expect(line![1]).toContain('${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}');
+    expect(line![1], 'Terraform list syntax must preserve both distinct values').toMatch(
+      /^'\[".+", ".+"\]'$/,
     );
   });
 
@@ -284,7 +301,7 @@ describe('release-all.yml feeds Terraform the rollout target', () => {
     // during plan or the precondition is never evaluated.
     const jobEnv = tfJob![1].match(/^ {4}env:\n((?: {6}.*\n)+)/m);
     expect(jobEnv, 'terraform-apply must declare a job-level env block').toBeTruthy();
-    expect(jobEnv![1]).toContain('TF_VAR_ci_ssm_expected_deploy_instance_id');
+    expect(jobEnv![1]).toContain('TF_VAR_ci_ssm_expected_deploy_instance_ids');
   });
 
   it('still guards the plan it applies', () => {
@@ -326,14 +343,16 @@ describe('ecr-publish-rollout-docker-dev.yml SSM failure diagnostics', () => {
     );
   });
 
-  it('tells the reader why the plan-time guard did not catch it first', () => {
+  it('explains that the plan guard covers both runtime targets', () => {
     const branch = yml.match(
       /if grep -q 'AccessDeniedException' "\$SEND_ERR"; then([\s\S]*?)\n {12}fi/,
     );
-    // With the guard wired, reaching this branch means the repo Variable moved
-    // after the last release apply — so the remediation is "re-run the release
-    // Terraform apply", not just "edit tfvars".
-    expect(branch![1]).toContain('ci_ssm_expected_deploy_instance_id');
+    // With the guard wired, reaching this branch means one of the repo Variables
+    // moved after the last release apply. Both must be named so a DEV failure is
+    // not misdiagnosed as release-only drift.
+    expect(branch![1]).toContain('TF_VAR_ci_ssm_expected_deploy_instance_ids');
+    expect(branch![1]).toContain('DOCKER_DEPLOY_INSTANCE_ID');
+    expect(branch![1]).toContain('DOCKER_DEPLOY_DEV_INSTANCE_ID');
   });
 
   it('still fails the job when send-command is denied', () => {

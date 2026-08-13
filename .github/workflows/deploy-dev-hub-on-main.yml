@@ -1,0 +1,58 @@
+# Build + push the server/Finalize images from `main`, then SSM-restart the
+# dockerized DEV Hub (dev.agenthub.*) so every merge to main lands there.
+#
+# Requires repo Variable DOCKER_DEPLOY_DEV_INSTANCE_ID (agenthub-dev-sandbox).
+# That instance must also be covered by the CI OIDC role's ssm:SendCommand
+# grant (Terraform `enable_ci_ssm_deploy_after_ecr_push` /
+# `ci_ssm_deploy_instance_*`); otherwise the rollout fails with AccessDenied.
+#
+# Manual rebuild without waiting for a merge: Actions → "Deploy DEV Hub from
+# main" → Run workflow. `push-image.yml` stays the escape hatch for arbitrary
+# refs / wipe-and-restart, and still targets DOCKER_DEPLOY_INSTANCE_ID.
+name: Deploy DEV Hub from main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One DEV Hub rollout at a time. Cancel superseded runs so a burst of merges
+# only leaves the tip live (same idea as deploy-dev.yml).
+concurrency:
+  group: deploy-dev-hub-from-main
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  require-dev-target:
+    name: Require DOCKER_DEPLOY_DEV_INSTANCE_ID
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail closed when the DEV Hub instance Variable is unset
+        env:
+          DEV_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Deploy DEV Hub from main only accepts the main branch; got ${GITHUB_REF}. Use push-image.yml for an arbitrary ref."
+            exit 1
+          fi
+          if [ -z "${DEV_INSTANCE_ID}" ]; then
+            echo "::error::Set repo Variable DOCKER_DEPLOY_DEV_INSTANCE_ID to the agenthub-dev-sandbox instance id (dev.agenthub.*). Refusing to fall back to DOCKER_DEPLOY_INSTANCE_ID so release rollouts stay on the sandbox."
+            exit 1
+          fi
+          echo "DEV Hub deploy target: $DEV_INSTANCE_ID"
+
+  ecr-and-rollout:
+    name: Build image and roll DEV Hub
+    needs: require-dev-target
+    uses: ./.github/workflows/ecr-publish-rollout-docker-dev.yml
+    with:
+      git_ref: ${{ github.sha }}
+      rollout: true
+      reset_instance: false
+      # Explicit — do not rely on reusable fallback (that is the sandbox var).
+      deploy_instance_id: ${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}

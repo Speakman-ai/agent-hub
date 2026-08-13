@@ -38,9 +38,12 @@ alb_ingress_cidr_blocks = ["0.0.0.0/0"]
 # break CI for other envs.
 manage_github_oidc_role = false
 
-# After CI pushes :main to ECR, GitHub Actions restarts the server on this
-# instance (SSM). The resolved target must include the DOCKER_DEPLOY_INSTANCE_ID
-# repo Variable the push-image workflow sends to.
+# After CI pushes :main to ECR, GitHub Actions can restart this host via SSM.
+# Two repo Variables select the target (see ecr-publish-rollout-docker-dev.yml):
+#   DOCKER_DEPLOY_DEV_INSTANCE_ID — preferred by Deploy DEV Hub from main
+#                                   (dev.agenthub.* / agenthub-dev-sandbox)
+#   DOCKER_DEPLOY_INSTANCE_ID     — release / legacy sandbox fallback
+# The resolved grant below must include whichever Variable CI will actually SSM.
 #
 # Prefer the tag map: it re-resolves on every apply, so rebuilding the sandbox
 # under the same Name tag keeps CI working instead of failing the rollout with
@@ -49,13 +52,17 @@ manage_github_oidc_role = false
 enable_ci_ssm_deploy_after_ecr_push = true
 ci_ssm_deploy_instance_tags         = { Name = "<DEV_SANDBOX_NAME_TAG>" }
 ci_ssm_deploy_instance_id           = "<DEV_SANDBOX_INSTANCE_ID>"
+# Extra ids when one workspace owns the shared CI SSM grant for both the
+# release sandbox and the DEV Hub (DOCKER_DEPLOY_DEV_INSTANCE_ID).
+# ci_ssm_deploy_instance_ids = ["<SANDBOX_INSTANCE_ID>", "<DEV_HUB_INSTANCE_ID>"]
 
-# Plan-time drift guard. Asserts the grant above actually covers the box CI
-# restarts, so a replaced sandbox fails the plan (with both ids named) instead of
-# the rollout. release-all.yml injects this from the DOCKER_DEPLOY_INSTANCE_ID
-# repo Variable as TF_VAR_ci_ssm_expected_deploy_instance_id, so leave it unset
-# here — set it only to check a local plan against a specific box.
+# Plan-time drift guard. Asserts the grant above actually covers every box CI
+# restarts, so a replaced host fails the plan (with the ids named) instead of the
+# rollout. release-all.yml injects both deploy repo Variables as
+# TF_VAR_ci_ssm_expected_deploy_instance_ids, so leave these unset here — set
+# either only to check a local plan against specific boxes.
 # ci_ssm_expected_deploy_instance_id = "<DEV_SANDBOX_INSTANCE_ID>"
+# ci_ssm_expected_deploy_instance_ids = ["<SANDBOX_INSTANCE_ID>", "<DEV_HUB_INSTANCE_ID>"]
 
 # First-launch admin credentials. The server writes a random password to
 # <dataDir>/initial-credentials.txt (mode 0600) when

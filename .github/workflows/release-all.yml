@@ -271,10 +271,10 @@ jobs:
   #   - var    TF_STATE_BUCKET     — remote-state bucket (e.g. agent-hub-tfstate-<acct>).
   #   - var    TF_STATE_LOCK_TABLE — DynamoDB lock table (e.g. agent-hub-tfstate-lock).
   #   - var    AWS_REGION          — defaults to us-east-2 when unset.
-  #   - var    DOCKER_DEPLOY_INSTANCE_ID — the rollout target, reused here as
-  #                                  TF_VAR_ci_ssm_expected_deploy_instance_id so
-  #                                  the plan asserts the CI SSM grant covers the
-  #                                  box docker-ecr-dev restarts.
+  #   - vars   DOCKER_DEPLOY_INSTANCE_ID + DOCKER_DEPLOY_DEV_INSTANCE_ID — the
+  #                                  rollout targets, reused here as
+  #                                  TF_VAR_ci_ssm_expected_deploy_instance_ids so
+  #                                  the plan asserts the CI SSM grant covers both.
   terraform-apply:
     name: Terraform apply (prod infra)
     needs: release
@@ -284,17 +284,16 @@ jobs:
       contents: read
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
-      # Single source of truth for the rollout target. The docker-ecr-dev job
-      # SSMs vars.DOCKER_DEPLOY_INSTANCE_ID; the CI role's ssm:SendCommand grant
-      # is scoped by ci_ssm_deploy_* in the PROD_TFVARS secret. Those two stores
-      # drifted when the sandbox was replaced (Variable moved, tfvars did not)
-      # and every rollout failed with AccessDenied. Feeding the Variable into the
-      # plan makes Terraform assert the grant covers it — see the
+      # Single source of truth for every rollout target. Release / push-image
+      # SSM vars.DOCKER_DEPLOY_INSTANCE_ID and main→DEV SSMs
+      # vars.DOCKER_DEPLOY_DEV_INSTANCE_ID; the CI role's ssm:SendCommand grant
+      # is scoped by ci_ssm_deploy_* in the PROD_TFVARS secret. Feeding both
+      # Variables into the plan makes Terraform assert the grant covers them — see the
       # terraform_data.ci_ssm_deploy_target_guard preconditions. Job-scoped
       # because `terraform apply` consumes the saved plan, so the var has to be
       # present at plan time or the assertion never runs. Empty (Variable unset)
       # skips the assertion.
-      TF_VAR_ci_ssm_expected_deploy_instance_id: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}
+      TF_VAR_ci_ssm_expected_deploy_instance_ids: '["${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}", "${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}"]'
     defaults:
       run:
         working-directory: ops/terraform

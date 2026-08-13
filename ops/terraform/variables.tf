@@ -217,27 +217,39 @@ variable "github_repo_name" {
 }
 
 variable "enable_ci_ssm_deploy_after_ecr_push" {
-  description = "If true, attach an inline IAM policy to `github_oidc_role_name` so GitHub Actions can run SSM SendCommand against the deploy target resolved from `ci_ssm_deploy_instance_id` and/or `ci_ssm_deploy_instance_tags` (restart `agenthub-server.service` after each ECR :main push). Enable only in one workspace per account to avoid duplicate policy management."
+  description = "If true, attach an inline IAM policy to `github_oidc_role_name` so GitHub Actions can run SSM SendCommand against the deploy target(s) resolved from `ci_ssm_deploy_instance_id`, `ci_ssm_deploy_instance_ids`, and/or `ci_ssm_deploy_instance_tags` (restart `agenthub-server.service` after each ECR push). Enable only in one workspace per account to avoid duplicate policy management."
   type        = bool
   default     = false
 }
 
 variable "ci_ssm_deploy_instance_id" {
-  description = "EC2 instance id (e.g. i-0abc...) in `aws_region` that receives `systemctl restart agenthub-server` from CI. Unioned with anything `ci_ssm_deploy_instance_tags` resolves; set at least one of the two when `enable_ci_ssm_deploy_after_ecr_push` is true. Must match the DOCKER_DEPLOY_INSTANCE_ID repo Variable read by .github/workflows/ecr-publish-rollout-docker-dev.yml."
+  description = "EC2 instance id (e.g. i-0abc...) in `aws_region` that receives `systemctl restart agenthub-server` from CI. Unioned with `ci_ssm_deploy_instance_ids` and anything `ci_ssm_deploy_instance_tags` resolves; set at least one of the three when `enable_ci_ssm_deploy_after_ecr_push` is true. Typically the DOCKER_DEPLOY_INSTANCE_ID sandbox; add the DEV Hub via `ci_ssm_deploy_instance_ids`."
   type        = string
   default     = ""
 }
 
+variable "ci_ssm_deploy_instance_ids" {
+  description = "Additional EC2 instance ids CI may SSM after an ECR push (unioned with `ci_ssm_deploy_instance_id` and tag-discovered ids). Use this to grant both the release sandbox and the DEV Hub (DOCKER_DEPLOY_DEV_INSTANCE_ID) without relying on a single Name tag."
+  type        = list(string)
+  default     = []
+}
+
 variable "ci_ssm_deploy_instance_tags" {
-  description = "Tag map (e.g. { Name = \"agenthub-dev-sandbox\" }) resolved at plan time to the instance ids CI may SSM, unioned with `ci_ssm_deploy_instance_id`. Preferred over the raw id: rebuilding the box with the same tags re-grants on the next apply instead of failing the rollout with AccessDenied. Every pair must match exactly, and the resolved grant is still scoped to concrete instance ARNs."
+  description = "Tag map (e.g. { Name = \"agenthub-dev-sandbox\" }) resolved at plan time to the instance ids CI may SSM, unioned with `ci_ssm_deploy_instance_id` / `ci_ssm_deploy_instance_ids`. Preferred over the raw id: rebuilding the box with the same tags re-grants on the next apply instead of failing the rollout with AccessDenied. Every pair must match exactly, and the resolved grant is still scoped to concrete instance ARNs."
   type        = map(string)
   default     = {}
 }
 
 variable "ci_ssm_expected_deploy_instance_id" {
-  description = "The instance CI will actually SSM, i.e. the DOCKER_DEPLOY_INSTANCE_ID repo Variable read by .github/workflows/ecr-publish-rollout-docker-dev.yml. NOT a targeting knob — it never widens the grant. It is asserted at plan time to be inside the set resolved from `ci_ssm_deploy_instance_id` / `ci_ssm_deploy_instance_tags`, so a replaced box that moved the repo Variable without moving these fails the plan (naming both ids) instead of failing the rollout with AccessDeniedException on ssm:SendCommand. release-all.yml injects it automatically as TF_VAR_ci_ssm_expected_deploy_instance_id; leave it empty to skip the assertion on a local plan."
+  description = "Legacy singular assertion input for the instance CI will actually SSM. NOT a targeting knob — it never widens the grant. Unioned with `ci_ssm_expected_deploy_instance_ids` and asserted at plan time to be inside the set resolved from `ci_ssm_deploy_instance_id` / `ci_ssm_deploy_instance_ids` / `ci_ssm_deploy_instance_tags`. Leave it empty when CI supplies the complete runtime target list."
   type        = string
   default     = ""
+}
+
+variable "ci_ssm_expected_deploy_instance_ids" {
+  description = "Every instance CI may actually SSM, normally the DOCKER_DEPLOY_INSTANCE_ID and DOCKER_DEPLOY_DEV_INSTANCE_ID repo Variables. NOT a targeting knob — these values never widen the grant. Each non-empty id is asserted at plan time to be inside the resolved `ci_ssm_deploy_*` target set, so drift fails the plan instead of a rollout. release-all.yml injects this list automatically; leave it empty to skip the assertion on a local plan."
+  type        = list(string)
+  default     = []
 }
 
 # --- Dedicated ALB (ops/terraform/alb.tf) — TLS at ALB, HTTP to Agent Hub on the instance ---
