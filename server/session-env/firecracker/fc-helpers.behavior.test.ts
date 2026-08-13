@@ -8,9 +8,11 @@ import { execFileSync, spawnSync } from 'child_process';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -504,9 +506,12 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     // Tracked-but-ignored paths must be re-materialized or Changes shows
     // false deletions (sample.env / .vscode on Survey Tracker).
     expect(src).toMatch(/checkout-index.*-a.*-f|checkout-index", "-a", "-f"/);
-    // Dirty working-tree edits must be re-copied after checkout-index.
+    // Dirty working-tree edits must be re-copied after checkout-index via
+    // O_NOFOLLOW dirfds (never shutil.copy2 onto a destination symlink).
     expect(src).toMatch(/diff", "--name-only", "-z", "HEAD"/);
-    expect(src).toMatch(/shutil\.copy2/);
+    expect(src).toMatch(/O_NOFOLLOW/);
+    expect(src).toMatch(/os\.unlink\(/);
+    expect(src).not.toMatch(/shutil\.copy2/);
   });
 
   // O_NOFOLLOW + `/proc/<pid>/fd` are Linux-only; macOS tmpdirs also walk
@@ -560,6 +565,24 @@ describe('fc-prepare-disks.sh worktree copy', () => {
         ).toBe(0);
         // Uncommitted edit must survive checkout-index (dirty restore).
         writeFileSync(path.join(worktree, 'README.md'), 'dirty working tree\n');
+        // Dirty symlink (possibly dangling) must be preserved, not treated as delete.
+        writeFileSync(path.join(worktree, 'was-file.txt'), 'blob\n');
+        expect(
+          spawnSync('git', ['add', 'was-file.txt'], {
+            cwd: worktree,
+            encoding: 'utf8',
+            env: gitEnv,
+          }).status,
+        ).toBe(0);
+        expect(
+          spawnSync('git', ['commit', '-m', 'add file'], {
+            cwd: worktree,
+            encoding: 'utf8',
+            env: gitEnv,
+          }).status,
+        ).toBe(0);
+        rmSync(path.join(worktree, 'was-file.txt'));
+        symlinkSync('missing-target', path.join(worktree, 'was-file.txt'));
         const py = match![1];
         const run = spawnSync('python3', ['-', worktree, dest], {
           input: py,
@@ -568,9 +591,71 @@ describe('fc-prepare-disks.sh worktree copy', () => {
         });
         expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
         expect(readFileSync(path.join(dest, 'README.md'), 'utf8')).toBe('dirty working tree\n');
+        expect(lstatSync(path.join(dest, 'was-file.txt')).isSymbolicLink()).toBe(true);
+        expect(readlinkSync(path.join(dest, 'was-file.txt'))).toBe('missing-target');
         expect(existsSync(path.join(dest, 'frontend', 'node_modules'))).toBe(false);
         // Tar skipped this via --exclude-vcs-ignores; checkout-index restores it.
         expect(readFileSync(path.join(dest, 'tracked-ignored.txt'), 'utf8')).toBe('keep-me\n');
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'dirty restore does not follow a destination symlink outside dest (root escape)',
+    () => {
+      const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+      const match = src.match(
+        /python3 - "\$\{WORKTREE\}" "\$\{MOUNT_DIR\}" <<'PY'\n([\s\S]*?)\nPY\n/,
+      );
+      expect(match?.[1]).toBeTruthy();
+      const base = mkdtempSync(path.join(os.tmpdir(), 'fc-prepare-escape-'));
+      const worktree = path.join(base, 'wt');
+      const dest = path.join(base, 'out');
+      const hostVictim = path.join(base, 'host-secret.txt');
+      try {
+        mkdirSync(worktree);
+        mkdirSync(dest);
+        writeFileSync(hostVictim, 'safe\n');
+        // Index holds an absolute symlink; dirty tree replaces it with a file.
+        symlinkSync(hostVictim, path.join(worktree, 'victim'));
+        const gitEnv = {
+          ...process.env,
+          GIT_CONFIG_COUNT: '2',
+          GIT_CONFIG_KEY_0: 'user.email',
+          GIT_CONFIG_VALUE_0: 'test@example.com',
+          GIT_CONFIG_KEY_1: 'user.name',
+          GIT_CONFIG_VALUE_1: 'Test',
+        };
+        expect(
+          spawnSync('git', ['init'], { cwd: worktree, encoding: 'utf8', env: gitEnv }).status,
+        ).toBe(0);
+        expect(
+          spawnSync('git', ['add', 'victim'], {
+            cwd: worktree,
+            encoding: 'utf8',
+            env: gitEnv,
+          }).status,
+        ).toBe(0);
+        expect(
+          spawnSync('git', ['commit', '-m', 'symlink'], {
+            cwd: worktree,
+            encoding: 'utf8',
+            env: gitEnv,
+          }).status,
+        ).toBe(0);
+        rmSync(path.join(worktree, 'victim'));
+        writeFileSync(path.join(worktree, 'victim'), 'pwned\n');
+        const run = spawnSync('python3', ['-', worktree, dest], {
+          input: match![1],
+          encoding: 'utf8',
+          env: { ...process.env, AGENT_HUB_WORKSPACE_SIZE_MIB: '64' },
+        });
+        expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
+        expect(readFileSync(hostVictim, 'utf8')).toBe('safe\n');
+        expect(lstatSync(path.join(dest, 'victim')).isSymbolicLink()).toBe(false);
+        expect(readFileSync(path.join(dest, 'victim'), 'utf8')).toBe('pwned\n');
       } finally {
         rmSync(base, { recursive: true, force: true });
       }

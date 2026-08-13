@@ -134,7 +134,33 @@ describe('buildEnrichedPrompt — session startup setup', () => {
       stat: async () => null,
       exists: async () => false,
     };
-    const env = { worktreeIo: io, kind: 'host' } as unknown as SessionEnv;
+    const env = {
+      worktreeIo: io,
+      kind: 'host',
+      spawn: () => {
+        let resolveExit: ((e: { code: number; signal: null }) => void) | null = null;
+        const proc = {
+          pid: 1,
+          name: 'echo',
+          exited: false,
+          exitResult: null as { code: number; signal: null } | null,
+          onStdout: () => () => {},
+          onStderr: () => () => {},
+          onExit: (cb: (e: { code: number; signal: null }) => void) => {
+            queueMicrotask(() => {
+              const e = { code: 0, signal: null as null };
+              proc.exited = true;
+              proc.exitResult = e;
+              cb(e);
+              resolveExit?.(e);
+            });
+            return () => {};
+          },
+          kill: () => {},
+        };
+        return proc;
+      },
+    } as unknown as SessionEnv;
     await runSessionStartupHooks({
       sessionId: 'sess-1',
       env,

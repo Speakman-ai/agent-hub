@@ -112,7 +112,7 @@ RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex \
 # Cursor uses. Runtime discovery still searches ~/.grok/bin as a fallback
 # (xAI's installer default when GROK_BIN_DIR is unset).
 RUN if id runner >/dev/null 2>&1; then \
-      su - runner -c 'GROK_BIN_DIR="$HOME/.local/bin" curl -fsSL https://x.ai/cli/install.sh | bash' ; \
+      su - runner -c 'export GROK_BIN_DIR="$HOME/.local/bin"; curl -fsSL https://x.ai/cli/install.sh | bash' ; \
       su - runner -c 'curl -fsSL https://cursor.com/install | bash' ; \
       su - runner -c 'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; \
         target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \
@@ -120,7 +120,8 @@ RUN if id runner >/dev/null 2>&1; then \
         ln -sfn "$target" "$HOME/.local/bin/agent"; \
         command -v agent; command -v cursor-agent; command -v grok' ; \
     else \
-      GROK_BIN_DIR="$HOME/.local/bin" curl -fsSL https://x.ai/cli/install.sh | bash ; \
+      export GROK_BIN_DIR="$HOME/.local/bin"; \
+      curl -fsSL https://x.ai/cli/install.sh | bash ; \
       curl -fsSL https://cursor.com/install | bash ; \
       export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; \
       target="$(readlink -f "$HOME/.local/bin/cursor-agent")"; \

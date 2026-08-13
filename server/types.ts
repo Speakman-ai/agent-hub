@@ -4169,7 +4169,7 @@ export interface RouteDeps {
    * when a session ends — the env deliberately survives an individual preview
    * or terminal exiting, so this is the only place it gets released.
    */
-  disposeSessionEnv?: (sessionId: string) => Promise<void>;
+  disposeSessionEnv?: (sessionId: string, opts?: { forgetWorkspace?: boolean }) => Promise<void>;
   /**
    * Read/write the session's worktree, wherever it physically lives. The only
    * correct way to reach worktree contents: under a microVM env the worktree is

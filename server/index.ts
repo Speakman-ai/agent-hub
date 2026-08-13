@@ -1665,20 +1665,22 @@ export const routeDeps: RouteDeps = {
   },
   getBackgroundShellRuntime: () => backgroundShellRuntime,
   getBackgroundShellWatcher: () => backgroundShellWatcher,
-  disposeSessionEnv: async (sessionId: string) => {
-    await sessionEnvManager.dispose(sessionId, { forgetWorkspace: true });
-    // Idle reap / Hub restart leave the workspace disk. Session end must
-    // still delete it when no env is live in memory. Route `clean` through
-    // privileged host IO (docker helper / sudo) — the default direct exec
-    // cannot reach the helper from a Hub container.
-    if (getSessionEnvSelection().adapter === 'firecracker') {
-      const paths = firecrackerHostPaths();
-      const execCfg = resolveFirecrackerExecConfig(paths);
-      await forgetPersistedFirecrackerDisks(sessionId, {
-        io: createFirecrackerHostIo(execCfg),
-        paths,
-      });
-    }
+  disposeSessionEnv: async (sessionId: string, opts: { forgetWorkspace?: boolean } = {}) => {
+    // Soft archive must keep the Firecracker workspace disk — it is the only
+    // authoritative copy of guest work. Hard purge passes forgetWorkspace.
+    const forgetWorkspace = opts.forgetWorkspace === true;
+    await sessionEnvManager.dispose(sessionId, { forgetWorkspace });
+    if (!forgetWorkspace) return;
+    // Idle reap / Hub restart leave the workspace disk. Proven deletion must
+    // run whenever the session can own Firecracker artifacts — not only when
+    // this boot selected the firecracker adapter (a fallback boot still needs
+    // to clean disks created earlier).
+    const paths = firecrackerHostPaths();
+    const execCfg = resolveFirecrackerExecConfig(paths);
+    await forgetPersistedFirecrackerDisks(sessionId, {
+      io: createFirecrackerHostIo(execCfg),
+      paths,
+    });
   },
   getSessionWorktreeIo: resolveSessionWorktreeIo,
   provisionSessionWorkspace: async (sessionId: string) => {

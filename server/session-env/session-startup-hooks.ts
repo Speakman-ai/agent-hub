@@ -266,7 +266,7 @@ export function formatSessionStartupPromptSection(
     if (!opts.commandsConfigured) return '';
     return `\n\n## Session Startup Setup
 Status: **pending** (startup hooks have not reported yet)
-Status file: \`${SESSION_STARTUP_STATUS_GUEST_ABS}\` (outside the git worktree)
+Status file: not written yet — when hooks start, the path is outside the git worktree (guest: under \`${GUEST_RUNTIME_ROOT}\`; host: under \`$HOME/.agent-hub-runtime/session-startup/\`).
 
 Do **not** assume project deps (venv, node_modules, etc.) are ready yet. Poll the status file or wait before running tests that need them.`;
   }
@@ -362,10 +362,9 @@ export async function runSessionStartupHooks(
     statusBySession.set(args.sessionId, status);
     await persistStatusFile(args.env, status);
     const detail = formatSessionStartupProgressDetail(status);
-    const logDetail = formatSessionStartupProgressDetail(status, { redact: false });
     console.warn(
       `[session-startup] session=${args.sessionId} aborted before commands ran` +
-        (logDetail ? `\n${logDetail}` : ''),
+        (detail ? ` (${detail})` : ''),
     );
     args.onProgress?.({
       runStatus: 'failed',
@@ -395,7 +394,9 @@ export async function runSessionStartupHooks(
     entry.status = 'running';
     statusBySession.set(args.sessionId, { ...status, commands: [...status.commands] });
     await persistStatusFile(args.env, status);
-    console.log(`[session-startup] session=${args.sessionId} running: ${entry.cmd}`);
+    console.log(
+      `[session-startup] session=${args.sessionId} running command ${i + 1}/${status.commands.length}`,
+    );
 
     try {
       const result = await runStartupCommandInSessionWorkspace(args.env, entry.cmd, {
@@ -415,7 +416,9 @@ export async function runSessionStartupHooks(
       if (result.exitCode === 0) {
         entry.status = 'ok';
         entry.detail = null;
-        console.log(`[session-startup] session=${args.sessionId} ok: ${entry.cmd}`);
+        console.log(
+          `[session-startup] session=${args.sessionId} command ${i + 1}/${status.commands.length} ok`,
+        );
       } else {
         entry.status = 'failed';
         entry.detail = truncateDetail(result.stdout, result.stderr) ?? `exit ${result.exitCode}`;
@@ -425,7 +428,7 @@ export async function runSessionStartupHooks(
         status.status = 'failed';
         status.finishedAt = now();
         console.warn(
-          `[session-startup] session=${args.sessionId} failed: ${entry.cmd} (exit ${result.exitCode})\n${entry.detail}`,
+          `[session-startup] session=${args.sessionId} command ${i + 1}/${status.commands.length} failed (exit ${result.exitCode})`,
         );
         break;
       }
@@ -439,7 +442,7 @@ export async function runSessionStartupHooks(
       status.status = 'failed';
       status.finishedAt = now();
       console.warn(
-        `[session-startup] session=${args.sessionId} failed: ${entry.cmd}\n${entry.detail}`,
+        `[session-startup] session=${args.sessionId} command ${i + 1}/${status.commands.length} failed`,
       );
       break;
     }

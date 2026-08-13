@@ -487,10 +487,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
    * Full session runtime teardown for archive/delete: preview, background
    * shells, ephemeral Bash notices, and the session environment itself.
    *
-   * The env deliberately outlives an individual preview stop — this is the
-   * only path that releases it, otherwise containers / microVMs accumulate.
+   * Soft archive keeps the Firecracker workspace disk (`forgetWorkspace:
+   * false`) so restore can reattach. Hard purge must pass
+   * `forgetWorkspace: true`. Dispose failures propagate — callers must not
+   * archive/delete until resource teardown is proven.
    */
-  async function teardownSessionRuntime(sessionId: string): Promise<void> {
+  async function teardownSessionRuntime(
+    sessionId: string,
+    opts: { forgetWorkspace?: boolean } = {},
+  ): Promise<void> {
     // The session will never take another turn, so nothing will consume its
     // pending native-background-Bash notice. Drop it rather than leak the rows.
     clearEphemeralBackgroundBash(sessionId);
@@ -520,11 +525,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     if (deps.disposeSessionEnv) {
       tasks.push(
-        deps.disposeSessionEnv(sessionId).catch((err: unknown) => {
-          console.warn(
-            `[sessions] session env dispose failed (${sessionId}):`,
-            (err as Error).message,
-          );
+        deps.disposeSessionEnv(sessionId, {
+          forgetWorkspace: opts.forgetWorkspace === true,
         }),
       );
     }
@@ -533,7 +535,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   /** Fire-and-forget variant for bulk archive loops. */
   function teardownSessionRuntimeBestEffort(sessionId: string): void {
-    void teardownSessionRuntime(sessionId).catch((err) => {
+    void teardownSessionRuntime(sessionId, { forgetWorkspace: false }).catch((err) => {
       console.warn(
         `[sessions] session runtime teardown failed (${sessionId}):`,
         (err as Error).message,
@@ -1366,7 +1368,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     closeBrowserBestEffort(sessionId);
-    await teardownSessionRuntime(sessionId);
+    try {
+      // Soft archive: stop the env but keep the workspace disk for restore.
+      await teardownSessionRuntime(sessionId, { forgetWorkspace: false });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[sessions] refuse archive; runtime teardown failed (${sessionId}):`, message);
+      return res.status(500).json({
+        error: `Failed to tear down session environment: ${message}`,
+      });
+    }
 
     // Cleanup runs BEFORE the soft-delete so it can resolve the card's owning
     // agent without depending on whether `getSession` filters archived rows.

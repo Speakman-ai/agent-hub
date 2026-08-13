@@ -6,6 +6,8 @@ import { stmts } from './db.js';
 import {
   userOwnsSession,
   getSessionOwner,
+  isReviewerSession,
+  isSharedCronSession,
   setWsAuthUserId,
   getWsAuthUserId,
   setWsAuthVisibility,
@@ -23,6 +25,10 @@ import { buildAwaitingInputSnapshotLenient } from './awaiting-input.js';
 import { buildPreviewSnapshotEvents } from './preview/preview-snapshot.js';
 import { buildFinalizeSnapshotEvents } from './finalize/finalize-snapshot.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
+
+function isSharedReadableSession(sessionId: string): boolean {
+  return isReviewerSession(sessionId) || isSharedCronSession(sessionId);
+}
 import { parsePreviewProxySessionId } from './preview/preview-proxy.js';
 import { parseTerminalWebSocketSessionId } from './terminal/terminal-websocket.js';
 import { canViewProject } from './project-visibility.js';
@@ -432,6 +438,7 @@ export default function createWebSocket(
             resolveProjectId: resolveProjectIdFromEvent,
             findProject: findProjectLocal,
             getSessionOwner,
+            isSharedReadableSession,
           })
         ) {
           return;
@@ -555,6 +562,7 @@ export default function createWebSocket(
               resolveProjectId: resolveProjectIdFromEvent,
               findProject: findProjectLocal,
               getSessionOwner,
+              isSharedReadableSession,
             })
           ) {
             continue;
@@ -618,6 +626,7 @@ export default function createWebSocket(
             resolveProjectId: resolveProjectIdFromEvent,
             findProject: findProjectLocal,
             getSessionOwner,
+            isSharedReadableSession,
           })
         ) {
           continue;

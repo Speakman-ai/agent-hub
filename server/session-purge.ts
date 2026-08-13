@@ -48,6 +48,14 @@ import {
 } from './browser-screenshot-store.js';
 import config from './config.js';
 import type { Project, Stmts } from './types.js';
+import {
+  createFirecrackerHostIo,
+  resolveFirecrackerExecConfig,
+} from './session-env/firecracker/firecracker-privileged-exec.js';
+import {
+  firecrackerHostPaths,
+  forgetPersistedFirecrackerDisks,
+} from './session-env/firecracker/register-firecracker-backend.js';
 import type Database from 'better-sqlite3';
 
 /** Row shape returned by `stmts.getExpiredArchivedSessions`. */
@@ -125,6 +133,19 @@ export async function purgeExpiredArchivedSessions(
       rowsDeleted++;
       cleanupSpawnCredsForSession(row.id, config.dataDir);
       removeBrowserScreenshotsForSession(row.id, config.dataDir);
+      // Soft archive keeps the Firecracker workspace disk; hard purge must
+      // delete it now that the row is gone for good.
+      try {
+        const paths = firecrackerHostPaths();
+        const execCfg = resolveFirecrackerExecConfig(paths);
+        await forgetPersistedFirecrackerDisks(row.id, {
+          io: createFirecrackerHostIo(execCfg),
+          paths,
+        });
+      } catch (fcErr: unknown) {
+        const fcMsg = fcErr instanceof Error ? fcErr.message : String(fcErr);
+        console.error(`[Purge] forgetPersistedFirecrackerDisks(${row.id}) failed:`, fcMsg);
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[Purge] deleteSession(${row.id}) failed:`, message);

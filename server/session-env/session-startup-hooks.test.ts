@@ -298,7 +298,8 @@ describe('formatSessionStartupPromptSection', () => {
     const text = formatSessionStartupPromptSection(null, { commandsConfigured: true });
     expect(text).toContain('Session Startup Setup');
     expect(text).toContain('pending');
-    expect(text).toContain(SESSION_STARTUP_STATUS_GUEST_ABS);
+    expect(text).toContain('not written yet');
+    expect(text).not.toContain(SESSION_STARTUP_STATUS_GUEST_ABS);
   });
 
   it('includes ready guidance', () => {

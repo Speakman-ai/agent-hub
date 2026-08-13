@@ -3107,6 +3107,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           drainQueue(sessionId);
           return;
         }
+      } else if (
+        ensureSessionEnv &&
+        getProjectSessionStartupCommands(project as ProjectWithCommands).length > 0
+      ) {
+        // Host / sysbox / container: SessionEnvManager.ensure is what starts
+        // project sessionStartupCommands. Without it, the enriched prompt
+        // advertises a permanent "pending" setup that never runs.
+        try {
+          sessionEnv = await ensureSessionEnv(sessionId);
+        } catch (err: unknown) {
+          console.warn(
+            `[chat] session startup ensure failed (${sessionId}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
       }
 
       // Surface base-branch drift (umbrella moved while this card was
