@@ -75,6 +75,45 @@ const RUNNER_ENV_BLOCKLIST = new Set([
 ]);
 
 /**
+ * Bin dirs guaranteed to exist inside the finalize-runner image, where the
+ * image's apt-installed toolchain lives (node, gh, docker, compose, buildx are
+ * all under /usr/bin or /usr/local/bin; the runner user's pip/npm installs land
+ * in ~/.local/bin). These are APPENDED to any caller-provided PATH so a minimal
+ * or host-shaped PATH injected into the container can never *shadow away* the
+ * image toolchain. Regression: a self-deploy restarted the Hub under a PM2/nvm
+ * PATH that omitted /usr/bin; that PATH was carried into the deploy container
+ * and the `github_workflow` recovery step died with `gh: command not found`
+ * (watch exit 127) even though the image ships gh at /usr/bin/gh.
+ */
+const RUNNER_GUARANTEED_PATH_DIRS = [
+  '/usr/local/sbin',
+  '/usr/local/bin',
+  '/usr/sbin',
+  '/usr/bin',
+  '/sbin',
+  '/bin',
+  `${RUNNER_HOME}/.local/bin`,
+];
+
+/**
+ * Merge a caller-provided PATH with the container's guaranteed toolchain dirs.
+ * Caller entries keep their order and priority (a legitimately prepended tool
+ * dir still wins); the guaranteed dirs are appended and de-duped so the image
+ * toolchain is always reachable regardless of what PATH the Hub host handed in.
+ */
+export function mergeRunnerPath(incoming: string | undefined): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const dir of [...(incoming ? incoming.split(':') : []), ...RUNNER_GUARANTEED_PATH_DIRS]) {
+    if (dir && !seen.has(dir)) {
+      seen.add(dir);
+      out.push(dir);
+    }
+  }
+  return out.join(':');
+}
+
+/**
  * Sanitize env passed into a finalize runner container.
  * Hub runs with HOME=/data; runners need the runner user's home or npm hits EACCES on /data.
  */
@@ -95,6 +134,9 @@ export function finalizeRunnerEnv(
       env[key] = value;
     }
   }
+  // Never let an inherited PATH hide the image toolchain (node, gh, docker, …).
+  // Append the guaranteed container bin dirs whether or not a PATH was provided.
+  env.PATH = mergeRunnerPath(env.PATH);
   return env;
 }
 

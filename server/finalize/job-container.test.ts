@@ -7,6 +7,7 @@ import {
   finalizeRunnerEnv,
   sanitizeJobContainerName,
 } from './job-container.js';
+import { mergeRunnerPath } from './runner-exec-args.js';
 
 describe('sanitizeJobContainerName', () => {
   it('produces a lowercase docker-safe name', () => {
@@ -129,8 +130,11 @@ describe('buildStartJobContainerArgv', () => {
         resourceEnv: { FINALIZE_RUNNER_RESOURCE_PROFILE: 'unconstrained' },
       });
       expect(isolated.some((a) => a.startsWith(`${sentinel}=`))).toBe(false);
-      // Allowlisted basics still pass through.
-      expect(isolated.some((a) => a === 'PATH=/usr/bin')).toBe(true);
+      // Allowlisted basics still pass through — PATH is preserved (and the
+      // guaranteed container toolchain dirs are appended, see mergeRunnerPath).
+      const pathArg = isolated.find((a) => a.startsWith('PATH='));
+      expect(pathArg).toBeDefined();
+      expect(pathArg!.split('=')[1].split(':')).toContain('/usr/bin');
     } finally {
       delete process.env[sentinel];
     }
@@ -159,6 +163,25 @@ describe('finalizeRunnerEnv', () => {
     expect(env.FOO).toBe('bar');
   });
 
+  it('guarantees the image toolchain dirs are on PATH even when the injected PATH omits them', () => {
+    // Regression: a self-deploy restarted the Hub under a PM2/nvm PATH that did
+    // not include /usr/bin. That PATH was carried into the deploy container and
+    // the github_workflow recovery step died with `gh: command not found`
+    // (watch exit 127) though the image ships gh at /usr/bin/gh.
+    const env = finalizeRunnerEnv({ PATH: '/root/.nvm/versions/node/v22.11.0/bin' });
+    const dirs = (env.PATH ?? '').split(':');
+    // Caller-provided dir keeps priority...
+    expect(dirs[0]).toBe('/root/.nvm/versions/node/v22.11.0/bin');
+    // ...and the image toolchain dirs are always reachable.
+    expect(dirs).toContain('/usr/bin');
+    expect(dirs).toContain('/usr/local/bin');
+  });
+
+  it('sets a usable PATH even when no PATH is provided', () => {
+    const env = finalizeRunnerEnv({ FOO: 'bar' });
+    expect((env.PATH ?? '').split(':')).toContain('/usr/bin');
+  });
+
   it('strips macOS TMPDIR/TMP/TEMP so Linux runners use their own tmp', () => {
     // macOS hosts set TMPDIR=/var/folders/… — Cypress's installer (and
     // anything honoring TMPDIR) fails with EACCES mkdir /var/folders inside
@@ -173,6 +196,21 @@ describe('finalizeRunnerEnv', () => {
     expect(env.TMP).toBeUndefined();
     expect(env.TEMP).toBeUndefined();
     expect(env.FOO).toBe('bar');
+  });
+});
+
+describe('mergeRunnerPath', () => {
+  it('appends and de-dupes the guaranteed dirs, preserving caller order', () => {
+    expect(mergeRunnerPath('/opt/tool/bin:/usr/bin')).toBe(
+      '/opt/tool/bin:/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/bin:/home/runner/.local/bin',
+    );
+  });
+
+  it('returns just the guaranteed dirs for empty/undefined input', () => {
+    expect(mergeRunnerPath(undefined)).toBe(
+      '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/runner/.local/bin',
+    );
+    expect(mergeRunnerPath('')).toBe(mergeRunnerPath(undefined));
   });
 });
 
