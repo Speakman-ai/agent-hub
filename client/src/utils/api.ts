@@ -1551,6 +1551,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ state, body }),
     }),
+  // Dismiss a submitted verdict review (GitHub "Dismiss review"). One-way; a
+  // reason is required. The row stays for history but stops counting toward
+  // the review decision and renders collapsed with the note.
+  dismissNativePrReview: (projectId: any, number: any, reviewId: any, reason: any) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/reviews/${reviewId}/dismiss`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
   addNativePrComment: (projectId: any, number: any, { filePath, line, side = 'new', body }: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/comments`, {
       method: 'POST',

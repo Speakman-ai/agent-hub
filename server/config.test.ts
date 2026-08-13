@@ -235,6 +235,30 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
     ]);
   });
 
+  it('keeps cursor-grok-4.6-high when a config lists it (Cursor CLI slug)', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dataDir = path.join(
+      os.tmpdir(),
+      `agent-hub-cursor-46-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+    writeConfigAndImport(dataDir, {
+      engineValidModels: {
+        ...nonCursorValid,
+        'cursor-agent': ['auto', 'cursor-grok-4.6-high', 'composer-2.5'],
+      },
+      engineDefaultModels: { ...nonCursorDefaults, 'cursor-agent': 'cursor-grok-4.6-high' },
+    });
+
+    const mod = await import('./config.js');
+    expect(mod.default.engineValidModels['cursor-agent']).toEqual([
+      'cursor-grok-4.6-high',
+      'composer-2.5',
+    ]);
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('cursor-grok-4.6-high');
+  });
+
   it('coerces a stale engineDefaultModels["cursor-agent"] to a value in the filtered list', async () => {
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
@@ -274,10 +298,29 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
 
     const mod = await import('./config.js');
     expect(mod.default.engineValidModels['cursor-agent']).toEqual([
+      'cursor-grok-4.6-high',
       'composer-2.5',
       'cursor-grok-4.5-high',
     ]);
-    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2.5');
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('cursor-grok-4.6-high');
+  });
+
+  it('defaults cursor-agent to cursor-grok-4.6-high with no config.json', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dataDir = path.join(
+      os.tmpdir(),
+      `agent-hub-cursor-builtin-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({}), 'utf8');
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+
+    const mod = await import('./config.js');
+    const valid = mod.default.engineValidModels['cursor-agent'];
+    expect(valid[0]).toBe('cursor-grok-4.6-high');
+    expect(valid).toContain('composer-2.5');
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('cursor-grok-4.6-high');
   });
 });
 
@@ -936,21 +979,23 @@ describe('config.ts — grok-cli default model list', () => {
     return dir;
   }
 
-  it('defaults grok-cli to grok-4.5 and lists it first (now powers Grok Build)', async () => {
-    // Regression: the list predated grok-4.5 (shipped 2026-07-08) so users
-    // could not select the model that now backs Grok Build upstream.
+  it('defaults grok-cli to grok-4.6 and lists it first (current Grok Build model)', async () => {
+    // Regression: the list predated grok-4.6 (shipped 2026-08-07) so users
+    // could not select the model that now backs Grok Build upstream. grok-4.5
+    // stays selectable for sessions/agents pinned to it.
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
     process.env.AGENT_HUB_DATA_DIR = freshDataDirNoConfig('default');
     const mod = await import('./config.js');
     const valid = mod.default.engineValidModels['grok-cli'];
-    expect(valid[0]).toBe('grok-4.5');
+    expect(valid[0]).toBe('grok-4.6');
+    expect(valid).toContain('grok-4.5');
     expect(valid).toContain('grok-build');
     expect(valid).toContain('grok-composer-2.5-fast');
-    expect(mod.default.engineDefaultModels['grok-cli']).toBe('grok-4.5');
+    expect(mod.default.engineDefaultModels['grok-cli']).toBe('grok-4.6');
   });
 
-  it('resolveGrokSpawnModel passes grok-4.5 through when allowlisted', async () => {
+  it('resolveGrokSpawnModel passes grok-4.6 / grok-4.5 through when allowlisted', async () => {
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
     process.env.AGENT_HUB_DATA_DIR = freshDataDirNoConfig('spawn');
@@ -959,8 +1004,103 @@ describe('config.ts — grok-cli default model list', () => {
       engineValidModels: mod.default.engineValidModels,
       engineDefaultModels: mod.default.engineDefaultModels,
     };
+    expect(mod.resolveGrokSpawnModel('grok-4.6', cfg)).toBe('grok-4.6');
     expect(mod.resolveGrokSpawnModel('grok-4.5', cfg)).toBe('grok-4.5');
-    // An unknown id still falls back to the grok-4.5 default.
-    expect(mod.resolveGrokSpawnModel('grok-9-imaginary', cfg)).toBe('grok-4.5');
+    // An unknown id still falls back to the grok-4.6 default.
+    expect(mod.resolveGrokSpawnModel('grok-9-imaginary', cfg)).toBe('grok-4.6');
+  });
+});
+
+describe('config.ts — host (bind address) resolution', () => {
+  // config.host is what server/index.ts passes to server.listen(). It MUST
+  // default to 0.0.0.0 (all interfaces) so LAN/server deployments keep working,
+  // and honor AGENT_HUB_HOST / `host` so a shared host can restrict the API to
+  // loopback (127.0.0.1). Regression: the value was resolved but index.ts
+  // hardcoded '0.0.0.0' in listen(), so AGENT_HUB_HOST=127.0.0.1 did nothing.
+  function freshDataDir(label: string): string {
+    return path.join(
+      os.tmpdir(),
+      `agent-hub-host-${label}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+  }
+
+  function writeConfig(dir: string, body: Record<string, unknown>): void {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(body), 'utf8');
+  }
+
+  it('defaults to 0.0.0.0 when neither env nor config.json sets it', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('default');
+    delete process.env.AGENT_HUB_HOST;
+    const mod = await import('./config.js');
+    expect(mod.default.host).toBe('0.0.0.0');
+  });
+
+  it('honors AGENT_HUB_HOST=127.0.0.1 (loopback lock) over the default', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('env-loopback');
+    process.env.AGENT_HUB_HOST = '127.0.0.1';
+    const mod = await import('./config.js');
+    expect(mod.default.host).toBe('127.0.0.1');
+    delete process.env.AGENT_HUB_HOST;
+  });
+
+  it('env AGENT_HUB_HOST wins over config.json host', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('env-wins');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    writeConfig(dir, { host: '10.0.0.5' });
+    process.env.AGENT_HUB_HOST = '127.0.0.1';
+    const mod = await import('./config.js');
+    expect(mod.default.host).toBe('127.0.0.1');
+    delete process.env.AGENT_HUB_HOST;
+  });
+
+  it('reads host from config.json when env is unset', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('file');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    delete process.env.AGENT_HUB_HOST;
+    writeConfig(dir, { host: '127.0.0.1' });
+    const mod = await import('./config.js');
+    expect(mod.default.host).toBe('127.0.0.1');
+  });
+});
+
+describe('server/index.ts — server.listen() binds config.host (regression guard)', () => {
+  // The resolution tests above prove config.host is *computed* correctly, but
+  // the actual regression was that index.ts hardcoded '0.0.0.0' in the
+  // server.listen() call, so a correctly-resolved config.host was ignored and
+  // AGENT_HUB_HOST=127.0.0.1 did nothing. That listen() call lives inside the
+  // `NODE_ENV !== 'test'` boot guard, so it never executes under Vitest and
+  // can't be observed at runtime. We therefore assert on the source the same
+  // way this file already guards the Terraform/workflow bootstrap scripts:
+  // observe the address literally passed to server.listen(). These assertions
+  // FAIL if index.ts reverts to `server.listen(PORT, '0.0.0.0', …)`.
+  const indexSrc = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.ts'),
+    'utf8',
+  );
+
+  it('derives the bind host from config.host (no hardcoded default at the call site)', () => {
+    expect(indexSrc).toMatch(/const\s+HOST\s*:\s*string\s*=\s*config\.host\s*;/);
+  });
+
+  it('passes the config-derived HOST as the bind address to server.listen()', () => {
+    const listenCalls = indexSrc.match(/server\.listen\([^)]*\)/g) ?? [];
+    // Exactly one listener; guarding against a second, differently-bound call.
+    expect(listenCalls).toHaveLength(1);
+    expect(listenCalls[0]).toMatch(/server\.listen\(\s*PORT\s*,\s*HOST\s*,/);
+  });
+
+  it('does NOT bind server.listen() to a hardcoded IP string literal', () => {
+    // The exact shape of the pre-fix regression — a string-literal address as
+    // the second argument to listen() (e.g. '0.0.0.0' or '127.0.0.1').
+    expect(indexSrc).not.toMatch(/server\.listen\(\s*[A-Za-z0-9_]+\s*,\s*['"][\d.]+['"]/);
   });
 });

@@ -1333,6 +1333,18 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Dismissal state added to pull_request_reviews after the table shipped.
+  // A dismissed review keeps its row (history) but no longer counts toward
+  // the review decision and renders collapsed with the dismissal note —
+  // GitHub's "Dismiss review" semantics. Presence of dismissed_at = dismissed.
+  for (const col of ['dismissed_at INTEGER', 'dismissed_by TEXT', 'dismissal_reason TEXT']) {
+    try {
+      db.exec(`ALTER TABLE pull_request_reviews ADD COLUMN ${col}`);
+    } catch {
+      /* column already exists */
+    }
+  }
+
   try {
     db.prepare('SELECT step_index FROM finalize_run_steps LIMIT 1').get();
   } catch {
@@ -7005,6 +7017,14 @@ function initDb(dataDir: string): void {
       `SELECT * FROM pull_request_reviews
         WHERE project_id = ? AND pr_number = ?
         ORDER BY created_at ASC`,
+    ),
+    getPullRequestReview: db.prepare('SELECT * FROM pull_request_reviews WHERE id = ?'),
+    // Dismiss a review. Params: (dismissed_by, dismissal_reason, dismissed_at, id).
+    // Guarded to a not-yet-dismissed row so a repeat dismiss is a no-op (0 changes).
+    dismissPullRequestReview: db.prepare(
+      `UPDATE pull_request_reviews
+          SET dismissed_by = ?, dismissal_reason = ?, dismissed_at = ?
+        WHERE id = ? AND dismissed_at IS NULL`,
     ),
     insertPullRequestComment: db.prepare(
       `INSERT INTO pull_request_comments (id, project_id, pr_number, author, file_path, line, side, body, created_at)

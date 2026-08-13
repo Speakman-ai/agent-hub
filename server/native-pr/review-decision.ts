@@ -14,9 +14,12 @@ export function reviewDecisionFor(
   const reviews = stmts.listPullRequestReviewsForPr.all(projectId, row.number) as Array<{
     reviewer: string;
     state: string;
+    dismissed_at: number | null;
   }>;
   const latestByUser = new Map<string, string>();
   for (const r of reviews) {
+    // Dismissed reviews keep their history row but no longer carry a verdict.
+    if (r.dismissed_at) continue;
     const prev = latestByUser.get(r.reviewer);
     if (r.state === 'commented' && prev && prev !== 'commented') continue;
     latestByUser.set(r.reviewer, r.state);

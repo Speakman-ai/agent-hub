@@ -374,6 +374,38 @@ registerPath({
 
 registerPath({
   method: 'post',
+  path: '/api/projects/{projectId}/pulls/{number}/reviews/{reviewId}/dismiss',
+  tags: ['Projects'],
+  summary: 'Dismiss a submitted review on a native pull request',
+  description:
+    'GitHub-style "Dismiss review": the review row is kept for history but its verdict stops counting toward the review decision and renders collapsed with the dismissal note. Only approved / changes_requested reviews can be dismissed (a comment review has no verdict). A reason is required. Allowed on closed and merged PRs.',
+  request: {
+    params: z.object({ projectId: z.string(), number: z.string(), reviewId: z.string() }),
+    body: {
+      content: jsonContent(
+        z.object({
+          reason: z.string().min(1).openapi({ description: 'Why the review is being dismissed.' }),
+        }),
+      ),
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: 'The dismissed review (GitHub review-object shape).',
+      content: jsonContent(z.object({ review: z.record(z.string(), z.unknown()) })),
+    },
+    400: {
+      description: 'Missing reason, comment review, or not Hub-hosted.',
+      content: jsonContent(PrErrorSchema),
+    },
+    404: { description: 'Unknown project/PR/review.', content: jsonContent(PrErrorSchema) },
+    409: { description: 'Review is already dismissed.', content: jsonContent(PrErrorSchema) },
+  },
+});
+
+registerPath({
+  method: 'post',
   path: '/api/projects/{projectId}/pulls/{number}/comments',
   tags: ['Projects'],
   summary: 'Add an inline (per-line) diff comment to a native pull request',
@@ -862,6 +894,32 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       sendNativeError(res, err);
     }
   });
+
+  router.post(
+    '/api/projects/:projectId/pulls/:number/reviews/:reviewId/dismiss',
+    (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+      if (!reason) {
+        return res.status(400).json({ error: 'a dismissal reason is required' });
+      }
+      const areq = req as AuthenticatedRequest;
+      try {
+        const { review } = deps.nativePr!.dismissReview({
+          project: ctx.project,
+          number: ctx.number,
+          reviewId: String(req.params.reviewId),
+          reason: reason.slice(0, 2000),
+          actor: areq.authUser ?? areq.authUserId ?? 'user',
+        });
+        res.json({ review });
+      } catch (err: unknown) {
+        sendNativeError(res, err);
+      }
+    },
+  );
 
   router.post('/api/projects/:projectId/pulls/:number/comments', (req: Request, res: Response) => {
     const ctx = resolveActionContext(req, res);

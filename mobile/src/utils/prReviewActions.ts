@@ -48,6 +48,31 @@ export function buildReviewPayload(event: any, body: any = '') {
 export function buildGeneralCommentPayload(body: any) {
     return buildReviewPayload('COMMENT', body);
 }
+/**
+ * Build the body for POST .../pulls/:n/reviews/:reviewId/dismiss.
+ * A dismissal reason is required (GitHub "Dismiss review" semantics).
+ */
+export function buildDismissReviewPayload(reason: any) {
+    const text = typeof reason === 'string' ? reason.trim() : '';
+    if (!text) {
+        return { ok: false, error: 'A dismissal reason is required.' };
+    }
+    return { ok: true, payload: { reason: text } };
+}
+/**
+ * Whether a given review can be dismissed. Mirrors the server + web gating:
+ * native PR, a verdict review (approved / changes_requested — a comment has
+ * no verdict), and not already dismissed. Dismiss stays available on
+ * closed/merged PRs, so this does NOT gate on `isOpen`.
+ */
+export function canDismissReview(detail: any, review: any) {
+    if (detail?.source !== 'agenthub')
+        return false;
+    if (!review || review.dismissed)
+        return false;
+    const state = String(review.state || '').toUpperCase();
+    return state === 'APPROVED' || state === 'CHANGES_REQUESTED';
+}
 /** Build the body for PATCH .../pulls/:n (edit title/description). */
 export function buildEditPrPayload({ title, body }: any = {}) {
     const t = typeof title === 'string' ? title.trim() : '';

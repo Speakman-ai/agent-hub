@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 2.31.71
+  version: 2.31.73
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -37819,6 +37819,88 @@ paths:
                   - error
         "409":
           description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/reviews/{reviewId}/dismiss:
+    post:
+      tags:
+        - Projects
+      summary: Dismiss a submitted review on a native pull request
+      description: 'GitHub-style "Dismiss review": the review row is kept for history but its verdict stops counting toward the review decision and renders collapsed with the dismissal note. Only approved / changes_requested reviews can be dismissed (a comment review has no verdict). A reason is required. Allowed on closed and merged PRs.'
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: reviewId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  description: Why the review is being dismissed.
+              required:
+                - reason
+      responses:
+        "200":
+          description: The dismissed review (GitHub review-object shape).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  review:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - review
+        "400":
+          description: Missing reason, comment review, or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR/review.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Review is already dismissed.
           content:
             application/json:
               schema:

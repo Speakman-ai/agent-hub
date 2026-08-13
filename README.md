@@ -5,7 +5,7 @@ machine or server and gives your agents (Claude Code, Cursor, Codex, Gemini,
 Grok) a real workspace: chat, a kanban board, a wiki, code review, CI gating,
 deployments, and session replay — all in one app, all on hardware you control.
 
-Think of it as the dashboard your agents work *inside*, instead of a chat box
+Think of it as the dashboard your agents work _inside_, instead of a chat box
 bolted onto your editor.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -15,7 +15,7 @@ bolted onto your editor.
 ![Agent Hub dashboard](docs/media/dashboard.png)
 
 > **Not an AI coding assistant.** Assistants live in someone else's cloud and
-> autocomplete inside your editor — Agent Hub is the **self-hosted DevSecOps platform** the assistant runs *inside*.
+> autocomplete inside your editor — Agent Hub is the **self-hosted DevSecOps platform** the assistant runs _inside_.
 > **Your entire SDLC runs in your VPC and never phones home.** You bring your own model keys (BYO-inference), so your code and prompts never leave your network.
 
 ---
@@ -51,7 +51,7 @@ Each project gets its own set of tools. Here's the tour.
 
 Talk to any agent over a live, streaming connection. Pick the engine and model,
 attach files, and the agent answers with full context of your project — its
-code, wiki, and memory. Agents can also ask *you* structured questions when a
+code, wiki, and memory. Agents can also ask _you_ structured questions when a
 decision needs your input.
 
 ![Agent chat](docs/media/chat.png)
@@ -74,8 +74,6 @@ pass or fail, then decide whether to push or merge.
 
 <img width="1470" height="803" alt="Screenshot 2026-07-21 at 9 52 45 AM" src="https://github.com/user-attachments/assets/f6992a9b-6283-41b8-b2ed-5ab06c122e4f" />
 <img width="1472" height="803" alt="Screenshot 2026-07-21 at 9 52 32 AM" src="https://github.com/user-attachments/assets/367a6dcc-c117-4973-b410-e46651c3747b" />
-
-
 
 ### Session replay (RUM)
 
@@ -124,14 +122,14 @@ session replay, and convert a ticket into a kanban card with one click.
 Because it's all in one app, Agent Hub displaces a stack of separate SaaS
 products — one bill, one data boundary, one place to look:
 
-| Instead of…                         | Agent Hub gives you                        |
-| ----------------------------------- | ------------------------------------------ |
-| Jira / Linear / GitHub Projects     | Kanban boards with autonomous dispatch     |
-| CircleCI / GitHub Actions minutes   | Finalize Code Changes CI gating            |
-| LogRocket / FullStory / Datadog RUM | Session replay with frustration signals    |
-| Vercel / Netlify preview seats      | Per-PR preview environments                |
-| Confluence / Notion                 | Per-project wiki with full-text search     |
-| Standalone secret scanners          | Per-commit secret scanning                 |
+| Instead of…                         | Agent Hub gives you                     |
+| ----------------------------------- | --------------------------------------- |
+| Jira / Linear / GitHub Projects     | Kanban boards with autonomous dispatch  |
+| CircleCI / GitHub Actions minutes   | Finalize Code Changes CI gating         |
+| LogRocket / FullStory / Datadog RUM | Session replay with frustration signals |
+| Vercel / Netlify preview seats      | Per-PR preview environments             |
+| Confluence / Notion                 | Per-project wiki with full-text search  |
+| Standalone secret scanners          | Per-commit secret scanning              |
 
 And because the same agents can author the config, an agent stands the platform up for itself —
 point it at your repo and it writes the `ci.yaml`, `deploy.yaml`, and dev-server preview config.
@@ -187,13 +185,13 @@ Agent Hub drives third-party agent CLIs — it doesn't ship them and never proxi
 your prompts. You bring the binary and the key; model traffic goes straight from
 your box to your provider.
 
-| Engine       | Get it                                                              | Auto-installer                        | Notes                                                       |
-| ------------ | ------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------- |
-| Claude Code  | [claude.ai/code](https://claude.ai/code) — Anthropic Pro/Max or API | _none_ — install per Anthropic's docs | Paid third-party account required.                          |
-| Cursor Agent | [cursor.com/install](https://cursor.com/install)                    | `bash scripts/ensure-cursor-agent.sh` | Symlinks to `~/.local/bin/agent`, the server's default.     |
-| Codex        | `@openai/codex` (npm)                                               | `bash scripts/ensure-codex.sh`        | Symlinks `codex` into `~/.local/bin`.                       |
-| Gemini CLI   | Google's official installer                                         | _none_                                | Point `geminiBin` at it.                                    |
-| Grok Build   | [x.ai/cli](https://x.ai/cli)                                        | `bash scripts/ensure-grok.sh`         | Symlinks to `~/.local/bin/grok`. Auth via `XAI_API_KEY`.    |
+| Engine       | Get it                                                              | Auto-installer                        | Notes                                                    |
+| ------------ | ------------------------------------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
+| Claude Code  | [claude.ai/code](https://claude.ai/code) — Anthropic Pro/Max or API | _none_ — install per Anthropic's docs | Paid third-party account required.                       |
+| Cursor Agent | [cursor.com/install](https://cursor.com/install)                    | `bash scripts/ensure-cursor-agent.sh` | Symlinks to `~/.local/bin/agent`, the server's default.  |
+| Codex        | `@openai/codex` (npm)                                               | `bash scripts/ensure-codex.sh`        | Symlinks `codex` into `~/.local/bin`.                    |
+| Gemini CLI   | Google's official installer                                         | _none_                                | Point `geminiBin` at it.                                 |
+| Grok Build   | [x.ai/cli](https://x.ai/cli)                                        | `bash scripts/ensure-grok.sh`         | Symlinks to `~/.local/bin/grok`. Auth via `XAI_API_KEY`. |
 
 Once a binary is on disk, the Hub finds it three ways (in priority order): an
 **env var** (`CLAUDE_BIN` / `CURSOR_BIN` / `GEMINI_BIN` / `CODEX_BIN` /
@@ -208,11 +206,11 @@ PATH probe** across common install locations. You can also set every path from
 Agent Hub is a **server-first app with an optional desktop client** — a bit like
 Plex or Home Assistant. Three supported ways to run it, all self-hosted:
 
-| Mode                              | What you run                                                             | Best for                                                          |
-| --------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| **Server + browser**              | `npm run dev` (or PM2) on a Linux box, reached from any device on the LAN | You have a home server / VPS and want zero install on clients.    |
-| **Server + Electron remote**      | The same server, plus the Electron app pointed at it                     | A native window/tray on your laptop, no port-forward juggling.    |
-| **All-in-one Electron (`local`)** | The packaged Electron app — boots its own server in-process              | Single-machine use; easiest once installers exist.               |
+| Mode                              | What you run                                                              | Best for                                                       |
+| --------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| **Server + browser**              | `npm run dev` (or PM2) on a Linux box, reached from any device on the LAN | You have a home server / VPS and want zero install on clients. |
+| **Server + Electron remote**      | The same server, plus the Electron app pointed at it                      | A native window/tray on your laptop, no port-forward juggling. |
+| **All-in-one Electron (`local`)** | The packaged Electron app — boots its own server in-process               | Single-machine use; easiest once installers exist.             |
 
 ### Server + browser
 
@@ -298,20 +296,20 @@ You can edit every CLI path from **Settings → Engines** in the UI. Config
 resolves in priority order: **env vars** > **`~/.agent-hub/data/config.json`** >
 **`server/config.json` (legacy)** > **built-in defaults**.
 
-| Environment Variable    | config.json Key | Default                                       | Description                                                              |
-| ----------------------- | --------------- | --------------------------------------------- | ------------------------------------------------------------------------ |
-| `AGENT_HUB_PORT`        | `port`          | `3051`                                        | Server port                                                              |
-| `AGENT_HUB_HOST`        | `host`          | `0.0.0.0`                                     | Bind address (all interfaces; set `127.0.0.1` for loopback only)         |
-| `AGENT_HUB_DATA_DIR`    | —               | `~/.agent-hub/data`                           | SQLite + workspaces root                                                 |
-| `CLAUDE_BIN`            | `claudeBin`     | _smart probe_                                 | Path to Claude Code CLI                                                  |
-| `CURSOR_BIN`            | `cursorBin`     | `~/.local/bin/agent`                          | Path to Cursor Agent CLI                                                 |
-| `GEMINI_BIN`            | `geminiBin`     | _smart probe_                                 | Path to Gemini CLI                                                       |
-| `CODEX_BIN`             | `codexBin`      | `~/.local/bin/codex`                          | Path to Codex CLI                                                        |
-| `GROK_BIN`              | `grokBin`       | `~/.local/bin/grok`                           | Path to Grok Build CLI                                                   |
-| `AGENT_HUB_DEFAULT_CWD` | `defaultCwd`    | `$HOME`                                       | Fallback working directory                                              |
-| `AGENT_HUB_API_KEY`     | `apiKey`        | `null`                                        | Break-glass API key (treated as Owner for all orgs)                     |
-| `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                                        | Public URL for webhooks, OAuth callbacks, spawn fallback                |
-| `ALLOWED_ORIGINS`       | —               | `http://localhost:3050,http://127.0.0.1:3050` | Comma-separated browser CORS allowlist                                  |
+| Environment Variable    | config.json Key | Default                                       | Description                                                      |
+| ----------------------- | --------------- | --------------------------------------------- | ---------------------------------------------------------------- |
+| `AGENT_HUB_PORT`        | `port`          | `3051`                                        | Server port                                                      |
+| `AGENT_HUB_HOST`        | `host`          | `0.0.0.0`                                     | Bind address (all interfaces; set `127.0.0.1` for loopback only) |
+| `AGENT_HUB_DATA_DIR`    | —               | `~/.agent-hub/data`                           | SQLite + workspaces root                                         |
+| `CLAUDE_BIN`            | `claudeBin`     | _smart probe_                                 | Path to Claude Code CLI                                          |
+| `CURSOR_BIN`            | `cursorBin`     | `~/.local/bin/agent`                          | Path to Cursor Agent CLI                                         |
+| `GEMINI_BIN`            | `geminiBin`     | _smart probe_                                 | Path to Gemini CLI                                               |
+| `CODEX_BIN`             | `codexBin`      | `~/.local/bin/codex`                          | Path to Codex CLI                                                |
+| `GROK_BIN`              | `grokBin`       | `~/.local/bin/grok`                           | Path to Grok Build CLI                                           |
+| `AGENT_HUB_DEFAULT_CWD` | `defaultCwd`    | `$HOME`                                       | Fallback working directory                                       |
+| `AGENT_HUB_API_KEY`     | `apiKey`        | `null`                                        | Break-glass API key (treated as Owner for all orgs)              |
+| `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                                        | Public URL for webhooks, OAuth callbacks, spawn fallback         |
+| `ALLOWED_ORIGINS`       | —               | `http://localhost:3050,http://127.0.0.1:3050` | Comma-separated browser CORS allowlist                           |
 
 > **Bind-address note:** the server binds to `0.0.0.0` by default, so on a LAN
 > box the API is reachable on every interface. That's right for the server modes,
@@ -382,12 +380,12 @@ are your own integrations — remove them and the app still runs, fully offline.
 | Real-time      | [ws](https://github.com/websockets/ws) (WebSocket)                              |
 | Web client     | React 18, Vite, Tailwind CSS                                                    |
 | Mobile         | React Native, Expo                                                              |
-| Desktop        | Electron                                                                         |
+| Desktop        | Electron                                                                        |
 | CI runners     | Docker-in-Docker (GitHub-parity resource caps)                                  |
-| Session replay | rrweb                                                                            |
-| Scheduling     | node-cron                                                                        |
-| Slack          | @slack/bolt                                                                      |
-| Testing        | Vitest, supertest, Playwright                                                    |
+| Session replay | rrweb                                                                           |
+| Scheduling     | node-cron                                                                       |
+| Slack          | @slack/bolt                                                                     |
+| Testing        | Vitest, supertest, Playwright                                                   |
 | Deployment     | Self-hosted — Nginx, PM2 (EC2/Terraform reference module included)              |
 
 ---
@@ -447,7 +445,7 @@ is set, send the `X-API-Key` header or `?apiKey=` query parameter.
 ### Database
 
 Agent Hub uses **SQLite with WAL mode** for zero-ops local persistence — the
-single file *is* your data. Tables are auto-created on first start.
+single file _is_ your data. Tables are auto-created on first start.
 
 ```mermaid
 erDiagram
@@ -463,8 +461,9 @@ erDiagram
     CRONS ||--o{ CRON_LOGS : produces
 ```
 
-The file lives at `server/agent-hub.db` (or under `dataDir` if configured). Back
-it up, encrypt it, or delete it — it never leaves the host unless you move it.
+The file lives at `~/.agent-hub/data/agent-hub.db` (or under `AGENT_HUB_DATA_DIR`
+if configured). Back it up, encrypt it, or delete it — it never leaves the host
+unless you move it.
 
 ---
 
@@ -597,16 +596,16 @@ Never commit directly to `main`, and never merge your own PR.
 
 ## Troubleshooting
 
-| Issue                                      | Fix                                                                                                                                                                                       |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `EBADENGINE` / Node version mismatch       | Repo pins `>=22.14.0 <23.0.0`. Run `nvm use`; if you switched versions after install, `npm rebuild better-sqlite3`.                                                                       |
-| `better-sqlite3` build fails               | Install build tools: `sudo apt install build-essential python3` (Linux) or `xcode-select --install` (macOS). Then `npm rebuild better-sqlite3`.                                          |
-| WebSocket connection refused               | Verify the server is running on port 3051 and no firewall is blocking it.                                                                                                                 |
-| Browser API calls fail with CORS error     | Set `ALLOWED_ORIGINS=<your-origin>` (comma-separated for multiple). Default is `http://localhost:3050,http://127.0.0.1:3050`. Electron / mobile / curl don't need this.                    |
-| CLI binary not found                       | Update `claudeBin`/`cursorBin`/`geminiBin`/`codexBin` in `~/.agent-hub/data/config.json`, set the matching env var, or use **Settings → Engines**.                                       |
-| Electron app can't reach the remote server | Confirm `connConfig.mode = 'remote'` and `remoteUrl` is correct in `app.getPath('userData')/connConfig.json`. Auth headers are injected only for hosts matching the configured remote.    |
-| `npm run install:all` fails                | Delete `node_modules` in root, client, server, and mobile, then retry.                                                                                                                    |
-| Vitest missing devDependency               | With `NODE_ENV=production`, npm omits devDependencies. Use `npm run install:all` or `npm ci --include=dev` per package.                                                                    |
+| Issue                                      | Fix                                                                                                                                                                                    |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EBADENGINE` / Node version mismatch       | Repo pins `>=22.14.0 <23.0.0`. Run `nvm use`; if you switched versions after install, `npm rebuild better-sqlite3`.                                                                    |
+| `better-sqlite3` build fails               | Install build tools: `sudo apt install build-essential python3` (Linux) or `xcode-select --install` (macOS). Then `npm rebuild better-sqlite3`.                                        |
+| WebSocket connection refused               | Verify the server is running on port 3051 and no firewall is blocking it.                                                                                                              |
+| Browser API calls fail with CORS error     | Set `ALLOWED_ORIGINS=<your-origin>` (comma-separated for multiple). Default is `http://localhost:3050,http://127.0.0.1:3050`. Electron / mobile / curl don't need this.                |
+| CLI binary not found                       | Update `claudeBin`/`cursorBin`/`geminiBin`/`codexBin` in `~/.agent-hub/data/config.json`, set the matching env var, or use **Settings → Engines**.                                     |
+| Electron app can't reach the remote server | Confirm `connConfig.mode = 'remote'` and `remoteUrl` is correct in `app.getPath('userData')/connection.json`. Auth headers are injected only for hosts matching the configured remote. |
+| `npm run install:all` fails                | Delete `node_modules` in root, client, server, and mobile, then retry.                                                                                                                 |
+| Vitest missing devDependency               | With `NODE_ENV=production`, npm omits devDependencies. Use `npm run install:all` or `npm ci --include=dev` per package.                                                                |
 
 ---
 

@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { REVIEW_EVENTS, reviewStateForEvent, buildReviewPayload, buildGeneralCommentPayload, buildEditPrPayload, buildInlineCommentPayload, prDetailCapabilities, } from './prReviewActions';
+import { REVIEW_EVENTS, reviewStateForEvent, buildReviewPayload, buildGeneralCommentPayload, buildEditPrPayload, buildInlineCommentPayload, buildDismissReviewPayload, canDismissReview, prDetailCapabilities, } from './prReviewActions';
 describe('REVIEW_EVENTS / reviewStateForEvent', () => {
     it('maps the GitHub-style UI verbs to the server state values', () => {
         expect(reviewStateForEvent('APPROVE')).toBe('approved');
@@ -59,6 +59,35 @@ describe('buildGeneralCommentPayload', () => {
     });
     it('rejects empty text', () => {
         expect(buildGeneralCommentPayload('  ').ok).toBe(false);
+    });
+});
+describe('buildDismissReviewPayload', () => {
+    it('requires a non-empty reason', () => {
+        expect(buildDismissReviewPayload('   ').ok).toBe(false);
+        expect(buildDismissReviewPayload('').ok).toBe(false);
+        expect(buildDismissReviewPayload(undefined).ok).toBe(false);
+        expect(buildDismissReviewPayload(42).ok).toBe(false);
+    });
+    it('trims the reason into the payload', () => {
+        expect(buildDismissReviewPayload('  stale  ').payload).toEqual({ reason: 'stale' });
+    });
+});
+describe('canDismissReview', () => {
+    const nativeOpen = { source: 'agenthub', pr: { state: 'open', html_url: 'x' } };
+    it('allows dismissing an active verdict on a native PR', () => {
+        expect(canDismissReview(nativeOpen, { state: 'APPROVED' })).toBe(true);
+        expect(canDismissReview(nativeOpen, { state: 'changes_requested' })).toBe(true);
+    });
+    it('stays available on a closed/merged native PR', () => {
+        const merged = { source: 'agenthub', pr: { state: 'closed', merged_at: 'x', html_url: 'x' } };
+        expect(canDismissReview(merged, { state: 'APPROVED' })).toBe(true);
+    });
+    it('refuses comment reviews, already-dismissed reviews, and non-native PRs', () => {
+        expect(canDismissReview(nativeOpen, { state: 'COMMENTED' })).toBe(false);
+        expect(canDismissReview(nativeOpen, { state: 'APPROVED', dismissed: true })).toBe(false);
+        expect(canDismissReview({ source: 'user-oauth', pr: { state: 'open' } }, { state: 'APPROVED' })).toBe(false);
+        expect(canDismissReview(nativeOpen, null)).toBe(false);
+        expect(canDismissReview(null, { state: 'APPROVED' })).toBe(false);
     });
 });
 describe('buildEditPrPayload', () => {
