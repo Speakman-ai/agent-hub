@@ -1,4 +1,8 @@
+import { mkdtemp, mkdir, writeFile } from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { describe, it, expect } from 'vitest';
+import type { SessionEnv } from './session-env.js';
 import {
   adaptSpawnEnvForGuest,
   buildGuestCliCommand,
@@ -10,6 +14,7 @@ import {
   GUEST_SPAWN_GUARDS_DIR,
   hostCwdToWorktreeRelative,
   shellQuote,
+  stageGuestCliHome,
 } from './guest-cli-spawn.js';
 
 describe('shellQuote / buildGuestCliCommand', () => {
@@ -90,5 +95,43 @@ describe('adaptSpawnEnvForGuest / finalizeGuestSpawnEnv', () => {
     expect(final.PATH).toContain(`${GUEST_CLI_HOME}/.local/bin`);
     expect(final.PATH).toContain(`${GUEST_SKILLS_ROOT}/agent-hub/scripts`);
     expect(final.PATH).toContain('/usr/local/bin');
+  });
+});
+
+describe('stageGuestCliHome — Cursor auth sync', () => {
+  it('copies Cursor auth/config files from the host HOME into the staged guest HOME', async () => {
+    const hostHome = await mkdtemp(path.join(os.tmpdir(), 'ah-host-home-'));
+    await mkdir(path.join(hostHome, '.cursor'), { recursive: true });
+    await mkdir(path.join(hostHome, '.config', 'cursor'), { recursive: true });
+    await writeFile(path.join(hostHome, '.cursor', 'auth.json'), '{"token":"cursor-oauth"}');
+    await writeFile(
+      path.join(hostHome, '.cursor', 'cli-config.json'),
+      JSON.stringify({ authInfo: { email: 'a@b.c' } }),
+    );
+    await writeFile(path.join(hostHome, '.cursor', 'argv.json'), '{}');
+    await writeFile(path.join(hostHome, '.config', 'cursor', 'auth.json'), '{"legacy":true}');
+
+    const written = new Map<string, string>();
+    const env = {
+      writeGuestFile: async (guestPath: string, contents: Buffer) => {
+        written.set(guestPath, contents.toString('utf8'));
+      },
+      worktreeIo: {
+        exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      },
+    } as unknown as SessionEnv;
+
+    const home = await stageGuestCliHome(env, hostHome);
+    expect(home).toBe(GUEST_CLI_HOME);
+    expect(written.get(`${GUEST_CLI_HOME}/.cursor/auth.json`)).toContain('cursor-oauth');
+    expect(written.get(`${GUEST_CLI_HOME}/.cursor/cli-config.json`)).toContain('authInfo');
+    expect(written.get(`${GUEST_CLI_HOME}/.cursor/argv.json`)).toBe('{}');
+    expect(written.get(`${GUEST_CLI_HOME}/.config/cursor/auth.json`)).toContain('legacy');
+
+    // Reuse path: a second stage with the same host HOME still lands the files
+    // (idempotent overwrite) so a later chat turn keeps working credentials.
+    written.clear();
+    await stageGuestCliHome(env, hostHome);
+    expect(written.get(`${GUEST_CLI_HOME}/.cursor/auth.json`)).toContain('cursor-oauth');
   });
 });
