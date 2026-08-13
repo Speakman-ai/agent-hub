@@ -245,6 +245,23 @@ describe('purgeExpiredArchivedSessions', () => {
     expect(existsSync(worktreePath)).toBe(true);
     expect(getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id)).toBeDefined();
   });
+
+  it('still hard-deletes host/sysbox sessions when no Firecracker artifact exists', async () => {
+    // Regression: invoking the FC helper for every purge failed on non-FC
+    // installs and left archived rows forever. Default forget is a no-op when
+    // the vm dir is absent; the stub here mirrors that success path.
+    const { id, worktreePath } = makeSession(fixture.workspaceDir, {
+      deletedAtSql: "datetime('now', '-25 hours')",
+    });
+    getDb()
+      .prepare("UPDATE sessions SET deleted_at = datetime('now', '-25 hours') WHERE id = ?")
+      .run(id);
+
+    const result = await purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
+    expect(result.rowsDeleted).toBe(1);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id)).toBeUndefined();
+  });
 });
 
 describe('cleanupAllProjectWorkspaces', () => {

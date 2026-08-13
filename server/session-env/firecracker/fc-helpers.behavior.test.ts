@@ -611,6 +611,15 @@ describe('fc-prepare-disks.sh worktree copy', () => {
     expect(src).not.toMatch(/src_path = os\.path\.join\(worktree, rel_s\)/);
   });
 
+  it('runs worktree materialization as the workspace uid (not root git)', () => {
+    const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
+    expect(src).toMatch(/run_as_workspace\(\)/);
+    expect(src).toMatch(/setpriv --reuid="\$\{WORKSPACE_UID\}"/);
+    expect(src).toMatch(/run_as_workspace python3 -/);
+    // Root still owns mount/mkfs; only the copy/git path drops privileges.
+    expect(src).toMatch(/mount -o loop/);
+  });
+
   it.skipIf(process.platform !== 'linux')(
     'dirty restore does not follow an intermediate source symlink outside the worktree',
     () => {

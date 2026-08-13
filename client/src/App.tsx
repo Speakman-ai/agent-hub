@@ -4557,19 +4557,30 @@ export default function App({ initialView }: any = {}) {
     for (const s of agentSessions) tearDownSessionPreview(s.id);
     try {
       const result = await api.clearAllSessions(agentId);
-      if (result.ok) {
-        // Only drop browser-screen state for the sessions we actually removed.
-        // `agentId` may be an inactive sidebar agent, so wiping the whole map
-        // would blank the active chat's screens for unrelated sessions.
-        const removedIds = new Set(agentSessions.map((s: any) => s.id));
-        setBrowserScreensBySession((prev: any) => pruneSessionScopedMap(prev, removedIds));
-        setSessionsByAgentId((prev: any) => ({ ...prev, [agentId]: [] }));
-        if (agentId === activeAgentId) {
-          setSessions([]);
-          setActiveSessionId(null);
-        } else if (activeSessionId && agentSessions.some((s: any) => s.id === activeSessionId)) {
-          setActiveSessionId(null);
+      // Prefer server-authoritative `archivedIds` so a partial teardown failure
+      // does not hide still-live sessions in the sidebar.
+      const removedIds = new Set(
+        Array.isArray(result?.archivedIds)
+          ? result.archivedIds
+          : result?.ok
+            ? agentSessions.map((s: any) => s.id)
+            : [],
+      );
+      if (removedIds.size === 0) return;
+      setBrowserScreensBySession((prev: any) => pruneSessionScopedMap(prev, removedIds));
+      const dropRemoved = (prev: any[]) => prev.filter((s: any) => !removedIds.has(s.id));
+      setSessionsByAgentId((prev: any) => ({
+        ...prev,
+        [agentId]: dropRemoved(prev[agentId] || []),
+      }));
+      if (agentId === activeAgentId) {
+        setSessions((prev: any) => dropRemoved(prev));
+        if (activeSessionId && removedIds.has(activeSessionId)) {
+          const remaining = dropRemoved(agentSessions);
+          setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
         }
+      } else if (activeSessionId && removedIds.has(activeSessionId)) {
+        setActiveSessionId(null);
       }
     } finally {
       setDeletingBulk(null);
@@ -4593,22 +4604,24 @@ export default function App({ initialView }: any = {}) {
     for (const id of mergedIds) tearDownSessionPreview(id);
     try {
       const result = await api.clearMergedSessions(agentId);
-      if (result.ok) {
-        const dropMerged = (prev: any[]) => prev.filter((s: any) => !mergedIds.has(s.id));
-        setSessionsByAgentId((prev: any) => ({
-          ...prev,
-          [agentId]: dropMerged(prev[agentId] || []),
-        }));
-        if (agentId === activeAgentId) {
-          setSessions((prev: any) => dropMerged(prev));
-          if (activeSessionId && mergedIds.has(activeSessionId)) {
-            const remaining = dropMerged(agentSessions);
-            setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
-          }
-        } else if (activeSessionId && mergedIds.has(activeSessionId)) {
+      const removedIds = new Set(
+        Array.isArray(result?.archivedIds) ? result.archivedIds : result?.ok ? [...mergedIds] : [],
+      );
+      if (removedIds.size === 0) return;
+      const dropMerged = (prev: any[]) => prev.filter((s: any) => !removedIds.has(s.id));
+      setSessionsByAgentId((prev: any) => ({
+        ...prev,
+        [agentId]: dropMerged(prev[agentId] || []),
+      }));
+      if (agentId === activeAgentId) {
+        setSessions((prev: any) => dropMerged(prev));
+        if (activeSessionId && removedIds.has(activeSessionId)) {
           const remaining = dropMerged(agentSessions);
           setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
         }
+      } else if (activeSessionId && removedIds.has(activeSessionId)) {
+        const remaining = dropMerged(agentSessions);
+        setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
       }
     } finally {
       setDeletingBulk(null);

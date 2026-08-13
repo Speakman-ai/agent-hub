@@ -107,9 +107,11 @@ describe('Session archive & restore', () => {
     const liveId = stillLive.id as string;
 
     const bulk = await request.delete(`/api/agents/${aid}/sessions`).expect(200);
+    expect(bulk.body.ok).toBe(true);
     expect(bulk.body.archived).toBe(1);
     expect(bulk.body.deleted).toBe(1);
-    expect(bulk.body.failed ?? 0).toBe(0);
+    expect(bulk.body.failed).toBe(0);
+    expect(bulk.body.archivedIds).toEqual([liveId]);
 
     const liveList = await request.get(`/api/agents/${aid}/sessions`).expect(200);
     expect((liveList.body as Array<{ id: string }>).some((s) => s.id === liveId)).toBe(false);
@@ -139,9 +141,11 @@ describe('Session archive & restore', () => {
       throw new Error('vmm still running');
     });
     try {
-      const bulk = await request.delete(`/api/agents/${aid}/sessions`).expect(200);
+      const bulk = await request.delete(`/api/agents/${aid}/sessions`).expect(500);
+      expect(bulk.body.ok).toBe(false);
       expect(bulk.body.archived).toBe(0);
       expect(bulk.body.failed).toBe(1);
+      expect(bulk.body.archivedIds).toEqual([]);
 
       const liveList = await request.get(`/api/agents/${aid}/sessions`).expect(200);
       expect((liveList.body as Array<{ id: string }>).some((s) => s.id === liveId)).toBe(true);

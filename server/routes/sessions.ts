@@ -1229,7 +1229,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
-    let archived = 0;
+    const archivedIds: string[] = [];
     let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
@@ -1262,15 +1262,23 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       // dependency on whether `getSession` filters `deleted_at` rows.
       cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
-      archived++;
+      archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
       } catch {
         /* best-effort */
       }
     }
-    // `deleted` mirrors `archived` for older clients that only read `deleted`.
-    res.json({ ok: true, archived, deleted: archived, failed });
+    const archived = archivedIds.length;
+    // Partial failure is not ok — clients must not optimistically drop sessions
+    // that stayed live. `archivedIds` is the authoritative removed set.
+    res.status(failed > 0 && archived === 0 ? 500 : 200).json({
+      ok: failed === 0,
+      archived,
+      deleted: archived,
+      failed,
+      archivedIds,
+    });
   });
 
   // Bulk soft-delete (archive) only the sessions whose resolved lifecycle state
@@ -1284,7 +1292,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
-    let archived = 0;
+    const archivedIds: string[] = [];
     let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
@@ -1306,14 +1314,21 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       // dependency on whether `getSession` filters `deleted_at` rows.
       cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
-      archived++;
+      archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
       } catch {
         /* best-effort */
       }
     }
-    res.json({ ok: true, archived, deleted: archived, failed });
+    const archived = archivedIds.length;
+    res.status(failed > 0 && archived === 0 ? 500 : 200).json({
+      ok: failed === 0,
+      archived,
+      deleted: archived,
+      failed,
+      archivedIds,
+    });
   });
 
   // Bulk soft-delete (archive) only the sessions whose resolved lifecycle state
@@ -1330,7 +1345,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
       (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
     );
-    let archived = 0;
+    const archivedIds: string[] = [];
     let failed = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
@@ -1352,14 +1367,21 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       // dependency on whether `getSession` filters `deleted_at` rows.
       cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
-      archived++;
+      archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
       } catch {
         /* best-effort */
       }
     }
-    res.json({ ok: true, archived, deleted: archived, failed });
+    const archived = archivedIds.length;
+    res.status(failed > 0 && archived === 0 ? 500 : 200).json({
+      ok: failed === 0,
+      archived,
+      deleted: archived,
+      failed,
+      archivedIds,
+    });
   });
 
   // Single-session DELETE is a *soft* delete (archive). The row is marked with

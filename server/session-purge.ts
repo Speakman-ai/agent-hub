@@ -34,6 +34,8 @@
  * `getProjects()` defaults so callers in `heartbeat.ts` stay one-liners.
  */
 
+import { existsSync } from 'fs';
+import path from 'path';
 import { db as _db, stmts as _stmts } from './db.js';
 import {
   removeWorkspaceAsync as defaultRemoveWorkspace,
@@ -56,6 +58,7 @@ import {
   firecrackerHostPaths,
   forgetPersistedFirecrackerDisks,
 } from './session-env/firecracker/register-firecracker-backend.js';
+import { sessionVmId } from './session-env/firecracker/firecracker-vm-args.js';
 import type Database from 'better-sqlite3';
 
 /** Row shape returned by `stmts.getExpiredArchivedSessions`. */
@@ -95,7 +98,20 @@ export interface PurgeResult {
  */
 async function defaultForgetPersistedFirecrackerDisks(sessionId: string): Promise<void> {
   const paths = firecrackerHostPaths();
+  const helper = paths.diskHelper ?? '/usr/local/lib/agent-hub/fc-prepare-disks.sh';
+  const vmDir = path.join(paths.runDir, sessionVmId(sessionId));
+  // Host/sysbox sessions (and installs that never provisioned Firecracker)
+  // leave no VM artifact. Do not invoke sudo/helper — a missing binary would
+  // otherwise fail closed and strand every archived row forever.
+  if (!existsSync(vmDir)) return;
   const execCfg = resolveFirecrackerExecConfig(paths);
+  if (execCfg.mode === 'local' && !existsSync(helper)) {
+    console.warn(
+      `[Purge] Firecracker vm dir ${vmDir} exists but helper ${helper} is missing; ` +
+        `skipping disk forget so the 24h session purge can proceed`,
+    );
+    return;
+  }
   await forgetPersistedFirecrackerDisks(sessionId, {
     io: createFirecrackerHostIo(execCfg),
     paths,

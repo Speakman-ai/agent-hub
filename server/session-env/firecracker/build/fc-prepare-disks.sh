@@ -145,10 +145,27 @@ trap cleanup EXIT
 
 mount -o loop -- "${WORKSPACE_OUT}" "${MOUNT_DIR}"
 
+# Materialize the worktree as the workspace user — never as root. The session
+# `.git` is attacker-controlled (smudge filters / hooks / config); Git must not
+# run against it with uid 0. Dropping to WORKSPACE_UID also satisfies
+# safe.directory / dubious-ownership when the tar stream lands uid-1000 files
+# into a root-mounted image (Docker helper path).
+chown "${WORKSPACE_UID}:${WORKSPACE_GID}" "${MOUNT_DIR}"
+run_as_workspace() {
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid="${WORKSPACE_UID}" --regid="${WORKSPACE_GID}" --clear-groups -- "$@"
+  elif command -v runuser >/dev/null 2>&1; then
+    runuser -u "#${WORKSPACE_UID}" -- "$@"
+  else
+    echo "fc-prepare-disks: need setpriv or runuser to drop privileges for git" >&2
+    exit 1
+  fi
+}
+
 # Archive the worktree through an O_NOFOLLOW directory walk so a symlink swap
 # after canonicalize cannot retarget the read to another host path.
 export AGENT_HUB_WORKSPACE_SIZE_MIB="${WORKSPACE_SIZE_MIB}"
-python3 - "${WORKTREE}" "${MOUNT_DIR}" <<'PY'
+run_as_workspace python3 - "${WORKTREE}" "${MOUNT_DIR}" <<'PY'
 import os
 import stat
 import subprocess
