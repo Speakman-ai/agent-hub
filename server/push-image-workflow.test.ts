@@ -13,11 +13,11 @@ const pushImageWorkflowPath = path.join(workflowsDir, 'push-image.yml');
  * workflow; the thin `push-image.yml` entrypoint stays manual-only.
  */
 describe('ECR publish + push-image deploy contract', () => {
-  // The deploy target is parameterized via repo Variables ONLY — no literal
-  // instance-id fallback. A real `i-...` fallback used to ship here and leaked a
-  // private EC2 instance id into the public tree (card #1598). The DEPLOY_INSTANCE_ID
-  // line must resolve purely from `vars.DOCKER_DEPLOY_INSTANCE_ID`; the job's own
-  // preflight fails loudly when that repo Variable is unset.
+  // The deploy target is parameterized via repo Variables / workflow inputs
+  // ONLY — no literal instance-id fallback. A real `i-...` fallback used to ship
+  // here and leaked a private EC2 instance id into the public tree (card #1598).
+  // The DEPLOY_INSTANCE_ID line must resolve from inputs / vars; the job's own
+  // preflight fails loudly when none are set.
   function deployInstanceIdLine(workflowYaml: string): string {
     const line = workflowYaml.match(/^\s*DEPLOY_INSTANCE_ID:.*$/m);
     expect(line?.[0], 'DEPLOY_INSTANCE_ID in ecr-publish-rollout-docker-dev.yml').toBeTruthy();
@@ -30,9 +30,9 @@ describe('ECR publish + push-image deploy contract', () => {
     expect(yml).toContain('systemctl restart agenthub-server');
     expect(yml).toContain('DEPLOY_INSTANCE_ID');
     const line = deployInstanceIdLine(yml);
-    // Sourced from the repo Variable...
-    expect(line, 'DEPLOY_INSTANCE_ID must resolve from vars.DOCKER_DEPLOY_INSTANCE_ID').toMatch(
-      /vars\.DOCKER_DEPLOY_INSTANCE_ID/,
+    // Prefer explicit input, then DEV Hub var, then legacy sandbox var.
+    expect(line, 'DEPLOY_INSTANCE_ID must resolve from inputs/vars only').toMatch(
+      /inputs\.deploy_instance_id\s*\|\|\s*vars\.DOCKER_DEPLOY_INSTANCE_ID/,
     );
     // ...with NO literal instance-id fallback (regression guard for card #1598).
     expect(line.match(/i-[a-f0-9]+/)?.[0], 'no hardcoded instance id may ship').toBeFalsy();
@@ -63,8 +63,8 @@ describe('ECR publish + push-image deploy contract', () => {
     expect(m![1]).not.toMatch(/^i-[a-f0-9]{8,}$/);
 
     const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
-    expect(yml, 'workflow must keep DEPLOY_INSTANCE_ID sourced from a repo Variable').toMatch(
-      /DEPLOY_INSTANCE_ID:\s*\$\{\{\s*vars\.DOCKER_DEPLOY_INSTANCE_ID/,
+    expect(yml, 'workflow must keep DEPLOY_INSTANCE_ID sourced from inputs/vars').toMatch(
+      /DEPLOY_INSTANCE_ID:\s*\$\{\{\s*inputs\.deploy_instance_id\s*\|\|\s*vars\.DOCKER_DEPLOY_INSTANCE_ID/,
     );
   });
 
@@ -215,6 +215,24 @@ printf '%s' "$BRANCH"`;
       /uses:\s*\.\/\.github\/workflows\/ecr-publish-rollout-docker-dev\.yml/,
     );
     expect(yml, 'push-image must not auto-run on pushes to main').not.toMatch(/^\s*push:\s*$/m);
+  });
+
+  it('auto-deploys the DEV Hub from main via deploy-dev-hub-on-main.yml', () => {
+    const yml = readFileSync(path.join(workflowsDir, 'deploy-dev-hub-on-main.yml'), 'utf8');
+    expect(yml).toMatch(/^\s*push:\s*$/m);
+    expect(yml).toMatch(/branches:\s*\[main\]/);
+    expect(yml).toMatch(/uses:\s*\.\/\.github\/workflows\/ecr-publish-rollout-docker-dev\.yml/);
+    expect(yml).toMatch(/rollout:\s*true/);
+    expect(yml).toMatch(
+      /deploy_instance_id:\s*\$\{\{\s*vars\.DOCKER_DEPLOY_DEV_INSTANCE_ID\s*\}\}/,
+    );
+    expect(yml).toMatch(/DOCKER_DEPLOY_DEV_INSTANCE_ID/);
+    expect(yml).toMatch(/concurrency:/);
+    expect(yml).toMatch(/group:\s*deploy-dev-hub-from-main/);
+    // Never bake a concrete instance id into the public tree.
+    expect(yml.match(/i-[a-f0-9]+/)?.[0], 'no hardcoded instance id').toBeFalsy();
+    // Must not silently fall back to the sandbox Variable.
+    expect(yml).toMatch(/Refusing to fall back to DOCKER_DEPLOY_INSTANCE_ID/);
   });
 
   it('gates deploy-dev-sandbox rollout behind inputs.rollout on the reusable workflow', () => {

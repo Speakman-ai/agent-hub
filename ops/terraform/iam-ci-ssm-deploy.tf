@@ -5,14 +5,14 @@
 # environments/<env>/<env>.tfvars) so the inline policy is not doubly-managed.
 #
 # Targeting the deploy box: set `ci_ssm_deploy_instance_tags` (recommended),
-# `ci_ssm_deploy_instance_id`, or both. The tag map is resolved to concrete
-# instance ids at plan time and unioned with the explicit id, so the grant stays
-# scoped to real instance ARNs (never `instance/*` plus a request-time tag
-# condition, which mutable tags could widen). Tag targeting is what survives the
-# box being rebuilt: the workflow reads its target from the
-# DOCKER_DEPLOY_INSTANCE_ID repo Variable while this policy reads it from the
-# operator's private tfvars, and when a replacement instance flipped one side
-# without the other, CI died on `AccessDeniedException ... ssm:SendCommand`.
+# `ci_ssm_deploy_instance_id`, `ci_ssm_deploy_instance_ids`, or any combination.
+# The tag map is resolved to concrete instance ids at plan time and unioned with
+# the explicit id(s), so the grant stays scoped to real instance ARNs (never
+# `instance/*` plus a request-time tag condition, which mutable tags could
+# widen). Tag targeting is what survives the box being rebuilt: release
+# rollouts read DOCKER_DEPLOY_INSTANCE_ID while main→DEV reads
+# DOCKER_DEPLOY_DEV_INSTANCE_ID; both must be covered by this grant or CI dies
+# on `AccessDeniedException ... ssm:SendCommand`.
 
 # Look the role up externally ONLY when this workspace doesn't create it. When
 # manage_github_oidc_role=true the role is created in github-oidc.tf in the same
@@ -40,8 +40,11 @@ locals {
   # resolve?" question is a precondition on the policy instead.
   ci_ssm_tag_lookup_enabled = var.enable_ci_ssm_deploy_after_ecr_push && length(var.ci_ssm_deploy_instance_tags) > 0
   ci_ssm_instance_id        = trimspace(var.ci_ssm_deploy_instance_id)
+  ci_ssm_instance_ids = [
+    for id in var.ci_ssm_deploy_instance_ids : trimspace(id) if trimspace(id) != ""
+  ]
   ci_ssm_deploy_enabled = var.enable_ci_ssm_deploy_after_ecr_push && (
-    local.ci_ssm_instance_id != "" || length(var.ci_ssm_deploy_instance_tags) > 0
+    local.ci_ssm_instance_id != "" || length(local.ci_ssm_instance_ids) > 0 || length(var.ci_ssm_deploy_instance_tags) > 0
   )
   ci_ssm_account_id = data.aws_caller_identity.current.account_id
 
@@ -49,6 +52,7 @@ locals {
 
   ci_ssm_target_instance_ids = sort(toset(concat(
     local.ci_ssm_instance_id != "" ? [local.ci_ssm_instance_id] : [],
+    local.ci_ssm_instance_ids,
     local.ci_ssm_discovered_instance_ids,
   )))
   ci_ssm_target_instance_arns = [
@@ -125,7 +129,7 @@ resource "aws_iam_role_policy" "github_actions_ecr_push_ssm_dev_deploy" {
   lifecycle {
     precondition {
       condition     = length(local.ci_ssm_target_instance_ids) > 0
-      error_message = "enable_ci_ssm_deploy_after_ecr_push = true resolved zero deploy targets. Set ci_ssm_deploy_instance_id to the instance CI restarts, and/or ci_ssm_deploy_instance_tags to a tag map matching it (e.g. { Name = \"agenthub-dev-sandbox\" }) in this workspace's region. The target must match the DOCKER_DEPLOY_INSTANCE_ID repo Variable used by .github/workflows/ecr-publish-rollout-docker-dev.yml."
+      error_message = "enable_ci_ssm_deploy_after_ecr_push = true resolved zero deploy targets. Set ci_ssm_deploy_instance_id / ci_ssm_deploy_instance_ids to the instance(s) CI restarts, and/or ci_ssm_deploy_instance_tags to a tag map matching them (e.g. { Name = \"agenthub-dev-sandbox\" }) in this workspace's region. Targets must cover DOCKER_DEPLOY_INSTANCE_ID and DOCKER_DEPLOY_DEV_INSTANCE_ID when those Variables are set."
     }
   }
 }
@@ -159,11 +163,11 @@ resource "terraform_data" "ci_ssm_deploy_target_guard" {
   lifecycle {
     precondition {
       condition     = local.ci_ssm_deploy_enabled
-      error_message = "CI expects to SSM ${local.ci_ssm_expected_instance_id} (DOCKER_DEPLOY_INSTANCE_ID repo Variable) but this workspace creates no grant: enable_ci_ssm_deploy_after_ecr_push is false, or neither ci_ssm_deploy_instance_id nor ci_ssm_deploy_instance_tags is set. Every rollout would fail with AccessDeniedException on ssm:SendCommand. Enable the grant here, or clear ci_ssm_expected_deploy_instance_id if a different workspace owns it."
+      error_message = "CI expects to SSM ${local.ci_ssm_expected_instance_id} (DOCKER_DEPLOY_INSTANCE_ID repo Variable) but this workspace creates no grant: enable_ci_ssm_deploy_after_ecr_push is false, or neither ci_ssm_deploy_instance_id / ci_ssm_deploy_instance_ids nor ci_ssm_deploy_instance_tags is set. Every rollout would fail with AccessDeniedException on ssm:SendCommand. Enable the grant here, or clear ci_ssm_expected_deploy_instance_id if a different workspace owns it."
     }
     precondition {
       condition     = local.ci_ssm_expected_covered
-      error_message = "CI ssm:SendCommand grant does not cover the box CI restarts. Expected ${local.ci_ssm_expected_instance_id} (DOCKER_DEPLOY_INSTANCE_ID repo Variable, passed in as TF_VAR_ci_ssm_expected_deploy_instance_id) but ci_ssm_deploy_instance_id / ci_ssm_deploy_instance_tags resolved [${join(", ", local.ci_ssm_target_instance_ids)}] in ${var.aws_region}. The deploy box was most likely replaced: point ci_ssm_deploy_instance_tags at its Name tag (that survives the next rebuild) and/or set ci_ssm_deploy_instance_id to the new id. Failing here is the cheap version — the alternative is a mid-rollout AccessDeniedException."
+      error_message = "CI ssm:SendCommand grant does not cover the box CI restarts. Expected ${local.ci_ssm_expected_instance_id} (DOCKER_DEPLOY_INSTANCE_ID repo Variable, passed in as TF_VAR_ci_ssm_expected_deploy_instance_id) but ci_ssm_deploy_instance_id / ci_ssm_deploy_instance_ids / ci_ssm_deploy_instance_tags resolved [${join(", ", local.ci_ssm_target_instance_ids)}] in ${var.aws_region}. The deploy box was most likely replaced: point ci_ssm_deploy_instance_tags at its Name tag (that survives the next rebuild) and/or set ci_ssm_deploy_instance_id / ci_ssm_deploy_instance_ids to the new id(s). Failing here is the cheap version — the alternative is a mid-rollout AccessDeniedException."
     }
   }
 }

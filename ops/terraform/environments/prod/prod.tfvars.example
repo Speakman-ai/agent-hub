@@ -54,6 +54,9 @@ enable_ci_ssm_deploy_after_ecr_push = true
 # include the DOCKER_DEPLOY_INSTANCE_ID repo Variable.
 ci_ssm_deploy_instance_tags = { Name = "<PROD_HUB_NAME_TAG>" }
 ci_ssm_deploy_instance_id   = "<PROD_HUB_INSTANCE_ID>" # agenthub prod Hub
+# When this workspace owns the shared CI SSM grant, also list the release
+# sandbox + DEV Hub so main→DEV auto-deploy and push-image both work:
+# ci_ssm_deploy_instance_ids = ["<SANDBOX_INSTANCE_ID>", "<DEV_HUB_INSTANCE_ID>"]
 
 # Plan-time drift guard. release-all.yml passes the DOCKER_DEPLOY_INSTANCE_ID
 # repo Variable in as TF_VAR_ci_ssm_expected_deploy_instance_id and the plan
