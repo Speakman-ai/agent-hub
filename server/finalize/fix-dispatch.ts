@@ -275,6 +275,13 @@ export interface FixDispatchOptions {
   /** The actual fail signal that triggered this dispatch. */
   trigger: FixDispatchTrigger;
   /**
+   * Explicit message body. When set, it is used verbatim instead of composing
+   * one from {@link trigger}. Used by the orchestrator's §6 no-progress nudge,
+   * which is not a step / reviewer failure but a "you left work uncommitted"
+   * prompt. When omitted, the body is composed from `trigger` as usual.
+   */
+  bodyOverride?: string;
+  /**
    * Per-project stall-watchdog notify window override. Passed straight
    * through to {@link armStallWatchdog} (clamped + sanitised there).
    */
@@ -331,8 +338,10 @@ export async function dispatchFixMessage(
 
   // Compose the body up-front so a malformed trigger (no failed step
   // AND no threads) surfaces here, not after we've already touched the
-  // DB. Empty body would be a meaningless prompt for the agent.
-  const body = composeDispatchBody(opts.trigger);
+  // DB. Empty body would be a meaningless prompt for the agent. A caller may
+  // pass an explicit `bodyOverride` (the no-progress nudge) which bypasses
+  // trigger composition entirely.
+  const body = opts.bodyOverride?.trim() ? opts.bodyOverride : composeDispatchBody(opts.trigger);
   if (!body.trim()) {
     log(
       `[finalize-fix-dispatch] refusing to dispatch empty message for run=${opts.runId} — trigger had no failed step and no reviewer threads`,

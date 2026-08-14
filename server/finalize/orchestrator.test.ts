@@ -27,6 +27,8 @@ import {
   computeIdempotencyKey,
   runFinalize,
   setReadyToPushAutomationHook,
+  resolveMaxNoProgressNudges,
+  DEFAULT_MAX_NO_PROGRESS_NUDGES,
   __test,
   type OrchestratorDeps,
   type OrchestratorOptions,
@@ -464,6 +466,7 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
   stmts: ReturnType<typeof makeStmts>;
   pushed: ReturnType<typeof vi.fn>;
   resolveHead: ReturnType<typeof vi.fn>;
+  resolveUncommitted: ReturnType<typeof vi.fn>;
   dispatchAndWaitForTurnEnd: ReturnType<typeof vi.fn>;
   emitRunSummary: ReturnType<typeof vi.fn>;
 } {
@@ -473,6 +476,10 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
     .fn()
     .mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' } satisfies PushAndCreatePrResult);
   const resolveHead = vi.fn().mockResolvedValue('deadbeefcafebabe');
+  // Default clean stub so the §6 no-progress guard never shells out to a real
+  // `git status` — keeps the harness git-free. Tests that exercise the guard
+  // inject their own resolver.
+  const resolveUncommitted = vi.fn().mockResolvedValue({ dirty: false, summary: [] });
   const dispatchAndWaitForTurnEnd = vi.fn().mockResolvedValue({ userMessagePersisted: true });
   // Stubbed by default so these tests never shell out to git or reach an LLM.
   const emitRunSummary = vi.fn().mockResolvedValue(null);
@@ -489,6 +496,7 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
       .fn()
       .mockResolvedValue({ sessionId: 'spawned-sess', worktreePath: '/tmp/spawn-wt' }),
     resolveHeadSha: resolveHead,
+    resolveUncommittedChanges: resolveUncommitted as never,
     dispatchAndWaitForTurnEnd,
     runRebasePhase: fakeRunRebase(REBASE_OK),
     loadCiConfigFromFile: fakeRunCi(CI_OK),
@@ -509,6 +517,7 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
     stmts,
     pushed,
     resolveHead,
+    resolveUncommitted,
     dispatchAndWaitForTurnEnd,
     emitRunSummary,
   };
@@ -1924,6 +1933,16 @@ describe('runFinalize — terminal broadcasts on outcomeFromFailed paths', () =>
 // ─── MAX_FIX_DISPATCH_LOOPS backstop ─────────────────────────────────
 
 describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
+  // These tests isolate the same-SHA rerun / backstop mechanics. Disable the §6
+  // no-progress nudge so a stuck HEAD reaches the rerun/terminate paths directly
+  // (the nudge has its own dedicated suite below).
+  beforeEach(() => {
+    process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES = '0';
+  });
+  afterEach(() => {
+    delete process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES;
+  });
+
   it('terminates with distinct max_fix_iterations reason (not review_failed)', async () => {
     // A pathological session that never commits anything in response to
     // fix dispatches will spin the loop forever. The backstop catches
@@ -2041,6 +2060,244 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
       if (prev === undefined) delete process.env.FINALIZE_MAX_SAME_SHA_RERUNS;
       else process.env.FINALIZE_MAX_SAME_SHA_RERUNS = prev;
     }
+  });
+});
+
+// ─── §6 no-progress: commit / wrong-branch nudge ─────────────────────
+// The reported failure (support ticket cb07c782): a run dead-ended at
+// `fix_no_progress` because the session left its work in the worktree without
+// committing it — HEAD never advanced, so the guard gave up. Instead of that
+// dead-end, ANY stuck HEAD now gets one bounded fix turn that feeds the
+// diagnostic back to the session: dirty worktree → commit your changes; clean
+// worktree → check for a commit that landed on a different branch.
+describe('runFinalize — no-progress nudge (§6)', () => {
+  // Force the strict single-shot guard so an unchanged HEAD reaches the nudge
+  // decision on round 2 without a same-SHA rerun muddying the call counts.
+  beforeEach(() => {
+    process.env.FINALIZE_MAX_SAME_SHA_RERUNS = '0';
+  });
+  afterEach(() => {
+    delete process.env.FINALIZE_MAX_SAME_SHA_RERUNS;
+    delete process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES;
+  });
+
+  const FAILED_STEPS: StepRunResult = {
+    status: 'failure',
+    stepResults: [],
+    activeSecondsBilled: 1,
+    failedStep: { index: 1, name: 'Test', run: 'npm test', exitCode: 1, outputTail: ['red'] },
+  };
+
+  it('nudges the session to commit (instead of fix_no_progress) when HEAD is stuck but the worktree is dirty', async () => {
+    const runSteps = fakeRunSteps(FAILED_STEPS);
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValue('frozen-sha');
+    const resolveUncommitted = vi
+      .fn()
+      .mockResolvedValue({ dirty: true, summary: ['?? server/foo.test.ts', ' M server/foo.ts'] });
+
+    const { deps } = makeDeps({
+      runJobPhase: runSteps,
+      resolveHeadSha: resolveHead,
+      resolveUncommittedChanges: resolveUncommitted as never,
+      budgetSeconds: 999_999_999,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    // Two dispatches: the round-1 checks-failure fix, then the round-2 commit
+    // nudge. The nudge carries a bodyOverride naming the uncommitted files.
+    const dispatch = deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>;
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    const nudgeCall = dispatch.mock.calls[1][1] as { bodyOverride?: string };
+    expect(nudgeCall.bodyOverride).toBeTruthy();
+    expect(nudgeCall.bodyOverride).toContain('uncommitted changes');
+    expect(nudgeCall.bodyOverride).toContain('server/foo.test.ts');
+    expect(resolveUncommitted).toHaveBeenCalled();
+
+    // The session never committed (HEAD stayed frozen), so after the bounded
+    // nudge the guard still terminates — no livelock — and the reason names
+    // the nudge it already spent.
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('fix_no_progress');
+      expect(result.detail).toContain('no-progress nudge');
+    }
+  });
+
+  it('nudges with wrong-branch wording (instead of fix_no_progress) when the stuck worktree is clean', async () => {
+    // The reviewer-flagged case: a clean worktree at an unchanged HEAD means the
+    // fix produced no commit here (or committed to a DIFFERENT branch). It must
+    // still get the diagnostic and a chance to repair — not an immediate dead-end.
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValue('frozen-sha');
+    const resolveUncommitted = vi.fn().mockResolvedValue({ dirty: false, summary: [] });
+
+    const { deps } = makeDeps({
+      runJobPhase: fakeRunSteps(FAILED_STEPS),
+      resolveHeadSha: resolveHead,
+      resolveUncommittedChanges: resolveUncommitted as never,
+      budgetSeconds: 999_999_999,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    const dispatch = deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>;
+    // Round-1 checks-failure fix + round-2 clean-worktree nudge.
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    const nudgeCall = dispatch.mock.calls[1][1] as { bodyOverride?: string };
+    expect(nudgeCall.bodyOverride).toBeTruthy();
+    expect(nudgeCall.bodyOverride).toContain('worktree is clean');
+    expect(nudgeCall.bodyOverride).toContain('DIFFERENT branch');
+    expect(resolveUncommitted).toHaveBeenCalled();
+
+    // Still bounded: the session made no commit, so after the nudge it terminates.
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('fix_no_progress');
+      expect(result.detail).toContain('no-progress nudge');
+    }
+  });
+
+  it('proceeds to ready_to_push when the nudge makes the session commit (HEAD advances)', async () => {
+    let head = 'sha-A';
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockImplementation(() => Promise.resolve(head));
+    // Steps are red until the commit lands, then green.
+    const runJobs = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(head === 'sha-B' ? STEPS_OK : FAILED_STEPS));
+    // The commit nudge (bodyOverride set) models the session committing: HEAD
+    // advances. The round-1 checks-failure fix does not commit.
+    const dispatch = vi
+      .fn()
+      .mockImplementation((_deps: unknown, opts: { bodyOverride?: string }) => {
+        if (opts.bodyOverride) head = 'sha-B';
+        return Promise.resolve(FIX_TURN_ENDED);
+      });
+    const resolveUncommitted = vi.fn().mockResolvedValue({ dirty: true, summary: [' M app.ts'] });
+
+    const { deps } = makeDeps({
+      runJobPhase: runJobs as never,
+      resolveHeadSha: resolveHead,
+      resolveUncommittedChanges: resolveUncommitted as never,
+      dispatchFixMessage: dispatch as never,
+      budgetSeconds: 999_999_999,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('ready_to_push');
+    // One checks-failure fix + one commit nudge, then success — no fix_no_progress.
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to a clean-worktree nudge when the probe throws (no crash)', async () => {
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValue('frozen-sha');
+    const resolveUncommitted = vi.fn().mockRejectedValue(new Error('git blew up'));
+
+    const { deps } = makeDeps({
+      runJobPhase: fakeRunSteps(FAILED_STEPS),
+      resolveHeadSha: resolveHead,
+      resolveUncommittedChanges: resolveUncommitted as never,
+      budgetSeconds: 999_999_999,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    const dispatch = deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>;
+    // A probe error is treated as clean → still nudges (does not crash the run).
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    const nudgeCall = dispatch.mock.calls[1][1] as { bodyOverride?: string };
+    expect(nudgeCall.bodyOverride).toContain('worktree is clean');
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') expect(result.failureReason).toBe('fix_no_progress');
+  });
+
+  it('FINALIZE_MAX_NO_PROGRESS_NUDGES=0 never nudges (immediate fix_no_progress) even when dirty', async () => {
+    process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES = '0';
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValue('frozen-sha');
+    const resolveUncommitted = vi.fn().mockResolvedValue({ dirty: true, summary: [' M app.ts'] });
+
+    const { deps } = makeDeps({
+      runJobPhase: fakeRunSteps(FAILED_STEPS),
+      resolveHeadSha: resolveHead,
+      resolveUncommittedChanges: resolveUncommitted as never,
+      budgetSeconds: 999_999_999,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('fix_no_progress');
+      expect(result.detail).not.toContain('no-progress nudge');
+    }
+    // Budget is 0 → the guard never even consults the probe, so only the
+    // round-1 checks-failure fix ran.
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
+    expect(resolveUncommitted).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveMaxNoProgressNudges', () => {
+  afterEach(() => {
+    delete process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES;
+  });
+
+  it('defaults to DEFAULT_MAX_NO_PROGRESS_NUDGES when unset', () => {
+    delete process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES;
+    expect(resolveMaxNoProgressNudges()).toBe(DEFAULT_MAX_NO_PROGRESS_NUDGES);
+  });
+
+  it('honors a non-negative integer override', () => {
+    process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES = '3';
+    expect(resolveMaxNoProgressNudges()).toBe(3);
+    process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES = '0';
+    expect(resolveMaxNoProgressNudges()).toBe(0);
+  });
+
+  it('falls back to the default on garbage / negative input', () => {
+    for (const bad of ['-1', 'abc', '1.5', '']) {
+      process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES = bad;
+      expect(resolveMaxNoProgressNudges()).toBe(DEFAULT_MAX_NO_PROGRESS_NUDGES);
+    }
+  });
+});
+
+describe('buildNoProgressNudgeBody', () => {
+  it('dirty: feeds the diagnostic back and names the uncommitted files', () => {
+    const body = __test.buildNoProgressNudgeBody('feature/x', true, [
+      '?? new.test.ts',
+      ' M src.ts',
+    ]);
+    expect(body).toContain('feature/x');
+    expect(body).toContain('uncommitted changes');
+    expect(body).toContain('fix_no_progress');
+    expect(body).toContain('?? new.test.ts');
+    expect(body).toContain(' M src.ts');
+    expect(body).toContain('do not switch branches');
+  });
+
+  it('dirty: omits the file block when there is no summary but still asks for a commit', () => {
+    const body = __test.buildNoProgressNudgeBody('feature/x', true, []);
+    expect(body).not.toContain('```');
+    expect(body).toContain('commit');
+  });
+
+  it('clean: asks the session to check for a wrong-branch commit', () => {
+    const body = __test.buildNoProgressNudgeBody('feature/x', false, []);
+    expect(body).toContain('feature/x');
+    expect(body).toContain('worktree is clean');
+    expect(body).toContain('DIFFERENT branch');
+    expect(body).toContain('fix_no_progress');
+    expect(body).toContain('do not switch branches');
+    // No uncommitted-file block for a clean worktree.
+    expect(body).not.toContain('```');
   });
 });
 

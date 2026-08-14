@@ -203,6 +203,40 @@ export function resolveMaxSameShaReruns(): number {
   return DEFAULT_MAX_SAME_SHA_RERUNS;
 }
 
+/**
+ * How many times the no-progress guard may feed the `fix_no_progress` diagnostic
+ * back to the session as a fix turn before giving up.
+ *
+ * When a fix dispatch ends without advancing HEAD, rather than dead-end the run
+ * we give the session one bounded chance to repair the state, choosing the
+ * message by what the worktree looks like:
+ *   - **Dirty worktree** — the common recoverable case: the session left its
+ *     work uncommitted (edited or newly-added files, often while waiting on a
+ *     background test run). The diff exists; it just never became a commit for
+ *     Finalize to validate. Nudge names the files and asks it to commit.
+ *   - **Clean worktree** — no uncommitted work and no new commit on this branch,
+ *     so the fix either produced nothing or landed on a DIFFERENT branch. Nudge
+ *     asks the session to check for a stray commit and re-create it on the
+ *     current session branch (the exact wrong-branch trap named in the terminal
+ *     `fix_no_progress` message).
+ *
+ * Bounded so a session that genuinely cannot (or will not) make progress still
+ * terminates instead of livelocking.
+ *
+ * Override with `FINALIZE_MAX_NO_PROGRESS_NUDGES` (non-negative integer; `0`
+ * restores the strict "unchanged HEAD is immediately terminal" behavior).
+ */
+export const DEFAULT_MAX_NO_PROGRESS_NUDGES = 1;
+
+export function resolveMaxNoProgressNudges(): number {
+  const raw = process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0 && String(n) === raw) return n;
+  }
+  return DEFAULT_MAX_NO_PROGRESS_NUDGES;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────
 
 /**
@@ -352,6 +386,17 @@ export interface OrchestratorDeps {
    * push (the session committed an extra fix mid-window).
    */
   resolveHeadSha?: (worktreePath: string, env?: NodeJS.ProcessEnv) => Promise<string>;
+  /**
+   * Detect uncommitted work in the worktree. Used by the §6 no-progress guard
+   * to pick the nudge wording for a stuck HEAD: a dirty worktree gets the
+   * "commit your changes" message, a clean one gets the "check for a
+   * wrong-branch commit" message. Defaults to a `git status --porcelain` probe;
+   * tests inject a stub. `summary` is a short, capped list of porcelain lines.
+   */
+  resolveUncommittedChanges?: (
+    worktreePath: string,
+    env?: NodeJS.ProcessEnv,
+  ) => Promise<{ dirty: boolean; summary: string[] }>;
   /**
    * Resolve the host directory this run validates. Defaults to
    * {@link acquireFinalizeSource}, which is a no-op passthrough for every
@@ -525,6 +570,7 @@ export async function runFinalize(
   const runJobs = deps.runJobPhase ?? runJobPhase;
   const dispatchFix = deps.dispatchFixMessage ?? dispatchFixMessage;
   const resolveHead = deps.resolveHeadSha ?? defaultResolveHeadSha;
+  const resolveUncommitted = deps.resolveUncommittedChanges ?? defaultResolveUncommittedChanges;
   // `transactional` is technically optional on the type so unit tests can
   // omit it (they pass plain in-memory stmts where atomicity is
   // meaningless). Production callers MUST inject `db.transaction(...)`
@@ -914,6 +960,13 @@ export async function runFinalize(
     // the relaxed fix_no_progress path so a stuck run can't livelock.
     const maxSameShaReruns = resolveMaxSameShaReruns();
     let sameShaRerunsUsed = 0;
+    // §6 no-progress nudges: how many times we've fed the `fix_no_progress`
+    // diagnostic back to the session this streak (dirty → commit your changes;
+    // clean → check for a wrong-branch commit). Reset to 0 whenever HEAD
+    // advances (the nudge worked, or a real commit landed). Bounds the recovery
+    // path so a session that never makes progress still terminates.
+    const maxNoProgressNudges = resolveMaxNoProgressNudges();
+    let noProgressNudgesUsed = 0;
     // Flake gate (fail-closed): set to false the moment any round's per-round
     // job-attempt history fails to persist. Without complete history, the
     // classifier can't tell a real fix from a laundered flake, so the gate must
@@ -931,6 +984,35 @@ export async function runFinalize(
     // at the push step — a red→green config retry must not launder to auto-push.
     // Keyed by "jobId matrixKey"; the highest observed failure count wins.
     const intraPhaseFlakeRecovered = new Map<string, FlakeRecoveredInstance>();
+
+    // Map a settled fix-dispatch outcome to a terminal orchestrator result, or
+    // `null` when the session ended its turn cleanly and the loop should
+    // re-enter. Shared by the Phase 6 dispatch and the §6 no-progress nudge so
+    // both handle stall / cancel / spawn-failure identically.
+    const settleFixDispatchOutcome = (fix: FixDispatchResult): OrchestratorOutcome | null => {
+      if (fix.outcome === 'stalled_no_response') {
+        lifecycle.onStalled({ runId });
+        recordStalledNoResponse(
+          { stmts: deps.stmts, now, log },
+          { projectId: opts.project.id, runId },
+        );
+        return { kind: 'stalled', runId };
+      }
+      if (fix.outcome === 'cancelled') {
+        return cancelTerminal(deps, runId, log);
+      }
+      if (fix.outcome === 'spawn_failed') {
+        return terminate(
+          deps,
+          runId,
+          'failed',
+          'dispatch_failure',
+          'agent CLI spawn failed during fix dispatch',
+          log,
+        );
+      }
+      return null; // turn_ended — re-enter the loop.
+    };
 
     while (loopCount < MAX_FIX_DISPATCH_LOOPS) {
       loopCount += 1;
@@ -1186,7 +1268,91 @@ export async function runFinalize(
               `rerun ${sameShaRerunsUsed}/${maxSameShaReruns} (flaky/transient retry) for run=${runId}`,
           );
           // fall through to re-run checks at the same HEAD.
+        } else if (noProgressNudgesUsed < maxNoProgressNudges) {
+          // Reruns exhausted, but we still have a nudge budget. Rather than
+          // dead-end at `fix_no_progress`, feed the diagnostic back to the
+          // session as one more fix turn so it can repair the state. The
+          // worktree tells us which repair to ask for:
+          //   - dirty  → the session left its work uncommitted (edited or added
+          //     files but never `git commit`, often while waiting on a
+          //     background test run); ask it to commit those files.
+          //   - clean  → no uncommitted work and no new commit on this branch,
+          //     so the fix produced nothing OR landed on a different branch;
+          //     ask it to check for a stray commit and re-create it here.
+          // Best-effort probe: a probe error is not a reason to crash the run —
+          // treat it as clean and send the (generic) clean-worktree nudge.
+          let uncommitted: { dirty: boolean; summary: string[] } = { dirty: false, summary: [] };
+          try {
+            uncommitted = await resolveUncommitted(worktreePath, spawnEnv);
+          } catch (err) {
+            log(
+              `[finalize-orchestrator] uncommitted-changes probe threw for run=${runId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+          noProgressNudgesUsed += 1;
+          trace('no_progress_nudge', {
+            round: loopCount,
+            used: noProgressNudgesUsed,
+            max: maxNoProgressNudges,
+            head: headValidatedAgainst,
+            dirty: uncommitted.dirty,
+            files: uncommitted.summary.length,
+          });
+          log(
+            `[finalize-orchestrator] HEAD unchanged at ${headValidatedAgainst} ` +
+              `(${uncommitted.dirty ? 'worktree dirty' : 'worktree clean'}) — nudging session ` +
+              `${noProgressNudgesUsed}/${maxNoProgressNudges} for run=${runId}`,
+          );
+          fixDispatchCounter.value += 1;
+          let nudge: FixDispatchResult;
+          try {
+            nudge = await dispatchFix(
+              {
+                stmts: deps.stmts,
+                broadcast: deps.broadcast,
+                turnEnd: deps.turnEnd,
+                spawnFixTurn: deps.spawnFixTurn,
+              },
+              {
+                runId,
+                sessionId,
+                projectId: opts.project.id,
+                cardId: opts.card.id,
+                triggerSource: opts.triggerSource,
+                cardTitle: opts.card.title,
+                trigger: {},
+                bodyOverride: buildNoProgressNudgeBody(
+                  opts.branch,
+                  uncommitted.dirty,
+                  uncommitted.summary,
+                ),
+                notifyAfterMs: opts.stallNotifyAfterMs,
+                stallAfterMs: opts.stallAfterMs,
+                signal: opts.signal,
+              },
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return terminate(
+              deps,
+              runId,
+              'infra_error',
+              'container_unavailable',
+              `no-progress nudge dispatch threw: ${msg}`,
+              log,
+            );
+          }
+          broadcastActiveSeconds(deps, runId);
+          const settled = settleFixDispatchOutcome(nudge);
+          if (settled) return settled;
+          // turn_ended — re-enter the loop. If the session repaired the state,
+          // the next round's HEAD advances and the guard resets; if it still
+          // didn't, the nudge budget is now spent and the guard terminates.
+          continue;
         } else {
+          // Reruns AND nudges exhausted — give up.
           trace('terminal', {
             result: 'fix_no_progress',
             round: loopCount,
@@ -1199,7 +1365,12 @@ export async function runFinalize(
             'fix_no_progress',
             `fix dispatch ended without advancing HEAD on '${opts.branch}' ` +
               `(still ${headValidatedAgainst}) after ${sameShaRerunsUsed} same-SHA rerun` +
-              `${sameShaRerunsUsed === 1 ? '' : 's'} — re-running checks keeps reproducing ` +
+              `${sameShaRerunsUsed === 1 ? '' : 's'}` +
+              `${
+                noProgressNudgesUsed > 0
+                  ? ` and ${noProgressNudgesUsed} no-progress nudge${noProgressNudgesUsed === 1 ? '' : 's'}`
+                  : ''
+              } — re-running checks keeps reproducing ` +
               `the same result. The fixer may have committed to a different branch ` +
               `or made no commit.`,
             log,
@@ -1207,8 +1378,9 @@ export async function runFinalize(
         }
       } else {
         // HEAD advanced (or this is the first round) — a real commit landed, so
-        // the flaky-rerun budget resets for the new tree.
+        // the flaky-rerun and no-progress-nudge budgets reset for the new tree.
         sameShaRerunsUsed = 0;
+        noProgressNudgesUsed = 0;
       }
       prevValidatedHead = headValidatedAgainst;
 
@@ -2102,34 +2274,11 @@ export async function runFinalize(
       // this broadcast surfaces the combined running total.
       broadcastActiveSeconds(deps, runId);
       trace('fix_dispatch', { round: loopCount, phase: 'settled', outcome: fix.outcome });
-      if (fix.outcome === 'stalled_no_response') {
-        // The watchdog already wrote the terminal status; just surface.
-        // Mirror the stall onto the card — this is the "human walked away"
-        // branch (see card `490d6c41`); the comment names the two recovery
-        // actions so the user has a clear next step.
-        lifecycle.onStalled({ runId });
-        // §14 metric: per-CEO-requested 24-hour terminal counter. Fires
-        // once per stall so dashboards can spot whether the dogfood
-        // window is producing more abandoned runs than expected.
-        recordStalledNoResponse(
-          { stmts: deps.stmts, now, log },
-          { projectId: opts.project.id, runId },
-        );
-        return { kind: 'stalled', runId };
-      }
-      if (fix.outcome === 'cancelled') {
-        return cancelTerminal(deps, runId, log);
-      }
-      if (fix.outcome === 'spawn_failed') {
-        return terminate(
-          deps,
-          runId,
-          'failed',
-          'dispatch_failure',
-          'agent CLI spawn failed during fix dispatch',
-          log,
-        );
-      }
+      // stalled → mirror the stall onto the card (the "human walked away" branch,
+      // card `490d6c41`) and record the §14 24-hour terminal counter; cancel →
+      // cancelTerminal; spawn_failed → dispatch_failure. All handled uniformly.
+      const settledOutcome = settleFixDispatchOutcome(fix);
+      if (settledOutcome) return settledOutcome;
       // `turn_ended` — the session committed (or at least ended its turn).
       // We re-enter at the top of the loop. The next iteration's rebase
       // pass will refresh the worktree state and the reviewer + step
@@ -2847,6 +2996,81 @@ async function defaultResolveHeadSha(
   return stdout.trim();
 }
 
+/** Cap on porcelain lines woven into the no-progress nudge body. */
+const UNCOMMITTED_SUMMARY_MAX_LINES = 20;
+
+/**
+ * Default uncommitted-work probe — `git status --porcelain` on the worktree.
+ * Counts staged, unstaged, and untracked changes (untracked new test files are
+ * the common "forgot to commit" case). Best-effort: a probe error reports clean
+ * so the guard falls back to its historical terminate-immediately behavior
+ * rather than nudging on bad signal. Tests inject a deterministic stub.
+ */
+async function defaultResolveUncommittedChanges(
+  worktreePath: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<{ dirty: boolean; summary: string[] }> {
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+      cwd: worktreePath,
+      env,
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const lines = stdout
+      .split('\n')
+      .map((l) => l.replace(/\s+$/, ''))
+      .filter((l) => l.length > 0);
+    return { dirty: lines.length > 0, summary: lines.slice(0, UNCOMMITTED_SUMMARY_MAX_LINES) };
+  } catch {
+    return { dirty: false, summary: [] };
+  }
+}
+
+/**
+ * Fix-turn body for the §6 no-progress nudge. Feeds the `fix_no_progress`
+ * diagnostic back to the session so it can repair the state instead of the run
+ * dead-ending. Wording depends on the worktree:
+ *   - dirty → name the uncommitted files and ask it to commit them (Finalize
+ *     reviews and pushes commits, never the working tree).
+ *   - clean → the fix produced no commit on this branch (or committed to a
+ *     different one); ask it to check and re-create the commit here.
+ */
+function buildNoProgressNudgeBody(branch: string, dirty: boolean, summary: string[]): string {
+  if (dirty) {
+    const lines = [
+      `Finalize Code Changes: HEAD did not advance on '${branch}' after your last turn, ` +
+        `but the worktree has uncommitted changes. Finalize reviews and pushes commits, ` +
+        `not the working tree, so this work will not ship (and the run will fail with ` +
+        `fix_no_progress) until you commit it on the current branch.`,
+    ];
+    if (summary.length > 0) {
+      lines.push('');
+      lines.push('Uncommitted changes (git status --porcelain):');
+      lines.push('```');
+      lines.push(...summary);
+      lines.push('```');
+    }
+    lines.push('');
+    lines.push(
+      'Commit these changes on the current session branch (do not switch branches), then end ' +
+        'your turn so Finalize can re-run the checks against the new commit.',
+    );
+    return lines.join('\n');
+  }
+  return [
+    `Finalize Code Changes: HEAD did not advance on '${branch}' after your last turn, and the ` +
+      `worktree is clean — there are no uncommitted changes and no new commit landed on this ` +
+      `branch, so the run is about to fail with fix_no_progress.`,
+    '',
+    `If you committed a fix, it likely went to a DIFFERENT branch: Finalize only ships commits ` +
+      `on '${branch}'. Run \`git log --oneline -5\` and \`git status\` to check. If a stray ` +
+      `commit exists on another branch, cherry-pick or re-create it on '${branch}' (the current ` +
+      `session branch — do not switch branches). If no fix was made yet, make the change and ` +
+      `commit it here. Then end your turn so Finalize can re-run the checks.`,
+  ].join('\n');
+}
+
 /**
  * Identity transactional wrapper for tests that don't need atomicity.
  * Production callers MUST inject `db.transaction(...)` from
@@ -2869,6 +3093,8 @@ export const __test = {
   statusFromOutcome,
   MAX_FIX_DISPATCH_LOOPS,
   DEFAULT_CI_CONFIG_RELATIVE_PATH,
+  buildNoProgressNudgeBody,
+  defaultResolveUncommittedChanges,
 };
 
 // Suppress the unused-import warning for ReviewerLocalDiffInputs — it is

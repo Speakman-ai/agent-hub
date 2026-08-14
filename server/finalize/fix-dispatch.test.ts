@@ -475,6 +475,33 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('dispatchFixMessage — bodyOverride', () => {
+  it('dispatches the explicit body verbatim, bypassing trigger composition', async () => {
+    const { deps, stmts, turnEnd } = makeDeps();
+    const nudge = 'Finalize Code Changes: commit your uncommitted changes.';
+    const promise = dispatchFixMessage(
+      deps,
+      // Empty trigger — composeDispatchBody would return '' and refuse to
+      // dispatch. bodyOverride must be used instead.
+      baseOpts({ trigger: {}, bodyOverride: nudge }),
+    );
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(1);
+    expect(stmts.addMessage.run.mock.calls[0][3]).toBe(nudge);
+    turnEnd.fireFor('sess-1');
+    const result = await promise;
+    expect(result.outcome).toBe('turn_ended');
+  });
+
+  it('falls back to trigger composition when bodyOverride is blank', async () => {
+    const { deps, stmts, turnEnd } = makeDeps();
+    const promise = dispatchFixMessage(deps, baseOpts({ bodyOverride: '   ' }));
+    // Whitespace-only override is ignored → the composed failed-step body wins.
+    expect(stmts.addMessage.run.mock.calls[0][3]).toContain('phase=tasks, step "Test" failed');
+    turnEnd.fireFor('sess-1');
+    await promise;
+  });
+});
+
 describe('dispatchFixMessage — turn-end resolves the dispatch', () => {
   it('inserts the §7 message, billing the entry charge, and resolves with turn_ended', async () => {
     const { deps, stmts, broadcast, turnEnd } = makeDeps();
