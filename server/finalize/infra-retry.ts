@@ -148,6 +148,19 @@ export const INFRA_FAILURE_REASONS = [
   // recurring the run still terminates `infra_error` with a retrigger
   // affordance rather than livelocking.
   'runner_cancelled',
+  // The CI workspace mount (`/github/workspace`) was not writable by the job
+  // container's `runner` user, so the first `npm ci` / `pip install` / venv
+  // create died at the INSTALL step with a permission-denied error rooted at
+  // that path (EACCES `mkdir /github/workspace/node_modules`). The cause is a
+  // uid mismatch between the agent that materialized the worktree and the job
+  // image (`worktree-job-ownership.ts`), typically a rollout-window skew — NOT
+  // the change set. The step-runner tags it here (see
+  // `step-workspace-permission.ts`) so the §10 auto-retry re-runs on a fresh
+  // runner (which clears the skew once the fleet pulls the uid-aligned image)
+  // instead of the fix loop chasing an unfixable red into a misleading
+  // `fix_no_progress`. Infra-class, conservative cap — a persistent host fault
+  // still terminates `infra_error` with a retrigger affordance.
+  'runner_workspace_unwritable',
   // A known-transient Spot reclaim: the runner instance was interrupted by
   // EC2 (2-minute notice → instance killed → lease expired → reaper marks
   // the job lost). Distinct from `container_unavailable` (which may be a

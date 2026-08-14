@@ -100,6 +100,8 @@ import { detailIsSpotReclaim, spotReclaimDetail } from './spot-interruption.js';
 import type { RunnerJobLossProbe } from './runner-queue.js';
 import { hasTestFailureSummary, isRunnerTeardownExit } from './runner-teardown.js';
 import { isRunnerCancellationCollateral } from './step-cancellation.js';
+import { isRunnerWorkspacePermissionError } from './step-workspace-permission.js';
+import { FINALIZE_RUNNER_WORKSPACE } from './runner-images.js';
 
 /**
  * Argv form of {@link FINALIZE_STEP_SHELL}. Parsed once at module load so
@@ -803,6 +805,45 @@ export async function runStepsSequence(
           activeSecondsBilled,
           stepResults,
           `step ${stepIndex} (${displayName}) cancelled mid-run (context canceled)`,
+          failedStep,
+          writeRunTerminal,
+        ),
+      );
+    }
+
+    // A non-zero exit whose output is a permission-denied error rooted at the CI
+    // workspace mount (`/github/workspace`) is the runner's bind-mounted worktree
+    // not being writable by the job's `runner` user (uid 1000) — a uid mismatch
+    // between the agent that materialized the worktree and the job container (see
+    // `worktree-job-ownership.ts`), usually a rollout-window skew. npm/pip/venv
+    // die at the INSTALL step (`EACCES mkdir /github/workspace/node_modules`)
+    // before any test runs. This is infra, never a code failure: no branch edit
+    // can make the mount writable, so it must NOT drive the fix-dispatch loop
+    // (which otherwise chases it every round and reports a misleading
+    // `fix_no_progress`). Reclassify infra so the §10 auto-retry re-runs on a
+    // fresh runner — clearing the skew once the fleet pulls the uid-aligned image
+    // — and, if it recurs, the run terminates `infra_error` with a retrigger
+    // affordance. The shared `hasTestFailureSummary` guardrail keeps a genuine
+    // red that merely mentions the tokens CI-class.
+    if (
+      !hasTestFailureSummary(cancelDetectInput) &&
+      isRunnerWorkspacePermissionError({
+        tail: runOutcome.outputTail,
+        excerpt: runOutcome.failureExcerpt,
+      })
+    ) {
+      return finishStepSequence(
+        deps,
+        opts,
+        terminate(
+          stmts,
+          opts.runId,
+          'infra_error',
+          'runner_workspace_unwritable',
+          `step ${stepIndex} (${displayName}) could not write the CI workspace (${FINALIZE_RUNNER_WORKSPACE}) — permission denied (runner workspace not writable; infra, not a code failure)`,
+          activeSecondsBilled,
+          stepResults,
+          `step ${stepIndex} (${displayName}) permission denied under ${FINALIZE_RUNNER_WORKSPACE} (workspace not writable)`,
           failedStep,
           writeRunTerminal,
         ),

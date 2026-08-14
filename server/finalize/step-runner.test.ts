@@ -688,6 +688,96 @@ describe('runJobSteps — runner teardown (context canceled) reclassifies to inf
   });
 });
 
+describe('runJobSteps — workspace-permission (EACCES) reclassifies to infra_error', () => {
+  it('an install step dying with EACCES on /github/workspace → infra `runner_workspace_unwritable`, not step_failed', async () => {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'Install root dependencies', run: 'npm ci' }]);
+
+    const resultP = runJobSteps(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    // The bind-mounted worktree is owned by a uid the `runner` user can't write:
+    // npm ci dies immediately at the install step. No branch edit can fix this.
+    fakes[0].stderr.push('npm error code EACCES\n');
+    fakes[0].stderr.push('npm error syscall mkdir\n');
+    fakes[0].stderr.push('npm error path /github/workspace/node_modules\n');
+    fakes[0].stderr.push('npm error errno -13\n');
+    fakes[0].stderr.push(
+      "npm error Error: EACCES: permission denied, mkdir '/github/workspace/node_modules'\n",
+    );
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 243);
+
+    const result = await resultP;
+    // Infra-class so the orchestrator's auto-retry re-runs on a fresh runner
+    // instead of the fix loop chasing an unfixable red into `fix_no_progress`.
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('runner_workspace_unwritable');
+    // Contract: infra_error must NOT persist a terminal status — the orchestrator
+    // owns the retry-vs-fail decision.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+    expect(result.failedStep).toBeDefined();
+    expect(result.failedStep!.name).toBe('Install root dependencies');
+  });
+
+  it('a real test failure that also prints an EACCES workspace path stays CI-class (step_failed)', async () => {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'Tests (server)', run: 'npm test' }]);
+
+    const resultP = runJobSteps(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    // A genuine red whose assertion output happens to mention an EACCES workspace
+    // path: the vitest failure summary must keep it CI-class via the shared
+    // hasTestFailureSummary guardrail.
+    fakes[0].stdout.push('FAIL src/fs.test.ts\n');
+    fakes[0].stdout.push(
+      "AssertionError: expected write to succeed, got EACCES '/github/workspace/x'\n",
+    );
+    fakes[0].stdout.push('Tests  1 failed | 40 passed (41)\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'step_failed', RUN_ID);
+  });
+});
+
 describe('runJobSteps — runner cancellation collateral', () => {
   it('reclassifies a `context canceled` non-zero exit as infra `runner_cancelled` (not step_failed)', async () => {
     const stmts = makeStmts();

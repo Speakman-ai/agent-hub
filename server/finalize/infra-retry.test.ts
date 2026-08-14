@@ -241,8 +241,18 @@ describe('classifyFailureReason', () => {
       'container_unavailable',
       'github_push_5xx',
       'runner_cancelled',
+      'runner_workspace_unwritable',
       'spot_reclaimed',
     ]);
+  });
+
+  it('runner_workspace_unwritable classifies as infra (unwritable CI workspace, retryable) but is not a reclaim', () => {
+    // An EACCES rooted at the CI workspace mount is a runner/host fault, not the
+    // change set — infra-class so the §10 auto-retry re-runs on a fresh runner,
+    // with the CONSERVATIVE generation cap (not a known-transient Spot reclaim).
+    expect(classifyFailureReason('runner_workspace_unwritable')).toBe('infra');
+    expect(isInfraFailureReason('runner_workspace_unwritable')).toBe(true);
+    expect(isReclaimFailureReason('runner_workspace_unwritable')).toBe(false);
   });
 
   it('runner_cancelled classifies as infra (collateral cancellation, retryable) but is not a reclaim', () => {
