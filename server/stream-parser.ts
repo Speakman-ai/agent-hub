@@ -1176,6 +1176,54 @@ function finalizeGrokError(agentMessage: { text: string }, message: string): Str
   return out;
 }
 
+// Both the ACP (`session/update` with `sessionUpdate:'tool_call'`) and the
+// native-NDJSON (`{ type:'tool_call' }`) Grok paths carry the same field names
+// on the object describing the call — `toolCallId`, `title`/`kind`/`toolName`,
+// `rawInput`, and a terminal `status` + `content`. These two helpers accept
+// whichever object holds those fields (the ACP `update` or the raw native line)
+// so the two shapes normalize identically.
+function grokToolCallEvents(src: Record<string, unknown>): StreamEvent[] {
+  const id =
+    (src.toolCallId as string) ?? (src.tool_call_id as string) ?? simpleHash(JSON.stringify(src));
+  const tool =
+    (src.toolName as string) ??
+    (src.title as string) ??
+    (src.kind as string) ??
+    (src.name as string) ??
+    'tool';
+  const input =
+    (src.rawInput as Record<string, unknown>) ?? (src.input as Record<string, unknown>) ?? {};
+  const out: StreamEvent[] = [{ type: 'tool_use', id, tool, input }];
+  // A tool_call may already carry a terminal status + output.
+  const status = src.status as string | undefined;
+  if (status === 'completed' || status === 'failed') {
+    out.push({
+      type: 'tool_result',
+      toolUseId: id,
+      output: stringifyToolResult(src.content),
+      isError: status === 'failed',
+      ...toolResultImagesField(src.content),
+    });
+  }
+  return out;
+}
+
+function grokToolCallUpdateEvents(src: Record<string, unknown>): StreamEvent[] {
+  const id = (src.toolCallId as string) ?? (src.tool_call_id as string) ?? '';
+  const status = src.status as string | undefined;
+  // Non-terminal ticks (null / 'pending' / 'in_progress') carry no final output.
+  if (status !== 'completed' && status !== 'failed') return [];
+  return [
+    {
+      type: 'tool_result',
+      toolUseId: id,
+      output: stringifyToolResult(src.content),
+      isError: status === 'failed',
+      ...toolResultImagesField(src.content),
+    },
+  ];
+}
+
 function normalizeGrokNativeStream(
   raw: Record<string, unknown>,
   agentMessage: { text: string },
@@ -1195,6 +1243,20 @@ function normalizeGrokNativeStream(
       agentMessage.text += chunk;
       return [{ type: 'assistant_text', text: chunk, partial: true }];
     }
+    // Current Grok builds stream tool activity as top-level native NDJSON lines
+    // (`{ type:'tool_call' }` / `{ type:'tool_call_update' }`) rather than
+    // ACP-wrapped `session/update` notifications. Without these cases every tool
+    // read/grep/exec fell through to the `unhandled grok event` placeholder and
+    // flooded the session tail.
+    case 'tool_call':
+      return grokToolCallEvents(raw);
+    case 'tool_call_update':
+      return grokToolCallUpdateEvents(raw);
+    // Bookkeeping frames: the available-tools handshake and per-step token usage
+    // carry nothing to render. Drop them (don't stamp an `unknown` row).
+    case 'available_commands':
+    case 'usage':
+      return [];
     case 'end': {
       const stopReason =
         (raw.stopReason as string | undefined) ?? (raw.stop_reason as string | undefined) ?? null;
@@ -1262,45 +1324,10 @@ function normalizeGrok(
         if (!contentText) return [];
         return [{ type: 'thinking', text: contentText }];
       }
-      case 'tool_call': {
-        const id =
-          (update.toolCallId as string) ??
-          (update.tool_call_id as string) ??
-          simpleHash(JSON.stringify(update));
-        const tool =
-          (update.title as string) ?? (update.kind as string) ?? (update.name as string) ?? 'tool';
-        const input =
-          (update.rawInput as Record<string, unknown>) ??
-          (update.input as Record<string, unknown>) ??
-          {};
-        const out: StreamEvent[] = [{ type: 'tool_use', id, tool, input }];
-        // A tool_call may already carry a terminal status + output.
-        const status = update.status as string | undefined;
-        if (status === 'completed' || status === 'failed') {
-          out.push({
-            type: 'tool_result',
-            toolUseId: id,
-            output: stringifyToolResult(update.content),
-            isError: status === 'failed',
-            ...toolResultImagesField(update.content),
-          });
-        }
-        return out;
-      }
-      case 'tool_call_update': {
-        const id = (update.toolCallId as string) ?? (update.tool_call_id as string) ?? '';
-        const status = update.status as string | undefined;
-        if (status !== 'completed' && status !== 'failed') return [];
-        return [
-          {
-            type: 'tool_result',
-            toolUseId: id,
-            output: stringifyToolResult(update.content),
-            isError: status === 'failed',
-            ...toolResultImagesField(update.content),
-          },
-        ];
-      }
+      case 'tool_call':
+        return grokToolCallEvents(update);
+      case 'tool_call_update':
+        return grokToolCallUpdateEvents(update);
       default:
         return [];
     }

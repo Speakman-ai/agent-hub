@@ -1863,6 +1863,109 @@ describe('createStreamParser — Grok Build CLI', () => {
       expect(result.isError).toBe(true);
       expect(result.text).toContain('stream interrupted');
     });
+
+    // Regression: current Grok builds stream tool activity as top-level native
+    // NDJSON `tool_call` / `tool_call_update` lines (not ACP `session/update`
+    // notifications). These fell through to the `unhandled grok event`
+    // placeholder and flooded the session tail with grey rows. Support ticket
+    // 6b7a5401-2034-4211-babe-fd2d45649048.
+    it('normalizes native tool_call into tool_use (no unhandled row)', () => {
+      const events = parse([
+        JSON.stringify({
+          type: 'tool_call',
+          toolCallId: 'call-abc-39',
+          title: 'read_file',
+          kind: 'read',
+          status: 'pending',
+          toolName: 'read_file',
+          rawInput: { target_file: '/repo/App.tsx' },
+        }),
+      ]);
+      expect(events.some((e) => e.type === 'unknown')).toBe(false);
+      const toolUse = events.find((e) => e.type === 'tool_use') as {
+        id: string;
+        tool: string;
+        input: Record<string, unknown>;
+      };
+      expect(toolUse).toBeDefined();
+      expect(toolUse.id).toBe('call-abc-39');
+      expect(toolUse.tool).toBe('read_file');
+      expect(toolUse.input).toEqual({ target_file: '/repo/App.tsx' });
+      // A pending call has no terminal output yet.
+      expect(events.some((e) => e.type === 'tool_result')).toBe(false);
+    });
+
+    it('drops non-terminal native tool_call_update ticks but emits tool_result on completed', () => {
+      const events = parse([
+        // pending → no output
+        JSON.stringify({
+          type: 'tool_call_update',
+          toolCallId: 'call-abc-39',
+          status: null,
+          content: [],
+          rawOutput: null,
+          locations: [{ path: '/repo/App.tsx' }],
+        }),
+        // in_progress → still no output
+        JSON.stringify({
+          type: 'tool_call_update',
+          toolCallId: 'call-abc-39',
+          status: 'in_progress',
+          content: [{ type: 'content', content: { type: 'text', text: '' } }],
+        }),
+        // completed → tool_result with the ACP-wrapped text lifted out
+        JSON.stringify({
+          type: 'tool_call_update',
+          toolCallId: 'call-abc-39',
+          status: 'completed',
+          content: [{ type: 'content', content: { type: 'text', text: 'found 24 matches' } }],
+          rawOutput: null,
+        }),
+      ]);
+      expect(events.some((e) => e.type === 'unknown')).toBe(false);
+      const results = events.filter((e) => e.type === 'tool_result') as Array<{
+        toolUseId: string;
+        output: string;
+        isError: boolean;
+      }>;
+      expect(results).toHaveLength(1);
+      expect(results[0].toolUseId).toBe('call-abc-39');
+      expect(results[0].output).toBe('found 24 matches');
+      expect(results[0].isError).toBe(false);
+    });
+
+    it('marks a failed native tool_call_update as an error result', () => {
+      const events = parse([
+        JSON.stringify({
+          type: 'tool_call_update',
+          toolCallId: 'call-abc-40',
+          status: 'failed',
+          content: [{ type: 'content', content: { type: 'text', text: 'boom' } }],
+        }),
+      ]);
+      const result = events.find((e) => e.type === 'tool_result') as {
+        isError: boolean;
+        output: string;
+      };
+      expect(result).toBeDefined();
+      expect(result.isError).toBe(true);
+      expect(result.output).toBe('boom');
+    });
+
+    it('silently drops available_commands and usage bookkeeping frames', () => {
+      const events = parse([
+        JSON.stringify({
+          type: 'available_commands',
+          tools: ['run_terminal_command', 'read_file', 'grep'],
+        }),
+        JSON.stringify({
+          type: 'usage',
+          usage: { input_tokens: 3804, output_tokens: 565, reasoning_tokens: 562 },
+          signature: 'abc',
+        }),
+      ]);
+      expect(events).toHaveLength(0);
+    });
   });
 });
 
