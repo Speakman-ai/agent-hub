@@ -12,11 +12,15 @@ import {
 class FakeStream implements VmAgentStream {
   readonly sent: Buffer[] = [];
   closed = false;
+  /** When false, the next `send` reports backpressure (returns false). */
+  writable = true;
   #frameSubs = new Set<(f: VmAgentFrame) => void>();
   #closeSubs = new Set<(err?: Error) => void>();
+  #drainSubs = new Set<() => void>();
 
-  send(frame: Buffer): void {
+  send(frame: Buffer): boolean {
     this.sent.push(frame);
+    return this.writable;
   }
   onFrame(cb: (f: VmAgentFrame) => void): () => void {
     this.#frameSubs.add(cb);
@@ -25,6 +29,20 @@ class FakeStream implements VmAgentStream {
   onClose(cb: (err?: Error) => void): () => void {
     this.#closeSubs.add(cb);
     return () => this.#closeSubs.delete(cb);
+  }
+  onDrain(cb: () => void): () => void {
+    if (this.closed) {
+      cb();
+      return () => {};
+    }
+    this.#drainSubs.add(cb);
+    return () => this.#drainSubs.delete(cb);
+  }
+  emitDrain(): void {
+    this.writable = true;
+    const waiters = [...this.#drainSubs];
+    this.#drainSubs.clear();
+    for (const cb of waiters) cb();
   }
   close(): void {
     this.emitClose();

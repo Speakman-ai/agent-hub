@@ -23,16 +23,19 @@ function makeChannel(
   reads: string[];
   writes: Array<{ path: string; contents: Buffer }>;
   downloads: Array<{ path: string; destHostPath: string }>;
+  uploads: Array<{ path: string; srcHostPath: string }>;
 } {
   const execCalls: ExecCall[] = [];
   const reads: string[] = [];
   const writes: Array<{ path: string; contents: Buffer }> = [];
   const downloads: Array<{ path: string; destHostPath: string }> = [];
+  const uploads: Array<{ path: string; srcHostPath: string }> = [];
   return {
     execCalls,
     reads,
     writes,
     downloads,
+    uploads,
     channel: {
       exec: async (command, opts) => {
         execCalls.push({ command, ...opts });
@@ -47,6 +50,9 @@ function makeChannel(
       },
       downloadFile: async (guestPath, destHostPath) => {
         downloads.push({ path: guestPath, destHostPath });
+      },
+      uploadFile: async (guestPath, srcHostPath) => {
+        uploads.push({ path: guestPath, srcHostPath });
       },
     },
   };
@@ -124,6 +130,14 @@ describe('GuestWorktreeIo file ops', () => {
     expect(reads).toEqual(['/workspace/server/index.ts']);
     expect(writes[0]?.path).toBe('/workspace/a/b.txt');
     expect(writes[0]?.contents.toString('utf8')).toBe('hi');
+  });
+
+  it('streams a host file into the guest via uploadFile', async () => {
+    const { io, uploads } = makeIo();
+    await io.uploadFile('inbox/pack.zip', '/host/uploads/pack.zip');
+    expect(uploads).toEqual([
+      { path: '/workspace/inbox/pack.zip', srcHostPath: '/host/uploads/pack.zip' },
+    ]);
   });
 
   it('rejects absolute paths instead of reinterpreting them', async () => {

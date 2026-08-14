@@ -45,6 +45,7 @@ function makeIo(): {
       });
     },
     downloadFile: async () => {},
+    uploadFile: async () => {},
     listDir: async () => [],
     stat: async () => null,
     exists: async () => false,

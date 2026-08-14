@@ -74,6 +74,21 @@ describe('vm-agent frame codec', () => {
     expect(() => encodeFrame('stdout', tooBig)).toThrow(/exceeds the/);
   });
 
+  it('cannot fit a zip-sized JSON write-file in one frame', () => {
+    // 6 MiB of raw bytes base64-expands to exactly MAX_FRAME_PAYLOAD_BYTES
+    // before the JSON envelope; encodeFrame then throws. Chat attachments
+    // (zips, videos) routinely exceed this, which is why writeGuestFile
+    // streams them over exec+stdin instead of stuffing contentBase64.
+    const contentBase64 = Buffer.alloc(6 * 1024 * 1024).toString('base64');
+    expect(() =>
+      encodeJsonFrame('request', {
+        kind: 'write-file',
+        path: '/workspace/pack.zip',
+        contentBase64,
+      }),
+    ).toThrow(/exceeds the/);
+  });
+
   it('rejects a length prefix above the cap rather than allocating', () => {
     // A desynchronized stream reads garbage as a length. Without this guard
     // the decoder would wait on (or allocate for) a multi-gigabyte frame.

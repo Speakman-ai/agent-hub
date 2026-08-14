@@ -7,7 +7,7 @@
  * worktree_path` is to exercise a double whose `hostPath` is null.
  */
 import { Buffer } from 'buffer';
-import { mkdir, writeFile } from 'fs/promises';
+import { mkdir, writeFile, readFile } from 'fs/promises';
 import path from 'path';
 import type {
   SessionWorktreeIo,
@@ -45,6 +45,8 @@ export class FakeWorktreeIo implements SessionWorktreeIo {
   readonly execCalls: FakeWorktreeExecCall[] = [];
   /** Worktree-relative path → host destination, for every downloadFile. */
   readonly downloads: { relPath: string; destHostPath: string }[] = [];
+  /** Host source → worktree-relative path, for every uploadFile. */
+  readonly uploads: { relPath: string; srcHostPath: string }[] = [];
 
   constructor(
     readonly sharing: 'host-shared' | 'env-owned',
@@ -77,6 +79,13 @@ export class FakeWorktreeIo implements SessionWorktreeIo {
     this.downloads.push({ relPath, destHostPath });
     await mkdir(path.dirname(destHostPath), { recursive: true });
     await writeFile(destHostPath, contents);
+  }
+
+  async uploadFile(relPath: string, srcHostPath: string): Promise<void> {
+    this.uploads.push({ relPath, srcHostPath });
+    const contents = await readFile(srcHostPath);
+    this.options.files ??= {};
+    this.options.files[relPath] = contents.toString();
   }
 
   async writeFile(relPath: string, contents: Buffer | string): Promise<void> {
@@ -128,6 +137,7 @@ export function envOwnedOverHostDir(dir: string): SessionWorktreeIo {
     readFile: (relPath) => host.readFile(relPath),
     writeFile: (relPath, contents) => host.writeFile(relPath, contents),
     downloadFile: (relPath, destHostPath) => host.downloadFile(relPath, destHostPath),
+    uploadFile: (relPath, srcHostPath) => host.uploadFile(relPath, srcHostPath),
     listDir: (relPath) => host.listDir(relPath),
     stat: (relPath) => host.stat(relPath),
     exists: (relPath) => host.exists(relPath),

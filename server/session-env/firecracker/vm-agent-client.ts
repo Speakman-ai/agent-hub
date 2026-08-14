@@ -26,12 +26,15 @@ import {
 
 /** The subset of `net.Socket` this module needs, so tests can fake it. */
 export interface VsockDuplex {
-  write(data: Buffer): void;
+  /** Returns `false` when the kernel buffer is full — wait for `drain`. */
+  write(data: Buffer): boolean;
   end(): void;
   destroy(): void;
   on(event: 'data', cb: (chunk: Buffer) => void): void;
   on(event: 'close', cb: () => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
+  /** Fires when the write buffer empties after `write` returned `false`. */
+  on(event: 'drain', cb: () => void): void;
 }
 
 export type VsockConnectFn = (udsPath: string) => Promise<VsockDuplex>;
@@ -51,11 +54,22 @@ export const defaultVsockConnect: VsockConnectFn = (udsPath) =>
   });
 
 export interface VmAgentStream {
-  /** Send an already-encoded frame. */
-  send(frame: Buffer): void;
+  /**
+   * Send an already-encoded frame. Returns `false` when the transport buffer
+   * is full (or the connection has not opened yet) so a caller streaming a
+   * large body can wait for {@link onDrain} instead of queueing the whole
+   * payload in memory.
+   */
+  send(frame: Buffer): boolean;
   onFrame(cb: (frame: VmAgentFrame) => void): () => void;
   /** Fires once, on remote close or transport error. */
   onClose(cb: (err?: Error) => void): () => void;
+  /**
+   * One-shot: fires on the next transport drain after {@link send} returned
+   * `false` (fires immediately if the stream is already closed, so a waiter
+   * never hangs). Returns an unsubscribe fn.
+   */
+  onDrain(cb: () => void): () => void;
   close(): void;
   readonly closed: boolean;
 }
@@ -90,6 +104,9 @@ export async function openVmAgentStream(opts: OpenVmAgentStreamOpts): Promise<Vm
 
   const frameSubs = new Set<(frame: VmAgentFrame) => void>();
   const closeSubs = new Set<(err?: Error) => void>();
+  // One-shot drain waiters: a caller that saw `send` return false subscribes
+  // and is woken on the socket's next `drain`.
+  const drainSubs = new Set<() => void>();
   const decoder = new VmAgentFrameDecoder();
 
   let handshakeDone = false;
@@ -109,6 +126,11 @@ export async function openVmAgentStream(opts: OpenVmAgentStreamOpts): Promise<Vm
     for (const cb of closeSubs) cb(err);
     closeSubs.clear();
     frameSubs.clear();
+    // Wake anyone blocked on a drain that will never come now the socket is
+    // gone — they re-check `closed` and stop, rather than hanging forever.
+    const waiters = [...drainSubs];
+    drainSubs.clear();
+    for (const cb of waiters) cb();
   };
 
   socket.on('data', (chunk) => {
@@ -143,6 +165,13 @@ export async function openVmAgentStream(opts: OpenVmAgentStreamOpts): Promise<Vm
     for (const frame of frames) {
       for (const cb of frameSubs) cb(frame);
     }
+  });
+
+  socket.on('drain', () => {
+    if (drainSubs.size === 0) return;
+    const waiters = [...drainSubs];
+    drainSubs.clear();
+    for (const cb of waiters) cb();
   });
 
   socket.on('error', (err) => {
@@ -185,8 +214,8 @@ export async function openVmAgentStream(opts: OpenVmAgentStreamOpts): Promise<Vm
 
   return {
     send: (frame) => {
-      if (closed) return;
-      socket.write(frame);
+      if (closed) return true;
+      return socket.write(frame);
     },
     onFrame: (cb) => {
       frameSubs.add(cb);
@@ -199,6 +228,14 @@ export async function openVmAgentStream(opts: OpenVmAgentStreamOpts): Promise<Vm
       }
       closeSubs.add(cb);
       return () => closeSubs.delete(cb);
+    },
+    onDrain: (cb) => {
+      if (closed) {
+        cb();
+        return () => {};
+      }
+      drainSubs.add(cb);
+      return () => drainSubs.delete(cb);
     },
     close: () => {
       socket.end();
@@ -231,10 +268,22 @@ export function deferStream(pending: Promise<VmAgentStream>): VmAgentStream {
   const outbox: Buffer[] = [];
   const frameSubs = new Set<(frame: VmAgentFrame) => void>();
   const closeSubs = new Set<(err?: Error) => void>();
+  // Drain waiters registered before the connection resolves. Woken once the
+  // real stream exists (and its buffered frames are flushed), so a caller
+  // streaming a large body waits for the connection instead of piling the
+  // whole payload into `outbox`.
+  const drainSubs = new Set<() => void>();
   let resolved: VmAgentStream | null = null;
   let closed = false;
   let closeRequested = false;
   let closeError: Error | undefined;
+
+  const wakeDrainWaiters = () => {
+    if (drainSubs.size === 0) return;
+    const waiters = [...drainSubs];
+    drainSubs.clear();
+    for (const cb of waiters) cb();
+  };
 
   const fireClose = (err?: Error) => {
     if (closed) return;
@@ -243,6 +292,7 @@ export function deferStream(pending: Promise<VmAgentStream>): VmAgentStream {
     for (const cb of closeSubs) cb(err);
     closeSubs.clear();
     frameSubs.clear();
+    wakeDrainWaiters();
   };
 
   pending.then(
@@ -254,6 +304,9 @@ export function deferStream(pending: Promise<VmAgentStream>): VmAgentStream {
       stream.onClose((err) => fireClose(err));
       for (const buffered of outbox.splice(0)) stream.send(buffered);
       if (closeRequested) stream.close();
+      // Connection is live and the backlog is flushed: release callers that
+      // parked on a pre-connection `send` returning false.
+      wakeDrainWaiters();
     },
     (err: unknown) => {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -268,9 +321,13 @@ export function deferStream(pending: Promise<VmAgentStream>): VmAgentStream {
 
   return {
     send: (frame) => {
-      if (closed) return;
-      if (resolved) resolved.send(frame);
-      else outbox.push(frame);
+      if (closed) return true;
+      if (resolved) return resolved.send(frame);
+      // Not connected yet: buffer this frame and signal backpressure so the
+      // caller waits for the connection (onDrain) rather than dumping a whole
+      // file into `outbox`.
+      outbox.push(frame);
+      return false;
     },
     onFrame: (cb) => {
       frameSubs.add(cb);
@@ -283,6 +340,17 @@ export function deferStream(pending: Promise<VmAgentStream>): VmAgentStream {
       }
       closeSubs.add(cb);
       return () => closeSubs.delete(cb);
+    },
+    onDrain: (cb) => {
+      if (closed) {
+        cb();
+        return () => {};
+      }
+      // Once connected, defer to the real stream's drain signal; until then,
+      // park here and get woken when the connection resolves.
+      if (resolved) return resolved.onDrain(cb);
+      drainSubs.add(cb);
+      return () => drainSubs.delete(cb);
     },
     close: () => {
       closeRequested = true;

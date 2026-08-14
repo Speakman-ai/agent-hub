@@ -181,6 +181,36 @@ describe('vm-agent over a real socket', () => {
     expect(text(frames, 'stdout')).toBe('piped input');
   });
 
+  it('preserves a large piped body across stdin backpressure', async () => {
+    // Regression: streaming a chat attachment into `cat` overflows the child's
+    // stdin pipe. The agent must pause the vsock read side until stdin drains
+    // rather than buffering the whole body in the guest heap — and that
+    // pause/resume must not drop or reorder a single byte.
+    const dir = await mkdtemp(join(tmpdir(), 'vm-agent-bp-'));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const outPath = join(dir, 'out.bin');
+    const { socketPath } = await startAgent();
+    const stream = await openStream(socketPath, {
+      kind: 'exec',
+      command: `cat > ${JSON.stringify(outPath)}`,
+      cwd: process.cwd(),
+      env: {},
+    });
+    await stream.waitFor('started');
+
+    const chunk = Buffer.alloc(64 * 1024);
+    for (let i = 0; i < chunk.length; i++) chunk[i] = i % 251;
+    const chunks = 128; // 8 MiB, far past the pipe buffer, so backpressure fires.
+    for (let i = 0; i < chunks; i++) stream.send(encodeFrame('stdin', chunk));
+    stream.send(encodeJsonFrame('control', { kind: 'stdin-eof' }));
+
+    await stream.done;
+    const written = await readFile(outPath);
+    expect(written.length).toBe(chunk.length * chunks);
+    expect(written.subarray(0, chunk.length).equals(chunk)).toBe(true);
+    expect(written.subarray(written.length - chunk.length).equals(chunk)).toBe(true);
+  }, 15_000);
+
   it('signals the whole process group, not just the shell', async () => {
     // `sh -c` forks; signalling only the shell leaves the real workload
     // running and the VM never goes idle.

@@ -1,6 +1,6 @@
 import { spawn, execFile, execSync } from 'child_process';
 import type { ChildProcess } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
@@ -3383,41 +3383,73 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       let imagePromptSuffix = '';
       if (images && images.length > 0) {
-        const imgPaths: string[] = [];
-        if (sessionEnv && envOwned) {
-          const imgDirRel = '.agent-hub-images';
-          await sessionEnv.worktreeIo.exec(`mkdir -p ${imgDirRel}`, { cwd: '.' });
-          for (const img of images as unknown as ImageRef[]) {
-            const srcPath = path.join(uploadsDir, img.filename);
-            if (existsSync(srcPath)) {
-              const destRel = `${imgDirRel}/${img.filename}`;
-              await sessionEnv.worktreeIo.writeFile(destRel, readFileSync(srcPath));
-              imgPaths.push(`${FIRECRACKER_GUEST_WORKSPACE}/${destRel}`);
+        try {
+          const imgPaths: string[] = [];
+          if (sessionEnv && envOwned) {
+            const imgDirRel = '.agent-hub-images';
+            await sessionEnv.worktreeIo.exec(`mkdir -p ${imgDirRel}`, { cwd: '.' });
+            for (const img of images as unknown as ImageRef[]) {
+              const srcPath = path.join(uploadsDir, img.filename);
+              if (existsSync(srcPath)) {
+                const destRel = `${imgDirRel}/${img.filename}`;
+                // Stream host → guest. readFileSync + writeFile would put a zip
+                // on the Hub heap and in one vsock JSON frame, which OOMs / throws
+                // past the 8 MB cap and restarts the process.
+                await sessionEnv.worktreeIo.uploadFile(destRel, srcPath);
+                imgPaths.push(`${FIRECRACKER_GUEST_WORKSPACE}/${destRel}`);
+              }
+            }
+          } else {
+            const imgCwd = session!.worktree_path || project.cwd;
+            const imgDir = path.join(imgCwd, '.agent-hub-images');
+            mkdirSync(imgDir, { recursive: true });
+            for (const img of images as unknown as ImageRef[]) {
+              const srcPath = path.join(uploadsDir, img.filename);
+              if (existsSync(srcPath)) {
+                const destPath = path.join(imgDir, img.filename);
+                copyFileSync(srcPath, destPath);
+                imgPaths.push(destPath);
+              }
             }
           }
-        } else {
-          const imgCwd = session!.worktree_path || project.cwd;
-          const imgDir = path.join(imgCwd, '.agent-hub-images');
-          mkdirSync(imgDir, { recursive: true });
-          for (const img of images as unknown as ImageRef[]) {
-            const srcPath = path.join(uploadsDir, img.filename);
-            if (existsSync(srcPath)) {
-              const destPath = path.join(imgDir, img.filename);
-              writeFileSync(destPath, readFileSync(srcPath));
-              imgPaths.push(destPath);
-            }
+          if (imgPaths.length > 0) {
+            const n = imgPaths.length;
+            imagePromptSuffix =
+              '\n\n[The user has attached ' +
+              (n === 1 ? 'a file' : `${n} files`) +
+              '. Open ' +
+              (n === 1 ? 'it' : 'them') +
+              ' with the Read tool at: ' +
+              imgPaths.map((p) => `"${p}"`).join(', ') +
+              ']';
           }
-        }
-        if (imgPaths.length > 0) {
-          const n = imgPaths.length;
-          imagePromptSuffix =
-            '\n\n[The user has attached ' +
-            (n === 1 ? 'a file' : `${n} files`) +
-            '. Open ' +
-            (n === 1 ? 'it' : 'them') +
-            ' with the Read tool at: ' +
-            imgPaths.map((p) => `"${p}"`).join(', ') +
-            ']';
+        } catch (err: unknown) {
+          // Staging attachments can fail after the turn is already committed:
+          // the active_tasks row is inserted and the session broadcast as
+          // working at turn start (see above). A disk-full host, a guest-write
+          // error, or an unreadable upload must run the same turn-failure
+          // cleanup as any other pre-spawn error — otherwise the session stays
+          // stuck "working" and its queue never drains.
+          const errMessage = err instanceof Error ? err.message : String(err);
+          console.error(`Failed to stage chat attachments: ${errMessage}`);
+          const errText = `Failed to stage attachments for this turn: ${errMessage}`;
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          try {
+            stmts.deleteActiveTask.run(sessionId);
+          } catch {}
+          recomputeSessionState(stmts, sessionId, { agentId, broadcast });
+          maybeFinalizeAutoReviewSession(
+            { stmts, broadcast },
+            { sessionId, agentId, error: errText },
+          );
+          drainQueue(sessionId);
+          return;
         }
       }
 

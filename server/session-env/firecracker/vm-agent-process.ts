@@ -158,11 +158,14 @@ export function createVmAgentProcess(opts: VmAgentProcessOpts): VmAgentProcessHa
       stream.send(encodeJsonFrame('control', control));
     },
     writeStdin: (data) => {
-      if (exitResult !== null) return;
+      // Nothing to write to; treat as accepted so a streaming caller stops
+      // rather than parking on a drain that will never fire.
+      if (exitResult !== null) return true;
       opts.onActivity?.();
       const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
-      stream.send(encodeFrame('stdin', buf));
+      return stream.send(encodeFrame('stdin', buf));
     },
+    onStdinDrain: (cb) => stream.onDrain(cb),
     endStdin: () => {
       if (exitResult !== null) return;
       const control: VmAgentControl = { kind: 'stdin-eof' };

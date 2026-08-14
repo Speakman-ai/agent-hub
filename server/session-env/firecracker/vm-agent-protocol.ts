@@ -39,7 +39,8 @@ export const VM_AGENT_PROTOCOL_VERSION = 2;
 /**
  * Hard cap on a single frame. Guards the guest against a host bug (and vice
  * versa) turning a corrupt length prefix into an unbounded allocation. Output
- * chunks are far smaller; file reads above this stream as multiple frames.
+ * chunks are far smaller; file reads and writes above this stream as multiple
+ * frames (paged `read-file`, or `cat` + stdin for writes).
  */
 export const MAX_FRAME_PAYLOAD_BYTES = 8 * 1024 * 1024;
 
@@ -48,6 +49,17 @@ export const MAX_FRAME_PAYLOAD_BYTES = 8 * 1024 * 1024;
  * JSON envelope under {@link MAX_FRAME_PAYLOAD_BYTES} with margin to spare.
  */
 export const READ_FILE_CHUNK_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Largest body a single JSON `write-file` frame can carry. Same size as a
+ * read chunk: base64 of anything bigger blows {@link MAX_FRAME_PAYLOAD_BYTES}
+ * and `encodeFrame` throws — which used to take the Hub down when a chat
+ * attachment (a zip, a video) was copied into a Firecracker guest.
+ *
+ * Host writes above this go over exec `cat` + raw stdin frames instead, which
+ * works with existing guest images (no rootfs rebuild).
+ */
+export const WRITE_FILE_CHUNK_BYTES = READ_FILE_CHUNK_BYTES;
 
 export const FRAME_HEADER_BYTES = 5;
 
@@ -148,7 +160,11 @@ export interface VmAgentReadFileRequest {
 export interface VmAgentWriteFileRequest {
   kind: 'write-file';
   path: string;
-  /** base64 so the JSON envelope stays valid for binary content. */
+  /**
+   * base64 so the JSON envelope stays valid for binary content. Must fit in
+   * one frame after expansion — callers with a larger body stream via exec
+   * `cat` rather than stuffing it here.
+   */
   contentBase64: string;
   /** Octal mode string (e.g. "0644"); omitted leaves the default. */
   mode?: string;

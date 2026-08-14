@@ -35,6 +35,7 @@ class FakeEnv {
       readFile: async () => Buffer.from(''),
       writeFile: async () => {},
       downloadFile: async () => {},
+      uploadFile: async () => {},
       listDir: async () => [],
       stat: async () => null,
       exists: async () => false,

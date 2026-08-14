@@ -82,8 +82,19 @@ export interface SessionEnvProcess {
    * Write to the child's stdin. Optional — adapters that open stdin as
    * `ignore` (host preview spawns) omit these. Guest exec and any spawn that
    * needs a stdin prompt (Codex `-`) implement them.
+   *
+   * Returns `false` when the transport buffer is full (Node stream
+   * backpressure) and the caller should wait for {@link onStdinDrain} before
+   * writing more. A caller streaming a large body (a chat attachment into a
+   * Firecracker guest) MUST respect this or it defeats end-to-end flow control
+   * and re-queues the whole file in memory.
    */
-  writeStdin?(data: string | Buffer): void;
+  writeStdin?(data: string | Buffer): boolean;
+  /**
+   * One-shot subscription that fires the next time the stdin transport drains
+   * after {@link writeStdin} returned `false`. Returns an unsubscribe fn.
+   */
+  onStdinDrain?(cb: () => void): () => void;
   /** Close stdin (EOF). */
   endStdin?(): void;
 }

@@ -130,6 +130,7 @@ describe('buildEnrichedPrompt — session startup setup', () => {
       readFile: async () => Buffer.from(''),
       writeFile: async () => {},
       downloadFile: async () => {},
+      uploadFile: async () => {},
       listDir: async () => [],
       stat: async () => null,
       exists: async () => false,

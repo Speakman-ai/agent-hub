@@ -91,6 +91,13 @@ describe('HostWorktreeIo', () => {
     expect(await io.readFile('bin.dat')).toEqual(bytes);
   });
 
+  it('copies a host file in via uploadFile without going through writeFile', async () => {
+    const src = path.join(root, 'src.bin');
+    await writeFile(src, Buffer.from([0x00, 0xff, 0x10]));
+    await io.uploadFile('copied.bin', src);
+    expect(await io.readFile('copied.bin')).toEqual(Buffer.from([0x00, 0xff, 0x10]));
+  });
+
   it('lists entries with their kinds', async () => {
     await writeFile(path.join(root, 'file.txt'), 'x');
     await mkdir(path.join(root, 'dir'));

@@ -19,14 +19,18 @@ class FakeVsock implements VsockDuplex {
   readonly written: Buffer[] = [];
   destroyed = false;
   ended = false;
+  /** When false, `write` reports backpressure (returns false) until `drain`. */
+  writable = true;
   #handlers: {
     data: ((chunk: Buffer) => void)[];
     close: (() => void)[];
     error: ((err: Error) => void)[];
-  } = { data: [], close: [], error: [] };
+    drain: (() => void)[];
+  } = { data: [], close: [], error: [], drain: [] };
 
-  write(data: Buffer): void {
+  write(data: Buffer): boolean {
     this.written.push(data);
+    return this.writable;
   }
   end(): void {
     this.ended = true;
@@ -38,7 +42,8 @@ class FakeVsock implements VsockDuplex {
   on(event: 'data', cb: (chunk: Buffer) => void): void;
   on(event: 'close', cb: () => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
-  on(event: 'data' | 'close' | 'error', cb: never): void {
+  on(event: 'drain', cb: () => void): void;
+  on(event: 'data' | 'close' | 'error' | 'drain', cb: never): void {
     (this.#handlers[event] as unknown[]).push(cb);
   }
 
@@ -50,6 +55,10 @@ class FakeVsock implements VsockDuplex {
   }
   emitError(err: Error): void {
     for (const cb of this.#handlers.error) cb(err);
+  }
+  emitDrain(): void {
+    this.writable = true;
+    for (const cb of this.#handlers.drain) cb();
   }
 
   /** Frames the host sent, excluding the CONNECT handshake line. */
@@ -208,8 +217,12 @@ function fakeStream() {
   const frameSubs = new Set<(f: VmAgentFrame) => void>();
   const closeSubs = new Set<(err?: Error) => void>();
   let closed = false;
+  const drainSubs = new Set<() => void>();
   const stream: VmAgentStream = {
-    send: (f) => sent.push(f),
+    send: (f) => {
+      sent.push(f);
+      return true;
+    },
     onFrame: (cb) => {
       frameSubs.add(cb);
       return () => frameSubs.delete(cb);
@@ -217,6 +230,14 @@ function fakeStream() {
     onClose: (cb) => {
       closeSubs.add(cb);
       return () => closeSubs.delete(cb);
+    },
+    onDrain: (cb) => {
+      if (closed) {
+        cb();
+        return () => {};
+      }
+      drainSubs.add(cb);
+      return () => drainSubs.delete(cb);
     },
     close: () => {
       closed = true;
@@ -230,6 +251,11 @@ function fakeStream() {
     sent,
     emit: (f: VmAgentFrame) => frameSubs.forEach((cb) => cb(f)),
     emitClose: (err?: Error) => closeSubs.forEach((cb) => cb(err)),
+    emitDrain: () => {
+      const waiters = [...drainSubs];
+      drainSubs.clear();
+      waiters.forEach((cb) => cb());
+    },
     wasClosed: () => closed,
   };
 }

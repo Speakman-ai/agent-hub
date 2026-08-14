@@ -26,7 +26,7 @@
  */
 
 import { execFile, spawn as nodeSpawn } from 'child_process';
-import { createWriteStream } from 'fs';
+import { createReadStream, createWriteStream } from 'fs';
 import { mkdir, rm, stat, writeFile } from 'fs/promises';
 import { once } from 'events';
 import path from 'path';
@@ -87,6 +87,7 @@ import {
 import { createVmAgentProcess, createVmAgentPty } from './vm-agent-process.js';
 import {
   READ_FILE_CHUNK_BYTES,
+  WRITE_FILE_CHUNK_BYTES,
   VM_AGENT_PROTOCOL_VERSION,
   VM_AGENT_VSOCK_PORT,
   type VmAgentPtyRequest,
@@ -174,6 +175,13 @@ export const defaultStopVmm: StopVmmFn = ({ pid }) => {
 
 /** Cap guest exec capture the same way the host pre-commit runner does. */
 export const FIRECRACKER_EXEC_OUTPUT_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Generous ceiling for streaming a chat attachment into the guest over vsock. */
+export const STREAM_WRITE_TIMEOUT_MS = 10 * 60_000;
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
 
 /** Host-side IO the adapter needs. Injected so tests touch no real host. */
 export interface FirecrackerHostIo {
@@ -834,6 +842,14 @@ export class FirecrackerSessionEnv implements SessionEnv {
     opts: { mode?: string } = {},
   ): Promise<void> {
     await this.ensureStarted();
+    // A single JSON write-file frame cannot hold a zip/video: base64 of
+    // anything above WRITE_FILE_CHUNK_BYTES blows the vsock payload cap and
+    // encodeFrame throws, which used to crash the Hub (uncaught handleChat
+    // rejection / OOM). Stream those through exec `cat` + raw stdin instead.
+    if (contents.length > WRITE_FILE_CHUNK_BYTES) {
+      await this.#streamWriteGuestFile(guestPath, contents, opts);
+      return;
+    }
     const stream = await this.#open({
       kind: 'write-file',
       path: guestPath,
@@ -843,6 +859,121 @@ export class FirecrackerSessionEnv implements SessionEnv {
     const reply = await awaitReply(stream);
     if (reply.kind !== 'written') {
       throw new Error(`Unexpected guest reply writing ${guestPath}: ${reply.kind}`);
+    }
+  }
+
+  /**
+   * Stream a host file into the guest without materialising it on the Hub heap.
+   * Chat attachments (zips especially) use this rather than readFileSync +
+   * writeGuestFile.
+   */
+  async uploadGuestFile(
+    guestPath: string,
+    srcHostPath: string,
+    opts: { mode?: string } = {},
+  ): Promise<void> {
+    await this.ensureStarted();
+    const source = createReadStream(srcHostPath, { highWaterMark: WRITE_FILE_CHUNK_BYTES });
+    await this.#streamWriteGuestFile(guestPath, source, opts);
+  }
+
+  async #streamWriteGuestFile(
+    guestPath: string,
+    source: Buffer | AsyncIterable<Buffer>,
+    opts: { mode?: string } = {},
+  ): Promise<void> {
+    const dir = path.posix.dirname(guestPath);
+    const mkdir = dir && dir !== '/' ? `mkdir -p ${shellQuote(dir)} && ` : '';
+    const chmod = opts.mode ? ` && chmod ${opts.mode} ${shellQuote(guestPath)}` : '';
+    const command = `${mkdir}cat > ${shellQuote(guestPath)}${chmod}`;
+    const proc = this.spawn(command, { cwd: '.', name: `write-file ${guestPath}` });
+
+    let timer: NodeJS.Timeout | undefined;
+    // Resolves when the guest process exits. A handler is attached immediately
+    // (`proc.onExit`) and it never rejects on its own, so awaiting it late is
+    // safe.
+    const exitP = new Promise<SessionEnvExit>((resolve) => proc.onExit(resolve));
+    // The timeout is a separate rejecting promise that the work below RACES
+    // against. Racing attaches a rejection handler synchronously, so a timeout
+    // firing while we are still reading the source or parked on backpressure is
+    // always consumed here — it can never surface as an unhandledRejection and
+    // terminate the Hub. Promise.race also keeps a handler on the losing side,
+    // so `pump()`'s later settlement after a timeout kill is handled too.
+    const timeoutP = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        proc.kill('SIGKILL');
+        reject(
+          new Error(`Guest file write timed out after ${STREAM_WRITE_TIMEOUT_MS}ms: ${guestPath}`),
+        );
+      }, STREAM_WRITE_TIMEOUT_MS);
+      timer.unref?.();
+    });
+
+    // Park until the stdin transport drains, so a 100 MB attachment cannot be
+    // queued whole in host/socket memory — the write rate is bounded by how
+    // fast the guest `cat` consumes it. Resolves early if the process exits so
+    // we never wait on a drain that will never come from a dead stream.
+    const awaitDrainOrExit = () =>
+      new Promise<void>((resolve) => {
+        if (proc.exited) {
+          resolve();
+          return;
+        }
+        let done = false;
+        let offDrain: (() => void) | undefined;
+        let offExit: (() => void) | undefined;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          offDrain?.();
+          offExit?.();
+          resolve();
+        };
+        offDrain = proc.onStdinDrain?.(finish);
+        offExit = proc.onExit(finish);
+      });
+
+    const writeChunk = async (buf: Buffer) => {
+      for (let offset = 0; offset < buf.length; offset += WRITE_FILE_CHUNK_BYTES) {
+        if (proc.exited) return;
+        const end = Math.min(offset + WRITE_FILE_CHUNK_BYTES, buf.length);
+        const accepted = proc.writeStdin?.(buf.subarray(offset, end));
+        if (accepted === false) await awaitDrainOrExit();
+      }
+    };
+
+    const pump = async (): Promise<void> => {
+      if (Buffer.isBuffer(source)) {
+        await writeChunk(source);
+      } else {
+        for await (const chunk of source) {
+          await writeChunk(chunk);
+        }
+      }
+      proc.endStdin?.();
+      const exit = await exitP;
+      if (exit.error) throw exit.error;
+      if (exit.code !== 0) {
+        throw new Error(
+          `Guest file write failed (${exit.code ?? exit.signal ?? 'unknown'}): ${guestPath}`,
+        );
+      }
+    };
+
+    try {
+      await Promise.race([pump(), timeoutP]);
+    } catch (err) {
+      // A producer read error, an interrupted backpressure wait, or the timeout
+      // above lands here. The guest `cat` may still be live in the VM's process
+      // set — close its stdin and kill it so a failed upload never strands a
+      // process in the guest.
+      if (!proc.exited) {
+        proc.endStdin?.();
+        proc.kill('SIGKILL');
+      }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -982,6 +1113,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
         readFile: (guestPath) => this.readGuestFile(guestPath),
         writeFile: (guestPath, contents) => this.writeGuestFile(guestPath, contents),
         downloadFile: (guestPath, destHostPath) => this.downloadGuestFile(guestPath, destHostPath),
+        uploadFile: (guestPath, srcHostPath) => this.uploadGuestFile(guestPath, srcHostPath),
       },
       FIRECRACKER_GUEST_WORKSPACE,
     );

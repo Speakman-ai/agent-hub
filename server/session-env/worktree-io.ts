@@ -121,6 +121,15 @@ export interface SessionWorktreeIo {
    * the host (the CI source hand-off) use this instead.
    */
   downloadFile(relPath: string, destHostPath: string): Promise<void>;
+  /**
+   * Copy a host file into the worktree without buffering it whole.
+   *
+   * Inverse of {@link downloadFile}. Chat attachments (zips, videos) live on
+   * the Hub host under `uploads/` and have to reach an env-owned guest; loading
+   * them with {@link writeFile} would put the entire body on the Hub heap and,
+   * on Firecracker, in a single vsock JSON frame.
+   */
+  uploadFile(relPath: string, srcHostPath: string): Promise<void>;
   listDir(relPath?: string): Promise<WorktreeDirEntry[]>;
   /** `null` when the path does not exist, rather than throwing ENOENT. */
   stat(relPath: string): Promise<WorktreeStat | null>;
@@ -235,6 +244,12 @@ export class HostWorktreeIo implements SessionWorktreeIo {
   async downloadFile(relPath: string, destHostPath: string): Promise<void> {
     await mkdir(path.dirname(destHostPath), { recursive: true });
     await copyFile(resolveWorktreeRelative(this.hostPath, relPath), destHostPath);
+  }
+
+  async uploadFile(relPath: string, srcHostPath: string): Promise<void> {
+    const target = resolveWorktreeRelative(this.hostPath, relPath);
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(srcHostPath, target);
   }
 
   async writeFile(relPath: string, contents: Buffer | string): Promise<void> {

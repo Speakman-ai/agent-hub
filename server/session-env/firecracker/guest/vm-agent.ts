@@ -327,7 +327,19 @@ class Connection {
     child.stdout?.on('data', (chunk: Buffer) => this.send('stdout', chunk));
     child.stderr?.on('data', (chunk: Buffer) => this.send('stderr', chunk));
 
-    this.#onStdin = (chunk) => child.stdin?.write(chunk);
+    this.#onStdin = (chunk) => {
+      const stdin = child.stdin;
+      if (!stdin) return;
+      // Respect child stdin backpressure: when its buffer is full, pause the
+      // vsock socket so the host stops sending. Without this a slow consumer
+      // (disk-full, slow `cat`) would let a large upload pile up in the guest's
+      // Node heap — the very memory-pressure failure this streaming path exists
+      // to avoid. Resuming on `drain` propagates the pause back to the host.
+      if (!stdin.write(chunk)) {
+        this.socket.pause();
+        stdin.once('drain', () => this.socket.resume());
+      }
+    };
     this.#onStdinEof = () => child.stdin?.end();
     this.#onControl = (control) => {
       if (control.kind !== 'signal' || child.pid === undefined) return;

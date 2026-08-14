@@ -3,6 +3,7 @@ import {
   FirecrackerSessionEnv,
   VmAgentProtocolMismatchError,
   defaultPrepareDisks,
+  STREAM_WRITE_TIMEOUT_MS,
   type FirecrackerHostIo,
   type FirecrackerSlotPool,
 } from './firecracker-session-env.js';
@@ -10,6 +11,7 @@ import type { VsockDuplex } from './vm-agent-client.js';
 import {
   VmAgentFrameDecoder,
   VM_AGENT_PROTOCOL_VERSION,
+  WRITE_FILE_CHUNK_BYTES,
   encodeFrame,
   encodeJsonFrame,
   decodeJsonPayload,
@@ -38,11 +40,14 @@ class FakeGuestConnection implements VsockDuplex {
   destroyed = false;
   ended = false;
   readonly sentFrames: VmAgentFrame[] = [];
+  /** When false, the next post-handshake `write` reports backpressure. */
+  writable = true;
   #decoder = new VmAgentFrameDecoder();
   #handshakeDone = false;
   #data: ((chunk: Buffer) => void)[] = [];
   #close: (() => void)[] = [];
   #error: ((err: Error) => void)[] = [];
+  #drain: (() => void)[] = [];
 
   constructor(
     private readonly accept: boolean,
@@ -54,12 +59,12 @@ class FakeGuestConnection implements VsockDuplex {
     },
   ) {}
 
-  write(data: Buffer): void {
+  write(data: Buffer): boolean {
     if (!this.#handshakeDone) {
       this.#handshakeDone = true;
       const reply = this.accept ? 'OK 1024\n' : 'FAILED\n';
       setImmediate(() => this.emitData(Buffer.from(reply)));
-      return;
+      return true;
     }
     for (const frame of this.#decoder.push(data)) {
       this.sentFrames.push(frame);
@@ -73,6 +78,7 @@ class FakeGuestConnection implements VsockDuplex {
         }
       }
     }
+    return this.writable;
   }
   end(): void {
     this.ended = true;
@@ -84,10 +90,18 @@ class FakeGuestConnection implements VsockDuplex {
   on(event: 'data', cb: (chunk: Buffer) => void): void;
   on(event: 'close', cb: () => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
-  on(event: 'data' | 'close' | 'error', cb: never): void {
+  on(event: 'drain', cb: () => void): void;
+  on(event: 'data' | 'close' | 'error' | 'drain', cb: never): void {
     if (event === 'data') this.#data.push(cb);
     else if (event === 'close') this.#close.push(cb);
+    else if (event === 'drain') this.#drain.push(cb);
     else this.#error.push(cb);
+  }
+
+  /** Release backpressure and wake the host's drain waiter. */
+  emitDrain(): void {
+    this.writable = true;
+    for (const cb of this.#drain) cb();
   }
 
   emitData(chunk: Buffer): void {
@@ -108,6 +122,8 @@ class FakeGuestConnection implements VsockDuplex {
 class FakeGuest {
   readonly connections: FakeGuestConnection[] = [];
   accept = true;
+  /** Backpressure state applied to every new connection at creation. */
+  defaultWritable = true;
   /** Overridden to model a stale guest image or an agent that never answers. */
   pong: VmAgentReply | null = {
     kind: 'pong',
@@ -117,6 +133,7 @@ class FakeGuest {
 
   connect = async (): Promise<VsockDuplex> => {
     const conn = new FakeGuestConnection(this.accept, this.pong);
+    conn.writable = this.defaultWritable;
     this.connections.push(conn);
     return conn;
   };
@@ -400,6 +417,150 @@ describe('FirecrackerSessionEnv processes', () => {
     const request = guest.workConnections[0].request as { env: Record<string, string | null> };
     expect(request.env.AWS_PROFILE).toBeNull();
     expect(request.env.TERM_APP).toBe('hub');
+  });
+});
+
+describe('FirecrackerSessionEnv writeGuestFile', () => {
+  it('sends a small body as a single JSON write-file frame', async () => {
+    const { env, guest } = makeEnv();
+    await env.ensureStarted();
+    const writing = env.writeGuestFile('/workspace/note.txt', Buffer.from('hello vm'));
+    await flush();
+
+    const conn = guest.workConnections[0];
+    expect(conn.request).toMatchObject({
+      kind: 'write-file',
+      path: '/workspace/note.txt',
+      contentBase64: Buffer.from('hello vm').toString('base64'),
+    });
+    conn.replyJson('reply', { kind: 'written' });
+    await writing;
+  });
+
+  it('streams a body above WRITE_FILE_CHUNK_BYTES via cat + stdin instead of JSON', async () => {
+    // Regression: copying a chat zip into the guest used to JSON-base64 the
+    // whole file into one vsock frame. encodeFrame throws above 8 MB, and the
+    // Hub process died (uncaught handleChat rejection / OOM).
+    const { env, guest } = makeEnv();
+    await env.ensureStarted();
+    const payload = Buffer.alloc(WRITE_FILE_CHUNK_BYTES + 1, 7);
+    const writing = env.writeGuestFile('/workspace/.agent-hub-images/pack.zip', payload);
+    await flush();
+
+    const conn = guest.workConnections[0];
+    expect(conn.request).toMatchObject({
+      kind: 'exec',
+      cwd: '/workspace',
+    });
+    expect((conn.request as { command: string }).command).toContain(
+      "cat > '/workspace/.agent-hub-images/pack.zip'",
+    );
+    expect(guest.workConnections.every((c) => c.request?.kind !== 'write-file')).toBe(true);
+
+    const stdin = Buffer.concat(
+      conn.sentFrames.filter((f) => f.type === 'stdin').map((f) => f.payload),
+    );
+    expect(stdin.equals(payload)).toBe(true);
+
+    conn.replyJson('started', { pid: 11 });
+    conn.replyJson('exit', { code: 0, signal: null });
+    await writing;
+  });
+
+  it('parks on transport backpressure instead of queueing the whole body', async () => {
+    // Regression: a slow guest consumer must not let a large attachment pile up
+    // in host/socket memory. When the stdin transport signals backpressure the
+    // streaming loop stops writing and waits for a drain.
+    const { env, guest } = makeEnv();
+    await env.ensureStarted();
+    // The `cat` connection is backpressured from the first stdin write.
+    guest.defaultWritable = false;
+    const payload = Buffer.alloc(WRITE_FILE_CHUNK_BYTES * 3, 9);
+    const writing = env.writeGuestFile('/workspace/big.bin', payload);
+    await flush();
+
+    const conn = guest.workConnections[0];
+    const stdinFrames = () => conn.sentFrames.filter((f) => f.type === 'stdin').length;
+    // The whole 3-chunk body is NOT on the wire — the loop parked mid-stream.
+    expect(stdinFrames()).toBeLessThan(3);
+    const parked = stdinFrames();
+    // Still parked: no forward progress while backpressured.
+    await flush();
+    expect(stdinFrames()).toBe(parked);
+
+    // Consumer catches up: the remaining chunks flush and the write completes.
+    conn.emitDrain();
+    await flush();
+    const stdin = Buffer.concat(
+      conn.sentFrames.filter((f) => f.type === 'stdin').map((f) => f.payload),
+    );
+    expect(stdin.equals(payload)).toBe(true);
+
+    conn.replyJson('started', { pid: 21 });
+    conn.replyJson('exit', { code: 0, signal: null });
+    await writing;
+  });
+
+  it('kills the guest cat when the host source fails mid-stream', async () => {
+    // Regression: if the host read stream throws, the spawned `cat` must be
+    // torn down rather than left running in the guest's live-process set.
+    const { env, guest } = makeEnv();
+    await env.ensureStarted();
+    const uploading = env.uploadGuestFile('/workspace/pack.zip', '/no/such/source-file-xyz');
+    await expect(uploading).rejects.toThrow();
+    await flush();
+
+    const conn = guest.workConnections[0];
+    expect(conn.request).toMatchObject({ kind: 'exec' });
+    const killed = conn.sentFrames.some(
+      (f) =>
+        f.type === 'control' &&
+        decodeJsonPayload<{ kind: string; signal?: string }>(f.payload).signal === 'SIGKILL',
+    );
+    expect(killed).toBe(true);
+  });
+
+  it('rejects with a timeout — and no unhandled rejection — when the stream never drains', async () => {
+    // Regression: the timeout rejection must be attached (raced) immediately.
+    // Otherwise, firing while the loop is parked on backpressure surfaces as an
+    // unhandledRejection and terminates the Hub. Boot on real timers, then fake
+    // only setTimeout so the streaming timeout — the sole pending timer — can be
+    // advanced deterministically while the vsock handshake still runs live.
+    const { env, guest } = makeEnv();
+    await env.ensureStarted();
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      // Backpressured from the first stdin write and never drained: the loop
+      // parks, so the timeout fires with no chunk-level await in flight.
+      guest.defaultWritable = false;
+      const payload = Buffer.alloc(WRITE_FILE_CHUNK_BYTES * 2, 5);
+      const writing = env.writeGuestFile('/workspace/stuck.bin', payload);
+      const settled = writing.then(
+        () => 'resolved' as const,
+        (err: unknown) => (err instanceof Error ? err.message : String(err)),
+      );
+      // Let the live handshake complete and the loop reach its parked state.
+      await flush();
+      // Fire the streaming timeout.
+      vi.advanceTimersByTime(STREAM_WRITE_TIMEOUT_MS + 1);
+      // Let the guest ack the kill so the losing pump() unwinds deterministically
+      // (a non-racing implementation would surface the timeout error here as its
+      // reject reason — this keeps the negative case failing fast, not hanging).
+      const conn = guest.workConnections[0];
+      conn.replyJson('exit', { code: 137, signal: 'SIGKILL' });
+      const outcome = await settled;
+      expect(outcome).toMatch(/timed out/);
+    } finally {
+      vi.useRealTimers();
+      // Give Node a real tick to surface any unhandled rejection before checking.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
   });
 });
 

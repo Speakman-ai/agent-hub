@@ -30,4 +30,22 @@ describe('chat.ts active_tasks cleanup on pre-spawn failures', () => {
     expect(window).toContain('drainQueue(sessionId)');
     expect(window).toContain('recomputeSessionState');
   });
+
+  it('clears active_tasks + drains when staging chat attachments fails', () => {
+    // Attachment staging (uploadFile into an env-owned guest, copyFileSync on
+    // host) runs AFTER the active_tasks row is inserted and the session is
+    // broadcast working. A disk-full / guest-write / unreadable-source failure
+    // must run the same cleanup, not leave the session stuck working.
+    const uploadIdx = src.indexOf('await sessionEnv.worktreeIo.uploadFile(destRel, srcPath)');
+    expect(uploadIdx).toBeGreaterThan(-1);
+    const markerIdx = src.indexOf('Failed to stage attachments for this turn:', uploadIdx);
+    // The failure handler must sit after the upload call (i.e. it catches it).
+    expect(markerIdx).toBeGreaterThan(uploadIdx);
+    const window = src.slice(markerIdx, markerIdx + 900);
+    expect(window).toContain('saveErrorMessage(sessionId, assistantMsgId, engine, model');
+    expect(window).toContain('stmts.deleteActiveTask.run(sessionId)');
+    expect(window).toContain('recomputeSessionState');
+    expect(window).toContain('drainQueue(sessionId)');
+    expect(window).toContain('return;');
+  });
 });

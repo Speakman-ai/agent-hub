@@ -684,7 +684,23 @@ export default function createWebSocket(
         // call site (server/autonomous.ts) — which never goes through WebSocket
         // — is a legitimate producer of extraEnv.
         const { extraEnv: _drop, ...safeMsg } = msg;
-        handleChat(ws, safeMsg as unknown as import('./types.js').ChatMessage);
+        void handleChat(ws, safeMsg as unknown as import('./types.js').ChatMessage).catch(
+          (err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[chat] handleChat rejected: ${message}`);
+            try {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  sessionId: typeof safeMsg.sessionId === 'string' ? safeMsg.sessionId : undefined,
+                  error: message,
+                }),
+              );
+            } catch {
+              /* socket already gone */
+            }
+          },
+        );
       } else if (type === 'cancel' && typeof msg.sessionId === 'string') {
         if (!mayActOnSession(msg.sessionId)) return;
         handleCancel(msg.sessionId);

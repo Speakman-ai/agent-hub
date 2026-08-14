@@ -47,6 +47,8 @@ export interface GuestWorktreeChannel {
   writeFile(guestPath: string, contents: Buffer): Promise<void>;
   /** Stream a guest file to a host path without buffering it whole. */
   downloadFile(guestPath: string, destHostPath: string): Promise<void>;
+  /** Stream a host file into the guest without buffering it whole. */
+  uploadFile(guestPath: string, srcHostPath: string): Promise<void>;
 }
 
 export class GuestWorktreeIo implements SessionWorktreeIo {
@@ -100,6 +102,10 @@ export class GuestWorktreeIo implements SessionWorktreeIo {
 
   async downloadFile(relPath: string, destHostPath: string): Promise<void> {
     await this.channel.downloadFile(this.#guestPath(relPath), destHostPath);
+  }
+
+  async uploadFile(relPath: string, srcHostPath: string): Promise<void> {
+    await this.channel.uploadFile(this.#guestPath(relPath), srcHostPath);
   }
 
   async writeFile(relPath: string, contents: Buffer | string): Promise<void> {
