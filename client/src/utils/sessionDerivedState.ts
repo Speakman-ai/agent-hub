@@ -52,6 +52,83 @@ export function isSessionWorkspaceReady(session: any) {
 }
 
 /**
+ * Whether opening this session should POST /workspace/ensure.
+ *
+ * A persisted `worktree_path` only proves the git clone happened once. The
+ * session VM/container is in-memory and can be gone after a Hub restart or
+ * idle reap while the path row survives, so we must NOT gate on
+ * `isSessionWorkspaceReady` here — an already-cloned session with a dead
+ * environment still needs an ensure to reboot the VM before the first chat.
+ * The ensure fires for every worktree-enabled session; the server route is
+ * idempotent (reuses the clone and a live env, boots one only when missing).
+ * Non-worktree / workflow sessions never need it.
+ */
+export function shouldEnsureSessionWorkspaceOnOpen(session: any): boolean {
+  if (!session) return false;
+  return isSessionWorktreeEnabled(session);
+}
+
+/**
+ * Immutably drop a session's key from a by-session flag map.
+ *
+ * Used to reset per-session open-time ensure state (the "settled" map) when
+ * leaving a session, so the reopen models readiness per activation instead of
+ * once per browser lifetime. Without this, a session whose VM was idle-reaped
+ * while the user worked elsewhere would reopen already marked ready — the
+ * composer would accept input against a dead environment and the first chat
+ * would pay the boot delay. The companion "attempted" Set is cleared alongside
+ * this (a plain `Set.delete`) so the ensure effect re-fires on reopen.
+ */
+export function withoutSessionKey<T extends Record<string, any>>(
+  map: T,
+  sid: string | null | undefined,
+): T {
+  if (!sid || !(sid in map)) return map;
+  const next = { ...map };
+  delete next[sid];
+  return next;
+}
+
+/**
+ * Decide what the open-time workspace-ensure effect should do for a session.
+ *
+ * - `'skip'`  — this activation already registered an attempt; do nothing.
+ * - `'adopt'` — a prior request for this session is still in flight (rapid
+ *   leave→reopen). Register the attempt but do NOT issue a second request: the
+ *   in-flight request's settle handler re-checks the attempted flag and marks
+ *   this activation ready. Issuing a racing request instead would double-POST,
+ *   and skipping outright would strand the composer gated forever (the old
+ *   request refuses to settle a session whose attempt was cleared on leave, and
+ *   the effect's dependencies do not change to trigger a retry).
+ * - `'issue'` — no request is in flight; start a fresh ensure.
+ */
+export function planWorkspaceEnsureOnOpen(args: {
+  attempted: boolean;
+  inFlight: boolean;
+}): 'skip' | 'adopt' | 'issue' {
+  if (args.attempted) return 'skip';
+  if (args.inFlight) return 'adopt';
+  return 'issue';
+}
+
+/**
+ * Whether the chat composer may be enabled for the active session.
+ *
+ * A session that needs an open-time ensure is only composer-ready once that
+ * ensure has settled (resolved or failed). Gating synchronously on this —
+ * rather than on the `ensuring` flag the effect sets after render — closes
+ * the first-render window where the composer would briefly accept input
+ * against a not-yet-ready workspace. On ensure failure we still report ready
+ * so the user is not stranded; the chat turn re-ensures the environment.
+ */
+export function isSessionComposerWorkspaceReady(args: {
+  needsEnsure: boolean;
+  settled: boolean;
+}): boolean {
+  return !args.needsEnsure || args.settled;
+}
+
+/**
  * Prepend a session to the sidebar list unless it is already present.
  * POST /sessions broadcasts `session_created` before the HTTP body returns;
  * without this, the REST path and WebSocket both insert the same row.

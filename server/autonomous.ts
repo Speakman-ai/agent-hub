@@ -387,6 +387,13 @@ interface AutonomousDeps {
   findProject: (projectId: string) => Project | undefined;
   findAgent: (agentId: string) => { project: Project; agent: Agent } | null;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
+  /**
+   * Clone the session worktree, boot the VM/container, and wait for project
+   * session-startup hooks before the first autonomous chat turn. Optional in
+   * tests. Interactive session open uses `POST …/workspace/ensure` instead
+   * (VM boot, but startup hooks stay in the background).
+   */
+  prepareSessionEnv?: (sessionId: string) => Promise<void>;
   handleCancel: (sessionId: string) => void;
   getActiveProcesses: () => Map<string, unknown>;
   getProjects: () => Project[];
@@ -1539,6 +1546,15 @@ async function runAutonomousLoopInner(
         const devHubKey = await getDevHubApiKey();
         if (devHubKey) {
           extraEnv.DEV_HUB_API_KEY = devHubKey;
+        }
+      }
+
+      if (d.prepareSessionEnv) {
+        try {
+          await d.prepareSessionEnv(sessionId);
+        } catch (err: unknown) {
+          rollbackCard(err);
+          continue;
         }
       }
 

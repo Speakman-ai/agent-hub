@@ -4195,12 +4195,21 @@ export interface RouteDeps {
    */
   getSessionWorktreeIo?: (sessionId: string) => Promise<SessionWorktreeIo | null>;
   /**
-   * Clone or attach the session git worktree before the first chat turn.
-   * Wired from `index.ts` (`ensureWorktree`). Used by
-   * `POST /api/sessions/:sessionId/workspace/ensure` so preview can start
-   * immediately after opening a session.
+   * Clone or attach the session git worktree. Clone-only and shared: also
+   * called by Finalize/RUM setup apply and design import, which must NOT boot
+   * a VM. Wired from `index.ts` (`ensureWorktree`). Used by
+   * `POST /api/sessions/:sessionId/workspace/ensure` before the environment
+   * ensure below.
    */
   provisionSessionWorkspace?: (sessionId: string) => Promise<string>;
+  /**
+   * Boot the session VM/container for an already-provisioned worktree. No-op
+   * for spike / no-worktree / workflow sessions. Kept separate from
+   * `provisionSessionWorkspace` so non-interactive clone callers do not
+   * allocate a VM. Wired from `index.ts`; called by the interactive
+   * `POST /api/sessions/:sessionId/workspace/ensure` route after the clone.
+   */
+  ensureSessionEnvironment?: (sessionId: string) => Promise<void>;
   /** Move a clean session worktree onto an existing remote branch. */
   switchSessionWorkspaceBranch?: (
     sessionId: string,

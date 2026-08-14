@@ -4,6 +4,10 @@ import {
   isSessionWorktreeEnabled,
   isSessionWorkspaceReady,
   shouldShowSessionChangesButton,
+  shouldEnsureSessionWorkspaceOnOpen,
+  isSessionComposerWorkspaceReady,
+  planWorkspaceEnsureOnOpen,
+  withoutSessionKey,
   prependSessionDeduped,
   planCreatedSessionCaches,
 } from './sessionDerivedState';
@@ -72,6 +76,281 @@ describe('sessionDerivedState', () => {
           worktree_path: '/wt/session-abc',
         }),
       ).toBe(true);
+    });
+  });
+
+  describe('shouldEnsureSessionWorkspaceOnOpen', () => {
+    it('returns false when there is no active session', () => {
+      expect(shouldEnsureSessionWorkspaceOnOpen(undefined)).toBe(false);
+      expect(shouldEnsureSessionWorkspaceOnOpen(null)).toBe(false);
+    });
+
+    it('returns false for a non-worktree (spike / workflow) session', () => {
+      expect(shouldEnsureSessionWorkspaceOnOpen({ id: 'x', use_worktree: 0 })).toBe(false);
+    });
+
+    it('returns true for a fresh worktree session with no clone yet', () => {
+      expect(
+        shouldEnsureSessionWorkspaceOnOpen({ id: 'x', use_worktree: 1, worktree_path: null }),
+      ).toBe(true);
+    });
+
+    it('returns true for an already-cloned worktree whose live env may be gone (regression)', () => {
+      // A persisted worktree_path used to short-circuit the open-time ensure
+      // (via isSessionWorkspaceReady), so reopening a session after a Hub
+      // restart / idle reap skipped the VM reboot and the first chat paid the
+      // boot delay. The ensure must still fire for an already-cloned session.
+      expect(isSessionWorkspaceReady({ id: 'x', use_worktree: 1, worktree_path: '/wt/abc' })).toBe(
+        true,
+      );
+      expect(
+        shouldEnsureSessionWorkspaceOnOpen({ id: 'x', use_worktree: 1, worktree_path: '/wt/abc' }),
+      ).toBe(true);
+    });
+  });
+
+  describe('isSessionComposerWorkspaceReady', () => {
+    it('is ready when the session does not need an open-time ensure', () => {
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: false, settled: false })).toBe(true);
+    });
+
+    it('is not ready while a needed ensure is still pending (first-render gate)', () => {
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: false })).toBe(false);
+    });
+
+    it('becomes ready once the ensure settles (resolved or failed)', () => {
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: true })).toBe(true);
+    });
+  });
+
+  describe('withoutSessionKey', () => {
+    it('returns the same map reference when the key is absent', () => {
+      const map = { a: true };
+      expect(withoutSessionKey(map, 'b')).toBe(map);
+      expect(withoutSessionKey(map, undefined)).toBe(map);
+      expect(withoutSessionKey(map, null)).toBe(map);
+    });
+
+    it('removes the key immutably when present', () => {
+      const map = { a: true, b: true };
+      const next = withoutSessionKey(map, 'a');
+      expect(next).not.toBe(map);
+      expect(next).toEqual({ b: true });
+      expect(map).toEqual({ a: true, b: true });
+    });
+  });
+
+  describe('planWorkspaceEnsureOnOpen', () => {
+    it('skips when this activation already registered an attempt', () => {
+      expect(planWorkspaceEnsureOnOpen({ attempted: true, inFlight: false })).toBe('skip');
+      expect(planWorkspaceEnsureOnOpen({ attempted: true, inFlight: true })).toBe('skip');
+    });
+
+    it('adopts an in-flight request instead of double-posting', () => {
+      expect(planWorkspaceEnsureOnOpen({ attempted: false, inFlight: true })).toBe('adopt');
+    });
+
+    it('issues a fresh request when nothing is in flight', () => {
+      expect(planWorkspaceEnsureOnOpen({ attempted: false, inFlight: false })).toBe('issue');
+    });
+  });
+
+  describe('per-activation reset on leave (regression: idle-reaped VM on reopen)', () => {
+    it('re-ensures and re-gates the composer when a session is reopened after leaving', () => {
+      const session = { id: 's1', use_worktree: 1, worktree_path: '/wt/s1' };
+
+      // First open: the effect fired and settled.
+      const attempted = new Set<string>(['s1']);
+      let settled: Record<string, any> = { s1: true };
+      expect(
+        isSessionComposerWorkspaceReady({
+          needsEnsure: shouldEnsureSessionWorkspaceOnOpen(session),
+          settled: !!settled.s1,
+        }),
+      ).toBe(true);
+
+      // Leave s1 (effect cleanup): clear attempted + settled so readiness is
+      // modeled per activation, not once per browser lifetime.
+      attempted.delete('s1');
+      settled = withoutSessionKey(settled, 's1');
+
+      // Reopen s1 (its VM may have been idle-reaped meanwhile): the ensure must
+      // re-fire and the composer must be gated until the fresh ensure settles.
+      expect(attempted.has('s1')).toBe(false);
+      expect(shouldEnsureSessionWorkspaceOnOpen(session)).toBe(true);
+      expect(
+        isSessionComposerWorkspaceReady({
+          needsEnsure: shouldEnsureSessionWorkspaceOnOpen(session),
+          settled: !!settled.s1,
+        }),
+      ).toBe(false);
+    });
+
+    it('adopts the in-flight ensure on reopen so the composer is not permanently gated', () => {
+      // Reproduces the deadlock: leaving mid-request clears `attempted`, and a
+      // reopen that only checked in-flight would skip a new request while the
+      // old request refused to settle — stranding the composer gated forever.
+      const attempted = new Set<string>();
+      const inFlight = new Set<string>();
+      let settled: Record<string, any> = {};
+
+      // Mirror the effect's open handling.
+      const open = (sid: string) => {
+        const plan = planWorkspaceEnsureOnOpen({
+          attempted: attempted.has(sid),
+          inFlight: inFlight.has(sid),
+        });
+        if (plan === 'skip') return plan;
+        attempted.add(sid);
+        if (plan === 'adopt') return plan;
+        inFlight.add(sid);
+        return plan;
+      };
+      const leave = (sid: string) => {
+        attempted.delete(sid);
+        settled = withoutSessionKey(settled, sid);
+      };
+      // Mirror the request's `.finally`.
+      const settleRequest = (sid: string) => {
+        inFlight.delete(sid);
+        if (attempted.has(sid)) {
+          settled = settled[sid] ? settled : { ...settled, [sid]: true };
+        }
+      };
+
+      // Open s1 → issues a single request.
+      expect(open('s1')).toBe('issue');
+      expect(inFlight.has('s1')).toBe(true);
+
+      // Leave while the request is still in flight.
+      leave('s1');
+      expect(attempted.has('s1')).toBe(false);
+
+      // Reopen while still in flight → adopt (re-registers the attempt, no
+      // second request).
+      expect(open('s1')).toBe('adopt');
+      expect(attempted.has('s1')).toBe(true);
+      expect(inFlight.size).toBe(1);
+
+      // The single request settles → marks the reopened activation ready.
+      settleRequest('s1');
+      expect(settled.s1).toBe(true);
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: !!settled.s1 })).toBe(
+        true,
+      );
+    });
+
+    it('keeps the composer gated on a failed ensure and re-enables it after a successful retry', () => {
+      // A failed workspace/environment ensure must NOT be recorded as settled
+      // (which would enable the composer against a VM that is not ready). It is
+      // tracked as an error instead, and a retry path re-issues the ensure.
+      const attempted = new Set<string>();
+      const inFlight = new Set<string>();
+      let settled: Record<string, any> = {};
+      let error: Record<string, any> = {};
+
+      const open = (sid: string) => {
+        const plan = planWorkspaceEnsureOnOpen({
+          attempted: attempted.has(sid),
+          inFlight: inFlight.has(sid),
+        });
+        if (plan === 'skip') return plan;
+        attempted.add(sid);
+        error = withoutSessionKey(error, sid);
+        if (plan === 'adopt') return plan;
+        inFlight.add(sid);
+        return plan;
+      };
+      // Mirror the runner's success (`.then`) and failure (`.catch`) handlers.
+      const resolveOk = (sid: string) => {
+        inFlight.delete(sid);
+        if (attempted.has(sid)) settled = settled[sid] ? settled : { ...settled, [sid]: true };
+      };
+      const resolveFail = (sid: string, msg: string) => {
+        inFlight.delete(sid);
+        if (attempted.has(sid)) error = { ...error, [sid]: msg };
+      };
+      const retry = (sid: string) => {
+        attempted.delete(sid);
+        error = withoutSessionKey(error, sid);
+        open(sid);
+      };
+
+      // Open s1, the ensure fails.
+      open('s1');
+      resolveFail('s1', 'boot failed');
+      // Failure is NOT settled — composer stays gated — and an error is surfaced.
+      expect(settled.s1).toBeUndefined();
+      expect(error.s1).toBe('boot failed');
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: !!settled.s1 })).toBe(
+        false,
+      );
+
+      // Retry issues a fresh request (error cleared) and this time succeeds.
+      retry('s1');
+      expect(error.s1).toBeUndefined();
+      expect(inFlight.has('s1')).toBe(true);
+      resolveOk('s1');
+      expect(settled.s1).toBe(true);
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: !!settled.s1 })).toBe(
+        true,
+      );
+    });
+
+    it('re-ensures and re-gates after a WebSocket disconnect (Hub restart drops the VM)', () => {
+      const attempted = new Set<string>();
+      const inFlight = new Set<string>();
+      let settled: Record<string, any> = {};
+      let error: Record<string, any> = {};
+
+      const open = (sid: string) => {
+        const plan = planWorkspaceEnsureOnOpen({
+          attempted: attempted.has(sid),
+          inFlight: inFlight.has(sid),
+        });
+        if (plan === 'skip') return plan;
+        attempted.add(sid);
+        error = withoutSessionKey(error, sid);
+        if (plan === 'adopt') return plan;
+        inFlight.add(sid);
+        return plan;
+      };
+      const resolveOk = (sid: string) => {
+        inFlight.delete(sid);
+        if (attempted.has(sid)) settled = settled[sid] ? settled : { ...settled, [sid]: true };
+      };
+      // Mirror the on-disconnect invalidation.
+      const disconnect = () => {
+        attempted.clear();
+        settled = {};
+        error = {};
+      };
+
+      // Open s1 and reach ready.
+      open('s1');
+      resolveOk('s1');
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: !!settled.s1 })).toBe(
+        true,
+      );
+
+      // WS drops (Hub restart) — readiness must be invalidated so the composer
+      // re-gates even though the same session stays active.
+      disconnect();
+      expect(attempted.has('s1')).toBe(false);
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: !!settled.s1 })).toBe(
+        false,
+      );
+
+      // On reconnect the ensure effect re-runs and issues a fresh request
+      // (not 'skip') that re-gates until it settles.
+      expect(open('s1')).toBe('issue');
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: !!settled.s1 })).toBe(
+        false,
+      );
+      resolveOk('s1');
+      expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: !!settled.s1 })).toBe(
+        true,
+      );
     });
   });
 

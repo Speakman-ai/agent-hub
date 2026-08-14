@@ -4,6 +4,9 @@
  */
 export const SESSION_ENV_LAUNCH_STEP = 'Launching session VM';
 
+/** Host-emitted progress_step while the session git worktree is cloning. */
+export const SESSION_WORKSPACE_STEP = 'Preparing session workspace';
+
 export type SessionEnvLaunchStatus = 'started' | 'completed' | 'failed';
 
 export type SessionEnvLaunchInfo = {

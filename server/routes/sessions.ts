@@ -2235,6 +2235,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           return res.status(503).json({ error: 'Workspace provisioning is not available' });
         }
         const worktreePath = await deps.provisionSessionWorkspace(sessionId);
+        // Boot the session VM/container after the clone so the interactive open
+        // pays clone + boot up front (the composer stays gated until this
+        // resolves). Idempotent — reuses a live env, boots one only when the
+        // in-memory environment is gone (Hub restart / idle reap) even though
+        // the worktree_path row persists.
+        if (deps.ensureSessionEnvironment) {
+          await deps.ensureSessionEnvironment(sessionId);
+        }
         const updated = stmts.getSession.get(sessionId) as SessionRow;
         const sessionWire = enrichSessionForClient(updated, stmts);
         deps.broadcast({

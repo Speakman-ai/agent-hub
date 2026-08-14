@@ -217,6 +217,27 @@ describe('importDesignToSession (executor)', () => {
     };
   }
 
+  it('provisions clone-only and never boots a session environment', async () => {
+    // Design import is a non-interactive provisioning caller: it materializes
+    // the seed worktree to copy artifacts and replay the transcript, but must
+    // NOT allocate a VM (only the interactive open / autonomous dispatch do).
+    // The dependency contract enforces this — there is no env-boot hook to call.
+    const design = seedDesign();
+    const designFull = { ...design, linkedProjects: [lookup('p1')!] };
+    const worktree = mkdtempSync(path.join(tmpdir(), 'design-import-noboot-'));
+    const deps = buildDeps(worktree);
+
+    await importDesignToSession(
+      deps,
+      designFull,
+      getStmts().listDesignMessages.all(design.id) as DesignMessageRow[],
+    );
+
+    expect(deps.provisionSessionWorkspace).toHaveBeenCalledTimes(1);
+    // No environment-boot dependency is exposed to the import flow.
+    expect('ensureSessionEnvironment' in deps).toBe(false);
+  });
+
   it('creates a design-mode session, copies artifacts, replays the transcript', async () => {
     const design = seedDesign();
     const designFull = { ...design, linkedProjects: [lookup('p1')!] };

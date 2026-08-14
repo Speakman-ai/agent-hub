@@ -194,6 +194,10 @@ import {
   isSessionWorkspaceReady,
   isSessionWorktreeEnabled,
   shouldShowSessionChangesButton,
+  shouldEnsureSessionWorkspaceOnOpen,
+  isSessionComposerWorkspaceReady,
+  planWorkspaceEnsureOnOpen,
+  withoutSessionKey,
   prependSessionDeduped,
   planCreatedSessionCaches,
 } from './utils/sessionDerivedState';
@@ -408,6 +412,23 @@ export default function App({ initialView }: any = {}) {
   const [workspaceEnsuringBySession, setWorkspaceEnsuringBySession] = useState<Record<string, any>>(
     {},
   );
+  /**
+   * Sessions whose open-time ensure has settled (resolved or failed) this
+   * client load. Drives the synchronous composer gate so input stays disabled
+   * from first render until the environment is confirmed, not just while the
+   * request is in flight.
+   */
+  const [workspaceEnsureSettledBySession, setWorkspaceEnsureSettledBySession] = useState<
+    Record<string, any>
+  >({});
+  /**
+   * Sessions whose open-time ensure FAILED. Tracked separately from the
+   * settled (success) map so a failed VM boot keeps the composer gated instead
+   * of enabling it — the value is the error message shown with a Retry action.
+   */
+  const [workspaceEnsureErrorBySession, setWorkspaceEnsureErrorBySession] = useState<
+    Record<string, any>
+  >({});
   const workspaceEnsureInFlightRef = useRef<Set<any>>(new Set());
   const workspaceEnsureAttemptedRef = useRef<Set<any>>(new Set());
   const previewEventBySessionRef = useRef(previewEventBySession);
@@ -4940,41 +4961,138 @@ export default function App({ initialView }: any = {}) {
     [activeSession, activeTasks, finalizeStatusBySession],
   );
 
-  const activeSessionWorktreeReady =
-    !activeSession ||
-    !isSessionWorktreeEnabled(activeSession) ||
-    isSessionWorkspaceReady(activeSession);
+  // Fire an ensure for every opened worktree session, independent of the
+  // persisted worktree_path. A persisted path proves the clone happened once,
+  // but the session VM/container is in-memory and can be gone after a Hub
+  // restart or idle reap — reopening such a session must reboot it so the
+  // first chat does not pay the boot delay.
+  const activeSessionNeedsWorkspaceEnsure = shouldEnsureSessionWorkspaceOnOpen(activeSession);
 
-  // Provision the git worktree as soon as a session is opened so Start preview
-  // mounts the same checkout the agent will edit (not project.cwd).
+  // Provision the git worktree and boot the environment for a session so Start
+  // preview mounts the same checkout the agent will edit (not project.cwd) and
+  // the first chat turn spawns in a ready VM. Success marks the session ready;
+  // FAILURE records an error (not ready) so the composer stays gated and a
+  // Retry path is offered — a failed boot must never enable the composer.
+  const runSessionWorkspaceEnsure = useCallback(
+    (sid: string) => {
+      const plan = planWorkspaceEnsureOnOpen({
+        attempted: workspaceEnsureAttemptedRef.current.has(sid),
+        inFlight: workspaceEnsureInFlightRef.current.has(sid),
+      });
+      if (plan === 'skip') return;
+      // Register this activation's attempt before issuing/adopting so the
+      // request that ultimately settles (this one, or the in-flight one we
+      // adopt) marks the session ready/failed via its attempted-ref check.
+      workspaceEnsureAttemptedRef.current.add(sid);
+      setWorkspaceEnsuringBySession((prev: any) => ({ ...prev, [sid]: true }));
+      // Starting (or adopting) a fresh attempt clears any prior failure.
+      setWorkspaceEnsureErrorBySession((prev: any) => withoutSessionKey(prev, sid));
+      if (plan === 'adopt') {
+        // A prior request for this session is still in flight (rapid
+        // leave→reopen). Its handlers now see the re-added attempt and will
+        // settle this activation — issuing a second request would race.
+        return;
+      }
+      workspaceEnsureInFlightRef.current.add(sid);
+      void api
+        .ensureSessionWorkspace(sid)
+        .then((body: any) => {
+          if (body?.session) {
+            setSessions((prev: any) => prev.map((s: any) => (s.id === sid ? body.session : s)));
+          }
+          // Mark ready only on success, and only if this activation still owns
+          // the attempt (the user may have navigated away mid-request).
+          if (workspaceEnsureAttemptedRef.current.has(sid)) {
+            setWorkspaceEnsureSettledBySession((prev: any) =>
+              prev[sid] ? prev : { ...prev, [sid]: true },
+            );
+          }
+        })
+        .catch((err: any) => {
+          const message = err?.message || 'Failed to prepare session workspace';
+          showToast(message, 'error', 8000);
+          // Record the failure (keeps the composer gated) so the UI can offer a
+          // Retry instead of pretending the environment is ready.
+          if (workspaceEnsureAttemptedRef.current.has(sid)) {
+            setWorkspaceEnsureErrorBySession((prev: any) => ({ ...prev, [sid]: message }));
+          }
+        })
+        .finally(() => {
+          workspaceEnsureInFlightRef.current.delete(sid);
+          setWorkspaceEnsuringBySession((prev: any) => {
+            if (!prev[sid]) return prev;
+            const next = { ...prev };
+            delete next[sid];
+            return next;
+          });
+        });
+    },
+    [showToast],
+  );
+
+  // Ensure the workspace as soon as a session is opened.
   useEffect(() => {
     const sid = activeSessionId;
-    if (!sid || !connected || activeSessionWorktreeReady) return;
-    if (workspaceEnsureAttemptedRef.current.has(sid)) return;
-    if (workspaceEnsureInFlightRef.current.has(sid)) return;
-    workspaceEnsureInFlightRef.current.add(sid);
-    workspaceEnsureAttemptedRef.current.add(sid);
-    setWorkspaceEnsuringBySession((prev: any) => ({ ...prev, [sid]: true }));
-    void api
-      .ensureSessionWorkspace(sid)
-      .then((body: any) => {
-        if (body?.session) {
-          setSessions((prev: any) => prev.map((s: any) => (s.id === sid ? body.session : s)));
-        }
-      })
-      .catch((err: any) => {
-        showToast(err?.message || 'Failed to prepare session workspace', 'error', 8000);
-      })
-      .finally(() => {
-        workspaceEnsureInFlightRef.current.delete(sid);
-        setWorkspaceEnsuringBySession((prev: any) => {
-          if (!prev[sid]) return prev;
-          const next = { ...prev };
-          delete next[sid];
-          return next;
-        });
-      });
-  }, [activeSessionId, connected, activeSessionWorktreeReady, showToast]);
+    if (!sid || !connected || !activeSessionNeedsWorkspaceEnsure) return;
+    runSessionWorkspaceEnsure(sid);
+  }, [activeSessionId, connected, activeSessionNeedsWorkspaceEnsure, runSessionWorkspaceEnsure]);
+
+  // Retry a failed open-time ensure: drop the prior attempt + error so the
+  // runner issues a fresh request and re-gates the composer while it runs.
+  const retrySessionWorkspaceEnsure = useCallback(
+    (sid: string) => {
+      if (!sid) return;
+      workspaceEnsureAttemptedRef.current.delete(sid);
+      setWorkspaceEnsureErrorBySession((prev: any) => withoutSessionKey(prev, sid));
+      runSessionWorkspaceEnsure(sid);
+    },
+    [runSessionWorkspaceEnsure],
+  );
+
+  // Model open-time readiness PER ACTIVATION. The attempted/settled state above
+  // otherwise persists for the whole browser lifetime, so a session whose VM is
+  // idle-reaped while the user works elsewhere would reopen still marked
+  // attempted+settled — skipping the reboot and opening the composer against a
+  // dead environment. Reset both when leaving the session (effect cleanup keyed
+  // only on activeSessionId, so unstable deps like showToast can't retrigger
+  // it) so the reopen re-runs the idempotent ensure and re-gates the composer.
+  useEffect(() => {
+    const sid = activeSessionId;
+    if (!sid) return;
+    return () => {
+      workspaceEnsureAttemptedRef.current.delete(sid);
+      setWorkspaceEnsureSettledBySession((prev: any) => withoutSessionKey(prev, sid));
+      setWorkspaceEnsureErrorBySession((prev: any) => withoutSessionKey(prev, sid));
+    };
+  }, [activeSessionId]);
+
+  // Invalidate open-time readiness on WebSocket disconnect. A drop can mean a
+  // Hub restart that lost every in-memory session VM while the persisted
+  // worktree_path survives, so trusting the settled/attempted state after
+  // reconnect would leave the composer enabled against a dead environment.
+  // Clearing it forces the ensure effect (which re-runs when `connected` flips
+  // back to true) to issue a fresh, re-gating ensure. In-flight requests are
+  // left alone: the ensure POST is served by the server, so a request that
+  // completes after a restart genuinely reflects the rebooted VM.
+  useEffect(() => {
+    if (connected) return;
+    workspaceEnsureAttemptedRef.current.clear();
+    setWorkspaceEnsureSettledBySession((prev: any) => (Object.keys(prev).length ? {} : prev));
+    setWorkspaceEnsureErrorBySession((prev: any) => (Object.keys(prev).length ? {} : prev));
+  }, [connected]);
+
+  // Composer readiness: a session that needs an open-time ensure only accepts
+  // input once that ensure has settled. Computed synchronously so the composer
+  // is disabled from first render, not just after the effect sets the
+  // in-flight flag.
+  const activeSessionComposerWorkspaceReady = isSessionComposerWorkspaceReady({
+    needsEnsure: activeSessionNeedsWorkspaceEnsure,
+    settled: !!(activeSessionId && workspaceEnsureSettledBySession[activeSessionId]),
+  });
+  // Error message when the active session's open-time ensure failed (composer
+  // stays gated; the UI offers a Retry).
+  const activeSessionWorkspaceEnsureError: string | null =
+    (activeSessionId && workspaceEnsureErrorBySession[activeSessionId]) || null;
 
   // Whether the active session currently shows the optimistic synthetic
   // `preview_starting` seed. Extracted (rather than inlined into the
@@ -6176,6 +6294,35 @@ export default function App({ initialView }: any = {}) {
                                     <p className="text-lg">Loading conversation</p>
                                     <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
                                   </>
+                                ) : activeSessionWorkspaceEnsureError ? (
+                                  <>
+                                    <AlertTriangle size={40} className="mb-4 text-amber-500" />
+                                    <p className="text-lg">Couldn't set up this session</p>
+                                    <p className="text-sm mt-1 text-gray-500 max-w-md">
+                                      {activeSessionWorkspaceEnsureError}
+                                    </p>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        activeSessionId &&
+                                        retrySessionWorkspaceEnsure(activeSessionId)
+                                      }
+                                      className="mt-4 px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 text-gray-100 text-sm"
+                                    >
+                                      Retry
+                                    </button>
+                                  </>
+                                ) : !activeSessionComposerWorkspaceReady ? (
+                                  <>
+                                    <Loader2
+                                      size={40}
+                                      className="mb-4 text-gray-500 animate-spin"
+                                    />
+                                    <p className="text-lg">Setting up this session</p>
+                                    <p className="text-sm mt-1 text-gray-500">
+                                      Preparing the workspace and environment…
+                                    </p>
+                                  </>
                                 ) : (
                                   <>
                                     <MessageCircle size={40} className="mb-3 text-gray-600" />
@@ -6650,11 +6797,30 @@ export default function App({ initialView }: any = {}) {
 
                       {/* Input */}
                       <div className="shrink-0">
+                        {activeSessionWorkspaceEnsureError && messages.length > 0 && (
+                          <div className="mx-3 mb-2 flex items-center gap-2 rounded-md border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
+                            <AlertTriangle size={16} className="shrink-0 text-amber-400" />
+                            <span className="flex-1 min-w-0 truncate">
+                              Couldn't set up this session's environment.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                activeSessionId && retrySessionWorkspaceEnsure(activeSessionId)
+                              }
+                              className="shrink-0 rounded bg-amber-700/60 hover:bg-amber-700 px-2.5 py-1 text-amber-50"
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        )}
                         <MessageInput
                           ref={messageInputRef}
                           onSend={handleSend}
                           onCancel={handleCancel}
-                          disabled={!activeAgent || !connected}
+                          disabled={
+                            !activeAgent || !connected || !activeSessionComposerWorkspaceReady
+                          }
                           isProcessing={isProcessing}
                           queueLength={(messageQueues[activeSessionId] || []).length}
                           agentColor={chatAccentColor}

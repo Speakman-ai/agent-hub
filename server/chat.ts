@@ -51,6 +51,8 @@ import { isDevServerConfigured } from './dev-server-config.js';
 import { getSessionEnvSelection } from './session-env/sysbox-capability.js';
 import type { SessionEnv } from './session-env/session-env.js';
 import { sessionTurnUsesEnvOwnedWorktree } from './session-env/workflow-session-env.js';
+import type { SessionEnvEnsureOpts } from './session-env/session-env-manager.js';
+import { emitSessionWorkspaceProgress } from './session-env/session-env-progress.js';
 import {
   adaptSpawnEnvForGuest,
   buildGuestCliCommand,
@@ -475,8 +477,10 @@ export interface ChatHandlerDeps {
    * Ensure the session's SessionEnv is started. Required for env-owned
    * backends (Firecracker) so chat CLI turns spawn inside the guest.
    * Optional in tests that never exercise Firecracker.
+   * Pass `{ waitForStartup: true }` so autonomous dispatch waits for
+   * project session-startup hooks before spawning the CLI.
    */
-  ensureSessionEnv?: (sessionId: string) => Promise<SessionEnv>;
+  ensureSessionEnv?: (sessionId: string, opts?: SessionEnvEnsureOpts) => Promise<SessionEnv>;
   drainQueue: (sessionId: string) => void;
   /**
    * Accessor for the managed dev-server runtime. Returns `null` when the
@@ -3011,20 +3015,55 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (envOwned && priorWorktree && !isNewEngineSession) {
           effectiveCwd = priorWorktree;
         } else {
-          effectiveCwd = await ensureWorktree(
-            session!,
-            project.cwd,
-            agentId,
-            (project as ProjectWithCommands).commands?.install || null,
-            sessionPrBase,
-            (project as Project).repoUrl ?? null,
-            project.id,
-            (info) => {
-              baseBranchAdvanced = info;
-            },
-            (project as Project).githubRepo ?? null,
-            hostedBarePathForProject(project as Project),
-          );
+          const emitWorkspaceProgress = !priorWorktree;
+          const workspaceStartedAt = Date.now();
+          if (emitWorkspaceProgress) {
+            emitSessionWorkspaceProgress({
+              stmts,
+              broadcast,
+              sessionId,
+              status: 'started',
+              startedAt: workspaceStartedAt,
+            });
+          }
+          try {
+            effectiveCwd = await ensureWorktree(
+              session!,
+              project.cwd,
+              agentId,
+              (project as ProjectWithCommands).commands?.install || null,
+              sessionPrBase,
+              (project as Project).repoUrl ?? null,
+              project.id,
+              (info) => {
+                baseBranchAdvanced = info;
+              },
+              (project as Project).githubRepo ?? null,
+              hostedBarePathForProject(project as Project),
+            );
+            if (emitWorkspaceProgress) {
+              emitSessionWorkspaceProgress({
+                stmts,
+                broadcast,
+                sessionId,
+                status: 'completed',
+                startedAt: workspaceStartedAt,
+                finishedAt: Date.now(),
+              });
+            }
+          } catch (err) {
+            if (emitWorkspaceProgress) {
+              emitSessionWorkspaceProgress({
+                stmts,
+                broadcast,
+                sessionId,
+                status: 'failed',
+                startedAt: workspaceStartedAt,
+                finishedAt: Date.now(),
+              });
+            }
+            throw err;
+          }
           session = stmts.getSession.get(sessionId) as SessionRow | undefined;
           if (session) {
             persistLegacyWikiHybridGateIfNeeded(session, sessionId);
@@ -3093,7 +3132,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           model,
         });
         try {
-          sessionEnv = await ensureSessionEnv(sessionId);
+          sessionEnv = await ensureSessionEnv(sessionId, {
+            waitForStartup: msg._fromAutonomousDispatch === true,
+          });
         } catch (err: unknown) {
           const errText =
             `Failed to start session environment for env-owned CLI turn: ` +
@@ -3121,7 +3162,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // project sessionStartupCommands. Without it, the enriched prompt
         // advertises a permanent "pending" setup that never runs.
         try {
-          sessionEnv = await ensureSessionEnv(sessionId);
+          sessionEnv = await ensureSessionEnv(sessionId, {
+            waitForStartup: msg._fromAutonomousDispatch === true,
+          });
         } catch (err: unknown) {
           console.warn(
             `[chat] session startup ensure failed (${sessionId}): ${
