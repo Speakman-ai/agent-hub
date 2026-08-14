@@ -69,6 +69,27 @@ describe('sortTickets', () => {
     ]);
     expect(sorted.map((t: any) => t.id)).toEqual(['crit', 'high', 'med-new', 'med-old', 'low']);
   });
+
+  it("mode 'date' orders purely by created_at (newest first), ignoring severity", () => {
+    const sorted = sortTickets(
+      [
+        ticket({ id: 'low', severity: 'low', created_at: '2026-06-14 12:00:00' }),
+        ticket({ id: 'crit', severity: 'critical', created_at: '2026-06-14 09:00:00' }),
+        ticket({ id: 'high', severity: 'high', created_at: '2026-06-14 11:00:00' }),
+        ticket({ id: 'med-new', severity: 'medium', created_at: '2026-06-14 13:00:00' }),
+      ],
+      'date',
+    );
+    expect(sorted.map((t: any) => t.id)).toEqual(['med-new', 'low', 'high', 'crit']);
+  });
+
+  it('defaults to priority ordering when no mode is passed', () => {
+    const sorted = sortTickets([
+      ticket({ id: 'low', severity: 'low', created_at: '2026-06-14 13:00:00' }),
+      ticket({ id: 'crit', severity: 'critical', created_at: '2026-06-14 09:00:00' }),
+    ]);
+    expect(sorted.map((t: any) => t.id)).toEqual(['crit', 'low']);
+  });
 });
 
 describe('resolveReplayUrl', () => {
@@ -126,6 +147,47 @@ describe('CustomerSupportPage', () => {
     expect(replay!).toBeInTheDocument();
     // No legacy raw-JSON link.
     expect(screen.queryByRole('link', { name: /session replay/i })).toBeNull();
+  });
+
+  it('re-orders the list by pure date when the Date sort toggle is selected', async () => {
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({
+        id: 'crit',
+        severity: 'critical',
+        subject: 'Critical crash',
+        created_at: '2026-06-14 09:00:00',
+      }),
+      ticket({
+        id: 'low-new',
+        severity: 'low',
+        subject: 'Newer low request',
+        created_at: '2026-06-14 12:00:00',
+      }),
+    ]);
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Critical crash')).toBeInTheDocument());
+
+    // Priority default: the critical card leads even though the low one is newer.
+    let crit = screen.getByText('Critical crash');
+    let low = screen.getByText('Newer low request');
+    expect(crit.compareDocumentPosition(low) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Switch to pure-date sorting: the newest ticket now leads regardless of severity.
+    fireEvent.click(screen.getByTestId('sort-mode-date'));
+    await waitFor(() => {
+      const c = screen.getByText('Critical crash');
+      const l = screen.getByText('Newer low request');
+      expect(l.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    // Toggling back to Priority restores severity-first ordering.
+    fireEvent.click(screen.getByTestId('sort-mode-priority'));
+    await waitFor(() => {
+      const c = screen.getByText('Critical crash');
+      const l = screen.getByText('Newer low request');
+      expect(c.compareDocumentPosition(l) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
   });
 
   it('does not render a watch-replay control for non-bug tickets', async () => {

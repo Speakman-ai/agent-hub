@@ -33,6 +33,22 @@ describe('sortTickets', () => {
         ]);
         expect(sorted.map((t: any) => t.id)).toEqual(['low', 'weird']);
     });
+    it("mode 'date' orders purely by created_at (newest first), ignoring severity", () => {
+        const sorted = sortTickets([
+            ticket({ id: 'low', severity: 'low', created_at: '2026-06-14 12:00:00' }),
+            ticket({ id: 'crit', severity: 'critical', created_at: '2026-06-14 09:00:00' }),
+            ticket({ id: 'high', severity: 'high', created_at: '2026-06-14 11:00:00' }),
+            ticket({ id: 'med-new', severity: 'medium', created_at: '2026-06-14 13:00:00' }),
+        ], 'date');
+        expect(sorted.map((t: any) => t.id)).toEqual(['med-new', 'low', 'high', 'crit']);
+    });
+    it("defaults to priority ordering when no mode is passed", () => {
+        const sorted = sortTickets([
+            ticket({ id: 'low', severity: 'low', created_at: '2026-06-14 13:00:00' }),
+            ticket({ id: 'crit', severity: 'critical', created_at: '2026-06-14 09:00:00' }),
+        ]);
+        expect(sorted.map((t: any) => t.id)).toEqual(['crit', 'low']);
+    });
 });
 describe('resolveReplayUrl', () => {
     it('passes absolute URLs through unchanged', () => {

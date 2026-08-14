@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useContext, useRef } from 'react';
 import { View, Text, TouchableOpacity, FlatList, ScrollView, StyleSheet, ActivityIndicator, Image, Linking, Alert, Modal, TextInput, Switch, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -55,6 +55,12 @@ const TYPE_FILTERS = [
     { key: 'other', label: 'Other' },
 ];
 const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all');
+// Queue ordering toggle. "Priority" (default) sorts severity-first then newest;
+// "Date" ignores severity and orders purely by creation date (newest first).
+const SORT_MODES = [
+    { key: 'priority', label: 'Priority' },
+    { key: 'date', label: 'Date' },
+];
 function pickMainDevAgent(agents: any[]) {
     const active = (agent: any) => agent?.active !== false;
     return (agents.find((agent: any) => active(agent) && agent.role === 'lead') ||
@@ -395,6 +401,9 @@ export default function CustomerSupportScreen({ route }: any) {
     // Default to the "Open" group; terminal tickets are retained but hidden.
     const [statusFilter, setStatusFilter] = useState('open');
     const [typeFilter, setTypeFilter] = useState('all');
+    // Queue ordering: 'priority' (default) sorts severity-first then newest;
+    // 'date' ignores severity and sorts purely by creation date (newest first).
+    const [sortMode, setSortMode] = useState<'priority' | 'date'>('priority');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<any>(null);
     const [selectedTicket, setSelectedTicket] = useState<any>(null);
@@ -473,6 +482,10 @@ export default function CustomerSupportScreen({ route }: any) {
         api.markSupportTicketRead(projectId, ticket.id).catch(() => { });
     }, [projectId]);
     const hasUnread = tickets.some((t: any) => !t.read_at);
+    // Re-sort for display when the sort mode changes. The write paths keep
+    // `tickets` in priority order; this memo applies the pure-date ordering on
+    // top when selected, so toggling never needs a refetch.
+    const sortedTickets = useMemo(() => sortTickets(tickets, sortMode), [tickets, sortMode]);
     const markAllRead = useCallback(() => {
         const stamp = new Date().toISOString();
         setTickets((prev: any) => prev.map((t: any) => (t.read_at ? t : { ...t, read_at: stamp })));
@@ -741,6 +754,15 @@ export default function CustomerSupportScreen({ route }: any) {
           </TouchableOpacity>))}
       </View>
 
+      <View style={styles.sortRow}>
+        <Text style={styles.sortLabel}>Sort</Text>
+        {SORT_MODES.map((s: any) => (<TouchableOpacity key={s.key} testID={`sort-mode-${s.key}`} onPress={() => setSortMode(s.key)} style={[styles.typeFilterButton, sortMode === s.key && styles.filterButtonActive]}>
+            <Text style={[styles.filterText, sortMode === s.key && styles.filterTextActive]}>
+              {s.label}
+            </Text>
+          </TouchableOpacity>))}
+      </View>
+
       {loading ? (<View style={styles.centerState}>
           <ActivityIndicator size="small" color={colors.gray400}/>
         </View>) : error ? (<View style={styles.centerState}>
@@ -748,7 +770,7 @@ export default function CustomerSupportScreen({ route }: any) {
         </View>) : tickets.length === 0 ? (<View style={styles.centerState}>
           <Text style={styles.emptyTitle}>No support requests</Text>
           <Text style={styles.emptyDesc}>Incoming requests appear here, most urgent first.</Text>
-        </View>) : (<FlatList data={tickets} keyExtractor={(item: any) => item.id} contentContainerStyle={{ padding: 12 }} renderItem={renderItem}/>)}
+        </View>) : (<FlatList data={sortedTickets} keyExtractor={(item: any) => item.id} contentContainerStyle={{ padding: 12 }} renderItem={renderItem}/>)}
 
       <Modal visible={!!wontDoTicket} transparent animationType="fade" onRequestClose={() => setWontDoTicket(null)}>
         <View style={styles.modalBackdrop}>
@@ -1086,6 +1108,15 @@ const styles = StyleSheet.create({
         borderRadius: 6,
         backgroundColor: colors.gray800,
     },
+    sortRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        paddingHorizontal: 12,
+        paddingBottom: 8,
+        gap: 6,
+    },
+    sortLabel: { color: colors.gray600, fontSize: 11, marginRight: 2 },
     statusActionRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',

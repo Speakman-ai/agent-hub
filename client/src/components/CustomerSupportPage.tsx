@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   LifeBuoy,
   AlertCircle,
@@ -152,6 +152,13 @@ const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all').map((f: an
   label: f.label,
 }));
 
+// Queue ordering toggle. "Priority" is the default (severity first, then newest);
+// "Date" ignores severity and orders purely by creation date (newest first).
+const SORT_MODES = [
+  { key: 'priority', label: 'Priority', title: 'Sort by severity, then newest first' },
+  { key: 'date', label: 'Date', title: 'Sort by date only (newest first), ignoring severity' },
+] as const;
+
 function pickMainDevAgent(agents: any[]) {
   const active = (agent: any) => agent?.active !== false;
   return (
@@ -168,12 +175,19 @@ function pickMainDevAgent(agents: any[]) {
   );
 }
 
-function sortTickets(list: any) {
+// Sort the queue. Default `mode` is 'priority' — severity (critical → low) then
+// newest first, matching the server's ORDER BY. `mode: 'date'` ignores severity
+// entirely and sorts purely by `created_at` (newest first). The default arg
+// keeps existing callers/tests (which pass a single argument) unchanged.
+function sortTickets(list: any, mode: 'priority' | 'date' = 'priority') {
   return [...list].sort((a: any, b: any) => {
-    const sa = SEVERITY_RANK[a.severity] ?? 4;
-    const sb = SEVERITY_RANK[b.severity] ?? 4;
-    if (sa !== sb) return sa - sb;
-    // Newest first within a severity, matching the server's created_at DESC.
+    if (mode !== 'date') {
+      const sa = SEVERITY_RANK[a.severity] ?? 4;
+      const sb = SEVERITY_RANK[b.severity] ?? 4;
+      if (sa !== sb) return sa - sb;
+    }
+    // Newest first (within a severity for priority mode; overall for date mode),
+    // matching the server's created_at DESC.
     return (b.created_at || '').localeCompare(a.created_at || '');
   });
 }
@@ -1418,6 +1432,9 @@ function CustomerSupportPageInner(
   // wont_do) are retained but hidden until their filter is selected.
   const [statusFilter, setStatusFilter] = useState('open');
   const [typeFilter, setTypeFilter] = useState('all');
+  // Queue ordering. 'priority' (default) sorts severity-first then newest;
+  // 'date' ignores severity and sorts purely by creation date (newest first).
+  const [sortMode, setSortMode] = useState<'priority' | 'date'>('priority');
   // The ticket whose detail modal is open (null = closed), held independently of
   // the filtered list so a status-filter change never drops the modal out from
   // under the user. It's kept fresh by the same WebSocket upsert/remove path
@@ -1522,6 +1539,12 @@ function CustomerSupportPageInner(
 
   const hasUnread = tickets.some((t: any) => !t.read_at);
 
+  // The list is re-sorted for display whenever the sort mode changes. The write
+  // paths (load / WebSocket upsert) keep `tickets` in priority order; this memo
+  // applies the pure-date ordering on top when the toggle selects it, so
+  // switching modes never needs a refetch.
+  const sortedTickets = useMemo(() => sortTickets(tickets, sortMode), [tickets, sortMode]);
+
   // Deep-link focus: when the page is opened with an `initialTicketId` (e.g. a
   // Deployments release-item link), open that ticket's detail on arrival. We
   // fetch it by id rather than scanning the loaded list because the target is
@@ -1605,7 +1628,7 @@ function CustomerSupportPageInner(
         </div>
       </div>
 
-      {/* Type filter */}
+      {/* Type filter + sort toggle */}
       <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 bg-gray-900/30 flex-wrap">
         <span className="text-[11px] text-gray-600 mr-1">Type</span>
         {TYPE_FILTERS.map((f: any) => (
@@ -1622,6 +1645,24 @@ function CustomerSupportPageInner(
             {f.label}
           </button>
         ))}
+        <div className="flex items-center gap-1 ml-auto">
+          <span className="text-[11px] text-gray-600 mr-1">Sort</span>
+          {SORT_MODES.map((s: any) => (
+            <button
+              key={s.key}
+              onClick={() => setSortMode(s.key)}
+              data-testid={`sort-mode-${s.key}`}
+              title={s.title}
+              className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                sortMode === s.key
+                  ? 'bg-gray-700 text-gray-200'
+                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Body */}
@@ -1647,7 +1688,7 @@ function CustomerSupportPageInner(
           </div>
         ) : (
           <div className="p-3 space-y-2 max-w-5xl mx-auto">
-            {tickets.map((ticket: any) => (
+            {sortedTickets.map((ticket: any) => (
               <SupportTicketCard
                 key={ticket.id}
                 ticket={ticket}

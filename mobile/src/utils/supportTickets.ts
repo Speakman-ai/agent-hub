@@ -12,13 +12,20 @@ export const RELEASE_STATE_LABEL: Record<string, any> = {
 export function releaseStateLabel(state: any) {
     return state ? RELEASE_STATE_LABEL[state] || String(state) : null;
 }
-export function sortTickets(list: any) {
+// Sort the queue. Default `mode` is 'priority' — severity (critical → low) then
+// newest first, mirroring the server's ORDER BY. `mode: 'date'` ignores severity
+// and sorts purely by `created_at` (newest first). The default arg keeps existing
+// callers/tests (which pass a single argument) unchanged.
+export function sortTickets(list: any, mode: 'priority' | 'date' = 'priority') {
     return [...list].sort((a: any, b: any) => {
-        const sa = SEVERITY_RANK[a.severity] ?? 4;
-        const sb = SEVERITY_RANK[b.severity] ?? 4;
-        if (sa !== sb)
-            return sa - sb;
-        // Newest first within a severity, matching the server's created_at DESC.
+        if (mode !== 'date') {
+            const sa = SEVERITY_RANK[a.severity] ?? 4;
+            const sb = SEVERITY_RANK[b.severity] ?? 4;
+            if (sa !== sb)
+                return sa - sb;
+        }
+        // Newest first (within a severity for priority mode; overall for date
+        // mode), matching the server's created_at DESC.
         return (b.created_at || '').localeCompare(a.created_at || '');
     });
 }
