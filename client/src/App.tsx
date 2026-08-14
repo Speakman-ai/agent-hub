@@ -6194,6 +6194,17 @@ export default function App({ initialView }: any = {}) {
                                     <p className="text-lg">Loading conversation</p>
                                     <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
                                   </>
+                                ) : workspaceEnsuringBySession[activeSessionId] ? (
+                                  <>
+                                    <Loader2
+                                      size={40}
+                                      className="mb-4 text-gray-500 animate-spin"
+                                    />
+                                    <p className="text-lg">Setting up this session</p>
+                                    <p className="text-sm mt-1 text-gray-500">
+                                      Preparing the workspace and environment…
+                                    </p>
+                                  </>
                                 ) : (
                                   <>
                                     <MessageCircle size={40} className="mb-3 text-gray-600" />
@@ -6672,7 +6683,11 @@ export default function App({ initialView }: any = {}) {
                           ref={messageInputRef}
                           onSend={handleSend}
                           onCancel={handleCancel}
-                          disabled={!activeAgent || !connected}
+                          disabled={
+                            !activeAgent ||
+                            !connected ||
+                            !!(activeSessionId && workspaceEnsuringBySession[activeSessionId])
+                          }
                           isProcessing={isProcessing}
                           queueLength={(messageQueues[activeSessionId] || []).length}
                           agentColor={chatAccentColor}

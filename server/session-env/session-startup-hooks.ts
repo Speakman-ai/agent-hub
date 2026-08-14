@@ -1,6 +1,7 @@
 /**
- * Project session startup hooks — background shell commands after every
- * SessionEnv boot, without blocking `ensure()` / chat.
+ * Project session startup hooks — shell commands after every SessionEnv boot.
+ * `ensure()` does not wait for them by default (interactive chat / preview
+ * can overlap). Autonomous dispatch passes `{ waitForStartup: true }`.
  *
  * Config lives on the Hub project (`sessionStartupCommands`). Commands run
  * via {@link SessionEnv.spawn} with cwd at the session worktree root (the same

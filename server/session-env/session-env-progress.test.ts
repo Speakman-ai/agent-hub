@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SESSION_ENV_LAUNCH_STEP } from '../../shared/utils/sessionEnvLaunch.js';
+import {
+  SESSION_ENV_LAUNCH_STEP,
+  SESSION_WORKSPACE_STEP,
+} from '../../shared/utils/sessionEnvLaunch.js';
 import {
   emitSessionEnvLaunchProgress,
   emitSessionStartupProgress,
+  emitSessionWorkspaceProgress,
 } from './session-env-progress.js';
 import { SESSION_STARTUP_STEP } from './session-startup-hooks.js';
 
@@ -153,6 +157,38 @@ describe('emitSessionEnvLaunchProgress without chat messageId', () => {
       1000,
       null,
       null,
+    );
+  });
+});
+
+describe('emitSessionWorkspaceProgress', () => {
+  it('persists and broadcasts Preparing session workspace', () => {
+    const stmts = mockStmts();
+    const broadcast = vi.fn();
+    emitSessionWorkspaceProgress({
+      stmts,
+      broadcast,
+      sessionId: 'sess-1',
+      status: 'started',
+      startedAt: 1000,
+    });
+    expect(stmts.addSessionProgress.run).toHaveBeenCalledWith(
+      'sess-1',
+      '__session_workspace__',
+      SESSION_WORKSPACE_STEP,
+      'started',
+      1000,
+      null,
+      null,
+    );
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session-progress',
+        sessionId: 'sess-1',
+        step: SESSION_WORKSPACE_STEP,
+        status: 'started',
+        startedAt: 1000,
+      }),
     );
   });
 });

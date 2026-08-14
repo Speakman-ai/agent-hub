@@ -198,4 +198,18 @@ describe('ProgressPanel render', () => {
     expect(screen.getByText('Launching session VM')).toBeInTheDocument();
     expect(screen.getByLabelText('in progress')).toBeInTheDocument();
   });
+
+  it('renders Preparing session workspace while the git clone is in flight', () => {
+    const steps = [
+      {
+        step: 'Preparing session workspace',
+        status: 'started',
+        startedAt: Date.now() - 1000,
+      },
+    ];
+    render(<ProgressPanel steps={steps} sessionRunning={false} />);
+    expect(screen.getByTestId('progress-panel')).toBeInTheDocument();
+    expect(screen.getByText('Preparing session workspace')).toBeInTheDocument();
+    expect(screen.getByLabelText('in progress')).toBeInTheDocument();
+  });
 });

@@ -65,7 +65,8 @@ export interface SessionEnvManagerDeps {
   resolvePublishPorts?: (sessionId: string) => number[] | null;
   /**
    * Project `sessionStartupCommands` for this session (empty = skip).
-   * Looked up after mountWorktree; run in the background without blocking ensure.
+   * Looked up after mountWorktree. `ensure()` does not wait for them unless
+   * `{ waitForStartup: true }` is passed (autonomous dispatch).
    */
   resolveStartupCommands?: (sessionId: string) => string[];
   /**
@@ -108,12 +109,24 @@ export interface SessionEnvManagerDeps {
 
 const DEFAULT_IDLE_TTL_MS = 4 * 60 * 60 * 1000;
 
+export type SessionEnvEnsureOpts = {
+  /**
+   * Wait until project `sessionStartupCommands` finish (ready / failed /
+   * skipped) before resolving. Default false — interactive chat and preview
+   * can start while npm install / venv setup still run in the background.
+   * Autonomous dispatch passes true so the first turn sees a finished env.
+   */
+  waitForStartup?: boolean;
+};
+
 interface Entry {
   /** In-flight or settled creation. One per session, so `ensure` races collapse. */
   promise: Promise<SessionEnv>;
   env: SessionEnv | null;
   /** Cancels in-flight session startup hooks on dispose. */
   startupAbort?: AbortController;
+  /** Settles when startup hooks finish (or immediately when none were configured). */
+  startupPromise?: Promise<unknown>;
 }
 
 export class SessionEnvManager {
@@ -147,22 +160,28 @@ export class SessionEnvManager {
    * The session's environment, creating it on first use. Idempotent and
    * safe under concurrent callers — the preview and the terminal starting
    * at the same moment must not produce two containers for one session.
+   *
+   * Resolves after the adapter is mounted (VM / container / host). Pass
+   * `{ waitForStartup: true }` to also wait for project session-startup
+   * hooks (npm install, venv, …) before returning.
    */
-  ensure(sessionId: string): Promise<SessionEnv> {
+  ensure(sessionId: string, opts: SessionEnvEnsureOpts = {}): Promise<SessionEnv> {
     // A dispose in flight owns the session name — wait for it before deciding
     // whether to reuse (failed stop) or replace (successful stop).
     const pendingTeardown = this.teardowns.get(sessionId);
     if (pendingTeardown) {
       return pendingTeardown.then(
-        () => this.ensure(sessionId),
-        () => this.ensure(sessionId),
+        () => this.ensure(sessionId, opts),
+        () => this.ensure(sessionId, opts),
       );
     }
     const existing = this.entries.get(sessionId);
     // A disposed env is not reusable; drop it and build a fresh one.
     // A live env whose prior dispose failed stays here (disposed === false)
     // so we never allocate a second environment against the same resources.
-    if (existing && !(existing.env?.disposed ?? false)) return existing.promise;
+    if (existing && !(existing.env?.disposed ?? false)) {
+      return this.#awaitEnsure(sessionId, existing.promise, opts);
+    }
     if (existing) this.entries.delete(sessionId);
 
     const entry: Entry = {
@@ -179,7 +198,28 @@ export class SessionEnvManager {
       if (entry.env && !entry.env.disposed && entry.env.retainAfterFailedEnsure()) return;
       this.entries.delete(sessionId);
     });
-    return entry.promise;
+    return this.#awaitEnsure(sessionId, entry.promise, opts);
+  }
+
+  /**
+   * Wait until this session's startup hooks have settled. No-op when none
+   * were configured or the env is not live.
+   */
+  async whenStartupSettled(sessionId: string): Promise<void> {
+    const startup = this.entries.get(sessionId)?.startupPromise;
+    if (startup) await startup;
+  }
+
+  #awaitEnsure(
+    sessionId: string,
+    envPromise: Promise<SessionEnv>,
+    opts: SessionEnvEnsureOpts,
+  ): Promise<SessionEnv> {
+    if (!opts.waitForStartup) return envPromise;
+    return envPromise.then(async (env) => {
+      await this.whenStartupSettled(sessionId);
+      return env;
+    });
   }
 
   async #create(sessionId: string, entry: Entry): Promise<SessionEnv> {
@@ -252,12 +292,14 @@ export class SessionEnvManager {
       }
       this.logger.log(`[session-env] ${sessionId}: ready on "${kind}" adapter`);
 
-      // Background project startup hooks — never block ensure()/chat. Abort on dispose.
+      // Project startup hooks. `ensure()` does not await these unless the
+      // caller passed `{ waitForStartup: true }` (autonomous dispatch).
+      // Abort on dispose.
       const commands = this.deps.resolveStartupCommands?.(sessionId) ?? [];
       if (commands.length > 0) {
         const abort = new AbortController();
         entry.startupAbort = abort;
-        void startSessionStartupHooks({
+        entry.startupPromise = startSessionStartupHooks({
           sessionId,
           env,
           commands,
@@ -269,6 +311,7 @@ export class SessionEnvManager {
           this.logger.log(
             `[session-env] ${sessionId}: startup hooks ${status.status} (${commands.length} command(s))`,
           );
+          return status;
         });
       }
 

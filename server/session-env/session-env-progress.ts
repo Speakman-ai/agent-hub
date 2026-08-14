@@ -8,10 +8,13 @@
 import type { BroadcastFn, ProgressStepEvent, ProgressStepStatus } from '../types.js';
 import { buildSessionEventBroadcast } from '../session-event-broadcast.js';
 import { clampPayload } from '../session-events-store.js';
-import { SESSION_ENV_LAUNCH_STEP } from '../../shared/utils/sessionEnvLaunch.js';
+import {
+  SESSION_ENV_LAUNCH_STEP,
+  SESSION_WORKSPACE_STEP,
+} from '../../shared/utils/sessionEnvLaunch.js';
 import { SESSION_STARTUP_STEP } from './session-startup-hooks.js';
 
-export { SESSION_ENV_LAUNCH_STEP, SESSION_STARTUP_STEP };
+export { SESSION_ENV_LAUNCH_STEP, SESSION_STARTUP_STEP, SESSION_WORKSPACE_STEP };
 
 type StmtRun = { run: (...args: any[]) => unknown };
 
@@ -23,6 +26,7 @@ export type SessionEnvProgressStmts = {
 
 const SESSION_STARTUP_MESSAGE_ID = '__session_startup__';
 const SESSION_ENV_LAUNCH_MESSAGE_ID = '__session_env_launch__';
+const SESSION_WORKSPACE_MESSAGE_ID = '__session_workspace__';
 
 function emitProgressStep(args: {
   stmts: SessionEnvProgressStmts;
@@ -169,6 +173,29 @@ export function emitSessionStartupProgress(args: {
     startedAt: args.startedAt,
     finishedAt: args.finishedAt,
     detail: args.detail,
+    log: args.log,
+  });
+}
+
+/** Git clone / worktree attach — covers the silent gap before VM boot. */
+export function emitSessionWorkspaceProgress(args: {
+  stmts: SessionEnvProgressStmts;
+  broadcast: BroadcastFn;
+  sessionId: string;
+  status: ProgressStepStatus;
+  startedAt: number;
+  finishedAt?: number;
+  log?: (msg: string) => void;
+}): void {
+  emitProgressStep({
+    stmts: args.stmts,
+    broadcast: args.broadcast,
+    sessionId: args.sessionId,
+    messageId: SESSION_WORKSPACE_MESSAGE_ID,
+    step: SESSION_WORKSPACE_STEP,
+    status: args.status,
+    startedAt: args.startedAt,
+    finishedAt: args.finishedAt,
     log: args.log,
   });
 }

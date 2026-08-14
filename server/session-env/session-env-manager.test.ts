@@ -133,7 +133,7 @@ function makeManager(
     createEnv: (kind, o) => {
       opts.onCreateOpts?.(o);
       const env = new FakeEnv(kind, o.sessionId, o.worktreePath, async (cmd) => {
-        if (opts.slowStartupMs && cmd.startsWith('sleep-hook')) {
+        if (opts.slowStartupMs && cmd.includes('sleep-hook')) {
           await new Promise((r) => setTimeout(r, opts.slowStartupMs));
         }
         return { stdout: '', stderr: '', exitCode: 0 };
@@ -484,6 +484,28 @@ describe('SessionEnvManager session startup hooks', () => {
       },
       { timeout: 2000 },
     );
+  });
+
+  it('waitForStartup holds until a slow startup hook finishes', async () => {
+    const { manager } = makeManager({
+      resolveStartupCommands: () => ['sleep-hook-long'],
+      slowStartupMs: 200,
+    });
+    const t0 = Date.now();
+    await manager.ensure('s1', { waitForStartup: true });
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(150);
+    expect(getSessionStartupStatus('s1')?.status).toBe('ready');
+  });
+
+  it('a later waitForStartup caller waits on hooks started by a non-waiting ensure', async () => {
+    const { manager } = makeManager({
+      resolveStartupCommands: () => ['sleep-hook-long'],
+      slowStartupMs: 200,
+    });
+    await manager.ensure('s1');
+    expect(getSessionStartupStatus('s1')?.status).not.toBe('ready');
+    await manager.ensure('s1', { waitForStartup: true });
+    expect(getSessionStartupStatus('s1')?.status).toBe('ready');
   });
 });
 

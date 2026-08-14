@@ -105,7 +105,7 @@ import {
   registerFirecrackerBackend,
   unregisterFirecrackerBackend,
 } from './session-env/firecracker/register-firecracker-backend.js';
-import { SessionEnvManager } from './session-env/session-env-manager.js';
+import { SessionEnvManager, type SessionEnvEnsureOpts } from './session-env/session-env-manager.js';
 import { worktreeSharingForKind } from './session-env/session-env.js';
 import {
   allocateEphemeralHostPort,
@@ -117,6 +117,7 @@ import { getProjectSessionStartupCommands } from './session-env/session-startup-
 import {
   emitSessionStartupProgress,
   emitSessionEnvLaunchProgress,
+  emitSessionWorkspaceProgress,
 } from './session-env/session-env-progress.js';
 import {
   describeSessionEnvPortRouting,
@@ -384,6 +385,7 @@ let CODEX_BIN: string = config.codexBin;
 let GROK_BIN: string = config.grokBin;
 
 let handleChat: ((ws: unknown, msg: ChatMessage) => Promise<void>) | undefined;
+let prepareAutonomousSessionEnv: (sessionId: string) => Promise<void> = async () => {};
 
 /**
  * Collaborators the unattended security scans (on-push, scheduled) need to
@@ -857,6 +859,7 @@ initAutonomous({
   findProject: findProject as (id: string) => Project | undefined,
   findAgent,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
+  prepareSessionEnv: (sessionId: string) => prepareAutonomousSessionEnv(sessionId),
   handleCancel,
   getActiveProcesses: () => activeProcesses,
   getProjects,
@@ -1717,22 +1720,56 @@ export const routeDeps: RouteDeps = {
     const { project, agent } = found;
     const installCommand =
       (project as { commands?: { install?: string | null } }).commands?.install ?? null;
-    // Side-effect-free: only materialize the host seed worktree. Firecracker /
-    // container boots happen later via chat / ensureSessionEnv so creating a
-    // session (or opening Finalize setup) does not pay for a VM that may never
-    // run a turn.
-    return ensureWorktree(
-      session,
-      project.cwd,
-      agent.id,
-      installCommand,
-      null,
-      project.repoUrl ?? null,
-      project.id,
-      undefined,
-      project.githubRepo ?? null,
-      hostedBarePathForProject(project),
-    );
+    const workspaceStartedAt = Date.now();
+    emitSessionWorkspaceProgress({
+      stmts: stmts!,
+      broadcast,
+      sessionId,
+      status: 'started',
+      startedAt: workspaceStartedAt,
+    });
+    let worktreePath: string;
+    try {
+      worktreePath = await ensureWorktree(
+        session,
+        project.cwd,
+        agent.id,
+        installCommand,
+        null,
+        project.repoUrl ?? null,
+        project.id,
+        undefined,
+        project.githubRepo ?? null,
+        hostedBarePathForProject(project),
+      );
+    } catch (err) {
+      emitSessionWorkspaceProgress({
+        stmts: stmts!,
+        broadcast,
+        sessionId,
+        status: 'failed',
+        startedAt: workspaceStartedAt,
+        finishedAt: Date.now(),
+      });
+      throw err;
+    }
+    emitSessionWorkspaceProgress({
+      stmts: stmts!,
+      broadcast,
+      sessionId,
+      status: 'completed',
+      startedAt: workspaceStartedAt,
+      finishedAt: Date.now(),
+    });
+    // Session open used to clone git only and boot the VM later (first chat /
+    // GET /changes). That left ~10s of blank UI during clone, then a delayed
+    // "Launching session VM". Block workspace ensure on VM mount so the
+    // Progress panel covers clone + boot before the session is ready.
+    if (getProjectMode(project) !== 'workflow') {
+      await whenSessionEnvSelectionReady();
+      await sessionEnvManager.ensure(sessionId);
+    }
+    return worktreePath;
   },
   switchSessionWorkspaceBranch: async (sessionId: string, branch: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
@@ -1968,9 +2005,9 @@ const chatHandler = createChatHandler({
   createCursorChat: undefined,
   ensureWorktree,
   drainQueue: (sessionId: string) => drainQueue(sessionId),
-  ensureSessionEnv: async (sessionId: string) => {
+  ensureSessionEnv: async (sessionId: string, opts?: SessionEnvEnsureOpts) => {
     await whenSessionEnvSelectionReady();
-    return sessionEnvManager.ensure(sessionId);
+    return sessionEnvManager.ensure(sessionId, opts);
   },
   rescheduleCron,
   getDevServerRuntime: () => devServerRuntime,
@@ -1989,6 +2026,20 @@ const chatHandler = createChatHandler({
 handleChat = chatHandler.handleChat as (ws: unknown, msg: ChatMessage) => Promise<void>;
 saveErrorMessage = chatHandler.saveErrorMessage;
 chatHandler.initMultiAgent();
+
+prepareAutonomousSessionEnv = async (sessionId: string) => {
+  const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+  if (!session) throw new Error('Session not found');
+  const found = findAgent(session.agent_id);
+  if (!found) throw new Error('Agent not found');
+  // Spike / no-worktree / workflow sessions have no per-session VM. Skip.
+  if (!sessionUsesWorktree(session) || getProjectMode(found.project) === 'workflow') {
+    return;
+  }
+  await routeDeps.provisionSessionWorkspace!(sessionId);
+  await whenSessionEnvSelectionReady();
+  await sessionEnvManager.ensure(sessionId, { waitForStartup: true });
+};
 
 setTriggerAutoSessionShip(async ({ sessionId, project, agent, session }) => {
   const result = triggerSessionShip({
