@@ -31,6 +31,27 @@ export function labelsFieldFromInput(raw: string | null | undefined): string {
 
 export const DEFAULT_EPIC_COLOR = '#6366F1';
 
+/**
+ * Sentinel id used inside the board's selected-epic set to mean "cards with no
+ * epic". Not a real epic id (real ids are UUIDs), so it never collides and it
+ * serializes into saved views (kanbanFilterSets) transparently as a string.
+ */
+export const NO_EPIC_FILTER_ID = '__no_epic__';
+
+/**
+ * Does a card pass the board's epic filter? An empty selection matches every
+ * card. NO_EPIC_FILTER_ID matches cards with no epic; concrete epic ids match
+ * cards linked to that epic. Selections combine with OR, so "No epic" plus a
+ * specific epic shows unlinked cards together with that epic's cards. Mirrors
+ * mobile/src/utils/epics.ts.
+ */
+export function cardMatchesEpicFilter(card: any, selectedEpicIds: any): boolean {
+  const set = selectedEpicIds instanceof Set ? selectedEpicIds : new Set(selectedEpicIds || []);
+  if (set.size === 0) return true;
+  if (!card?.epic_id) return set.has(NO_EPIC_FILTER_ID);
+  return set.has(card.epic_id);
+}
+
 export const EPIC_STATE_LABELS = {
   not_started: 'Not started',
   in_progress: 'In progress',

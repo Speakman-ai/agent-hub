@@ -140,14 +140,23 @@ export function epicFormToCreateBody(form: any) {
     };
 }
 /**
- * Filter cards by epic id. A null/undefined filter returns all cards.
- * Used by the board-level epic dropdown.
+ * Sentinel epic-filter value meaning "cards with no epic". Not a real epic id
+ * (real ids are UUIDs), so it never collides. Mirrors client/src/utils/epics.ts.
+ */
+export const NO_EPIC_FILTER_ID = '__no_epic__';
+
+/**
+ * Filter cards by epic id. A null/undefined filter returns all cards. The
+ * NO_EPIC_FILTER_ID sentinel returns only cards with no epic. Used by the
+ * board-level epic dropdown.
  */
 export function filterCardsByEpic(cards: any, epicId: any) {
     if (!Array.isArray(cards))
         return [];
     if (!epicId)
         return cards;
+    if (epicId === NO_EPIC_FILTER_ID)
+        return cards.filter((c: any) => !c.epic_id);
     return cards.filter((c: any) => c.epic_id === epicId);
 }
 /**

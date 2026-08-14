@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicStateLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, epicBranchTogglePatch, featureBranchNameFromName, } from './epics';
+import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicStateLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, epicBranchTogglePatch, featureBranchNameFromName, NO_EPIC_FILTER_ID, } from './epics';
 describe('EPIC_COLORS', () => {
     it('matches the web palette', () => {
         expect(EPIC_COLORS).toEqual([
@@ -240,6 +240,9 @@ describe('filterCardsByEpic', () => {
     it('returns only cards for the given epic id', () => {
         expect(filterCardsByEpic(cards, 'e1')).toEqual([cards[0]]);
         expect(filterCardsByEpic(cards, 'e2')).toEqual([cards[1]]);
+    });
+    it('returns only cards with no epic for the No-epic sentinel', () => {
+        expect(filterCardsByEpic(cards, NO_EPIC_FILTER_ID)).toEqual([cards[2]]);
     });
     it('handles non-array input defensively', () => {
         expect(filterCardsByEpic(null, 'e1')).toEqual([]);

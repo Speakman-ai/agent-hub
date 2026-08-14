@@ -66,6 +66,7 @@ import {
 } from '../utils/kanbanColumnCollapse';
 import { collectDistinctLabels, cardMatchesLabelFilter } from '../utils/kanbanLabels';
 import { cardMatchesUserFilter, usernameForUserId } from '../utils/kanbanUserFilter';
+import { cardMatchesEpicFilter } from '../utils/epics';
 import { MarkdownContent } from './MarkdownRenderer';
 import FinalizeCardBadge from './finalize/CardBadge';
 import CardContextMenu from './CardContextMenu';
@@ -1465,9 +1466,7 @@ export default function KanbanBoard({
     const q = searchQuery.toLowerCase().trim();
     return cards
       .filter((c: any) => c.column_id === columnId)
-      .filter(
-        (c: any) => selectedEpicIds.size === 0 || (c.epic_id && selectedEpicIds.has(c.epic_id)),
-      )
+      .filter((c: any) => cardMatchesEpicFilter(c, selectedEpicIds))
       .filter((c: any) => cardMatchesLabelFilter(c, selectedLabels))
       .filter((c: any) => cardMatchesUserFilter(c, selectedUserIds))
       .filter(

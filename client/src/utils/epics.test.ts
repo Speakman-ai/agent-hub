@@ -12,6 +12,8 @@ import {
   epicStateLabel,
   epicBranchTogglePatch,
   featureBranchNameFromName,
+  cardMatchesEpicFilter,
+  NO_EPIC_FILTER_ID,
 } from './epics';
 
 describe('autonomousFormFromRow', () => {
@@ -109,6 +111,44 @@ describe('epicsWithActiveCards', () => {
 
   it('returns an empty array for a non-array input', () => {
     expect(epicsWithActiveCards(null, countFor, null)).toEqual([]);
+  });
+});
+
+describe('cardMatchesEpicFilter', () => {
+  const linked = { id: 'c1', epic_id: 'e1' };
+  const other = { id: 'c2', epic_id: 'e2' };
+  const unlinked = { id: 'c3', epic_id: null };
+
+  it('matches every card when the selection is empty', () => {
+    const empty = new Set<string>();
+    expect(cardMatchesEpicFilter(linked, empty)).toBe(true);
+    expect(cardMatchesEpicFilter(unlinked, empty)).toBe(true);
+  });
+
+  it('matches cards linked to a selected epic', () => {
+    const sel = new Set(['e1']);
+    expect(cardMatchesEpicFilter(linked, sel)).toBe(true);
+    expect(cardMatchesEpicFilter(other, sel)).toBe(false);
+    expect(cardMatchesEpicFilter(unlinked, sel)).toBe(false);
+  });
+
+  it('matches only unlinked cards when No epic is selected', () => {
+    const sel = new Set([NO_EPIC_FILTER_ID]);
+    expect(cardMatchesEpicFilter(unlinked, sel)).toBe(true);
+    expect(cardMatchesEpicFilter({ id: 'c4', epic_id: undefined }, sel)).toBe(true);
+    expect(cardMatchesEpicFilter(linked, sel)).toBe(false);
+  });
+
+  it('combines No epic with a concrete epic using OR', () => {
+    const sel = new Set([NO_EPIC_FILTER_ID, 'e1']);
+    expect(cardMatchesEpicFilter(linked, sel)).toBe(true);
+    expect(cardMatchesEpicFilter(unlinked, sel)).toBe(true);
+    expect(cardMatchesEpicFilter(other, sel)).toBe(false);
+  });
+
+  it('accepts an array selection and defends against nullish input', () => {
+    expect(cardMatchesEpicFilter(unlinked, [NO_EPIC_FILTER_ID])).toBe(true);
+    expect(cardMatchesEpicFilter(linked, null)).toBe(true);
   });
 });
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bookmark, CheckSquare, Search, Square, Tag, Target, Trash2, User, X } from 'lucide-react';
 import KanbanUserFilterChips from './KanbanUserFilterChips';
 import { api } from '../utils/api';
-import { nonDoneEpicsForFilter } from '../utils/epics';
+import { nonDoneEpicsForFilter, NO_EPIC_FILTER_ID } from '../utils/epics';
 import {
   applySnapshot,
   deleteFilterSet,
@@ -345,6 +345,33 @@ export default function KanbanSidebarEpicsPanel({
             Clear ({selectedEpicIds.size})
           </button>
         ) : null}
+      </div>
+
+      <div className="mb-2 px-1">
+        <button
+          type="button"
+          onClick={() => toggleEpic(NO_EPIC_FILTER_ID)}
+          data-testid="kanban-sidebar-epic-none"
+          className={`flex w-full items-center gap-2.5 px-2.5 py-2 rounded-lg text-left transition-colors border border-white/[0.06] ${
+            selectedEpicIds.has(NO_EPIC_FILTER_ID)
+              ? 'bg-indigo-500/10'
+              : 'bg-white/[0.02] hover:bg-white/[0.04]'
+          }`}
+        >
+          <span
+            className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 ${
+              selectedEpicIds.has(NO_EPIC_FILTER_ID) ? 'text-indigo-300' : 'text-gray-600'
+            }`}
+          >
+            {selectedEpicIds.has(NO_EPIC_FILTER_ID) ? (
+              <CheckSquare size={14} />
+            ) : (
+              <Square size={14} />
+            )}
+          </span>
+          <span className="w-2 h-2 rounded-full flex-shrink-0 border border-dashed border-gray-500" />
+          <span className="flex-1 min-w-0 truncate text-sm text-gray-300">No epic</span>
+        </button>
       </div>
 
       {visibleEpics.length > 0 ? (

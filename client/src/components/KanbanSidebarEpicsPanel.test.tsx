@@ -73,6 +73,43 @@ describe('KanbanSidebarEpicsPanel', () => {
     expect(within(panel).getByTestId('kanban-sidebar-label-list')).toBeInTheDocument();
   });
 
+  it('toggles the "No epic" pseudo-selection with the sentinel id', () => {
+    const onSelectedEpicIdsChange = vi.fn();
+    render(
+      <KanbanSidebarEpicsPanel
+        projectId="p1"
+        searchQuery=""
+        onSearchChange={vi.fn()}
+        selectedEpicIds={new Set()}
+        onSelectedEpicIdsChange={onSelectedEpicIdsChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('kanban-sidebar-epic-none'));
+    expect(onSelectedEpicIdsChange).toHaveBeenCalled();
+    const next = onSelectedEpicIdsChange.mock.calls[0][0] as Set<string>;
+    expect(next.has('__no_epic__')).toBe(true);
+  });
+
+  it('offers the "No epic" toggle even when the board has no epics', async () => {
+    (api.getEpics as any).mockResolvedValueOnce([]);
+    render(
+      <KanbanSidebarEpicsPanel
+        projectId="p1"
+        searchQuery=""
+        onSearchChange={vi.fn()}
+        selectedEpicIds={new Set()}
+        onSelectedEpicIdsChange={vi.fn()}
+      />,
+    );
+
+    const panel = screen.getByTestId('kanban-sidebar-epics-panel');
+    await waitFor(() =>
+      expect(within(panel).getByText('No epics on the board yet.')).toBeInTheDocument(),
+    );
+    expect(within(panel).getByTestId('kanban-sidebar-epic-none')).toBeInTheDocument();
+  });
+
   it('hides done epics from the filter list but keeps selected done epics', async () => {
     (api.getEpics as any).mockResolvedValueOnce([
       { id: 'e1', name: 'Platform', color: '#6366F1', autonomous: 0, state: 'in_progress' },

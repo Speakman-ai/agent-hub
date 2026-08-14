@@ -6,7 +6,7 @@ import { useApp } from '../context/AppContext';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicBranchTogglePatch, } from '../utils/epics';
+import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicBranchTogglePatch, NO_EPIC_FILTER_ID, } from '../utils/epics';
 import { findAgentByName, hasActiveSession, buildAssigneeOptions, filterAgentsByProject, validModelsForAgent, engineEntriesWithModels, assignedSessionId, } from '../utils/kanbanAssign';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 import { isPrematureDoneMoveError, PREMATURE_DONE_MOVE_EXPLANATION, PREMATURE_DONE_MOVE_TITLE, } from '@shared/utils/prematureDoneMove';
@@ -1459,6 +1459,9 @@ export default function KanbanScreen({ route, navigation }: any) {
               <Text style={styles.epicFilterText} numberOfLines={1}>
                 {epicDropdownLabel(selectedEpic)}
               </Text>
+            </>) : selectedEpicId === NO_EPIC_FILTER_ID ? (<>
+              <View style={[styles.epicDot, { backgroundColor: colors.gray600 }]}/>
+              <Text style={styles.epicFilterText} numberOfLines={1}>No epic</Text>
             </>) : (<Text style={styles.epicFilterText}>All Epics ({epics.length})</Text>)}
           <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
         </TouchableOpacity>
@@ -1663,6 +1666,13 @@ export default function KanbanScreen({ route, navigation }: any) {
         }}>
                 <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]}/>
                 <Text style={styles.modalOptionText}>All Epics ({epics.length})</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalOption} onPress={() => {
+            setSelectedEpicId(NO_EPIC_FILTER_ID);
+            setShowEpicFilterModal(false);
+        }}>
+                <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]}/>
+                <Text style={styles.modalOptionText}>No epic ({filterCardsByEpic(cards, NO_EPIC_FILTER_ID).length})</Text>
               </TouchableOpacity>
               {epicsWithActiveCards(epics, (id: any) => countOpenCardsForEpic(cards, id, doneColumnIds), selectedEpicId).map((epic: any) => {
             const count = countOpenCardsForEpic(cards, epic.id, doneColumnIds);
