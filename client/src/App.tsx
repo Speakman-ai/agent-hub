@@ -5419,14 +5419,6 @@ export default function App({ initialView }: any = {}) {
             loadedSessionsAgentId={loadedSessionsAgentId}
             loadedArchivedAgentId={loadedArchivedAgentId}
             onFocusSession={focusAgentSession}
-            onOrchestrationSave={async (body: any) => {
-              if (!activeSessionId) return null;
-              const row = await api.setSessionOrchestration(activeSessionId, body);
-              setSessions((prev: any) =>
-                prev.map((s: any) => (s.id === activeSessionId ? { ...s, ...row } : s)),
-              );
-              return row;
-            }}
             showToast={showToast}
             connected={connected}
             reconnecting={reconnecting}
@@ -5509,13 +5501,6 @@ export default function App({ initialView }: any = {}) {
             openPullCounts={openPullCounts}
             securityOpenCounts={securityOpenCounts}
             activeReviews={activeReviews}
-            designs={designs}
-            activeDesignId={activeDesignId}
-            onSelectDesign={(id: any) => {
-              setActiveDesignId(id);
-              setActiveSessionId(null);
-              setSidebarOpen(false);
-            }}
             electronSuppressHealthFetch={isElectron}
             electronHealthSnapshot={electronDesktopHealth}
             kanbanProjectId={currentView.startsWith('kanban:') ? currentView.split(':')[1] : null}
@@ -5581,9 +5566,6 @@ export default function App({ initialView }: any = {}) {
                     canForward={
                       !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
                     }
-                    onOpenLinkDesign={() => setShowLinkDesign(true)}
-                    canLinkDesign={!!activeSessionId}
-                    linkedDesignActive={!!linkedDesign}
                   />
 
                   <SessionSummarySidebar

@@ -214,6 +214,18 @@ describe('<TopBar /> reviewer-agent "+ New" gating', () => {
   });
 });
 
+describe('<TopBar /> retired designs chrome', () => {
+  it('does not render the link-a-design button', () => {
+    renderTopBar({
+      onOpenLinkDesign: vi.fn(),
+      canLinkDesign: true,
+      linkedDesignActive: true,
+    });
+    expect(screen.queryByTestId('topbar-link-design')).toBeNull();
+    expect(screen.queryByLabelText(/link a design/i)).toBeNull();
+  });
+});
+
 describe('<TopBar /> accent color', () => {
   it('uses accentColor for the header dot and border when provided', () => {
     const { container } = renderTopBar({

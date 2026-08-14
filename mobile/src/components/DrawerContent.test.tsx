@@ -219,3 +219,44 @@ describe('mobile DrawerContent collapsed-project hydration', () => {
     expect(testState.api.putMySidebarCollapsedProject).toHaveBeenCalledTimes(1);
   });
 });
+
+function collectText(node: any, acc: string[] = []): string[] {
+  if (!node) return acc;
+  if (typeof node === 'string' || typeof node === 'number') {
+    acc.push(String(node));
+    return acc;
+  }
+  const children = node.children ?? node.props?.children;
+  if (Array.isArray(children)) {
+    for (const child of children) collectText(child, acc);
+  } else if (children) {
+    collectText(children, acc);
+  }
+  return acc;
+}
+
+describe('mobile DrawerContent — retired Designs chrome', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sharedSaverState.savers.length = 0;
+    testState.accountKey = 'sidebarCollapsedProjects:user-a';
+    testState.cacheLoad.mockResolvedValue([]);
+    testState.cacheSaverFactory.mockImplementation(() => ({
+      save: vi.fn(() => Promise.resolve()),
+      cancel: vi.fn(),
+    }));
+    testState.api.getHealth.mockResolvedValue({});
+    testState.api.getGoogleStatus.mockResolvedValue({ connected: false });
+    testState.api.getMySidebarCollapsedProjects.mockResolvedValue({
+      sidebarCollapsedProjects: [],
+    });
+  });
+
+  it('does not render a Designs bottom-nav entry', async () => {
+    const nav = navigation();
+    const renderer = await renderDrawer(nav);
+    const texts = collectText(renderer.toJSON());
+    expect(texts).not.toContain('Designs');
+    expect(nav.navigate).not.toHaveBeenCalledWith('Designs');
+  });
+});

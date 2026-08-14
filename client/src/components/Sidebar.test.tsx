@@ -1671,3 +1671,32 @@ describe('Sidebar kanban board mode', () => {
     }
   });
 });
+
+describe('Sidebar — retired Designs and outer-orchestration chrome', () => {
+  it('does not render the standalone Designs module even when designs exist', () => {
+    render(
+      <Sidebar
+        {...buildProps({
+          designs: [{ id: 'd1', name: 'Landing mock' }],
+          activeDesignId: 'd1',
+          onSelectDesign: vi.fn(),
+        })}
+      />,
+    );
+    expect(screen.queryByText('Designs')).not.toBeInTheDocument();
+    expect(screen.queryByText('Landing mock')).not.toBeInTheDocument();
+  });
+
+  it('does not render outer orchestration controls for an active chat session', () => {
+    render(
+      <Sidebar
+        {...buildProps({
+          currentView: 'chat',
+          activeSessionId: 's-running',
+          onOrchestrationSave: vi.fn(),
+        })}
+      />,
+    );
+    expect(screen.queryByText('Outer orchestration')).not.toBeInTheDocument();
+  });
+});

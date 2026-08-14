@@ -23,7 +23,6 @@ import {
   BarChart3,
   House,
   Plus,
-  Palette,
   Archive,
   RotateCcw,
   Loader2,
@@ -51,7 +50,6 @@ import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle } from '@shared/uti
 import { parseNativePrUrl } from '../utils/prFormatting';
 import AgentAvatar from './AgentAvatar';
 import { daysUntilPurge } from '../utils/time';
-import SidebarSessionOrchestration from './SidebarSessionOrchestration';
 import SessionStateIcon from './SessionStateIcon';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import { deriveWatchIndicator, watchIndicatorTitle } from '../utils/backgroundShells';
@@ -161,9 +159,6 @@ export default function Sidebar({
   /** Per-project open-severity counts: { [projectId]: { critical, high, … } }. */
   securityOpenCounts = {},
   activeReviews = {},
-  designs = [],
-  activeDesignId,
-  onSelectDesign,
   subagentsBySession = {},
   /**
    * Map of sessionId → running Hub-owned background shells. Sessions with a
@@ -184,8 +179,6 @@ export default function Sidebar({
   archivedSessions = [],
   onRestoreSession,
   restoringSessionIds = new Set(),
-  /** Optional PAV controls for the active chat session (left sidebar). */
-  onOrchestrationSave,
   showToast,
   connected = false,
   reconnecting = false,
@@ -525,11 +518,6 @@ export default function Sidebar({
       </button>
     );
   };
-
-  const orchestrationSession =
-    currentView === 'chat' && activeSessionId
-      ? (sessions.find((s: any) => s.id === activeSessionId) ?? null)
-      : null;
 
   const isKanbanView = Boolean(kanbanProjectId);
   const kanbanProject = isKanbanView ? projects.find((p: any) => p.id === kanbanProjectId) : null;
@@ -1937,54 +1925,6 @@ export default function Sidebar({
               }}
             />
           )}
-
-          {/* Designs — top-level nav section (not project-scoped).
-              Entry point for the Claude Design canvas; clicking opens the
-              designs list where the user can create/open a design. */}
-          <div className="mt-4">
-            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
-              Design
-            </div>
-            <button
-              onClick={() => onNavigate('designs')}
-              className={`w-full text-left px-3 py-2.5 rounded-lg mb-0.5 flex items-center gap-2 text-sm transition-colors ${
-                currentView === 'designs' || currentView === 'design'
-                  ? 'bg-gray-800 text-white'
-                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-              }`}
-            >
-              <Palette size={14} className="flex-shrink-0 text-purple-400" />
-              <span className="truncate">Designs</span>
-              {designs.length > 0 && (
-                <span className="text-gray-600 text-xs ml-auto">{designs.length}</span>
-              )}
-            </button>
-            {designs.slice(0, 5).map((d: any) => (
-              <button
-                key={d.id}
-                onClick={() => {
-                  onSelectDesign?.(d.id);
-                  onNavigate('design', d.id);
-                }}
-                className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                  activeDesignId === d.id && currentView === 'design'
-                    ? 'bg-gray-800 text-white'
-                    : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                }`}
-              >
-                <Palette size={12} className="flex-shrink-0" />
-                <span className="truncate">{d.name}</span>
-              </button>
-            ))}
-          </div>
-
-          {orchestrationSession && onOrchestrationSave ? (
-            <SidebarSessionOrchestration
-              session={orchestrationSession}
-              onOrchestrationSave={onOrchestrationSave}
-              showToast={showToast}
-            />
-          ) : null}
         </div>
       </div>
 

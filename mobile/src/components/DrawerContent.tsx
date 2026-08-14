@@ -680,13 +680,6 @@ export default function DrawerContent({ navigation }: any) {
               "Settings" submenu, matching the web sidebar's project-scoped grouping. */}
       <View style={styles.bottomNav}>
         <TouchableOpacity style={styles.navButton} onPress={() => {
-            navigation.navigate('Designs');
-            navigation.closeDrawer();
-        }}>
-          <HubIcon name="Palette" size={16} color={colors.purple400} style={styles.navButtonIcon}/>
-          <Text style={styles.navButtonText}>Designs</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navButton} onPress={() => {
             navigation.navigate('Skills');
             navigation.closeDrawer();
         }}>
