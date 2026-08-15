@@ -13,6 +13,7 @@ import type { ChildProcess } from 'child_process';
 import {
   BackgroundShellRuntime,
   systemClock,
+  type BackgroundShellBroadcast,
   type BackgroundShellLogSink,
   type SpawnFn,
 } from './background-shell-runtime.js';
@@ -59,7 +60,9 @@ interface Harness {
   lastSpawnOpts: () => Record<string, unknown> | null;
 }
 
-function makeHarness(opts: { failSpawn?: boolean } = {}): Harness {
+function makeHarness(
+  opts: { failSpawn?: boolean; broadcast?: BackgroundShellBroadcast } = {},
+): Harness {
   const db = new Database(':memory:');
   const children: FakeChild[] = [];
   const killCalls: Array<{ target: number; signal: NodeJS.Signals }> = [];
@@ -98,6 +101,7 @@ function makeHarness(opts: { failSpawn?: boolean } = {}): Harness {
     db,
     spawn,
     logSink,
+    broadcast: opts.broadcast,
     // Simulate the OS: signalling a process group (`-pid`) makes the
     // matching child exit-with-signal, so `waitForExit` resolves.
     kill: (target, signal) => {
@@ -140,6 +144,34 @@ describe('BackgroundShellRuntime.start', () => {
 
     expect(h.runtime.getLogTail(row.id)).toEqual(['compiling', 'warning: x']);
     expect(h.logs.get(row.id)).toContain('compiling');
+  });
+
+  it('broadcasts live log chunks from stdout and stderr', () => {
+    const logs: Array<{ sessionId: string; shellId: string; chunk: string }> = [];
+    const h = makeHarness({
+      broadcast: (e) => {
+        if (e.type === 'background_shell_log') logs.push(e);
+      },
+    });
+    const row = h.runtime.start(START);
+    h.children[0].emitData('stdout', 'compiling\n');
+    h.children[0].emitData('stderr', 'warning: x\n');
+
+    expect(logs).toEqual([
+      { type: 'background_shell_log', sessionId: 'sess-1', shellId: row.id, chunk: 'compiling\n' },
+      { type: 'background_shell_log', sessionId: 'sess-1', shellId: row.id, chunk: 'warning: x\n' },
+    ]);
+  });
+
+  it('does not broadcast empty log chunks', () => {
+    const types: string[] = [];
+    const h = makeHarness({
+      broadcast: (e) => types.push(e.type),
+    });
+    h.runtime.start(START);
+    types.length = 0;
+    h.children[0].emitData('stdout', '');
+    expect(types).toEqual([]);
   });
 
   it('keeps the log tail readable after the shell exits (cross-turn monitoring)', () => {
@@ -483,7 +515,9 @@ describe('BackgroundShellRuntime.list / boot reconcile', () => {
         return c as unknown as ChildProcess;
       }) as unknown as SpawnFn,
       logSink,
-      broadcast: (e) => events.push(e.shell.status),
+      broadcast: (e) => {
+        if (e.type === 'background_shell_update') events.push(e.shell.status);
+      },
     });
     runtime.start(START);
     children[0].emitExit(0);

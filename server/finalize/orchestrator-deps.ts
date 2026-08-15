@@ -15,6 +15,7 @@ import { buildEnrichedPrompt } from '../chat.js';
 import { createFinalizeStepLogStore } from './finalize-log-store.js';
 import type { OrchestratorDeps } from './orchestrator.js';
 import type { EnrichedAgent, KanbanCardRow, RouteDeps } from '../types.js';
+import { waitForPreFinalizeBackgroundShells } from './pre-finalize-background-shells.js';
 
 // ─── Stub seams (tests only) ─────────────────────────────────────────
 
@@ -107,6 +108,8 @@ export function buildOrchestratorDeps(
       { stmts: routeDeps.stmts, broadcast: routeDeps.broadcast },
       { cardId: card.id, projectId, moveToDoneOnPush: routeDeps.config.cardDoneOnPush !== false },
     ),
+    waitForBackgroundShells: async ({ sessionId, signal }) =>
+      waitForPreFinalizeBackgroundShells(routeDeps, sessionId, { signal }),
   };
 }
 

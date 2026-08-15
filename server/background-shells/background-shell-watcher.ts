@@ -65,6 +65,12 @@ export interface BackgroundShellWatcherDeps {
   getSession: (sessionId: string) => WatchSessionLike | undefined;
   /** True while a chat turn is in flight for this session. */
   isSessionBusy: (sessionId: string) => boolean;
+  /**
+   * True while Finalize is in flight for this session. Completions are
+   * dropped rather than deferred so they cannot wake a new process the
+   * moment the run parks or a fix turn ends.
+   */
+  isSessionFinalizing?: (sessionId: string) => boolean;
   /** Dispatch the wake turn. Mirrors `handleChat(null, msg)`. */
   dispatchChat: (msg: WatcherChatMessage) => Promise<unknown> | unknown;
   /** Write a `role: 'system'` transcript line. Used only for the give-up notice. */
@@ -237,6 +243,7 @@ export class BackgroundShellWatcher {
       finishedShells: finished.map(toSummary),
       sessionGone: !session || Boolean(session.deleted_at),
       sessionBusy: this.deps.isSessionBusy(sessionId),
+      sessionFinalizing: this.sessionIsFinalizing(sessionId),
       priorWakes: state.wakes,
       lastWakeAtMs: state.lastWakeAtMs,
       nowMs: this.now(),
@@ -334,6 +341,21 @@ export class BackgroundShellWatcher {
         `[bg-watch] wake dispatch threw session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
       );
       settle();
+    }
+  }
+
+  private sessionIsFinalizing(sessionId: string): boolean {
+    try {
+      return this.deps.isSessionFinalizing?.(sessionId) ?? false;
+    } catch (err) {
+      this.logger.warn(
+        `[bg-watch] isSessionFinalizing threw session=${sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      // Fail closed: a throwing probe must not become a wake that collides
+      // with an in-flight Finalize run.
+      return true;
     }
   }
 

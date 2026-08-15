@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Copy, Loader2, RotateCw, SquareTerminal, X } from 'lucide-react';
+import { Copy, Loader2, RotateCw, Square, SquareTerminal, X } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { getTerminalWsUrl } from '../utils/connection';
 import { subscribeToTerminalCommands } from '../utils/terminalCommandBus';
+import { api } from '../utils/api';
+import {
+  PTY_TAB_ID,
+  terminalJobLabel,
+  terminalTabsFromJobs,
+  type BackgroundShellView,
+} from '../utils/backgroundShells';
 
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
 const defaultWebSocketFactory = (url: string) => new WebSocket(url);
@@ -35,6 +42,137 @@ function dimensions(terminal: Terminal) {
   };
 }
 
+const JOB_XTERM_THEME = {
+  background: '#030712',
+  foreground: '#e5e7eb',
+  cursor: '#67e8f9',
+  selectionBackground: '#164e63',
+};
+
+function jobStatusLabel(status: BackgroundShellView['status']): string {
+  switch (status) {
+    case 'running':
+      return 'Running';
+    case 'exited':
+      return 'Exited';
+    case 'failed':
+      return 'Failed';
+    case 'stopped':
+      return 'Stopped';
+    default: {
+      const _exhaustive: never = status;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * Read-only xterm for one Hub-owned background shell. Snapshot via REST, then
+ * live chunks from the parent (WS `background_shell_log`). Never injects into
+ * the shared interactive PTY.
+ */
+function BackgroundShellJobTerminal({
+  sessionId,
+  shellId,
+  logText,
+  onSnapshot,
+}: {
+  sessionId: string;
+  shellId: string;
+  logText: string;
+  onSnapshot: (snapshot: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const writtenRef = useRef(0);
+  const snapshotRequestedRef = useRef(false);
+  const logTextRef = useRef(logText);
+  logTextRef.current = logText;
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+
+    const terminal = new Terminal({
+      allowProposedApi: false,
+      convertEol: true,
+      disableStdin: true,
+      cursorBlink: false,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 13,
+      scrollback: 5_000,
+      theme: JOB_XTERM_THEME,
+    });
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.open(container);
+    terminalRef.current = terminal;
+    writtenRef.current = 0;
+    const initial = logTextRef.current;
+    if (initial) {
+      terminal.write(initial);
+      writtenRef.current = initial.length;
+    }
+
+    const fit = () => {
+      try {
+        fitAddon.fit();
+      } catch {
+        /* pane can be hidden during a layout transition */
+      }
+    };
+    const resizeObserver = new ResizeObserver(fit);
+    resizeObserver.observe(container);
+    fit();
+
+    return () => {
+      resizeObserver.disconnect();
+      terminal.dispose();
+      terminalRef.current = null;
+    };
+  }, [sessionId, shellId]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    if (logText.length < writtenRef.current) {
+      terminal.reset();
+      writtenRef.current = 0;
+    }
+    const next = logText.slice(writtenRef.current);
+    if (next) terminal.write(next);
+    writtenRef.current = logText.length;
+  }, [logText]);
+
+  useEffect(() => {
+    if (logText.length > 0 || snapshotRequestedRef.current) return undefined;
+    snapshotRequestedRef.current = true;
+    let cancelled = false;
+    void api
+      .getBackgroundShellLogs(sessionId, shellId, 500)
+      .then((body) => {
+        if (cancelled) return;
+        const lines = body.logs ?? [];
+        if (lines.length === 0) return;
+        onSnapshot(`${lines.join('\n')}\n`);
+      })
+      .catch(() => {
+        /* live chunks still apply if the snapshot fetch fails */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [logText, onSnapshot, sessionId, shellId]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="absolute inset-0 p-2"
+      data-testid={`background-shell-job-xterm-${shellId}`}
+    />
+  );
+}
+
 /**
  * Shared shell for one Agent Hub session.
  *
@@ -43,15 +181,32 @@ function dimensions(terminal: Terminal) {
  * same echo/order. On every (re)connect, the `attached` frame replaces the
  * local xterm buffer with the server's serialized snapshot before live output
  * resumes.
+ *
+ * Long-running Hub background shells (`bg.sh`) get extra read-only job tabs
+ * beside this PTY — they are a different process, not inject into this shell.
  */
 export default function SessionTerminalPane({
   sessionId,
   onClose,
   webSocketFactory = defaultWebSocketFactory,
+  jobs = [],
+  logsById = {},
+  activeTabId = PTY_TAB_ID,
+  onActiveTabChange,
+  onStopJob,
+  onDismissJob,
+  onLogSnapshot,
 }: {
   sessionId: string;
   onClose?: () => void;
   webSocketFactory?: (url: string) => WebSocket;
+  jobs?: BackgroundShellView[];
+  logsById?: Record<string, string>;
+  activeTabId?: string;
+  onActiveTabChange?: (tabId: string) => void;
+  onStopJob?: (shellId: string) => void | Promise<void>;
+  onDismissJob?: (shellId: string) => void;
+  onLogSnapshot?: (shellId: string, snapshot: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -66,6 +221,12 @@ export default function SessionTerminalPane({
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [busyShellId, setBusyShellId] = useState<string | null>(null);
+
+  const tabs = terminalTabsFromJobs(jobs);
+  const resolvedTabId = tabs.some((tab) => tab.id === activeTabId) ? activeTabId : PTY_TAB_ID;
+  const activeJob = jobs.find((job) => job.id === resolvedTabId) ?? null;
+  const ptyActive = resolvedTabId === PTY_TAB_ID;
 
   const sendFrame = useCallback((frame: Record<string, unknown>) => {
     const socket = socketRef.current;
@@ -87,7 +248,9 @@ export default function SessionTerminalPane({
   }, [sendFrame]);
 
   const copyBuffer = useCallback(async () => {
-    const serialized = serializeAddonRef.current?.serialize() ?? '';
+    const serialized = activeJob
+      ? (logsById[activeJob.id] ?? '')
+      : (serializeAddonRef.current?.serialize() ?? '');
     try {
       await navigator.clipboard.writeText(serialized);
       setCopied(true);
@@ -95,7 +258,7 @@ export default function SessionTerminalPane({
     } catch {
       setError('Could not copy the terminal buffer');
     }
-  }, []);
+  }, [activeJob, logsById]);
 
   const reconnectNow = useCallback(() => {
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
@@ -107,6 +270,29 @@ export default function SessionTerminalPane({
     socket?.close();
     connectRef.current();
   }, []);
+
+  const selectTab = useCallback(
+    (tabId: string) => {
+      onActiveTabChange?.(tabId);
+    },
+    [onActiveTabChange],
+  );
+
+  const stopJob = useCallback(
+    async (shellId: string) => {
+      setBusyShellId(shellId);
+      setError('');
+      try {
+        if (onStopJob) await onStopJob(shellId);
+        else await api.stopBackgroundShell(sessionId, shellId);
+      } catch {
+        setError('Failed to stop the background command');
+      } finally {
+        setBusyShellId(null);
+      }
+    },
+    [onStopJob, sessionId],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -125,12 +311,7 @@ export default function SessionTerminalPane({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
       scrollback: 5_000,
-      theme: {
-        background: '#030712',
-        foreground: '#e5e7eb',
-        cursor: '#67e8f9',
-        selectionBackground: '#164e63',
-      },
+      theme: JOB_XTERM_THEME,
     });
     const fitAddon = new FitAddon();
     const serializeAddon = new SerializeAddon();
@@ -254,6 +435,11 @@ export default function SessionTerminalPane({
     };
   }, [reportSize, sendFrame, sessionId, webSocketFactory]);
 
+  useEffect(() => {
+    if (!ptyActive) return;
+    reportSize();
+  }, [ptyActive, reportSize]);
+
   // "Run in terminal" hand-offs from the chat transcript. Subscribing only
   // once attached is what makes the bus's hold-and-replay do its job: input
   // sent before the socket attaches is dropped by the `onData` guard above.
@@ -266,10 +452,11 @@ export default function SessionTerminalPane({
     return subscribeToTerminalCommands(sessionId, (command) => {
       const terminal = terminalRef.current;
       if (!terminal) return;
+      onActiveTabChange?.(PTY_TAB_ID);
       terminal.focus();
       terminal.paste(command);
     });
-  }, [sessionId, status]);
+  }, [onActiveTabChange, sessionId, status]);
 
   const statusLabel =
     status === 'connected'
@@ -293,23 +480,53 @@ export default function SessionTerminalPane({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-xs font-semibold text-gray-100">
             Terminal
-            <span
-              data-testid="session-terminal-status"
-              className={`inline-flex items-center gap-1 text-[10px] font-normal ${
-                status === 'connected' ? 'text-emerald-300' : 'text-amber-300'
-              }`}
-            >
-              {(status === 'connecting' || status === 'reconnecting') && (
-                <Loader2 size={10} className="animate-spin" />
-              )}
-              {statusLabel}
-            </span>
+            {ptyActive ? (
+              <span
+                data-testid="session-terminal-status"
+                className={`inline-flex items-center gap-1 text-[10px] font-normal ${
+                  status === 'connected' ? 'text-emerald-300' : 'text-amber-300'
+                }`}
+              >
+                {(status === 'connecting' || status === 'reconnecting') && (
+                  <Loader2 size={10} className="animate-spin" />
+                )}
+                {statusLabel}
+              </span>
+            ) : (
+              <span
+                data-testid="session-terminal-job-status"
+                className={`text-[10px] font-normal ${
+                  activeJob?.status === 'running' ? 'text-emerald-300' : 'text-gray-400'
+                }`}
+              >
+                {activeJob ? jobStatusLabel(activeJob.status) : ''}
+              </span>
+            )}
           </div>
           <div className="truncate text-[10px] text-amber-300/90">
-            Shared — agent may type. Input is echoed by the shared shell.
+            {activeJob
+              ? activeJob.command
+              : 'Shared — agent may type. Input is echoed by the shared shell.'}
           </div>
         </div>
-        {(status === 'error' || status === 'exited') && (
+        {activeJob?.status === 'running' && (
+          <button
+            type="button"
+            onClick={() => void stopJob(activeJob.id)}
+            disabled={busyShellId === activeJob.id}
+            className="flex items-center gap-1 text-gray-400 hover:text-red-200 disabled:opacity-50"
+            title="Stop this command"
+            aria-label="Stop background command"
+            data-testid={`session-terminal-stop-${activeJob.id}`}
+          >
+            {busyShellId === activeJob.id ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Square size={14} />
+            )}
+          </button>
+        )}
+        {ptyActive && (status === 'error' || status === 'exited') && (
           <button
             type="button"
             onClick={reconnectNow}
@@ -341,6 +558,64 @@ export default function SessionTerminalPane({
           <X size={14} />
         </button>
       </div>
+      {jobs.length > 0 && (
+        <div
+          className="flex items-center gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950 px-2 py-1"
+          data-testid="session-terminal-tabs"
+          role="tablist"
+          aria-label="Terminal tabs"
+        >
+          {tabs.map((tab) => {
+            const selected = tab.id === resolvedTabId;
+            const job = tab.kind === 'job' ? jobs.find((row) => row.id === tab.id) : null;
+            return (
+              <div
+                key={tab.id}
+                className={`flex shrink-0 items-center rounded-md ${
+                  selected ? 'bg-cyan-950/70 text-cyan-100' : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  data-testid={`session-terminal-tab-${tab.id}`}
+                  onClick={() => selectTab(tab.id)}
+                  className="max-w-[9.5rem] truncate px-2 py-1 text-[11px]"
+                  title={job?.command ?? tab.label}
+                >
+                  {tab.label}
+                </button>
+                {job?.status === 'running' && (
+                  <button
+                    type="button"
+                    onClick={() => void stopJob(job.id)}
+                    disabled={busyShellId === job.id}
+                    className="pr-1.5 text-gray-500 hover:text-red-200 disabled:opacity-50"
+                    title="Stop this command"
+                    aria-label={`Stop ${tab.label}`}
+                    data-testid={`session-terminal-tab-stop-${job.id}`}
+                  >
+                    <Square size={10} />
+                  </button>
+                )}
+                {job && job.status !== 'running' && (
+                  <button
+                    type="button"
+                    onClick={() => onDismissJob?.(job.id)}
+                    className="pr-1.5 text-gray-500 hover:text-gray-200"
+                    title="Dismiss this tab"
+                    aria-label={`Dismiss ${tab.label}`}
+                    data-testid={`session-terminal-tab-dismiss-${job.id}`}
+                  >
+                    <X size={10} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {error && (
         <div
           data-testid="session-terminal-error"
@@ -349,7 +624,22 @@ export default function SessionTerminalPane({
           {error}
         </div>
       )}
-      <div ref={containerRef} className="min-h-0 flex-1 p-2" data-testid="xterm-container" />
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={containerRef}
+          className={`absolute inset-0 p-2 ${ptyActive ? '' : 'invisible pointer-events-none'}`}
+          data-testid="xterm-container"
+        />
+        {activeJob && (
+          <BackgroundShellJobTerminal
+            key={activeJob.id}
+            sessionId={sessionId}
+            shellId={activeJob.id}
+            logText={logsById[activeJob.id] ?? ''}
+            onSnapshot={(snapshot) => onLogSnapshot?.(activeJob.id, snapshot)}
+          />
+        )}
+      </div>
     </aside>
   );
 }

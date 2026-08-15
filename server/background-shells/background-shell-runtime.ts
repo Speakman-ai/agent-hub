@@ -195,11 +195,23 @@ export interface BackgroundShellLogSink {
   read?: (logPath: string, limit?: number) => string[];
 }
 
-export type BackgroundShellBroadcast = (event: {
+export type BackgroundShellUpdateEvent = {
   type: 'background_shell_update';
   sessionId: string;
   shell: BackgroundShellRow;
-}) => void;
+};
+
+/** Incremental stdout/stderr for a live Terminal job tab. */
+export type BackgroundShellLogEvent = {
+  type: 'background_shell_log';
+  sessionId: string;
+  shellId: string;
+  chunk: string;
+};
+
+export type BackgroundShellBroadcast = (
+  event: BackgroundShellUpdateEvent | BackgroundShellLogEvent,
+) => void;
 
 type OrphanReapResult = 'reaped' | 'already-gone' | 'unverified';
 
@@ -401,6 +413,7 @@ export class BackgroundShellRuntime {
         }
       }
       sink.append(chunk);
+      this.emitLog(handle.sessionId, handle.id, chunk);
     };
 
     let child: ChildProcess;
@@ -784,6 +797,17 @@ export class BackgroundShellRuntime {
     } catch (err) {
       this.logger.warn(
         `[bg-shell ${row.id}] broadcast threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private emitLog(sessionId: string, shellId: string, chunk: string): void {
+    if (!this.broadcast || chunk.length === 0) return;
+    try {
+      this.broadcast({ type: 'background_shell_log', sessionId, shellId, chunk });
+    } catch (err) {
+      this.logger.warn(
+        `[bg-shell ${shellId}] log broadcast threw: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

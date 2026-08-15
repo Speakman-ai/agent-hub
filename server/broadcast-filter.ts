@@ -60,11 +60,12 @@ export interface BroadcastFilterDeps {
  *
  * Background-shell rows carry the exact command line, cwd, pid, and log path
  * of work an agent parked in someone's session — always owner-only
- * (`userOwnsSession`). Session Progress / event timeline use the broader
- * read predicate so Reviewer and shared-cron sessions stay live for every
- * org member who can already GET the thread.
+ * (`userOwnsSession`). Live `background_shell_log` chunks are the same
+ * payload in motion and stay on the same gate. Session Progress / event
+ * timeline use the broader read predicate so Reviewer and shared-cron
+ * sessions stay live for every org member who can already GET the thread.
  */
-const SESSION_OWNER_ONLY_EVENT_TYPES = new Set(['background_shell_update']);
+const SESSION_OWNER_ONLY_EVENT_TYPES = new Set(['background_shell_update', 'background_shell_log']);
 const SESSION_READ_SCOPED_EVENT_TYPES = new Set(['session-event', 'session-progress']);
 
 /**

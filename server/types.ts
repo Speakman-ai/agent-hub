@@ -4173,6 +4173,16 @@ export interface RouteDeps {
      * double only has to supply the session-wide reap.
      */
     stopSessionSnapshot?: (sessionId: string) => Promise<Array<{ id: string }>>;
+    /**
+     * Every currently-running shell. Finalize kickoff waits on the subset
+     * belonging to the session so leftover pytest cannot race CI.
+     */
+    listRunning?: () => Array<{ id: string; session_id: string; status: string }>;
+    /**
+     * Clear `watch` on every armed shell for the session so a completion
+     * cannot wake a new agent process. Does not kill the process.
+     */
+    disarmSessionWatch?: (sessionId: string) => unknown;
   } | null;
   /**
    * The background-shell watch loop. Session teardown drops the session's

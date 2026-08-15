@@ -221,6 +221,15 @@ describe('BackgroundShellWatcher', () => {
     expect(dispatchChat).not.toHaveBeenCalled();
   });
 
+  it('drops a completion while Finalize is in flight instead of waking a new process', async () => {
+    const { watcher, dispatchChat } = build(runtime, { isSessionFinalizing: () => true });
+    runtime.emitFinalize(row());
+    await settle();
+    expect(dispatchChat).not.toHaveBeenCalled();
+    expect(watcher.pendingCount('sess-1')).toBe(0);
+    expect(runtime.getById('shell-1')?.watch).toBe(0);
+  });
+
   it('names shells still running so the agent knows more is coming', async () => {
     runtime.put(row({ id: 'slow', label: 'migration', status: 'running' }));
     const { dispatchChat } = build(runtime);

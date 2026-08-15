@@ -63,6 +63,23 @@ describe('planBackgroundShellWake', () => {
     expect(plan({ sessionGone: true })).toMatchObject({ action: 'drop', reason: 'session_gone' });
   });
 
+  it('drops while Finalize is in flight rather than waking a new process', () => {
+    expect(plan({ sessionFinalizing: true })).toMatchObject({
+      action: 'drop',
+      reason: 'session_finalizing',
+    });
+  });
+
+  it('drops a finalizing session even if it is also busy or inside the coalescing window', () => {
+    const decision = plan({
+      sessionFinalizing: true,
+      sessionBusy: true,
+      lastWakeAtMs: 1_000_000 - 1,
+      nowMs: 1_000_000,
+    });
+    expect(decision).toMatchObject({ action: 'drop', reason: 'session_finalizing' });
+  });
+
   it('defers instead of colliding with an in-flight turn', () => {
     expect(plan({ sessionBusy: true })).toMatchObject({
       action: 'defer',

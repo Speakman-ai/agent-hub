@@ -133,7 +133,14 @@ import { pruneSessionScopedMap } from './utils/pruneSessionScopedMap';
 import {
   applyBackgroundShellSnapshot,
   applyBackgroundShellUpdate,
+  applyBackgroundShellLog,
+  applyBackgroundShellLogSnapshot,
+  applyTerminalJobSnapshot,
+  applyTerminalJobUpdate,
+  dismissTerminalJob,
   deriveWatchIndicator,
+  PTY_TAB_ID,
+  shouldFocusTerminalJob,
   type BackgroundShellsBySession,
 } from './utils/backgroundShells';
 import {
@@ -401,6 +408,20 @@ export default function App({ initialView }: any = {}) {
   const [terminalPaneOpenBySession, setTerminalPaneOpenBySession] = useState<Record<string, any>>(
     {},
   );
+  /**
+   * Running + recently finished Hub background shells, for Terminal job tabs.
+   * Distinct from `backgroundShellsBySession`, which drops finished rows so
+   * the chat pill only reflects work still in flight.
+   */
+  const [terminalJobsBySession, setTerminalJobsBySession] = useState<BackgroundShellsBySession>({});
+  /** Live stdout/stderr text for Terminal job tabs, keyed session → shell. */
+  const [backgroundShellLogsBySession, setBackgroundShellLogsBySession] = useState<
+    Record<string, Record<string, string>>
+  >({});
+  /** Active Terminal tab (`pty` or a background-shell id) per session. */
+  const [terminalActiveTabBySession, setTerminalActiveTabBySession] = useState<
+    Record<string, string>
+  >({});
   /** Per-session count of artifacts, to badge the "Artifacts" toolbar button. */
   const [artifactCountBySession, setArtifactCountBySession] = useState<Record<string, any>>({});
   /** Per-session counter bumped on `artifact_created` / `artifact_deleted` WS
@@ -2108,11 +2129,42 @@ export default function App({ initialView }: any = {}) {
           // full replacement can also clear sessions whose shells finished
           // while this client was away.
           setBackgroundShellsBySession(applyBackgroundShellSnapshot(data.sessions));
+          setTerminalJobsBySession((prev: BackgroundShellsBySession) =>
+            applyTerminalJobSnapshot(prev, data.sessions),
+          );
           break;
         }
         case 'background_shell_update': {
           setBackgroundShellsBySession((prev: BackgroundShellsBySession) =>
             applyBackgroundShellUpdate(prev, data.shell),
+          );
+          setTerminalJobsBySession((prev: BackgroundShellsBySession) =>
+            applyTerminalJobUpdate(prev, data.shell),
+          );
+          if (shouldFocusTerminalJob(data.shell)) {
+            const sid = data.shell.session_id;
+            setTerminalPaneOpenBySession((prev: Record<string, boolean>) => ({
+              ...prev,
+              [sid]: true,
+            }));
+            setDiffPaneOpenBySession((prev: Record<string, boolean>) => ({
+              ...prev,
+              [sid]: false,
+            }));
+            setArtifactsPaneOpenBySession((prev: Record<string, boolean>) => ({
+              ...prev,
+              [sid]: false,
+            }));
+            setTerminalActiveTabBySession((prev: Record<string, string>) => ({
+              ...prev,
+              [sid]: data.shell.id,
+            }));
+          }
+          break;
+        }
+        case 'background_shell_log': {
+          setBackgroundShellLogsBySession((prev: Record<string, Record<string, string>>) =>
+            applyBackgroundShellLog(prev, data),
           );
           break;
         }
@@ -6441,6 +6493,26 @@ export default function App({ initialView }: any = {}) {
                                         <BackgroundShellsPanel
                                           sessionId={activeSessionId}
                                           shells={backgroundShellsBySession[activeSessionId]}
+                                          onOpenTerminal={(shellId) => {
+                                            setTerminalPaneOpenBySession((prev: any) => ({
+                                              ...prev,
+                                              [activeSessionId]: true,
+                                            }));
+                                            setDiffPaneOpenBySession((prev: any) => ({
+                                              ...prev,
+                                              [activeSessionId]: false,
+                                            }));
+                                            setArtifactsPaneOpenBySession((prev: any) => ({
+                                              ...prev,
+                                              [activeSessionId]: false,
+                                            }));
+                                            if (shellId) {
+                                              setTerminalActiveTabBySession((prev) => ({
+                                                ...prev,
+                                                [activeSessionId]: shellId,
+                                              }));
+                                            }
+                                          }}
                                         />
                                       </div>
                                     )}
@@ -6916,6 +6988,35 @@ export default function App({ initialView }: any = {}) {
                       >
                         <SessionTerminalPane
                           sessionId={activeSessionId}
+                          jobs={terminalJobsBySession[activeSessionId] ?? []}
+                          logsById={backgroundShellLogsBySession[activeSessionId] ?? {}}
+                          activeTabId={terminalActiveTabBySession[activeSessionId] ?? PTY_TAB_ID}
+                          onActiveTabChange={(tabId) =>
+                            setTerminalActiveTabBySession((prev) => ({
+                              ...prev,
+                              [activeSessionId]: tabId,
+                            }))
+                          }
+                          onDismissJob={(shellId) => {
+                            setTerminalJobsBySession((prev) =>
+                              dismissTerminalJob(prev, activeSessionId, shellId),
+                            );
+                            setTerminalActiveTabBySession((prev) =>
+                              prev[activeSessionId] === shellId
+                                ? { ...prev, [activeSessionId]: PTY_TAB_ID }
+                                : prev,
+                            );
+                          }}
+                          onLogSnapshot={(shellId, snapshot) =>
+                            setBackgroundShellLogsBySession((prev) =>
+                              applyBackgroundShellLogSnapshot(
+                                prev,
+                                activeSessionId,
+                                shellId,
+                                snapshot,
+                              ),
+                            )
+                          }
                           onClose={() =>
                             setTerminalPaneOpenBySession((prev: any) => ({
                               ...prev,

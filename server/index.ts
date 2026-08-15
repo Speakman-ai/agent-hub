@@ -1217,6 +1217,7 @@ const backgroundShellWatcher = new BackgroundShellWatcher({
       activeProcesses,
       stmts!.getActiveTask.get(sessionId) as ActiveTaskRow | undefined,
     ),
+  isSessionFinalizing: (sessionId) => Boolean(stmts!.getActiveFinalizeRunForSession.get(sessionId)),
   dispatchChat: (msg) => handleChat!(null, msg as unknown as ChatMessage),
   persistSystemMessage: (sessionId, content, meta) =>
     persistWatchSystemMessage(sessionId, content, meta),

@@ -189,6 +189,38 @@ describe('shouldDeliverBroadcast', () => {
     expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
   });
 
+  it('SKIPS background-shell log chunks for a non-owner who can view the project', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u2', role: 'User' };
+    const data = {
+      type: 'background_shell_log',
+      sessionId: 's1',
+      shellId: 'sh1',
+      chunk: 'secret output\n',
+    };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
+  });
+
+  it('delivers background-shell log chunks to the session owner', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u1', role: 'User' };
+    const data = {
+      type: 'background_shell_log',
+      sessionId: 's1',
+      shellId: 'sh1',
+      chunk: 'ok\n',
+    };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+      getSessionOwner: () => 'u1',
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(true);
+  });
+
   it('delivers background-shell events to the session owner', () => {
     const stamp: WsVisibilityStamp = { userId: 'u1', role: 'User' };
     const data = { type: 'background_shell_update', sessionId: 's1', shell: { id: 'sh1' } };

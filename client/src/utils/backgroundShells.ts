@@ -92,6 +92,176 @@ export function applyBackgroundShellUpdate(
   return { ...prev, [sessionId]: sortShells([...without, shell]) };
 }
 
+/** Interactive PTY tab id in SessionTerminalPane. */
+export const PTY_TAB_ID = 'pty';
+
+/** Cap finished job tabs so a long session does not accumulate dozens. */
+export const MAX_FINISHED_TERMINAL_JOBS = 8;
+
+const MAX_JOB_LOG_CHARS = 512 * 1024;
+
+export type BackgroundShellLogsBySession = Record<string, Record<string, string>>;
+
+export interface TerminalTab {
+  id: string;
+  kind: 'pty' | 'job';
+  label: string;
+  status?: BackgroundShellStatus;
+}
+
+function setSessionShells(
+  prev: BackgroundShellsBySession,
+  sessionId: string,
+  shells: BackgroundShellView[],
+): BackgroundShellsBySession {
+  if (shells.length === 0) {
+    if (!(sessionId in prev)) return prev;
+    const next = { ...prev };
+    delete next[sessionId];
+    return next;
+  }
+  return { ...prev, [sessionId]: shells };
+}
+
+function trimFinishedJobs(shells: BackgroundShellView[]): BackgroundShellView[] {
+  const running = shells.filter((shell) => shell.status === 'running');
+  const finished = shells.filter((shell) => shell.status !== 'running');
+  return sortShells([...running, ...finished.slice(-MAX_FINISHED_TERMINAL_JOBS)]);
+}
+
+function capLog(text: string): string {
+  if (text.length <= MAX_JOB_LOG_CHARS) return text;
+  return text.slice(text.length - MAX_JOB_LOG_CHARS);
+}
+
+/**
+ * Keep running *and* recently finished shells for Terminal job tabs.
+ * Chat's compact panel still uses `applyBackgroundShellUpdate`, which drops
+ * terminal statuses so the pill only reflects work in flight.
+ */
+export function applyTerminalJobUpdate(
+  prev: BackgroundShellsBySession,
+  shell: unknown,
+): BackgroundShellsBySession {
+  if (!isShell(shell)) return prev;
+  const sessionId = shell.session_id;
+  const existing = prev[sessionId] ?? [];
+  const without = existing.filter((candidate) => candidate.id !== shell.id);
+  return setSessionShells(prev, sessionId, trimFinishedJobs([...without, shell]));
+}
+
+/**
+ * Connect snapshot is running-only. Preserve finished job tabs the client
+ * already had so a reconnect does not yank output the human was looking at.
+ */
+export function applyTerminalJobSnapshot(
+  prev: BackgroundShellsBySession,
+  sessions: unknown,
+): BackgroundShellsBySession {
+  const running = applyBackgroundShellSnapshot(sessions);
+  const next: BackgroundShellsBySession = { ...running };
+  for (const [sessionId, shells] of Object.entries(prev)) {
+    const runningIds = new Set((next[sessionId] ?? []).map((row) => row.id));
+    const finished = shells.filter((row) => row.status !== 'running' && !runningIds.has(row.id));
+    if (finished.length === 0) continue;
+    next[sessionId] = trimFinishedJobs([...(next[sessionId] ?? []), ...finished]);
+  }
+  return next;
+}
+
+export function dismissTerminalJob(
+  prev: BackgroundShellsBySession,
+  sessionId: string,
+  shellId: string,
+): BackgroundShellsBySession {
+  const existing = prev[sessionId];
+  if (!existing) return prev;
+  const next = existing.filter((shell) => shell.id !== shellId);
+  if (next.length === existing.length) return prev;
+  return setSessionShells(prev, sessionId, next);
+}
+
+export function applyBackgroundShellLog(
+  prev: BackgroundShellLogsBySession,
+  event: { sessionId?: unknown; shellId?: unknown; chunk?: unknown },
+): BackgroundShellLogsBySession {
+  if (
+    typeof event.sessionId !== 'string' ||
+    typeof event.shellId !== 'string' ||
+    typeof event.chunk !== 'string' ||
+    event.chunk.length === 0
+  ) {
+    return prev;
+  }
+  const sessionLogs = prev[event.sessionId] ?? {};
+  return {
+    ...prev,
+    [event.sessionId]: {
+      ...sessionLogs,
+      [event.shellId]: capLog((sessionLogs[event.shellId] ?? '') + event.chunk),
+    },
+  };
+}
+
+/**
+ * Fold a REST log-tail snapshot into live chunks. Prefer the longer coherent
+ * view: keep live data when it already extends the snapshot, otherwise take
+ * the snapshot when it is a prefix/superset of what we have.
+ */
+export function mergeLogSnapshot(existing: string, snapshot: string): string {
+  if (!snapshot) return existing;
+  if (!existing) return capLog(snapshot);
+  if (existing.startsWith(snapshot)) return existing;
+  if (snapshot.startsWith(existing) || snapshot.endsWith(existing)) return capLog(snapshot);
+  return existing;
+}
+
+export function applyBackgroundShellLogSnapshot(
+  prev: BackgroundShellLogsBySession,
+  sessionId: string,
+  shellId: string,
+  snapshot: string,
+): BackgroundShellLogsBySession {
+  const sessionLogs = prev[sessionId] ?? {};
+  const merged = mergeLogSnapshot(sessionLogs[shellId] ?? '', snapshot);
+  if (merged === (sessionLogs[shellId] ?? '')) return prev;
+  return {
+    ...prev,
+    [sessionId]: { ...sessionLogs, [shellId]: merged },
+  };
+}
+
+export function terminalJobLabel(shell: BackgroundShellView): string {
+  const label = shell.label?.trim();
+  if (label) return label;
+  const cmd = shell.command.replace(/\s+/g, ' ').trim();
+  if (cmd.length <= 24) return cmd || 'job';
+  return `${cmd.slice(0, 23)}…`;
+}
+
+/** Shell PTY first, then one tab per Hub background shell. */
+export function terminalTabsFromJobs(jobs: BackgroundShellView[] | undefined): TerminalTab[] {
+  const tabs: TerminalTab[] = [{ id: PTY_TAB_ID, kind: 'pty', label: 'Shell' }];
+  if (!jobs) return tabs;
+  for (const job of jobs) {
+    tabs.push({
+      id: job.id,
+      kind: 'job',
+      label: terminalJobLabel(job),
+      status: job.status,
+    });
+  }
+  return tabs;
+}
+
+/**
+ * Watched shells that just started: open/focus Terminal so turn-end is not
+ * a silent chat with output buried behind an expand.
+ */
+export function shouldFocusTerminalJob(shell: unknown): shell is BackgroundShellView {
+  return isShell(shell) && shell.status === 'running' && shell.watch === 1;
+}
+
 export interface WatchIndicator {
   /** Running shells for the session, watched or not. */
   running: number;

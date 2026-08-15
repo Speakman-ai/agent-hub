@@ -990,6 +990,21 @@ describe('runFinalize — happy path', () => {
     expect(timelineMetaKinds).toContain('finalize_rebase_result');
     expect(timelineMetaKinds).toContain('finalize_ready_to_push');
   });
+
+  it('waits for background shells before rebase so leftover pytest cannot race CI', async () => {
+    const waitForBackgroundShells = vi.fn(async () => 'ready' as const);
+    const { deps } = makeDeps({ waitForBackgroundShells });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('ready_to_push');
+    expect(waitForBackgroundShells).toHaveBeenCalledWith({
+      sessionId: 'sess-1',
+      signal: undefined,
+    });
+    const waitOrder = waitForBackgroundShells.mock.invocationCallOrder[0];
+    const rebaseOrder = (deps.runRebasePhase as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    expect(waitOrder).toBeLessThan(rebaseOrder);
+  });
 });
 
 describe('runFinalize — rebase failure', () => {
@@ -1628,6 +1643,15 @@ describe('runFinalize — cancellation', () => {
     // The orchestrator wrote `cancelled` to the row.
     expect(stmts.failCalls.some((c) => c.status === 'cancelled')).toBe(true);
     void aborted; // suppress unused-let warning
+  });
+
+  it('cancels when waitForBackgroundShells reports aborted', async () => {
+    const waitForBackgroundShells = vi.fn(async () => 'aborted' as const);
+    const { deps } = makeDeps({ waitForBackgroundShells });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('cancelled');
+    expect(waitForBackgroundShells).toHaveBeenCalledTimes(1);
+    expect(deps.runRebasePhase).not.toHaveBeenCalled();
   });
 
   it('propagates cancelled when fix-dispatch returns cancelled', async () => {

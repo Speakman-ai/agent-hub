@@ -38,6 +38,7 @@ import {
   POST_FINALIZE_PUSH_LOCK_ERROR,
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from './post-push-session-lock.js';
+import { suppressBackgroundShellWakesForFinalize } from './pre-finalize-background-shells.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -399,6 +400,11 @@ async function kickoffFinalizeRun(
   if (!current) {
     return { kind: 'error', error: 'session_not_found', message: 'Session not found.' };
   }
+
+  // Disarm watches before the git/claim work. A background pytest that
+  // finishes during kickoff used to wake a new agent process into the
+  // in-flight Finalize run ("you are now in a new process").
+  suppressBackgroundShellWakesForFinalize(deps, current.id);
 
   let lockHeld = false;
   let lockTransferred = false;

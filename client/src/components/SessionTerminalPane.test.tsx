@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const xtermMocks = vi.hoisted(() => ({
@@ -9,6 +9,18 @@ const xtermMocks = vi.hoisted(() => ({
 
 vi.mock('../utils/connection', () => ({
   getTerminalWsUrl: (sessionId: string) => `wss://hub.test/api/sessions/${sessionId}/terminal/ws`,
+}));
+
+const apiMocks = vi.hoisted(() => ({
+  getBackgroundShellLogs: vi.fn().mockResolvedValue({ logs: ['snapshot line'] }),
+  stopBackgroundShell: vi.fn().mockResolvedValue({}),
+}));
+
+vi.mock('../utils/api', () => ({
+  api: {
+    getBackgroundShellLogs: apiMocks.getBackgroundShellLogs,
+    stopBackgroundShell: apiMocks.stopBackgroundShell,
+  },
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -185,6 +197,8 @@ describe('SessionTerminalPane', () => {
     xtermMocks.serializers.length = 0;
     MockWebSocket.instances = [];
     MockResizeObserver.instances = [];
+    apiMocks.getBackgroundShellLogs.mockClear();
+    apiMocks.stopBackgroundShell.mockClear();
     vi.stubGlobal('WebSocket', MockWebSocket);
     vi.stubGlobal('ResizeObserver', MockResizeObserver);
   });
@@ -339,6 +353,69 @@ describe('SessionTerminalPane', () => {
       });
 
       expect(terminal.pasted).toEqual([]);
+    });
+  });
+
+  describe('background-shell job tabs', () => {
+    const job = {
+      id: 'job-1',
+      session_id: 'session-1',
+      command: 'npm test',
+      label: 'tests',
+      status: 'running' as const,
+      exit_code: null,
+      watch: 1,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    };
+
+    it('keeps the interactive Shell tab and adds a Stop-capable job tab', async () => {
+      const onStopJob = vi.fn().mockResolvedValue(undefined);
+      const onActiveTabChange = vi.fn();
+      render(
+        <SessionTerminalPane
+          sessionId="session-1"
+          jobs={[job]}
+          logsById={{ 'job-1': 'hello from ci\n' }}
+          activeTabId="job-1"
+          onActiveTabChange={onActiveTabChange}
+          onStopJob={onStopJob}
+        />,
+      );
+
+      expect(screen.getByTestId('session-terminal-tabs')).toBeInTheDocument();
+      expect(screen.getByTestId('session-terminal-tab-pty')).toHaveTextContent('Shell');
+      expect(screen.getByTestId('session-terminal-tab-job-1')).toHaveTextContent('tests');
+      expect(xtermMocks.terminals).toHaveLength(2);
+      expect(xtermMocks.terminals.flatMap((t) => t.writes).join('')).toContain('hello from ci');
+      expect(apiMocks.getBackgroundShellLogs).not.toHaveBeenCalled();
+
+      await act(async () => {
+        screen.getByTestId('session-terminal-stop-job-1').click();
+      });
+      expect(onStopJob).toHaveBeenCalledWith('job-1');
+
+      await act(async () => {
+        screen.getByTestId('session-terminal-tab-pty').click();
+      });
+      expect(onActiveTabChange).toHaveBeenCalledWith('pty');
+    });
+
+    it('fetches a log snapshot when the job tab has no live text yet', async () => {
+      const onLogSnapshot = vi.fn();
+      render(
+        <SessionTerminalPane
+          sessionId="session-1"
+          jobs={[job]}
+          activeTabId="job-1"
+          onLogSnapshot={onLogSnapshot}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(apiMocks.getBackgroundShellLogs).toHaveBeenCalledWith('session-1', 'job-1', 500);
+        expect(onLogSnapshot).toHaveBeenCalledWith('job-1', 'snapshot line\n');
+      });
     });
   });
 });

@@ -430,6 +430,16 @@ export interface OrchestratorDeps {
   dispatchFixMessage?: typeof dispatchFixMessage;
   /** Spawn originating agent after §7 fix dispatch (see `spawn-fix-turn.ts`). */
   spawnFixTurn?: SpawnFixTurnFn;
+  /**
+   * Wait for Hub-owned background shells before each orchestrator round.
+   * Production waits so leftover pytest cannot race rebase/CI or wake a
+   * new agent process mid-run. Tests omit it (no-op). Returning `aborted`
+   * cancels the run the same way a Stop Finalize click does.
+   */
+  waitForBackgroundShells?: (args: {
+    sessionId: string;
+    signal?: CancelSignal;
+  }) => Promise<'ready' | 'timed_out' | 'aborted'>;
   /** End-of-run summary writer. Tests inject a stub to avoid git + LLM calls. */
   emitRunSummary?: typeof emitFinalizeRunSummary;
   /** Override the active-time budget cap (seconds). Defaults to {@link FINALIZE_BUDGET_SECONDS}. */
@@ -1032,6 +1042,25 @@ export async function runFinalize(
       if (opts.signal?.aborted) {
         trace('cancelled', { round: loopCount, at: 'loop_top' });
         return cancelTerminal(deps, runId, log);
+      }
+      if (sessionId && deps.waitForBackgroundShells) {
+        let waitResult: 'ready' | 'timed_out' | 'aborted' = 'ready';
+        try {
+          waitResult = await deps.waitForBackgroundShells({
+            sessionId,
+            signal: opts.signal,
+          });
+        } catch (err) {
+          log(
+            `[finalize-orchestrator] waitForBackgroundShells threw run=${runId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        if (waitResult === 'aborted' || opts.signal?.aborted) {
+          trace('cancelled', { round: loopCount, at: 'bg_shell_wait' });
+          return cancelTerminal(deps, runId, log);
+        }
       }
       if (budgetExhausted(deps, runId, budgetSeconds, log)) {
         trace('timeout', { round: loopCount, at: 'loop_top', budgetSeconds });

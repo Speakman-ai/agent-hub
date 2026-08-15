@@ -67,6 +67,7 @@ export type BackgroundShellWakeAction = 'wake' | 'defer' | 'drop';
 export type BackgroundShellWakeReason =
   | 'nothing_finished'
   | 'session_gone'
+  | 'session_finalizing'
   | 'wake_cap_reached'
   | 'coalescing'
   | 'session_busy'
@@ -90,6 +91,14 @@ export interface PlanBackgroundShellWakeInput {
   sessionGone: boolean;
   /** A chat turn is in flight — starting another would collide with it. */
   sessionBusy: boolean;
+  /**
+   * A Finalize run is in flight (or kickoff has already disarmed this
+   * session). Completions must not spawn a new agent process — they race
+   * the orchestrator and the screenshot-famous "you are now in a new
+   * process" banner. Drop, don't defer: a deferred wake would fire the
+   * moment the run parks at ready_to_push.
+   */
+  sessionFinalizing?: boolean;
   /** Wakes already dispatched for this session. */
   priorWakes: number;
   /** When the last wake was dispatched, or null if none yet. */
@@ -115,6 +124,7 @@ export function planBackgroundShellWake(
 
   if (input.finishedShells.length === 0) return decide('drop', 'nothing_finished');
   if (input.sessionGone) return decide('drop', 'session_gone');
+  if (input.sessionFinalizing) return decide('drop', 'session_finalizing');
   if (input.priorWakes >= MAX_WAKES_PER_SESSION) {
     return decide('drop', 'wake_cap_reached', true);
   }
