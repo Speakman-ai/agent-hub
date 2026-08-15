@@ -416,6 +416,19 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     expect(chatArgs.content).toContain('TEMPLATE[ci]');
     expect(chatArgs.content).toContain('TEMPLATE[conflict]');
     expect(chatArgs.content).toContain('## PR Context');
+
+    // Sidebar live-sync: the spawned session must be pushed so the
+    // already-mounted sidebar can splice it without a page refresh.
+    expect(deps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session_created',
+        agentId: 'a1',
+        session: expect.objectContaining({
+          id: 'spawned-session',
+          name: '[Resolve PR #42] Fix thing',
+        }),
+      }),
+    );
   });
 
   it('returns 502 when the PR fetch fails with a non-404 error', async () => {

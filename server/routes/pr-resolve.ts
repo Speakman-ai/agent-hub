@@ -35,6 +35,7 @@ import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { CI_FAIL_CONCLUSIONS } from '../ci-conclusions.js';
+import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
 
 /** CLI (`CONFLICTING`) and App (`dirty`, `conflicting`) values both get caught here. */
 const CONFLICT_STATES = new Set(['dirty', 'conflicting']);
@@ -221,7 +222,7 @@ export function buildResolvePrompt(
 }
 
 export default function createPrResolveRoutes(deps: RouteDeps): Router {
-  const { config, findProject, findAgent, stmts, handleChat } = deps;
+  const { config, findProject, findAgent, stmts, handleChat, broadcast } = deps;
   const router = Router();
 
   router.post(
@@ -337,6 +338,7 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       });
 
       const session = stmts.getSession.get(sessionId) as SessionRow;
+      broadcastSessionCreated(broadcast, agentId, session, stmts);
       return res.status(201).json({ sessionId, triggered: detected, session });
     },
   );

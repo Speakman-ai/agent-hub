@@ -174,3 +174,38 @@ export function planCreatedSessionCaches(args: {
     loadedSessionsAgentId === targetAgentId ? prependSessionDeduped(sessions, session) : sessions;
   return { sessionsByAgentId: nextCache, sessions: nextSessions };
 }
+
+/**
+ * Apply a remote `session_created` WebSocket event to sidebar caches.
+ *
+ * Unlike {@link planCreatedSessionCaches} (the HTTP create path), this must
+ * not invent a cache entry for an agent that has never been fetched. The
+ * expand-agent loader skips a fetch when a cache key already exists, so a
+ * one-row seed would hide that agent's other sessions until a full reload.
+ * Only prepend when the agent is already cached, or when its list is the
+ * live `sessions` array.
+ */
+export function planRemoteSessionCreatedCaches(args: {
+  targetAgentId: string;
+  loadedSessionsAgentId: string | null | undefined;
+  session: any;
+  sessionsByAgentId: Record<string, any[]>;
+  sessions: any[];
+}): { sessionsByAgentId: Record<string, any[]>; sessions: any[] } {
+  const { targetAgentId, loadedSessionsAgentId, session, sessionsByAgentId, sessions } = args;
+  if (!targetAgentId || !session?.id) {
+    return { sessionsByAgentId, sessions };
+  }
+  const nextSessions =
+    loadedSessionsAgentId === targetAgentId ? prependSessionDeduped(sessions, session) : sessions;
+  if (!Object.prototype.hasOwnProperty.call(sessionsByAgentId, targetAgentId)) {
+    return { sessionsByAgentId, sessions: nextSessions };
+  }
+  return {
+    sessionsByAgentId: {
+      ...sessionsByAgentId,
+      [targetAgentId]: prependSessionDeduped(sessionsByAgentId[targetAgentId] || [], session),
+    },
+    sessions: nextSessions,
+  };
+}

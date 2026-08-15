@@ -222,6 +222,53 @@ describe('dispatchSecurityFixSession', () => {
     expect(msg.content).toContain('Resolve vulnerable dependencies');
   });
 
+  it('broadcasts session_created so the sidebar can splice the new row', () => {
+    const stmts = fakeStmts();
+    const broadcast = vi.fn();
+    const handleChat = vi.fn().mockResolvedValue(undefined);
+    const findAgent = vi.fn(() => ({ agent: agent({ id: 'lead' }), project }));
+    const result = dispatchSecurityFixSession(
+      { stmts, config: {} as any, findAgent: findAgent as any, handleChat, broadcast },
+      { project, findings: [row()], ownerUserId: null },
+    );
+    expect(result!.reused).toBe(false);
+    expect(broadcast).toHaveBeenCalledOnce();
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session_created',
+        agentId: 'lead',
+        session: expect.objectContaining({ id: 'sess' }),
+      }),
+    );
+  });
+
+  it('does not broadcast session_created when reusing an active fix session', () => {
+    const activeSession = {
+      id: 'existing',
+      agent_id: 'lead',
+      name: '[Security fix] 2 deps',
+      deleted_at: null,
+    };
+    const stmts = fakeStmts({
+      getRunningBackgroundTasks: {
+        all: vi.fn(() => [{ session_id: 'existing', agent_id: 'lead' }]),
+      },
+      getSession: { get: vi.fn(() => activeSession) },
+    });
+    const broadcast = vi.fn();
+    dispatchSecurityFixSession(
+      {
+        stmts,
+        config: {} as any,
+        findAgent: vi.fn(() => ({ agent: agent({ id: 'lead' }), project })) as any,
+        handleChat: vi.fn().mockResolvedValue(undefined),
+        broadcast,
+      },
+      { project, findings: [row()], ownerUserId: null },
+    );
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
   it('pins merge automation when the caller asks for an auto-merged fix', () => {
     const stmts = fakeStmts();
     const handleChat = vi.fn().mockResolvedValue(undefined);

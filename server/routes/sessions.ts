@@ -853,7 +853,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     });
 
     const session = stmts.getSession.get(sessionId) as SessionRow;
-    res.status(201).json({ taskId, sessionId, session: enrichSessionForClient(session, stmts) });
+    const sessionWire = enrichSessionForClient(session, stmts);
+    deps.broadcast({ type: 'session_created', agentId, session: sessionWire });
+    res.status(201).json({ taskId, sessionId, session: sessionWire });
   });
 
   router.get('/api/tasks', (req: Request, res: Response) => {

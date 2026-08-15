@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   engineSupportsCheckpointRewind,
   enrichSessionForClient,
+  broadcastSessionCreated,
 } from './session-checkpoint-rewind.js';
 import type { SessionRow, Stmts } from './types.js';
 
@@ -129,5 +130,21 @@ describe('enrichSessionForClient', () => {
     } as unknown as Stmts;
     const wire = enrichSessionForClient(minimalSession({}), stmts);
     expect(wire.finalize_status).toBeNull();
+  });
+});
+
+describe('broadcastSessionCreated', () => {
+  it('emits session_created with an enriched wire row', () => {
+    const broadcast = vi.fn();
+    const row = minimalSession({ id: 'sess-new', engine: 'claude-code' });
+    broadcastSessionCreated(broadcast, 'agent-1', row);
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'session_created',
+      agentId: 'agent-1',
+      session: expect.objectContaining({
+        id: 'sess-new',
+        checkpoint_rewind_supported: true,
+      }),
+    });
   });
 });

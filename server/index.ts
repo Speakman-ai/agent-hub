@@ -401,6 +401,7 @@ const securityAutofixDeps = (): SecurityAutofixDeps => {
     config,
     findAgent: routeDeps.findAgent,
     handleChat: routeDeps.handleChat,
+    broadcast,
     store: securityAuditStore,
   };
 };

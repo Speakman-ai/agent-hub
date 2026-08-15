@@ -701,7 +701,8 @@ export function AppProvider({ children }: any) {
                 break;
             case 'session_created': {
                 const row = data.session;
-                if (row && data.agentId === activeAgentIdRef.current) {
+                const agentId = data.agentId || row?.agent_id;
+                if (row && agentId === activeAgentIdRef.current) {
                     setSessions((prev: any) => {
                         if (prev.some((s: any) => s.id === row.id))
                             return prev;

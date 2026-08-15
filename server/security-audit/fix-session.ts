@@ -19,8 +19,9 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import type { AppConfig, ChatMessage, Project, SessionRow, Stmts } from '../types.js';
+import type { AppConfig, BroadcastFn, ChatMessage, Project, SessionRow, Stmts } from '../types.js';
 import type { AgentLookup } from '../types.js';
+import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
 import type { SecurityFindingRow } from './findings-store.js';
 import { severityRank } from './severity.js';
 import type { Severity } from './types.js';
@@ -172,6 +173,8 @@ export interface DispatchSecurityFixDeps {
   config: AppConfig;
   findAgent: (agentId: string) => AgentLookup | null;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
+  /** When set, a newly created session is pushed to connected sidebars. */
+  broadcast?: BroadcastFn;
 }
 
 export interface DispatchSecurityFixResult {
@@ -309,5 +312,8 @@ export function dispatchSecurityFixSession(
     });
 
   const session = deps.stmts.getSession.get(sessionId) as SessionRow;
+  if (deps.broadcast) {
+    broadcastSessionCreated(deps.broadcast, agentId, session, deps.stmts);
+  }
   return { sessionId, session, agentId, findingCount: count, reused: false };
 }

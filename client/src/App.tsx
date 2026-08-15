@@ -207,6 +207,7 @@ import {
   withoutSessionKey,
   prependSessionDeduped,
   planCreatedSessionCaches,
+  planRemoteSessionCreatedCaches,
 } from './utils/sessionDerivedState';
 import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
@@ -3067,18 +3068,44 @@ export default function App({ initialView }: any = {}) {
           break;
 
         case 'session_created': {
-          // Kanban assign, autonomous dispatch, handoff target session, another
-          // browser tab POST /sessions, etc. — splice into the sidebar without
-          // a full refetch when the session belongs to the active agent.
+          // Triggered spawn (Resolve PR, security fix, kanban assign,
+          // autonomous dispatch) and another tab's POST /sessions. Splice
+          // into the live list when it belongs to the loaded agent, and
+          // into any already-fetched per-agent sidebar cache. Do not
+          // invent a cache for an agent that has never been fetched.
           const row = data.session;
+          const agentId = data.agentId || row?.agent_id;
           if (row?.id) {
             sessionsByIdRef.current.set(row.id, row);
             setSessionsIndexTick((t: any) => t + 1);
           }
-          if (row && data.agentId === activeAgentIdRef.current) {
+          if (row && agentId) {
+            // Functional setters + eager ref writes: two session_created
+            // events before paint must compose. Planning only from
+            // sessionsRef / sessionsByAgentIdRef then setState(plan) loses
+            // the first row — those refs do not advance until the next
+            // render, so the second plan starts from the same arrays.
             setSessions((prev: any) => {
-              if (prev.some((s: any) => s.id === row.id)) return prev;
-              return [row, ...prev];
+              const next = planRemoteSessionCreatedCaches({
+                targetAgentId: agentId,
+                loadedSessionsAgentId: loadedSessionsAgentIdRef.current,
+                session: row,
+                sessionsByAgentId: sessionsByAgentIdRef.current,
+                sessions: prev,
+              }).sessions;
+              sessionsRef.current = next;
+              return next;
+            });
+            setSessionsByAgentId((prev: any) => {
+              const next = planRemoteSessionCreatedCaches({
+                targetAgentId: agentId,
+                loadedSessionsAgentId: loadedSessionsAgentIdRef.current,
+                session: row,
+                sessionsByAgentId: prev,
+                sessions: sessionsRef.current,
+              }).sessionsByAgentId;
+              sessionsByAgentIdRef.current = next;
+              return next;
             });
           }
           break;

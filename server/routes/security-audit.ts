@@ -109,6 +109,7 @@ export default function createSecurityAuditRoutes(
     config: deps.config,
     findAgent: deps.findAgent,
     handleChat: deps.handleChat,
+    broadcast: deps.broadcast,
   });
 
   const dispatchFix = (

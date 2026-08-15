@@ -10,6 +10,7 @@ import {
   withoutSessionKey,
   prependSessionDeduped,
   planCreatedSessionCaches,
+  planRemoteSessionCreatedCaches,
 } from './sessionDerivedState';
 
 describe('sessionDerivedState', () => {
@@ -483,6 +484,79 @@ describe('sessionDerivedState', () => {
           ...state,
         }),
       ).toEqual(state);
+    });
+  });
+
+  describe('planRemoteSessionCreatedCaches', () => {
+    const rowA = { id: 's-a' };
+    const created = { id: 's-new', name: '[Resolve PR #12] Fix' };
+
+    it('prepends onto the live list when the loaded agent owns the session', () => {
+      const out = planRemoteSessionCreatedCaches({
+        targetAgentId: 'agent-1',
+        loadedSessionsAgentId: 'agent-1',
+        session: created,
+        sessionsByAgentId: { 'agent-1': [rowA] },
+        sessions: [rowA],
+      });
+      expect(out.sessions).toEqual([created, rowA]);
+      expect(out.sessionsByAgentId['agent-1']).toEqual([created, rowA]);
+    });
+
+    it('prepends onto an already-cached other agent without touching the live list', () => {
+      const sessions = [rowA];
+      const out = planRemoteSessionCreatedCaches({
+        targetAgentId: 'agent-2',
+        loadedSessionsAgentId: 'agent-1',
+        session: created,
+        sessionsByAgentId: { 'agent-1': [rowA], 'agent-2': [{ id: 's-b' }] },
+        sessions,
+      });
+      expect(out.sessions).toBe(sessions);
+      expect(out.sessionsByAgentId['agent-2']).toEqual([created, { id: 's-b' }]);
+      expect(out.sessionsByAgentId['agent-1']).toEqual([rowA]);
+    });
+
+    it('does not invent a cache entry for an agent that has never been fetched', () => {
+      // Expanding that agent later fetches the full list. A one-row seed
+      // would skip the fetch and hide every other session.
+      const sessions = [rowA];
+      const cache = { 'agent-1': [rowA] };
+      const out = planRemoteSessionCreatedCaches({
+        targetAgentId: 'agent-2',
+        loadedSessionsAgentId: 'agent-1',
+        session: created,
+        sessionsByAgentId: cache,
+        sessions,
+      });
+      expect(out.sessionsByAgentId).toBe(cache);
+      expect(out.sessionsByAgentId['agent-2']).toBeUndefined();
+      expect(out.sessions).toBe(sessions);
+    });
+
+    it('composes two events so the second does not drop the first', () => {
+      const first = { id: 's-1', name: '[Resolve PR #1]' };
+      const second = { id: 's-2', name: '[Security] Fix' };
+      const afterFirst = planRemoteSessionCreatedCaches({
+        targetAgentId: 'agent-1',
+        loadedSessionsAgentId: 'agent-1',
+        session: first,
+        sessionsByAgentId: { 'agent-1': [rowA] },
+        sessions: [rowA],
+      });
+      const afterSecond = planRemoteSessionCreatedCaches({
+        targetAgentId: 'agent-1',
+        loadedSessionsAgentId: 'agent-1',
+        session: second,
+        sessionsByAgentId: afterFirst.sessionsByAgentId,
+        sessions: afterFirst.sessions,
+      });
+      expect(afterSecond.sessions.map((s: { id: string }) => s.id)).toEqual(['s-2', 's-1', 's-a']);
+      expect(afterSecond.sessionsByAgentId['agent-1'].map((s: { id: string }) => s.id)).toEqual([
+        's-2',
+        's-1',
+        's-a',
+      ]);
     });
   });
 });

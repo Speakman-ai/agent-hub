@@ -1,4 +1,4 @@
-import type { Project, SessionRow, Stmts } from './types.js';
+import type { BroadcastFn, Project, SessionRow, Stmts } from './types.js';
 import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
 import { sessionCanUseDesignMode } from './project-mode-guards.js';
 
@@ -151,6 +151,8 @@ function isSessionFinalizeFullyValidated(stmts: Stmts, sessionId: string): boole
  *   - `handoff.ts` (handoff session_created)
  *   - `kanban-caller-session.ts` (card-link title rename broadcast)
  *   - `session-agents.ts` (`enrichSessionWithAgents` reuses it)
+ *   - `routes/pr-resolve.ts` (Resolve PR spawn)
+ *   - `security-audit/fix-session.ts` (security-fix spawn)
  *
  * The two-arg shape is enforced by ESLint via grep-friendly call sites,
  * not by the type system (the optional is a back-compat affordance, not
@@ -171,4 +173,25 @@ export function enrichSessionForClient(
       : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
     can_design_mode: sessionCanUseDesignMode(row, project ?? null),
   };
+}
+
+/**
+ * Push a `session_created` WebSocket event so every connected sidebar can
+ * splice the new row without a page refresh. Triggered spawn paths
+ * (Resolve PR, security fix, background tasks) must call this after
+ * `createSession`; the HTTP 201 body is not enough for other tabs / the
+ * already-mounted sidebar.
+ */
+export function broadcastSessionCreated(
+  broadcast: BroadcastFn,
+  agentId: string,
+  session: SessionRow,
+  stmts?: Stmts,
+  project?: Project | null,
+): void {
+  broadcast({
+    type: 'session_created',
+    agentId,
+    session: enrichSessionForClient(session, stmts, project),
+  });
 }
