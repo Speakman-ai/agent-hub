@@ -679,6 +679,228 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     resolveRun();
     await vi.waitFor(() => expect(getSessionWorktreeLockOwner('sess-1')).toBeNull());
   });
+
+  it('409 dedupes an overlapping kickoff once the first run row becomes visible', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+      created_by: 'user-1',
+      title: 't',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+
+    let runVisible = false;
+    let runEntered = false;
+    let resolveRun!: () => void;
+    let notifyRunEntered!: () => void;
+    let notifyDuplicatePolled!: () => void;
+    const runEnteredPromise = new Promise<void>((resolve) => {
+      notifyRunEntered = resolve;
+    });
+    const duplicatePolledPromise = new Promise<void>((resolve) => {
+      notifyDuplicatePolled = resolve;
+    });
+    stmts.getFinalizeRunByIdempotencyKey.get.mockImplementation(() =>
+      runVisible ? { id: 'run-first', status: 'running' } : undefined,
+    );
+    stmts.getActiveFinalizeRunForSessionBranch.get.mockImplementation(() => {
+      if (runEntered && !runVisible) notifyDuplicatePolled();
+      return runVisible ? { id: 'run-first', status: 'running' } : undefined;
+    });
+    runFinalize.mockImplementation(() => {
+      runEntered = true;
+      notifyRunEntered();
+      return new Promise<void>((resolve) => {
+        resolveRun = resolve;
+      });
+    });
+
+    // Start request one, but hold its run row invisible after it owns the lock.
+    // Request two must overlap this window; awaiting request one first would
+    // miss the race and only exercise the already-visible-row path.
+    const firstPromise = supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .then((res) => res);
+    await runEnteredPromise;
+    expect(getSessionWorktreeLockOwner('sess-1')).toBe('finalize');
+
+    const duplicatePromise = supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .then((res) => res);
+    await duplicatePolledPromise;
+    runVisible = true;
+
+    const [first, duplicate] = await Promise.all([firstPromise, duplicatePromise]);
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ run_id: 'run-first', reused: false });
+    expect(duplicate.status).toBe(409);
+
+    expect(duplicate.body).toMatchObject({
+      error: 'in_flight',
+      run_id: 'run-first',
+      status: 'running',
+    });
+    expect(runFinalize).toHaveBeenCalledOnce();
+
+    resolveRun();
+    await vi.waitFor(() => expect(getSessionWorktreeLockOwner('sess-1')).toBeNull());
+  });
+
+  it('reuses a fast terminal owner whose row predates the duplicate request', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+      created_by: 'user-1',
+      title: 't',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+
+    let firstRunVisible = false;
+    let resolveFirstRun!: () => void;
+    let notifyDuplicatePolled!: () => void;
+    const duplicatePolledPromise = new Promise<void>((resolve) => {
+      notifyDuplicatePolled = resolve;
+    });
+    stmts.getLatestFinalizeRunForSession.get.mockImplementation(() =>
+      firstRunVisible
+        ? { id: 'run-first', branch: 'feature/x', status: 'failed' }
+        : { id: 'run-old', branch: 'feature/x', status: 'failed' },
+    );
+    stmts.getFinalizeRunByIdempotencyKey.get.mockImplementation(() =>
+      firstRunVisible ? { id: 'run-first', status: 'failed' } : undefined,
+    );
+    stmts.getActiveFinalizeRunForSessionBranch.get.mockImplementation(() => {
+      if (firstRunVisible) notifyDuplicatePolled();
+      return undefined;
+    });
+    runFinalize.mockImplementation(() => {
+      firstRunVisible = true;
+      return new Promise<void>((resolve) => {
+        resolveFirstRun = resolve;
+      });
+    });
+
+    // The first request has already made its row terminal, but deliberately
+    // keeps its promise unsettled so its worktree lock remains owned.
+    const first = await supertest(app).post('/api/projects/proj-1/cards/card-1/finalize').send({});
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ run_id: 'run-first', reused: false });
+    expect(getSessionWorktreeLockOwner('sess-1')).toBe('finalize');
+
+    const duplicatePromise = supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .then((res) => res);
+    await duplicatePolledPromise;
+    resolveFirstRun();
+
+    const duplicate = await duplicatePromise;
+    expect(duplicate.status).toBe(200);
+    expect(duplicate.body).toMatchObject({
+      run_id: 'run-first',
+      status: 'failed',
+      reused: true,
+    });
+    expect(runFinalize).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(getSessionWorktreeLockOwner('sess-1')).toBeNull());
+  });
+
+  it('retries after a pre-row failure instead of reusing an older same-branch run', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+      created_by: 'user-1',
+      title: 't',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    stmts.getLatestFinalizeRunForSession.get.mockReturnValue({
+      id: 'run-old',
+      branch: 'feature/x',
+      status: 'failed',
+    });
+
+    let orchestratorCalls = 0;
+    let secondRunVisible = false;
+    let resolveFirstRun!: () => void;
+    let resolveSecondRun!: () => void;
+    let notifyFirstRunEntered!: () => void;
+    let notifyDuplicatePolled!: () => void;
+    const firstRunEnteredPromise = new Promise<void>((resolve) => {
+      notifyFirstRunEntered = resolve;
+    });
+    const duplicatePolledPromise = new Promise<void>((resolve) => {
+      notifyDuplicatePolled = resolve;
+    });
+    stmts.getFinalizeRunByIdempotencyKey.get.mockImplementation(() =>
+      secondRunVisible ? { id: 'run-retry', status: 'running' } : undefined,
+    );
+    stmts.getActiveFinalizeRunForSessionBranch.get.mockImplementation(() => {
+      if (orchestratorCalls === 1) notifyDuplicatePolled();
+      return secondRunVisible ? { id: 'run-retry', status: 'running' } : undefined;
+    });
+    runFinalize.mockImplementation(() => {
+      orchestratorCalls += 1;
+      if (orchestratorCalls === 1) {
+        notifyFirstRunEntered();
+        return new Promise<void>((resolve) => {
+          resolveFirstRun = resolve;
+        });
+      }
+      secondRunVisible = true;
+      return new Promise<void>((resolve) => {
+        resolveSecondRun = resolve;
+      });
+    });
+
+    const firstPromise = supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .then((res) => res);
+    await firstRunEnteredPromise;
+
+    const duplicatePromise = supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .then((res) => res);
+    await duplicatePolledPromise;
+    resolveFirstRun();
+
+    const duplicate = await duplicatePromise;
+    expect(duplicate.status).toBe(200);
+    expect(duplicate.body).toMatchObject({ run_id: 'run-retry', reused: false });
+    expect(duplicate.body.run_id).not.toBe('run-old');
+    expect(runFinalize).toHaveBeenCalledTimes(2);
+
+    resolveSecondRun();
+    await firstPromise;
+    await vi.waitFor(() => expect(getSessionWorktreeLockOwner('sess-1')).toBeNull());
+  });
 });
 
 describe('POST /api/projects/:projectId/sessions/:sessionId/finalize', () => {

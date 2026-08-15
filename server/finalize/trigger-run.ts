@@ -2,8 +2,6 @@
  * trigger-run.ts — shared Finalize run kickoff for card and session routes.
  */
 import { createHash } from 'crypto';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import type { AuthenticatedRequest } from '../auth.js';
 import type {
   FinalizeRunMode,
@@ -29,6 +27,7 @@ import {
   unregisterFinalizeRunAbort,
 } from './run-abort-registry.js';
 import {
+  getSessionWorktreeLockOwner,
   releaseSessionWorktreeLock,
   tryAcquireSessionWorktreeLock,
   waitForSessionWorktreeLockRelease,
@@ -39,8 +38,6 @@ import {
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from './post-push-session-lock.js';
 import { suppressBackgroundShellWakesForFinalize } from './pre-finalize-background-shells.js';
-
-const execFileAsync = promisify(execFile);
 
 const TERMINAL_STATUSES: ReadonlySet<FinalizeRunStatus> = new Set<FinalizeRunStatus>([
   'pushed',
@@ -54,6 +51,13 @@ const TERMINAL_STATUSES: ReadonlySet<FinalizeRunStatus> = new Set<FinalizeRunSta
 const ROW_VISIBILITY_POLL_INTERVAL_MS = 20;
 const ROW_VISIBILITY_POLL_MAX_ATTEMPTS = 15;
 const KICKOFF_CLAIM_TTL_MS = 5 * 60 * 1000;
+
+// Baseline run identity captured by the process that owns each Finalize
+// worktree lock. A contending request cannot take this snapshot itself: by the
+// time it observes the lock, a fast owner may already have inserted and
+// terminalized its row. Binding the baseline to lock acquisition lets the
+// contender prove whether a later row was created by that owner.
+const finalizeLockBaselineRunIds = new Map<string, string | null>();
 
 /**
  * Defensive ceiling on manual re-run attempts probed for a single head SHA.
@@ -357,6 +361,12 @@ async function kickoffFinalizeRunBody(
       .finally(() => {
         settled = true;
         if (registeredRunId) unregisterFinalizeRunAbort(registeredRunId);
+        // A rejection before runFinalize inserts its row leaves no durable run
+        // for the claim to protect. The HTTP visibility poll may still be in
+        // progress (or may already have returned 202), so release the claim
+        // here as well; a duplicate that observed our worktree lock can then
+        // retry instead of waiting for the stale-claim TTL.
+        if (!registeredRunId) stmts.deleteFinalizeKickoffClaim.run(claimKey);
         args.onFinalizeSettled?.();
       });
     args.onFinalizeStarted?.();
@@ -412,12 +422,62 @@ async function kickoffFinalizeRun(
 
   if (current.worktree_path && current.worktree_branch) {
     while (!tryAcquireSessionWorktreeLock(current.id, 'finalize')) {
+      // Do not queue one Finalize kickoff behind another. Once the first run
+      // settles, an explicit UI trigger would see its terminal row and advance
+      // to a fresh attempt, turning a duplicate request into an unintended
+      // second run. The lock is acquired before the run row is inserted, so
+      // wait for that row (or for the owner to settle) rather than returning a
+      // malformed in-flight response with an empty run id. Other lock owners
+      // (a turn start, branch switch, or multi-agent round) still need the
+      // original wait-and-retry behavior.
+      if (getSessionWorktreeLockOwner(current.id) === 'finalize') {
+        const ownerBaselineRunId = finalizeLockBaselineRunIds.get(current.id);
+        while (getSessionWorktreeLockOwner(current.id) === 'finalize') {
+          const active = stmts.getActiveFinalizeRunForSessionBranch.get(
+            current.id,
+            current.worktree_branch,
+          ) as FinalizeRunRow | undefined;
+          if (active?.id) {
+            return { kind: 'in_flight', runId: active.id, status: active.status };
+          }
+          await sleep(ROW_VISIBILITY_POLL_INTERVAL_MS);
+        }
+
+        // A very short run can become ready/terminal between polls and release
+        // the lock before the active-only query sees it. Reuse that completed
+        // overlapping run instead of advancing this duplicate UI request to a
+        // new attempt. If no row was ever created, retry lock acquisition so a
+        // failed pre-row kickoff does not wedge the session.
+        const latest = stmts.getLatestFinalizeRunForSession.get(current.id) as
+          | FinalizeRunRow
+          | undefined;
+        if (
+          ownerBaselineRunId !== undefined &&
+          latest?.id &&
+          latest.id !== ownerBaselineRunId &&
+          latest.branch === current.worktree_branch
+        ) {
+          if (latest.status === 'ready_to_push') {
+            return { kind: 'ready_to_push', runId: latest.id };
+          }
+          if (TERMINAL_STATUSES.has(latest.status)) {
+            return { kind: 'reused', runId: latest.id, status: latest.status };
+          }
+          return { kind: 'in_flight', runId: latest.id, status: latest.status };
+        }
+        continue;
+      }
       await waitForSessionWorktreeLockRelease(current.id);
     }
     lockHeld = true;
+    const baseline = stmts.getLatestFinalizeRunForSession.get(current.id) as
+      | FinalizeRunRow
+      | undefined;
+    finalizeLockBaselineRunIds.set(current.id, baseline?.id ?? null);
     const refreshed = stmts.getSession.get(current.id) as SessionRow | undefined;
     if (!refreshed) {
       releaseSessionWorktreeLock(current.id, 'finalize');
+      finalizeLockBaselineRunIds.delete(current.id);
       return { kind: 'error', error: 'session_not_found', message: 'Session not found.' };
     }
     session = refreshed;
@@ -435,6 +495,7 @@ async function kickoffFinalizeRun(
         if (lockTransferred) {
           lockTransferred = false;
           releaseSessionWorktreeLock(session.id, 'finalize');
+          finalizeLockBaselineRunIds.delete(session.id);
           setImmediate(() => deps.drainSessionQueue?.(session.id));
         }
       },
@@ -442,6 +503,7 @@ async function kickoffFinalizeRun(
   } finally {
     if (lockHeld) {
       releaseSessionWorktreeLock(session.id, 'finalize');
+      finalizeLockBaselineRunIds.delete(session.id);
     }
   }
 }
