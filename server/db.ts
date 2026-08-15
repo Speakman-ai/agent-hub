@@ -5818,7 +5818,11 @@ function initDb(dataDir: string): void {
        WHERE project_id = ? AND read_at IS NULL`,
     ),
     countUnreadSupportTickets: db.prepare(
-      `SELECT COUNT(*) AS n FROM support_tickets WHERE project_id = ? AND read_at IS NULL`,
+      `SELECT COUNT(*) AS n
+         FROM support_tickets
+        WHERE project_id = ?
+          AND status IN ('new', 'investigating')
+          AND read_at IS NULL`,
     ),
     deleteSupportTicket: db.prepare('DELETE FROM support_tickets WHERE id = ?'),
     deleteSupportTicketsByProject: db.prepare('DELETE FROM support_tickets WHERE project_id = ?'),

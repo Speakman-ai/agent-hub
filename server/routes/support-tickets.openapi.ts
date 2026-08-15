@@ -218,8 +218,9 @@ registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/support-tickets/unread-count',
   tags: ['Support'],
-  summary: 'Count a project’s unread support tickets',
-  description: 'Returns the number of tickets with read_at NULL. Drives the Support sidebar badge.',
+  summary: 'Count a project’s unread open support tickets',
+  description:
+    'Returns the number of open tickets (new or investigating) with read_at NULL. Drives the Support sidebar badge.',
   request: { params: projectIdParams },
   responses: {
     200: {

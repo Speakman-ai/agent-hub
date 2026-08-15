@@ -995,6 +995,25 @@ describe('support-tickets routes', () => {
     expect(two.body).toEqual({ count: 2 });
   });
 
+  it('excludes unread terminal tickets from the unread-count badge', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'resolved without being opened', severity: 'medium', type: 'question' })
+      .expect(201);
+
+    expect(created.body.read_at).toBeNull();
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
+      .send({ status: 'closed' })
+      .expect(200);
+
+    const count = await request
+      .get(`/api/projects/${projectId}/support-tickets/unread-count`)
+      .expect(200);
+    expect(count.body).toEqual({ count: 0 });
+  });
+
   it('marks a ticket read and unread, adjusting the count each way', async () => {
     const projectId = await newProjectId();
     const created = await request

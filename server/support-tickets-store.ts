@@ -594,7 +594,7 @@ export function markAllSupportTicketsRead(projectId: string): number {
   return getStmts().markAllSupportTicketsRead.run(projectId).changes;
 }
 
-/** Count a project's unread tickets (read_at IS NULL). */
+/** Count a project's unread open tickets (read_at IS NULL). */
 export function countUnreadSupportTickets(projectId: string): number {
   const row = getStmts().countUnreadSupportTickets.get(projectId) as { n: number } | undefined;
   return row?.n ?? 0;
