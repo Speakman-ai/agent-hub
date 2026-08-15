@@ -69,6 +69,69 @@ describe('Session archive & restore', () => {
     );
   });
 
+  it('moves the linked card to Done on archive and back to In Progress on restore', async () => {
+    const suffix = Date.now().toString(36);
+    const projectId = `card-lifecycle-project-${suffix}`;
+    const project = await createProject({
+      id: projectId,
+      name: 'Card lifecycle project',
+      cwd: '/tmp',
+    });
+    const agent = await createAgent({
+      projectId: project.id as string,
+      id: `card-lifecycle-agent-${suffix}`,
+      name: 'Card lifecycle agent',
+    });
+    const session = await createSession({
+      agentId: agent.id as string,
+      name: 'close and restore card',
+    });
+    const sessionId = session.id as string;
+
+    const { randomUUID } = await import('node:crypto');
+    const { db } = await import('../db.js');
+    if (!db) throw new Error('Database not initialized');
+
+    const boardId = randomUUID();
+    const inProgressId = randomUUID();
+    const doneId = randomUUID();
+    const cardId = randomUUID();
+    db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?,?,?)').run(
+      boardId,
+      projectId,
+      'Card lifecycle board',
+    );
+    db.prepare('INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?,?,?,?)').run(
+      inProgressId,
+      boardId,
+      'In Progress',
+      0,
+    );
+    db.prepare('INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?,?,?,?)').run(
+      doneId,
+      boardId,
+      'Done',
+      1,
+    );
+    db.prepare(
+      'INSERT INTO kanban_cards (id, column_id, board_id, title, session_id) VALUES (?,?,?,?,?)',
+    ).run(cardId, inProgressId, boardId, 'Session-owned ticket', sessionId);
+
+    await request.delete(`/api/sessions/${sessionId}`).expect(200);
+    expect(db.prepare('SELECT column_id FROM kanban_cards WHERE id = ?').get(cardId)).toMatchObject(
+      { column_id: doneId },
+    );
+
+    // Older Hub versions marked retained cards orphaned on archive. Restoring
+    // one must clear that stale badge as well as reactivate the card.
+    db.prepare("UPDATE kanban_cards SET orphaned_at = datetime('now') WHERE id = ?").run(cardId);
+
+    await request.post(`/api/sessions/${sessionId}/restore`).expect(200);
+    expect(
+      db.prepare('SELECT column_id, orphaned_at FROM kanban_cards WHERE id = ?').get(cardId),
+    ).toMatchObject({ column_id: inProgressId, orphaned_at: null });
+  });
+
   it('GET /archived-sessions returns empty array when nothing is archived', async () => {
     // Use a fresh agent so prior tests don't pollute the result.
     const agent = await createAgent({

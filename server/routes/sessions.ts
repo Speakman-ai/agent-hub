@@ -90,7 +90,7 @@ import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { checkWorktreeChanges } from '../auto-git.js';
 import { hasPublishableChanges, makeNetDiffProbe } from '../finalize/net-diff.js';
-import { cleanupOrphanCardForClosedSession } from '../card-orphan-cleanup.js';
+import { syncLinkedCardToSessionStatus } from '../session-card-status.js';
 import {
   computeSessionChanges,
   computeFileDiff,
@@ -448,17 +448,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     broadcast,
   } = deps;
 
-  /**
-   * Garbage-collect / flag the kanban card left behind by a closed session.
-   * Best-effort: a card-less session (the common case) is a no-op, and any
-   * failure is swallowed so it can never block the archive. See
-   * `server/card-orphan-cleanup.ts` for the delete-vs-flag-vs-keep decision.
-   */
-  function cleanupOrphanCardBestEffort(sessionId: string): void {
+  /** Keep a linked kanban card aligned with session archive / restore state. */
+  function syncSessionCardBestEffort(sessionId: string, status: 'closed' | 'in-progress'): void {
     try {
-      cleanupOrphanCardForClosedSession({ stmts, broadcast, findAgent }, sessionId);
+      syncLinkedCardToSessionStatus({ stmts, broadcast }, sessionId, status);
     } catch (err) {
-      console.warn(`[sessions] orphan-card cleanup failed (${sessionId}):`, (err as Error).message);
+      console.warn(
+        `[sessions] linked-card ${status} sync failed (${sessionId}):`,
+        (err as Error).message,
+      );
     }
   }
 
@@ -1259,10 +1257,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         );
         continue;
       }
-      // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
-      // agent via `getSession`, and keeping it ahead of the archive removes any
-      // dependency on whether `getSession` filters `deleted_at` rows.
-      cleanupOrphanCardBestEffort(session.id);
+      syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
       archivedIds.push(session.id);
       try {
@@ -1311,10 +1306,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         );
         continue;
       }
-      // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
-      // agent via `getSession`, and keeping it ahead of the archive removes any
-      // dependency on whether `getSession` filters `deleted_at` rows.
-      cleanupOrphanCardBestEffort(session.id);
+      syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
       archivedIds.push(session.id);
       try {
@@ -1364,10 +1356,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         );
         continue;
       }
-      // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
-      // agent via `getSession`, and keeping it ahead of the archive removes any
-      // dependency on whether `getSession` filters `deleted_at` rows.
-      cleanupOrphanCardBestEffort(session.id);
+      syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
       archivedIds.push(session.id);
       try {
@@ -1425,9 +1414,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
     }
 
-    // Cleanup runs BEFORE the soft-delete so it can resolve the card's owning
-    // agent without depending on whether `getSession` filters archived rows.
-    cleanupOrphanCardBestEffort(sessionId);
+    syncSessionCardBestEffort(sessionId, 'closed');
     stmts.softDeleteSession.run(sessionId);
 
     // Broadcast `session_deleted` for cross-tab sync — the client treats
@@ -1462,6 +1449,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     stmts.restoreArchivedSession.run(sessionId);
+    syncSessionCardBestEffort(sessionId, 'in-progress');
     const restored = stmts.getSession.get(sessionId) as SessionRow;
     const restoredWire = enrichSessionForClient(restored, stmts);
 

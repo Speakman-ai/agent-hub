@@ -2596,11 +2596,9 @@ function initDb(dataDir: string): void {
     );
   }
 
-  // Set when a card's working session is closed/archived but the card had
-  // already progressed (PR, finalize run, advanced column, comments, or epic)
-  // so it can't be safely garbage-collected as an abandoned stub. The card is
-  // kept and flagged so a human can see its originating session is gone. NULL
-  // for live cards. See `server/card-orphan-cleanup.ts`.
+  // Legacy marker written by older Hub versions when a linked session was
+  // archived. The column remains for backwards-compatible reads; restoring a
+  // session clears it via `session-card-status.ts`.
   try {
     db.prepare('SELECT orphaned_at FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -5178,11 +5176,10 @@ function initDb(dataDir: string): void {
       "UPDATE kanban_cards SET auto_merge = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteKanbanCard: db.prepare('DELETE FROM kanban_cards WHERE id = ?'),
-    // Flag a card as orphaned (its working session was closed but the card had
-    // progressed too far to delete). Idempotent: re-flagging keeps the first
-    // orphaned_at timestamp via COALESCE.
-    markKanbanCardOrphaned: db.prepare(
-      "UPDATE kanban_cards SET orphaned_at = COALESCE(orphaned_at, datetime('now')), updated_at = datetime('now') WHERE id = ?",
+    // Restored sessions are active work again. Clear legacy orphan markers
+    // written by Hub versions that flagged retained cards during archive.
+    clearKanbanCardOrphaned: db.prepare(
+      "UPDATE kanban_cards SET orphaned_at = NULL, updated_at = datetime('now') WHERE id = ?",
     ),
 
     // Kanban card comments

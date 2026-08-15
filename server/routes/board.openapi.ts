@@ -208,7 +208,7 @@ export const KanbanCardComponent = registerComponent(
       dispatched_by_autonomous: z.number().int(),
       orphaned_at: z.string().nullable().optional().openapi({
         description:
-          "Set when the card's working session was closed/archived but the card had already progressed (PR, finalize run, advanced column, comments, or epic), so it was kept and flagged rather than deleted as an abandoned stub. NULL for live cards.",
+          'Legacy marker written by older Hub versions when a card lost its working session. Restoring the session clears it.',
       }),
       assign_model: z.string().nullable().optional(),
       assign_engine: z.string().nullable().optional().openapi({

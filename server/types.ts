@@ -1116,9 +1116,8 @@ export interface KanbanCardRow {
   documented: number;
   /** Set when autonomous dispatch claims a card — controls auto-PR at session end vs Create PR banner. */
   dispatched_by_autonomous: number;
-  /** ISO timestamp set when the card's working session was closed/archived but
-   *  the card had progressed too far to garbage-collect as an abandoned stub.
-   *  NULL for live cards. See `server/card-orphan-cleanup.ts`. */
+  /** Legacy ISO timestamp written when older Hub versions flagged a card whose
+   *  working session was archived. Restoring the session clears the marker. */
   orphaned_at?: string | null;
   /** Per-card auto-merge preference captured at assign / support-ticket-convert
    *  time. 1 = force auto-merge ("Auto Merge"), 0 = explicitly off ("Build and
@@ -2279,7 +2278,7 @@ export interface Stmts {
   getNextUndocumentedCard: Stmt;
   markCardDocumented: Stmt;
   deleteKanbanCard: Stmt;
-  markKanbanCardOrphaned: Stmt;
+  clearKanbanCardOrphaned: Stmt;
   setKanbanCardAutoMerge: Stmt;
   setKanbanCardAssignedUser: Stmt;
   setKanbanCardsAssignedUserByEpic: Stmt;
