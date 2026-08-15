@@ -226,6 +226,18 @@ printf '%s' "$BRANCH"`;
     expect(yml).toMatch(/tee \/etc\/agent-hub\/image-tag/);
   });
 
+  it('heals host run scripts that ignore image-tag before restart', () => {
+    // Prod Release v2.31.78: CI wrote image-tag=v2.31.78 but agenthub-server-run.sh
+    // still always pulled :main (script only refreshed at first boot). Digest gate
+    // saw empty LOCAL_REPO_DIGEST for :v2.31.78 while the container stayed on :main.
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toContain('ensure_image_tag_override');
+    expect(yml).toMatch(/Patching \$script to honor \/etc\/agent-hub\/image-tag/);
+    // Both reset and normal deploy paths must call it after writing the tag.
+    const calls = yml.match(/ensure_image_tag_override\b/g) ?? [];
+    expect(calls.length, 'define once + call from both deploy paths').toBeGreaterThanOrEqual(3);
+  });
+
   it('prints the tag it rolled out in the run summary', () => {
     // The escapes elsewhere are deliberate — those lines are inside the
     // heredoc sent to SSM, where expansion has to happen on the remote host.

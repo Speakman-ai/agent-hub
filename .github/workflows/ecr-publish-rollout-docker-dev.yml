@@ -381,12 +381,64 @@ jobs:
           fi
           DATA_ROOT="/var/lib/agent-hub"
           BOOL_RESET="${RESET_INSTANCE,,}"
+          # user-data writes agenthub-server-run.sh only at first boot; terraform
+          # env sync does not refresh it. Hosts with a pre-image-tag script ignore
+          # /etc/agent-hub/image-tag and always pull the baked :main — Release then
+          # times out with empty LOCAL_REPO_DIGEST for :vX.Y.Z. Inject the
+          # override once when missing (matches agent-hub-user-data.tftpl).
+          ENSURE_IMAGE_TAG_OVERRIDE=$(cat <<'ENSURE_EOF'
+          ensure_image_tag_override() {
+            local script=/usr/local/bin/agenthub-server-run.sh
+            if [ ! -f "$script" ]; then
+              echo "WARN: $script missing; cannot ensure image-tag override" >&2
+              return 0
+            fi
+            if grep -q '/etc/agent-hub/image-tag' "$script"; then
+              return 0
+            fi
+            echo "Patching $script to honor /etc/agent-hub/image-tag (stale host script)"
+            sudo python3 - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path("/usr/local/bin/agenthub-server-run.sh")
+          text = path.read_text()
+          if "/etc/agent-hub/image-tag" in text:
+              raise SystemExit(0)
+          block = """
+          # CI / manual deploy writes the moving tag here before systemctl restart.
+          # Override the baked-in image URI so pull-on-start tracks the tag that was
+          # just published rather than whatever tag was embedded at host bootstrap.
+          if [ -f /etc/agent-hub/image-tag ]; then
+            DEPLOY_TAG="$(tr -d '[:space:]' < /etc/agent-hub/image-tag)"
+            if [ -n "$DEPLOY_TAG" ]; then
+              IMAGE_BASE="${IMAGE_URI%:*}"
+              IMAGE_URI="$IMAGE_BASE:$DEPLOY_TAG"
+              if [ -n "$RUNNER_IMAGE_URI" ]; then
+                RUNNER_BASE="${RUNNER_IMAGE_URI%:*}"
+                RUNNER_IMAGE_URI="$RUNNER_BASE:$DEPLOY_TAG"
+              fi
+            fi
+          fi
+          """
+          m = re.search(r"^RUNNER_IMAGE_URI=.*$", text, re.M) or re.search(
+              r"^IMAGE_URI=.*$", text, re.M
+          )
+          if not m:
+              raise SystemExit("could not find IMAGE_URI insertion point in agenthub-server-run.sh")
+          path.write_text(text[: m.end()] + "\n" + block + text[m.end() :])
+          path.chmod(0o755)
+          print("patched", path)
+          PY
+          }
+          ENSURE_EOF
+          )
           if [[ "$BOOL_RESET" == "true" ]]; then
             SCRIPT=$(cat <<EOF
           set -euo pipefail
           DATA_ROOT="$DATA_ROOT"
           EXPECTED_DIGEST="$EXPECTED_DIGEST"
           DEPLOY_TAG="$DEPLOY_TAG"
+          ${ENSURE_IMAGE_TAG_OVERRIDE}
           if [ -f "\$DATA_ROOT/data/config.json" ]; then
             sudo cp -a "\$DATA_ROOT/data/config.json" /tmp/agent-hub-config.json
           fi
@@ -400,6 +452,7 @@ jobs:
           fi
           sudo install -d -m 0755 /etc/agent-hub
           printf '%s\n' "\$DEPLOY_TAG" | sudo tee /etc/agent-hub/image-tag >/dev/null
+          ensure_image_tag_override
           sudo systemctl start agenthub-server
           sudo systemctl is-active agenthub-server
 
@@ -469,8 +522,10 @@ jobs:
           set -euo pipefail
           EXPECTED_DIGEST="$EXPECTED_DIGEST"
           DEPLOY_TAG="$DEPLOY_TAG"
+          ${ENSURE_IMAGE_TAG_OVERRIDE}
           sudo install -d -m 0755 /etc/agent-hub
           printf '%s\n' "\$DEPLOY_TAG" | sudo tee /etc/agent-hub/image-tag >/dev/null
+          ensure_image_tag_override
           sudo systemctl restart agenthub-server
           sudo systemctl is-active agenthub-server
 
