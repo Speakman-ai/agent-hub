@@ -26,6 +26,21 @@ describe('benignStreamEvents', () => {
     ).toBe(true);
   });
 
+  it('matches Grok plan snapshots already persisted before the parser suppressed them', () => {
+    expect(
+      isBenignUnknownStreamEvent({
+        type: 'unknown',
+        text: 'unhandled grok event: {"type":"plan","entries":[{"content":"Explore how triggered sessions are created","priority":"medium","status":"in_progress"}]}',
+      }),
+    ).toBe(true);
+    expect(
+      isBenignUnknownStreamEvent({
+        type: 'unknown',
+        text: 'unhandled grok event: {"type":"plan"}',
+      }),
+    ).toBe(true);
+  });
+
   it('does not match real parser gaps', () => {
     expect(
       isBenignUnknownStreamEvent({
@@ -37,6 +52,18 @@ describe('benignStreamEvents', () => {
       isBenignUnknownStreamEvent({
         type: 'unknown',
         text: 'unhandled cursor event: status',
+      }),
+    ).toBe(false);
+    expect(
+      isBenignUnknownStreamEvent({
+        type: 'unknown',
+        text: 'unhandled grok event: {"type":"plan_approval","ok":true}',
+      }),
+    ).toBe(false);
+    expect(
+      isBenignUnknownStreamEvent({
+        type: 'unknown',
+        text: 'unhandled grok event: {"type":"widget","id":1}',
       }),
     ).toBe(false);
   });

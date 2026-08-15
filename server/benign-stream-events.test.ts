@@ -21,6 +21,15 @@ describe('shouldPersistStreamEvent', () => {
     ).toBe(false);
   });
 
+  it('drops persisted Grok plan-snapshot unknowns', () => {
+    expect(
+      shouldPersistStreamEvent({
+        type: 'unknown',
+        text: 'unhandled grok event: {"type":"plan","entries":[{"content":"Explore","status":"in_progress"}]}',
+      } as StreamEvent),
+    ).toBe(false);
+  });
+
   it('keeps unrecognized unknown frames for debugging', () => {
     expect(
       shouldPersistStreamEvent({

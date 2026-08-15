@@ -1252,10 +1252,13 @@ function normalizeGrokNativeStream(
       return grokToolCallEvents(raw);
     case 'tool_call_update':
       return grokToolCallUpdateEvents(raw);
-    // Bookkeeping frames: the available-tools handshake and per-step token usage
-    // carry nothing to render. Drop them (don't stamp an `unknown` row).
+    // Bookkeeping frames: available-tools handshake, per-step token usage,
+    // and the working-plan snapshot (`{ type:'plan', entries:[...] }`). Drop
+    // them so they do not stamp an `unknown` row. Codex `todo_list` is
+    // ignored the same way.
     case 'available_commands':
     case 'usage':
+    case 'plan':
       return [];
     case 'end': {
       const stopReason =

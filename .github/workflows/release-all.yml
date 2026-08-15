@@ -7,7 +7,7 @@ name: Release
 #   2. After release succeeds, jobs fan out in parallel:
 #        - docker-ecr — build + push the server/runner images at the tag
 #          (`:sha`, `:vX.Y.Z` — not `:main`), then SSM restart of the prod
-#          sandbox (agenthub.surveytracker.io) pinned to that version tag.
+#          sandbox (agenthub.example.com) pinned to that version tag.
 #          `:main` is owned by "Deploy DEV Hub from main" (dev.agenthub.*).
 #        - build-mac        — DMGs → S3 (non-gating vs server rollout).
 #        - terraform-apply  — ALWAYS runs: `terraform apply` against the prod

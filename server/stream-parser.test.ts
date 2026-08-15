@@ -1966,6 +1966,32 @@ describe('createStreamParser — Grok Build CLI', () => {
       ]);
       expect(events).toHaveLength(0);
     });
+
+    // Regression: Grok streams the working-plan snapshot as a top-level native
+    // NDJSON `{ type:'plan', entries:[...] }` line. That fell through to the
+    // `unhandled grok event` placeholder and flooded the session tail with a
+    // grey JSON dump of the todo list.
+    it('silently drops native plan snapshots (no unhandled row)', () => {
+      const events = parse([
+        JSON.stringify({
+          type: 'plan',
+          entries: [
+            {
+              content: 'Explore how triggered sessions are created and how sidebar updates',
+              priority: 'medium',
+              status: 'in_progress',
+            },
+            {
+              content: 'Create kanban card and find the bug',
+              priority: 'medium',
+              status: 'pending',
+            },
+          ],
+        }),
+      ]);
+      expect(events).toHaveLength(0);
+      expect(events.some((e) => e.type === 'unknown')).toBe(false);
+    });
   });
 });
 

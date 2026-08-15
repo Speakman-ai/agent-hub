@@ -5,7 +5,7 @@
 # digest gate fails even when the host is healthy):
 #   - Deploy DEV Hub from main owns `:main` (dev.agenthub.*).
 #   - Release publishes immutable `:vX.Y.Z` (+ `:sha`) and rolls the prod
-#     sandbox (agenthub.surveytracker.io) to that tag. It must NOT retag `:main`.
+#     sandbox (agenthub.example.com) to that tag. It must NOT retag `:main`.
 #   - `/etc/agent-hub/image-tag` also retags the in-box finalize-runner image
 #     to the same moving tag (user-data run script).
 #
@@ -45,7 +45,7 @@ on:
       deploy_instance_id:
         description: >-
           EC2 instance id to SSM for rollout. When empty, falls back to
-          vars.DOCKER_DEPLOY_INSTANCE_ID (prod sandbox / agenthub.surveytracker.io).
+          vars.DOCKER_DEPLOY_INSTANCE_ID (prod sandbox / agenthub.example.com).
           Deploy DEV Hub from main passes vars.DOCKER_DEPLOY_DEV_INSTANCE_ID
           (dev.agenthub.*) so release rollouts stay on prod.
         required: false
@@ -339,7 +339,7 @@ jobs:
       # main→DEV Hub caller can pass DOCKER_DEPLOY_DEV_INSTANCE_ID without
       # stealing release-all's prod sandbox), else DOCKER_DEPLOY_INSTANCE_ID.
       # Never hardcode an instance id in this public tree.
-      #   DOCKER_DEPLOY_INSTANCE_ID      prod sandbox (agenthub.surveytracker.io)
+      #   DOCKER_DEPLOY_INSTANCE_ID      prod sandbox (agenthub.example.com)
       #   DOCKER_DEPLOY_DEV_INSTANCE_ID  DEV Hub (dev.agenthub.*) — set only on
       #                                  the Deploy DEV Hub from main caller
       #   DOCKER_DEPLOY_ROLE_ARN         OIDC role assumed on the target account

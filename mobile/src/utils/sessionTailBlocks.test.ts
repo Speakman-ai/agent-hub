@@ -40,6 +40,18 @@ describe('eventsToBlocks — benign unknown stream events', () => {
         expect(blocks.filter((b: any) => b.kind === 'unknown')).toEqual([]);
         expect(blocks.map((b: any) => b.kind)).toEqual(['text']);
     });
+    it('suppresses historical Grok plan-snapshot unknown rows', () => {
+        const events = wrap([
+            {
+                type: 'unknown',
+                text: 'unhandled grok event: {"type":"plan","entries":[{"content":"Explore","status":"in_progress"}]}',
+            },
+            { type: 'assistant_text', text: 'ok', partial: false },
+        ]);
+        const blocks = eventsToBlocks(events);
+        expect(blocks.filter((b: any) => b.kind === 'unknown')).toEqual([]);
+        expect(blocks.map((b: any) => b.kind)).toEqual(['text']);
+    });
 });
 describe('eventsToBlocks — progress_step handling', () => {
     it('does not produce unknown blocks for progress_step-only streams', () => {

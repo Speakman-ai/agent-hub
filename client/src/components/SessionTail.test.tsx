@@ -228,6 +228,19 @@ describe('eventsToBlocks — benign unknown stream events', () => {
     const blocks = eventsToBlocks(events);
     expect(blocks.filter((b: any) => b.kind === 'unknown')).toEqual([]);
   });
+
+  it('suppresses historical Grok plan-snapshot unknown rows', () => {
+    const events = wrap([
+      {
+        type: 'unknown',
+        text: 'unhandled grok event: {"type":"plan","entries":[{"content":"Explore how triggered sessions are created","priority":"medium","status":"in_progress"}]}',
+      },
+      { type: 'assistant_text', text: 'Looking at the parser.', partial: false },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks.filter((b: any) => b.kind === 'unknown')).toEqual([]);
+    expect(blocks.map((b: any) => b.kind)).toEqual(['text']);
+  });
 });
 
 describe('SessionTail — tool_result image rendering', () => {
