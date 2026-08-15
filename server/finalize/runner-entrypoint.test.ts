@@ -87,3 +87,39 @@ describe('runner identity matches the workspace owner', () => {
     expect(script).toMatch(/if \[ -z "\$want_uid" \]; then\n\s+return 0/);
   });
 });
+
+describe('runner entrypoint — Finalize workspace chown', () => {
+  // Prod after a host replacement: every install step died with EACCES mkdir
+  // /github/workspace/node_modules (exit 243). The fleet agent already chowns
+  // to hardcoded uid 1000; that misses job-image uid skew, Hub-local clones,
+  // and userns remap. The job entrypoint chowns to the account it actually
+  // execs as and probes that a create succeeds before any CI step runs.
+  it('chowns /github/workspace to the running runner account on the Finalize path', () => {
+    const script = readEntrypoint();
+    expect(script).toContain('prepare_job_workspace');
+    expect(script).toMatch(/sudo chown -R "\$\{RUNNER_USER\}:\$\{RUNNER_USER\}" "\$ws"/);
+    expect(script).toContain('.finalize-workspace-writable');
+  });
+
+  it('runs prepare_job_workspace in daemon mode before dockerd', () => {
+    const script = readEntrypoint();
+    const daemon = script.slice(script.indexOf('daemon)'));
+    const chownAt = daemon.indexOf('prepare_job_workspace');
+    const dockerdAt = daemon.indexOf('start_dockerd');
+    expect(chownAt).toBeGreaterThan(-1);
+    expect(dockerdAt).toBeGreaterThan(chownAt);
+  });
+
+  it('does not chown the workspace when a session env declared AGENT_HUB_WORKSPACE_UID', () => {
+    const script = readEntrypoint();
+    expect(script).toMatch(
+      /prepare_job_workspace\(\) \{\n\s+\[ -n "\$\{AGENT_HUB_WORKSPACE_UID:-\}" \] && return 0/,
+    );
+  });
+
+  it('refuses to chown a path other than /github/workspace', () => {
+    const script = readEntrypoint();
+    expect(script).toContain('skipping workspace chown for unexpected path');
+    expect(script).toContain('[ "$ws" != "/github/workspace" ]');
+  });
+});

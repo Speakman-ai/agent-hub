@@ -38,14 +38,18 @@ export function jobWorktreePath(
 /**
  * Materialise an independent working tree at `dest` from `src`.
  *
- * Prefers `git clone --local` (hardlinked objects, copied worktree). Falls
- * back to a recursive copy when `src` is not a git checkout.
+ * Prefers `git clone --local --no-hardlinks` (copied objects + worktree).
+ * `--local` skips the git-aware transport for a same-host path; `--no-hardlinks`
+ * is required because the job container's entrypoint `chown -R`s the bind
+ * mount to `runner`. Hardlinked `.git/objects` would also rewrite ownership
+ * of the session/staging repo those inodes still name. Falls back to a
+ * recursive copy when `src` is not a git checkout.
  */
 export async function materializeJobWorktree(src: string, dest: string): Promise<void> {
   await rm(dest, { recursive: true, force: true });
   await mkdir(path.dirname(dest), { recursive: true });
   try {
-    await execFileAsync('git', ['clone', '--local', '--quiet', src, dest], {
+    await execFileAsync('git', ['clone', '--local', '--no-hardlinks', '--quiet', src, dest], {
       timeout: CLONE_TIMEOUT_MS,
     });
   } catch {

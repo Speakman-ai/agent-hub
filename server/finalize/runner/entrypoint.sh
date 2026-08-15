@@ -31,6 +31,11 @@ RUNNER_USER="${RUNNER_USER:-runner}"
 # So a mismatch is reported as the build-time problem it actually is, rather than
 # handing back a container whose workspace silently rejects every write.
 # AGENT_HUB_WORKSPACE_UID unset means no check, which is the Finalize path.
+#
+# Finalize jobs take the opposite approach: they cannot rewrite the running
+# account either, but they CAN chown the bind-mounted tree to that account
+# (see prepare_job_workspace). Session envs must not — the Hub still writes
+# the same files from outside the container.
 align_runner_identity() {
   local want_uid="${AGENT_HUB_WORKSPACE_UID:-}"
   local want_gid="${AGENT_HUB_WORKSPACE_GID:-}"
@@ -50,6 +55,42 @@ align_runner_identity() {
   echo "[finalize-runner] A running account cannot be renumbered from inside its own container." >&2
   echo "[finalize-runner] Rebuild this image with ${RUNNER_USER} on ${want_uid}:${want_gid} (see the useradd step in the Dockerfile)." >&2
   return 1
+}
+
+# Bind-mounted CI workspace. Every `docker exec` runs as $RUNNER_USER; whoever
+# materialized the tree (fleet agent, Hub-local clone, a restored volume after
+# a host replacement) may have left a different uid. The first `npm ci` then
+# dies with EACCES mkdir $ws/node_modules (exit 243) and the run is classified
+# `runner_workspace_unwritable`.
+#
+# Chown to the account THIS container actually execs as — not a hardcoded 1000
+# — so it stays correct when agent/job images disagree on `runner`'s uid, and
+# under userns remap (the kernel maps the container uid onto the bind mount).
+# Session envs skip this: they set AGENT_HUB_WORKSPACE_UID and refuse a
+# mismatch instead, because the Hub process still needs to write the same tree.
+#
+# Passwordless sudo is granted to `runner` in the Finalize Dockerfile.
+prepare_job_workspace() {
+  [ -n "${AGENT_HUB_WORKSPACE_UID:-}" ] && return 0
+
+  local ws="${FINALIZE_RUNNER_WORKSPACE:-/github/workspace}"
+  [ -d "$ws" ] || return 0
+  if [ "$ws" != "/github/workspace" ]; then
+    echo "[finalize-runner] skipping workspace chown for unexpected path ${ws}" >&2
+    return 0
+  fi
+
+  echo "[finalize-runner] ensuring ${ws} is writable by ${RUNNER_USER} ($(id -u "${RUNNER_USER}"):$(id -g "${RUNNER_USER}"))"
+  sudo chown -R "${RUNNER_USER}:${RUNNER_USER}" "$ws"
+
+  local probe="${ws}/.finalize-workspace-writable"
+  if ! touch "$probe"; then
+    echo "[finalize-runner] FATAL: ${ws} is not writable by ${RUNNER_USER} after chown." >&2
+    echo "[finalize-runner] Bind-mount ownership/permissions prevent CI from creating node_modules." >&2
+    ls -ldn "$ws" >&2 || true
+    return 1
+  fi
+  rm -f "$probe"
 }
 
 # Configure a registry pull-through cache / mirror for the inner dockerd when
@@ -137,6 +178,7 @@ start_dockerd() {
 case "${1:-}" in
   daemon)
     align_runner_identity
+    prepare_job_workspace
     configure_registry_mirror
     prepare_image_cache
     start_dockerd

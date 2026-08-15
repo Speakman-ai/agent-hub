@@ -17,7 +17,11 @@
  *
  * Chown after materialize closes the uid gap regardless of which agent image
  * did the clone. Requires passwordless sudo (granted to `runner` in the
- * Finalize Dockerfile).
+ * Finalize Dockerfile). The job container entrypoint also `chown -R`s
+ * `/github/workspace` to the account it actually execs as (`prepare_job_workspace`
+ * in `runner/entrypoint.sh`) so a host replacement, local-backend clone, or
+ * userns remap cannot leave the mount unwritable even if this agent-side
+ * chown used the wrong uid.
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
