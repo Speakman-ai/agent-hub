@@ -114,28 +114,34 @@ describe('ECR publish + push-image deploy contract', () => {
   });
 
   /**
-   * Runs the workflow's tag sanitizer + BRANCH assignment, so this cannot drift
-   * from what CI does.
+   * Runs the workflow's tag sanitizer + moving-tag assignment, so this cannot
+   * drift from what CI does.
    */
-  function computeBranchTag(refName: string, shaShort = 'abc123def456'): string {
+  function computeMovingTag(opts: {
+    githubRefName?: string;
+    gitRef?: string;
+    versionTag?: string;
+    shaShort?: string;
+  }): string {
+    const shaShort = opts.shaShort ?? 'abc123def456';
     const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
     const start = yml.indexOf('sanitize_docker_tag() {');
-    const branchAssign = yml.indexOf('REF_NAME="${GITHUB_REF_NAME:-main}"', start);
+    const end = yml.indexOf('echo "sha_short=', start);
     expect(start, 'sanitize_docker_tag in Compute tags step').toBeGreaterThan(-1);
-    expect(branchAssign, 'REF_NAME assignment in Compute tags step').toBeGreaterThan(-1);
-    const endHelpers = yml.indexOf('echo "sha_short=', branchAssign);
-    const script = `${yml.slice(start, endHelpers)}SHA_SHORT="${shaShort}"
-REF_NAME="\${GITHUB_REF_NAME:-main}"
-if is_stable_docker_tag "$REF_NAME"; then
-  BRANCH="$REF_NAME"
-else
-  BRANCH="$(unique_docker_tag "$REF_NAME" "$SHA_SHORT")"
-fi
+    expect(end, 'sha_short output in Compute tags step').toBeGreaterThan(start);
+    const script = `SHA_SHORT="${shaShort}"
+INPUT_VERSION_TAG="${opts.versionTag ?? ''}"
+INPUT_GIT_REF="${opts.gitRef ?? ''}"
+${yml.slice(start, end)}
 printf '%s' "$BRANCH"`;
     return execFileSync('bash', ['-c', script], {
-      env: { ...process.env, GITHUB_REF_NAME: refName },
+      env: { ...process.env, GITHUB_REF_NAME: opts.githubRefName ?? 'main' },
       encoding: 'utf8',
     });
+  }
+
+  function computeBranchTag(refName: string, shaShort = 'abc123def456'): string {
+    return computeMovingTag({ githubRefName: refName, shaShort });
   }
 
   it('turns a slashed branch into a usable docker tag with a SHA suffix', () => {
@@ -175,6 +181,31 @@ printf '%s' "$BRANCH"`;
 
   it('falls back to branch when sanitization leaves nothing usable', () => {
     expect(computeBranchTag('@@@')).toBe('branch-abc123def456');
+  });
+
+  it('Release version_tag owns the moving tag even when the caller ref is main', () => {
+    // Reusable workflows inherit the caller's GITHUB_REF_NAME. Release is
+    // dispatched from main while checking out refs/tags/vX.Y.Z — using the
+    // inherited `main` retagged :main and raced Deploy DEV Hub from main.
+    expect(
+      computeMovingTag({
+        githubRefName: 'main',
+        gitRef: 'refs/tags/v2.31.77',
+        versionTag: 'refs/tags/v2.31.77',
+      }),
+    ).toBe('v2.31.77');
+    expect(
+      computeMovingTag({
+        githubRefName: 'main',
+        gitRef: 'abc123def456',
+      }),
+    ).toBe('main');
+  });
+
+  it('does not retag main when publishing a release version tag', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toContain('INPUT_GIT_REF: ${{ inputs.git_ref }}');
+    expect(yml).toMatch(/if \[\[ -n "\$EXTRA_TAG" \]\]; then\s*\n\s*MOVING_SRC="\$EXTRA_TAG"/);
   });
 
   it('reset path also writes image-tag and verifies digest', () => {

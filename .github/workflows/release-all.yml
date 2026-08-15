@@ -5,9 +5,10 @@ name: Release
 #   1. release               — bumps version, tags, notes, GitHub release
 #                              (same core job as release-prod.yml).
 #   2. After release succeeds, jobs fan out in parallel:
-#        - docker-ecr-dev — build + push the server image to ECR Public at
-#          the tag commit (`:branch`, `:sha`, `:vX.Y.Z`), then SSM restart of
-#          the docker dev sandbox (`agenthub.dev` pull :main + digest checks).
+#        - docker-ecr — build + push the server/runner images at the tag
+#          (`:sha`, `:vX.Y.Z` — not `:main`), then SSM restart of the prod
+#          sandbox (agenthub.surveytracker.io) pinned to that version tag.
+#          `:main` is owned by "Deploy DEV Hub from main" (dev.agenthub.*).
 #        - build-mac        — DMGs → S3 (non-gating vs server rollout).
 #        - terraform-apply  — ALWAYS runs: `terraform apply` against the prod
 #          stack in ops/terraform, so an infra change carries on the next
@@ -38,7 +39,7 @@ on:
           - major
       docker_reset_instance:
         description: >-
-          With ECR roll: wipe Agent Hub SQLite/uploads/projects on docker dev sandbox
+          With ECR roll: wipe Agent Hub SQLite/uploads/projects on the prod sandbox
           before restart (fresh-setup drill). Leaves TLS + data/config intact.
         required: false
         type: boolean
@@ -232,9 +233,12 @@ jobs:
             echo "> First-pass builds are **unsigned**. Code-signing and notarization will be added in a follow-up PR."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ECR docker dev sandbox rolls out in parallel with build-mac after `release`.
+  # Prod sandbox rolls out in parallel with build-mac after `release`.
+  # Publishes immutable `:vX.Y.Z` (+ `:sha`) only — never retags `:main`, which
+  # Deploy DEV Hub from main owns. Two writers of `:main` race and fail the
+  # digest gate (Release #49 / v2.31.77).
   docker-ecr-dev:
-    name: ECR push and docker dev sandbox
+    name: ECR push and prod sandbox
     needs: release
     uses: ./.github/workflows/ecr-publish-rollout-docker-dev.yml
     with:

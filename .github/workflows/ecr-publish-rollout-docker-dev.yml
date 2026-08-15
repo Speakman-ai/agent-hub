@@ -1,10 +1,17 @@
-# Builds the server image and pushes it to public ECR, then optionally
-# restarts the dockerized dev sandbox (SSM pull, digest checked against the
-# moving tag this run published).
+# Builds the server + Finalize runner images and pushes them to public ECR,
+# then optionally SSMs a host to pull the moving tag this run published.
 #
-# Called by `release-all.yml` after a semver tag is pushed. Also reachable
-# directly via `workflow_dispatch` for emergency image builds without a
-# version bump (`push-image.yml` delegates here).
+# Tag ownership (do not collapse these — two writers of `:main` race and the
+# digest gate fails even when the host is healthy):
+#   - Deploy DEV Hub from main owns `:main` (dev.agenthub.*).
+#   - Release publishes immutable `:vX.Y.Z` (+ `:sha`) and rolls the prod
+#     sandbox (agenthub.surveytracker.io) to that tag. It must NOT retag `:main`.
+#   - `/etc/agent-hub/image-tag` also retags the in-box finalize-runner image
+#     to the same moving tag (user-data run script).
+#
+# Called by `release-all.yml` after a semver tag is pushed, and by
+# `deploy-dev-hub-on-main.yml` on every merge to main. `push-image.yml` is the
+# escape hatch for arbitrary refs.
 #
 # See also: wiki / deployment-guide (docker dev sandbox path).
 name: ECR publish and docker dev rollout
@@ -38,9 +45,9 @@ on:
       deploy_instance_id:
         description: >-
           EC2 instance id to SSM for rollout. When empty, falls back to
-          vars.DOCKER_DEPLOY_INSTANCE_ID (release / push-image sandbox). The
-          Deploy DEV Hub from main caller passes vars.DOCKER_DEPLOY_DEV_INSTANCE_ID
-          explicitly so release rollouts keep targeting the sandbox.
+          vars.DOCKER_DEPLOY_INSTANCE_ID (prod sandbox / agenthub.surveytracker.io).
+          Deploy DEV Hub from main passes vars.DOCKER_DEPLOY_DEV_INSTANCE_ID
+          (dev.agenthub.*) so release rollouts stay on prod.
         required: false
         type: string
         default: ''
@@ -152,6 +159,7 @@ jobs:
         id: tags
         env:
           INPUT_VERSION_TAG: ${{ inputs.version_tag }}
+          INPUT_GIT_REF: ${{ inputs.git_ref }}
         run: |
           set -euo pipefail
           SHA_SHORT="$(git rev-parse --short=12 HEAD)"
@@ -188,15 +196,6 @@ jobs:
             [[ "$raw" == "main" ]] && return 0
             [[ "$raw" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9_.-]+)?$ ]]
           }
-          # A docker tag admits only [A-Za-z0-9_.-], so a branch like
-          # `preview/foo` cannot be one verbatim — buildx rejects the whole
-          # build with "invalid reference format" before a layer is built.
-          REF_NAME="${GITHUB_REF_NAME:-main}"
-          if is_stable_docker_tag "$REF_NAME"; then
-            BRANCH="$REF_NAME"
-          else
-            BRANCH="$(unique_docker_tag "$REF_NAME" "$SHA_SHORT")"
-          fi
           EXTRA_TAG=""
           if [[ -n "$INPUT_VERSION_TAG" ]]; then
             if [[ "$INPUT_VERSION_TAG" == refs/tags/* ]]; then
@@ -208,6 +207,27 @@ jobs:
               EXTRA_TAG="$(unique_docker_tag "$EXTRA_TAG" "$SHA_SHORT")"
             fi
           fi
+          # Moving tag = the tag THIS publish owns. Reusable workflows inherit
+          # the *caller's* GITHUB_REF_NAME, so Release (dispatched from `main`
+          # while checking out `refs/tags/vX.Y.Z`) used to retag `:main` and
+          # race Deploy DEV Hub from main — both wrote `:main`, each digest
+          # gate failed. Precedence: version_tag (Release) → git_ref if it is
+          # a heads/tags ref → GITHUB_REF_NAME (push to main).
+          MOVING_SRC=""
+          if [[ -n "$EXTRA_TAG" ]]; then
+            MOVING_SRC="$EXTRA_TAG"
+          elif [[ "$INPUT_GIT_REF" == refs/tags/* ]]; then
+            MOVING_SRC="${INPUT_GIT_REF#refs/tags/}"
+          elif [[ "$INPUT_GIT_REF" == refs/heads/* ]]; then
+            MOVING_SRC="${INPUT_GIT_REF#refs/heads/}"
+          else
+            MOVING_SRC="${GITHUB_REF_NAME:-main}"
+          fi
+          if is_stable_docker_tag "$MOVING_SRC"; then
+            BRANCH="$MOVING_SRC"
+          else
+            BRANCH="$(unique_docker_tag "$MOVING_SRC" "$SHA_SHORT")"
+          fi
 
           echo "sha_short=$SHA_SHORT" >> "$GITHUB_OUTPUT"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
@@ -215,7 +235,7 @@ jobs:
             echo "docker_tags_multi<<DOCKER_TAGS_EOF"
             echo "${ECR_PUBLIC_URI}:${SHA_SHORT}"
             echo "${ECR_PUBLIC_URI}:${BRANCH}"
-            if [[ -n "$EXTRA_TAG" ]]; then
+            if [[ -n "$EXTRA_TAG" && "$EXTRA_TAG" != "$BRANCH" ]]; then
               echo "${ECR_PUBLIC_URI}:${EXTRA_TAG}"
             fi
             echo "DOCKER_TAGS_EOF"
@@ -224,7 +244,7 @@ jobs:
             echo "runner_tags_multi<<RUNNER_TAGS_EOF"
             echo "${ECR_PUBLIC_RUNNER_URI}:${SHA_SHORT}"
             echo "${ECR_PUBLIC_RUNNER_URI}:${BRANCH}"
-            if [[ -n "$EXTRA_TAG" ]]; then
+            if [[ -n "$EXTRA_TAG" && "$EXTRA_TAG" != "$BRANCH" ]]; then
               echo "${ECR_PUBLIC_RUNNER_URI}:${EXTRA_TAG}"
             fi
             echo "RUNNER_TAGS_EOF"
@@ -306,7 +326,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy-dev-sandbox:
-    name: Deploy dev sandbox (Docker + SSM)
+    name: Deploy sandbox (Docker + SSM)
     needs: push
     if: inputs.rollout
     runs-on: ubuntu-latest
@@ -317,10 +337,11 @@ jobs:
     env:
       # Docker rollout target. Prefer an explicit workflow input (so the
       # main→DEV Hub caller can pass DOCKER_DEPLOY_DEV_INSTANCE_ID without
-      # stealing release-all's sandbox target), else the legacy sandbox var.
+      # stealing release-all's prod sandbox), else DOCKER_DEPLOY_INSTANCE_ID.
       # Never hardcode an instance id in this public tree.
-      #   DOCKER_DEPLOY_INSTANCE_ID      release / push-image sandbox default
-      #   DOCKER_DEPLOY_DEV_INSTANCE_ID  set on the Deploy DEV Hub from main caller
+      #   DOCKER_DEPLOY_INSTANCE_ID      prod sandbox (agenthub.surveytracker.io)
+      #   DOCKER_DEPLOY_DEV_INSTANCE_ID  DEV Hub (dev.agenthub.*) — set only on
+      #                                  the Deploy DEV Hub from main caller
       #   DOCKER_DEPLOY_ROLE_ARN         OIDC role assumed on the target account
       #   DOCKER_DEPLOY_REGION           region of that instance
       # When DOCKER_DEPLOY_ROLE_ARN is unset the ECR push role (ECR_PUSH_ROLE_ARN)

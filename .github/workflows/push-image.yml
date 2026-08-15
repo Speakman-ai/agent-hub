@@ -8,7 +8,7 @@ on:
     inputs:
       rollout:
         description: >-
-          After push, restart the dockerized dev sandbox via SSM (pull :main verified).
+          After push, restart the target sandbox via SSM (digest verified).
         required: false
         type: boolean
         default: true

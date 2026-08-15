@@ -1,7 +1,9 @@
-# Build + push the server/Finalize images from `main`, then SSM-restart the
-# dockerized DEV Hub (dev.agenthub.*) so every merge to main lands there.
+# Build + push the server/Finalize images from `main` (the `:main` moving tag),
+# then SSM-restart the dockerized DEV Hub (dev.agenthub.*) so every merge to
+# main lands there. This workflow is the sole writer of `:main`; Release
+# publishes immutable `:vX.Y.Z` tags and must not retag it.
 #
-# Requires repo Variable DOCKER_DEPLOY_DEV_INSTANCE_ID (agenthub-dev-sandbox).
+# Requires repo Variable DOCKER_DEPLOY_DEV_INSTANCE_ID (DEV Hub instance).
 # That instance must also be covered by the CI OIDC role's ssm:SendCommand
 # grant (Terraform `enable_ci_ssm_deploy_after_ecr_push` /
 # `ci_ssm_deploy_instance_*`); otherwise the rollout fails with AccessDenied.
