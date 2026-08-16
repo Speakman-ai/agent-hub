@@ -148,6 +148,8 @@ import {
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import {
+  acquireSessionWorktreeLock,
+  isSessionWorktreeLocked,
   releaseSessionWorktreeLock,
   tryAcquireSessionWorktreeLock,
 } from '../session-worktree-lock.js';
@@ -447,6 +449,47 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     activeProcesses,
     broadcast,
   } = deps;
+
+  interface WorkspaceEnsureState {
+    generation: number;
+    pending: number;
+  }
+  const workspaceEnsureStates = new Map<string, WorkspaceEnsureState>();
+
+  function beginWorkspaceEnsure(sessionId: string): void {
+    const current = workspaceEnsureStates.get(sessionId);
+    workspaceEnsureStates.set(sessionId, {
+      generation: (current?.generation ?? 0) + 1,
+      pending: (current?.pending ?? 0) + 1,
+    });
+  }
+
+  function finishWorkspaceEnsure(sessionId: string, succeeded: boolean): void {
+    const current = workspaceEnsureStates.get(sessionId);
+    if (!current) return;
+    const pending = Math.max(0, current.pending - 1);
+    const generation = current.generation;
+    workspaceEnsureStates.set(sessionId, { generation, pending });
+    if (pending > 0) return;
+    if (!succeeded) {
+      workspaceEnsureStates.delete(sessionId);
+      return;
+    }
+
+    // Defer until lock waiters have had a chance to acquire. The generation
+    // makes this callback belong to the final successful setup batch: a new
+    // request invalidates it, and that request schedules its own drain only if
+    // it succeeds. Exactly one callback can therefore drain a fast sequence of
+    // idempotent overlapping ensures.
+    setImmediate(() => {
+      const latest = workspaceEnsureStates.get(sessionId);
+      if (!latest || latest.generation !== generation || latest.pending !== 0) return;
+      workspaceEnsureStates.delete(sessionId);
+      if (!isSessionWorktreeLocked(sessionId)) {
+        deps.drainSessionQueue?.(sessionId);
+      }
+    });
+  }
 
   /** Keep a linked kanban card aligned with session archive / restore state. */
   function syncSessionCardBestEffort(sessionId: string, status: 'closed' | 'in-progress'): void {
@@ -2224,29 +2267,44 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         if (!deps.provisionSessionWorkspace) {
           return res.status(503).json({ error: 'Workspace provisioning is not available' });
         }
-        const worktreePath = await deps.provisionSessionWorkspace(sessionId);
-        // Boot the session VM/container after the clone so the interactive open
-        // pays clone + boot up front (the composer stays gated until this
-        // resolves). Idempotent — reuses a live env, boots one only when the
-        // in-memory environment is gone (Hub restart / idle reap) even though
-        // the worktree_path row persists.
-        if (deps.ensureSessionEnvironment) {
-          await deps.ensureSessionEnvironment(sessionId);
+        // Reserve turn startup before provisioning. A chat submitted while
+        // setup owns the lock is persisted as queued by handleChat; if chat
+        // wins the first-render race, wait for its own worktree/env startup to
+        // finish before running this idempotent ensure. Waiting (rather than
+        // proceeding after a failed tryAcquire) also serializes overlapping
+        // ensure requests so an early request cannot drain chat while a later
+        // request is still provisioning.
+        beginWorkspaceEnsure(sessionId);
+        await acquireSessionWorktreeLock(sessionId, 'workspace-setup');
+        let workspaceSetupSucceeded = false;
+        try {
+          const worktreePath = await deps.provisionSessionWorkspace(sessionId);
+          // Boot the session VM/container after the clone so the interactive
+          // open pays clone + boot up front. Idempotent — reuses a live env,
+          // boots one only when the in-memory environment is gone (Hub restart
+          // / idle reap) even though the worktree_path row persists.
+          if (deps.ensureSessionEnvironment) {
+            await deps.ensureSessionEnvironment(sessionId);
+          }
+          workspaceSetupSucceeded = true;
+          const updated = stmts.getSession.get(sessionId) as SessionRow;
+          const sessionWire = enrichSessionForClient(updated, stmts);
+          deps.broadcast({
+            type: 'session_workspace_ready',
+            sessionId,
+            worktreePath,
+            session: sessionWire,
+          });
+          return res.json({
+            ok: true,
+            skipped: false,
+            worktreePath,
+            session: sessionWire,
+          });
+        } finally {
+          releaseSessionWorktreeLock(sessionId, 'workspace-setup');
+          finishWorkspaceEnsure(sessionId, workspaceSetupSucceeded);
         }
-        const updated = stmts.getSession.get(sessionId) as SessionRow;
-        const sessionWire = enrichSessionForClient(updated, stmts);
-        deps.broadcast({
-          type: 'session_workspace_ready',
-          sessionId,
-          worktreePath,
-          session: sessionWire,
-        });
-        return res.json({
-          ok: true,
-          skipped: false,
-          worktreePath,
-          session: sessionWire,
-        });
       } catch (err) {
         return res.status(500).json({ error: (err as Error).message });
       }

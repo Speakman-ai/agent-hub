@@ -202,6 +202,7 @@ import {
   shouldShowSessionChangesButton,
   shouldEnsureSessionWorkspaceOnOpen,
   isSessionComposerWorkspaceReady,
+  shouldDisableSessionComposer,
   planWorkspaceEnsureOnOpen,
   withoutSessionKey,
   prependSessionDeduped,
@@ -6903,9 +6904,11 @@ export default function App({ initialView }: any = {}) {
                           ref={messageInputRef}
                           onSend={handleSend}
                           onCancel={handleCancel}
-                          disabled={
-                            !activeAgent || !connected || !activeSessionComposerWorkspaceReady
-                          }
+                          disabled={shouldDisableSessionComposer({
+                            hasAgent: !!activeAgent,
+                            connected,
+                            workspaceEnsureFailed: !!activeSessionWorkspaceEnsureError,
+                          })}
                           isProcessing={isProcessing}
                           queueLength={(messageQueues[activeSessionId] || []).length}
                           agentColor={chatAccentColor}

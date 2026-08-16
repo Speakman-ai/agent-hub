@@ -1,5 +1,6 @@
 export type SessionWorktreeLockOwner =
   | 'branch-switch'
+  | 'workspace-setup'
   | 'turn-start'
   | 'multi-agent-round'
   | 'finalize';
@@ -27,6 +28,27 @@ export function waitForSessionWorktreeLockRelease(sessionId: string): Promise<vo
     sessionWaiters.push(resolve);
     waiters.set(sessionId, sessionWaiters);
   });
+}
+
+export function getSessionWorktreeLockWaiterCount(sessionId: string): number {
+  return waiters.get(sessionId)?.length ?? 0;
+}
+
+/**
+ * Acquire the per-session worktree lock, waiting for any current owner first.
+ *
+ * The failed try + waiter registration is atomic in Node's synchronous turn:
+ * no release can interleave between the two calls. Multiple released waiters
+ * race through the loop, and only the one that acquires continues; the rest
+ * register for the next release instead of entering their critical sections.
+ */
+export async function acquireSessionWorktreeLock(
+  sessionId: string,
+  owner: SessionWorktreeLockOwner,
+): Promise<void> {
+  while (!tryAcquireSessionWorktreeLock(sessionId, owner)) {
+    await waitForSessionWorktreeLockRelease(sessionId);
+  }
 }
 
 export function releaseSessionWorktreeLock(

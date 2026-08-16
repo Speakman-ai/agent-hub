@@ -6,6 +6,7 @@ import {
   shouldShowSessionChangesButton,
   shouldEnsureSessionWorkspaceOnOpen,
   isSessionComposerWorkspaceReady,
+  shouldDisableSessionComposer,
   planWorkspaceEnsureOnOpen,
   withoutSessionKey,
   prependSessionDeduped,
@@ -121,6 +122,42 @@ describe('sessionDerivedState', () => {
 
     it('becomes ready once the ensure settles (resolved or failed)', () => {
       expect(isSessionComposerWorkspaceReady({ needsEnsure: true, settled: true })).toBe(true);
+    });
+  });
+
+  describe('shouldDisableSessionComposer', () => {
+    it('allows typing and submitting while workspace setup is still pending', () => {
+      expect(
+        shouldDisableSessionComposer({
+          hasAgent: true,
+          connected: true,
+          workspaceEnsureFailed: false,
+        }),
+      ).toBe(false);
+    });
+
+    it('preserves the connection, missing-agent, and failed-setup gates', () => {
+      expect(
+        shouldDisableSessionComposer({
+          hasAgent: true,
+          connected: false,
+          workspaceEnsureFailed: false,
+        }),
+      ).toBe(true);
+      expect(
+        shouldDisableSessionComposer({
+          hasAgent: false,
+          connected: true,
+          workspaceEnsureFailed: false,
+        }),
+      ).toBe(true);
+      expect(
+        shouldDisableSessionComposer({
+          hasAgent: true,
+          connected: true,
+          workspaceEnsureFailed: true,
+        }),
+      ).toBe(true);
     });
   });
 

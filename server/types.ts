@@ -4224,7 +4224,7 @@ export interface RouteDeps {
     sessionId: string,
     branch: string,
   ) => Promise<{ worktreePath: string; branch: string }>;
-  /** Resume queued messages after a branch switch releases the worktree lock. */
+  /** Resume queued messages after workspace setup or a branch switch releases its lock. */
   drainSessionQueue?: (sessionId: string) => void;
 }
 

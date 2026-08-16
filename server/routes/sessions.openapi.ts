@@ -1178,7 +1178,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Provision session git worktree',
   description:
-    'Clones or reuses the per-session worktree before the first chat message so preview and file edits use the same checkout. Idempotent when `worktree_path` is already set.',
+    'Clones or reuses the per-session worktree so preview and file edits use the same checkout. Chat messages submitted during setup are queued and run automatically when the workspace and environment are ready. Idempotent when `worktree_path` is already set.',
   request: { params: sessionIdParams },
   responses: {
     200: {

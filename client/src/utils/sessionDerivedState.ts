@@ -129,6 +129,22 @@ export function isSessionComposerWorkspaceReady(args: {
 }
 
 /**
+ * Whether the session composer must reject input.
+ *
+ * Workspace setup in progress is deliberately absent: handleChat persists the
+ * message as queued while the server's setup lock is held. A failed setup does
+ * remain blocking until Retry succeeds, and connection/agent gates are
+ * unchanged.
+ */
+export function shouldDisableSessionComposer(args: {
+  hasAgent: boolean;
+  connected: boolean;
+  workspaceEnsureFailed: boolean;
+}): boolean {
+  return !args.hasAgent || !args.connected || args.workspaceEnsureFailed;
+}
+
+/**
  * Prepend a session to the sidebar list unless it is already present.
  * POST /sessions broadcasts `session_created` before the HTTP body returns;
  * without this, the REST path and WebSocket both insert the same row.
