@@ -73,9 +73,6 @@ function MessageInput(
     onReplaceQueuedMessage,
     sessionAgents = [],
     enableMentions = false,
-    readbackEnabled = false,
-    readbackSupported = false,
-    onToggleReadback,
   }: any,
   ref: any,
 ) {
@@ -1219,55 +1216,6 @@ function MessageInput(
             </svg>
           )}
         </button>
-
-        {/* Readback / text-to-speech toggle. Reads assistant text aloud as it
-            streams in. Hidden when the browser has no speech synthesis. */}
-        {readbackSupported && (
-          <button
-            type="button"
-            onClick={() => onToggleReadback?.()}
-            aria-label={readbackEnabled ? 'Turn off readback' : 'Read responses aloud'}
-            aria-pressed={readbackEnabled}
-            title={
-              readbackEnabled
-                ? 'Readback on — assistant replies are read aloud. Click to turn off.'
-                : 'Read assistant replies aloud as they stream in'
-            }
-            className={`px-2 py-3 transition-colors ${
-              readbackEnabled
-                ? 'text-sky-400 hover:text-sky-300'
-                : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            {readbackEnabled ? (
-              // Speaker with sound waves = on
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-5 w-5"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.617.787L4.66 13.5H2a1 1 0 01-1-1v-5a1 1 0 011-1h2.66l3.723-3.287a1 1 0 011-.137z" />
-                <path d="M14.657 5.343a.75.75 0 011.06 0 6 6 0 010 8.486.75.75 0 11-1.06-1.06 4.5 4.5 0 000-6.364.75.75 0 010-1.06zM12.535 7.464a.75.75 0 011.06 0 3 3 0 010 4.243.75.75 0 11-1.06-1.06 1.5 1.5 0 000-2.122.75.75 0 010-1.06z" />
-              </svg>
-            ) : (
-              // Muted speaker = off
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-5 w-5"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.617.787L4.66 13.5H2a1 1 0 01-1-1v-5a1 1 0 011-1h2.66l3.723-3.287a1 1 0 011-.137z" />
-                <path
-                  fillRule="evenodd"
-                  d="M13.47 7.47a.75.75 0 011.06 0L16 8.94l1.47-1.47a.75.75 0 111.06 1.06L17.06 10l1.47 1.47a.75.75 0 11-1.06 1.06L16 11.06l-1.47 1.47a.75.75 0 01-1.06-1.06L14.94 10l-1.47-1.47a.75.75 0 010-1.06z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            )}
-          </button>
-        )}
 
         <textarea
           ref={textareaRef}

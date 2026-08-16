@@ -94,6 +94,29 @@ describe('MessageInput mid-stream behavior', () => {
   });
 });
 
+describe('MessageInput session controls', () => {
+  it('does not render the assistant readback control', () => {
+    render(
+      <MessageInput
+        onSend={() => {}}
+        onCancel={() => {}}
+        disabled={false}
+        isProcessing={false}
+        queueLength={0}
+        agentColor="#4F46E5"
+        skills={[]}
+        askMode={false}
+        readbackEnabled={true}
+        readbackSupported={true}
+        onToggleReadback={() => {}}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: /read responses aloud/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /turn off readback/i })).not.toBeInTheDocument();
+  });
+});
+
 describe('MessageInput composer prefill (edit queued)', () => {
   const baseProps = {
     onSend: vi.fn(),
