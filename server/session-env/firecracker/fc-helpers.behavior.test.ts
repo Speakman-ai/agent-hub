@@ -903,6 +903,154 @@ describe('fc-netctl.sh', () => {
     expect(res.status).toBe(2);
     expect(res.stderr).toMatch(/refused tap name/);
   });
+
+  it('checks for conflicting subnet routes before ensure-bridge claims ahfc0', () => {
+    const src = readFileSync(netctlHelper, 'utf8');
+    expect(src).toMatch(/refuse_conflicting_subnet_routes\(\)/);
+    expect(src).toMatch(/Unable to connect to API \(ENOTIMP\)/);
+    // Call sites: ensure_bridge and ensure_nat both refuse conflicts first.
+    expect(src).toMatch(
+      /ensure_bridge\(\) \{\s*refuse_conflicting_subnet_routes\s*\n\s*ip link add/s,
+    );
+    expect(src).toMatch(
+      /ensure_nat\(\) \{\s*local uplink\s*\n\s*# Refuse[\s\S]*?refuse_conflicting_subnet_routes/s,
+    );
+  });
+
+  it('detects broader overlapping routes without modifying their networks or ahfc0', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-netctl-reclaim-'));
+    try {
+      const conf = writeRootsConf(base);
+      const bin = path.join(base, 'bin');
+      const log = path.join(base, 'ip.log');
+      const fakeIp = path.join(bin, 'ip');
+      mkdirSync(bin);
+      writeFileSync(
+        fakeIp,
+        [
+          '#!/usr/bin/env bash',
+          'set -u',
+          'printf \'%s\\n\' "$*" >> "$IP_LOG"',
+          'if [[ "$*" == "-o -4 route show table all" ]]; then',
+          "  cat <<'EOF'",
+          '172.30.0.0/16 dev ahfc0 proto kernel scope link src 172.30.0.1',
+          '172.16.0.0/12 dev tun0 proto kernel scope link src 172.16.0.1',
+          '172.30.0.0/16 dev br-conflict proto kernel scope link src 172.30.0.1',
+          '10.0.0.0/8 dev unrelated proto kernel scope link src 10.0.0.1',
+          'default via 192.0.2.1 dev eth0',
+          'malformed output that must be ignored',
+          'EOF',
+          '  exit 0',
+          'fi',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      chmodSync(fakeIp, 0o755);
+
+      const res = run(netctlHelper, ['ensure-bridge'], {
+        FC_ROOTS_CONF: conf,
+        IP_LOG: log,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      });
+      expect(res.status).toBe(1);
+
+      const calls = readFileSync(log, 'utf8').trim().split('\n');
+      expect(calls).toContain('-o -4 route show table all');
+      expect(calls.some((call) => call.startsWith('addr del '))).toBe(false);
+      expect(calls.some((call) => call.startsWith('link '))).toBe(false);
+      expect(res.stderr).toMatch(
+        /overlaps existing route\(s\): 172\.16\.0\.0\/12 via tun0; 172\.30\.0\.0\/16 via br-conflict/,
+      );
+      expect(res.stderr).toMatch(/refusing to disrupt a live network/);
+      expect(res.stderr).toMatch(/Stop or reconfigure the owning Docker\/VPN\/host network/);
+      expect(res.stderr).not.toMatch(/via ahfc0/);
+      expect(res.stderr).not.toMatch(/via unrelated/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed without bridge mutation when route lookup fails', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-netctl-lookup-fail-'));
+    try {
+      const conf = writeRootsConf(base);
+      const bin = path.join(base, 'bin');
+      const log = path.join(base, 'ip.log');
+      const fakeIp = path.join(bin, 'ip');
+      mkdirSync(bin);
+      writeFileSync(
+        fakeIp,
+        [
+          '#!/usr/bin/env bash',
+          'printf \'%s\\n\' "$*" >> "$IP_LOG"',
+          'if [[ "$*" == "-o -4 route show table all" ]]; then exit 41; fi',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      chmodSync(fakeIp, 0o755);
+
+      const res = run(netctlHelper, ['ensure-bridge'], {
+        FC_ROOTS_CONF: conf,
+        IP_LOG: log,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      });
+      expect(res.status).toBe(1);
+
+      const calls = readFileSync(log, 'utf8').trim().split('\n');
+      expect(calls).toEqual(['-o -4 route show table all']);
+      expect(res.stderr).toMatch(/could not inspect IPv4 routes/);
+      expect(res.stderr).toMatch(/refusing to modify the Firecracker bridge or NAT/);
+      expect(res.stderr).toMatch(/Verify iproute2 permissions and retry/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('allows bridge setup when routes are non-overlapping or owned by ahfc0', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-netctl-routes-safe-'));
+    try {
+      const conf = writeRootsConf(base);
+      const bin = path.join(base, 'bin');
+      const log = path.join(base, 'ip.log');
+      const fakeIp = path.join(bin, 'ip');
+      mkdirSync(bin);
+      writeFileSync(
+        fakeIp,
+        [
+          '#!/usr/bin/env bash',
+          'printf \'%s\\n\' "$*" >> "$IP_LOG"',
+          'if [[ "$*" == "-o -4 route show table all" ]]; then',
+          "  cat <<'EOF'",
+          '172.30.0.0/16 dev ahfc0 proto kernel scope link src 172.30.0.1',
+          '10.0.0.0/8 dev unrelated proto kernel scope link src 10.0.0.1',
+          'default via 192.0.2.1 dev eth0',
+          'EOF',
+          '  exit 0',
+          'fi',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      chmodSync(fakeIp, 0o755);
+
+      const res = run(netctlHelper, ['ensure-bridge'], {
+        FC_ROOTS_CONF: conf,
+        IP_LOG: log,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      });
+      expect(res.status, res.stderr).toBe(0);
+
+      const calls = readFileSync(log, 'utf8').trim().split('\n');
+      expect(calls).toContain('-o -4 route show table all');
+      expect(calls).toContain('link add ahfc0 type bridge');
+      expect(calls).toContain('addr add 172.30.0.1/16 dev ahfc0');
+      expect(calls).toContain('link set ahfc0 up');
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('fc-prepare-disks.sh argv', () => {

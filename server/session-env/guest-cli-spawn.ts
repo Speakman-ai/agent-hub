@@ -172,6 +172,9 @@ export function adaptSpawnEnvForGuest(
   // Force the file store so synced `$HOME/.cursor/auth.json` / `cli-config.json`
   // (and `CURSOR_API_KEY`) are what the CLI actually uses.
   out.AGENT_CLI_CREDENTIAL_STORE = 'file';
+  // Grok device-auth / OAuth lives under `$GROK_HOME` (default `~/.grok`).
+  // Host paths are unreachable in the guest — pin to the staged CLI HOME.
+  out.GROK_HOME = path.posix.join(opts.guestHome, '.grok');
   return out;
 }
 
@@ -187,9 +190,11 @@ export function finalizeGuestSpawnEnv(
 ): Record<string, string> {
   const localBin = `${guestHome}/.local/bin`;
   const guards = opts.spawnGuardsDir ?? GUEST_SPAWN_GUARDS_DIR;
+  const grokBin = `${guestHome}/.grok/bin`;
   const pathParts = [
     guards,
     localBin,
+    grokBin,
     ...skillScriptDirs,
     '/usr/local/sbin',
     '/usr/local/bin',
@@ -371,6 +376,13 @@ export async function stageGuestCliHome(
     ['.cursor/cli-config.json', '.cursor/cli-config.json'],
     ['.config/cursor/auth.json', '.config/cursor/auth.json'],
     ['.gemini/settings.json', '.gemini/settings.json'],
+    // Grok device-auth OAuth token (`grok login --device-auth`). Without this
+    // the guest CLI exits "Not signed in" even when Account settings shows
+    // logged-in (probe runs on the Hub host against per-user HOME). Host
+    // XAI_API_KEY is intentionally never injected into grok-cli spawns — only
+    // a per-user pasted key or this file authenticates the CLI.
+    ['.grok/auth.json', '.grok/auth.json'],
+    ['.grok/config.toml', '.grok/config.toml'],
   ] as const;
 
   for (const [hostRel, guestRelTail] of smallFiles) {

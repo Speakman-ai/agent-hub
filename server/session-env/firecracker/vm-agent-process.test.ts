@@ -87,6 +87,52 @@ describe('createVmAgentProcess', () => {
     expect(err).toEqual(['warn']);
   });
 
+  it('replays stdout/stderr that arrived before the first subscriber', () => {
+    // Regression: chat attaches stream parsers after prepareGuestCliTurn /
+    // prompt staging. Fast CLI JSON on stdout was dropped → UI hung on
+    // "Waiting for first event…".
+    const stream = new FakeStream();
+    const { process } = createVmAgentProcess({ stream, name: 'chat:claude-code' });
+    stream.emit('stdout', Buffer.from('{"type":"assistant"}\n'));
+    stream.emit('stderr', Buffer.from('boot\n'));
+    const out: string[] = [];
+    const err: string[] = [];
+    process.onStdout((c) => out.push(c));
+    process.onStderr((c) => err.push(c));
+    expect(out).toEqual(['{"type":"assistant"}\n']);
+    expect(err).toEqual(['boot\n']);
+    // Later frames still fan out live (buffer was drained on subscribe).
+    stream.emit('stdout', Buffer.from('{"type":"result"}\n'));
+    expect(out).toEqual(['{"type":"assistant"}\n', '{"type":"result"}\n']);
+  });
+
+  it('fails explicitly instead of replaying truncated protocol output after early overflow', async () => {
+    const stream = new FakeStream();
+    const onSettled = vi.fn();
+    const { process, exited } = createVmAgentProcess({
+      stream,
+      name: 'chat:claude-code',
+      onSettled,
+    });
+    // Complete NDJSON frames occupy 999,999 bytes. The next vm-agent frame
+    // would cross the cap in the middle of a CLI protocol line under the old
+    // slice-and-drop behavior.
+    stream.emit('stdout', Buffer.from('{}\n'.repeat(333_333)));
+    stream.emit('stdout', Buffer.from('{"type":"assistant"'));
+    await exited;
+
+    expect(process.exitResult?.error?.message).toMatch(
+      /early stdout exceeded the 1000000-byte limit/,
+    );
+    expect(stream.closed).toBe(true);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+
+    const out: string[] = [];
+    process.onStdout((chunk) => out.push(chunk));
+    stream.emit('stdout', Buffer.from('{"type":"result"}\n'));
+    expect(out).toEqual([]);
+  });
+
   it('settles once with the exit frame', async () => {
     const stream = new FakeStream();
     const { process, exited } = createVmAgentProcess({ stream, name: 'dev' });

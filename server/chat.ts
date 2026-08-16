@@ -4121,12 +4121,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             for (const w of spawnWaiters) w();
             spawnWaiters.length = 0;
           };
-          // Guest `started` frame may arrive after we subscribe; also treat
-          // first stdout/stderr as evidence the process is up.
-          const unsubStarted = guestProc.onStdout(() => {
-            markSpawned();
-          });
-          unsubStarted();
 
           let errorSubs: Array<(err: Error) => void> = [];
           let closeSubs: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];

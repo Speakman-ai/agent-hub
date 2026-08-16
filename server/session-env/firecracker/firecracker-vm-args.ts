@@ -26,7 +26,9 @@ export const FIRECRACKER_GUEST_USER = 'runner';
  */
 export const FIRECRACKER_BRIDGE_NAME = 'ahfc0';
 export const FIRECRACKER_SUBNET_PREFIX = 16;
-/** 172.30.0.0/16 — inside RFC1918 and clear of docker's default 172.17/16. */
+/** 172.30.0.0/16 — RFC1918, clear of docker0's default 172.17/16.
+ * Still inside Docker's broader 172.16/12 address-pool range; fc-netctl
+ * refuses bridge/NAT setup when an existing route overlaps this subnet. */
 export const FIRECRACKER_SUBNET_BASE = [172, 30, 0, 0] as const;
 export const FIRECRACKER_GATEWAY_IP = '172.30.0.1';
 

@@ -171,6 +171,40 @@ describe('acquireFinalizeSource', () => {
     expect(await git(source.path, 'rev-list', '--count', 'HEAD')).toBe('3');
   });
 
+  it('restores origin when thin materialization falls back to a full bundle', async () => {
+    const { repo, origin } = await makeSessionRepo();
+    const root = await tmpDir('root');
+    const hostIo = envOwnedOverHostDir(repo);
+    const io = {
+      ...hostIo,
+      git: (args: string[], opts = {}) => {
+        if (
+          args[0] === 'bundle' &&
+          args.includes('create') &&
+          args.some((arg) => arg.startsWith('^'))
+        ) {
+          return Promise.resolve({
+            stdout: '',
+            stderr: 'forced thin-bundle failure',
+            exitCode: 1,
+          });
+        }
+        return hostIo.git(args, opts);
+      },
+    };
+
+    const source = await acquireFinalizeSource({
+      runId: 'run-full-fallback',
+      sessionId: 'sess-full-fallback',
+      worktreePath: repo,
+      branch: 'feature/x',
+      io,
+      root,
+    });
+
+    expect(await git(source.path, 'remote', 'get-url', 'origin')).toBe(origin);
+  });
+
   it('leaves no bundle behind in the session', async () => {
     const { repo } = await makeSessionRepo();
     const root = await tmpDir('root');

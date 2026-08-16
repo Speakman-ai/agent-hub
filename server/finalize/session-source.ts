@@ -176,8 +176,15 @@ class StagedSource implements FinalizeSource {
       // Point origin at the real remote so the rebase can fetch the base
       // branch and the push has somewhere to go. A clone from the host seed
       // already has this; a clone from a bundle file does not.
-      if (originUrl) await hostGit(this.path, ['remote', 'set-url', 'origin', originUrl]);
-      else {
+      if (originUrl) {
+        const remotes = (await hostGit(this.path, ['remote'])).split('\n');
+        await hostGit(this.path, [
+          'remote',
+          remotes.includes('origin') ? 'set-url' : 'add',
+          'origin',
+          originUrl,
+        ]);
+      } else {
         await hostGit(this.path, ['remote', 'remove', 'origin']).catch(() => {});
       }
 

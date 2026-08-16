@@ -90,6 +90,7 @@ describe('adaptSpawnEnvForGuest / finalizeGuestSpawnEnv', () => {
     expect(adapted.AGENT_HUB_REAL_GH).toBe('/usr/bin/gh');
     expect(adapted.AGENT_HUB_PROTECT_SESSION_BRANCH).toBe('1');
     expect(adapted.AGENT_CLI_CREDENTIAL_STORE).toBe('file');
+    expect(adapted.GROK_HOME).toBe(`${GUEST_CLI_HOME}/.grok`);
 
     const final = finalizeGuestSpawnEnv(
       adapted,
@@ -99,6 +100,7 @@ describe('adaptSpawnEnvForGuest / finalizeGuestSpawnEnv', () => {
     );
     expect(final.PATH!.startsWith(`${GUEST_SPAWN_GUARDS_DIR}:`)).toBe(true);
     expect(final.PATH).toContain(`${GUEST_CLI_HOME}/.local/bin`);
+    expect(final.PATH).toContain(`${GUEST_CLI_HOME}/.grok/bin`);
     expect(final.PATH).toContain(`${GUEST_SKILLS_ROOT}/agent-hub/scripts`);
     expect(final.PATH).toContain('/usr/local/bin');
   });
@@ -139,5 +141,45 @@ describe('stageGuestCliHome — Cursor auth sync', () => {
     written.clear();
     await stageGuestCliHome(env, hostHome);
     expect(written.get(`${GUEST_CLI_HOME}/.cursor/auth.json`)).toContain('cursor-oauth');
+  });
+});
+
+describe('stageGuestCliHome — Grok auth sync', () => {
+  it('copies .grok/auth.json (and config.toml) from the host HOME into the staged guest HOME', async () => {
+    const hostHome = await mkdtemp(path.join(os.tmpdir(), 'ah-host-home-'));
+    await mkdir(path.join(hostHome, '.grok'), { recursive: true });
+    await writeFile(
+      path.join(hostHome, '.grok', 'auth.json'),
+      JSON.stringify({
+        'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828': { access_token: 'tok' },
+      }),
+    );
+    await writeFile(path.join(hostHome, '.grok', 'config.toml'), 'model = "grok-3"\n');
+
+    const written = new Map<string, string>();
+    const env = {
+      writeGuestFile: async (guestPath: string, contents: Buffer) => {
+        written.set(guestPath, contents.toString('utf8'));
+      },
+      worktreeIo: {
+        exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      },
+    } as unknown as SessionEnv;
+
+    await stageGuestCliHome(env, hostHome);
+    expect(written.get(`${GUEST_CLI_HOME}/.grok/auth.json`)).toContain('access_token');
+    expect(written.get(`${GUEST_CLI_HOME}/.grok/config.toml`)).toContain('grok-3');
+  });
+});
+
+describe('adaptSpawnEnvForGuest — GROK_HOME', () => {
+  it('pins GROK_HOME to the staged guest .grok directory', () => {
+    const adapted = adaptSpawnEnvForGuest(
+      { HOME: '/data/per-user-creds/u/home', PATH: '/usr/bin', XAI_API_KEY: 'xai-user' },
+      { guestHome: GUEST_CLI_HOME, guestSkillsRoot: GUEST_SKILLS_ROOT },
+    );
+    expect(adapted.GROK_HOME).toBe(`${GUEST_CLI_HOME}/.grok`);
+    expect(adapted.HOME).toBe(GUEST_CLI_HOME);
+    expect(adapted.XAI_API_KEY).toBe('xai-user');
   });
 });

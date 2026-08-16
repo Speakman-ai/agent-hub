@@ -41,11 +41,22 @@ export interface VmAgentProcessHandle {
   exited: Promise<void>;
 }
 
+/** Cap early stdout/stderr retained until the first subscriber attaches. */
+const EARLY_OUTPUT_MAX_BYTES = 1_000_000;
+
 export function createVmAgentProcess(opts: VmAgentProcessOpts): VmAgentProcessHandle {
   const { stream, name } = opts;
   const stdoutSubs = new Set<(chunk: string) => void>();
   const stderrSubs = new Set<(chunk: string) => void>();
   const exitSubs = new Set<(result: SessionEnvExit) => void>();
+  // chat.ts (and similar) often builds the guest spawn handle, then does more
+  // async setup before attaching parsers. Unlike Node child_process streams,
+  // vsock frames with zero subscribers were previously dropped — which left
+  // the UI stuck on "Waiting for first event…" after a fast first JSON line.
+  let earlyStdout = '';
+  let earlyStderr = '';
+  let earlyStdoutBytes = 0;
+  let earlyStderrBytes = 0;
 
   let pid: number | null = null;
   let exitResult: SessionEnvExit | null = null;
@@ -69,20 +80,53 @@ export function createVmAgentProcess(opts: VmAgentProcessOpts): VmAgentProcessHa
     resolveExit();
   };
 
+  const pushEarly = (kind: 'stdout' | 'stderr', text: string, byteLength: number) => {
+    const bufferedBytes = kind === 'stdout' ? earlyStdoutBytes : earlyStderrBytes;
+    if (bufferedBytes + byteLength > EARLY_OUTPUT_MAX_BYTES) {
+      // Never replay a truncated protocol frame. Once the bounded buffer
+      // cannot retain a whole vm-agent output frame, fail the spawn explicitly
+      // and discard every early byte before closing the stream.
+      earlyStdout = '';
+      earlyStderr = '';
+      earlyStdoutBytes = 0;
+      earlyStderrBytes = 0;
+      settle({
+        code: null,
+        signal: null,
+        error: new Error(
+          `vm-agent process "${name}" early ${kind} exceeded the ` +
+            `${EARLY_OUTPUT_MAX_BYTES}-byte limit before a subscriber attached`,
+        ),
+      });
+      stream.close();
+      return;
+    }
+    if (kind === 'stdout') {
+      earlyStdout += text;
+      earlyStdoutBytes += byteLength;
+      return;
+    }
+    earlyStderr += text;
+    earlyStderrBytes += byteLength;
+  };
+
   stream.onFrame((frame) => {
     opts.onActivity?.();
+    if (exitResult !== null) return;
     switch (frame.type) {
       case 'started':
         pid = decodeJsonPayload<VmAgentStarted>(frame.payload).pid;
         return;
       case 'stdout': {
         const text = frame.payload.toString();
-        for (const cb of stdoutSubs) cb(text);
+        if (stdoutSubs.size === 0) pushEarly('stdout', text, frame.payload.length);
+        else for (const cb of stdoutSubs) cb(text);
         return;
       }
       case 'stderr': {
         const text = frame.payload.toString();
-        for (const cb of stderrSubs) cb(text);
+        if (stderrSubs.size === 0) pushEarly('stderr', text, frame.payload.length);
+        else for (const cb of stderrSubs) cb(text);
         return;
       }
       case 'exit': {
@@ -138,10 +182,22 @@ export function createVmAgentProcess(opts: VmAgentProcessOpts): VmAgentProcessHa
     },
     onStdout: (cb) => {
       stdoutSubs.add(cb);
+      if (earlyStdout) {
+        const replay = earlyStdout;
+        earlyStdout = '';
+        earlyStdoutBytes = 0;
+        cb(replay);
+      }
       return () => stdoutSubs.delete(cb);
     },
     onStderr: (cb) => {
       stderrSubs.add(cb);
+      if (earlyStderr) {
+        const replay = earlyStderr;
+        earlyStderr = '';
+        earlyStderrBytes = 0;
+        cb(replay);
+      }
       return () => stderrSubs.delete(cb);
     },
     onExit: (cb) => {
