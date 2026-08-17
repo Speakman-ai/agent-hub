@@ -1,0 +1,227 @@
+# Bake a Finalize runner AMI with the current runner image pre-pulled, then
+# pin the fleet launch template (no instance refresh — running hosts keep
+# working; only new scale-outs use the new AMI).
+#
+# Cadence:
+#   - Deploy DEV Hub from main → fleet=dev, image :main
+#   - Release → fleet=prod, image :vX.Y.Z
+#
+# Skips when the runner image digest already matches the last baked AMI
+# (SSM `/agenthub/<fleet>/finalize-runner-image-digest`) unless force=true.
+name: Bake finalize runner AMI
+
+on:
+  workflow_call:
+    inputs:
+      fleet:
+        description: 'dev or prod (selects SG / instance profile / launch template)'
+        required: true
+        type: string
+      runner_image:
+        description: 'Full image URI to pre-pull into the AMI'
+        required: true
+        type: string
+      force:
+        description: 'Bake even when the runner digest is unchanged'
+        required: false
+        type: boolean
+        default: false
+      allow_failure:
+        description: 'Report a successful reusable call when baking fails'
+        required: false
+        type: boolean
+        default: false
+      aws_role_arn:
+        description: 'OIDC role with EC2 + SSM bake/pin permissions (defaults to vars.AWS_TERRAFORM_ROLE_ARN)'
+        required: false
+        type: string
+        default: ''
+      aws_region:
+        description: 'Region for the fleet (not ECR Public)'
+        required: false
+        type: string
+        default: us-east-2
+    outputs:
+      ami_id:
+        description: 'AMI id after bake+pin (or existing pin when skipped)'
+        value: ${{ jobs.bake.outputs.ami_id }}
+      skipped:
+        description: 'true when bake was skipped (digest unchanged)'
+        value: ${{ jobs.bake.outputs.skipped }}
+  workflow_dispatch:
+    inputs:
+      fleet:
+        description: 'dev or prod'
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+      runner_image:
+        description: 'Image URI (empty → :main for dev only)'
+        required: false
+        type: string
+        default: ''
+      force:
+        description: 'Bake even when digest unchanged'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  bake:
+    name: Bake and pin (${{ inputs.fleet }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ inputs.allow_failure }}
+    concurrency:
+      group: finalize-runner-ami-${{ inputs.fleet }}
+      cancel-in-progress: false
+    # Cold pull of the runner image on a build host can take 15–25m.
+    timeout-minutes: 90
+    outputs:
+      ami_id: ${{ steps.result.outputs.ami_id }}
+      skipped: ${{ steps.result.outputs.skipped }}
+    env:
+      AWS_REGION: ${{ inputs.aws_region || vars.AWS_REGION || 'us-east-2' }}
+      FLEET: ${{ inputs.fleet }}
+      FORCE: ${{ inputs.force }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve runner image
+        id: image
+        env:
+          INPUT_IMAGE: ${{ inputs.runner_image }}
+          FLEET: ${{ inputs.fleet }}
+          ECR_BASE: ${{ vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_IMAGE:-}" ]; then
+            echo "runner_image=$INPUT_IMAGE" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$FLEET" in
+            dev) TAG=main ;;
+            prod)
+              echo "::error::prod bake requires runner_image (e.g. …:v2.31.81)"
+              exit 1
+              ;;
+            *)
+              echo "::error::fleet must be dev or prod"
+              exit 1
+              ;;
+          esac
+          echo "runner_image=${ECR_BASE}/agent-hub-finalize-runner:${TAG}" >>"$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn != '' && inputs.aws_role_arn || vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-bake-finalize-ami-${{ inputs.fleet }}-${{ github.run_id }}
+
+      - name: Resolve runner digest (skip if unchanged)
+        id: digest
+        env:
+          RUNNER_IMAGE: ${{ steps.image.outputs.runner_image }}
+        run: |
+          set -euo pipefail
+          # crane is lighter than docker for digest lookup.
+          if ! command -v crane >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq curl ca-certificates
+            curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin crane
+          fi
+          DIGEST=$(crane digest "$RUNNER_IMAGE")
+          if [ -z "$DIGEST" ]; then
+            echo "::error::Could not resolve digest for $RUNNER_IMAGE"
+            exit 1
+          fi
+          echo "digest=$DIGEST" >>"$GITHUB_OUTPUT"
+          echo "Runner image: $RUNNER_IMAGE @ $DIGEST"
+
+          SSM_DIGEST="/agenthub/${FLEET}/finalize-runner-image-digest"
+          PREV=$(aws ssm get-parameter --name "$SSM_DIGEST" --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+          SKIP=0
+          if [ "$FORCE" != "true" ] && [ -n "$PREV" ] && [ "$PREV" = "$DIGEST" ]; then
+            SKIP=1
+            echo "Digest unchanged vs $SSM_DIGEST — skipping bake."
+          fi
+          echo "skip=$SKIP" >>"$GITHUB_OUTPUT"
+
+          CUR_AMI=$(aws ssm get-parameter --name "/agenthub/${FLEET}/finalize-runner-ami-id" \
+            --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+          echo "current_ami=$CUR_AMI" >>"$GITHUB_OUTPUT"
+
+      - name: Bake AMI
+        id: bake
+        if: steps.digest.outputs.skip != '1'
+        env:
+          RUNNER_IMAGE: ${{ steps.image.outputs.runner_image }}
+          FLEET: ${{ inputs.fleet }}
+        run: |
+          set -euo pipefail
+          ./ops/scripts/bake-finalize-runner-ami.sh
+
+      - name: Pin launch template (no instance refresh)
+        id: pin
+        if: steps.digest.outputs.skip != '1'
+        env:
+          AMI_ID: ${{ steps.bake.outputs.ami_id }}
+          FLEET: ${{ inputs.fleet }}
+          RUNNER_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AMI_ID:-}" ]; then
+            echo "::error::bake did not emit ami_id"
+            exit 1
+          fi
+          ./ops/scripts/pin-finalize-runner-ami.sh
+          aws ssm put-parameter --name "/agenthub/${FLEET}/finalize-runner-image-digest" \
+            --type String --value "$RUNNER_DIGEST" --overwrite >/dev/null
+
+      # Cap snapshot spend: keep the newest 3 bake AMIs per fleet (never the
+      # SSM pin or an AMI still attached to an instance).
+      - name: Prune old bake AMIs
+        if: steps.digest.outputs.skip != '1'
+        env:
+          FLEET: ${{ inputs.fleet }}
+          KEEP: '3'
+        run: ./ops/scripts/prune-finalize-runner-amis.sh
+
+      - name: Record outputs
+        id: result
+        env:
+          SKIP: ${{ steps.digest.outputs.skip }}
+          BAKED_AMI: ${{ steps.bake.outputs.ami_id }}
+          CUR_AMI: ${{ steps.digest.outputs.current_ami }}
+        run: |
+          set -euo pipefail
+          if [ "$SKIP" = 1 ]; then
+            echo "skipped=true" >>"$GITHUB_OUTPUT"
+            if [ -z "${CUR_AMI:-}" ] || [ "$CUR_AMI" = None ]; then
+              echo "::error::Digest unchanged but no /agenthub/${FLEET}/finalize-runner-ami-id — force a bake."
+              exit 1
+            fi
+            echo "ami_id=$CUR_AMI" >>"$GITHUB_OUTPUT"
+            echo "Skipped bake; keeping AMI $CUR_AMI"
+          else
+            echo "skipped=false" >>"$GITHUB_OUTPUT"
+            echo "ami_id=$BAKED_AMI" >>"$GITHUB_OUTPUT"
+          fi
+
+          {
+            echo "## Finalize runner AMI (${FLEET})"
+            echo ""
+            echo "- Image: \`${{ steps.image.outputs.runner_image }}\`"
+            echo "- Digest: \`${{ steps.digest.outputs.digest }}\`"
+            echo "- AMI: \`${{ steps.bake.outputs.ami_id || steps.digest.outputs.current_ami }}\`"
+            echo "- Skipped: \`$SKIP\` (no instance refresh either way)"
+          } >>"$GITHUB_STEP_SUMMARY"

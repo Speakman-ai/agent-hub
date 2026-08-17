@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { parse as parseYaml } from 'yaml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +48,33 @@ describe('release workflows', () => {
       expect(commitOpenApi).toBeGreaterThan(generateOpenApi);
     },
   );
+
+  it('configures non-gating reusable AMI bakes inside the called workflow', () => {
+    const bake = parseYaml(readWorkflow('bake-finalize-runner-ami.yml'));
+    const dev = parseYaml(readWorkflow('deploy-dev-hub-on-main.yml'));
+    const release = parseYaml(readWorkflow('release-all.yml'));
+    const callers = [dev.jobs['bake-finalize-ami'], release.jobs['bake-finalize-ami-prod']];
+
+    expect(bake.on.workflow_call.inputs.allow_failure).toMatchObject({
+      type: 'boolean',
+      default: false,
+    });
+    expect(bake.jobs.bake['continue-on-error']).toBe('${{ inputs.allow_failure }}');
+    for (const caller of callers) {
+      expect(caller.uses).toBe('./.github/workflows/bake-finalize-runner-ami.yml');
+      expect(caller.with.allow_failure).toBe(true);
+      expect(caller).not.toHaveProperty('continue-on-error');
+    }
+  });
+
+  it('serializes AMI bake and pin operations per fleet', () => {
+    const bake = parseYaml(readWorkflow('bake-finalize-runner-ami.yml'));
+
+    expect(bake.jobs.bake.concurrency).toEqual({
+      group: 'finalize-runner-ami-${{ inputs.fleet }}',
+      'cancel-in-progress': false,
+    });
+  });
 });
 
 /**

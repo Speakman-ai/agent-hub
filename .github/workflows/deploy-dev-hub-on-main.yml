@@ -3,10 +3,15 @@
 # main lands there. This workflow is the sole writer of `:main`; Release
 # publishes immutable `:vX.Y.Z` tags and must not retag it.
 #
+# After a successful ECR push, also rebakes the DEV Finalize runner AMI when
+# the `:main` runner digest changed, and pins the DEV launch template without
+# an instance refresh (in-flight jobs keep their hosts).
+#
 # Requires repo Variable DOCKER_DEPLOY_DEV_INSTANCE_ID (DEV Hub instance).
 # That instance must also be covered by the CI OIDC role's ssm:SendCommand
 # grant (Terraform `enable_ci_ssm_deploy_after_ecr_push` /
 # `ci_ssm_deploy_instance_*`); otherwise the rollout fails with AccessDenied.
+# AMI bake/pin uses vars.AWS_TERRAFORM_ROLE_ARN (EC2 + SSM on the fleet VPC).
 #
 # Manual rebuild without waiting for a merge: Actions → "Deploy DEV Hub from
 # main" → Run workflow. `push-image.yml` stays the escape hatch for arbitrary
@@ -58,3 +63,18 @@ jobs:
       reset_instance: false
       # Explicit — do not rely on reusable fallback (that is the sandbox var).
       deploy_instance_id: ${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}
+
+  # Non-gating vs Hub rollout: a bake failure still leaves DEV Hub on the new
+  # :main image; operators can re-run "Bake finalize runner AMI" manually.
+  bake-finalize-ami:
+    name: Bake DEV Finalize runner AMI
+    needs: ecr-and-rollout
+    uses: ./.github/workflows/bake-finalize-runner-ami.yml
+    with:
+      fleet: dev
+      runner_image: ${{ format('{0}/agent-hub-finalize-runner:main', vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0') }}
+      aws_role_arn: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+      aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
+      force: false
+      allow_failure: true
+    secrets: inherit

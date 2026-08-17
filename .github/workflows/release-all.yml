@@ -9,15 +9,19 @@ name: Release
 #          (`:sha`, `:vX.Y.Z` — not `:main`), then SSM restart of the prod
 #          sandbox (agenthub.example.com) pinned to that version tag.
 #          `:main` is owned by "Deploy DEV Hub from main" (dev.agenthub.*).
+#        - bake-finalize-ami-prod — after ECR succeeds, rebake the prod
+#          Finalize runner AMI for `:vX.Y.Z` when the digest changed, pin the
+#          launch template without instance refresh, write SSM AMI id.
 #        - build-mac        — DMGs → S3 (non-gating vs server rollout).
-#        - terraform-apply  — ALWAYS runs: `terraform apply` against the prod
-#          stack in ops/terraform, so an infra change carries on the next
-#          release instead of waiting for someone to remember. The apply can
-#          never replace the Hub: the plan is gated by
-#          assert-no-protected-replacements.sh, and env-only changes reach the
-#          running host through the SSM env sync step rather than a rebuild.
-#          Requires the CI prereqs documented on the job below (PROD_TFVARS
-#          secret, AWS_TERRAFORM_ROLE_ARN + TF_STATE_* vars).
+#        - terraform-apply  — ALWAYS runs (after bake when bake ran):
+#          `terraform apply` against the prod stack. Injects
+#          TF_VAR_finalize_runner_ami_id from bake/SSM so PROD_TFVARS cannot
+#          revert the launch-template AMI pin. The apply can never replace the
+#          Hub: the plan is gated by assert-no-protected-replacements.sh, and
+#          env-only changes reach the running host through the SSM env sync
+#          step rather than a rebuild. Requires the CI prereqs documented on
+#          the job below (PROD_TFVARS secret, AWS_TERRAFORM_ROLE_ARN +
+#          TF_STATE_* vars).
 #
 # Dev EC2 hosts that still use npm/git rather than Docker are upgraded with
 # "Deploy Dev" (`.github/workflows/deploy-dev.yml`) manually if needed — it is
@@ -247,9 +251,26 @@ jobs:
       rollout: true
       reset_instance: ${{ inputs.docker_reset_instance }}
 
+  # Rebake prod Finalize AMI for the release tag when the runner digest moved.
+  # Pins LT without instance refresh; terraform-apply consumes the AMI via TF_VAR.
+  # allow_failure: infra apply still runs (falls back to SSM / PROD_TFVARS).
+  bake-finalize-ami-prod:
+    name: Bake prod Finalize runner AMI
+    needs: [release, docker-ecr-dev]
+    uses: ./.github/workflows/bake-finalize-runner-ami.yml
+    with:
+      fleet: prod
+      runner_image: ${{ format('{0}/agent-hub-finalize-runner:{1}', vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0', needs.release.outputs.tag) }}
+      aws_role_arn: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+      aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
+      force: false
+      allow_failure: true
+    secrets: inherit
+
   # Prod infrastructure apply. Runs on every release so a merged Terraform change
-  # actually lands. Independent of the image rollout: the ECR/SSM path ships app
-  # code, this ships infra (buckets, IAM, ALB, fleet, Hub env).
+  # actually lands. Waits on bake so TF_VAR_finalize_runner_ami_id matches the
+  # launch-template pin (PROD_TFVARS alone would otherwise revert a fresher AMI).
+  # ECR/SSM path ships app code; this ships infra (buckets, IAM, ALB, fleet, Hub env).
   #
   # Two rails make an unattended prod apply safe, and both are load-bearing:
   #
@@ -281,13 +302,18 @@ jobs:
   #                                  the plan asserts the CI SSM grant covers both.
   terraform-apply:
     name: Terraform apply (prod infra)
-    needs: release
+    needs: [release, bake-finalize-ami-prod]
+    # The reusable bake job allows failure; still apply when bake fails/skips.
+    if: always() && needs.release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC for AWS
       contents: read
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+      # Prefer the AMI this release just baked/pinned; falls through to SSM in the
+      # plan step if the reusable output is empty (should not happen).
+      BAKED_FINALIZE_AMI: ${{ needs.bake-finalize-ami-prod.outputs.ami_id }}
       # Single source of truth for every rollout target. Release / push-image
       # SSM vars.DOCKER_DEPLOY_INSTANCE_ID and main→DEV SSMs
       # vars.DOCKER_DEPLOY_DEV_INSTANCE_ID; the CI role's ssm:SendCommand grant
@@ -347,6 +373,22 @@ jobs:
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}" \
             -backend-config="encrypt=true"
+
+      # Override gitignored finalize_runner_ami_id so apply cannot undo the bake pin.
+      - name: Resolve finalize_runner_ami_id for TF_VAR
+        run: |
+          set -euo pipefail
+          AMI="${BAKED_FINALIZE_AMI:-}"
+          if [ -z "$AMI" ] || [ "$AMI" = None ]; then
+            AMI=$(aws ssm get-parameter --name /agenthub/prod/finalize-runner-ami-id \
+              --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+          fi
+          if [ -z "$AMI" ] || [ "$AMI" = None ]; then
+            echo "::warning::No baked/SSM finalize AMI — terraform will use PROD_TFVARS finalize_runner_ami_id as-is."
+            exit 0
+          fi
+          echo "TF_VAR_finalize_runner_ami_id=$AMI" >>"$GITHUB_ENV"
+          echo "Using finalize_runner_ami_id=$AMI"
 
       # Saved plan + JSON rendering. Everything downstream keys off this exact
       # plan file so the guard cannot approve one plan while apply runs another.
@@ -452,7 +494,7 @@ jobs:
 
   summary:
     name: Release summary
-    needs: [release, docker-ecr-dev, build-mac, terraform-apply]
+    needs: [release, docker-ecr-dev, bake-finalize-ami-prod, build-mac, terraform-apply]
     # Always run so the operator gets a single status block at the bottom
     # of the workflow page, regardless of which fan-out leg succeeded.
     if: always()
@@ -461,6 +503,7 @@ jobs:
       TAG: ${{ needs.release.outputs.tag }}
       RELEASE_RESULT: ${{ needs.release.result }}
       DOCKER_ECR_RESULT: ${{ needs.docker-ecr-dev.result }}
+      BAKE_AMI_RESULT: ${{ needs.bake-finalize-ami-prod.result }}
       MAC_RESULT: ${{ needs.build-mac.result }}
       TERRAFORM_RESULT: ${{ needs.terraform-apply.result }}
     steps:
@@ -483,6 +526,7 @@ jobs:
             echo "| --- | --- |"
             echo "| Tag & release      | $(icon "$RELEASE_RESULT") $RELEASE_RESULT |"
             echo "| ECR + docker dev   | $(icon "$DOCKER_ECR_RESULT") $DOCKER_ECR_RESULT |"
+            echo "| Bake Finalize AMI  | $(icon "$BAKE_AMI_RESULT") $BAKE_AMI_RESULT (pin LT, no refresh) |"
             echo "| Build mac DMGs     | $(icon "$MAC_RESULT") $MAC_RESULT (non-gating) |"
             echo "| Terraform apply    | $(icon "$TERRAFORM_RESULT") $TERRAFORM_RESULT (incl. guarded plan + SSM env sync) |"
           } >> "$GITHUB_STEP_SUMMARY"
