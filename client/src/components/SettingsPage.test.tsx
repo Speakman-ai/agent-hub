@@ -1015,7 +1015,7 @@ describe('AgentConfigSection — allowed-skills multi-select', () => {
     (api.getMyAgentEngineOverrides as any).mockResolvedValue({ agentEngineOverrides: {} });
     (api.getSkills as any).mockResolvedValue([
       { id: 'kanban', name: 'kanban', description: 'manage cards' },
-      { id: '1password', name: '1password', description: 'secrets' },
+      { id: 'github', name: 'github', description: 'repos' },
       { id: 'aws-cli', name: 'aws-cli', description: 'aws' },
     ]);
     (api.updateAgent as any).mockResolvedValue({ ok: true } as any);
@@ -1066,7 +1066,7 @@ describe('AgentConfigSection — allowed-skills multi-select', () => {
     expect(boxes!).toHaveLength(3);
     expect(boxes.every((b: any) => (b as any).checked)).toBe(true);
 
-    // Uncheck 1password, then save.
+    // Uncheck github, then save.
     fireEvent.click(boxes[1] as any);
     fireEvent.click(await findByText('Save' as any));
 
@@ -1084,7 +1084,7 @@ describe('AgentConfigSection — allowed-skills multi-select', () => {
     const list = await findByTestId('agent-allowed-skills-list');
     const boxes = within(list).getAllByRole('checkbox');
     expect((boxes[0] as any).checked).toBe(true); // kanban
-    expect((boxes[1] as any).checked).toBe(false); // 1password
+    expect((boxes[1] as any).checked).toBe(false); // github
     expect((boxes[2] as any).checked).toBe(false); // aws-cli
   });
 

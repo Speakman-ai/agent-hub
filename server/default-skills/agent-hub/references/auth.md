@@ -541,7 +541,7 @@ the trigger.
 
 ## Per-user skill credentials
 
-Third-party tokens for **installed skills** (1Password, GitHub PAT, etc.) live
+Third-party tokens for **installed skills** (GitHub PAT, etc.) live
 in a dedicated store — not on the `users` row — so operators are not
 tempted to paste secrets into chat or kanban cards.
 
@@ -569,7 +569,7 @@ request body carries `agent_id`:
   panel. Resolution skips every per-project skill store and walks **only**
   bundled `server/default-skills/{skill_id}/SKILL.md` → `skill_registry`.
   The agent-scoped RBAC gate does not run — any authenticated user may
-  store their own personal credential for a bundled skill (e.g. 1Password).
+  store their own personal credential for a bundled skill (e.g. GitHub).
   `skill_id` + `key_name` are still required; unknown skills 400 with
   `invalid credential schema for skill: …`.
 

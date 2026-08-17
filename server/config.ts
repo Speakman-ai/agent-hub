@@ -64,7 +64,7 @@ export function resolveSkillsDir(): string | null {
 /**
  * Absolute paths to every bundled default-skill `scripts/` dir that exists on
  * disk, `agent-hub` first. Each domain skill (aws-cli, gcloud, github, google,
- * 1password, designs, …) documents its wrappers as bare-name commands
+ * designs, …) documents its wrappers as bare-name commands
  * (`aws-whoami.sh`, `gh-pr.sh`, …), but only `agent-hub/scripts` was ever put
  * on PATH — so every other skill's wrappers failed with "command not found".
  * Returning all of them lets `buildSpawnEnv` prepend each dir so the documented
@@ -784,7 +784,7 @@ export function buildSpawnEnv(
   // call. Export the agent-hub skill root as `AGENT_HUB_SKILLS_DIR` and prepend
   // EVERY default-skill's `scripts/` dir to PATH so `board.sh`, `wiki-search.sh`
   // AND the domain wrappers (`aws-whoami.sh`, `gh-pr.sh`, `gcloud-q.sh`,
-  // `google-cal.sh`, `op-read.sh`, …) all resolve by bare name regardless of
+  // `google-cal.sh`, …) all resolve by bare name regardless of
   // the session's CWD or project. Without this the documented commands fail and
   // agents fall back to hand-rolled curl (which then 401s on JWT deployments)
   // or report the skill as broken. Prepend (not append) so the canonical

@@ -718,7 +718,7 @@ describe('buildSpawnEnv — agent-hub skill-script contract', () => {
     }
   });
 
-  // Regression: the AWS/gcloud/github/google/1password domain skills each ship
+  // Regression: the AWS/gcloud/github/google domain skills each ship
   // their own scripts/ dir whose wrappers are documented as bare-name commands,
   // but only agent-hub/scripts was ever put on PATH — so `aws-whoami.sh` and
   // friends failed with "command not found" ("AWS login skill doesn't work").
@@ -751,7 +751,7 @@ describe('buildSpawnEnv — agent-hub skill-script contract', () => {
     const env = buildSpawnEnv();
     const segs = (env.PATH as string).split(path.delimiter);
     // One representative wrapper from each non-agent-hub domain skill.
-    for (const name of ['gh-pr.sh', 'gcloud-q.sh', 'google-cal.sh', 'op-read.sh']) {
+    for (const name of ['gh-pr.sh', 'gcloud-q.sh', 'google-cal.sh']) {
       const hit = segs
         .map((d) => path.join(d, name))
         .find((p) => existsSync(p) && (statSync(p).mode & 0o111) !== 0);

@@ -5258,8 +5258,8 @@ export function AgentConfigSection({
                             are listed in its prompt and loadable via{' '}
                             <code className="font-mono">&lt;agenthub:skill&gt;</code> — every other
                             skill fails to load. Useful for trimming prompt noise and for keeping
-                            sensitive skills (e.g. <code className="font-mono">1password</code>,{' '}
-                            <code className="font-mono">aws-cli</code>) off agents that should never
+                            sensitive skills (e.g. <code className="font-mono">aws-cli</code>,{' '}
+                            <code className="font-mono">gcloud</code>) off agents that should never
                             touch them.
                           </p>
                           {skillsLoadError && (

@@ -254,7 +254,7 @@ export default function ProjectSecretsEditor({ projectId, hint }: any) {
           onChange={(e: any) => setImportBlob(e.target.value)}
           rows={3}
           className={inputClass + ' resize-y'}
-          placeholder={'API_KEY=op://...\nFEATURE_X=on'}
+          placeholder={'API_KEY=sk-...\nFEATURE_X=on'}
         />
         <button
           type="button"

@@ -106,6 +106,32 @@ describe('buildEnrichedPrompt — credential-request guidance', () => {
     expect(prompt.toLowerCase()).toContain('never ask for it in plain prose');
   });
 
+  it('makes the credential-request block the path for interactive secrets and bans external secret managers', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+    // Regression for the Survey Tracker "log me in" session: the agent claimed
+    // there was no secure prompt and steered the user to 1Password / paste-in-chat
+    // instead of emitting the masked credential-request card.
+    expect(prompt).toContain('collecting a username/password or any one-off secret');
+    expect(prompt).toContain('1Password');
+    expect(prompt).toContain('`op` CLI');
+    // The picker is barred for the secret itself (it renders plaintext) but
+    // allowed for the non-secret environment choice — keep both halves stated.
+    expect(prompt).toContain('Never route the secret itself through the `agenthub:ask` picker');
+    expect(prompt).toContain('renders in plaintext');
+  });
+
+  it('scopes the rule to interactive secrets and preserves the persistent skill-credential store', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+    // Regression for reviewer feedback: the guidance must not claim the session
+    // block is the ONLY path for "any secret" — reusable integration tokens
+    // (a skill's `credentials:` block, e.g. a GitHub PAT) belong in the
+    // persistent Settings → My Skill Credentials store, not a one-time request.
+    expect(prompt).toContain('Reusable integration tokens are the exception');
+    expect(prompt).toContain('`credentials:` frontmatter');
+    expect(prompt).toContain('Settings → My Skill Credentials');
+    expect(prompt).toContain('injects it into your environment');
+  });
+
   it('documents the consume retrieval path via the session API', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
     expect(prompt).toContain('/credential-requests/<requestId>/consume');

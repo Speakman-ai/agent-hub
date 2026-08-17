@@ -283,21 +283,21 @@ credentials:
       .put('/api/auth/me/skill-credentials')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        skill_id: '1password',
-        key_name: 'OP_SERVICE_ACCOUNT_TOKEN',
-        value: 'op_token_personal_test_xx',
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
+        value: 'gh_token_personal_test_xx',
       });
     expect(put.status).toBe(200);
-    expect(put.body.credential.skill_id).toBe('1password');
-    expect(put.body.credential.key_name).toBe('OP_SERVICE_ACCOUNT_TOKEN');
+    expect(put.body.credential.skill_id).toBe('github');
+    expect(put.body.credential.key_name).toBe('GH_TOKEN');
     expect(put.body.credential.masked_preview).toMatch(/^••••/);
 
     const listed = await supertest(app)
-      .get('/api/auth/me/skill-credentials?skillId=1password')
+      .get('/api/auth/me/skill-credentials?skillId=github')
       .set('Authorization', `Bearer ${token}`);
     expect(listed.status).toBe(200);
     expect(listed.body.credentials).toHaveLength(1);
-    expect(listed.body.credentials[0].key_name).toBe('OP_SERVICE_ACCOUNT_TOKEN');
+    expect(listed.body.credentials[0].key_name).toBe('GH_TOKEN');
   });
 
   it('rejects PUT without agent_id for an unknown skill that does not resolve from defaults', async () => {
@@ -327,9 +327,9 @@ credentials:
       .put('/api/auth/me/skill-credentials')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        skill_id: '1password',
-        key_name: 'OP_SERVICE_ACCOUNT_TOKEN',
-        value: 'op_token_to_clear',
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
+        value: 'gh_token_to_clear',
       })
       .expect(200);
 
@@ -338,15 +338,15 @@ credentials:
       .put('/api/auth/me/skill-credentials')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        skill_id: '1password',
-        key_name: 'OP_SERVICE_ACCOUNT_TOKEN',
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
         value: '',
       });
     expect(clear.status).toBe(200);
     expect(clear.body.cleared).toBe(true);
 
     const listed = await supertest(app)
-      .get('/api/auth/me/skill-credentials?skillId=1password')
+      .get('/api/auth/me/skill-credentials?skillId=github')
       .set('Authorization', `Bearer ${token}`);
     expect(listed.body.credentials).toHaveLength(0);
   });
@@ -358,7 +358,7 @@ credentials:
       .put('/api/auth/me/skill-credentials')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        key_name: 'OP_SERVICE_ACCOUNT_TOKEN',
+        key_name: 'GH_TOKEN',
         value: 'x',
       });
     expect(put.status).toBe(400);
