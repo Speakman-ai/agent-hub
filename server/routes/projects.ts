@@ -806,7 +806,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     config,
     getProjects,
     getProjectDataDir,
-    ensureDocsAgents,
     retireIntakeAgents,
     ensureSkillBuilderAgents,
     ensureReviewerAgents,
@@ -1895,7 +1894,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // Roster on a fresh workflow project:
     //   1. A single primary "Agent" — workflow projects have no git repo,
     //      so we call them "<Project> Agent" rather than "<Project> Dev".
-    //   2. A Docs agent (`ensureDocsAgents()`), enabled for all projects.
+    //   2. NO Docs agent; projects can still add one explicitly if needed.
     //   3. NO Intake agent — Ticket Intake is retired; `retireIntakeAgents()`
     //      runs as a purge sweep that removes any legacy intake agents.
     //   4. A Reviewer agent is NOT seeded here — Reviewer is GitHub-only
@@ -1907,8 +1906,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         getOrCreateBoard(stmts, project.id);
 
         // 2. Seed the primary agent so subsequent helpers
-        //    (`ensureProjectRoom`, `ensureDocsAgents`, `retireIntakeAgents`)
-        //    have an anchor — those helpers early-return on
+        //    (`ensureProjectRoom`, `retireIntakeAgents`) have an anchor —
+        //    those helpers early-return on
         //    `project.agents.length === 0`. Engine defaults to claude-code
         //    but is overridable via the optional `engine` POST field for
         //    Cursor-only installs.
@@ -1941,15 +1940,13 @@ This workspace has no git repo and no PR automation — your job is planning, or
         }
 
         // 3. Persist the seeded primary agent before invoking the
-        //    docs/intake helpers — they pick the project up via the
+        //    specialist helpers — they pick the project up via the
         //    in-memory `projects` array and call `saveProjects()`
         //    themselves once they add their own rows.
         saveProjects();
 
-        // 4. Seed Docs for every project and purge any retired intake agents
-        //    (Reviewer is GitHub-only and skipped here intentionally —
-        //    `ensureReviewerAgents()` gates on `githubRepo` / webhook configs).
-        ensureDocsAgents();
+        // 4. Purge any retired intake agents. Reviewer is GitHub-only and
+        //    skipped here intentionally.
         retireIntakeAgents();
         // Creation-scoped: pass the new project's id so we never backfill a
         // Skill Builder into every pre-existing project.
@@ -3000,10 +2997,9 @@ This workspace has no git repo and no PR automation — your job is planning, or
       }
     }
 
-    // Specialist helpers (`ensureDocsAgents`, `retireIntakeAgents`,
-    // `ensureReviewerAgents`) intentionally skip projects with an empty
-    // `agents` roster. Require at least one validated dev peer so onboard
-    // cannot return 201 without Docs/Intake (and Reviewer when GitHub-linked).
+    // Specialist helpers intentionally skip projects with an empty `agents`
+    // roster. Require at least one validated dev peer so onboard cannot return
+    // 201 without a usable primary agent.
     if (project.agents.length === 0) {
       try {
         rmSync(dataDir, { recursive: true, force: true });
@@ -3059,16 +3055,15 @@ This workspace has no git repo and no PR automation — your job is planning, or
       });
     }
 
-    // Seed the role-specialist agents alongside the analyzed dev roster.
-    //   * Docs is seeded for every onboarded project. Ticket Intake is retired
-    //     (never seeded); `retireIntakeAgents()` purges any legacy intake agent.
+    // Seed the remaining role-specialist agents alongside the analyzed dev roster.
+    //   * Docs is no longer auto-seeded. Ticket Intake is retired (never seeded),
+    //     and `retireIntakeAgents()` purges any legacy intake agent.
     //   * Reviewer is GitHub-only — `ensureReviewerAgents()` internally
     //     gates on `githubRepo` and is a no-op for non-GitHub projects.
     //     (It's also re-invoked when the user wires up GitHub later via a
     //     project PATCH, so the Finalize reviewer remains available for
     //     after-the-fact connections.)
     try {
-      ensureDocsAgents();
       retireIntakeAgents();
       // Creation-scoped: only the project just onboarded, never a backfill.
       ensureSkillBuilderAgents(project.id);

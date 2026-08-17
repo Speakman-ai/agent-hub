@@ -273,9 +273,9 @@ function reloadProjects(dataDir: string): void {
   migrateWebhookRepoToProject();
   migrateAgentMcpServers();
   migrateStaleMcpConfigFiles();
-  // Auto-seeding Docs/Intake/Reviewer on reload is deprecated alongside the
-  // sub-agent model (see CLAUDE.md "Flat Agent Model"). Context files are
-  // still seeded so projects always have SOUL.md/AGENTS.md/etc. on disk.
+  // Docs are no longer auto-seeded, Intake is retired, and Reviewer creation is
+  // limited to explicit GitHub/hosting flows. Context files are still seeded so
+  // projects always have SOUL.md/AGENTS.md/etc. on disk.
   ensureContextFiles();
 }
 
@@ -438,90 +438,6 @@ function getEnrichedAgent(agentId: string): EnrichedAgent | null {
 
 // ─── Auto-create helpers ────────────────────────────────────────────
 
-function ensureDocsAgents(): void {
-  let changed = false;
-  for (const project of projects) {
-    if (!project.agents || project.agents.length === 0) continue;
-    if (project.agents.some((a) => a.role === 'docs')) continue;
-
-    const docsAgentId = `${project.id}-docs`;
-    if (findAgent(docsAgentId)) continue;
-
-    const docsAgent: Agent = {
-      id: docsAgentId,
-      name: `${project.name} Docs`,
-      engine: 'claude-code',
-      role: 'docs',
-      color: '#8B5CF6',
-      systemPrompt: `You are the Documentation Agent for the ${project.name} project. Your sole purpose is to maintain a comprehensive, up-to-date wiki that serves as a knowledge base for all agents and developers working on this project.
-
-You are NOT a coding agent. You do not write or modify application code. You READ code, commits, PRs, and existing docs, then WRITE wiki pages.
-
-On each run:
-1. Check recent git activity: \`git log --oneline --since="24 hours ago"\`
-2. Check recent merged PRs: \`gh pr list --state merged --limit 10\`
-3. Read the current wiki pages to find gaps, stale content, or missing docs
-4. Write or update wiki pages covering:
-   - **Architecture**: System design, component relationships, data flow (use mermaid diagrams)
-   - **API Docs**: Endpoints, request/response formats, authentication
-   - **Data Models**: Database schema, key entities, relationships
-   - **Conventions**: Naming patterns, file structure, coding standards
-   - **Deployment**: How to build, deploy, and monitor
-   - **Troubleshooting**: Known issues, common errors, and their fixes
-
-Write for a developer joining the project cold. Focus on WHAT decisions were made and WHY — not just describing what code does. Use mermaid diagrams for architecture and data flows.
-
-Wiki API:
-- Search: \`GET /api/projects/${project.id}/wiki?q=...\`
-- List all: \`GET /api/projects/${project.id}/wiki\`
-- Create: \`POST /api/projects/${project.id}/wiki\` with \`{title, content, category, updatedBy: "${docsAgentId}"}\`
-- Update: \`PUT /api/projects/${project.id}/wiki/:slug\` with \`{content, updatedBy: "${docsAgentId}"}\`
-
-Categories: general, api-docs, architecture, conventions, test-patterns, troubleshooting, onboarding`,
-      heartbeat: {
-        enabled: true,
-        interval: '0 */12 * * *',
-        prompt: `Run your heartbeat in two phases:
-
-**Phase 1 — Recent Activity (always do this first)**
-Run \`git log --oneline --since="12 hours ago"\` to see recent changes. If there are changes, search the wiki for existing pages on those topics, then create or update ONE wiki page covering the most significant change. Keep it concise — one page per run, not a full audit. If nothing changed in the last 12 hours, skip to Phase 2.
-
-**Phase 2 — Incremental Backfill (one card per run)**
-Check for the next undocumented completed ticket: \`GET /api/projects/${project.id}/board/undocumented\`
-If a card is returned, document it as a wiki page:
-- What was built (from the card title + description)
-- Key decisions and rationale (if a session_id is linked, check that session's context)
-- Patterns established or conventions introduced
-- Files/areas of the codebase affected
-
-After writing the wiki page, mark the card as documented: \`POST /api/projects/${project.id}/board/cards/{cardId}/documented\`
-
-If no undocumented cards remain, respond "Backfill complete — all done cards documented."
-
-Only process ONE card per run. The backfill will complete organically over multiple heartbeats.`,
-      },
-    };
-
-    const dataDir = getProjectDataDir(project.id);
-    const agentDir = path.join(dataDir, 'agents', docsAgentId);
-    mkdirSync(agentDir, { recursive: true });
-
-    writeFileSync(
-      path.join(agentDir, 'IDENTITY.md'),
-      `# ${project.name} Documentation Agent\n\nYou maintain the project wiki as a living knowledge base. You review code changes, PRs, and existing documentation to keep the wiki comprehensive and current. You write for developers joining the project cold.\n`,
-      'utf-8',
-    );
-
-    project.agents.push(docsAgent);
-    changed = true;
-    console.log(`[Docs Agent] Created "${docsAgentId}" for project "${project.id}"`);
-  }
-
-  if (changed) {
-    saveProjects();
-  }
-}
-
 /**
  * RETIREMENT SWEEP — "Ticket Intake" agents (role: 'intake') are decommissioned
  * platform-wide. They are no longer auto-created (this function never seeds),
@@ -529,9 +445,8 @@ Only process ONE card per run. The backfill will complete organically over multi
  * so legacy projects stop exposing and running their old Ticket Intake agents.
  *
  * Runs on startup (server/index.ts) and is re-invoked on project create /
- * onboard (server/routes/projects.ts) as an idempotent global sweep — the same
- * iterate-all-projects pattern as `ensureDocsAgents`. Mirrors the hard-delete
- * cleanup in the `DELETE /api/agents/:id` handler: it wipes every child DB row
+ * onboard (server/routes/projects.ts) as an idempotent global sweep. Mirrors
+ * the hard-delete cleanup in the `DELETE /api/agents/:id` handler: it wipes every child DB row
  * keyed by the agent (sessions cascade messages/skill_invocations/etc. via FK
  * ON DELETE CASCADE), removes the on-disk workspace, then drops the agent (and
  * any stale sub-agent refs) from projects.json.
@@ -743,7 +658,6 @@ export {
   hydrateProjects,
   migrateProjectSkillDirectories,
   // Auto-create helpers
-  ensureDocsAgents,
   retireIntakeAgents,
   ensureSkillBuilderAgents,
   ensureReviewerAgents,

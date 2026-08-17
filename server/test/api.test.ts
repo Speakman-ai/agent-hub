@@ -211,13 +211,13 @@ describe('Projects', () => {
       expect(res.body.cwd).not.toBe(path.join(res.body.ahw as string, 'workspace'));
     });
 
-    it('scaffolds a workflow project with board, primary agent + docs (intake retired), and context files', async () => {
+    it('scaffolds a workflow project without auto-seeding Docs or Intake', async () => {
       // Workflow projects must land the user on a fully-formed shell — not
       // a blank canvas. The wizard's `POST /api/projects { mode: 'workflow' }`
       // call should eagerly initialise:
       //   - kanban board with the 4 default columns (To Do → Done)
       //   - the primary "<Project> Agent" (role: 'dev', id: '<id>-agent')
-      //   - a Docs agent (role: 'docs') — seeded for every project
+      //   - no Docs agent — users can still add one explicitly when needed
       //   - top-level context files (SOUL.md, AGENTS.md, USER.md, TOOLS.md, MEMORY.md)
       // Ticket Intake (role: 'intake') is RETIRED — never seeded anymore.
       // and explicitly NOT seed a Reviewer agent — Reviewer is GitHub-only
@@ -234,7 +234,7 @@ describe('Projects', () => {
       const columnNames = (board.body.columns as Array<{ name: string }>).map((c) => c.name);
       expect(columnNames).toEqual(['To Do', 'In Progress', 'Done']);
 
-      // Project carries the primary "<Project> Agent" plus Docs.
+      // Project carries the primary "<Project> Agent" without Docs.
       // Intake is retired (never seeded); Reviewer is deliberately absent
       // (no `githubRepo` on workflow projects).
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
@@ -247,7 +247,7 @@ describe('Projects', () => {
         }>) || [];
       const roles = agents.map((a) => a.role).filter(Boolean);
       expect(roles).toContain('dev');
-      expect(roles).toContain('docs');
+      expect(roles).not.toContain('docs');
       expect(roles).not.toContain('intake');
       expect(roles).not.toContain('lead');
       expect(roles).not.toContain('reviewer');
@@ -524,10 +524,9 @@ describe('Projects', () => {
 
   describe('POST /api/projects/onboard — role-specialist seeding', () => {
     // The onboard route owns dev-mode scaffolding (analyzed roster + GitHub
-    // wiring). It must seed Docs for every project and a Reviewer for projects
-    // with a `githubRepo` set. Intake is retired (never seeded). Reviewer stays
-    // out of non-GitHub onboards.
-    it('seeds Docs (not Intake) on any onboarded project, and Reviewer when githubRepo is set', async () => {
+    // wiring). It must not seed Docs or Intake. Reviewer is still created for
+    // projects with a `githubRepo` and stays out of non-GitHub onboards.
+    it('does not seed Docs or Intake, and seeds Reviewer when githubRepo is set', async () => {
       const projectId = `onboard-gh-${Date.now()}-${++_uniqueCounter}`;
       await request
         .post('/api/projects/onboard')
@@ -557,15 +556,15 @@ describe('Projects', () => {
         (proj.body.agents as Array<{ id: string; role?: string; name?: string }>) || [];
       const roles = agents.map((a) => a.role).filter(Boolean);
       expect(roles).toContain('dev');
-      expect(roles).toContain('docs');
+      expect(roles).not.toContain('docs');
       expect(roles).not.toContain('intake');
       expect(roles).toContain('reviewer');
-      expect(agents.some((a) => a.id === `${projectId}-docs`)).toBe(true);
+      expect(agents.some((a) => a.id === `${projectId}-docs`)).toBe(false);
       expect(agents.some((a) => a.id === `${projectId}-intake`)).toBe(false);
       expect(agents.some((a) => a.id === `${projectId}-reviewer`)).toBe(true);
     });
 
-    it('seeds Docs but NOT Intake or Reviewer when onboarded without a GitHub repo', async () => {
+    it('does not seed Docs, Intake, or Reviewer without a GitHub repo', async () => {
       const projectId = `onboard-nogh-${Date.now()}-${++_uniqueCounter}`;
       await request
         .post('/api/projects/onboard')
@@ -592,7 +591,7 @@ describe('Projects', () => {
       const agents = (proj.body.agents as Array<{ id: string; role?: string }>) || [];
       const roles = agents.map((a) => a.role).filter(Boolean);
       expect(roles).toContain('dev');
-      expect(roles).toContain('docs');
+      expect(roles).not.toContain('docs');
       expect(roles).not.toContain('intake');
       expect(roles).not.toContain('reviewer');
       expect(agents.some((a) => a.id === `${projectId}-intake`)).toBe(false);

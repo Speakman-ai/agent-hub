@@ -1,5 +1,5 @@
 /**
- * Isolated fork: `ensureDocsAgents` is mocked to throw so we can assert the
+ * Isolated fork: `ensureSkillBuilderAgents` is mocked to throw so we can assert the
  * onboard route fails the HTTP request instead of returning 201 with a
  * silently incomplete specialist roster.
  */
@@ -10,7 +10,7 @@ vi.mock('../project-model.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../project-model.js')>();
   return {
     ...actual,
-    ensureDocsAgents: () => {
+    ensureSkillBuilderAgents: () => {
       throw new Error('simulated specialist seed failure');
     },
   };

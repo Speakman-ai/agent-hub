@@ -275,7 +275,7 @@ describe('ensureReviewerAgents', () => {
   /**
    * Helper to create a project and seed a single dummy agent on it (the
    * ensure-* functions short-circuit on agentless projects, matching the
-   * behaviour of ensureDocsAgents/ensureIntakeAgents).
+   * behaviour of the remaining role-specialist helpers).
    */
   async function createProjectWithAgent(
     projId: string,

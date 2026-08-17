@@ -9,7 +9,7 @@ vi.mock('../project-model.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../project-model.js')>();
   return {
     ...actual,
-    ensureDocsAgents: () => {
+    ensureSkillBuilderAgents: () => {
       throw new Error('simulated workflow specialist seed failure');
     },
   };

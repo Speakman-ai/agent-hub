@@ -53,7 +53,6 @@ import {
   resolveProjectSkillsDir,
   saveProjects,
   reloadProjects,
-  ensureDocsAgents,
   retireIntakeAgents,
   ensureSkillBuilderAgents,
   ensureReviewerAgents,
@@ -504,12 +503,9 @@ if (_startupOrgId !== 'default') {
 
 migrateAhwDirectories();
 migrateProjectSkillDirectories();
-// Auto-seeding Docs/Intake/Reviewer at startup is deprecated alongside the
-// sub-agent model (see CLAUDE.md "Flat Agent Model"). We no longer
-// retroactively backfill them on existing projects — projects keep
-// whatever roster they were created with. `ensureReviewerAgents` is still
-// invoked when a project is wired up to GitHub so the Finalize review
-// phase has a reviewer agent to spawn.
+// Docs are no longer auto-seeded, Intake is retired, and Reviewer creation is
+// limited to explicit GitHub/hosting flows. Existing project rosters otherwise
+// remain unchanged.
 ensureContextFiles();
 // Retirement sweep: "Ticket Intake" agents (role: 'intake') are decommissioned
 // platform-wide. Unlike the deprecated-but-passive seeders above, this actively
@@ -1656,7 +1652,6 @@ export const routeDeps: RouteDeps = {
   DEFAULT_MODEL,
   activeProcesses,
   getProjectDataDir,
-  ensureDocsAgents,
   retireIntakeAgents,
   ensureSkillBuilderAgents,
   ensureReviewerAgents,

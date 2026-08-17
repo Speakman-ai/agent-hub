@@ -4119,7 +4119,6 @@ export interface RouteDeps {
   DEFAULT_MODEL: string;
   activeProcesses: Map<string, import('./active-chat-process.js').ActiveChatProcess>;
   getProjectDataDir: (projectId: string) => string;
-  ensureDocsAgents: () => void;
   retireIntakeAgents: () => void;
   ensureSkillBuilderAgents: (projectId?: string) => void;
   ensureReviewerAgents: () => boolean;
