@@ -151,11 +151,13 @@ finalize_task_protection_expiry_minutes = 40
 finalize_fleet_dynamic_scale_down = true
 finalize_runner_min_size          = 0 # scale-to-zero when idle
 # Agent ceiling. Drives the ASG max_size, on_demand_base_capacity, and
-# maximum_scaling_step_size AND the Hub env FINALIZE_FLEET_MAX_AGENTS in
-# lockstep — one task per instance, so agents == instances. The quota guard
-# (finalize-runners.tf) reads the LIVE On-Demand vCPU quota and FAILS the plan
-# if this would exceed it, so a bump past the approved quota is blocked until the
-# quota is raised first.
+# maximum_scaling_step_size AND the Hub env FINALIZE_FLEET_MAX_AGENTS +
+# FINALIZE_MAX_PARALLEL_JOBS in lockstep — one task per instance, so agents ==
+# instances, and the Hub must be allowed to dispatch that many shards at once
+# (otherwise docker-compose's local default of 4 silently caps remote Finalize).
+# The quota guard (finalize-runners.tf) reads the LIVE On-Demand vCPU quota and
+# FAILS the plan if this would exceed it, so a bump past the approved quota is
+# blocked until the quota is raised first.
 finalize_runner_max_size = 64
 # Baked AMI: AL2023 ECS-optimized + the runner image pre-pulled, so fleet
 # instances skip the multi-GB boot `docker pull`. Re-bake when the base AMI /

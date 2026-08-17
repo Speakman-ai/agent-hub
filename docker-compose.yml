@@ -58,7 +58,9 @@ services:
       - AGENT_HUB_PREVIEW_READY_TIMEOUT_MS=${AGENT_HUB_PREVIEW_READY_TIMEOUT_MS:-600000}
       # Finalize CI DinD runner — local build tag by default; prod uses ECR via user-data.
       - FINALIZE_RUNNER_IMAGE_UBUNTU_24_04=${FINALIZE_RUNNER_IMAGE_UBUNTU_24_04:-agent-hub/finalize-runner:ubuntu-24.04}
-      # Cap concurrent Finalize jobs (default 4); lower on memory-constrained hosts.
+      # Cap concurrent Finalize jobs. Default 4 is for local single-host DinD.
+      # Prod remote fleet overrides this via Terraform
+      # (FINALIZE_MAX_PARALLEL_JOBS = finalize_runner_max_size, e.g. 128).
       - FINALIZE_MAX_PARALLEL_JOBS=${FINALIZE_MAX_PARALLEL_JOBS:-4}
       # Registry pull-through cache for the runner's inner dockerd (avoids Docker
       # Hub rate limits). Local: http://host.docker.internal:5001; prod: ECR

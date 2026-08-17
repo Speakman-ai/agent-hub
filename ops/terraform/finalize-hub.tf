@@ -53,6 +53,12 @@ locals {
       "FINALIZE_FLEET_ECS_SERVICE=${var.project_name}-finalize-runner-agent",
       "FINALIZE_FLEET_MIN_AGENTS=${tostring(var.finalize_runner_min_size)}",
       "FINALIZE_FLEET_MAX_AGENTS=${tostring(var.finalize_runner_max_size)}",
+      # Hub-side shard concurrency. docker-compose defaults this to 4 for local
+      # single-host DinD; without an explicit value on the remote fleet Hub, that
+      # default caps Finalize at 4 concurrent jobs while the ASG can still be 128.
+      # Keep in lockstep with FINALIZE_FLEET_MAX_AGENTS so the fleet ceiling is
+      # what actually limits parallelism.
+      "FINALIZE_MAX_PARALLEL_JOBS=${tostring(var.finalize_runner_max_size)}",
       "FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS=${tostring(var.finalize_max_reclaim_retry_generations)}",
     ],
     var.finalize_fleet_dynamic_scale_down ? ["FINALIZE_FLEET_DYNAMIC_SCALE_DOWN=1"] : [],

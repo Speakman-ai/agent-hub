@@ -512,8 +512,9 @@ variable "finalize_runner_min_size" {
 }
 
 variable "finalize_runner_max_size" {
-  type    = number
-  default = 4
+  type        = number
+  default     = 4
+  description = "ASG max / FINALIZE_FLEET_MAX_AGENTS and FINALIZE_MAX_PARALLEL_JOBS (lockstep). One agent per instance; Hub dispatch concurrency must match or docker-compose's local default of 4 silently caps remote Finalize."
 }
 
 variable "finalize_max_reclaim_retry_generations" {
