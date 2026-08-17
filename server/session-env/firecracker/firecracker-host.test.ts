@@ -303,7 +303,7 @@ describe('reconcileFirecrackerHost', () => {
     const result = await reconcileFirecrackerHost({ run, logger: { warn } });
     expect(result.bridgeReady).toBe(false);
     expect(result.natReady).toBe(false);
-    expect(warn).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fc-netctl ensure-bridge failed'));
   });
 
   it('marks NAT not ready when fc-netctl ensure-nat fails', async () => {

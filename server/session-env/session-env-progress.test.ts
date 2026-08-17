@@ -105,6 +105,34 @@ describe('emitSessionEnvLaunchProgress', () => {
       }),
     );
   });
+
+  it('persists failure detail on Launching session VM', () => {
+    const stmts = mockStmts(1);
+    const broadcast = vi.fn();
+    emitSessionEnvLaunchProgress({
+      stmts,
+      broadcast,
+      sessionId: 'sess-1',
+      status: 'failed',
+      startedAt: 1000,
+      finishedAt: 1400,
+      detail: 'Firecracker guest bridge is not ready',
+    });
+    expect(stmts.completeSessionProgress.run).toHaveBeenCalledWith(
+      'failed',
+      1400,
+      'Firecracker guest bridge is not ready',
+      'sess-1',
+      SESSION_ENV_LAUNCH_STEP,
+    );
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session-progress',
+        status: 'failed',
+        detail: 'Firecracker guest bridge is not ready',
+      }),
+    );
+  });
 });
 
 describe('emitSessionStartupProgress', () => {

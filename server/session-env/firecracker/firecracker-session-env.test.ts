@@ -245,8 +245,13 @@ describe('FirecrackerSessionEnv start', () => {
       ),
     ).toBe(true);
     expect(runs.some((a) => a[0].endsWith('fc-prepare-disks.sh'))).toBe(true);
-    // Guest NAT is ensured before the tap is created (closed fc-netctl helper).
-    expect(runs.some((a) => a[0]?.endsWith('fc-netctl.sh') && a[1] === 'ensure-nat')).toBe(true);
+    // Guest bridge + NAT are ensured before the tap is created. Chat sessions
+    // use the host adapter, so Hub boot may skip the Firecracker sweep —
+    // isolated mode must create ahfc0 itself.
+    const netctl = runs.filter((a) => a[0]?.endsWith('fc-netctl.sh')).map((a) => a[1]);
+    expect(netctl.indexOf('ensure-bridge')).toBeGreaterThanOrEqual(0);
+    expect(netctl.indexOf('ensure-bridge')).toBeLessThan(netctl.indexOf('ensure-nat'));
+    expect(netctl.indexOf('ensure-nat')).toBeLessThan(netctl.indexOf('tap-create'));
 
     const config = JSON.parse([...written.values()][0]);
     expect(config['machine-config'].vcpu_count).toBeGreaterThan(0);
@@ -256,6 +261,34 @@ describe('FirecrackerSessionEnv start', () => {
     expect(spawned[0].file).toBe('jailer');
     expect(env.vmStarted).toBe(true);
     expect(env.guestIp).toBe('172.30.0.3');
+  });
+
+  it('fails closed when the guest bridge cannot be created', async () => {
+    const { env } = makeEnv({
+      ioOverrides: {
+        run: async (argv: string[]) => {
+          if (argv[1] === 'ensure-bridge') {
+            return { ok: false, stdout: '', stderr: 'Cannot find device "ahfc0"' };
+          }
+          return { ok: true, stdout: '', stderr: '' };
+        },
+      },
+    });
+    await expect(env.ensureStarted()).rejects.toThrow(/guest bridge is not ready/);
+  });
+
+  it('fails closed when guest NAT cannot be installed', async () => {
+    const { env } = makeEnv({
+      ioOverrides: {
+        run: async (argv: string[]) => {
+          if (argv[1] === 'ensure-nat') {
+            return { ok: false, stdout: '', stderr: 'no uplink' };
+          }
+          return { ok: true, stdout: '', stderr: '' };
+        },
+      },
+    });
+    await expect(env.ensureStarted()).rejects.toThrow(/guest NAT is not ready/);
   });
 
   it('clears leftover sockets before binding them', async () => {

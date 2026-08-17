@@ -136,6 +136,7 @@ export function emitSessionEnvLaunchProgress(args: {
   status: ProgressStepStatus;
   startedAt: number;
   finishedAt?: number;
+  detail?: string;
   log?: (msg: string) => void;
 }): void {
   emitProgressStep({
@@ -147,6 +148,7 @@ export function emitSessionEnvLaunchProgress(args: {
     status: args.status,
     startedAt: args.startedAt,
     finishedAt: args.finishedAt,
+    detail: args.detail,
     nextSeq: args.nextSeq,
     log: args.log,
   });

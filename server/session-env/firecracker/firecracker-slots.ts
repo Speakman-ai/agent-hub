@@ -332,6 +332,23 @@ export async function ensureBridgeNetfilter(
   return true;
 }
 
+export async function ensureFirecrackerGuestBridge(
+  deps: ReconcileFirecrackerHostDeps,
+): Promise<boolean> {
+  const logger = deps.logger ?? { warn: (msg: string) => console.warn(msg) };
+  const helper = resolveFcNetctlHelper();
+  const res = await deps.run([helper, 'ensure-bridge']);
+  // `ip link add` reports "File exists" when ahfc0 is already up — that is
+  // success, not a failure to create.
+  const ready = res.ok || /exists/i.test(res.stderr) || /exists/i.test(res.stdout);
+  if (!ready) {
+    logger.warn(
+      `[firecracker] fc-netctl ensure-bridge failed: ${res.stderr.trim() || res.stdout.trim() || 'unknown'}`,
+    );
+  }
+  return ready;
+}
+
 export async function ensureFirecrackerGuestNat(
   deps: ReconcileFirecrackerHostDeps,
 ): Promise<boolean> {
@@ -368,13 +385,7 @@ export async function reconcileFirecrackerHost(
   const logger = deps.logger ?? { warn: (msg: string) => console.warn(msg) };
   const helper = resolveFcNetctlHelper();
 
-  const bridge = await deps.run([helper, 'ensure-bridge']);
-  const bridgeReady = bridge.ok || /exists/i.test(bridge.stderr) || /exists/i.test(bridge.stdout);
-  if (!bridgeReady) {
-    logger.warn(
-      `[firecracker] failed to prepare bridge via fc-netctl: ${bridge.stderr.trim() || bridge.stdout.trim()}`,
-    );
-  }
+  const bridgeReady = await ensureFirecrackerGuestBridge(deps);
 
   let natReady = await ensureFirecrackerGuestNat(deps);
 

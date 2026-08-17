@@ -88,6 +88,7 @@ import {
   whenSessionEnvSelectionReady,
 } from './session-env/sysbox-capability.js';
 import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
+import { runSessionEnvBootSweep } from './session-env/session-env-boot-sweep.js';
 import { probeFirecrackerCapability } from './session-env/firecracker/firecracker-capability.js';
 import { reconcileFirecrackerHost } from './session-env/firecracker/firecracker-slots.js';
 import {
@@ -129,7 +130,10 @@ import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { getProjectMode, sessionUsesWorktree } from './project-mode.js';
 import { resolveSessionWorktreePath } from './session-env/workflow-session-env.js';
-import { resolveSessionEnvAdapterForSession } from './session-env/resolve-session-adapter.js';
+import {
+  isFirecrackerBackendRegistered,
+  resolveSessionEnvAdapterForSession,
+} from './session-env/resolve-session-adapter.js';
 import { isSessionWorktreeLocked } from './session-worktree-lock.js';
 import {
   ensureSessionWorkspace,
@@ -1286,6 +1290,7 @@ const sessionEnvManager = new SessionEnvManager({
       status: update.status,
       startedAt: update.startedAt,
       finishedAt: update.finishedAt,
+      detail: update.detail,
     });
   },
   resolvePublishPorts: (sessionId) => {
@@ -2545,43 +2550,21 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     )
       .then((selection) => {
         logSessionEnvSelection(selection);
-        // Boot GC sweep: session envs live only in Hub memory, so every
-        // labeled session container/volume from a previous run is a leak.
-        // Both container backends label identically, so one sweep covers them.
-        if (selection.adapter === 'sysbox' || selection.adapter === 'container') {
-          return reconcileSysboxSessionEnvs().then(() => undefined);
-        }
-        if (selection.adapter === 'firecracker') {
-          // The VM equivalent: a tap left behind by a previous process keeps
-          // its name occupied, and the first session after a restart then
-          // fails to create it.
-          return reconcileFirecrackerHost({
-            run: (argv) => createFirecrackerHostIo(firecrackerExec).run(argv),
-            stopStaleVmms: () => stopStaleFirecrackerVmms(firecrackerExec),
-          }).then((result) => {
-            if (result.deletedTaps.length > 0) {
-              console.log(
-                `[session-env] swept ${result.deletedTaps.length} stale microVM tap(s): ${result.deletedTaps.join(', ')}`,
-              );
-            }
-            // Without guest NAT, apt/npm/pip die with "Temporary failure
-            // resolving …". Drop the backend so `auto` cannot select a path
-            // that cannot reach the network; an explicit firecracker force
-            // still fails loud at session start when ensureNat runs again.
-            if (!result.natReady) {
-              console.error(
-                '[session-env] Firecracker guest NAT is not ready — unregistering firecracker backend',
-              );
-              unregisterFirecrackerBackend();
-            } else if (!result.bridgeReady) {
-              console.error(
-                '[session-env] Firecracker bridge is not ready — unregistering firecracker backend',
-              );
-              unregisterFirecrackerBackend();
-            }
-          });
-        }
-        return undefined;
+        // The firecracker sweep is deliberately keyed off backend registration,
+        // NOT `selection.adapter`: VM mode is opt-in, so the global adapter is
+        // usually `host`, yet ahfc0 + guest NAT must still be prepared or the
+        // first opt-in VM session fails on tap-create. See runSessionEnvBootSweep.
+        return runSessionEnvBootSweep({
+          adapter: selection.adapter,
+          firecrackerRegistered: () => isFirecrackerBackendRegistered(),
+          reconcileSysbox: () => reconcileSysboxSessionEnvs().then(() => undefined),
+          reconcileFirecracker: () =>
+            reconcileFirecrackerHost({
+              run: (argv) => createFirecrackerHostIo(firecrackerExec).run(argv),
+              stopStaleVmms: () => stopStaleFirecrackerVmms(firecrackerExec),
+            }),
+          unregisterFirecracker: () => unregisterFirecrackerBackend(),
+        });
       })
       .catch((e) => console.error('[session-env] capability probe failed:', (e as Error).message))
       // Always open the gate, including on a failed probe or sweep: a session

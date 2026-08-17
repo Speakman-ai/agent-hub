@@ -62,7 +62,7 @@ import type { SessionEnvPortRouting } from '../container-routing.js';
 import type { SessionWorktreeIo } from '../worktree-io.js';
 import { GuestWorktreeIo } from './guest-worktree-io.js';
 import { resolveGuestNameservers } from './guest-nameservers.js';
-import { ensureFirecrackerGuestNat } from './firecracker-slots.js';
+import { ensureFirecrackerGuestBridge, ensureFirecrackerGuestNat } from './firecracker-slots.js';
 import { translateContainerPathToHost } from '../../preview/host-path-translation.js';
 import {
   FIRECRACKER_GUEST_WORKSPACE,
@@ -546,9 +546,21 @@ export class FirecrackerSessionEnv implements SessionEnv {
       );
     }
 
-    // Re-apply MASQUERADE/FORWARD even when the boot sweep already did — a
-    // Docker restart between Hub boot and this session can drop the rules
+    // Create ahfc0 here, not only at Hub boot. Chat sessions use the host
+    // adapter, so the boot sweep used to skip Firecracker networking whenever
+    // `sessionEnvAdapter=host` — then VM mode failed on `tap-create` because
+    // the bridge did not exist. Re-apply NAT even when the sweep already did:
+    // a Docker restart between Hub boot and this session can drop MASQUERADE
     // while leaving the bridge up.
+    const bridgeReady = await ensureFirecrackerGuestBridge({
+      run: (argv) => this.io.run(argv),
+    });
+    if (!bridgeReady) {
+      throw new Error(
+        `Firecracker guest bridge is not ready (session ${this.sessionId}); ` +
+          `session taps cannot attach without ahfc0`,
+      );
+    }
     const natReady = await ensureFirecrackerGuestNat({
       run: (argv) => this.io.run(argv),
     });

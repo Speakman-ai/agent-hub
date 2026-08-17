@@ -90,6 +90,7 @@ export interface SessionEnvManagerDeps {
     status: 'started' | 'completed' | 'failed';
     startedAt: number;
     finishedAt?: number;
+    detail?: string;
   }) => void;
   /** Idle envs with no live processes are reaped after this long. Default 4h. */
   idleTtlMs?: number;
@@ -334,12 +335,15 @@ export class SessionEnvManager {
 
       return env;
     } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[session-env] ${sessionId}: "${kind}" adapter failed: ${detail}`);
       if (reportLaunch) {
         this.deps.onEnvLaunchProgress?.({
           sessionId,
           status: 'failed',
           startedAt: launchStartedAt,
           finishedAt: Date.now(),
+          detail,
         });
       }
       throw err;

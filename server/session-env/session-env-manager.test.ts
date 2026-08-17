@@ -115,6 +115,7 @@ function makeManager(
       status: 'started' | 'completed' | 'failed';
       startedAt: number;
       finishedAt?: number;
+      detail?: string;
     }) => void;
     onCreateOpts?: (opts: {
       sessionId: string;
@@ -604,13 +605,16 @@ describe('SessionEnvManager env launch progress', () => {
   });
 
   it('emits failed when mountWorktree throws', async () => {
-    const events: string[] = [];
+    const events: Array<{ status: string; detail?: string }> = [];
     const { manager } = makeManager({
       kind: 'container',
       failOnMount: true,
-      onEnvLaunchProgress: (u) => events.push(u.status),
+      onEnvLaunchProgress: (u) => events.push({ status: u.status, detail: u.detail }),
     });
     await expect(manager.ensure('s1')).rejects.toThrow(/container failed/);
-    expect(events).toEqual(['started', 'failed']);
+    expect(events).toEqual([
+      { status: 'started', detail: undefined },
+      { status: 'failed', detail: 'container failed to start' },
+    ]);
   });
 });
