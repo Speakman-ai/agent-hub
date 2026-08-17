@@ -97,6 +97,7 @@ import {
   type TimelineMessageDeps,
 } from './timeline-message.js';
 import { detailIsSpotReclaim, spotReclaimDetail } from './spot-interruption.js';
+import { detailIsHubUnavailable } from './hub-unavailable.js';
 import type { RunnerJobLossProbe } from './runner-queue.js';
 import { hasTestFailureSummary, isRunnerTeardownExit } from './runner-teardown.js';
 import { isRunnerCancellationCollateral } from './step-cancellation.js';
@@ -720,12 +721,17 @@ export async function runStepsSequence(
       // spot_reclaimed marker (the fleet reaper sets it when the agent reported an
       // IMDS interruption notice before its lease expired). Classify those as
       // `spot_reclaimed` so the orchestrator's retry path earns the generous
-      // reclaim generation cap; every other spawn failure stays the conservative
-      // `container_unavailable`. Both are infra-class, so the retry path is the
-      // same — only the cap differs.
+      // reclaim generation cap. A whole batch of leases reaped in one tick is a
+      // Hub-side blip (restart / brief unreachability) — the reaper marks those
+      // `hub_unavailable`, which also earns the generous cap because a Hub restart
+      // is a known-transient external event that recovers on its own. Every other
+      // spawn failure stays the conservative `container_unavailable`. All three are
+      // infra-class, so the retry path is the same — only the cap differs.
       const failureReason = detailIsSpotReclaim(runOutcome.detail)
         ? 'spot_reclaimed'
-        : 'container_unavailable';
+        : detailIsHubUnavailable(runOutcome.detail)
+          ? 'hub_unavailable'
+          : 'container_unavailable';
       return finishStepSequence(
         deps,
         opts,

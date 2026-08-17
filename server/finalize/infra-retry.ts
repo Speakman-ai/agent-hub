@@ -167,6 +167,16 @@ export const INFRA_FAILURE_REASONS = [
   // deterministic environment failure) so reclaims can earn a more generous
   // retry-generation allowance — see {@link resolveRetryGenerationCap}.
   'spot_reclaimed',
+  // A Hub-side blip: the Hub process restarted or was briefly unreachable, so
+  // EVERY in-flight runner agent's heartbeat failed at once and a whole batch of
+  // leases was reaped in one tick (see `runner-fleet-scaler.ts` → the
+  // `hub_unavailable` detail marker). Like a Spot reclaim it is a known-transient
+  // EXTERNAL event that recovers on its own and has nothing to do with the change
+  // set, so it earns the generous retry-generation cap (see
+  // {@link GENEROUS_RETRY_FAILURE_REASONS}) rather than the conservative
+  // `container_unavailable` cap that would park a run caught by back-to-back
+  // restart windows before the Hub stabilises.
+  'hub_unavailable',
 ] as const;
 
 /**
@@ -177,18 +187,39 @@ export const INFRA_FAILURE_REASONS = [
  */
 export const RECLAIM_FAILURE_REASONS = ['spot_reclaimed'] as const;
 
+/**
+ * Infra-class reasons that earn the GENEROUS retry-generation cap. These are the
+ * known-transient EXTERNAL events — an EC2 Spot reclaim (`spot_reclaimed`) or a
+ * Hub restart / brief unreachability (`hub_unavailable`) — that recover on their
+ * own and are never about the change set, so a run caught by back-to-back windows
+ * survives more generations before parking. Every other infra reason
+ * (`container_unavailable`, `worktree_create_failed`, …) keeps the conservative
+ * cap, since it may be a deterministic environment fault that would only livelock.
+ */
+export const GENEROUS_RETRY_FAILURE_REASONS = ['spot_reclaimed', 'hub_unavailable'] as const;
+
 export type CiFailureReason = (typeof CI_FAILURE_REASONS)[number];
 export type InfraFailureReason = (typeof INFRA_FAILURE_REASONS)[number];
 export type ReclaimFailureReason = (typeof RECLAIM_FAILURE_REASONS)[number];
 
 /**
- * Is this failure_reason a known-transient Spot reclaim? Used by the
- * orchestrator's retry-generation policy and by budget.ts to decide that a
- * reclaim-aborted attempt's active time is non-billable.
+ * Is this failure_reason a known-transient Spot reclaim? Used by budget.ts to
+ * decide that a reclaim-aborted attempt's active time is non-billable. (Budget
+ * forgiveness for other infra reasons is handled generically by
+ * {@link classifyFailureReason}, so this predicate stays scoped to reclaims.)
  */
 export function isReclaimFailureReason(reason: string | null | undefined): boolean {
   if (!reason) return false;
   return (RECLAIM_FAILURE_REASONS as readonly string[]).includes(reason);
+}
+
+/**
+ * Does this failure_reason earn the generous retry-generation cap? True for the
+ * known-transient external events in {@link GENEROUS_RETRY_FAILURE_REASONS}.
+ */
+export function earnsGenerousRetryCap(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return (GENEROUS_RETRY_FAILURE_REASONS as readonly string[]).includes(reason);
 }
 
 /**
@@ -202,8 +233,10 @@ export function isReclaimFailureReason(reason: string | null | undefined): boole
  *     historical hard cap of 1 to **2** so a run that loses its driving agent
  *     to back-to-back Spot reclaims (each surfacing as `container_unavailable`)
  *     still recovers instead of terminating green-code as `infra_error`.
- *   - Reclaim-class (`spot_reclaimed`) → {@link MAX_RECLAIM_RETRY_GENERATIONS}.
- *     Known-transient, so a more generous **3**.
+ *   - Generous-class (`spot_reclaimed`, `hub_unavailable`) →
+ *     {@link MAX_RECLAIM_RETRY_GENERATIONS}. Known-transient external events (an
+ *     EC2 Spot reclaim or a Hub restart / brief unreachability), so a more
+ *     generous **3** — see {@link GENEROUS_RETRY_FAILURE_REASONS}.
  *
  * Both are env-overridable for ops tuning. The env is read at CALL time (not
  * module load) so a deploy — or a test — can tune the cap without re-importing.
@@ -226,14 +259,14 @@ function readGenerationCap(envName: string, dflt: number): number {
 }
 
 /**
- * The generation cap that applies to a given parent failure reason. Reclaims
- * get the generous cap; every other infra-class reason gets the conservative
- * one. (CI-class reasons never reach this — the orchestrator only calls the
- * retry path for infra-class terminals.) Reads the env live so ops/tests can
- * override without a re-import.
+ * The generation cap that applies to a given parent failure reason.
+ * Generous-class reasons (Spot reclaim, Hub blip) get the generous cap; every
+ * other infra-class reason gets the conservative one. (CI-class reasons never
+ * reach this — the orchestrator only calls the retry path for infra-class
+ * terminals.) Reads the env live so ops/tests can override without a re-import.
  */
 export function resolveRetryGenerationCap(parentFailureReason: string | null | undefined): number {
-  return isReclaimFailureReason(parentFailureReason)
+  return earnsGenerousRetryCap(parentFailureReason)
     ? readGenerationCap(
         'FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS',
         DEFAULT_MAX_RECLAIM_RETRY_GENERATIONS,
@@ -668,6 +701,7 @@ export const __test = {
   CI_FAILURE_REASONS,
   INFRA_FAILURE_REASONS,
   RECLAIM_FAILURE_REASONS,
+  GENEROUS_RETRY_FAILURE_REASONS,
   INFRA_TERMINAL_HEADER,
   MAX_INFRA_RETRY_GENERATIONS,
   MAX_RECLAIM_RETRY_GENERATIONS,

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CiConfig, CiStep } from './ci-config.js';
 import { spotReclaimDetail } from './spot-interruption.js';
+import { hubUnavailableDetail } from './hub-unavailable.js';
 import {
   STEP_OUTPUT_TAIL_LINES,
   STEP_ACTIVE_SECONDS_PER_STEP,
@@ -1415,6 +1416,39 @@ describe('runJobSteps — spawn errors', () => {
     expect(result.status).toBe('infra_error');
     expect(result.failureReason).toBe('spot_reclaimed');
     // Still infra-class: the orchestrator never persists infra_error itself.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('classifies a hub-unavailable-marked spawn-error as hub_unavailable', async () => {
+    // When the Hub restarts, the reaper fails a whole batch of in-flight step
+    // channels with the hub_unavailable marker (mass reap = Hub blip). step-runner
+    // must lift that into the hub_unavailable failure_reason so the orchestrator
+    // earns the generous retry cap and the run self-resolves across restart windows
+    // instead of parking as container_unavailable. This is the regression that
+    // would have caught the original mis-classification.
+    const stmts = makeStmts();
+    const spawnStep: SpawnStepFn = () => {
+      throw new Error(
+        hubUnavailableDetail(
+          'runner agent lost — lease expired with no heartbeat; 5 jobs reaped in one tick, ' +
+            'so the Hub was likely briefly unreachable or restarting (not a per-agent crash)',
+        ),
+      );
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const result = await runJobSteps(deps, {
+      runId: RUN_ID,
+      config: makeConfig([{ name: 'step 1', run: 'echo hi' }]),
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('hub_unavailable');
     expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
   });
 });

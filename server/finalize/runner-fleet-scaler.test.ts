@@ -24,6 +24,7 @@ import {
   runnerQueueDepth,
 } from './runner-queue.js';
 import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
+import { detailIsHubUnavailable } from './hub-unavailable.js';
 
 describe('desiredAgents', () => {
   it('scales to zero (min) when the queue is empty', () => {
@@ -618,7 +619,52 @@ describe('reapDeadRunnerJobs (liveness backstop, card d8a76929)', () => {
     await Promise.resolve();
     expect(failure).not.toBeNull();
     expect(failure!.message).toMatch(/runner agent lost — lease expired with no heartbeat/);
+    // A SINGLE reap is ambiguous (crash / OOM / deploy / Hub blip), so it stays
+    // the conservative container_unavailable reason — no hub_unavailable marker.
+    expect(detailIsHubUnavailable(failure!.message)).toBe(false);
     removeJobChannel(claimed!.id);
+  });
+
+  it('marks a MASS reap (whole batch in one tick) as a hub_unavailable Hub blip', async () => {
+    // Regression for "container_unavailable that does not self resolve": when the
+    // Hub restarts, every agent's heartbeat fails at once and the whole batch is
+    // reaped in one tick. That is a known-transient Hub blip, so its channel-fail
+    // detail carries the hub_unavailable marker → step-runner tags it
+    // `hub_unavailable` (generous retry cap) instead of `container_unavailable`.
+    const ids: string[] = [];
+    const failures: (Error | null)[] = [];
+    for (let i = 0; i < 3; i++) {
+      enqueueRunnerJob({
+        orgId: 'orgA',
+        projectId: 'p1',
+        runId: `r${i}`,
+        jobId: `job-${i}`,
+        matrixKey: '',
+        image: 'img:latest',
+        specJson: '{}',
+        now: 1_000,
+      });
+      const claimed = claimRunnerJob({ agentId: `agent-${i}`, leaseMs: 10_000, now: 2_000 });
+      expect(claimed).not.toBeNull();
+      ids.push(claimed!.id);
+      const channel = createJobChannel(claimed!.id);
+      const slot = i;
+      failures[slot] = null;
+      channel.ready.catch((err: Error) => {
+        failures[slot] = err;
+      });
+    }
+
+    const reaped = reapDeadRunnerJobs(2_000 + 10_000 + 1);
+    expect(reaped).toHaveLength(3);
+    await Promise.resolve();
+    for (const f of failures) {
+      expect(f).not.toBeNull();
+      expect(detailIsHubUnavailable(f!.message)).toBe(true);
+      expect(f!.message).toMatch(/3 jobs reaped in one tick/);
+      expect(f!.message).toMatch(/Hub was likely briefly unreachable or restarting/);
+    }
+    for (const id of ids) removeJobChannel(id);
   });
 
   it('startFleetScaler reaps expired leases even with no ECS fleet configured', () => {

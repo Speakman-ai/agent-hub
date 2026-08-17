@@ -22,12 +22,14 @@ import {
   CI_FAILURE_REASONS,
   INFRA_FAILURE_REASONS,
   RECLAIM_FAILURE_REASONS,
+  GENEROUS_RETRY_FAILURE_REASONS,
   INFRA_TERMINAL_HEADER,
   MAX_INFRA_RETRY_GENERATIONS,
   MAX_RECLAIM_RETRY_GENERATIONS,
   classifyFailureReason,
   composeInfraTerminalMessageBody,
   computeRetryIdempotencyKey,
+  earnsGenerousRetryCap,
   getRetryGenerationDepth,
   isInfraFailureReason,
   isReclaimFailureReason,
@@ -243,6 +245,7 @@ describe('classifyFailureReason', () => {
       'runner_cancelled',
       'runner_workspace_unwritable',
       'spot_reclaimed',
+      'hub_unavailable',
     ]);
   });
 
@@ -295,6 +298,30 @@ describe('classifyFailureReason', () => {
     expect(isReclaimFailureReason('github_push_5xx')).toBe(false);
     expect(isReclaimFailureReason(null)).toBe(false);
     expect([...RECLAIM_FAILURE_REASONS]).toEqual(['spot_reclaimed']);
+  });
+
+  it('hub_unavailable classifies as infra and earns the generous cap, but is not a Spot reclaim', () => {
+    // A Hub restart / brief unreachability reaps a whole batch of leases in one
+    // tick. It is a known-transient EXTERNAL event (recovers on its own), so it
+    // must earn the generous retry-generation cap so a run caught by back-to-back
+    // restart windows self-resolves instead of parking. It is NOT a Spot reclaim,
+    // so budget's reclaim-specific refund predicate stays false for it.
+    expect(classifyFailureReason('hub_unavailable')).toBe('infra');
+    expect(isInfraFailureReason('hub_unavailable')).toBe(true);
+    expect(earnsGenerousRetryCap('hub_unavailable')).toBe(true);
+    expect(isReclaimFailureReason('hub_unavailable')).toBe(false);
+    expect((INFRA_FAILURE_REASONS as readonly string[]).includes('hub_unavailable')).toBe(true);
+  });
+
+  it('earnsGenerousRetryCap is true exactly for the generous set', () => {
+    expect([...GENEROUS_RETRY_FAILURE_REASONS].sort()).toEqual(
+      ['hub_unavailable', 'spot_reclaimed'].sort(),
+    );
+    expect(earnsGenerousRetryCap('spot_reclaimed')).toBe(true);
+    expect(earnsGenerousRetryCap('hub_unavailable')).toBe(true);
+    expect(earnsGenerousRetryCap('container_unavailable')).toBe(false);
+    expect(earnsGenerousRetryCap('runner_cancelled')).toBe(false);
+    expect(earnsGenerousRetryCap(null)).toBe(false);
   });
 
   it('INFRA and CI lists are disjoint', () => {
@@ -527,6 +554,27 @@ describe('openInfraRetryRun', () => {
     expect(resolveRetryGenerationCap('container_unavailable')).toBe(2);
     expect(resolveRetryGenerationCap('spot_reclaimed')).toBe(3);
     expect(resolveRetryGenerationCap(undefined)).toBe(2);
+  });
+
+  it('hub_unavailable earns the generous cap (3), same as a Spot reclaim', () => {
+    // Regression for the "container_unavailable that does not self resolve" report:
+    // a Hub restart mass-reap must survive back-to-back windows, so it gets the
+    // generous cap rather than the conservative 2.
+    expect(resolveRetryGenerationCap('hub_unavailable')).toBe(3);
+  });
+
+  it('FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS also governs hub_unavailable (shared generous cap)', () => {
+    const saved = process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS;
+    try {
+      process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = '5';
+      expect(resolveRetryGenerationCap('hub_unavailable')).toBe(5);
+      expect(resolveRetryGenerationCap('spot_reclaimed')).toBe(5);
+      // Generic infra is unaffected by the generous-class override.
+      expect(resolveRetryGenerationCap('container_unavailable')).toBe(2);
+    } finally {
+      if (saved === undefined) delete process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS;
+      else process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = saved;
+    }
   });
 
   it('FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS env overrides the reclaim cap live (prod sets 5)', () => {

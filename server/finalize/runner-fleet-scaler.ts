@@ -36,6 +36,7 @@ import type { ReapedRunnerJob } from './runner-queue.js';
 import { clearHubTaskProtection, loadHubTaskProtectionConfig } from './hub-task-protection.js';
 import { getJobChannel } from './runner-job-channel.js';
 import { spotReclaimDetail } from './spot-interruption.js';
+import { hubUnavailableDetail } from './hub-unavailable.js';
 import { DEFAULT_FLEET_MAX_AGENTS, DEFAULT_FLEET_MIN_AGENTS } from './runner-fleet-constants.js';
 
 interface FleetScalerConfig {
@@ -300,11 +301,18 @@ export function reapDeadRunnerJobs(now: number = Date.now()): ReapedRunnerJob[] 
     // OBSERVED — a missing heartbeat — and does NOT guess "Spot reclaim" (the
     // lease can expire from an agent crash, an OOM kill, a deploy/scale-in, OR
     // the Hub being briefly unreachable). A whole batch reaped in one tick
-    // points at the Hub side, not N independent agent deaths.
+    // points at the Hub side, not N independent agent deaths — mark those with
+    // the hub_unavailable seam so they earn the generous transient retry cap
+    // (a Hub restart recovers on its own, exactly like a Spot reclaim) instead
+    // of the conservative `container_unavailable` cap that parks a run caught by
+    // back-to-back restart windows. A single reap stays ambiguous (crash / OOM /
+    // deploy / Hub blip), so it keeps the conservative reason.
     const genericDetail =
       reaped.length > 1
-        ? `runner agent lost — lease expired with no heartbeat; ${reaped.length} jobs reaped in one tick, ` +
-          `so the Hub was likely briefly unreachable or restarting (not a per-agent crash)`
+        ? hubUnavailableDetail(
+            `runner agent lost — lease expired with no heartbeat; ${reaped.length} jobs reaped in one tick, ` +
+              `so the Hub was likely briefly unreachable or restarting (not a per-agent crash)`,
+          )
         : `runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)`;
     // Clear Hub task protection on each reaped agent's task. The lease expired,
     // so either the task is already gone (clear is a harmless no-op) or it's a
