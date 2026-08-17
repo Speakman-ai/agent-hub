@@ -116,6 +116,20 @@ export const DEFAULT_STEP_DEADLINE_MS = 60 * 60 * 1_000;
  */
 export const DEFAULT_BRINGUP_DEADLINE_MS = 3 * 60 * 1_000;
 
+/**
+ * A bring-up deadline is fatal to this runner process. Promise.race cannot stop
+ * the timed-out materialize/container-start promise, so the agent must recycle
+ * instead of claiming another job against the same workspace and DinD daemon.
+ */
+export class RunnerBringupTimeoutError extends Error {
+  constructor(public readonly deadlineMs: number) {
+    super(
+      `runner bring-up (worktree + DinD) exceeded ${deadlineMs}ms; recycling before directive poll`,
+    );
+    this.name = 'RunnerBringupTimeoutError';
+  }
+}
+
 export function readBringupDeadlineMs(
   env: NodeJS.ProcessEnv = process.env,
   fallback: number = DEFAULT_BRINGUP_DEADLINE_MS,
@@ -137,11 +151,7 @@ export async function withBringupDeadline<T>(
       work(),
       new Promise<T>((_, reject) => {
         timer = setTimeout(() => {
-          reject(
-            new Error(
-              `runner bring-up (worktree + DinD) exceeded ${deadlineMs}ms — aborting before directive poll`,
-            ),
-          );
+          reject(new RunnerBringupTimeoutError(deadlineMs));
         }, deadlineMs);
         if (typeof (timer as { unref?: () => void }).unref === 'function') {
           (timer as { unref: () => void }).unref();
@@ -154,10 +164,9 @@ export async function withBringupDeadline<T>(
 }
 
 /**
- * Per-attempt timeout for the two CRITICAL posts (step-result, finish). A hung
- * fetch is indistinguishable from a lost message — without a bound the agent
- * would sit in `await fetch` forever while its heartbeat keeps the lease
- * fresh, which is exactly the zombie this delivery path exists to prevent.
+ * Per-attempt timeout for critical posts (step-result, finish) and the fatal
+ * error report. A hung fetch is indistinguishable from a lost message — without
+ * a bound the agent would sit in `await fetch` forever instead of recycling.
  */
 export const CRITICAL_POST_TIMEOUT_MS = 15_000;
 
@@ -704,6 +713,7 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport {
         method: 'POST',
         headers: auth,
         body: JSON.stringify({ detail }),
+        signal: AbortSignal.timeout(CRITICAL_POST_TIMEOUT_MS),
       });
     },
   };
@@ -772,6 +782,44 @@ export async function agentIsDraining(
   }
 }
 
+/**
+ * Claim and run one job at a time. Exported so the fatal-timeout guarantee is
+ * regression-testable without booting a real HTTP transport or Docker daemon.
+ */
+export async function runAgentClaimLoop(args: {
+  transport: AgentTransport;
+  runJob: (job: { jobId: string; spec: RunnerJobWireSpec }) => Promise<unknown>;
+  isDraining?: () => Promise<boolean>;
+  pauseAfterClaimError?: () => Promise<void>;
+}): Promise<void> {
+  const isDraining = args.isDraining ?? agentIsDraining;
+  const pauseAfterClaimError =
+    args.pauseAfterClaimError ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 2_000)));
+  for (;;) {
+    // A draining instance (pending EC2 Spot reclaim) must NOT claim new work —
+    // any job it picks up now is guaranteed to be lost mid-run. Exit instead;
+    // the queued job stays `queued` for a healthy agent and the fleet scaler
+    // replaces this task.
+    if (await isDraining()) {
+      console.log(
+        '[runner-agent] EC2 Spot interruption notice pending — draining instead of claiming new work',
+      );
+      return;
+    }
+    let claimed: { jobId: string; spec: RunnerJobWireSpec } | null = null;
+    try {
+      claimed = await args.transport.claim();
+    } catch (err) {
+      console.error(`[runner-agent] claim error: ${(err as Error).message}`);
+      await pauseAfterClaimError();
+      continue;
+    }
+    if (!claimed) continue;
+    console.log(`[runner-agent] claimed job ${claimed.jobId} (${claimed.spec.jobId})`);
+    await runClaimedJobWithRecovery(args.transport, claimed.jobId, () => args.runJob(claimed));
+  }
+}
+
 /** CLI entry: register, then claim → run → repeat (one job at a time). */
 export async function runAgentMain(): Promise<void> {
   const hubUrl =
@@ -796,29 +844,9 @@ export async function runAgentMain(): Promise<void> {
     materializeWorktree({ ref: spec.worktreeRef!, store, destPath: dest, rev: undefined });
 
   console.log(`[runner-agent] registered; polling ${hubUrl} (scope=${orgScope})`);
-  for (;;) {
-    // A draining instance (pending EC2 Spot reclaim) must NOT claim new work —
-    // any job it picks up now is guaranteed to be lost mid-run. Exit instead;
-    // the queued job stays `queued` for a healthy agent and the fleet scaler
-    // replaces this task.
-    if (await agentIsDraining()) {
-      console.log(
-        '[runner-agent] EC2 Spot interruption notice pending — draining instead of claiming new work',
-      );
-      return;
-    }
-    let claimed: { jobId: string; spec: RunnerJobWireSpec } | null = null;
-    try {
-      claimed = await transport.claim();
-    } catch (err) {
-      console.error(`[runner-agent] claim error: ${(err as Error).message}`);
-      await new Promise((r) => setTimeout(r, 2000));
-      continue;
-    }
-    if (!claimed) continue;
-    console.log(`[runner-agent] claimed job ${claimed.jobId} (${claimed.spec.jobId})`);
-    const job = claimed;
-    await runClaimedJobWithRecovery(transport, job.jobId, () =>
+  await runAgentClaimLoop({
+    transport,
+    runJob: (job) =>
       runAgentJob({
         jobId: job.jobId,
         spec: job.spec,
@@ -828,20 +856,17 @@ export async function runAgentMain(): Promise<void> {
         materialize,
         protection,
       }),
-    );
-  }
+  });
 }
 
 /**
- * Run one claimed job to completion; on a thrown failure (bring-up error — the
- * worktree materialize, inner dockerd readiness, image pull, …), report the loss
- * to the Hub before returning so the job is recovered NOW (the Hub fails its job
- * channel → infra_error → retry on a fresh agent). Without this the agent's loop
- * would silently swallow the throw and claim the NEXT job, orphaning the thrown
- * one until the lease reaper notices the missing heartbeat (~one lease window).
- * The report is best-effort: a failed report must never wedge the agent loop — the
- * reaper remains the backstop for an agent that dies too hard to make the call.
- * Exported for unit-testing the recovery contract.
+ * Run one claimed job to completion; on a thrown failure, report the loss to the
+ * Hub so its channel fails immediately and the job retries on a fresh agent.
+ * Ordinary failures are swallowed after the best-effort report so this agent can
+ * continue. A RunnerBringupTimeoutError is rethrown after reporting because the
+ * timed-out work cannot be cancelled; the CLI force-exits and the fleet replaces
+ * the task before another claim can overlap that stale work. The lease reaper
+ * remains the backstop when the report itself fails. Exported for tests.
  */
 export async function runClaimedJobWithRecovery(
   transport: AgentTransport,
@@ -851,6 +876,7 @@ export async function runClaimedJobWithRecovery(
   try {
     await run();
   } catch (err) {
+    const recycleAgent = err instanceof RunnerBringupTimeoutError;
     const detail = (err as Error).message;
     console.error(`[runner-agent] job ${jobId} failed: ${detail}`);
     try {
@@ -860,5 +886,10 @@ export async function runClaimedJobWithRecovery(
         `[runner-agent] reportError for job ${jobId} failed: ${(reportErr as Error).message}`,
       );
     }
+    // Promise.race only rejects this caller; the underlying bring-up can still
+    // mutate the workspace or start a container. Escape runAgentMain so its CLI
+    // entrypoint force-exits this process and the fleet replaces the task. That
+    // guarantees no subsequent claim overlaps the stale bring-up.
+    if (recycleAgent) throw err;
   }
 }

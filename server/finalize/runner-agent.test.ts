@@ -4,10 +4,13 @@ import {
   agentIsDraining,
   httpTransport,
   resolveEcsTaskArn,
+  runAgentClaimLoop,
   runAgentJob,
   runClaimedJobWithRecovery,
   runExecStepChild,
+  RunnerBringupTimeoutError,
   STEP_DEADLINE_EXIT_CODE,
+  withBringupDeadline,
   type AgentDocker,
   type AgentLogFrame,
   type AgentPollResult,
@@ -772,6 +775,7 @@ describe('httpTransport.reportError (card #1184)', () => {
     // route would drop the specific bring-up detail and fall back to a generic one.
     expect(headers['content-type']).toBe('application/json');
     expect(headers['Authorization']).toBe('Bearer tok');
+    expect(calls[0].init.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.parse(calls[0].init.body as string)).toEqual({
       detail: 'inner dockerd not ready within 120s',
     });
@@ -864,6 +868,50 @@ describe('runClaimedJobWithRecovery (card #1184)', () => {
         throw new Error('materialize failed');
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it('rethrows a bring-up timeout after reporting it so the runner process recycles', async () => {
+    const t = recorder();
+    const timeout = new RunnerBringupTimeoutError(30_000);
+    await expect(
+      runClaimedJobWithRecovery(t, 'job-timeout', async () => {
+        throw timeout;
+      }),
+    ).rejects.toBe(timeout);
+    expect(t.errors).toEqual([{ jobId: 'job-timeout', detail: timeout.message }]);
+  });
+});
+
+describe('runAgentClaimLoop bring-up timeout isolation', () => {
+  it('exits before claiming a second job while the timed-out work is still alive', async () => {
+    let finishStaleBringup!: () => void;
+    const staleBringup = new Promise<void>((resolve) => {
+      finishStaleBringup = resolve;
+    });
+    const claims = [
+      { jobId: 'job-1', spec: wire({ jobId: 'first' }) },
+      { jobId: 'job-2', spec: wire({ jobId: 'second' }) },
+    ];
+    const { transport } = fakes([], () => 0);
+    transport.claim = vi.fn(async () => claims.shift() ?? null);
+    const started: string[] = [];
+
+    await expect(
+      runAgentClaimLoop({
+        transport,
+        isDraining: async () => false,
+        runJob: async (job) => {
+          started.push(job.jobId);
+          await (job.jobId === 'job-1' ? withBringupDeadline(10, () => staleBringup) : undefined);
+        },
+      }),
+    ).rejects.toBeInstanceOf(RunnerBringupTimeoutError);
+
+    expect(transport.claim).toHaveBeenCalledTimes(1);
+    expect(started).toEqual(['job-1']);
+    finishStaleBringup();
+    await staleBringup;
+    expect(transport.claim).toHaveBeenCalledTimes(1);
   });
 });
 

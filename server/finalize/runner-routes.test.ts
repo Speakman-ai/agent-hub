@@ -394,6 +394,10 @@ describe('runner-routes (HTTP control plane)', () => {
     await tick();
     expect(errors.some((e) => /inner dockerd not ready/.test(e.message))).toBe(true);
 
+    // Production always releases the acquired lease in job-runner's finally.
+    // That cleanup must not overwrite the error route's terminal `lost` state.
+    await lease.lease.release();
+
     const row = getOrgsDb()
       .prepare('SELECT state, detail FROM runner_jobs WHERE id=?')
       .get(jobId) as { state: string; detail: string | null };

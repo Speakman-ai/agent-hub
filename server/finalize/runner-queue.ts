@@ -192,7 +192,7 @@ export function heartbeatRunnerJob(args: {
   return res.changes === 1;
 }
 
-/** Record a terminal outcome for a job. */
+/** Record the first terminal outcome for a live or queued job. Terminal rows are immutable. */
 export function reportRunnerJob(args: {
   jobId: string;
   state: 'succeeded' | 'failed' | 'cancelled' | 'lost';
@@ -204,7 +204,7 @@ export function reportRunnerJob(args: {
     .prepare(
       `UPDATE runner_jobs
           SET state=@state, exit_code=@exitCode, detail=@detail, ended_at=@now
-        WHERE id=@jobId`,
+        WHERE id=@jobId AND state IN ('queued','claimed','running')`,
     )
     .run({
       jobId: args.jobId,
