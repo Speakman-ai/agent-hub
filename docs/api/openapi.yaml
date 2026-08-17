@@ -2295,6 +2295,9 @@ components:
         checkpoint_rewind_supported:
           type: boolean
           description: "True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint."
+        can_isolated_mode:
+          type: boolean
+          description: True when this session may enter `isolated` mode because the owning project is a dev project and the host has a registered Firecracker backend. Clients use this capability to hide the VM option when Firecracker is not enabled.
         model:
           type: string
         use_worktree:
@@ -2309,12 +2312,13 @@ components:
           nullable: true
           enum:
             - chat
+            - isolated
             - design
             - scoping
             - skill-builder
             - consult
             - null
-          description: "Session mode picker dimension: `chat` (default), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is read-only Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
+          description: "Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `isolated` forces a microVM when Firecracker is registered; `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
         reasoning_effort:
           type: string
           nullable: true
@@ -2415,6 +2419,7 @@ components:
         - name
         - engine
         - checkpoint_rewind_supported
+        - can_isolated_mode
         - model
         - use_worktree
         - ask_mode
@@ -20983,6 +20988,7 @@ paths:
                   type: string
                   enum:
                     - chat
+                    - isolated
                     - design
                     - scoping
                     - skill-builder
@@ -21254,6 +21260,7 @@ paths:
                   type: string
                   enum:
                     - chat
+                    - isolated
                     - design
                     - scoping
                     - skill-builder
@@ -21275,6 +21282,12 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "404":
           description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "503":
+          description: Session environment transition support is unavailable.
           content:
             application/json:
               schema:
@@ -22190,6 +22203,7 @@ paths:
                   type: string
                   enum:
                     - chat
+                    - isolated
                     - design
                     - scoping
                     - skill-builder
@@ -22211,6 +22225,12 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "404":
           description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "503":
+          description: Session environment transition support is unavailable.
           content:
             application/json:
               schema:

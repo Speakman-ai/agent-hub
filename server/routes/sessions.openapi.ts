@@ -55,13 +55,17 @@ export const SessionComponent = registerComponent(
         description:
           'True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint.',
       }),
+      can_isolated_mode: z.boolean().openapi({
+        description:
+          'True when this session may enter `isolated` mode because the owning project is a dev project and the host has a registered Firecracker backend. Clients use this capability to hide the VM option when Firecracker is not enabled.',
+      }),
       model: z.string(),
       use_worktree: z.number().int(),
       ask_mode: z.number().int(),
       react_loop_enabled: z.number().int().nullable().optional(),
       session_mode: SessionModeSchema.nullable().optional().openapi({
         description:
-          'Session mode picker dimension: `chat` (default), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is read-only Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
+          'Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `isolated` forces a microVM when Firecracker is registered; `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
       }),
       reasoning_effort: z.enum(['high', 'pro']).nullable().optional().openapi({
         description:
@@ -799,6 +803,7 @@ registerPath({
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
     404: errorResponse('Session not found.'),
+    503: errorResponse('Session environment transition support is unavailable.'),
   },
 });
 
@@ -1029,6 +1034,7 @@ registerPath({
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
     404: errorResponse('Session not found.'),
+    503: errorResponse('Session environment transition support is unavailable.'),
   },
 });
 

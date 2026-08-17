@@ -7,4 +7,8 @@ describe('sessionControlAppIcon', () => {
 
     expect(iconName).toBe('chatbubble-outline');
   });
+
+  it('maps VM (isolated) to cube-outline', () => {
+    expect(sessionControlAppIcon('isolated')).toBe('cube-outline');
+  });
 });

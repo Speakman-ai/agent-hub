@@ -84,7 +84,6 @@ import {
 import config, { refreshShellPath } from './config.js';
 import {
   beginSessionEnvSelection,
-  getSessionEnvSelection,
   initSessionEnvSelection,
   logSessionEnvSelection,
   whenSessionEnvSelectionReady,
@@ -129,10 +128,8 @@ import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { getProjectMode, sessionUsesWorktree } from './project-mode.js';
-import {
-  resolveSessionEnvAdapterForProject,
-  resolveSessionWorktreePath,
-} from './session-env/workflow-session-env.js';
+import { resolveSessionWorktreePath } from './session-env/workflow-session-env.js';
+import { resolveSessionEnvAdapterForSession } from './session-env/resolve-session-adapter.js';
 import { isSessionWorktreeLocked } from './session-worktree-lock.js';
 import {
   ensureSessionWorkspace,
@@ -1053,7 +1050,10 @@ const { devServerRuntime } = createPreviewRuntimes({
   // runtime keeps its own env and its reserved-port allocator.
   resolveSharedEnv: async (sessionId) => {
     await whenSessionEnvSelectionReady();
-    if (getSessionEnvSelection().adapter === 'host') return null;
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    const project = session ? findAgent(session.agent_id)?.project : null;
+    const adapter = resolveSessionEnvAdapterForSession({ project, session });
+    if (adapter === 'host') return null;
     return sessionEnvManager.ensure(sessionId);
   },
   onSessionActivity: (sessionId) => {
@@ -1065,12 +1065,14 @@ const { devServerRuntime } = createPreviewRuntimes({
     // their `/p/<internalPort>` sub-mount. Env-scoped dial targets never use
     // localhost — the Hub proxy reaches container / guest IPs instead.
     portClientUrl: ({ sessionId, hostPort, internalPort, primary }) => {
-      const selection = getSessionEnvSelection();
+      const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+      const project = session ? findAgent(session.agent_id)?.project : null;
+      const adapter = resolveSessionEnvAdapterForSession({ project, session });
       const routing = resolveSessionEnvPortRouting();
       const useProxy =
-        selection.adapter === 'firecracker' ||
-        selection.adapter === 'sysbox' ||
-        (selection.adapter === 'container' && routing === 'container-ip');
+        adapter === 'firecracker' ||
+        adapter === 'sysbox' ||
+        (adapter === 'container' && routing === 'container-ip');
       return resolveDevServerPortClientUrl(
         config.publicUrl,
         sessionId,
@@ -1254,11 +1256,11 @@ const sessionEnvManager = new SessionEnvManager({
       projectMode: getProjectMode(project),
     });
   },
-  // Workflow projects never get a VM — shared project.cwd on the host only.
+  // Workflow → host; isolated → firecracker when registered; else global adapter.
   resolveAdapter: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     const project = session ? findAgent(session.agent_id)?.project : null;
-    return resolveSessionEnvAdapterForProject(project, getSessionEnvSelection().adapter);
+    return resolveSessionEnvAdapterForSession({ project, session });
   },
   resolveStartupCommands: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
@@ -1337,7 +1339,7 @@ async function resolveSessionWorktreeIo(sessionId: string): Promise<SessionWorkt
     projectMode: getProjectMode(project),
   });
   if (!worktreePath) return null;
-  const adapter = resolveSessionEnvAdapterForProject(project, getSessionEnvSelection().adapter);
+  const adapter = resolveSessionEnvAdapterForSession({ project, session });
   if (worktreeSharingForKind(adapter) === 'host-shared') {
     return new HostWorktreeIo(worktreePath);
   }
@@ -1709,6 +1711,10 @@ export const routeDeps: RouteDeps = {
       paths,
     });
   },
+  transitionSessionEnv: (
+    sessionId: string,
+    applyTransition: (disposeCurrent: () => Promise<void>) => void | Promise<void>,
+  ) => sessionEnvManager.transitionAdapter(sessionId, applyTransition),
   getSessionWorktreeIo: resolveSessionWorktreeIo,
   provisionSessionWorkspace: async (sessionId: string) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;

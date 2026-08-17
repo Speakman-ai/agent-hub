@@ -18,7 +18,7 @@ const PURPLE = '#7C3AED';
 
 function resolveSessionModeFromRow(session: any) {
     const m = session?.session_mode;
-    if (m === 'design' || m === 'scoping' || m === 'skill-builder' || m === 'consult')
+    if (m === 'design' || m === 'scoping' || m === 'skill-builder' || m === 'consult' || m === 'isolated')
         return m;
     return 'chat';
 }
@@ -55,7 +55,9 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
     // session's agent is a helper (the server rejects it for those roles too).
     const workflowProject = project?.mode === 'workflow';
     const sessionAgent = (sessionAgents || []).find((a: any) => a.id === session?.agent_id) || (sessionAgents || [])[0] || null;
-    const controlOptions = sessionControlOptionsForProject(project, sessionAgent);
+    const controlOptions = sessionControlOptionsForProject(project, sessionAgent, {
+        canUseVm: session?.can_isolated_mode === true,
+    });
     const fullyValidated = isFullyValidated(phases);
     const btn = deriveFinalizeButton({ status, fullyValidated, hasChanges });
     const pushEnabled = canPush({ status, hasChanges }) && !!run?.id;

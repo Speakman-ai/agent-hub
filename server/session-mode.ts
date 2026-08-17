@@ -25,7 +25,14 @@
  */
 
 /** Canonical, ordered list of session modes. Order is display order. */
-export const SESSION_MODES = ['chat', 'design', 'scoping', 'skill-builder', 'consult'] as const;
+export const SESSION_MODES = [
+  'chat',
+  'isolated',
+  'design',
+  'scoping',
+  'skill-builder',
+  'consult',
+] as const;
 
 export type SessionMode = (typeof SESSION_MODES)[number];
 
@@ -77,6 +84,28 @@ export function isSkillBuilderModeActive(
   session: { session_mode?: string | null } | null | undefined,
 ): boolean {
   return normalizeSessionMode(session?.session_mode) === 'skill-builder';
+}
+
+/**
+ * Whether isolated / VM mode is active. Same ship surface as `chat` (Finalize
+ * allowed), but the session env adapter is forced to Firecracker when that
+ * backend is registered — see `resolveSessionEnvAdapterForSession`.
+ */
+export function isIsolatedModeActive(
+  session: { session_mode?: string | null } | null | undefined,
+): boolean {
+  return normalizeSessionMode(session?.session_mode) === 'isolated';
+}
+
+/**
+ * Modes that share chat's ship / Finalize surface (Build → Auto Merge allowed;
+ * entering them must not clear finalize automation).
+ */
+export function isShippingCompatibleSessionMode(
+  mode: SessionMode | string | null | undefined,
+): boolean {
+  const normalized = normalizeSessionMode(mode);
+  return normalized === 'chat' || normalized === 'isolated';
 }
 
 /**

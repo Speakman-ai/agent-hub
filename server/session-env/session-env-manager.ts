@@ -146,6 +146,16 @@ export class SessionEnvManager {
    * the new session is using. Creation waits on this instead.
    */
   private readonly teardowns = new Map<string, Promise<void>>();
+  /**
+   * Adapter-changing configuration transitions, keyed by session.
+   *
+   * `ensure()` must not recreate an environment while a mode update is
+   * deciding whether adapter selection changes. A transition registers its
+   * barrier synchronously, performs the complete read/compare/dispose/write
+   * operation, then releases acquisition. Multiple transitions serialize in
+   * call order.
+   */
+  private readonly transitions = new Map<string, Promise<void>>();
 
   constructor(deps: SessionEnvManagerDeps) {
     this.deps = deps;
@@ -166,6 +176,13 @@ export class SessionEnvManager {
    * hooks (npm install, venv, …) before returning.
    */
   ensure(sessionId: string, opts: SessionEnvEnsureOpts = {}): Promise<SessionEnv> {
+    const pendingTransition = this.transitions.get(sessionId);
+    if (pendingTransition) {
+      return pendingTransition.then(
+        () => this.ensure(sessionId, opts),
+        () => this.ensure(sessionId, opts),
+      );
+    }
     // A dispose in flight owns the session name — wait for it before deciding
     // whether to reuse (failed stop) or replace (successful stop).
     const pendingTeardown = this.teardowns.get(sessionId);
@@ -333,6 +350,33 @@ export class SessionEnvManager {
   get(sessionId: string): SessionEnv | null {
     const env = this.entries.get(sessionId)?.env ?? null;
     return env && !env.disposed ? env : null;
+  }
+
+  /**
+   * Atomically replace the adapter-selection state with respect to `ensure()`.
+   *
+   * Acquisition waits on the registered barrier while `applyTransition`
+   * rereads adapter-selection state, conditionally disposes the old
+   * environment, and persists the requested update. The callback receives the
+   * disposal operation so that even updates which turn out not to change the
+   * adapter remain serialized with transitions queued ahead of them.
+   */
+  transitionAdapter(
+    sessionId: string,
+    applyTransition: (disposeCurrent: () => Promise<void>) => void | Promise<void>,
+  ): Promise<void> {
+    const prior = this.transitions.get(sessionId) ?? Promise.resolve();
+    const transition = prior
+      .catch(() => undefined)
+      .then(() => applyTransition(() => this.dispose(sessionId)));
+    this.transitions.set(sessionId, transition);
+    const clear = () => {
+      if (this.transitions.get(sessionId) === transition) {
+        this.transitions.delete(sessionId);
+      }
+    };
+    void transition.then(clear, clear);
+    return transition;
   }
 
   /** Sessions with a live (or in-flight) env. */

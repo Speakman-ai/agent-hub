@@ -189,6 +189,79 @@ describe('SessionEnvManager.ensure', () => {
     expect(created[0].kind).toBe('container');
   });
 
+  it('blocks acquisition until an adapter transition disposes then persists', async () => {
+    let kind: SessionEnvKind = 'host';
+    const created: FakeEnv[] = [];
+    const manager = new SessionEnvManager({
+      resolveWorktree: () => '/wt/s1',
+      resolveAdapter: () => kind,
+      createEnv: (resolvedKind, opts) => {
+        const env = new FakeEnv(resolvedKind, opts.sessionId, opts.worktreePath);
+        created.push(env);
+        return env as unknown as SessionEnv;
+      },
+      logger: { log: () => {}, warn: () => {} },
+    });
+    const first = (await manager.ensure('s1')) as unknown as FakeEnv;
+    let releaseDispose!: () => void;
+    const disposeBlocked = new Promise<void>((resolve) => {
+      releaseDispose = resolve;
+    });
+    let disposeStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      disposeStarted = resolve;
+    });
+    const originalDispose = first.dispose.bind(first);
+    first.dispose = async () => {
+      disposeStarted();
+      await disposeBlocked;
+      await originalDispose();
+    };
+
+    let persisted = false;
+    const transition = manager.transitionAdapter('s1', async (disposeCurrent) => {
+      await disposeCurrent();
+      kind = 'firecracker';
+      persisted = true;
+    });
+    await started;
+
+    let acquired = false;
+    const concurrentEnsure = manager.ensure('s1').then((env) => {
+      acquired = true;
+      return env;
+    });
+    await Promise.resolve();
+    expect(acquired).toBe(false);
+    expect(persisted).toBe(false);
+
+    releaseDispose();
+    await transition;
+    const replacement = (await concurrentEnsure) as unknown as FakeEnv;
+    expect(persisted).toBe(true);
+    expect(replacement).not.toBe(first);
+    expect(replacement.kind).toBe('firecracker');
+    expect(created).toHaveLength(2);
+  });
+
+  it('does not persist an adapter transition when old-environment disposal fails', async () => {
+    const { manager, created } = makeManager({ kind: 'host' });
+    const first = await manager.ensure('s1');
+    created[0].dispose = async () => {
+      throw new Error('stop failed');
+    };
+    let persisted = false;
+    const applyTransition = vi.fn(async (disposeCurrent: () => Promise<void>) => {
+      await disposeCurrent();
+      persisted = true;
+    });
+
+    await expect(manager.transitionAdapter('s1', applyTransition)).rejects.toThrow('stop failed');
+    expect(applyTransition).toHaveBeenCalledOnce();
+    expect(persisted).toBe(false);
+    await expect(manager.ensure('s1')).resolves.toBe(first);
+  });
+
   it('preloads publishPorts from resolvePublishPorts before first start', async () => {
     // Terminal-first openPty under published-ports must not start with an
     // empty `-p` set that locks out later preview mapPortsOut.

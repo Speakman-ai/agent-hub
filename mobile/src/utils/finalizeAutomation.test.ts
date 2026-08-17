@@ -56,12 +56,13 @@ describe('deriveSessionFinalizeMode', () => {
 });
 
 describe('SESSION_CONTROL_OPTIONS', () => {
-  it('lists Consult, Design, Scoping, Skill Builder, then the four finalize levels', () => {
+  it('lists Consult, Design, Scoping, Skill Builder, VM, then the four finalize levels', () => {
     expect(SESSION_CONTROL_OPTIONS.map((o: any) => o.value)).toEqual([
       'consult',
       'design',
       'scoping',
       'skill-builder',
+      'isolated',
       'manual',
       'review',
       'push',
@@ -84,6 +85,11 @@ describe('sessionControlValue', () => {
       'consult',
     );
   });
+  it('returns isolated for VM mode regardless of ship automation', () => {
+    expect(
+      sessionControlValue({ sessionMode: 'isolated', askMode: false, automation: 'push' }),
+    ).toBe('isolated');
+  });
   it('falls through to the finalize automation level', () => {
     expect(sessionControlValue({ sessionMode: 'chat', askMode: false, automation: 'push' })).toBe(
       'push',
@@ -96,6 +102,7 @@ describe('sessionControlLabel', () => {
   it('maps the folded values to labels', () => {
     expect(sessionControlLabel('consult')).toBe('Consult');
     expect(sessionControlLabel('design')).toBe('Design');
+    expect(sessionControlLabel('isolated')).toBe('VM');
     expect(sessionControlLabel('merge')).toBe('Auto Merge');
     expect(sessionControlLabel('bogus')).toBe('Build');
   });
@@ -135,6 +142,23 @@ describe('planSessionControlChange', () => {
       { type: 'mode', value: 'consult' },
     ]);
   });
+  it('entering VM clears ship intent; leaving VM for ship keeps isolated', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'chat', askMode: false, automation: 'merge' },
+        'isolated',
+      ),
+    ).toEqual([
+      { type: 'automation', value: 'manual' },
+      { type: 'mode', value: 'isolated' },
+    ]);
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'isolated', askMode: false, automation: 'manual' },
+        'push',
+      ),
+    ).toEqual([{ type: 'automation', value: 'push' }]);
+  });
   it('workflow project non-ship transitions do not write finalize automation', () => {
     expect(
       sessionControlPatch(
@@ -155,10 +179,19 @@ describe('sessionControlOptionsForProject', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'docs' });
     expect(opts.map((o: any) => o.value)).toEqual(['consult', 'design', 'scoping']);
   });
-  it('includes Consult on dev projects', () => {
-    const opts = sessionControlOptionsForProject({ mode: 'dev' }, { role: 'sub' });
+  it('includes Consult and VM on dev projects', () => {
+    const opts = sessionControlOptionsForProject(
+      { mode: 'dev' },
+      { role: 'sub' },
+      { canUseVm: true },
+    );
     expect(opts.map((o: any) => o.value)).toContain('consult');
+    expect(opts.map((o: any) => o.value)).toContain('isolated');
     expect(opts.map((o: any) => o.value)).toContain('manual');
+  });
+  it('hides VM on dev projects until the server capability is enabled', () => {
+    const opts = sessionControlOptionsForProject({ mode: 'dev' }, { role: 'sub' });
+    expect(opts.map((o: any) => o.value)).not.toContain('isolated');
   });
   it('maps legacy ship automation to Consult for display', () => {
     expect(sessionControlValueForProject({ mode: 'workflow' }, { automation: 'merge' })).toBe(

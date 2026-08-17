@@ -48,9 +48,9 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { isDevServerConfigured } from './dev-server-config.js';
-import { getSessionEnvSelection } from './session-env/sysbox-capability.js';
 import type { SessionEnv } from './session-env/session-env.js';
 import { sessionTurnUsesEnvOwnedWorktree } from './session-env/workflow-session-env.js';
+import { resolveSessionEnvAdapterForSession } from './session-env/resolve-session-adapter.js';
 import type { SessionEnvEnsureOpts } from './session-env/session-env-manager.js';
 import { emitSessionWorkspaceProgress } from './session-env/session-env-progress.js';
 import {
@@ -2994,7 +2994,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // Firecracker VM — env-owned CLI turns wait on a worktree that never comes.
       const envOwned = sessionTurnUsesEnvOwnedWorktree(
         project as Project,
-        getSessionEnvSelection().adapter,
+        resolveSessionEnvAdapterForSession({
+          project: project as Project,
+          session,
+        }),
       );
       const pinnedSpawnCwd =
         typeof msg._spawnCwd === 'string' && msg._spawnCwd.trim() !== ''

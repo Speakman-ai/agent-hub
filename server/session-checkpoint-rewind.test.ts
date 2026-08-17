@@ -4,6 +4,7 @@ import {
   enrichSessionForClient,
   broadcastSessionCreated,
 } from './session-checkpoint-rewind.js';
+import { setFirecrackerBackendRegistered } from './session-env/firecracker/firecracker-backend-status.js';
 import type { SessionRow, Stmts } from './types.js';
 
 function minimalSession(overrides: Partial<SessionRow>): SessionRow {
@@ -65,6 +66,31 @@ describe('enrichSessionForClient', () => {
       enrichSessionForClient(minimalSession({ worktree_path: '/tmp/wt/session-x' }))
         .can_design_mode,
     ).toBe(true);
+  });
+
+  it('offers isolated mode only when Firecracker is registered for a dev project', () => {
+    setFirecrackerBackendRegistered(false);
+    expect(
+      enrichSessionForClient(minimalSession({}), undefined, { id: 'p1', mode: 'dev' } as any)
+        .can_isolated_mode,
+    ).toBe(false);
+
+    setFirecrackerBackendRegistered(true);
+    try {
+      expect(
+        enrichSessionForClient(minimalSession({}), undefined, { id: 'p1', mode: 'dev' } as any)
+          .can_isolated_mode,
+      ).toBe(true);
+      expect(
+        enrichSessionForClient(minimalSession({}), undefined, {
+          id: 'p1',
+          mode: 'workflow',
+        } as any).can_isolated_mode,
+      ).toBe(false);
+      expect(enrichSessionForClient(minimalSession({})).can_isolated_mode).toBe(false);
+    } finally {
+      setFirecrackerBackendRegistered(false);
+    }
   });
 
   it('finalize_status reflects the latest finalize run status when stmts is provided', () => {

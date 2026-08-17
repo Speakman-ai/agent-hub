@@ -1,6 +1,7 @@
 import type { BroadcastFn, Project, SessionRow, Stmts } from './types.js';
 import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
-import { sessionCanUseDesignMode } from './project-mode-guards.js';
+import { isWorkflowProject, sessionCanUseDesignMode } from './project-mode-guards.js';
+import { isFirecrackerBackendRegistered } from './session-env/firecracker/firecracker-backend-status.js';
 
 /**
  * File-level checkpoint rewind is implemented by spawning the Claude Code CLI
@@ -52,6 +53,12 @@ export type SessionWireRow = SessionRow & {
    * degrade on stmts-less broadcast paths).
    */
   can_design_mode: boolean;
+  /**
+   * Whether this session can enter isolated / VM mode. Derived from the live
+   * Firecracker backend registry and the owning project mode, matching the
+   * server-side mode guard instead of making clients infer host capability.
+   */
+  can_isolated_mode: boolean;
 };
 
 /**
@@ -172,6 +179,8 @@ export function enrichSessionForClient(
       ? computeSessionState(stmts, row.id)
       : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
     can_design_mode: sessionCanUseDesignMode(row, project ?? null),
+    can_isolated_mode:
+      project != null && !isWorkflowProject(project) && isFirecrackerBackendRegistered(),
   };
 }
 

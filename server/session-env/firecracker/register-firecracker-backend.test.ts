@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   forgetPersistedFirecrackerDisks,
+  registerFirecrackerBackend,
   resolveFirecrackerUseJailer,
+  unregisterFirecrackerBackend,
 } from './register-firecracker-backend.js';
+import { isFirecrackerBackendRegistered } from './firecracker-backend-status.js';
 import type { FirecrackerExecConfig } from './firecracker-privileged-exec.js';
 import type { FirecrackerHostIo } from './firecracker-session-env.js';
 
@@ -20,6 +23,26 @@ const dockerCfg: FirecrackerExecConfig = {
   dockerBin: 'docker',
   mounts: [],
 };
+
+describe('Firecracker backend capability status', () => {
+  it('tracks registration and unregistration without loading the backend registry in UI callers', () => {
+    unregisterFirecrackerBackend();
+    expect(isFirecrackerBackendRegistered()).toBe(false);
+
+    registerFirecrackerBackend({
+      paths: {
+        kernelPath: '/kernel',
+        baseRootfsPath: '/rootfs',
+        runDir: '/vms',
+        controlDir: '/control',
+      },
+    } as any);
+    expect(isFirecrackerBackendRegistered()).toBe(true);
+
+    unregisterFirecrackerBackend();
+    expect(isFirecrackerBackendRegistered()).toBe(false);
+  });
+});
 
 describe('resolveFirecrackerUseJailer', () => {
   it('defaults on for local and docker (production isolation)', () => {

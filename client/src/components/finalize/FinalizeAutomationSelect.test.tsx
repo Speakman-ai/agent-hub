@@ -62,6 +62,27 @@ describe('FinalizeAutomationSelect', () => {
     expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Consult');
   });
 
+  it('shows VM only when the server marks isolated mode available', () => {
+    const { rerender } = render(
+      <FinalizeAutomationSelect
+        sessionId={sid}
+        session={{ finalize_automation: 'manual', can_isolated_mode: false }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('finalize-automation-select' as any) as any);
+    expect(screen.queryByTestId('finalize-automation-option-isolated')).not.toBeInTheDocument();
+
+    rerender(
+      <FinalizeAutomationSelect
+        sessionId={sid}
+        session={{ finalize_automation: 'manual', can_isolated_mode: true }}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Close runner automation menu'));
+    fireEvent.click(screen.getByTestId('finalize-automation-select' as any) as any);
+    expect(screen.getByTestId('finalize-automation-option-isolated')).toBeInTheDocument();
+  });
+
   describe('atomic single-patch contract', () => {
     it('sends one patch with the new automation level via onControlChange', async () => {
       const onControlChange = vi.fn().mockResolvedValue(undefined);

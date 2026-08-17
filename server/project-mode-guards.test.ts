@@ -38,6 +38,10 @@ describe('project-mode-guards', () => {
     expect(validateSessionModeForProject(workflowProject, 'chat')?.error).toBe(
       'session_mode_not_allowed_on_workflow_project',
     );
+    expect(validateSessionModeForProject(workflowProject, 'isolated')?.error).toBe(
+      'session_mode_not_allowed_on_workflow_project',
+    );
+    expect(validateSessionModeForProject(devProject, 'isolated')).toBeNull();
   });
 
   it('sessionCanUseDesignMode: worktree (dev) OR workflow project', () => {
@@ -64,5 +68,6 @@ describe('project-mode-guards', () => {
     expect(sessionBlocksFinalize(devProject, { session_mode: 'consult' })).toBe(true);
     expect(sessionBlocksFinalize(devProject, { session_mode: 'chat', ask_mode: 1 })).toBe(true);
     expect(sessionBlocksFinalize(devProject, { session_mode: 'chat' })).toBe(false);
+    expect(sessionBlocksFinalize(devProject, { session_mode: 'isolated' })).toBe(false);
   });
 });

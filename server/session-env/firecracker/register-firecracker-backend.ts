@@ -30,6 +30,7 @@ import {
   type FirecrackerExecConfig,
 } from './firecracker-privileged-exec.js';
 import { InMemorySlotPool } from './firecracker-slots.js';
+import { setFirecrackerBackendRegistered } from './firecracker-backend-status.js';
 
 /**
  * Where the host keeps guest artifacts and per-VM scratch. Defaults match
@@ -76,6 +77,7 @@ export function registerFirecrackerBackend(defaults: FirecrackerBackendDefaults)
         ...(opts.firecrackerDeps as Partial<FirecrackerSessionEnvDeps> | undefined),
       }),
   );
+  setFirecrackerBackendRegistered(true);
 }
 
 /**
@@ -140,4 +142,5 @@ export async function forgetPersistedFirecrackerDisks(
 /** Test-only: drop the backend so `auto` stops considering it. */
 export function unregisterFirecrackerBackend(): void {
   unregisterSessionEnvBackend('firecracker');
+  setFirecrackerBackendRegistered(false);
 }

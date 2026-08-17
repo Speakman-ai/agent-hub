@@ -1,4 +1,5 @@
 import {
+  Box,
   CloudUpload,
   FlaskConical,
   GitMerge,
@@ -16,6 +17,7 @@ export const SESSION_CONTROL_ICON_MAP: Record<string, LucideIcon> = {
   design: Palette,
   scoping: Network,
   'skill-builder': Sparkles,
+  isolated: Box,
   manual: Hammer,
   review: FlaskConical,
   push: CloudUpload,

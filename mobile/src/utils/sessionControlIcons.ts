@@ -4,6 +4,7 @@ export const SESSION_CONTROL_APP_ICON_MAP: Record<string, string> = {
   design: 'color-palette-outline',
   scoping: 'git-network-outline',
   'skill-builder': 'sparkles-outline',
+  isolated: 'cube-outline',
   manual: 'hammer-outline',
   review: 'flask-outline',
   push: 'cloud-upload-outline',

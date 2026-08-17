@@ -8,13 +8,22 @@ import {
   isSkillBuilderModeActive,
   isSkillBuilderEligibleAgent,
   isConsultModeActive,
+  isIsolatedModeActive,
+  isShippingCompatibleSessionMode,
   defaultSessionModeForProject,
   sessionHasUsableWorktree,
 } from './session-mode.js';
 
 describe('session-mode helpers', () => {
   it('exposes the canonical mode list with chat as the default', () => {
-    expect(SESSION_MODES).toEqual(['chat', 'design', 'scoping', 'skill-builder', 'consult']);
+    expect(SESSION_MODES).toEqual([
+      'chat',
+      'isolated',
+      'design',
+      'scoping',
+      'skill-builder',
+      'consult',
+    ]);
     expect(DEFAULT_SESSION_MODE).toBe('chat');
     expect(SESSION_MODES).toContain(DEFAULT_SESSION_MODE);
   });
@@ -26,6 +35,7 @@ describe('session-mode helpers', () => {
       expect(isSessionMode('scoping')).toBe(true);
       expect(isSessionMode('skill-builder')).toBe(true);
       expect(isSessionMode('consult')).toBe(true);
+      expect(isSessionMode('isolated')).toBe(true);
     });
 
     it('rejects unknown strings and non-strings', () => {
@@ -95,6 +105,23 @@ describe('session-mode helpers', () => {
     it('is false for a missing agent', () => {
       expect(isSkillBuilderEligibleAgent(null)).toBe(false);
       expect(isSkillBuilderEligibleAgent(undefined)).toBe(false);
+    });
+  });
+
+  describe('isIsolatedModeActive', () => {
+    it('is true only for isolated mode rows', () => {
+      expect(isIsolatedModeActive({ session_mode: 'isolated' })).toBe(true);
+      expect(isIsolatedModeActive({ session_mode: 'chat' })).toBe(false);
+      expect(isIsolatedModeActive({ session_mode: null })).toBe(false);
+    });
+  });
+
+  describe('isShippingCompatibleSessionMode', () => {
+    it('is true for chat and isolated only', () => {
+      expect(isShippingCompatibleSessionMode('chat')).toBe(true);
+      expect(isShippingCompatibleSessionMode('isolated')).toBe(true);
+      expect(isShippingCompatibleSessionMode('design')).toBe(false);
+      expect(isShippingCompatibleSessionMode('consult')).toBe(false);
     });
   });
 

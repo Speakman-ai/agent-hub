@@ -4,7 +4,6 @@ import { api } from '../../utils/api';
 import {
   SESSION_CONTROL_OPTIONS,
   finalizeAutomationFromSession,
-  sessionControlValue,
   sessionControlPatch,
   sessionControlOptionsForProject,
   sessionControlValueForProject,
@@ -58,7 +57,9 @@ export default function FinalizeAutomationSelect({
           ? 'skill-builder'
           : session?.session_mode === 'consult'
             ? 'consult'
-            : 'chat';
+            : session?.session_mode === 'isolated'
+              ? 'isolated'
+              : 'chat';
   // Design mode runs when the session has an isolated worktree (dev projects) OR
   // the project is workflow/no-code (artifacts go to the Hub data-dir store). The
   // server's `can_design_mode` covers the worktree arm; we OR in the workflow arm
@@ -123,7 +124,9 @@ export default function FinalizeAutomationSelect({
   // The currently-active label is resolved against the FULL list so a session
   // already in skill-builder mode still renders correctly even on an ineligible
   // agent; the dropdown itself only OFFERS the options the agent/project allow.
-  const optionList = sessionControlOptionsForProject(project, agent);
+  const optionList = sessionControlOptionsForProject(project, agent, {
+    canUseVm: session?.can_isolated_mode === true,
+  });
   const selected =
     SESSION_CONTROL_OPTIONS.find((o: any) => o.value === selectedValue) ??
     optionList[0] ??

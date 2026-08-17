@@ -23,8 +23,13 @@ import {
   normalizeSessionMode,
   isSkillBuilderEligibleAgent,
   defaultSessionModeForProject,
+  isShippingCompatibleSessionMode,
   type SessionMode,
 } from '../session-mode.js';
+import {
+  isFirecrackerBackendRegistered,
+  resolveSessionEnvAdapterForSession,
+} from '../session-env/resolve-session-adapter.js';
 import {
   buildFollowUpSeedMessage,
   buildFollowUpSessionName,
@@ -638,6 +643,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
             'is a helper (docs / reviewer / skill-builder) and is not eligible.',
         });
       }
+      if (requestedMode === 'isolated' && !isFirecrackerBackendRegistered()) {
+        return res.status(400).json({
+          error: 'isolated_mode_requires_firecracker',
+          message:
+            'VM mode requires Firecracker on this host (nested virtualization + guest artifacts). ' +
+            'It is unavailable here — use a normal chat session or enable Firecracker.',
+        });
+      }
     }
 
     const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
@@ -654,7 +667,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (
       !isWorkflowProject(found?.project) &&
       found?.project?.id &&
-      (requestedMode === undefined || requestedMode === 'chat')
+      (requestedMode === undefined || isShippingCompatibleSessionMode(requestedMode))
     ) {
       // Apply this user's per-project default Finalize automation level (if any)
       // to the new ad-hoc session. No stored preference → leave NULL, which the
@@ -1505,7 +1518,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(restoredWire);
   });
 
-  router.patch('/api/sessions/:sessionId', (req: Request, res: Response) => {
+  router.patch('/api/sessions/:sessionId', async (req: Request, res: Response) => {
     const parsed = parseBody(PatchSessionRequestSchema, req, res);
     if (!parsed) return;
     const sessionId = String(req.params.sessionId);
@@ -1549,6 +1562,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
             'is a helper (docs / reviewer / skill-builder) and is not eligible.',
         });
       }
+      if (nextMode === 'isolated' && !isFirecrackerBackendRegistered()) {
+        return res.status(400).json({
+          error: 'isolated_mode_requires_firecracker',
+          message:
+            'VM mode requires Firecracker on this host (nested virtualization + guest artifacts). ' +
+            'It is unavailable here — use a normal chat session or enable Firecracker.',
+        });
+      }
       const modeGuard = validateSessionModeForProject(sessionProject, nextMode);
       if (modeGuard) return res.status(400).json(modeGuard);
     }
@@ -1569,7 +1590,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     const finalMode = nextMode ?? normalizeSessionMode(existing.session_mode);
     const finalAskMode = parsed.ask_mode !== undefined ? 0 : Number(existing.ask_mode ?? 0);
-    const finalModeBlocksFinalize = finalMode !== 'chat' || finalAskMode !== 0;
+    const finalModeBlocksFinalize =
+      !isShippingCompatibleSessionMode(finalMode) || finalAskMode !== 0;
     if (
       finalModeBlocksFinalize &&
       parsed.finalize_automation !== undefined &&
@@ -1582,12 +1604,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
     }
 
-    const enteringNonShippingMode = nextMode !== undefined && nextMode !== 'chat';
+    const enteringNonShippingMode =
+      nextMode !== undefined && !isShippingCompatibleSessionMode(nextMode);
     const shouldClearFinalizeAutomation =
       enteringNonShippingMode && parsed.finalize_automation === undefined;
     const shouldClearAskMode = enteringNonShippingMode;
 
-    getDb().transaction(() => {
+    const persistPatch = getDb().transaction(() => {
       if (parsed.name) {
         stmts.updateSessionName.run(parsed.name, sessionId);
       }
@@ -1609,7 +1632,29 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (nextMode !== undefined) {
         stmts.updateSessionMode.run(nextMode, sessionId);
       }
-    })();
+    });
+    if (nextMode !== undefined) {
+      if (!deps.transitionSessionEnv) {
+        return res.status(503).json({ error: 'session_env_transition_unavailable' });
+      }
+      await deps.transitionSessionEnv(sessionId, async (disposeCurrent) => {
+        const current = stmts.getSession.get(sessionId) as SessionRow;
+        const prevAdapter = resolveSessionEnvAdapterForSession({
+          project: sessionProject,
+          session: current,
+        });
+        const nextAdapter = resolveSessionEnvAdapterForSession({
+          project: sessionProject,
+          session: { ...current, session_mode: nextMode },
+        });
+        if (prevAdapter !== nextAdapter) {
+          await disposeCurrent();
+        }
+        persistPatch();
+      });
+    } else {
+      persistPatch();
+    }
 
     const session = stmts.getSession.get(sessionId) as SessionRow;
     const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent, sessionProject);
@@ -1933,7 +1978,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // Session mode picker (chat | design). Persists the chosen mode; the spawn
   // path reads it to decide design-skill loading / artifact behavior. Accepted
   // on any session. See server/session-mode.ts.
-  router.put('/api/sessions/:sessionId/mode', (req: Request, res: Response) => {
+  router.put('/api/sessions/:sessionId/mode', async (req: Request, res: Response) => {
     const parsed = parseBody(PutSessionModeRequestSchema, req, res);
     if (!parsed) return;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
@@ -1968,16 +2013,42 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           'is a helper (docs / reviewer / skill-builder) and is not eligible.',
       });
     }
+    if (mode === 'isolated' && !isFirecrackerBackendRegistered()) {
+      return res.status(400).json({
+        error: 'isolated_mode_requires_firecracker',
+        message:
+          'VM mode requires Firecracker on this host (nested virtualization + guest artifacts). ' +
+          'It is unavailable here — use a normal chat session or enable Firecracker.',
+      });
+    }
     const modeGuard = validateSessionModeForProject(sessionProject, mode);
     if (modeGuard) return res.status(400).json(modeGuard);
-    const enteringNonShippingMode = mode !== 'chat';
-    getDb().transaction(() => {
+    const enteringNonShippingMode = !isShippingCompatibleSessionMode(mode);
+    const persistMode = getDb().transaction(() => {
       stmts.updateSessionMode.run(mode, req.params.sessionId);
       if (enteringNonShippingMode) {
         stmts.updateSessionAskMode.run(0, req.params.sessionId);
         stmts.updateSessionFinalizeAutomation.run('manual', req.params.sessionId);
       }
-    })();
+    });
+    if (!deps.transitionSessionEnv) {
+      return res.status(503).json({ error: 'session_env_transition_unavailable' });
+    }
+    await deps.transitionSessionEnv(String(req.params.sessionId), async (disposeCurrent) => {
+      const current = stmts.getSession.get(req.params.sessionId) as SessionRow;
+      const prevAdapter = resolveSessionEnvAdapterForSession({
+        project: sessionProject,
+        session: current,
+      });
+      const nextAdapter = resolveSessionEnvAdapterForSession({
+        project: sessionProject,
+        session: { ...current, session_mode: mode },
+      });
+      if (prevAdapter !== nextAdapter) {
+        await disposeCurrent();
+      }
+      persistMode();
+    });
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     const enriched = enrichSessionForClient(updated, stmts, sessionProject);
     deps.broadcast({ type: 'session-updated', session: enriched });

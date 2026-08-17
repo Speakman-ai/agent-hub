@@ -63,7 +63,7 @@ export function validateSessionModeForProject(
     return {
       error: 'session_mode_not_allowed_on_workflow_project',
       message:
-        'Workflow projects only support Consult, Scoping, and Skill Builder session modes. Use a dev project for build/chat-style sessions.',
+        'Workflow projects only support Consult, Scoping, Skill Builder, and Design session modes. Use a dev project for build/chat/VM sessions.',
     };
   }
   return null;

@@ -4939,7 +4939,9 @@ export default function App({ initialView }: any = {}) {
           ? 'skill-builder'
           : activeSession?.session_mode === 'consult'
             ? 'consult'
-            : 'chat';
+            : activeSession?.session_mode === 'isolated'
+              ? 'isolated'
+              : 'chat';
   const designModeActive = sessionMode === 'design';
   const scopingModeActive = sessionMode === 'scoping';
   // Skill Builder mode is purely conversational (the coach runs in chat and
@@ -4957,7 +4959,11 @@ export default function App({ initialView }: any = {}) {
       if (!activeSessionId) return;
       const prevConsult = sessionConsultMode;
       if (patch.session_mode === 'consult') setSessionConsultMode(true);
-      else if (patch.session_mode === 'chat' || patch.finalize_automation !== undefined) {
+      else if (
+        patch.session_mode === 'chat' ||
+        patch.session_mode === 'isolated' ||
+        patch.finalize_automation !== undefined
+      ) {
         setSessionConsultMode(false);
       }
       if (patch.ask_mode === false) setSessionConsultMode(false);

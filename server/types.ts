@@ -4196,6 +4196,15 @@ export interface RouteDeps {
    */
   disposeSessionEnv?: (sessionId: string, opts?: { forgetWorkspace?: boolean }) => Promise<void>;
   /**
+   * Serialize a session-mode read/compare/persist decision while environment
+   * acquisition is blocked. The callback disposes through `disposeCurrent`
+   * only when its fresh comparison finds that the adapter changes.
+   */
+  transitionSessionEnv?: (
+    sessionId: string,
+    applyTransition: (disposeCurrent: () => Promise<void>) => void | Promise<void>,
+  ) => Promise<void>;
+  /**
    * Read/write the session's worktree, wherever it physically lives. The only
    * correct way to reach worktree contents: under a microVM env the worktree is
    * on the guest's disk and `session.worktree_path` is the boot-time seed, so

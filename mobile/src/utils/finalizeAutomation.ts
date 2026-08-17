@@ -66,6 +66,12 @@ export const CONSULT_AUTOMATION_OPTION: Record<string, any> = {
   description:
     'Answer questions and update Agent Hub project data — board, wiki, workflows — without code ship or Finalize',
 };
+export const VM_AUTOMATION_OPTION: Record<string, any> = {
+  value: 'isolated',
+  label: 'VM',
+  description:
+    'Run this session in an intentional Firecracker microVM — Build/Push/Merge still work like chat',
+};
 // Design is offered on workflow projects too: worktree-less workflow design
 // sessions store artifacts in a Hub-managed data-dir store (server:
 // design-artifact-store.ts), so the mode runs without a worktree and ships nothing.
@@ -81,6 +87,7 @@ export const SESSION_CONTROL_OPTIONS = [
   DESIGN_AUTOMATION_OPTION,
   SCOPING_AUTOMATION_OPTION,
   SKILL_BUILDER_AUTOMATION_OPTION,
+  VM_AUTOMATION_OPTION,
   ...FINALIZE_AUTOMATION_OPTIONS,
 ];
 /**
@@ -103,8 +110,14 @@ export function sessionControlOptionsForAgent(agent: any) {
   if (isSkillBuilderEligibleAgent(agent)) return SESSION_CONTROL_OPTIONS;
   return SESSION_CONTROL_OPTIONS.filter((o: any) => o.value !== 'skill-builder');
 }
-export function sessionControlOptionsForProject(project: any, agent: any) {
-  const base = sessionControlOptionsForAgent(agent);
+export function sessionControlOptionsForProject(
+  project: any,
+  agent: any,
+  capabilities: { canUseVm?: boolean } = {},
+) {
+  const base = sessionControlOptionsForAgent(agent).filter(
+    (o: any) => o.value !== 'isolated' || capabilities.canUseVm === true,
+  );
   if (project?.mode === 'workflow') {
     return base.filter((o: any) => WORKFLOW_SESSION_CONTROL_VALUES.has(o.value));
   }
@@ -128,6 +141,7 @@ export function sessionControlValue({ sessionMode, askMode, automation }: any = 
   if (sessionMode === 'scoping') return 'scoping';
   if (sessionMode === 'skill-builder') return 'skill-builder';
   if (sessionMode === 'consult') return 'consult';
+  if (sessionMode === 'isolated') return 'isolated';
   if (askMode) return 'consult';
   return parseFinalizeAutomation(automation);
 }
@@ -146,7 +160,8 @@ export function sessionControlLabel(value: any) {
  * Key invariant: Design is mutually exclusive with all ship intent, so selecting
  * it CLEARS ask mode (no read-only underneath) AND resets finalize_automation to
  * 'manual' (no push/merge intent left lurking that resurfaces when leaving
- * Design). Leaving Design resets session_mode to 'chat' first. Returns [] for a
+ * Design). Leaving Design resets session_mode to 'chat' first. Leaving VM
+ * (isolated) for ship levels keeps session_mode isolated. Returns [] for a
  * no-op.
  *
  * @param {{ sessionMode?: string, askMode?: unknown, automation?: string }} current
@@ -165,7 +180,9 @@ export function planSessionControlChange(current: any, target: any, options: any
           ? 'skill-builder'
           : current?.sessionMode === 'consult'
             ? 'consult'
-            : 'chat';
+            : current?.sessionMode === 'isolated'
+              ? 'isolated'
+              : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });
@@ -197,6 +214,12 @@ export function planSessionControlChange(current: any, target: any, options: any
     if (askMode) steps.push({ type: 'ask', value: false });
     clearShipIntent();
     steps.push({ type: 'mode', value: 'consult' });
+    return steps;
+  }
+  if (target === 'isolated') {
+    if (askMode) steps.push({ type: 'ask', value: false });
+    clearShipIntent();
+    steps.push({ type: 'mode', value: 'isolated' });
     return steps;
   }
   if (
