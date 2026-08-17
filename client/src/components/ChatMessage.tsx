@@ -25,6 +25,8 @@ import FinalizeReviewRoundBlock from './finalize/blocks/FinalizeReviewRoundBlock
 import FinalizeChecksRoundBlock from './finalize/blocks/FinalizeChecksRoundBlock';
 import FinalizeReadyToPushBlock from './finalize/blocks/FinalizeReadyToPushBlock';
 import FinalizeRunSummaryBlock from './finalize/blocks/FinalizeRunSummaryBlock';
+import TurnChangeSummaryBlock from './finalize/blocks/TurnChangeSummaryBlock';
+import { parseTurnChangeSummaryMetadata } from '../utils/turnChangeSummary';
 import FinalizeTerminalBlock from './finalize/blocks/FinalizeTerminalBlock';
 import FinalizeFixDispatchBlock from './finalize/blocks/FinalizeFixDispatchBlock';
 
@@ -413,6 +415,9 @@ function ChatMessage({
   if (isSystem) {
     if (isFinalizeStepOutputMessage(message.metadata)) {
       return null;
+    }
+    if (parseTurnChangeSummaryMetadata(message.metadata)) {
+      return <TurnChangeSummaryBlock message={message} />;
     }
     const finalizeKind = parseFinalizeTimelineKind(message.metadata);
     if (finalizeKind === 'finalize_run_started') {

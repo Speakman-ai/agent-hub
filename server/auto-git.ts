@@ -2751,9 +2751,8 @@ export async function autoCommitAndPR(
         );
         return;
       }
-      const changes = await checkWorktreeChanges(
-        await sessionWorktreeIoFor(sessionId, effectiveCwd),
-      );
+      const worktreeIo = await sessionWorktreeIoFor(sessionId, effectiveCwd);
+      const changes = await checkWorktreeChanges(worktreeIo);
       if (!changes.hasUncommitted && !changes.hasUnpushed) {
         return;
       }
@@ -2802,6 +2801,31 @@ export async function autoCommitAndPR(
         ownerUserId: getSessionOwner(sessionId),
         ...changesReadyData,
       });
+      // Fire-and-forget post-turn briefing: the same summary + manual-testing
+      // sections the Finalize summary carries, but for a plain code-change turn.
+      // Best-effort and self-gated (no-op without an OpenAI key); a failure here
+      // must never affect the changes_ready path. Lazy import mirrors the
+      // finalize automation-runner import below — keeps auto-git's test mocks
+      // free of the turn-summary module graph.
+      void import('./turn-change-summary.js')
+        .then((m) =>
+          m.emitTurnChangeSummary(
+            { stmts: d.stmts, broadcast: d.broadcast, getConfig: d.getConfig },
+            {
+              sessionId,
+              io: worktreeIo,
+              baseBranch: null,
+              card: card ? { title: card.title, description: card.description } : null,
+            },
+          ),
+        )
+        .catch((err: unknown) => {
+          console.error(
+            `[auto-commit] Session ${sessionId} — turn change summary failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
       if (finalizeBlocksShip && allowFinalizeAutoStart) {
         // Lazy import: keep `auto-git.js` free of the finalize orchestrator +
         // db.ts/project-model.ts module-load side effects (those auto-init at
