@@ -10,7 +10,7 @@ directory instead and is wired to an npm script.
 | --- | --- |
 | `prune-session-events.cjs` | One-time backfill to delete orphan `session_events` rows and `VACUUM` the SQLite file so the on-disk size actually drops. The ongoing sweep already runs daily via `pruneOrphanSessionEvents` in `server/session-events-store.ts`; you only need this to reclaim space accumulated *before* that landed. |
 | `recover-orphan-designs.cjs` | Incident recovery: re-inserts `designs` rows for artifact directories that exist on disk under `<dataDir>/designs/<uuid>/` but lost their DB row. |
-| `bake-finalize-runner-ami.sh` | Bake a custom AMI for the Finalize runner fleet with the runner image pre-pulled (cuts cold provision from ~3–4 min toward ~1 min). **CI:** `Deploy DEV Hub from main` rebakes DEV when `:main` digest changes; `Release` rebakes prod for `:vX.Y.Z`. Manual: `FLEET=dev\|prod RUNNER_IMAGE=… ./ops/scripts/bake-finalize-runner-ami.sh`, then pin. |
+| `bake-finalize-runner-ami.sh` | Bake a custom AMI for the Finalize runner fleet with the runner image pre-pulled (cuts cold provision from ~3–4 min toward ~1 min). **CI:** `Release` rebakes prod for `:vX.Y.Z`. DEV fleet bake is parked (DEV Hub decommissioned). Manual: `FLEET=prod RUNNER_IMAGE=… ./ops/scripts/bake-finalize-runner-ami.sh`, then pin. |
 | `pin-finalize-runner-ami.sh` | Point the fleet launch template at a baked AMI and write SSM `/agenthub/<fleet>/finalize-runner-ami-id` — **no instance refresh** (in-flight hosts keep working; only new scale-outs use the AMI). Used by `.github/workflows/bake-finalize-runner-ami.yml`. |
 | `prune-finalize-runner-amis.sh` | Keep the newest `KEEP` (default 3) bake AMIs per fleet; deregister older ones and delete their snapshots. Skips the SSM-pinned AMI and any AMI still on an instance. Runs automatically after each successful CI bake. |
 | `setup-sysbox-host.sh` | Install `sysbox-runc` on an Agent Hub host and register it as a Docker runtime, so the SessionEnv sysbox adapter can run per-session dev environments without `--privileged` or a host docker socket. |
@@ -19,11 +19,10 @@ directory instead and is wired to an npm script.
 
 | Trigger | Fleet | Image tag | Disruptive to in-flight Finalize? |
 | --- | --- | --- | --- |
-| Push / merge to `main` | DEV | `:main` | **No** — pin LT only; no instance refresh |
-| Release (`release-all.yml`) | prod | `:vX.Y.Z` | **No** — same |
+| Release (`release-all.yml`) | prod | `:vX.Y.Z` | **No** — pin LT only; no instance refresh |
 | Actions → “Bake finalize runner AMI” | chosen | chosen | **No** — same |
 
-Busy DEV/prod runner hosts keep their current AMI and jobs. Only **new** scale-outs boot the baked image. Prune never deletes an AMI still on an instance, the SSM pin, or the launch-template `$Default`.
+DEV Hub (dev.agenthub.*) was decommissioned 2026-08-17 — merges to `main` no longer bake a DEV fleet AMI. Busy prod runner hosts keep their current AMI and jobs. Only **new** scale-outs boot the baked image. Prune never deletes an AMI still on an instance, the SSM pin, or the launch-template `$Default`.
 
 Digest skip: CI stores `/agenthub/<fleet>/finalize-runner-image-digest` and skips bake when unchanged (`force: true` overrides). Prod Terraform apply injects `TF_VAR_finalize_runner_ami_id` from the bake/SSM pin so `PROD_TFVARS` cannot revert a fresher AMI. After each bake, CI keeps the newest **3** AMIs per fleet and deletes the rest (snapshots included).
 

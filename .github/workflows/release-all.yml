@@ -8,7 +8,7 @@ name: Release
 #        - docker-ecr — build + push the server/runner images at the tag
 #          (`:sha`, `:vX.Y.Z` — not `:main`), then SSM restart of the prod
 #          sandbox (agenthub.example.com) pinned to that version tag.
-#          `:main` is owned by "Deploy DEV Hub from main" (dev.agenthub.*).
+#          DEV Hub no longer writes `:main` (decommissioned 2026-08-17).
 #        - bake-finalize-ami-prod — after ECR succeeds, rebake the prod
 #          Finalize runner AMI for `:vX.Y.Z` when the digest changed, pin the
 #          launch template without instance refresh, write SSM AMI id.
@@ -238,9 +238,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Prod sandbox rolls out in parallel with build-mac after `release`.
-  # Publishes immutable `:vX.Y.Z` (+ `:sha`) only — never retags `:main`, which
-  # Deploy DEV Hub from main owns. Two writers of `:main` race and fail the
-  # digest gate (Release #49 / v2.31.77).
+  # Publishes immutable `:vX.Y.Z` (+ `:sha`) only — never retags `:main`.
+  # Two writers of `:main` race and fail the digest gate (Release #49 / v2.31.77).
   docker-ecr-dev:
     name: ECR push and prod sandbox
     needs: release
@@ -296,10 +295,11 @@ jobs:
   #   - var    TF_STATE_BUCKET     — remote-state bucket (e.g. agent-hub-tfstate-<acct>).
   #   - var    TF_STATE_LOCK_TABLE — DynamoDB lock table (e.g. agent-hub-tfstate-lock).
   #   - var    AWS_REGION          — defaults to us-east-2 when unset.
-  #   - vars   DOCKER_DEPLOY_INSTANCE_ID + DOCKER_DEPLOY_DEV_INSTANCE_ID — the
-  #                                  rollout targets, reused here as
+  #   - var    DOCKER_DEPLOY_INSTANCE_ID — the prod sandbox rollout target,
+  #                                  reused here as
   #                                  TF_VAR_ci_ssm_expected_deploy_instance_ids so
-  #                                  the plan asserts the CI SSM grant covers both.
+  #                                  the plan asserts the CI SSM grant covers it.
+  #                                  DEV Hub was decommissioned 2026-08-17.
   terraform-apply:
     name: Terraform apply (prod infra)
     needs: [release, bake-finalize-ami-prod]
@@ -314,16 +314,15 @@ jobs:
       # Prefer the AMI this release just baked/pinned; falls through to SSM in the
       # plan step if the reusable output is empty (should not happen).
       BAKED_FINALIZE_AMI: ${{ needs.bake-finalize-ami-prod.outputs.ami_id }}
-      # Single source of truth for every rollout target. Release / push-image
-      # SSM vars.DOCKER_DEPLOY_INSTANCE_ID and main→DEV SSMs
-      # vars.DOCKER_DEPLOY_DEV_INSTANCE_ID; the CI role's ssm:SendCommand grant
-      # is scoped by ci_ssm_deploy_* in the PROD_TFVARS secret. Feeding both
-      # Variables into the plan makes Terraform assert the grant covers them — see the
-      # terraform_data.ci_ssm_deploy_target_guard preconditions. Job-scoped
-      # because `terraform apply` consumes the saved plan, so the var has to be
-      # present at plan time or the assertion never runs. Empty (Variable unset)
-      # skips the assertion.
-      TF_VAR_ci_ssm_expected_deploy_instance_ids: '["${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}", "${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}"]'
+      # Single source of truth for the rollout target. Release / push-image
+      # SSM vars.DOCKER_DEPLOY_INSTANCE_ID; the CI role's ssm:SendCommand grant
+      # is scoped by ci_ssm_deploy_* in the PROD_TFVARS secret. Feeding the
+      # Variable into the plan makes Terraform assert the grant covers it — see
+      # terraform_data.ci_ssm_deploy_target_guard. Job-scoped because
+      # `terraform apply` consumes the saved plan, so the var has to be present
+      # at plan time or the assertion never runs. Empty (Variable unset) skips
+      # the assertion. DEV Hub (DOCKER_DEPLOY_DEV_INSTANCE_ID) was decommissioned.
+      TF_VAR_ci_ssm_expected_deploy_instance_ids: '["${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}"]'
     defaults:
       run:
         working-directory: ops/terraform

@@ -51,9 +51,8 @@ describe('release workflows', () => {
 
   it('configures non-gating reusable AMI bakes inside the called workflow', () => {
     const bake = parseYaml(readWorkflow('bake-finalize-runner-ami.yml'));
-    const dev = parseYaml(readWorkflow('deploy-dev-hub-on-main.yml'));
     const release = parseYaml(readWorkflow('release-all.yml'));
-    const callers = [dev.jobs['bake-finalize-ami'], release.jobs['bake-finalize-ami-prod']];
+    const callers = [release.jobs['bake-finalize-ami-prod']];
 
     expect(bake.on.workflow_call.inputs.allow_failure).toMatchObject({
       type: 'boolean',
@@ -74,6 +73,29 @@ describe('release workflows', () => {
       group: 'finalize-runner-ami-${{ inputs.fleet }}',
       'cancel-in-progress': false,
     });
+  });
+
+  // The "Resolve runner image" step rejects prod + empty image with
+  // "prod bake requires runner_image". If the manual dispatch defaults to
+  // fleet=prod but leaves runner_image optional/empty, submitting the form
+  // with its defaults always fails that step. Pin the default form state so it
+  // stays executable.
+  it('keeps the manual-dispatch default form executable', () => {
+    const bake = parseYaml(readWorkflow('bake-finalize-runner-ami.yml'));
+    const inputs = bake.on.workflow_dispatch.inputs;
+    const fleetDefault = inputs.fleet.default;
+    const imageRequired = inputs.runner_image.required === true;
+    // Required dispatch inputs must be supplied, so they can never reach the
+    // step empty; optional ones fall back to their (possibly empty) default.
+    const imageDefault = imageRequired ? '<supplied>' : (inputs.runner_image.default ?? '');
+
+    // Replicate the resolve step's rejection condition.
+    const resolveWouldReject = imageDefault === '' && fleetDefault === 'prod';
+    expect(resolveWouldReject).toBe(false);
+
+    // The prod fleet has no static default tag, so the image must be mandatory.
+    expect(fleetDefault).toBe('prod');
+    expect(imageRequired).toBe(true);
   });
 });
 

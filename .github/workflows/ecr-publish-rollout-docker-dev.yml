@@ -1,17 +1,16 @@
 # Builds the server + Finalize runner images and pushes them to public ECR,
 # then optionally SSMs a host to pull the moving tag this run published.
 #
-# Tag ownership (do not collapse these — two writers of `:main` race and the
-# digest gate fails even when the host is healthy):
-#   - Deploy DEV Hub from main owns `:main` (dev.agenthub.*).
+# Tag ownership:
 #   - Release publishes immutable `:vX.Y.Z` (+ `:sha`) and rolls the prod
-#     sandbox (agenthub.example.com) to that tag. It must NOT retag `:main`.
+#     sandbox. It must NOT retag `:main`.
+#   - DEV Hub (dev.agenthub.*) was decommissioned 2026-08-17; `deploy-dev-hub-on-main.yml`
+#     no longer writes `:main` on merge.
 #   - `/etc/agent-hub/image-tag` also retags the in-box finalize-runner image
 #     to the same moving tag (user-data run script).
 #
-# Called by `release-all.yml` after a semver tag is pushed, and by
-# `deploy-dev-hub-on-main.yml` on every merge to main. `push-image.yml` is the
-# escape hatch for arbitrary refs.
+# Called by `release-all.yml` after a semver tag is pushed. `push-image.yml` is
+# the escape hatch for arbitrary refs. `deploy-dev-hub-on-main.yml` is parked.
 #
 # See also: wiki / deployment-guide (docker dev sandbox path).
 name: ECR publish and docker dev rollout
@@ -45,9 +44,8 @@ on:
       deploy_instance_id:
         description: >-
           EC2 instance id to SSM for rollout. When empty, falls back to
-          vars.DOCKER_DEPLOY_INSTANCE_ID (prod sandbox / agenthub.example.com).
-          Deploy DEV Hub from main passes vars.DOCKER_DEPLOY_DEV_INSTANCE_ID
-          (dev.agenthub.*) so release rollouts stay on prod.
+          vars.DOCKER_DEPLOY_INSTANCE_ID (prod sandbox). DEV Hub was
+          decommissioned; this input remains as an override for a revive.
         required: false
         type: string
         default: ''
@@ -335,13 +333,11 @@ jobs:
       id-token: write
       contents: read
     env:
-      # Docker rollout target. Prefer an explicit workflow input (so the
-      # main→DEV Hub caller can pass DOCKER_DEPLOY_DEV_INSTANCE_ID without
-      # stealing release-all's prod sandbox), else DOCKER_DEPLOY_INSTANCE_ID.
-      # Never hardcode an instance id in this public tree.
-      #   DOCKER_DEPLOY_INSTANCE_ID      prod sandbox (agenthub.example.com)
-      #   DOCKER_DEPLOY_DEV_INSTANCE_ID  DEV Hub (dev.agenthub.*) — set only on
-      #                                  the Deploy DEV Hub from main caller
+      # Docker rollout target. Prefer an explicit workflow input, else
+      # DOCKER_DEPLOY_INSTANCE_ID (prod sandbox). Never hardcode an instance id
+      # in this public tree. DEV Hub (DOCKER_DEPLOY_DEV_INSTANCE_ID) was
+      # decommissioned 2026-08-17; leave the input for a possible revive.
+      #   DOCKER_DEPLOY_INSTANCE_ID      prod sandbox
       #   DOCKER_DEPLOY_ROLE_ARN         OIDC role assumed on the target account
       #   DOCKER_DEPLOY_REGION           region of that instance
       # When DOCKER_DEPLOY_ROLE_ARN is unset the ECR push role (ECR_PUSH_ROLE_ARN)
@@ -616,8 +612,8 @@ jobs:
             --query 'Command.CommandId' 2>"$SEND_ERR")"; then
             cat "$SEND_ERR" >&2
             if grep -q 'AccessDeniedException' "$SEND_ERR"; then
-              echo "::error::ssm:SendCommand denied for $DEPLOY_INSTANCE_ID in $AWS_DEPLOY_REGION. The CI role's SSM grant (Terraform aws_iam_role_policy.github_actions_ecr_push_ssm_dev_deploy) is scoped to different instances. Point ci_ssm_deploy_instance_tags / ci_ssm_deploy_instance_id / ci_ssm_deploy_instance_ids at the same box as DOCKER_DEPLOY_INSTANCE_ID (release) or DOCKER_DEPLOY_DEV_INSTANCE_ID (main→DEV), re-apply Terraform, then re-run this job."
-              echo "::error::Reaching this usually means a deploy Variable changed since the last prod Terraform apply — release-all.yml passes DOCKER_DEPLOY_INSTANCE_ID and DOCKER_DEPLOY_DEV_INSTANCE_ID into the plan as TF_VAR_ci_ssm_expected_deploy_instance_ids, and terraform_data.ci_ssm_deploy_target_guard fails the plan when either target is missing. Re-run the release Terraform apply (or apply locally) after fixing the tfvars."
+              echo "::error::ssm:SendCommand denied for $DEPLOY_INSTANCE_ID in $AWS_DEPLOY_REGION. The CI role's SSM grant (Terraform aws_iam_role_policy.github_actions_ecr_push_ssm_dev_deploy) is scoped to different instances. Point ci_ssm_deploy_instance_tags / ci_ssm_deploy_instance_id / ci_ssm_deploy_instance_ids at the same box as DOCKER_DEPLOY_INSTANCE_ID, re-apply Terraform, then re-run this job."
+              echo "::error::Reaching this usually means a deploy Variable changed since the last prod Terraform apply — release-all.yml passes DOCKER_DEPLOY_INSTANCE_ID into the plan as TF_VAR_ci_ssm_expected_deploy_instance_ids, and terraform_data.ci_ssm_deploy_target_guard fails the plan when the target is missing. Re-run the release Terraform apply (or apply locally) after fixing the tfvars."
             fi
             exit 1
           fi

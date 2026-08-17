@@ -260,31 +260,18 @@ printf '%s' "$BRANCH"`;
     expect(yml, 'push-image must not auto-run on pushes to main').not.toMatch(/^\s*push:\s*$/m);
   });
 
-  it('auto-deploys the DEV Hub from main via deploy-dev-hub-on-main.yml', () => {
+  it('does not auto-deploy the decommissioned DEV Hub from main', () => {
     const yml = readFileSync(path.join(workflowsDir, 'deploy-dev-hub-on-main.yml'), 'utf8');
-    expect(yml).toMatch(/^\s*push:\s*$/m);
-    expect(yml).toMatch(/branches:\s*\[main\]/);
+    expect(yml, 'must not auto-run on pushes to main').not.toMatch(/^\s*push:\s*$/m);
     expect(yml).toMatch(/^\s*workflow_dispatch:\s*$/m);
-    expect(yml).toMatch(/uses:\s*\.\/\.github\/workflows\/ecr-publish-rollout-docker-dev\.yml/);
-    expect(yml).toMatch(/rollout:\s*true/);
-    expect(yml).toMatch(
-      /deploy_instance_id:\s*\$\{\{\s*vars\.DOCKER_DEPLOY_DEV_INSTANCE_ID\s*\}\}/,
-    );
-    expect(yml).toMatch(/DOCKER_DEPLOY_DEV_INSTANCE_ID/);
-    expect(yml).toMatch(/concurrency:/);
-    expect(yml).toMatch(/group:\s*deploy-dev-hub-from-main/);
+    expect(yml).toMatch(/DEV Hub is decommissioned/);
+    expect(yml).toMatch(/torn down 2026-08-17/);
+    expect(yml, 'must fail closed rather than skip green').toMatch(/exit 1/);
     // Never bake a concrete instance id into the public tree.
     expect(yml.match(/i-[a-f0-9]+/)?.[0], 'no hardcoded instance id').toBeFalsy();
     // Must not silently fall back to the sandbox Variable.
-    expect(yml).toMatch(/Refusing to fall back to DOCKER_DEPLOY_INSTANCE_ID/);
-    // GitHub lets a workflow_dispatch caller select a branch or tag. This
-    // main-only entrypoint must reject that arbitrary ref before invoking the
-    // reusable rollout; push-image.yml remains the explicit escape hatch.
-    expect(yml, 'manual dispatch must reject every non-main ref').toMatch(
-      /if \[ "\$\{GITHUB_REF\}" != "refs\/heads\/main" \]; then/,
-    );
-    expect(yml, 'a rejected manual dispatch must fail rather than skip green').toMatch(
-      /Deploy DEV Hub from main only accepts the main branch[\s\S]*?exit 1/,
+    expect(yml).not.toMatch(
+      /deploy_instance_id:\s*\$\{\{\s*vars\.DOCKER_DEPLOY_INSTANCE_ID\s*\}\}/,
     );
   });
 

@@ -1,8 +1,11 @@
 # dev: personal Agent Hub sandbox (dev AWS account).
 #
+# LIVE ENV DECOMMISSIONED 2026-08-17 (`terraform destroy` on this workspace).
+# Templates stay so the stack can be stood back up; do not apply until that is
+# an intentional revive. See `.github/workflows/deploy-dev-hub-on-main.yml`.
+#
 # Copy to dev.tfvars and fill in your account-specific values. The real
-# dev.tfvars is gitignored and must never be committed. Source the placeholders
-# below from your private overlay or from CI via TF_VAR_* environment variables.
+# dev.tfvars is gitignored and must never be committed.
 #
 #   cp environments/dev/dev.tfvars.example environments/dev/dev.tfvars
 #   AWS_PROFILE=<profile> ./scripts/tf-init.sh dev

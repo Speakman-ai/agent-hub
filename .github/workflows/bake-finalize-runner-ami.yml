@@ -3,8 +3,8 @@
 # working; only new scale-outs use the new AMI).
 #
 # Cadence:
-#   - Deploy DEV Hub from main → fleet=dev, image :main
 #   - Release → fleet=prod, image :vX.Y.Z
+#   - DEV fleet bake is parked (DEV Hub decommissioned 2026-08-17).
 #
 # Skips when the runner image digest already matches the last baked AMI
 # (SSM `/agenthub/<fleet>/finalize-runner-image-digest`) unless force=true.
@@ -55,12 +55,11 @@ on:
         required: true
         type: choice
         options: [dev, prod]
-        default: dev
+        default: prod
       runner_image:
-        description: 'Image URI (empty → :main for dev only)'
-        required: false
+        description: 'Full image URI to pre-pull (e.g. …:v2.31.81); required — prod has no default tag'
+        required: true
         type: string
-        default: ''
       force:
         description: 'Bake even when digest unchanged'
         required: false

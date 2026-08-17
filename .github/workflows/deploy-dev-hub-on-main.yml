@@ -1,80 +1,39 @@
-# Build + push the server/Finalize images from `main` (the `:main` moving tag),
-# then SSM-restart the dockerized DEV Hub (dev.agenthub.*) so every merge to
-# main lands there. This workflow is the sole writer of `:main`; Release
-# publishes immutable `:vX.Y.Z` tags and must not retag it.
+# DEV Hub (dev.agenthub.*) was torn down 2026-08-17. The live stack is gone
+# (`terraform destroy` on the `dev` workspace). This workflow used to:
+#   - push `:main` and SSM-restart agenthub-dev-sandbox on every merge to main
+#   - rebake the DEV Finalize runner AMI
 #
-# After a successful ECR push, also rebakes the DEV Finalize runner AMI when
-# the `:main` runner digest changed, and pins the DEV launch template without
-# an instance refresh (in-flight jobs keep their hosts).
+# It must not auto-run. `workflow_dispatch` is kept so a revive is one click
+# after the Terraform `dev` workspace is stood back up — but the jobs fail
+# closed until someone restores the rollout steps below.
 #
-# Requires repo Variable DOCKER_DEPLOY_DEV_INSTANCE_ID (DEV Hub instance).
-# That instance must also be covered by the CI OIDC role's ssm:SendCommand
-# grant (Terraform `enable_ci_ssm_deploy_after_ecr_push` /
-# `ci_ssm_deploy_instance_*`); otherwise the rollout fails with AccessDenied.
-# AMI bake/pin uses vars.AWS_TERRAFORM_ROLE_ARN (EC2 + SSM on the fleet VPC).
-#
-# Manual rebuild without waiting for a merge: Actions → "Deploy DEV Hub from
-# main" → Run workflow. `push-image.yml` stays the escape hatch for arbitrary
-# refs / wipe-and-restart, and still targets DOCKER_DEPLOY_INSTANCE_ID.
+# To revive:
+#   1. AWS_PROFILE=agenthub ops/terraform/scripts/tf-init.sh dev
+#      (tf-init.sh resolves its own paths, so it runs from any cwd)
+#      then, from ops/terraform: terraform apply -var-file=environments/dev/dev.tfvars
+#   2. Set repo Variable DOCKER_DEPLOY_DEV_INSTANCE_ID to the new instance id
+#   3. Restore the `on.push` trigger and the ecr-and-rollout / bake jobs from
+#      git history (this file before the decommission).
+# Release still publishes immutable `:vX.Y.Z` and rolls the prod sandbox.
+# `push-image.yml` stays the escape hatch for an arbitrary ref.
 name: Deploy DEV Hub from main
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
-# One DEV Hub rollout at a time. Cancel superseded runs so a burst of merges
-# only leaves the tip live (same idea as deploy-dev.yml).
 concurrency:
   group: deploy-dev-hub-from-main
   cancel-in-progress: true
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
-  require-dev-target:
-    name: Require DOCKER_DEPLOY_DEV_INSTANCE_ID
+  decommissioned:
+    name: DEV Hub is decommissioned
     runs-on: ubuntu-latest
     steps:
-      - name: Fail closed when the DEV Hub instance Variable is unset
-        env:
-          DEV_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}
+      - name: Fail closed
         run: |
-          set -euo pipefail
-          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "::error::Deploy DEV Hub from main only accepts the main branch; got ${GITHUB_REF}. Use push-image.yml for an arbitrary ref."
-            exit 1
-          fi
-          if [ -z "${DEV_INSTANCE_ID}" ]; then
-            echo "::error::Set repo Variable DOCKER_DEPLOY_DEV_INSTANCE_ID to the agenthub-dev-sandbox instance id (dev.agenthub.*). Refusing to fall back to DOCKER_DEPLOY_INSTANCE_ID so release rollouts stay on the sandbox."
-            exit 1
-          fi
-          echo "DEV Hub deploy target: $DEV_INSTANCE_ID"
-
-  ecr-and-rollout:
-    name: Build image and roll DEV Hub
-    needs: require-dev-target
-    uses: ./.github/workflows/ecr-publish-rollout-docker-dev.yml
-    with:
-      git_ref: ${{ github.sha }}
-      rollout: true
-      reset_instance: false
-      # Explicit — do not rely on reusable fallback (that is the sandbox var).
-      deploy_instance_id: ${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}
-
-  # Non-gating vs Hub rollout: a bake failure still leaves DEV Hub on the new
-  # :main image; operators can re-run "Bake finalize runner AMI" manually.
-  bake-finalize-ami:
-    name: Bake DEV Finalize runner AMI
-    needs: ecr-and-rollout
-    uses: ./.github/workflows/bake-finalize-runner-ami.yml
-    with:
-      fleet: dev
-      runner_image: ${{ format('{0}/agent-hub-finalize-runner:main', vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0') }}
-      aws_role_arn: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
-      aws_region: ${{ vars.AWS_REGION || 'us-east-2' }}
-      force: false
-      allow_failure: true
-    secrets: inherit
+          echo "::error::DEV Hub (dev.agenthub.*) was torn down 2026-08-17. Do not deploy. Restore the Terraform dev workspace and this workflow's rollout jobs to revive."
+          exit 1

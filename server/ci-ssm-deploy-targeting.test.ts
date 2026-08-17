@@ -285,14 +285,13 @@ describe('release-all.yml feeds Terraform every rollout target', () => {
   const yml = read(releaseWorkflowPath);
   const tfJob = yml.match(/\n {2}terraform-apply:\n([\s\S]*?)\n {2}[a-z][a-z-]*:\n/);
 
-  it('injects both repo Variables into the expected target list', () => {
+  it('injects the prod sandbox Variable into the expected target list', () => {
     expect(tfJob, 'terraform-apply job must exist').toBeTruthy();
     const line = tfJob![1].match(/^\s*TF_VAR_ci_ssm_expected_deploy_instance_ids:\s*(.+)$/m);
-    expect(line, 'Terraform must receive the full runtime target list').toBeTruthy();
+    expect(line, 'Terraform must receive the runtime target list').toBeTruthy();
     expect(line![1]).toContain('${{ vars.DOCKER_DEPLOY_INSTANCE_ID }}');
-    expect(line![1]).toContain('${{ vars.DOCKER_DEPLOY_DEV_INSTANCE_ID }}');
-    expect(line![1], 'Terraform list syntax must preserve both distinct values').toMatch(
-      /^'\[".+", ".+"\]'$/,
+    expect(line![1], 'DEV Hub is decommissioned — do not require it in the grant').not.toContain(
+      'DOCKER_DEPLOY_DEV_INSTANCE_ID',
     );
   });
 
@@ -343,16 +342,14 @@ describe('ecr-publish-rollout-docker-dev.yml SSM failure diagnostics', () => {
     );
   });
 
-  it('explains that the plan guard covers both runtime targets', () => {
+  it('explains that the plan guard covers the runtime target', () => {
     const branch = yml.match(
       /if grep -q 'AccessDeniedException' "\$SEND_ERR"; then([\s\S]*?)\n {12}fi/,
     );
-    // With the guard wired, reaching this branch means one of the repo Variables
-    // moved after the last release apply. Both must be named so a DEV failure is
-    // not misdiagnosed as release-only drift.
+    // With the guard wired, reaching this branch means the repo Variable
+    // moved after the last release apply.
     expect(branch![1]).toContain('TF_VAR_ci_ssm_expected_deploy_instance_ids');
     expect(branch![1]).toContain('DOCKER_DEPLOY_INSTANCE_ID');
-    expect(branch![1]).toContain('DOCKER_DEPLOY_DEV_INSTANCE_ID');
   });
 
   it('still fails the job when send-command is denied', () => {
