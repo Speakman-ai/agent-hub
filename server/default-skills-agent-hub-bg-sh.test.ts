@@ -147,6 +147,101 @@ describe('bg.sh start (hermetic)', () => {
     expect(parsed.label).toBe('prod build');
   });
 
+  it('POSTs timeoutMs from --timeout-sec', async () => {
+    let captured: { method: string; url: string; body: string } | undefined;
+    await withCaptureServer(async (baseUrl, getCaptured) => {
+      await runAsync(['start', '--timeout-sec', '120', '--label', 'slice', 'echo', 'ok'], {
+        AGENT_HUB_URL: baseUrl,
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_SESSION_ID: 'session-1',
+      });
+      captured = getCaptured();
+    });
+    const parsed = JSON.parse(captured?.body || '{}');
+    expect(parsed.timeoutMs).toBe(120_000);
+    expect(parsed.label).toBe('slice');
+  });
+
+  // Regression: a huge --timeout-sec used to overflow bash's signed 64-bit
+  // `sec * 1000` and wrap to a small positive ms (e.g. 384), which the server
+  // clamp accepts — so an above-cap value timed out almost immediately instead
+  // of being clamped to 30 minutes. Both flag forms must clamp the SECONDS to
+  // the cap (1800s → 1_800_000ms) before multiplying.
+  for (const form of ['space', 'equals'] as const) {
+    it(`clamps an overflow-inducing --timeout-sec (${form} form) to the 30-minute cap`, async () => {
+      const huge = '18446744073709552';
+      const args =
+        form === 'space'
+          ? ['start', '--timeout-sec', huge, 'echo', 'ok']
+          : ['start', `--timeout-sec=${huge}`, 'echo', 'ok'];
+      let captured: { method: string; url: string; body: string } | undefined;
+      await withCaptureServer(async (baseUrl, getCaptured) => {
+        await runAsync(args, {
+          AGENT_HUB_URL: baseUrl,
+          AGENT_HUB_API_KEY: 'test-key',
+          AGENT_HUB_SESSION_ID: 'session-1',
+        });
+        captured = getCaptured();
+      });
+      const parsed = JSON.parse(captured?.body || '{}');
+      expect(parsed.timeoutMs).toBe(1_800_000);
+    });
+  }
+
+  it('clamps an above-cap --timeout-sec to the 30-minute cap', async () => {
+    let captured: { method: string; url: string; body: string } | undefined;
+    await withCaptureServer(async (baseUrl, getCaptured) => {
+      await runAsync(['start', '--timeout-sec', '7200', 'echo', 'ok'], {
+        AGENT_HUB_URL: baseUrl,
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_SESSION_ID: 'session-1',
+      });
+      captured = getCaptured();
+    });
+    const parsed = JSON.parse(captured?.body || '{}');
+    expect(parsed.timeoutMs).toBe(1_800_000);
+  });
+
+  it('treats a zero-padded --timeout-sec by magnitude, not digit count', async () => {
+    let captured: { method: string; url: string; body: string } | undefined;
+    await withCaptureServer(async (baseUrl, getCaptured) => {
+      await runAsync(['start', '--timeout-sec', '000000005', 'echo', 'ok'], {
+        AGENT_HUB_URL: baseUrl,
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_SESSION_ID: 'session-1',
+      });
+      captured = getCaptured();
+    });
+    const parsed = JSON.parse(captured?.body || '{}');
+    expect(parsed.timeoutMs).toBe(5_000);
+  });
+
+  it('rejects a non-integer --timeout-sec before any HTTP call', () => {
+    const r = run(['start', '--timeout-sec', '1.5', 'echo', 'ok'], {
+      AGENT_HUB_SESSION_ID: 'session-1',
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--timeout-sec must be a positive integer');
+  });
+
+  // Regression: `--timeout-sec 0` passed the digit-only regex, produced
+  // timeoutMs 0, and the server then silently substituted the 30-minute
+  // default — so a "0" request ran far longer than asked. Both flag forms and
+  // any zero-padded spelling must be rejected before any HTTP call.
+  for (const value of ['0', '00', '000000']) {
+    for (const form of ['space', 'equals'] as const) {
+      it(`rejects --timeout-sec ${value} (${form} form) instead of defaulting to 30 min`, () => {
+        const args =
+          form === 'space'
+            ? ['start', '--timeout-sec', value, 'echo', 'ok']
+            : ['start', `--timeout-sec=${value}`, 'echo', 'ok'];
+        const r = run(args, { AGENT_HUB_SESSION_ID: 'session-1' });
+        expect(r.status).toBe(2);
+        expect(r.stderr).toContain('--timeout-sec must be a positive integer');
+      });
+    }
+  }
+
   it('only parses --label in leading position (a trailing --label stays in the command)', async () => {
     let captured: { method: string; url: string; body: string } | undefined;
     await withCaptureServer(async (baseUrl, getCaptured) => {

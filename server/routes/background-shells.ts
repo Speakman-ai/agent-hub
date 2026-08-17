@@ -82,7 +82,12 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     const runtime = runtimeOr503(res);
     if (!runtime) return;
 
-    const body = (req.body ?? {}) as { command?: unknown; label?: unknown; watch?: unknown };
+    const body = (req.body ?? {}) as {
+      command?: unknown;
+      label?: unknown;
+      watch?: unknown;
+      timeoutMs?: unknown;
+    };
     // Validate on the trimmed form (reject blank/whitespace-only), but run the
     // ORIGINAL string — the bg.sh wrapper shell-quotes argv, so leading/trailing
     // whitespace can be a meaningful part of a quoted first/last argument.
@@ -98,6 +103,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     // can end its turn; without a watch it would have to poll, which is the
     // behaviour this replaces. Only an explicit `false` opts out.
     const watch = body.watch !== false;
+    const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined;
 
     // A background shell runs in the session worktree so it sees the same
     // checkout the agent edits. Fall back to the project cwd for
@@ -117,6 +123,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
       cwd,
       label,
       watch,
+      timeoutMs,
     });
     res.status(201).json({ shell });
   });

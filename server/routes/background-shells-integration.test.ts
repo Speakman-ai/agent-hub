@@ -78,4 +78,29 @@ describe('background shells — real runtime lifecycle', () => {
       .send({ label: 'no-command' })
       .expect(400);
   });
+
+  it('times out a still-running shell at the requested cap', async () => {
+    const session = await createSession();
+    const sessionId = session.id as string;
+
+    const started = await request
+      .post(`/api/sessions/${sessionId}/background-shells`)
+      .send({ command: 'sleep 60', label: 'cap', timeoutMs: 400 })
+      .expect(201);
+    const shell = started.body.shell;
+    expect(shell.timeout_ms).toBe(400);
+    expect(isAlive(shell.pid)).toBe(true);
+
+    const deadline = Date.now() + 8_000;
+    let status = shell.status as string;
+    while (Date.now() < deadline && status === 'running') {
+      await new Promise((r) => setTimeout(r, 100));
+      const got = await request
+        .get(`/api/sessions/${sessionId}/background-shells/${shell.id}`)
+        .expect(200);
+      status = got.body.shell.status;
+    }
+    expect(status).toBe('timed_out');
+    expect(isAlive(shell.pid)).toBe(false);
+  });
 });

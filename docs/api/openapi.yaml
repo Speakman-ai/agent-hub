@@ -754,6 +754,7 @@ components:
             - exited
             - failed
             - stopped
+            - timed_out
         exit_code:
           type: integer
           nullable: true
@@ -766,6 +767,9 @@ components:
         watch_resolved_at:
           type: string
           nullable: true
+        timeout_ms:
+          type: integer
+          description: Wall-clock cap in milliseconds. The Hub stops the process group when it fires (default and max 30 minutes).
         created_at:
           type: string
         updated_at:
@@ -784,6 +788,7 @@ components:
         - log_path
         - watch
         - watch_resolved_at
+        - timeout_ms
         - created_at
         - updated_at
       description: A Hub-owned background shell — a long-running command that survives across chat turns.
@@ -17984,6 +17989,9 @@ paths:
                 watch:
                   type: boolean
                   description: Wake the session automatically when this shell finishes. Defaults to true; pass false to start an unwatched shell.
+                timeoutMs:
+                  type: integer
+                  description: Wall-clock cap in milliseconds. Defaults to 1800000 (30 minutes). Values above 30 minutes are clamped; omitted/invalid values use the default. There is no way to disable the cap.
               required:
                 - command
       responses:

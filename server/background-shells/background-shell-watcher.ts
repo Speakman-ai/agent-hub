@@ -111,6 +111,7 @@ function toSummary(row: BackgroundShellRow): WatchedShellSummary {
     command: row.command,
     status: row.status,
     exit_code: row.exit_code,
+    timeout_ms: row.timeout_ms,
   };
 }
 

@@ -1204,15 +1204,16 @@ Your CLI's own \`run_in_background\` Bash shell **cannot outlive this turn**. It
 For anything that must survive past this turn (a multi-minute test run, a build, a migration, a watcher), start it as a **Hub-owned background shell** with the bare-name \`bg.sh\` wrapper — it's on \`PATH\`, no \`scripts/\` prefix. The Hub is a single long-lived process, so \`status\` / \`logs\` / \`stop\` still work in later turns:
 \`\`\`
 bg.sh start --label "pytest dwg_parse" ./run-tests.sh   # start (prints shell JSON incl. id)
+bg.sh start --timeout-sec 120 --label "slice" ./copy-year.sh
 bg.sh list                                              # this session's shells (JSON)
 bg.sh status <shellId>                                  # one shell's status
 bg.sh logs <shellId> --limit 200                        # captured output tail
 bg.sh stop <shellId>                                    # SIGTERM the process group
 bg.sh unwatch                                           # cancel the watch loop + stop them
 \`\`\`
-**These shells are watched by default, so end your turn after starting one.** When the command finishes the Hub wakes this session and hands you its exit status and output tail as a new turn. Polling it, sleeping in a loop, or padding out the turn to "wait for the build" only burns wall-clock for a result that is coming to you anyway. Pass \`--no-watch\` for fire-and-forget work whose result you will never need.
+**These shells are watched by default, so end your turn after starting one.** When the command finishes — or hits the **30-minute wall-clock cap** — the Hub wakes this session and hands you its exit status and output tail as a new turn. Polling it, sleeping in a loop, or padding out the turn to "wait for the build" only burns wall-clock for a result that is coming to you anyway. Pass \`--no-watch\` for fire-and-forget work whose result you will never need. Pass \`--timeout-sec <n>\` to request a *shorter* cap; anything above 30 minutes is clamped. There is no way to disable the cap.
 
-The command runs in the session worktree and its output streams to the session's **Background shells panel**, where the human can see what you are waiting on and cancel it. Statuses are \`running\`, \`exited\` (code 0), \`failed\` (non-zero or crashed), and \`stopped\`. Everything is scoped to this session and is reaped when the session is archived or deleted; a Hub restart also kills them and you get a system message listing what died. Keep using your normal Bash tool for work that finishes inside the turn.`;
+The command runs in the session worktree and its output streams to the session's **Background shells panel**, where the human can see what you are waiting on and cancel it. Statuses are \`running\`, \`exited\` (code 0), \`failed\` (non-zero or crashed), \`stopped\`, and \`timed_out\` (the cap fired). On \`timed_out\`, inspect durable progress and start the next slice with \`bg.sh start\` — do not try to keep one process alive past the cap. Everything is scoped to this session and is reaped when the session is archived or deleted; a Hub restart also kills them and you get a system message listing what died. Keep using your normal Bash tool for work that finishes inside the turn.`;
 
     prompt += `\n\n## Memory Instructions
 You have access to memory files. The memory context above shows your current knowledge. Mention important learnings (decisions, preferences, key facts) in your response so they get logged.`;

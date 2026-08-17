@@ -14,7 +14,7 @@
  * mounting the app.
  */
 
-export type BackgroundShellStatus = 'running' | 'exited' | 'failed' | 'stopped';
+export type BackgroundShellStatus = 'running' | 'exited' | 'failed' | 'stopped' | 'timed_out';
 
 export interface BackgroundShellView {
   id: string;

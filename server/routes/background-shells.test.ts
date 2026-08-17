@@ -36,6 +36,7 @@ function row(over: Partial<BackgroundShellRow> = {}): BackgroundShellRow {
     log_path: '/data/background-shells/shell-1.log',
     watch: 1,
     watch_resolved_at: null,
+    timeout_ms: 1_800_000,
     created_at: '2026-01-01',
     updated_at: '2026-01-01',
     ...over,
@@ -124,6 +125,14 @@ describe('POST /api/sessions/:sessionId/background-shells', () => {
     expect(runtime.start).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: 'sess-1', command: 'sleep 100', cwd: TEST_CWD }),
     );
+  });
+
+  it('forwards timeoutMs to the runtime', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/sessions/sess-1/background-shells')
+      .send({ command: 'sleep 100', timeoutMs: 5_000 });
+    expect(res.status).toBe(201);
+    expect(runtime.start).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 5_000 }));
   });
 
   it('falls back to project cwd when the session has no worktree', async () => {

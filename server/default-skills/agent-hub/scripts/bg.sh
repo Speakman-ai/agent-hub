@@ -12,7 +12,7 @@
 # work you will never need to hear about.
 #
 # Usage:
-#   bg.sh start [--label <text>] [--no-watch] [--] <command...>
+#   bg.sh start [--label <text>] [--no-watch] [--timeout-sec <n>] [--] <command...>
 #                                                   Start a background shell.
 #   bg.sh list                                      List this session's shells (JSON).
 #   bg.sh status <shellId>                          Show one shell's status (JSON).
@@ -21,8 +21,13 @@
 #   bg.sh unwatch                                   Cancel the watch loop AND stop
 #                                                   every watched shell.
 #
-# `--label` / `--no-watch` are only recognized BEFORE the command. Use `--` to end
-# wrapper options when your command itself begins with a flag, e.g. `bg.sh start -- ./x --label`.
+# `--label` / `--no-watch` / `--timeout-sec` are only recognized BEFORE the
+# command. Use `--` to end wrapper options when your command itself begins
+# with a flag, e.g. `bg.sh start -- ./x --label`.
+#
+# Every shell is capped at 30 minutes (the Hub stops it and wakes this session
+# with status `timed_out`). `--timeout-sec` may request a *shorter* cap; longer
+# values are clamped to 30 minutes. There is no way to disable the cap.
 #
 # Everything is scoped to $AGENT_HUB_SESSION_ID (injected by the server at
 # spawn). The command runs in the session worktree. Auth is resolved through
@@ -34,6 +39,7 @@
 #
 # Examples:
 #   bg.sh start --label "prod build" npm run build   # then end your turn
+#   bg.sh start --timeout-sec 120 --label "slice" ./copy-year.sh
 #   bg.sh start --no-watch --label "cache warm" ./warm.sh
 #   bg.sh list
 #   bg.sh logs 6f1c… --limit 100
@@ -47,7 +53,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/ah-api.sh"
 
 usage() {
-  sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -66,9 +72,37 @@ json_escape() {
   node -e 'process.stdout.write(JSON.stringify(process.argv[1] ?? ""))' -- "$1"
 }
 
+# Wall-clock cap, in seconds, that the Hub enforces on every background shell
+# (mirrors BACKGROUND_SHELL_MAX_TIMEOUT_MS = 30 minutes server-side).
+TIMEOUT_CAP_SEC=1800
+
+# Validate a --timeout-sec value and set `timeout_ms` (the caller's local, via
+# bash dynamic scope) to the requested seconds × 1000, clamped to the cap.
+#
+# We clamp the SECONDS before multiplying so a huge request can't overflow
+# bash's signed 64-bit arithmetic: `--timeout-sec 18446744073709552 * 1000`
+# wraps to a small positive ms, which the server clamp would then accept — so
+# an above-cap value would time out almost immediately instead of being clamped
+# to 30 minutes. Length-comparing first keeps an over-long value out of the
+# arithmetic entirely (where the ×1 conversion itself could overflow).
+parse_timeout_ms() {
+  local sec="$1"
+  [[ "$sec" =~ ^[0-9]+$ ]] || die "--timeout-sec must be a positive integer"
+  # Drop leading zeros so the length comparison reflects magnitude, not padding.
+  while [[ ${#sec} -gt 1 && $sec == 0* ]]; do sec="${sec#0}"; done
+  # Reject zero explicitly: it passes the digit-only regex but the server would
+  # silently treat timeoutMs 0 as "no request" and fall back to the 30-minute
+  # default, running the command far longer than the caller asked for.
+  [[ "$sec" == 0 ]] && die "--timeout-sec must be a positive integer"
+  if ((${#sec} > ${#TIMEOUT_CAP_SEC})) || ((10#$sec > TIMEOUT_CAP_SEC)); then
+    sec=$TIMEOUT_CAP_SEC
+  fi
+  timeout_ms=$((10#$sec * 1000))
+}
+
 cmd_start() {
   require_session
-  local label="" watch="true"
+  local label="" watch="true" timeout_ms=""
   # Parse wrapper options ONLY in leading position, so they can't be confused
   # with the command's own argv. Stop at the first non-option token or at an
   # explicit `--` separator; everything after is the command, taken verbatim
@@ -93,6 +127,16 @@ cmd_start() {
         ;;
       --watch)
         watch="true"
+        shift
+        ;;
+      --timeout-sec)
+        shift
+        [[ $# -gt 0 ]] || die "--timeout-sec needs a value"
+        parse_timeout_ms "$1"
+        shift
+        ;;
+      --timeout-sec=*)
+        parse_timeout_ms "${1#--timeout-sec=}"
         shift
         ;;
       --)
@@ -128,7 +172,11 @@ cmd_start() {
     command+="${command:+ }$quoted"
   done
   local body
-  body="{\"command\":$(json_escape "$command"),\"label\":$(json_escape "$label"),\"watch\":${watch}}"
+  body="{\"command\":$(json_escape "$command"),\"label\":$(json_escape "$label"),\"watch\":${watch}"
+  if [[ -n "$timeout_ms" ]]; then
+    body+=",\"timeoutMs\":${timeout_ms}"
+  fi
+  body+="}"
   ah_api POST "/api/sessions/${AGENT_HUB_SESSION_ID}/background-shells" -d "$body"
 }
 

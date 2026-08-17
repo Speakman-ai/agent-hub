@@ -121,6 +121,7 @@ describe('buildEnrichedPrompt — background-shell guidance', () => {
     for (const cmd of ['bg.sh start', 'bg.sh list', 'bg.sh status', 'bg.sh logs', 'bg.sh stop']) {
       expect(prompt).toContain(cmd);
     }
+    expect(prompt).toContain('--timeout-sec');
   });
 
   it('documents the status vocabulary and session-scoped reaping', () => {
@@ -130,6 +131,8 @@ describe('buildEnrichedPrompt — background-shell guidance', () => {
     expect(prompt).toContain('`exited`');
     expect(prompt).toContain('`failed`');
     expect(prompt).toContain('`stopped`');
+    expect(prompt).toContain('`timed_out`');
+    expect(prompt).toContain('30-minute');
     expect(prompt).toContain('archived or deleted');
   });
 

@@ -154,6 +154,15 @@ describe('buildBackgroundShellWakePrompt', () => {
     expect(text).toContain('killed by a signal');
   });
 
+  it('tells the agent a timed-out shell hit the cap and to start the next slice', () => {
+    const text = buildBackgroundShellWakePrompt([
+      withLogs({ status: 'timed_out', timeout_ms: 1_800_000 }),
+    ]);
+    expect(text).toContain('hit the 30-minute cap');
+    expect(text).toContain('next slice');
+    expect(text).toContain('nohup');
+  });
+
   it('tells the agent it is a new process so it does not poll a dead handle', () => {
     expect(buildBackgroundShellWakePrompt([withLogs()])).toContain('new process');
   });
@@ -194,7 +203,32 @@ describe('buildWatchTurnEndNotice', () => {
   it('promises the session will resume on its own', () => {
     const text = buildWatchTurnEndNotice([shell({ status: 'running' })]);
     expect(text).toContain('resume automatically');
+    expect(text).toContain('30-minute cap');
     expect(text).toContain('prod build');
+  });
+
+  it('reflects a shorter --timeout-sec cap instead of always saying 30 minutes', () => {
+    const text = buildWatchTurnEndNotice([shell({ status: 'running', timeout_ms: 5_000 })]);
+    expect(text).toContain('5-second cap');
+    expect(text).not.toContain('30-minute cap');
+  });
+
+  it('names a shared cap when several watched shells agree', () => {
+    const text = buildWatchTurnEndNotice([
+      shell({ id: 'a', status: 'running', timeout_ms: 60_000 }),
+      shell({ id: 'b', status: 'running', timeout_ms: 60_000 }),
+    ]);
+    expect(text).toContain('they finish or hit the 1-minute cap');
+  });
+
+  it('does not pick a misleading single cap when watched shells differ', () => {
+    const text = buildWatchTurnEndNotice([
+      shell({ id: 'a', status: 'running', timeout_ms: 5_000 }),
+      shell({ id: 'b', status: 'running', timeout_ms: 1_800_000 }),
+    ]);
+    expect(text).toContain('they finish or hit their timeout caps');
+    expect(text).not.toContain('30-minute cap');
+    expect(text).not.toContain('5-second cap');
   });
 });
 

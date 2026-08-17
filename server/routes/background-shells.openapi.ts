@@ -20,7 +20,7 @@ const BackgroundShell = registerComponent(
       cwd: z.string().nullable(),
       pid: z.number().int().nullable(),
       pid_start_time: z.string().nullable(),
-      status: z.enum(['running', 'exited', 'failed', 'stopped']),
+      status: z.enum(['running', 'exited', 'failed', 'stopped', 'timed_out']),
       exit_code: z.number().int().nullable(),
       log_path: z.string().nullable(),
       watch: z.number().int().openapi({
@@ -28,6 +28,10 @@ const BackgroundShell = registerComponent(
           '1 while the watch loop should wake this shell\u2019s session when it finishes.',
       }),
       watch_resolved_at: z.string().nullable(),
+      timeout_ms: z.number().int().openapi({
+        description:
+          'Wall-clock cap in milliseconds. The Hub stops the process group when it fires (default and max 30 minutes).',
+      }),
       created_at: z.string(),
       updated_at: z.string(),
     })
@@ -76,6 +80,10 @@ registerPath({
             watch: z.boolean().optional().openapi({
               description:
                 'Wake the session automatically when this shell finishes. Defaults to true; pass false to start an unwatched shell.',
+            }),
+            timeoutMs: z.number().int().optional().openapi({
+              description:
+                'Wall-clock cap in milliseconds. Defaults to 1800000 (30 minutes). Values above 30 minutes are clamped; omitted/invalid values use the default. There is no way to disable the cap.',
             }),
           }),
         },

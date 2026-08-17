@@ -59,6 +59,8 @@ function jobStatusLabel(status: BackgroundShellView['status']): string {
       return 'Failed';
     case 'stopped':
       return 'Stopped';
+    case 'timed_out':
+      return 'Timed out';
     default: {
       const _exhaustive: never = status;
       return _exhaustive;

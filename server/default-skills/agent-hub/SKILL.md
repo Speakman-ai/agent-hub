@@ -177,7 +177,8 @@ run), start a **Hub-owned background shell** with `scripts/bg.sh`: it runs in
 the session worktree and streams to the **Background shells panel**.
 
 ```bash
-scripts/bg.sh start --label "prod build" npm run build  # start (prints shell JSON incl. id)
+scripts/bg.sh start --label "prod build" npm run build   # start (prints shell JSON incl. id)
+scripts/bg.sh start --timeout-sec 120 --label "slice" ./copy-year.sh   # shorter cap
 scripts/bg.sh list                                       # this session's shells (JSON)
 scripts/bg.sh status <shellId>                           # one shell's status
 scripts/bg.sh logs <shellId> --limit 100                 # captured output tail
@@ -185,13 +186,12 @@ scripts/bg.sh stop <shellId>                             # SIGTERM the process g
 scripts/bg.sh unwatch                                    # cancel the watch loop + stop them
 ```
 
-**Watched by default — start the work, then end your turn.** The Hub wakes this
-session with the exit status and output tail when it finishes, so polling or
-sleep-looping only burns wall-clock. `--no-watch` opts out.
-
-Everything is scoped to `$AGENT_HUB_SESSION_ID`. Statuses are `running`,
-`exited` (clean, code 0), `failed` (non-zero / crashed), or `stopped` (you
-stopped it). The Hub reaps every running shell when the session is archived.
+**Watched by default — start the work, then end your turn.** The Hub wakes this session with the
+exit status and output tail when the shell finishes or hits its cap — 30 min by default;
+`--timeout-sec` requests a shorter one, longer is clamped, and the cap can't be disabled — so
+polling only burns wall-clock; `--no-watch` opts out. Statuses are `running`, `exited` (clean,
+code 0), `failed` (non-zero / crashed), `stopped` (you stopped it), or `timed_out` (cap fired —
+inspect durable progress, start the next slice). The Hub reaps every running shell at archive.
 
 ## Workflows — worked examples
 

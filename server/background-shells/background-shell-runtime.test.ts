@@ -8,7 +8,7 @@
 
 import Database from 'better-sqlite3';
 import { EventEmitter } from 'events';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'child_process';
 import {
   BackgroundShellRuntime,
@@ -58,6 +58,7 @@ interface Harness {
   logs: Map<string, string>;
   readCalls: string[];
   lastSpawnOpts: () => Record<string, unknown> | null;
+  scheduled: Array<{ delayMs: number; run: () => void; cancelled: boolean }>;
 }
 
 function makeHarness(
@@ -68,6 +69,7 @@ function makeHarness(
   const killCalls: Array<{ target: number; signal: NodeJS.Signals }> = [];
   const logs = new Map<string, string>();
   const readCalls: string[] = [];
+  const scheduled: Array<{ delayMs: number; run: () => void; cancelled: boolean }> = [];
   let nextPid = 1000;
   let lastOpts: Record<string, unknown> | null = null;
 
@@ -110,9 +112,25 @@ function makeHarness(
       children.find((c) => c.pid === pid)?.emitExit(null, signal);
     },
     config: { killGraceMs: 10 },
+    schedule: (fn, delayMs) => {
+      const entry = { delayMs, run: fn, cancelled: false };
+      scheduled.push(entry);
+      return () => {
+        entry.cancelled = true;
+      };
+    },
   });
 
-  return { runtime, db, children, killCalls, logs, readCalls, lastSpawnOpts: () => lastOpts };
+  return {
+    runtime,
+    db,
+    children,
+    killCalls,
+    logs,
+    readCalls,
+    lastSpawnOpts: () => lastOpts,
+    scheduled,
+  };
 }
 
 const START = {
@@ -132,6 +150,9 @@ describe('BackgroundShellRuntime.start', () => {
     expect(row.command).toBe('npm run build');
     expect(row.label).toBe('build');
     expect(row.pid).toBe(1000);
+    expect(row.timeout_ms).toBe(30 * 60 * 1000);
+    expect(h.scheduled).toHaveLength(1);
+    expect(h.scheduled[0].delayMs).toBe(30 * 60 * 1000);
     expect(row.log_path).toBe(`/fake/${row.id}.log`);
     expect(h.lastSpawnOpts()).toMatchObject({ cwd: '/wt/sess-1', detached: true });
   });
@@ -892,5 +913,60 @@ describe('BackgroundShellRuntime.stopSessionSnapshot', () => {
     expect(stopped).toEqual([]);
     expect(h.runtime.getById(finished.id)?.watch).toBe(0);
     expect(h.runtime.getById(finished.id)?.status).toBe('exited');
+  });
+});
+
+describe('BackgroundShellRuntime timeout cap', () => {
+  it('defaults to 30 minutes and arms a timer for that delay', () => {
+    const h = makeHarness();
+    const row = h.runtime.start(START);
+    expect(row.timeout_ms).toBe(1_800_000);
+    expect(h.scheduled).toEqual([
+      expect.objectContaining({ delayMs: 1_800_000, cancelled: false }),
+    ]);
+  });
+
+  it('clamps a requested cap above 30 minutes', () => {
+    const h = makeHarness();
+    const row = h.runtime.start({ ...START, timeoutMs: 24 * 60 * 60 * 1000 });
+    expect(row.timeout_ms).toBe(1_800_000);
+    expect(h.scheduled[0].delayMs).toBe(1_800_000);
+  });
+
+  it('honours a shorter requested cap', () => {
+    const h = makeHarness();
+    const row = h.runtime.start({ ...START, timeoutMs: 5_000 });
+    expect(row.timeout_ms).toBe(5_000);
+    expect(h.scheduled[0].delayMs).toBe(5_000);
+  });
+
+  it('defaults a fractional cap instead of arming a near-instant timer', () => {
+    // Regression: a fractional timeoutMs (1.5) reaching the store used to floor
+    // to a 1 ms cap and kill the shell immediately. It must default to 30 min.
+    const h = makeHarness();
+    const row = h.runtime.start({ ...START, timeoutMs: 1.5 });
+    expect(row.timeout_ms).toBe(1_800_000);
+    expect(h.scheduled[0].delayMs).toBe(1_800_000);
+  });
+
+  it('SIGTERMs the process group and marks the row timed_out when the cap fires', async () => {
+    const h = makeHarness();
+    const row = h.runtime.start({ ...START, watch: true, timeoutMs: 5_000 });
+    h.scheduled[0].run();
+    await vi.waitFor(() => {
+      expect(h.runtime.getById(row.id)?.status).toBe('timed_out');
+    });
+    expect(h.killCalls.some((c) => c.signal === 'SIGTERM')).toBe(true);
+    expect(h.logs.get(row.id)).toContain('timed out after the 5-second cap');
+  });
+
+  it('does not time out a shell that already exited', async () => {
+    const h = makeHarness();
+    const row = h.runtime.start(START);
+    h.children[0].emitExit(0);
+    expect(h.runtime.getById(row.id)?.status).toBe('exited');
+    expect(h.scheduled[0].cancelled).toBe(true);
+    h.scheduled[0].run();
+    expect(h.runtime.getById(row.id)?.status).toBe('exited');
   });
 });

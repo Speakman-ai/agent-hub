@@ -39,6 +39,11 @@ import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { BACKGROUND_SHELLS_SCHEMA } from './background-shell-schema.js';
+import {
+  BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS,
+  clampBackgroundShellTimeoutMs,
+  formatBackgroundShellTimeoutCap,
+} from './background-shell-timeout.js';
 
 /**
  * Default `/proc/<pid>/cmdline` reader for the boot-orphan reaper. argv is
@@ -109,8 +114,9 @@ function defaultProbeGroupAlive(pid: number): boolean {
  *   - `exited`   — process exited on its own with code 0.
  *   - `failed`   — process exited non-zero, or spawn/child errored.
  *   - `stopped`  — the runtime SIGTERMed it (stop / session reap).
+ *   - `timed_out` — the hard wall-clock cap fired and the process group was killed.
  */
-export type BackgroundShellStatus = 'running' | 'exited' | 'failed' | 'stopped';
+export type BackgroundShellStatus = 'running' | 'exited' | 'failed' | 'stopped' | 'timed_out';
 
 /** Persisted row shape, surfaced by the REST + wrapper surfaces. */
 export interface BackgroundShellRow {
@@ -133,6 +139,8 @@ export interface BackgroundShellRow {
   watch: number;
   /** When the watch was consumed or cancelled. Null while still armed. */
   watch_resolved_at: string | null;
+  /** Wall-clock cap in ms. The Hub SIGTERMs the process group when it fires. */
+  timeout_ms: number;
   created_at: string;
   updated_at: string;
 }
@@ -151,6 +159,11 @@ export interface StartBackgroundShellInput {
    * wakes its session with the result instead of leaving it idle forever.
    */
   watch?: boolean;
+  /**
+   * Wall-clock cap in ms. Clamped to the 30-minute maximum; omitted/invalid
+   * values use {@link BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS}.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -251,6 +264,11 @@ export interface BackgroundShellRuntimeDeps {
    * a process that ignores SIGTERM.
    */
   probeGroupAlive?: (pid: number) => boolean;
+  /**
+   * Schedule a one-shot timer. Returns a cancel function. Injected so timeout
+   * tests can fire the cap without waiting 30 minutes (or even 50ms).
+   */
+  schedule?: (fn: () => void, delayMs: number) => () => void;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -275,12 +293,14 @@ interface ShellHandle {
   /** Guards double-finalization (exit racing stop). */
   finalized: boolean;
   /**
-   * Set by `stop()` before it signals the child. The exit event that our own
-   * SIGTERM triggers then records `stopped` instead of `failed`, so an
-   * operator-initiated stop is never misreported as a crash.
+   * Set by `stop()` / the wall-clock cap before signalling the child. The exit
+   * event that our own SIGTERM triggers then records `stopped` or `timed_out`
+   * instead of `failed`, so an operator-initiated stop is never misreported
+   * as a crash.
    */
   stopping: boolean;
   naturalExitTimer?: NodeJS.Timeout;
+  cancelTimeout?: () => void;
 }
 
 export class BackgroundShellRuntime {
@@ -296,6 +316,7 @@ export class BackgroundShellRuntime {
   private readonly readProcArgv: (pid: number) => string[] | null;
   private readonly readProcStartTime: (pid: number) => string | null;
   private readonly probeGroupAlive: (pid: number) => boolean;
+  private readonly schedule: (fn: () => void, delayMs: number) => () => void;
 
   /**
    * Resolves once the boot-orphan reconcile has finished reaping + finalizing
@@ -336,11 +357,19 @@ export class BackgroundShellRuntime {
     this.readProcArgv = deps.readProcArgv ?? defaultReadProcArgv;
     this.readProcStartTime = deps.readProcStartTime ?? defaultReadProcStartTime;
     this.probeGroupAlive = deps.probeGroupAlive ?? defaultProbeGroupAlive;
+    this.schedule =
+      deps.schedule ??
+      ((fn, delayMs) => {
+        const timer = setTimeout(fn, delayMs);
+        timer.unref?.();
+        return () => clearTimeout(timer);
+      });
     // Apply schema so a caller can pass a hand-built DB (tests) without a
     // separate init step — same convention as other managed runtimes.
     this.db.exec(BACKGROUND_SHELLS_SCHEMA);
     this.ensurePidStartTimeColumn();
     this.ensureWatchColumns();
+    this.ensureTimeoutColumn();
     this.bootOrphans = this.readBootOrphans();
     // A prior Hub process may have left rows marked `running` whose detached
     // children can still be alive. Reap them (escalating SIGTERM→SIGKILL) and
@@ -373,12 +402,13 @@ export class BackgroundShellRuntime {
     const id = randomUUID();
     const now = this.clock.nowIso();
     const label = input.label?.trim() ? input.label.trim() : null;
+    const timeoutMs = clampBackgroundShellTimeoutMs(input.timeoutMs);
     const sink = this.logSink.open(id);
     this.db
       .prepare(
         `INSERT INTO background_shells
-           (id, session_id, project_id, command, label, cwd, pid, status, exit_code, log_path, watch, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, 'running', NULL, ?, ?, ?, ?)`,
+           (id, session_id, project_id, command, label, cwd, pid, status, exit_code, log_path, watch, timeout_ms, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, 'running', NULL, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -389,6 +419,7 @@ export class BackgroundShellRuntime {
         input.cwd,
         sink.path,
         input.watch ? 1 : 0,
+        timeoutMs,
         now,
         now,
       );
@@ -452,17 +483,21 @@ export class BackgroundShellRuntime {
     });
     child.on('exit', (code, signal) => {
       if (handle.finalized) return;
-      // `stop()` set `stopping` before signalling — the exit it triggered is
-      // an operator stop, not a crash, even though it arrives with a signal.
+      // `stop()` / the timeout cap set `stopping` before signalling — the
+      // exit they triggered is not a crash, even though it arrives with a
+      // signal. Leave finalization to `terminate()` after the group is reaped.
       if (handle.stopping) {
-        // Leave finalization to `stop()` after the entire process group has
-        // been reaped. The shell leader can exit while descendants remain.
+        // The shell leader can exit while descendants remain.
       } else if (signal) {
         this.monitorNaturalExit(handle, 'failed', null);
       } else {
         this.monitorNaturalExit(handle, code === 0 ? 'exited' : 'failed', code ?? null);
       }
     });
+
+    handle.cancelTimeout = this.schedule(() => {
+      void this.timeout(id, append);
+    }, timeoutMs);
 
     const row = this.getById(id)!;
     this.emit(row);
@@ -618,6 +653,30 @@ export class BackgroundShellRuntime {
    * configured grace. Returns the resulting row (or null if unknown).
    */
   async stop(shellId: string): Promise<BackgroundShellRow | null> {
+    return this.terminate(shellId, 'stopped');
+  }
+
+  /**
+   * Wall-clock cap: SIGTERM the process group and mark the row `timed_out`.
+   * Watched shells still wake the session so the agent can start the next
+   * slice. No-ops if the shell already finished.
+   */
+  private async timeout(shellId: string, append: (chunk: string) => void): Promise<void> {
+    const handle = this.handles.get(shellId);
+    if (!handle || handle.finalized) return;
+    const row = this.getById(shellId);
+    const cap = formatBackgroundShellTimeoutCap(
+      row?.timeout_ms ?? BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS,
+    );
+    append(`[agent-hub] timed out after the ${cap} cap; stopping the process group\n`);
+    this.logger.warn(`[bg-shell ${shellId}] timed out after ${cap} cap`);
+    await this.terminate(shellId, 'timed_out');
+  }
+
+  private async terminate(
+    shellId: string,
+    status: Extract<BackgroundShellStatus, 'stopped' | 'timed_out'>,
+  ): Promise<BackgroundShellRow | null> {
     const handle = this.handles.get(shellId);
     if (!handle) {
       // No live handle — either a prior Hub process or a stop racing boot
@@ -634,9 +693,9 @@ export class BackgroundShellRuntime {
         }
         this.db
           .prepare(
-            `UPDATE background_shells SET status = 'stopped', updated_at = ? WHERE id = ? AND status = 'running'`,
+            `UPDATE background_shells SET status = ?, updated_at = ? WHERE id = ? AND status = 'running'`,
           )
-          .run(this.clock.nowIso(), shellId);
+          .run(status, this.clock.nowIso(), shellId);
         const updated = this.getById(shellId);
         if (updated) {
           this.emit(updated);
@@ -649,9 +708,9 @@ export class BackgroundShellRuntime {
     if (handle.finalized) return this.getById(shellId);
 
     // Signal FIRST, then finalize. `stopping` tells the child's exit handler
-    // to record `stopped` (not `failed`) for the signal-triggered exit; the
-    // trailing finalize covers the no-child / already-exited case where no
-    // exit event will fire.
+    // to leave finalization to us (not record `failed`) for the
+    // signal-triggered exit; the trailing finalize covers the no-child /
+    // already-exited case where no exit event will fire.
     const child = handle.child;
     if (child && typeof child.pid === 'number') {
       handle.stopping = true;
@@ -659,7 +718,7 @@ export class BackgroundShellRuntime {
       this.killGroup(child, 'SIGTERM');
       await this.waitForExit(child);
     }
-    if (!handle.finalized) this.finalize(handle, 'stopped', null);
+    if (!handle.finalized) this.finalize(handle, status, null);
     return this.getById(shellId);
   }
 
@@ -753,6 +812,12 @@ export class BackgroundShellRuntime {
     if (handle.finalized) return;
     handle.finalized = true;
     if (handle.naturalExitTimer) clearTimeout(handle.naturalExitTimer);
+    try {
+      handle.cancelTimeout?.();
+    } catch {
+      // ignore cancel failures
+    }
+    handle.cancelTimeout = undefined;
     this.db
       .prepare(
         `UPDATE background_shells
@@ -862,6 +927,22 @@ export class BackgroundShellRuntime {
     }
     if (!has('watch_resolved_at')) {
       this.db.exec(`ALTER TABLE background_shells ADD COLUMN watch_resolved_at TEXT`);
+    }
+  }
+
+  /**
+   * Wall-clock cap column. Rows from an older build get the 30-minute default
+   * so an upgrade never leaves a pre-cap shell unbounded; in practice those
+   * rows are already terminal or get reaped on boot.
+   */
+  private ensureTimeoutColumn(): void {
+    const columns = this.db.prepare(`PRAGMA table_info(background_shells)`).all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((column) => column.name === 'timeout_ms')) {
+      this.db.exec(
+        `ALTER TABLE background_shells ADD COLUMN timeout_ms INTEGER NOT NULL DEFAULT ${BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS}`,
+      );
     }
   }
 

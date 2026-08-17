@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS background_shells (
   log_path TEXT,
   watch INTEGER NOT NULL DEFAULT 0,
   watch_resolved_at TEXT,
+  timeout_ms INTEGER NOT NULL DEFAULT 1800000,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

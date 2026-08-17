@@ -20,6 +20,7 @@ function row(overrides: Partial<BackgroundShellRow> = {}): BackgroundShellRow {
     watch: 1,
     watch_resolved_at: null,
     pid_start_time: null,
+    timeout_ms: 1_800_000,
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
     ...overrides,

@@ -18,13 +18,19 @@
  * without a database, a process, or a clock.
  */
 
+import {
+  BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS,
+  formatBackgroundShellTimeoutCap,
+} from './background-shell-timeout.js';
+
 /** The subset of a shell row the watch policy and its copy actually read. */
 export interface WatchedShellSummary {
   id: string;
   label: string | null;
   command: string;
-  status: 'running' | 'exited' | 'failed' | 'stopped';
+  status: 'running' | 'exited' | 'failed' | 'stopped' | 'timed_out';
   exit_code: number | null;
+  timeout_ms?: number;
 }
 
 /**
@@ -162,8 +168,14 @@ function outcomeOf(shell: WatchedShellSummary): string {
         : `failed (exit ${shell.exit_code})`;
     case 'stopped':
       return 'was stopped from the Agent Hub UI';
-    default:
+    case 'timed_out':
+      return `hit the ${formatBackgroundShellTimeoutCap(shell.timeout_ms ?? BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS)} cap and was stopped`;
+    case 'running':
       return 'is still running';
+    default: {
+      const _exhaustive: never = shell.status;
+      return _exhaustive;
+    }
   }
 }
 
@@ -230,6 +242,12 @@ export function buildBackgroundShellWakePrompt(
     'Continue the work this shell was part of: act on the result above, and if more long-running work is needed start it with `bg.sh start --label "<label>" <command>` and end your turn — you will be woken again. Do not poll or sleep-loop waiting for it.',
   );
 
+  if (finished.some((shell) => shell.status === 'timed_out')) {
+    parts.push(
+      'A shell hit the wall-clock cap (30 minutes by default; shorter is allowed, longer is not). Inspect durable progress (destination, logs, S3, git) and start the **next slice** with `bg.sh start`. Do not try to keep one process alive past the cap — `nohup`, `setsid`, and detaching inside a container will not help and are not allowed.',
+    );
+  }
+
   return parts.join('\n\n');
 }
 
@@ -246,7 +264,17 @@ export function buildWatchTurnEndNotice(shells: readonly WatchedShellSummary[]):
   const more = shells.length - shown.length;
   if (more > 0) shown.push(`- …and ${more} more`);
   const noun = shells.length === 1 ? 'shell' : 'shells';
-  const verb = shells.length === 1 ? 'it finishes' : 'they finish';
+  const caps = new Set(
+    shells.map((shell) =>
+      formatBackgroundShellTimeoutCap(shell.timeout_ms ?? BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS),
+    ),
+  );
+  // Derive the cap copy from the watched rows so a `--timeout-sec 5` shell
+  // isn't told it has 30 minutes. When the batch mixes caps, name none rather
+  // than pick a misleading one.
+  const capPhrase = caps.size === 1 ? `the ${[...caps][0]} cap` : 'their timeout caps';
+  const verb =
+    shells.length === 1 ? `it finishes or hits ${capPhrase}` : `they finish or hit ${capPhrase}`;
   return [
     `⏳ Watching ${shells.length} background ${noun}. This session will resume automatically when ${verb}:`,
     shown.join('\n'),
