@@ -7,12 +7,16 @@
  * inbound side. Keeping this transport-agnostic means the same channel works
  * whether the agent talks HTTP long-poll (today) or WebSocket (later).
  *
- *   backend.acquire  → createJobChannel(jobId) → await ready (agent attached)
+ *   backend.acquire  → createJobChannel(jobId) → await ready (agent claimed)
  *   spawnStep(step)  → channel.runStep() → RemoteSpawnedStep
- *   agent poll       → channel.nextDirective()  (long-poll)
+ *   agent poll       → channel.nextDirective()  (long-poll; also attaches)
  *   agent log post   → channel.onLog()    → RemoteSpawnedStep.feed()
  *   agent result post→ channel.onStepResult() → RemoteSpawnedStep.exit() → close
  *   lease.release    → channel.finish() + dispose
+ *
+ * `ready` settles on claim (routes attach) so Hub acquire is not blocked on
+ * worktree/DinD bring-up. Poll still calls attach() (idempotent) for tests /
+ * backends that attach without going through /claim.
  */
 import { RemoteSpawnedStep, type RemoteStepSink } from './remote-spawned-step.js';
 
@@ -41,9 +45,9 @@ export type RunnerDirective =
 
 export class RunnerJobChannel implements RemoteStepSink {
   /**
-   * Resolves when the agent attaches (first poll); REJECTS if the channel fails
-   * before any attach (agent claimed the job then died during container bring-up,
-   * before its first directive poll). The acquire-phase `Promise.race` in the
+   * Resolves when the agent attaches (claim-time, or first poll as a fallback);
+   * REJECTS if the channel fails before any attach (e.g. claim never completed
+   * but the row was marked lost). The acquire-phase `Promise.race` in the
    * remote backend awaits this — without the reject path a pre-attach loss would
    * keep that race pending until its timeout (≈ the whole run budget), stranding
    * the Finalize run even though the lease reaper already marked the job `lost`.
@@ -72,7 +76,7 @@ export class RunnerJobChannel implements RemoteStepSink {
     this.ready.catch(() => {});
   }
 
-  /** Called by the routes layer when the agent first polls — the runner is live. */
+  /** Called when a live agent owns the job (claim) or first polls — Hub may proceed. */
   attach(): void {
     if (!this.settled) {
       this.attached = true;

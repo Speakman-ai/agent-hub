@@ -40,15 +40,15 @@ describe('createRemoteRunnerBackend', () => {
       labels: {},
     });
 
-    // Simulate the pull-based agent: claim the job, then poll (which attaches
-    // the channel → unblocks acquire).
+    // Simulate the pull-based agent: claim the job, then attach (claim-time
+    // handshake — production does this in POST /claim before bring-up).
     const claimed = claimRunnerJob({ agentId: 'agent-1', leaseMs: 60_000, now: Date.now() });
     expect(claimed).not.toBeNull();
     const channel = getJobChannel(claimed!.id)!;
     expect(channel).toBeDefined();
-
-    const pollP = channel.nextDirective(1000); // first poll attaches
+    channel.attach();
     const lease = await acquireP;
+    const pollP = channel.nextDirective(1000);
 
     // Backend pushes a step; the agent's poll receives the run_step directive.
     const step = lease.spawnStep({
@@ -102,7 +102,7 @@ describe('createRemoteRunnerBackend', () => {
     });
     const claimed = claimRunnerJob({ agentId: 'agent-1', leaseMs: 60_000, now: Date.now() });
     const channel = getJobChannel(claimed!.id)!;
-    void channel.nextDirective(1000); // first poll attaches → unblocks acquire
+    channel.attach(); // claim-time attach → unblocks acquire
     const lease = await acquireP;
 
     const step = lease.spawnStep({
@@ -149,8 +149,9 @@ describe('createRemoteRunnerBackend', () => {
     });
     const claimed = claimRunnerJob({ agentId: 'agent-d', leaseMs: 60_000, now: Date.now() });
     const channel = getJobChannel(claimed!.id)!;
-    const pollP = channel.nextDirective(1000);
+    channel.attach();
     const lease = await acquireP;
+    const pollP = channel.nextDirective(1000);
 
     lease.spawnStep({
       step: { name: 's', run: 'npm test' },
@@ -194,7 +195,7 @@ describe('createRemoteRunnerBackend', () => {
 
     // Complete the handshake so the acquire promise settles (no dangling timer).
     const channel = getJobChannel(claimed!.id)!;
-    void channel.nextDirective(1000); // first poll attaches → unblocks acquire
+    channel.attach();
     const lease = await acquireP;
     await lease.release();
   });
@@ -241,6 +242,7 @@ describe('createRemoteRunnerBackend', () => {
       }
       expect(claimed).not.toBeNull();
       const channel = getJobChannel(claimed!.id)!;
+      channel.attach();
       const pollP = channel.nextDirective(1000);
       const lease = await acquireP;
       await pollP;

@@ -109,6 +109,51 @@ export const STEP_DEADLINE_EXIT_CODE = 124;
 export const DEFAULT_STEP_DEADLINE_MS = 60 * 60 * 1_000;
 
 /**
+ * Hard ceiling for worktree materialize + DinD start BEFORE the agent polls for
+ * directives. Claim already attached the Hub channel (so steps can leave
+ * `queued`), but a hung bring-up would otherwise heartbeat forever while never
+ * draining `run_step`. Override with FINALIZE_RUNNER_BRINGUP_DEADLINE_MS.
+ */
+export const DEFAULT_BRINGUP_DEADLINE_MS = 3 * 60 * 1_000;
+
+export function readBringupDeadlineMs(
+  env: NodeJS.ProcessEnv = process.env,
+  fallback: number = DEFAULT_BRINGUP_DEADLINE_MS,
+): number {
+  const raw = env.FINALIZE_RUNNER_BRINGUP_DEADLINE_MS?.trim();
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 1_000 ? n : fallback;
+}
+
+/** Reject if `work` does not settle within `deadlineMs` (bring-up hard ceiling). */
+export async function withBringupDeadline<T>(
+  deadlineMs: number,
+  work: () => Promise<T>,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new Error(
+              `runner bring-up (worktree + DinD) exceeded ${deadlineMs}ms — aborting before directive poll`,
+            ),
+          );
+        }, deadlineMs);
+        if (typeof (timer as { unref?: () => void }).unref === 'function') {
+          (timer as { unref: () => void }).unref();
+        }
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Per-attempt timeout for the two CRITICAL posts (step-result, finish). A hung
  * fetch is indistinguishable from a lost message — without a bound the agent
  * would sit in `await fetch` forever while its heartbeat keeps the lease
@@ -199,6 +244,8 @@ export async function runAgentJob(args: {
    * very `lease expired` reaping this aims to prevent).
    */
   spotProbeMs?: number;
+  /** Override {@link DEFAULT_BRINGUP_DEADLINE_MS} for tests. */
+  bringupDeadlineMs?: number;
   protection?: TaskProtection;
   /**
    * Starts the host resource sampler for this job. Injectable for tests;
@@ -289,17 +336,20 @@ export async function runAgentJob(args: {
     // root itself: that root (/finalize-ws) is a bind-mount point — it can't be
     // rmdir'd, and materializeWorktree clears its dest before cloning.
     const jobWorkspace = path.join(args.workspaceDir, 'repo');
-    // Prior jobs leave other-uid / root files under /finalize-ws/repo; wipe with
-    // sudo first so materialize's fs.rm cannot EACCES and strand the shard.
-    await (args.clearJobWorktreeDest ?? clearWorktreeDestForRematerialize)(jobWorkspace);
-    if (spec.worktreeRef && args.materialize) {
-      await args.materialize(spec, jobWorkspace);
-    }
-    // Agent image and job image can disagree on `runner`'s uid during a
-    // rollout (agent on :main → 1001, job on a pinned build → 1000). Without
-    // this, npm ci / venv mkdir EACCES across every shard.
-    await (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace);
-    const containerName = await docker.startContainer(spec, jobWorkspace);
+    const bringupDeadlineMs = args.bringupDeadlineMs ?? readBringupDeadlineMs();
+    const containerName = await withBringupDeadline(bringupDeadlineMs, async () => {
+      // Prior jobs leave other-uid / root files under /finalize-ws/repo; wipe with
+      // sudo first so materialize's fs.rm cannot EACCES and strand the shard.
+      await (args.clearJobWorktreeDest ?? clearWorktreeDestForRematerialize)(jobWorkspace);
+      if (spec.worktreeRef && args.materialize) {
+        await args.materialize(spec, jobWorkspace);
+      }
+      // Agent image and job image can disagree on `runner`'s uid during a
+      // rollout (agent on :main → 1001, job on a pinned build → 1000). Without
+      // this, npm ci / venv mkdir EACCES across every shard.
+      await (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace);
+      return docker.startContainer(spec, jobWorkspace);
+    });
     let seq = 0;
     try {
       for (;;) {

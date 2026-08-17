@@ -22,7 +22,7 @@ import {
   markRunnerJobSpotInterruption,
   reportRunnerJob,
 } from './runner-queue.js';
-import { getJobChannel } from './runner-job-channel.js';
+import { getJobChannel, removeJobChannel } from './runner-job-channel.js';
 import {
   armHubTaskProtection,
   clearHubTaskProtection,
@@ -203,6 +203,14 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
         // failure → 'error', which the per-heartbeat re-arm then retries), so
         // awaiting it can't break the claim handshake.
         await armHubTaskProtection(agentTaskArn(agent.agentId), taskProtectionCfg, { force: true });
+        // Attach as soon as a live agent owns the job — do NOT wait for the first
+        // directive poll. The agent still materializes the worktree + starts DinD
+        // *after* claim; if acquire only resolved on that first poll, a hung
+        // bring-up kept heartbeats alive while Hub steps sat `queued` forever
+        // (electron shard stranded while siblings passed; fleet scaled to 1).
+        // Claim-time attach lets the Hub mark steps running and queue `run_step`
+        // directives; the agent drains them once bring-up finishes.
+        getJobChannel(job.id)?.attach();
         res.json({
           jobId: job.id,
           spec: JSON.parse(job.specJson),
@@ -387,6 +395,7 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
         : 'runner agent reported a job error';
     getJobChannel(jobId)?.fail(new Error(`runner agent lost — ${detail}`));
     reportRunnerJob({ jobId, state: 'lost', detail, now: Date.now() });
+    removeJobChannel(jobId);
     getOrgsDb()
       .prepare(
         "UPDATE runner_agents SET state='idle', current_job_id=NULL, last_seen_at=? WHERE id=?",

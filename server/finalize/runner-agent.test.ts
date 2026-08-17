@@ -441,6 +441,24 @@ describe('runAgentJob', () => {
     expect(events[0]).toBe('start:/ws/repo');
   });
 
+  it('aborts hung bring-up before the first directive poll (bring-up deadline)', async () => {
+    const { transport, docker } = fakes([{ type: 'finish' }], () => 0);
+    await expect(
+      runAgentJob({
+        jobId: 'j',
+        spec: wire({ worktreeRef: { key: 'worktrees/o/r.bundle', sha256: 'x', sizeBytes: 1 } }),
+        workspaceDir: '/ws',
+        ...noChown,
+        transport,
+        docker,
+        bringupDeadlineMs: 30,
+        materialize: async () => {
+          await new Promise((r) => setTimeout(r, 500));
+        },
+      }),
+    ).rejects.toThrow(/bring-up.*exceeded 30ms/);
+  });
+
   // Regression: a hung/runaway remote step used to pin the agent in execStep
   // forever — the agent kept heartbeating, so the Hub lease reaper never fired
   // and the whole run hung. The agent now enforces the directive's per-step

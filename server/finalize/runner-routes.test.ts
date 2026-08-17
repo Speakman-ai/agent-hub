@@ -317,23 +317,13 @@ describe('runner-routes (HTTP control plane)', () => {
     expect(gone.status).toBe(410);
   });
 
-  // Regression (card #1184): the stall this whole card fixes. An agent claims a
-  // job, dies during container bring-up BEFORE its first poll (never attaches),
-  // and reports the loss via POST /error (#3a). The backend's acquire() is parked
-  // on channel.ready; that report must reject `ready` (#1) so acquire fails FAST
-  // (→ infra_error → retry) instead of waiting out acquireTimeoutMs (≈ the whole
-  // run budget). acquireTimeoutMs is set deliberately huge here: if the fix
-  // regresses, this test hangs to the vitest timeout instead of passing.
-  it('agent POST /error before attach makes acquire reject immediately, not after the budget', async () => {
+  // Claim attaches immediately so Hub acquire is not blocked on DinD/worktree
+  // bring-up. A hung bring-up used to keep heartbeats alive while Hub steps sat
+  // `queued` forever (stranded matrix shards after siblings passed).
+  it('claim attaches the channel so acquire unblocks before the first poll', async () => {
     const token = await register();
-    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 600_000 });
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 5_000 });
     const acquireP = backend.acquire(SPEC);
-    // Swallow the expected rejection on a second handle so it can't surface as an
-    // unhandled rejection while we drive the HTTP calls.
-    const settled = acquireP.then(
-      () => ({ ok: true as const }),
-      (err: Error) => ({ ok: false as const, err }),
-    );
 
     const claim = await request(app)
       .post('/api/runners/claim')
@@ -341,25 +331,74 @@ describe('runner-routes (HTTP control plane)', () => {
       .send({});
     expect(claim.status).toBe(200);
     const jobId = claim.body.jobId as string;
-    expect(getJobChannel(jobId)?.isAttached).toBe(false); // never polled → not attached
+    expect(getJobChannel(jobId)?.isAttached).toBe(true);
 
-    // Agent's runAgentJob threw during bring-up; it reports the loss.
+    // Acquire must resolve without any poll — agent is still "bringing up".
+    const lease = await acquireP;
+
+    const step = lease.spawnStep({
+      step: { name: 't', run: 'true' },
+      index: 0,
+      cwd: '/tmp',
+      env: {},
+    });
+    const closes: Array<number | null> = [];
+    step.on('close', (c) => closes.push(c));
+
+    const poll = await request(app)
+      .post(`/api/runners/jobs/${jobId}/poll`)
+      .set('Authorization', `Bearer ${token}`)
+      .send();
+    expect(poll.status).toBe(200);
+    expect(poll.body.type).toBe('run_step');
+
+    await request(app)
+      .post(`/api/runners/jobs/${jobId}/step-result`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ stepIndex: 0, exitCode: 0 });
+    await tick();
+    expect(closes).toEqual([0]);
+    await lease.release();
+  });
+
+  // Bring-up failure AFTER claim-time attach: acquire already resolved; POST
+  // /error must fail in-flight steps and mark the queue row lost.
+  it('agent POST /error after claim-attach fails in-flight steps and marks the job lost', async () => {
+    const token = await register();
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 5_000 });
+    const lease = await (async () => {
+      const acquireP = backend.acquire(SPEC);
+      const claim = await request(app)
+        .post('/api/runners/claim')
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      expect(claim.status).toBe(200);
+      return { jobId: claim.body.jobId as string, lease: await acquireP };
+    })();
+    const { jobId } = lease;
+
+    const step = lease.lease.spawnStep({
+      step: { name: 't', run: 'true' },
+      index: 0,
+      cwd: '/tmp',
+      env: {},
+    });
+    const errors: Error[] = [];
+    step.on('error', (err) => errors.push(err));
+
     const errRes = await request(app)
       .post(`/api/runners/jobs/${jobId}/error`)
       .set('Authorization', `Bearer ${token}`)
       .send({ detail: 'inner dockerd not ready within 120s' });
     expect(errRes.status).toBe(204);
+    await tick();
+    expect(errors.some((e) => /inner dockerd not ready/.test(e.message))).toBe(true);
 
-    const outcome = await settled;
-    expect(outcome.ok).toBe(false);
-    expect((outcome as { err: Error }).err.message).toMatch(/lost before attach/);
-    expect((outcome as { err: Error }).err.message).toContain('inner dockerd not ready');
-
-    // Queue row is terminal and the channel is cleaned up.
     const row = getOrgsDb()
       .prepare('SELECT state, detail FROM runner_jobs WHERE id=?')
       .get(jobId) as { state: string; detail: string | null };
     expect(row.state).toBe('lost');
+    expect(row.detail).toBe('inner dockerd not ready within 120s');
     expect(getJobChannel(jobId)).toBeUndefined();
   });
 
