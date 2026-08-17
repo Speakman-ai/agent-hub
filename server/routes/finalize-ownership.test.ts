@@ -35,6 +35,8 @@ function makeStmts() {
     // ownership tests don't seed a worktree, so a no-row mock keeps
     // currentHeadSha=null / stale=false.
     getSession: { get: vi.fn() },
+    getFinalizeRunStep: { get: vi.fn() },
+    getMessages: { all: vi.fn().mockReturnValue([]) },
     listReviewerThreadsForRun: { all: vi.fn().mockReturnValue([]) },
   };
 }
@@ -122,5 +124,47 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
       flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
     });
+  });
+});
+
+describe('GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output ownership gate', () => {
+  it('allows project-visible PR CI logs without requiring access to the sentinel session', async () => {
+    userCanReadSession.mockReturnValue(false);
+    const stmts = makeStmts();
+    stmts.getFinalizeRun.get.mockReturnValue({
+      id: 'pr-ci-run',
+      project_id: 'project-1',
+      session_id: 'pr-ci-sentinel-session',
+      trigger_source: 'pr_push',
+    });
+    const { app, deps } = makeApp(stmts);
+    vi.mocked(deps.findProject).mockReturnValue({ id: 'project-1' } as never);
+
+    const res = await supertest(app)
+      .get('/api/projects/project-1/finalize/pr-ci-run/steps/1/output')
+      .expect(200);
+
+    expect(res.body).toEqual({ run_id: 'pr-ci-run', step_index: 1, lines: [] });
+    expect(userCanReadSession).not.toHaveBeenCalled();
+  });
+
+  it('still hides session-owned Finalize logs from users who cannot read the session', async () => {
+    userCanReadSession.mockReturnValue(false);
+    const stmts = makeStmts();
+    stmts.getFinalizeRun.get.mockReturnValue({
+      id: 'private-finalize-run',
+      project_id: 'project-1',
+      session_id: 'private-session',
+      trigger_source: 'ui_button',
+    });
+    const { app, deps } = makeApp(stmts);
+    vi.mocked(deps.findProject).mockReturnValue({ id: 'project-1' } as never);
+
+    const res = await supertest(app)
+      .get('/api/projects/project-1/finalize/private-finalize-run/steps/1/output')
+      .expect(404);
+
+    expect(res.body).toEqual({ error: 'Session not found' });
+    expect(userCanReadSession).toHaveBeenCalledOnce();
   });
 });

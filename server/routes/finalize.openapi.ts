@@ -769,7 +769,8 @@ registerPath({
   path: '/api/projects/{projectId}/finalize/{runId}/steps/{stepIndex}/output',
   tags: ['Finalize'],
   summary: 'CI step output log',
-  description: 'Returns streamed stdout/stderr lines captured for one finalize CI step.',
+  description:
+    'Returns streamed stdout/stderr lines captured for one CI step. Project-level push and PR CI logs follow project visibility; session-owned Finalize logs also require session access.',
   request: {
     params: z.object({
       projectId: z.string(),
@@ -782,7 +783,7 @@ registerPath({
       description: 'Step log lines.',
       content: jsonContent(FinalizeStepOutputResponse),
     },
-    404: errorResponse('Project or run not found.'),
+    404: errorResponse('Project, run, or readable session not found.'),
   },
 });
 

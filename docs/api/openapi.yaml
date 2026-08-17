@@ -18551,7 +18551,7 @@ paths:
       tags:
         - Finalize
       summary: CI step output log
-      description: Returns streamed stdout/stderr lines captured for one finalize CI step.
+      description: Returns streamed stdout/stderr lines captured for one CI step. Project-level push and PR CI logs follow project visibility; session-owned Finalize logs also require session access.
       parameters:
         - schema:
             type: string
@@ -18577,7 +18577,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FinalizeStepOutputResponse"
         "404":
-          description: Project or run not found.
+          description: Project, run, or readable session not found.
           content:
             application/json:
               schema:

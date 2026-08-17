@@ -586,13 +586,13 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       }
 
       const sessionId = run.session_id;
-      // Push-CI runs (trigger_source 'git_push') log under a sentinel
-      // session with no owner — authorize via project access (this route
-      // sits behind the project visibility gate) instead of session
-      // ownership, which would 404 for everyone.
+      // Project CI runs (`git_push` and `pr_push`) log under a sentinel
+      // session with no owner. Authorize both through the project visibility
+      // gate instead of session ownership, which would 404 for everyone.
       if (
         sessionId &&
         run.trigger_source !== 'git_push' &&
+        run.trigger_source !== 'pr_push' &&
         !userCanReadSession(req as AuthenticatedRequest, sessionId)
       ) {
         return res.status(404).json({ error: 'Session not found' });
