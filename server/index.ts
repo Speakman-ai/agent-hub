@@ -684,8 +684,8 @@ app.use(
       // swallows failures so it never breaks the push path.
       void maybeRunDeployTriggers(project, 'push', refs, { broadcast, config, findProject });
       // Review safety net for external pushes: any moved branch backing
-      // an open PR gets the Reviewer agent when branch protection
-      // requires review and the head isn't Finalize-validated.
+      // an open PR gets the Reviewer agent when the head isn't already
+      // Finalize-validated. Merge policy does not suppress review.
       // routeDeps is initialized later in module order but long before
       // the server accepts pushes.
       for (const ref of refs) {

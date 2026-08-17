@@ -7076,7 +7076,7 @@ function initDb(dataDir: string): void {
     // "Was this exact sha fully validated by Finalize?" — review + checks
     // both passed (mode 'full' reaching ready_to_push/pushing/pushed). Drives
     // the PR-level validation passthrough: validated heads skip PR CI and the
-    // external-push auto-reviewer. This intentionally keys on the commit sha,
+    // always-on external-push reviewer. This intentionally keys on the commit sha,
     // not the branch: Finalize validates the commit object, and a session can
     // create/switch to a different PR head branch after the session worktree
     // was provisioned.

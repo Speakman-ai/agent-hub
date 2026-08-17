@@ -1,8 +1,8 @@
 /**
  * Ephemeral auto-review sessions are archived (soft-deleted) when their single
  * background turn finishes. Both flavors `maybeRunPrAutoReview` dispatches are
- * covered: the `external push` review that keeps the required-review gate
- * flowing, and the `requested` review a human triggers with "Request review".
+ * covered: the automatic `external push` review for an unvalidated native PR
+ * head, and the `requested` review a human triggers with "Request review".
  * Both are throwaway reviewer runs that must not linger on the dashboard once
  * the turn ends. Failures are recorded on the native PR as a `commented`
  * review before the session is removed from the live sidebar.

@@ -1,6 +1,6 @@
 /**
- * External-push auto-review: dispatches the Reviewer agent for
- * unvalidated PR heads when branch protection requires review.
+ * External-push auto-review: dispatches the Reviewer agent for every
+ * unvalidated native PR head.
  */
 import '../test/setup.js';
 import {
@@ -134,7 +134,27 @@ describe('maybeRunPrAutoReview', () => {
     expect(handleChat).toHaveBeenCalledOnce();
   });
 
-  it('skips when review is not required, head is validated, or no reviewer exists', async () => {
+  it('dispatches even when approval is not required to merge', async () => {
+    // Regression: auto-review used to be coupled to branch protection, so a
+    // newly pushed native PR received no review at all when requiredReview was
+    // off. Review policy controls merging, not whether Reviewer runs.
+    const { project, branch } = await hostedPrProject();
+    project.branchProtection = { requiredReview: false };
+    const handleChat = vi.fn();
+
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'pr_create' },
+    );
+
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { content: string };
+    expect(msg.content).toContain('every unvalidated PR head');
+  });
+
+  it('skips when the head is validated or no reviewer exists', async () => {
     const { project, branch, headSha } = await hostedPrProject();
     const handleChat = vi.fn();
     const deps = {
@@ -143,17 +163,6 @@ describe('maybeRunPrAutoReview', () => {
       broadcast: vi.fn(),
       handleChat: handleChat as RouteDeps['handleChat'],
     };
-
-    // requiredReview off → skip.
-    project.branchProtection = {};
-    await maybeRunPrAutoReview(
-      project,
-      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
-      deps,
-      { force: true, trigger: 'pr_create' },
-    );
-    expect(handleChat).not.toHaveBeenCalled();
-    project.branchProtection = { requiredReview: true };
 
     // Finalize-validated head → passthrough skip (session reviews own it).
     const runId = `fin-${uuidv4().slice(0, 8)}`;
@@ -590,7 +599,8 @@ describe('maybeRunPrAutoReview', () => {
   describe('manual "Request review" trigger', () => {
     it('dispatches even when branch protection does not require review', async () => {
       const { project, branch } = await hostedPrProject();
-      // requiredReview off — the external-push path would skip here.
+      // Manual review uses different prompt/lifecycle semantics and remains
+      // available even though ordinary external pushes now review too.
       project.branchProtection = {};
       const handleChat = vi.fn();
       await maybeRunPrAutoReview(

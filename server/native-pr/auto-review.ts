@@ -3,12 +3,12 @@
  *
  * Agent Hub-originated work is reviewed inside its session (Finalize's
  * in-hub reviewer runs pre-push with the fix loop attached), and a
- * fully-validated head satisfies branch protection via the passthrough.
+ * fully-validated head satisfies review policy via the passthrough.
  * Code that arrives on a PR head any other way — a laptop push over
  * smart-HTTP, a "push anyway", commits stacked after validation — lands
- * unreviewed. When the project's branch protection requires review,
- * this dispatches the project Reviewer agent against the native PR so
- * the gate can clear without a human writing the first review by hand.
+ * unreviewed. This dispatches the project Reviewer agent against every
+ * unvalidated native PR head, whether or not branch protection requires
+ * approval before merge.
  *
  * Mirrors the PR-level CI fallback (git-host/push-ci.ts maybeRunPrCi):
  * same trigger points, same Finalize-validated skip, deduped per
@@ -62,9 +62,9 @@ export interface AutoReviewOpts {
    * update. Head updates require `pushedByUserId`.
    *
    * `manual_request` is the human pressing "Request review" in the PR UI. It
-   * bypasses the branch-protection `requiredReview` gate, the Finalize-validated
-   * passthrough, and the per-head-sha dedup — the user explicitly asked for a
-   * review even when the gate is off or the head was already validated.
+   * bypasses the Finalize-validated passthrough and the per-head-sha dedup — the
+   * user explicitly asked for a fresh review even when the head was already
+   * validated.
    */
   trigger?: 'pr_create' | 'head_update' | 'manual_request';
 }
@@ -105,19 +105,12 @@ export async function maybeRunPrAutoReview(
     if (process.env.AGENT_HUB_DISABLE_AUTO_REVIEW === '1' && !opts.force) return;
     if (project.gitHost !== 'agenthub') return;
     const manual = opts.trigger === 'manual_request';
-    // Option-1 gating: auto-review exists to keep the required-review
-    // gate flowing for external pushes; without the gate it's not needed.
-    // A manual "Request review" press is explicit human intent, so it runs
-    // regardless of whether branch protection requires a review.
-    if (!manual && project.branchProtection?.requiredReview !== true) return;
     if (pr.status && pr.status !== 'open') return;
     if (!hostedRepoExists(project.id)) return;
 
     const reviewer = (project.agents || []).find((a) => a.role === 'reviewer');
     if (!reviewer) {
-      console.warn(
-        `[auto-review] ${project.id}: requiredReview is on but no reviewer agent exists — skipping`,
-      );
+      console.warn(`[auto-review] ${project.id}: no reviewer agent exists — skipping`);
       return;
     }
 
@@ -247,9 +240,9 @@ export async function maybeRunPrAutoReview(
         `A human pressed "Request review" on this Hub-hosted PR. You are the project Reviewer — ` +
         `review the change and post your verdict.\n\n`
       : `## Review pull request #${pr.number} (external push)\n\n` +
-        `New commits reached this Hub-hosted PR from outside a validated session, and this project's ` +
-        `branch protection requires an approving review before merge. You are the project Reviewer — ` +
-        `review the change and post your verdict.\n\n`;
+        `New commits reached this Hub-hosted PR from outside a validated session. Agent Hub reviews ` +
+        `every unvalidated PR head, even when approval is not required to merge. You are the project ` +
+        `Reviewer — review the change and post your verdict.\n\n`;
     const prompt =
       promptHeader +
       `### How to load the PR\n` +
