@@ -38,6 +38,7 @@ import {
   pickReviewerAgentId,
   composeReviewerSystemPrompt,
   FINALIZE_REVIEWER_TURN_OVERRIDE,
+  REVIEWER_GENERAL_FEEDBACK_ANCHOR,
 } from './in-session-reviewer.js';
 import { initOrgsDb } from '../orgs.js';
 import { createUser } from '../users-store.js';
@@ -494,6 +495,72 @@ describe('runReviewerTurn — changes_requested with threads', () => {
     expect(result.threads).toHaveLength(1);
     expect(result.threads[0]?.file_path).toBe('server/foo.ts');
     expect(result.threads[0]?.body).toContain('Race on config.bin');
+  });
+});
+
+describe('runReviewerTurn — changes_requested with no anchored findings', () => {
+  it('recovers the reviewer prose as a file-level finding so the round is not empty', async () => {
+    const assistantText = `This change ships scaffolding but never wires it up — the new helper has no caller, so the acceptance criterion is unmet.
+
+<agenthub:review-verdict>
+{"verdict":"changes_requested","threads":[]}
+</agenthub:review-verdict>`;
+    const { spawnFn } = makeSpawnFake(assistantText);
+    const { deps, messages } = makeDeps(spawnFn);
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-empty-threads',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('changes_requested');
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0]?.file_path).toBe(REVIEWER_GENERAL_FEEDBACK_ANCHOR);
+    expect(result.threads[0]?.line_start).toBeNull();
+    expect(result.threads[0]?.body).toContain('has no caller');
+    // The prose still persists as the reviewer's chat message.
+    expect(messages[0]?.content).toContain('has no caller');
+  });
+
+  it('throws when changes_requested has neither findings nor prose to recover', async () => {
+    const assistantText = `<agenthub:review-verdict>{"verdict":"changes_requested","threads":[]}</agenthub:review-verdict>`;
+    const { spawnFn } = makeSpawnFake(assistantText);
+    const { deps } = makeDeps(spawnFn);
+
+    await expect(
+      runReviewerTurn(deps, {
+        runId: 'run-empty-both',
+        worktreePath: '/tmp/wt',
+        card: fakeCard,
+        project: fakeProject,
+        inputs: fakeInputs,
+        sessionId: 'sess-1',
+      }),
+    ).rejects.toThrow(/no findings and no prose/);
+  });
+
+  it('leaves an approved verdict with empty threads untouched', async () => {
+    const assistantText = `Looks good.
+
+<agenthub:review-verdict>{"verdict":"approved","threads":[]}</agenthub:review-verdict>`;
+    const { spawnFn } = makeSpawnFake(assistantText);
+    const { deps } = makeDeps(spawnFn);
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-approved-empty',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('approved');
+    expect(result.threads).toHaveLength(0);
   });
 });
 

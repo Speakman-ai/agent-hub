@@ -418,12 +418,52 @@ export async function runReviewerTurn(
       );
     }
 
+    // A `changes_requested` verdict with zero findings is self-contradictory:
+    // the verdict decision tree only reaches `changes_requested` on a finding
+    // scored > 3, and the reviewer is told a coverage gap with no line still
+    // emits as a file-level thread. When it happens anyway the review round
+    // renders "Changes requested / No findings on this pass" and the fix
+    // dispatch body comes out empty — the user-visible "reviewer posted
+    // changes but no changes were attached" report. Recover the reviewer's
+    // prose critique as a single file-level finding so the review round and
+    // the fix loop both carry the reviewer's actual reasoning.
+    let threads = parsed.task.threads;
+    if (parsed.task.verdict === 'changes_requested' && threads.length === 0) {
+      const prose = stripReviewVerdictBlock(rawText).trim();
+      if (!prose) {
+        // Block-only reply with no prose and no findings: there is nothing
+        // actionable to attach. Fail loudly rather than drive the fix loop on
+        // an empty request-for-changes (which would re-review and re-request
+        // with nothing to fix until the round cap).
+        throw new Error(
+          `reviewer requested changes with no findings and no prose to recover (run=${runId})`,
+        );
+      }
+      threads = [
+        {
+          file_path: REVIEWER_GENERAL_FEEDBACK_ANCHOR,
+          line_start: null,
+          line_end: null,
+          body: prose,
+        },
+      ];
+    }
+
     return {
       verdict: parsed.task.verdict,
-      threads: parsed.task.threads,
+      threads,
     };
   }
 }
+
+/**
+ * File-path label for the synthesized fallback finding used when a reviewer
+ * returns `changes_requested` with no anchored threads. Rendered as the file
+ * group header in the review round block and as the anchor in the fix-dispatch
+ * body, so it reads as a general (non-line-anchored) note rather than a real
+ * path.
+ */
+export const REVIEWER_GENERAL_FEEDBACK_ANCHOR = 'General review feedback';
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
