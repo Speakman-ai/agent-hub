@@ -111,6 +111,7 @@ import {
 } from './session-env/ephemeral-host-port.js';
 import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
 import { setSessionWorktreeIoResolver } from './session-worktree-io.js';
+import { setSessionProjectResolver } from './session-checkpoint-rewind.js';
 import { getProjectSessionStartupCommands } from './session-env/session-startup-hooks.js';
 import {
   emitSessionStartupProgress,
@@ -1252,7 +1253,8 @@ const sessionEnvManager = new SessionEnvManager({
       projectMode: getProjectMode(project),
     });
   },
-  // Workflow → host; isolated → firecracker when registered; else global adapter.
+  // Workflow → host; isolated → firecracker when registered; chat never uses
+  // firecracker even if the global adapter is still pinned to it.
   resolveAdapter: (sessionId) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     const project = session ? findAgent(session.agent_id)?.project : null;
@@ -1345,6 +1347,12 @@ async function resolveSessionWorktreeIo(sessionId: string): Promise<SessionWorkt
 // Modules below the route layer (chat-turn hooks, auto-commit) reach the
 // worktree through this registry rather than a threaded dependency.
 setSessionWorktreeIoResolver(resolveSessionWorktreeIo);
+
+// Enrichment paths that omit `project` (WS broadcasts, most routes) resolve the
+// owning project here so client capability flags (can_isolated_mode /
+// can_design_mode) stay authoritative instead of assuming a non-workflow
+// project. See enrichSessionForClient.
+setSessionProjectResolver((row) => findAgent(row.agent_id)?.project ?? null);
 
 // One persistent terminal shell per Agent Hub session, in the session's own
 // environment. It no longer depends on a dev server having been started:

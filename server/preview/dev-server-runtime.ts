@@ -25,8 +25,10 @@
  *     dev-server companion columns.
  *
  * Isolation: all process + port work goes through the `SessionEnv`
- * abstraction. The default factory reads the boot-selected adapter
- * (host fallback or registered sysbox) when each session starts.
+ * abstraction. The default factory uses the host adapter (a private env
+ * when the session has no shared boundary). Firecracker / sysbox sessions
+ * must go through `resolveSharedEnv` so a leftover
+ * `sessionEnvAdapter=firecracker` pin cannot boot a VM for every preview.
  */
 
 import { randomUUID } from 'crypto';
@@ -47,7 +49,6 @@ import type {
 import type { SessionEnvPortRouting } from '../session-env/container-routing.js';
 import { isLoopbackHost } from '../loopback-host.js';
 import { createSessionEnv } from '../session-env/select-session-env.js';
-import { getSessionEnvSelection } from '../session-env/sysbox-capability.js';
 import {
   DEFAULT_PREVIEW_PORT_RANGE,
   DEV_SERVER_RUNTIME_KIND,
@@ -409,7 +410,7 @@ export class DevServerRuntime {
     this.createEnv =
       deps.createEnv ??
       ((opts) =>
-        createSessionEnv(getSessionEnvSelection().adapter, {
+        createSessionEnv('host', {
           sessionId: opts.sessionId,
           worktreePath: opts.worktreePath,
           hostDeps: { allocateHostPort: opts.allocateHostPort },

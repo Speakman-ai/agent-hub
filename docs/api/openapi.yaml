@@ -2302,7 +2302,7 @@ components:
           description: "True when the session engine supports Claude Code checkpoint file rewind (`POST /api/sessions/{sessionId}/rewind`). Today only `claude-code`. Other engines return HTTP 400 with `code: checkpoint_rewind_unsupported_engine` from that endpoint."
         can_isolated_mode:
           type: boolean
-          description: True when this session may enter `isolated` mode because the owning project is a dev project and the host has a registered Firecracker backend. Clients use this capability to hide the VM option when Firecracker is not enabled.
+          description: True when Firecracker is registered on this host so the session may enter `isolated` (VM) mode. False for workflow (no-code) projects when the owning project is known. Clients hide the VM option when this is false.
         model:
           type: string
         use_worktree:

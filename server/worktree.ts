@@ -28,6 +28,7 @@ import {
 import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credentials-github.js';
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
 import { rebaseOntoBase } from './pre-push-rebase.js';
+import { isIsolatedModeActive } from './session-mode.js';
 
 /**
  * Root for all per-session / per-process git clones the workspace manager
@@ -1580,6 +1581,13 @@ interface SetupDependenciesOptions {
   awaitInstall: boolean;
   /** When true, use {@link resolveSessionInstallCommand} (install:all for monorepos). */
   preferInstallAllScript: boolean;
+  /**
+   * Isolated / Firecracker sessions seed the guest from a tar of this clone.
+   * Host `node_modules` is useless inside the VM and races the snapshot.
+   * Skip host install for those sessions only — not because the Hub's global
+   * `sessionEnvAdapter` is firecracker (chat is host; VM is opt-in).
+   */
+  skipHostInstall?: boolean;
 }
 
 /**
@@ -1601,6 +1609,13 @@ function sessionWorkspaceDependencyInstallOpts(): Pick<
     return { awaitInstall: false, preferInstallAllScript: false };
   }
   return { awaitInstall: false, preferInstallAllScript: true };
+}
+
+function sessionScopedDependencyInstallOpts(session: SessionRow): SetupDependenciesOptions {
+  return {
+    ...sessionWorkspaceDependencyInstallOpts(),
+    skipHostInstall: isIsolatedModeActive(session),
+  };
 }
 
 /**
@@ -1644,14 +1659,14 @@ async function setupDependencies(
   installCommand: string | null,
   options: SetupDependenciesOptions,
 ): Promise<void> {
-  // Firecracker seeds the guest from a tar of this clone. Host `node_modules`
-  // (symlink from the project checkout, or a background `npm install`) is
-  // useless inside the VM and races the snapshot ("file changed as we read
-  // it"). The guest provisions its own deps after boot.
-  if (config.sessionEnvAdapter === 'firecracker') {
+  // Isolated / Firecracker sessions seed the guest from a tar of this clone.
+  // Host `node_modules` (symlink from the project checkout, or a background
+  // `npm install`) is useless inside the VM and races the snapshot
+  // ("file changed as we read it"). The guest provisions its own deps after boot.
+  if (options.skipHostInstall) {
     console.log(
       `[Workspace] Skipping host dependency install for ${cloneDir} ` +
-        `(sessionEnvAdapter=firecracker; guest provisions its own deps)`,
+        `(isolated session; guest provisions its own deps)`,
     );
     return;
   }
@@ -2942,7 +2957,7 @@ async function ensureSessionWorkspaceUnlocked(
     });
     try {
       await setupDependencies(projectCwd, session.worktree_path, installCommand ?? null, {
-        ...sessionWorkspaceDependencyInstallOpts(),
+        ...sessionScopedDependencyInstallOpts(session),
       });
     } catch (err: unknown) {
       if (!(err instanceof SessionDependencyInstallError)) throw err;
@@ -2971,7 +2986,7 @@ async function ensureSessionWorkspaceUnlocked(
     await enableHuskyHooks(cloneDir);
     try {
       await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
-        ...sessionWorkspaceDependencyInstallOpts(),
+        ...sessionScopedDependencyInstallOpts(session),
       });
     } catch (err: unknown) {
       if (!(err instanceof SessionDependencyInstallError)) throw err;
@@ -3214,7 +3229,7 @@ async function ensureSessionWorkspaceUnlocked(
 
     try {
       await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
-        ...sessionWorkspaceDependencyInstallOpts(),
+        ...sessionScopedDependencyInstallOpts(session),
       });
     } catch (err: unknown) {
       if (!(err instanceof SessionDependencyInstallError)) throw err;

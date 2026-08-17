@@ -3,6 +3,7 @@ import {
   engineSupportsCheckpointRewind,
   enrichSessionForClient,
   broadcastSessionCreated,
+  setSessionProjectResolver,
 } from './session-checkpoint-rewind.js';
 import { setFirecrackerBackendRegistered } from './session-env/firecracker/firecracker-backend-status.js';
 import type { SessionRow, Stmts } from './types.js';
@@ -87,8 +88,40 @@ describe('enrichSessionForClient', () => {
           mode: 'workflow',
         } as any).can_isolated_mode,
       ).toBe(false);
+    } finally {
+      setFirecrackerBackendRegistered(false);
+    }
+  });
+
+  it('fails closed on VM mode when the owning project is unknown (no project, no resolver)', () => {
+    setFirecrackerBackendRegistered(true);
+    try {
+      // Broadcasts / most routes omit `project`. Without an installed resolver
+      // the owning project is unknown, so VM mode must NOT be offered — a
+      // workflow session would otherwise expose the picker just because its
+      // `project` was omitted (the server-side mode guard rejects it anyway).
       expect(enrichSessionForClient(minimalSession({})).can_isolated_mode).toBe(false);
     } finally {
+      setFirecrackerBackendRegistered(false);
+    }
+  });
+
+  it('resolves the owning project via the installed resolver when project is omitted', () => {
+    setFirecrackerBackendRegistered(true);
+    try {
+      // Dev project → picker stays after a project-less broadcast.
+      setSessionProjectResolver(() => ({ id: 'p1', mode: 'dev' }) as any);
+      expect(enrichSessionForClient(minimalSession({})).can_isolated_mode).toBe(true);
+
+      // Workflow project → picker never appears, even though `project` is omitted.
+      setSessionProjectResolver(() => ({ id: 'p1', mode: 'workflow' }) as any);
+      expect(enrichSessionForClient(minimalSession({})).can_isolated_mode).toBe(false);
+
+      // Resolver miss (agent deleted) → fail closed.
+      setSessionProjectResolver(() => null);
+      expect(enrichSessionForClient(minimalSession({})).can_isolated_mode).toBe(false);
+    } finally {
+      setSessionProjectResolver(null);
       setFirecrackerBackendRegistered(false);
     }
   });

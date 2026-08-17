@@ -57,7 +57,7 @@ export const SessionComponent = registerComponent(
       }),
       can_isolated_mode: z.boolean().openapi({
         description:
-          'True when this session may enter `isolated` mode because the owning project is a dev project and the host has a registered Firecracker backend. Clients use this capability to hide the VM option when Firecracker is not enabled.',
+          'True when Firecracker is registered on this host so the session may enter `isolated` (VM) mode. False for workflow (no-code) projects when the owning project is known. Clients hide the VM option when this is false.',
       }),
       model: z.string(),
       use_worktree: z.number().int(),

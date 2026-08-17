@@ -54,9 +54,11 @@ export type SessionWireRow = SessionRow & {
    */
   can_design_mode: boolean;
   /**
-   * Whether this session can enter isolated / VM mode. Derived from the live
-   * Firecracker backend registry and the owning project mode, matching the
-   * server-side mode guard instead of making clients infer host capability.
+   * Whether this session can enter isolated / VM mode. True when Firecracker
+   * is registered on this host. False for workflow (no-code) projects when
+   * the caller passes `project`. When `project` is omitted (broadcasts,
+   * most session routes), still true if Firecracker is up so the mode picker
+   * does not hide VM after a `session-updated` overwrite.
    */
   can_isolated_mode: boolean;
 };
@@ -165,11 +167,37 @@ function isSessionFinalizeFullyValidated(stmts: Stmts, sessionId: string): boole
  * not by the type system (the optional is a back-compat affordance, not
  * a "use it or not" hint). When in doubt: pass `stmts`.
  */
+/**
+ * Owning-project resolver for a session row. Most enrichment call sites —
+ * WebSocket broadcasts (`session_created`, `session-updated`) and the routes
+ * that reuse them — do not thread the `project` through, yet the client
+ * capabilities below (`can_isolated_mode`, `can_design_mode`) are project-mode
+ * dependent. Rather than plumb `project` through ~40 call sites, `index.ts`
+ * installs a resolver at boot (agent registry → project) so every path gets the
+ * authoritative owning project. Mirrors `setSessionWorktreeIoResolver`.
+ *
+ * When no resolver is installed (unit tests, embedders) or the agent no longer
+ * exists, the resolver returns null and the capabilities fail closed — an
+ * unknown project is never treated as VM-eligible, so a workflow session can
+ * never expose the VM picker just because its `project` was omitted.
+ */
+export type SessionProjectResolver = (row: SessionRow) => Project | null;
+
+let projectForSessionResolver: SessionProjectResolver | null = null;
+
+/** Install the owning-project resolver. Pass null to clear (test teardown). */
+export function setSessionProjectResolver(fn: SessionProjectResolver | null): void {
+  projectForSessionResolver = fn;
+}
+
 export function enrichSessionForClient(
   row: SessionRow,
   stmts?: Stmts,
   project?: Project | null,
 ): SessionWireRow {
+  // Explicit project wins; otherwise resolve the owning project so capability
+  // flags stay authoritative on broadcast paths that omit it.
+  const resolvedProject = project ?? projectForSessionResolver?.(row) ?? null;
   return {
     ...row,
     checkpoint_rewind_supported: engineSupportsCheckpointRewind(row.engine),
@@ -178,9 +206,15 @@ export function enrichSessionForClient(
     state: stmts
       ? computeSessionState(stmts, row.id)
       : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
-    can_design_mode: sessionCanUseDesignMode(row, project ?? null),
+    can_design_mode: sessionCanUseDesignMode(row, resolvedProject),
+    // Fail closed on an unknown project: VM mode is offered only when we can
+    // positively confirm a non-workflow project. Workflow sessions (server-side
+    // guard rejects `isolated`) never expose the picker, even on a broadcast
+    // that omitted `project`.
     can_isolated_mode:
-      project != null && !isWorkflowProject(project) && isFirecrackerBackendRegistered(),
+      isFirecrackerBackendRegistered() &&
+      resolvedProject != null &&
+      !isWorkflowProject(resolvedProject),
   };
 }
 

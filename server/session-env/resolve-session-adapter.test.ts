@@ -49,7 +49,10 @@ describe('resolveSessionEnvAdapterForSession', () => {
     ).toBe('firecracker');
   });
 
-  it('falls back to global when isolated but FC is not registered', () => {
+  it('fails closed on firecracker for isolated when FC is not registered (global host)', () => {
+    // A persisted isolated row must not silently resume on host when the
+    // firecracker backend was unregistered at boot (NAT/bridge failure). It
+    // resolves to firecracker so createSessionEnv fails closed at launch.
     expect(
       resolveSessionEnvAdapterForSession({
         project: project('dev'),
@@ -57,7 +60,22 @@ describe('resolveSessionEnvAdapterForSession', () => {
         globalAdapter: 'host',
         registeredBackends: registered('host'),
       }),
-    ).toBe('host');
+    ).toBe('firecracker');
+  });
+
+  it('fails closed on firecracker for isolated + global firecracker + FC unregistered', () => {
+    // The stale-global-pin host fallback must not apply to isolated sessions:
+    // even with the global adapter still pinned to firecracker and the backend
+    // absent, an isolated session keeps its requested VM boundary and fails
+    // closed rather than downgrading to host.
+    expect(
+      resolveSessionEnvAdapterForSession({
+        project: project('dev'),
+        session: { session_mode: 'isolated' },
+        globalAdapter: 'firecracker',
+        registeredBackends: registered('host'),
+      }),
+    ).toBe('firecracker');
   });
 
   it('uses the global adapter for chat / non-isolated modes', () => {
@@ -73,9 +91,28 @@ describe('resolveSessionEnvAdapterForSession', () => {
       resolveSessionEnvAdapterForSession({
         project: project('dev'),
         session: { session_mode: 'design' },
+        globalAdapter: 'sysbox',
+        registeredBackends: registered('host', 'sysbox', 'firecracker'),
+      }),
+    ).toBe('sysbox');
+  });
+
+  it('does not boot a VM for chat when the global adapter is firecracker', () => {
+    expect(
+      resolveSessionEnvAdapterForSession({
+        project: project('dev'),
+        session: { session_mode: 'chat' },
         globalAdapter: 'firecracker',
         registeredBackends: registered('host', 'firecracker'),
       }),
-    ).toBe('firecracker');
+    ).toBe('host');
+    expect(
+      resolveSessionEnvAdapterForSession({
+        project: project('dev'),
+        session: { session_mode: 'design' },
+        globalAdapter: 'firecracker',
+        registeredBackends: registered('host', 'firecracker'),
+      }),
+    ).toBe('host');
   });
 });

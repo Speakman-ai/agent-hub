@@ -195,7 +195,20 @@ describe('setupDependencies awaited install failures', () => {
     clearDependencyInstallFailureMarker(cloneDir);
   });
 
-  it('skips host install when the session env is Firecracker (guest owns deps)', async () => {
+  it('skips host install when skipHostInstall is set (isolated / guest owns deps)', async () => {
+    const { __test } = await worktreePromise;
+    childProcessExecMock.mockClear();
+
+    await __test.setupDependencies(sourceDir, cloneDir, 'npm ci', {
+      awaitInstall: true,
+      preferInstallAllScript: false,
+      skipHostInstall: true,
+    });
+
+    expect(childProcessExecMock).not.toHaveBeenCalled();
+  });
+
+  it('still installs on the host when sessionEnvAdapter is firecracker (VM is opt-in)', async () => {
     configState.sessionEnvAdapter = 'firecracker';
     const { __test } = await worktreePromise;
     childProcessExecMock.mockClear();
@@ -205,6 +218,6 @@ describe('setupDependencies awaited install failures', () => {
       preferInstallAllScript: false,
     });
 
-    expect(childProcessExecMock).not.toHaveBeenCalled();
+    expect(childProcessExecMock).toHaveBeenCalled();
   });
 });
