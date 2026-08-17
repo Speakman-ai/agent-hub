@@ -158,6 +158,9 @@ export default function Sidebar({
   openPullCounts = {},
   /** Per-project open-severity counts: { [projectId]: { critical, high, … } }. */
   securityOpenCounts = {},
+  /** Per-project pending learned-lesson counts: { [projectId]: number }. Drives
+   * the Skills nav badge so a captured skill-improvement is discoverable. */
+  skillImprovementCounts = {},
   activeReviews = {},
   subagentsBySession = {},
   /**
@@ -1222,16 +1225,31 @@ export default function Sidebar({
                                 <Bot size={14} className="flex-shrink-0" />
                                 <span className="truncate">Agents</span>
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => onNavigate(`skills:${project.id}`)}
-                                className={projectMenuLinkClass(
-                                  currentView === `skills:${project.id}`,
-                                )}
-                              >
-                                <Puzzle size={14} className="flex-shrink-0" />
-                                <span className="truncate">Skills</span>
-                              </button>
+                              {(() => {
+                                const pendingLessons = skillImprovementCounts[project.id] || 0;
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigate(`skills:${project.id}`)}
+                                    className={projectMenuLinkClass(
+                                      currentView === `skills:${project.id}`,
+                                    )}
+                                  >
+                                    <Puzzle size={14} className="flex-shrink-0" />
+                                    <span className="truncate">Skills</span>
+                                    {pendingLessons > 0 && (
+                                      <span
+                                        title={`${pendingLessons} skill ${
+                                          pendingLessons === 1 ? 'lesson' : 'lessons'
+                                        } pending review`}
+                                        className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-amber-500 text-[10px] font-bold text-white px-1"
+                                      >
+                                        {pendingLessons > 99 ? '99+' : pendingLessons}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })()}
                               <button
                                 type="button"
                                 onClick={() => onNavigate('wiki', project.id)}

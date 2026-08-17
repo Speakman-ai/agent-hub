@@ -1700,3 +1700,46 @@ describe('Sidebar — retired Designs and outer-orchestration chrome', () => {
     expect(screen.queryByText('Outer orchestration')).not.toBeInTheDocument();
   });
 });
+
+describe('Sidebar — Skills pending-lesson badge', () => {
+  const skillsButton = () => {
+    const label = screen.getByText('Skills');
+    // The label lives inside the Skills nav <button>; walk up to it.
+    const button = label.closest('button');
+    if (!button) throw new Error('Skills nav button not found');
+    return button;
+  };
+
+  it('badges the Skills nav entry with the pending learned-lesson count', () => {
+    seedNavGroupsExpanded();
+    render(<Sidebar {...buildProps({ skillImprovementCounts: { [PROJECT_ID]: 3 } })} />);
+    const button = skillsButton();
+    expect(within(button).getByText('3')).toBeInTheDocument();
+    expect(within(button).getByTitle('3 skill lessons pending review')).toBeInTheDocument();
+  });
+
+  it('uses the singular label for a single pending lesson', () => {
+    seedNavGroupsExpanded();
+    render(<Sidebar {...buildProps({ skillImprovementCounts: { [PROJECT_ID]: 1 } })} />);
+    expect(within(skillsButton()).getByTitle('1 skill lesson pending review')).toBeInTheDocument();
+  });
+
+  it('caps the badge at 99+', () => {
+    seedNavGroupsExpanded();
+    render(<Sidebar {...buildProps({ skillImprovementCounts: { [PROJECT_ID]: 150 } })} />);
+    expect(within(skillsButton()).getByText('99+')).toBeInTheDocument();
+  });
+
+  it('renders no badge when there are zero pending lessons', () => {
+    seedNavGroupsExpanded();
+    render(<Sidebar {...buildProps({ skillImprovementCounts: { [PROJECT_ID]: 0 } })} />);
+    expect(within(skillsButton()).queryByText('0')).not.toBeInTheDocument();
+  });
+
+  it('renders no badge when the count is absent for the project', () => {
+    seedNavGroupsExpanded();
+    render(<Sidebar {...buildProps({})} />);
+    // No numeric badge inside the Skills button.
+    expect(within(skillsButton()).queryByTitle(/pending review/)).not.toBeInTheDocument();
+  });
+});

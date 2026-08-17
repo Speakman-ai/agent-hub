@@ -41,7 +41,7 @@ import BugReportButton from './BugReportButton';
 const putCollapsedProject = (projectId: string, collapsed: boolean) => api.putMySidebarCollapsedProject(projectId, collapsed);
 
 export default function DrawerContent({ navigation }: any) {
-    const { agents, projects, activeAgentId, setActiveAgentId, sessions, activeSessionId, setActiveSessionId, handleNewSession, handleDeleteSession, archivedSessions, handleRestoreSession, restoringSessionIds, handleSwitchOrg, refreshProjects, refreshAgents, cronSessions, activeTasks, finalizeStatusBySession, unreadThreadCounts, unreadTicketCounts, openPullCounts, securityOpenCounts, reloadMessages, connected, reconnecting, } = useApp();
+    const { agents, projects, activeAgentId, setActiveAgentId, sessions, activeSessionId, setActiveSessionId, handleNewSession, handleDeleteSession, archivedSessions, handleRestoreSession, restoringSessionIds, handleSwitchOrg, refreshProjects, refreshAgents, cronSessions, activeTasks, finalizeStatusBySession, unreadThreadCounts, unreadTicketCounts, openPullCounts, securityOpenCounts, skillImprovementPendingTotal, reloadMessages, connected, reconnecting, } = useApp();
     const activeAgent = agents.find((a: any) => a.id === activeAgentId) || null;
     const bugReportProjectId = activeAgent?.projectId || '';
     const [collapsedAgents, setCollapsedAgents] = useState<any>({});
@@ -685,6 +685,13 @@ export default function DrawerContent({ navigation }: any) {
         }}>
           <HubIcon name="BookOpen" size={16} style={styles.navButtonIcon}/>
           <Text style={styles.navButtonText}>Skills</Text>
+          {skillImprovementPendingTotal > 0 && (
+            <View testID="skills-pending-badge" style={[styles.unreadBadge, styles.skillBadge]}>
+              <Text style={styles.unreadBadgeText}>
+                {skillImprovementPendingTotal > 99 ? '99+' : skillImprovementPendingTotal}
+              </Text>
+            </View>
+          )}
         </TouchableOpacity>
         <TouchableOpacity style={styles.navButton} onPress={() => {
             navigation.navigate('Releases');
@@ -919,6 +926,10 @@ const styles = StyleSheet.create({
     },
     securityBadge: {
         backgroundColor: colors.red500,
+    },
+    skillBadge: {
+        backgroundColor: colors.amber400,
+        marginLeft: 'auto',
     },
     unreadBadgeText: {
         color: colors.white,

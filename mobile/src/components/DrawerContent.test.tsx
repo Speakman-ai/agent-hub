@@ -43,6 +43,7 @@ const testState = vi.hoisted(() => ({
     unreadTicketCounts: {},
     openPullCounts: {},
     securityOpenCounts: {},
+    skillImprovementPendingTotal: 0,
     reloadMessages: vi.fn(),
     connected: true,
     reconnecting: false,
@@ -258,5 +259,45 @@ describe('mobile DrawerContent — retired Designs chrome', () => {
     const texts = collectText(renderer.toJSON());
     expect(texts).not.toContain('Designs');
     expect(nav.navigate).not.toHaveBeenCalledWith('Designs');
+  });
+});
+
+describe('mobile DrawerContent — Skills pending-lesson badge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sharedSaverState.savers.length = 0;
+    testState.accountKey = 'sidebarCollapsedProjects:user-a';
+    testState.cacheLoad.mockResolvedValue([]);
+    testState.cacheSaverFactory.mockImplementation(() => ({
+      save: vi.fn(() => Promise.resolve()),
+      cancel: vi.fn(),
+    }));
+    testState.api.getHealth.mockResolvedValue({});
+    testState.api.getGoogleStatus.mockResolvedValue({ connected: false });
+    testState.api.getMySidebarCollapsedProjects.mockResolvedValue({
+      sidebarCollapsedProjects: [],
+    });
+    // Reset the count between cases (the mock object is shared/hoisted).
+    testState.app.skillImprovementPendingTotal = 0;
+  });
+
+  it('renders the pending-lesson badge on the Skills nav entry when > 0', async () => {
+    testState.app.skillImprovementPendingTotal = 3;
+    const renderer = await renderDrawer(navigation());
+    // Throws if the badge is absent.
+    renderer.root.findByProps({ testID: 'skills-pending-badge' });
+    expect(collectText(renderer.toJSON())).toContain('3');
+  });
+
+  it('caps the badge at 99+', async () => {
+    testState.app.skillImprovementPendingTotal = 150;
+    const renderer = await renderDrawer(navigation());
+    expect(collectText(renderer.toJSON())).toContain('99+');
+  });
+
+  it('renders no badge when the pending total is 0', async () => {
+    testState.app.skillImprovementPendingTotal = 0;
+    const renderer = await renderDrawer(navigation());
+    expect(renderer.root.findAllByProps({ testID: 'skills-pending-badge' })).toHaveLength(0);
   });
 });

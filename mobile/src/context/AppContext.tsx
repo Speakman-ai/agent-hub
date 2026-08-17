@@ -22,6 +22,7 @@ import { createReloadMessages } from '../utils/sessionReload';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import { firstEngineWithAuthenticatedModels, defaultModelForAuthenticatedEngine, } from '../utils/authModelEngines';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
+import { usePendingLessonTotal } from '../hooks/usePendingLessonTotal';
 import { resolveStreamingFromSnapshot } from '@shared/utils/activeTaskSnapshot';
 import { buildInterruptQueuedMessageDispatch, isPersistedUploadAttachment, } from '@shared/utils/queuedMessageAttachments';
 import { appendImportEvent } from '@shared/utils/projectImportWizard';
@@ -172,6 +173,14 @@ export function AppProvider({ children }: any) {
     // `skill_improvement_update` broadcast so SkillsScreen refetches its
     // pending-lessons queue (mirrors the web's window-event fan-out).
     const [skillImprovementRefreshKey, setSkillImprovementRefreshKey] = useState(0);
+    // Total pending learned-lessons across all projects, driving the Skills
+    // drawer badge so a captured skill-improvement is discoverable without
+    // opening the Skills screen. Recomputed on load and whenever the
+    // `skill_improvement_update` broadcast bumps skillImprovementRefreshKey.
+    // Total pending learned-lessons across all projects, driving the Skills
+    // drawer badge. The hook owns the fetch lifecycle (preserve-on-failure,
+    // prune-on-departure); see usePendingLessonTotal.
+    const skillImprovementPendingTotal = usePendingLessonTotal(projects, skillImprovementRefreshKey);
     // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
     const [changesReady, setChangesReady] = useState<any>({});
     // Map of sessionId -> latest Finalize Code Changes status string. Mirrors
@@ -2178,6 +2187,7 @@ export function AppProvider({ children }: any) {
         kanbanRefreshProjectIds,
         acknowledgeKanbanRefresh,
         skillImprovementRefreshKey,
+        skillImprovementPendingTotal,
         changesReady,
         shipFailureAt,
         dismissChangesReady,

@@ -18,6 +18,8 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/utils/**/*.test.ts',
+      'src/hooks/**/*.test.ts',
+      'src/hooks/**/*.test.tsx',
       'src/components/**/*.test.ts',
       'src/components/**/*.test.tsx',
       'src/screens/**/*.test.ts',

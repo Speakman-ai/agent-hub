@@ -102,6 +102,14 @@ import { useDesktopNotifications } from './hooks/useDesktopNotifications';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useVersionCheck } from './hooks/useVersionCheck';
 import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck';
+import {
+  createPendingLessonCountsState,
+  reconcilePendingLessonProjects,
+  beginPendingLessonFetch,
+  applyPendingLessonSuccess,
+  applyPendingLessonFailure,
+  pendingLessonCountsSnapshot,
+} from '@shared/utils/pendingLessonCounts';
 import { api } from './utils/api';
 import { createRefreshScheduler, kanbanEventTargetsProject } from '@shared/utils/kanbanRefresh';
 import { readCollapsedColumnIds, writeCollapsedColumnIds } from './utils/kanbanColumnCollapse';
@@ -565,6 +573,11 @@ export default function App({ initialView }: any = {}) {
   // Seeded from the server on load and refreshed on kanban_update; drives the
   // Security sidebar badge (open critical + high).
   const [securityOpenCounts, setSecurityOpenCounts] = useState<Record<string, any>>({});
+  // Pending skill-improvement (learned-lesson) counts per project. Seeded on
+  // load and refreshed on the skill_improvement_update WS event; drives the
+  // Skills sidebar badge so a captured lesson is discoverable without opening
+  // the Skills page.
+  const [skillImprovementCounts, setSkillImprovementCounts] = useState<Record<string, number>>({});
   // Cron-linked sessions (scheduled tasks)
   const [cronSessions, setCronSessions] = useState<any[]>([]);
   // Skills for the active agent (for /slash-command autocomplete)
@@ -1081,6 +1094,77 @@ export default function App({ initialView }: any = {}) {
       cancelled = true;
     };
   }, [projects]);
+
+  // Lifecycle-tracked pending learned-lesson counts (see @shared/utils/
+  // pendingLessonCounts): only a successful fetch marks a project seeded, a
+  // failure/cancellation preserves the last known count and retries later, and
+  // departed projects are pruned so an org-switch revisit refetches fresh.
+  const skillImprovementStateRef = useRef(createPendingLessonCountsState());
+  const syncSkillImprovementCounts = useCallback(() => {
+    setSkillImprovementCounts(pendingLessonCountsSnapshot(skillImprovementStateRef.current));
+  }, []);
+
+  // Refetch the pending learned-lesson count for one project. Called on the
+  // skill_improvement_update WS event (create/approve/reject all shift the
+  // pending tally). The fetch carries a token so a slow response can never
+  // overwrite a newer count, nor re-seed a project that departed meanwhile.
+  const refreshSkillImprovementCount = useCallback(
+    (projectId: any) => {
+      const state = skillImprovementStateRef.current;
+      const fetchInfo = beginPendingLessonFetch(state, projectId);
+      if (!fetchInfo) return;
+      const { projectId: pid, token } = fetchInfo;
+      api
+        .getSkillImprovements(pid, 'pending')
+        .then((data: any) => {
+          const count = Array.isArray(data?.improvements) ? data.improvements.length : 0;
+          if (applyPendingLessonSuccess(state, pid, token, count)) syncSkillImprovementCounts();
+        })
+        .catch(() => {
+          if (applyPendingLessonFailure(state, pid, token)) syncSkillImprovementCounts();
+        });
+    },
+    [syncSkillImprovementCounts],
+  );
+
+  // Seed pending learned-lesson counts for any not-yet-seeded project, on a
+  // cold load AND whenever the project list changes (org switch, project added,
+  // incremental delivery). A project is only marked seeded once its fetch
+  // succeeds; a cancelled or failed fetch is retried on the next run. Each
+  // fetch's token guards against stale/out-of-order completions.
+  useEffect(() => {
+    const state = skillImprovementStateRef.current;
+    const toFetch = reconcilePendingLessonProjects(
+      state,
+      (projects ?? []).map((p: any) => p?.id),
+      'seed',
+    );
+    // Reflect pruning of departed projects immediately, even with nothing to fetch.
+    syncSkillImprovementCounts();
+    if (toFetch.length === 0) return;
+    let cancelled = false;
+    for (const { projectId: pid, token } of toFetch) {
+      api
+        .getSkillImprovements(pid, 'pending')
+        .then((data: any) => {
+          if (cancelled) return;
+          const count = Array.isArray(data?.improvements) ? data.improvements.length : 0;
+          if (applyPendingLessonSuccess(state, pid, token, count)) syncSkillImprovementCounts();
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (applyPendingLessonFailure(state, pid, token)) syncSkillImprovementCounts();
+        });
+    }
+    return () => {
+      cancelled = true;
+      // Requests still in flight for this run were neither applied nor
+      // resolved; clear their in-flight marker so the next run retries them.
+      for (const { projectId: pid, token } of toFetch) {
+        applyPendingLessonFailure(state, pid, token);
+      }
+    };
+  }, [projects, syncSkillImprovementCounts]);
 
   const refreshOpenPullCount = useCallback((projectId: any) => {
     if (!projectId) return;
@@ -2935,6 +3019,9 @@ export default function App({ initialView }: any = {}) {
           // Skills page listens for this to live-refresh pending-lesson
           // badges and the review panel (same pattern as wiki_update).
           window.dispatchEvent(new CustomEvent('skill_improvement_update', { detail: data }));
+          // Also refresh the Skills sidebar badge for the affected project so a
+          // captured/approved/rejected lesson updates the pending tally live.
+          if (data?.projectId) refreshSkillImprovementCount(data.projectId);
           break;
 
         case 'wiki_update':
@@ -5690,6 +5777,7 @@ export default function App({ initialView }: any = {}) {
             unreadTicketCounts={unreadTicketCounts}
             openPullCounts={openPullCounts}
             securityOpenCounts={securityOpenCounts}
+            skillImprovementCounts={skillImprovementCounts}
             activeReviews={activeReviews}
             electronSuppressHealthFetch={isElectron}
             electronHealthSnapshot={electronDesktopHealth}
