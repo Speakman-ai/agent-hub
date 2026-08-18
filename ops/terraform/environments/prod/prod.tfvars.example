@@ -3,14 +3,18 @@
 # Finalize fleet (spot, autoscaled, scale-to-zero), and the shared base-image
 # registry mirror.
 #
-# Copy to prod.tfvars and fill in your account-specific values. The real
-# prod.tfvars is gitignored and must never be committed — it carries live
-# account IDs / ARNs / instance IDs. Source the placeholders below from your
-# private overlay or from CI via TF_VAR_* environment variables.
+# Reference template for a production-shaped environment. THIS repo's live prod
+# values are already committed in prod.tfvars (config, not a secret) — edit that
+# file in place; do NOT copy this template over it. Identifiers/tokens stay out
+# of both files: local overlay is secrets.tfvars (gitignored); CI injects
+# TF_VAR_* — tokens from GitHub Secrets (AGENT_HUB_AHLOG_TOKEN, …), non-secret
+# deployment identifiers from GitHub Variables.
 #
-#   cp environments/prod/prod.tfvars.example environments/prod/prod.tfvars
+#   # Standing up a brand-new env? Copy this template to that env's tfvars first;
+#   # for this repo's prod, skip the copy — prod.tfvars already exists.
 #   AWS_PROFILE=<profile> terraform init -reconfigure -backend-config=environments/prod/backend.hcl
-#   AWS_PROFILE=<profile> terraform apply -var-file=environments/prod/prod.tfvars
+#   AWS_PROFILE=<profile> terraform apply -var-file=environments/prod/prod.tfvars \
+#     -var-file=environments/prod/secrets.tfvars
 
 aws_region   = "us-east-2"
 project_name = "agenthub"
@@ -50,13 +54,12 @@ manage_github_oidc_role             = true
 create_github_oidc_provider         = true
 enable_ci_ssm_deploy_after_ecr_push = true
 # Tag targeting re-resolves on every apply, so a rebuilt box with the same Name
-# tag keeps CI working; the explicit id is unioned in. Whatever resolves must
-# include the DOCKER_DEPLOY_INSTANCE_ID repo Variable.
+# tag keeps CI working. The raw instance id lives in secrets.tfvars /
+# GitHub Variable CI_SSM_DEPLOY_INSTANCE_ID — do not put a live i-* here.
 ci_ssm_deploy_instance_tags = { Name = "<PROD_HUB_NAME_TAG>" }
-ci_ssm_deploy_instance_id   = "<PROD_HUB_INSTANCE_ID>" # agenthub prod Hub
-# When this workspace owns the shared CI SSM grant, also list the release
-# sandbox + DEV Hub so main→DEV auto-deploy and push-image both work:
-# ci_ssm_deploy_instance_ids = ["<SANDBOX_INSTANCE_ID>", "<DEV_HUB_INSTANCE_ID>"]
+# ci_ssm_deploy_instance_id   = "<PROD_HUB_INSTANCE_ID>"  # secrets.tfvars
+# When this workspace owns the shared CI SSM grant, also list additional
+# boxes in secrets.tfvars as ci_ssm_deploy_instance_ids.
 
 # Plan-time drift guard. release-all.yml passes DOCKER_DEPLOY_INSTANCE_ID and
 # DOCKER_DEPLOY_DEV_INSTANCE_ID in as TF_VAR_ci_ssm_expected_deploy_instance_ids
@@ -71,12 +74,12 @@ agent_hub_default_password = "auto"
 # ── Self log-shipping (server/log-shipper.ts) ────────────────────────────────
 # Ship the Hub's own console output to Agent Hub's JSON-batch log-ingest. Mint
 # the token from a Hub log source (POST /api/projects/<slug>/log-sources → the
-# 201 `token` is the plaintext `ahlog_…`, shown once). SENSITIVE — keep it in
-# this gitignored prod.tfvars (delivered via the PROD_TFVARS secret), never in
-# the tracked tree. Empty/unset disables shipping. Endpoint/service/environment
-# default to the server's built-ins (own loopback ingest route / "agent-hub" /
-# "production") when omitted.
-agent_hub_ahlog_token = "<AHLOG_INGEST_TOKEN>"
+# 201 `token` is the plaintext `ahlog_…`, shown once). SENSITIVE — GitHub secret
+# AGENT_HUB_AHLOG_TOKEN (CI) or secrets.tfvars (local). Never commit it.
+# Empty/unset disables shipping. Endpoint/service/environment default to the
+# server's built-ins (own loopback ingest route / "agent-hub" / "production")
+# when omitted.
+# agent_hub_ahlog_token = "<AHLOG_INGEST_TOKEN>"  # secrets.tfvars / GH secret
 # agent_hub_ahlog_endpoint    = "https://<your-hub-domain>/api/logs/ingest"
 # agent_hub_ahlog_service     = "agent-hub"
 # agent_hub_ahlog_environment = "production"
@@ -165,13 +168,10 @@ finalize_runner_min_size          = 0 # scale-to-zero when idle
 # FAILS the plan if this would exceed it, so a bump past the approved quota is
 # blocked until the quota is raised first.
 finalize_runner_max_size = 64
-# Baked AMI: AL2023 ECS-optimized + the runner image pre-pulled, so fleet
-# instances skip the multi-GB boot `docker pull`. Re-bake when the base AMI /
-# runner image change.
-finalize_runner_ami_id          = "<FINALIZE_RUNNER_AMI_ID>"
+# Baked AMI + fleet bucket names are non-secret deployment identifiers, not
+# secrets (secrets.tfvars / GitHub Variables FINALIZE_RUNNER_AMI_ID,
+# FINALIZE_CACHE_BUCKET_NAME, FINALIZE_WORKTREE_BUCKET_NAME).
 finalize_agent_desired_count    = 0 # scaler owns it at runtime
-finalize_cache_bucket_name      = "agent-hub-finalize-cache-<PROD_ACCOUNT_ID>"
-finalize_worktree_bucket_name   = "agent-hub-finalize-worktree-<PROD_ACCOUNT_ID>"
 finalize_fleet_token_secret_arn = "" # empty → TF generates the token + creates the secret
 
 # Shared base-image pull-through cache on the Hub (registry:2). Set

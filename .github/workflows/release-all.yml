@@ -14,14 +14,15 @@ name: Release
 #          launch template without instance refresh, write SSM AMI id.
 #        - build-mac        — DMGs → S3 (non-gating vs server rollout).
 #        - terraform-apply  — ALWAYS runs (after bake when bake ran):
-#          `terraform apply` against the prod stack. Injects
-#          TF_VAR_finalize_runner_ami_id from bake/SSM so PROD_TFVARS cannot
-#          revert the launch-template AMI pin. The apply can never replace the
-#          Hub: the plan is gated by assert-no-protected-replacements.sh, and
-#          env-only changes reach the running host through the SSM env sync
-#          step rather than a rebuild. Requires the CI prereqs documented on
-#          the job below (PROD_TFVARS secret, AWS_TERRAFORM_ROLE_ARN +
-#          TF_STATE_* vars).
+#          `terraform apply` against the prod stack. Uses the committed
+#          environments/prod/prod.tfvars. Injects
+#          TF_VAR_finalize_runner_ami_id from bake/SSM so a stale AMI pin in
+#          that file cannot revert the launch template. Tokens come from
+#          individual GitHub secrets (AGENT_HUB_AHLOG_TOKEN, …), not a tfvars
+#          blob. The apply can never replace the Hub: the plan is gated by
+#          assert-no-protected-replacements.sh, and env-only changes reach the
+#          running host through the SSM env sync step rather than a rebuild.
+#          Requires the CI prereqs documented on the job below.
 #
 # Dev EC2 hosts that still use npm/git rather than Docker are upgraded with
 # "Deploy Dev" (`.github/workflows/deploy-dev.yml`) manually if needed — it is
@@ -252,7 +253,7 @@ jobs:
 
   # Rebake prod Finalize AMI for the release tag when the runner digest moved.
   # Pins LT without instance refresh; terraform-apply consumes the AMI via TF_VAR.
-  # allow_failure: infra apply still runs (falls back to SSM / PROD_TFVARS).
+  # allow_failure: infra apply still runs (falls back to SSM / committed tfvars).
   bake-finalize-ami-prod:
     name: Bake prod Finalize runner AMI
     needs: [release, docker-ecr-dev]
@@ -268,8 +269,9 @@ jobs:
 
   # Prod infrastructure apply. Runs on every release so a merged Terraform change
   # actually lands. Waits on bake so TF_VAR_finalize_runner_ami_id matches the
-  # launch-template pin (PROD_TFVARS alone would otherwise revert a fresher AMI).
-  # ECR/SSM path ships app code; this ships infra (buckets, IAM, ALB, fleet, Hub env).
+  # launch-template pin (a stale finalize_runner_ami_id in committed tfvars
+  # would otherwise revert a fresher AMI). ECR/SSM path ships app code; this
+  # ships infra (buckets, IAM, ALB, fleet, Hub env).
   #
   # Two rails make an unattended prod apply safe, and both are load-bearing:
   #
@@ -284,11 +286,29 @@ jobs:
   #      SSM. That is why the `user_data_replace_on_change` switch no longer
   #      exists: nothing here needs to rebuild the box to change a variable.
   #
-  # Required CI configuration (nothing account-specific is hardcoded here — this
-  # workflow lives in a public repo):
-  #   - secret PROD_TFVARS         — the full contents of
-  #                                  environments/prod/prod.tfvars (gitignored;
-  #                                  carries live account IDs / ARNs / instance IDs).
+  # Required CI configuration:
+  #   - committed environments/prod/prod.tfvars — non-secret prod fleet/sizing
+  #                                  config (instance types, sizes, toggles).
+  #                                  Scanned by public-repo-hygiene.test.ts, so
+  #                                  account-specific identifiers are NOT in it.
+  #   - var    PUBLIC_FQDN, BASE_DOMAIN, ROOT_DELEGATION_ZONE_ID,
+  #                                  ROOT_DELEGATION_ROLE_ARN, HUB_DATA_KMS_KEY_ARN,
+  #                                  ARTIFACTS_BUCKET_NAME — account-specific
+  #                                  identifiers injected as TF_VAR_*. Required:
+  #                                  the apply fails-fast before plan if any is
+  #                                  empty. ALB_ACCESS_LOGS_BUCKET is optional.
+  #   - var    CI_SSM_DEPLOY_INSTANCE_ID, FINALIZE_CACHE_BUCKET_NAME,
+  #                                  FINALIZE_WORKTREE_BUCKET_NAME,
+  #                                  FINALIZE_RUNNER_AMI_ID — non-secret
+  #                                  deployment identifiers (Variables, not
+  #                                  Secrets). Optional: AMI is a fallback
+  #                                  (bake/SSM pin wins); the instance id / fleet
+  #                                  buckets have downstream Terraform guards.
+  #   - secret AGENT_HUB_AHLOG_TOKEN (optional) — AHLOG ingest token. Secrets are
+  #                                  reserved for tokens. Other optional token
+  #                                  secrets: AGENT_HUB_API_KEY,
+  #                                  TF_GITHUB_TOKEN_FOR_GIT_CLONE. Missing/empty
+  #                                  → Terraform defaults (do not resurrect PROD_TFVARS).
   #   - var    AWS_TERRAFORM_ROLE_ARN — an OIDC role in the prod account with
   #                                  permission to read/write the S3 state + lock
   #                                  table and manage every resource in the stack.
@@ -316,7 +336,7 @@ jobs:
       BAKED_FINALIZE_AMI: ${{ needs.bake-finalize-ami-prod.outputs.ami_id }}
       # Single source of truth for the rollout target. Release / push-image
       # SSM vars.DOCKER_DEPLOY_INSTANCE_ID; the CI role's ssm:SendCommand grant
-      # is scoped by ci_ssm_deploy_* in the PROD_TFVARS secret. Feeding the
+      # is scoped by ci_ssm_deploy_* in committed prod.tfvars. Feeding the
       # Variable into the plan makes Terraform assert the grant covers it — see
       # terraform_data.ci_ssm_deploy_target_guard. Job-scoped because
       # `terraform apply` consumes the saved plan, so the var has to be present
@@ -348,19 +368,100 @@ jobs:
           terraform_version: 1.7.3
           terraform_wrapper: false
 
-      # The real prod.tfvars is gitignored (live account IDs / ARNs), so it is
-      # never in the checkout — materialize it from the PROD_TFVARS secret.
-      - name: Materialize prod.tfvars from secret
-        env:
-          PROD_TFVARS: ${{ secrets.PROD_TFVARS }}
+      # Non-secret prod config is committed. Tokens are individual GitHub
+      # secrets injected as TF_VAR_* below (empty/missing → Terraform default).
+      - name: Assert committed prod.tfvars is present
         run: |
           set -euo pipefail
-          if [ -z "${PROD_TFVARS:-}" ]; then
-            echo "::error::PROD_TFVARS secret is empty — refusing to apply prod terraform." >&2
+          if [ ! -f environments/prod/prod.tfvars ]; then
+            echo "::error::environments/prod/prod.tfvars is missing from the checkout. Non-secret prod config is committed; do not recreate the PROD_TFVARS blob." >&2
             exit 1
           fi
-          mkdir -p environments/prod
-          printf '%s' "$PROD_TFVARS" > environments/prod/prod.tfvars
+
+      # Only tokens (credentials) come from GitHub Secrets. Non-secret
+      # deployment identifiers live in GitHub Variables (injected in the next
+      # step). Empty/missing token → Terraform default (never override with "").
+      - name: Inject Terraform tokens from GitHub Secrets
+        env:
+          AGENT_HUB_AHLOG_TOKEN: ${{ secrets.AGENT_HUB_AHLOG_TOKEN }}
+          AGENT_HUB_API_KEY: ${{ secrets.AGENT_HUB_API_KEY }}
+          TF_GITHUB_TOKEN_FOR_GIT_CLONE: ${{ secrets.TF_GITHUB_TOKEN_FOR_GIT_CLONE }}
+        run: |
+          set -euo pipefail
+          # Only export when the secret is non-empty so a missing GitHub secret
+          # cannot override Terraform defaults / generated values with "".
+          append_tf_var() {
+            local name="$1" value="${2:-}"
+            if [ -z "$value" ]; then
+              return 0
+            fi
+            {
+              echo "${name}<<TFVAR_EOF"
+              printf '%s\n' "$value"
+              echo "TFVAR_EOF"
+            } >> "$GITHUB_ENV"
+          }
+          append_tf_var TF_VAR_agent_hub_ahlog_token "${AGENT_HUB_AHLOG_TOKEN}"
+          append_tf_var TF_VAR_agent_hub_api_key "${AGENT_HUB_API_KEY}"
+          append_tf_var TF_VAR_github_token_for_git_clone "${TF_GITHUB_TOKEN_FOR_GIT_CLONE}"
+
+      # Deployment identifiers are internal-only but NOT secret (instance/AMI ids,
+      # bucket names, domain, account-scoped ARNs), so they live in GitHub
+      # Variables — Secrets are reserved for tokens. They are also kept out of the
+      # committed prod.tfvars (public-repo-hygiene.test.ts scans it) and inject as
+      # TF_VAR_* here. Required identifiers fail-fast: with base_domain unset,
+      # create_route53_zone would try to build a zone for the "example.com"
+      # default; kms/artifacts have plan-time preconditions, but a clear error
+      # before plan beats a cryptic one during it. The finalize/SSM identifiers
+      # stay optional — the AMI has a bake/SSM fallback, and the instance id /
+      # fleet buckets carry their own downstream Terraform guards.
+      - name: Inject Terraform deployment identifiers from GitHub Variables
+        env:
+          PUBLIC_FQDN: ${{ vars.PUBLIC_FQDN }}
+          BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
+          ROOT_DELEGATION_ZONE_ID: ${{ vars.ROOT_DELEGATION_ZONE_ID }}
+          ROOT_DELEGATION_ROLE_ARN: ${{ vars.ROOT_DELEGATION_ROLE_ARN }}
+          HUB_DATA_KMS_KEY_ARN: ${{ vars.HUB_DATA_KMS_KEY_ARN }}
+          ALB_ACCESS_LOGS_BUCKET: ${{ vars.ALB_ACCESS_LOGS_BUCKET }}
+          ARTIFACTS_BUCKET_NAME: ${{ vars.ARTIFACTS_BUCKET_NAME }}
+          CI_SSM_DEPLOY_INSTANCE_ID: ${{ vars.CI_SSM_DEPLOY_INSTANCE_ID }}
+          FINALIZE_RUNNER_AMI_ID: ${{ vars.FINALIZE_RUNNER_AMI_ID }}
+          FINALIZE_CACHE_BUCKET_NAME: ${{ vars.FINALIZE_CACHE_BUCKET_NAME }}
+          FINALIZE_WORKTREE_BUCKET_NAME: ${{ vars.FINALIZE_WORKTREE_BUCKET_NAME }}
+        run: |
+          set -euo pipefail
+          append_tf_var() {
+            local name="$1" value="${2:-}"
+            [ -z "$value" ] && return 0
+            {
+              echo "${name}<<TFVAR_EOF"
+              printf '%s\n' "$value"
+              echo "TFVAR_EOF"
+            } >> "$GITHUB_ENV"
+          }
+          require_tf_var() {
+            local name="$1" var="$2" value="${3:-}"
+            if [ -z "$value" ]; then
+              echo "::error::Required GitHub Variable ${var} is unset. Set the prod env identifiers (PUBLIC_FQDN, BASE_DOMAIN, ROOT_DELEGATION_ZONE_ID, ROOT_DELEGATION_ROLE_ARN, HUB_DATA_KMS_KEY_ARN, ARTIFACTS_BUCKET_NAME) before releasing — they moved out of prod.tfvars." >&2
+              exit 1
+            fi
+            append_tf_var "$name" "$value"
+          }
+          # Required — no safe Terraform default for a live prod apply.
+          require_tf_var TF_VAR_public_fqdn PUBLIC_FQDN "${PUBLIC_FQDN}"
+          require_tf_var TF_VAR_base_domain BASE_DOMAIN "${BASE_DOMAIN}"
+          require_tf_var TF_VAR_root_delegation_zone_id ROOT_DELEGATION_ZONE_ID "${ROOT_DELEGATION_ZONE_ID}"
+          require_tf_var TF_VAR_root_delegation_role_arn ROOT_DELEGATION_ROLE_ARN "${ROOT_DELEGATION_ROLE_ARN}"
+          require_tf_var TF_VAR_hub_data_kms_key_arn HUB_DATA_KMS_KEY_ARN "${HUB_DATA_KMS_KEY_ARN}"
+          require_tf_var TF_VAR_artifacts_bucket_name ARTIFACTS_BUCKET_NAME "${ARTIFACTS_BUCKET_NAME}"
+          # Optional — empty disables ALB access logging (no access_logs block).
+          append_tf_var TF_VAR_alb_access_logs_bucket "${ALB_ACCESS_LOGS_BUCKET}"
+          # Optional — AMI has a bake/SSM fallback (resolved below); the deploy
+          # instance id and fleet bucket names carry downstream Terraform guards.
+          append_tf_var TF_VAR_ci_ssm_deploy_instance_id "${CI_SSM_DEPLOY_INSTANCE_ID}"
+          append_tf_var TF_VAR_finalize_runner_ami_id "${FINALIZE_RUNNER_AMI_ID}"
+          append_tf_var TF_VAR_finalize_cache_bucket_name "${FINALIZE_CACHE_BUCKET_NAME}"
+          append_tf_var TF_VAR_finalize_worktree_bucket_name "${FINALIZE_WORKTREE_BUCKET_NAME}"
 
       # Backend values are non-secret; passed inline so no backend.hcl is needed.
       - name: Terraform init
@@ -373,7 +474,8 @@ jobs:
             -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}" \
             -backend-config="encrypt=true"
 
-      # Override gitignored finalize_runner_ami_id so apply cannot undo the bake pin.
+      # Override finalize_runner_ami_id so apply cannot undo the bake pin.
+      # GitHub Variable FINALIZE_RUNNER_AMI_ID is the fallback; bake/SSM wins.
       - name: Resolve finalize_runner_ami_id for TF_VAR
         run: |
           set -euo pipefail
@@ -383,7 +485,7 @@ jobs:
               --query 'Parameter.Value' --output text 2>/dev/null || echo "")
           fi
           if [ -z "$AMI" ] || [ "$AMI" = None ]; then
-            echo "::warning::No baked/SSM finalize AMI — terraform will use PROD_TFVARS finalize_runner_ami_id as-is."
+            echo "::warning::No baked/SSM finalize AMI — terraform will use GitHub Variable FINALIZE_RUNNER_AMI_ID / secrets.tfvars as-is."
             exit 0
           fi
           echo "TF_VAR_finalize_runner_ami_id=$AMI" >>"$GITHUB_ENV"

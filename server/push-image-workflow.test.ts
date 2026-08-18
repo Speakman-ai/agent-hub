@@ -44,14 +44,12 @@ describe('ECR publish + push-image deploy contract', () => {
 
   // Previously this asserted the dev-sandbox `ci_ssm_deploy_instance_id` in
   // ryan.tfvars stayed byte-identical to the workflow's DEPLOY_INSTANCE_ID
-  // fallback. As of AH-1388 the real per-env tfvars are gitignored (they carried
-  // live account / instance ids) and the sandbox env dir was renamed ryan -> dev,
-  // so the real instance id no longer lives in the tracked tree — the workflow
-  // sources it from the DOCKER_DEPLOY_INSTANCE_ID repo Variable and operators
-  // keep the matching value in their private tfvars overlay. What is still
-  // guardable in-tree: the dev `.example` template documents the same knob (so an
-  // operator knows which var to set) with a placeholder, never a real id, and the
-  // workflow keeps the deploy target parameterized via the repo Variable.
+  // fallback. The sandbox env dir was renamed ryan -> dev and then
+  // decommissioned. Prod config now lives in committed prod.tfvars; the
+  // workflow still sources the deploy target from DOCKER_DEPLOY_INSTANCE_ID.
+  // What is still guardable here: the dev `.example` template documents the
+  // same knob with a placeholder, never a real id, and the workflow keeps
+  // the deploy target parameterized via the repo Variable.
   it('documents the dev-sandbox CI SSM instance knob in the tracked .example template', () => {
     const example = readFileSync(
       path.join(repoRoot, 'ops', 'terraform', 'environments', 'dev', 'dev.tfvars.example'),

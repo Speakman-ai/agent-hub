@@ -10,16 +10,15 @@ import { describe, expect, it } from 'vitest';
  * templates, and the git-tracked Terraform environment inputs) before this is
  * an open, Apache-2.0 public repo.
  *
- * Scope note: the real per-environment Terraform inputs (the `<env>.tfvars` and
- * `backend.hcl` under `ops/terraform/environments/<env>/`) carry live account
- * IDs / ARNs / instance IDs and are now gitignored — operators copy the
- * tracked `*.example` templates and fill in real values locally (or via CI
- * `TF_VAR_*`). This guard scans every git-TRACKED file under
- * `ops/terraform/environments/**` (the sanitized templates + .gitignore), so a
- * real overlay sitting untracked on a developer's disk is never scanned, while
- * accidentally committing one is caught. Functional source that points at
- * vendor control-plane endpoints (release bucket, bug-report / replay ingest)
- * is out of scope here — changing it is a product change, not doc hygiene.
+ * Scope note: the live `prod.tfvars` is committed on purpose so fleet/sizing
+ * *config* (instance types, counts, toggles) is reviewable in PRs. It is still
+ * scanned here for internal-only identifiers — account-specific IDENTIFIERS
+ * (the deploy domain, AWS account IDs, Route 53 zone ID, KMS key ID,
+ * account-scoped bucket names, the delegation role ARN) and tokens stay OUT of
+ * it, in the gitignored overlay (`secrets.tfvars`) / CI `TF_VAR_*`. The live
+ * `backend.hcl` carries the account-ID state bucket, so it is gitignored (CI
+ * passes the same values inline from GitHub Variables). Committing a token in
+ * prod.tfvars is additionally caught by `ci-ssm-deploy-targeting.test.ts`.
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -145,10 +144,8 @@ function trackedAppSourceFiles(): string[] {
 }
 
 function trackedEnvFiles(): string[] {
-  // Every git-TRACKED file under ops/terraform/environments must be
-  // placeholder-clean. Enumerating via `git ls-files` (not the filesystem)
-  // means a real, gitignored overlay on a developer's disk is never scanned,
-  // while a real file accidentally added to the index is caught.
+  // Enumerating via `git ls-files` (not the filesystem) so an untracked local
+  // secrets.tfvars is never scanned, while a committed one is caught.
   const dir = join(REPO_ROOT, 'ops', 'terraform', 'environments');
   let out: string;
   try {
@@ -172,6 +169,11 @@ function publishableFiles(): string[] {
   collectMarkdown(join(REPO_ROOT, 'ops'), md);
   md.forEach((f) => files.add(f));
   terraformModuleSource().forEach((f) => files.add(f));
+  // Every git-tracked env file must be placeholder-clean of internal-only
+  // identifiers — the sanitized `.example` templates AND the committed live
+  // `prod.tfvars` (reviewable fleet config; account-specific IDs live in the
+  // gitignored overlay / TF_VAR_*). backend.hcl is gitignored, so `git
+  // ls-files` never surfaces the live one here.
   trackedEnvFiles().forEach((f) => files.add(f));
   trackedScriptFiles().forEach((f) => files.add(f));
   trackedWorkflowFiles().forEach((f) => files.add(f));
@@ -199,21 +201,35 @@ describe('public-repo hygiene', () => {
     expect(files.length).toBeGreaterThan(5);
   });
 
-  it('no real per-environment tfvars / backend.hcl is git-tracked (only *.example)', () => {
+  it('never tracks secrets.tfvars (tokens only; config tfvars are committed)', () => {
     const tracked = trackedEnvFiles().map((abs) => relative(REPO_ROOT, abs));
-    const offenders = tracked.filter((rel) => {
-      const base = rel.split('/').pop() ?? '';
-      // Only files directly inside an env subdir (environments/<env>/<file>).
-      const inEnvSubdir = /^ops\/terraform\/environments\/[^/]+\/[^/]+$/.test(rel);
-      if (!inEnvSubdir) return false;
-      const isRealTfvars = base.endsWith('.tfvars') && !base.endsWith('.tfvars.example');
-      const isRealBackend = base === 'backend.hcl';
-      return isRealTfvars || isRealBackend;
-    });
+    const secrets = tracked.filter((rel) => rel.endsWith('/secrets.tfvars'));
+    expect(secrets, `secrets.tfvars must stay gitignored:\n${secrets.join('\n')}`).toEqual([]);
+  });
+
+  function isGitIgnored(rel: string): boolean {
+    try {
+      execFileSync('git', ['check-ignore', '-q', '--', rel], { cwd: REPO_ROOT });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it('does not gitignore live prod.tfvars (reviewable config must be committable)', () => {
+    const rel = 'ops/terraform/environments/prod/prod.tfvars';
+    expect(isGitIgnored(rel), `${rel} is config and must be committable`).toBe(false);
+  });
+
+  it('gitignores live backend.hcl (carries the account-ID state bucket)', () => {
+    // The committed surface is the sanitized backend.hcl.example; the live file
+    // stays untracked (CI passes the same values inline from GitHub Variables).
+    const rel = 'ops/terraform/environments/prod/backend.hcl';
+    expect(isGitIgnored(rel), `${rel} must stay gitignored`).toBe(true);
     expect(
-      offenders,
-      `Real per-env Terraform inputs must be gitignored, not committed:\n${offenders.join('\n')}`,
-    ).toEqual([]);
+      isGitIgnored('ops/terraform/environments/prod/backend.hcl.example'),
+      'backend.hcl.example must stay committable',
+    ).toBe(false);
   });
 
   it('each environment ships sanitized .example templates', () => {

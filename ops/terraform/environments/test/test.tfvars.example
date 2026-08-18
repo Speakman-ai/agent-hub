@@ -4,9 +4,9 @@
 #           builds) without OOM. Separate state (environments/test/backend.hcl,
 #           key test/terraform.tfstate) — fully isolated from `dev`.
 #
-# Copy to test.tfvars and fill in your account-specific values. The real
-# test.tfvars is gitignored and must never be committed. Source the placeholders
-# below from your private overlay or from CI via TF_VAR_* environment variables.
+# Copy to test.tfvars and fill in account-specific values. test.tfvars is a
+# gitignored local overlay (only prod commits its live config today); tokens go
+# in secrets.tfvars (local) or individual GitHub secrets → TF_VAR_* (CI).
 #
 #   cp environments/test/test.tfvars.example environments/test/test.tfvars
 #   AWS_PROFILE=<profile> ./scripts/tf-init.sh test

@@ -88,11 +88,12 @@ variable "agent_hub_default_password" {
 # output to Agent Hub's JSON-batch log-ingest endpoint. Empty/null disables it
 # (the shipper is a no-op without a token). Mint the token from a Hub log source
 # (POST /api/projects/<slug>/log-sources — the 201 `token` is the plaintext
-# `ahlog_…`, shown once) and store it in the gitignored prod.tfvars delivered via
-# the PROD_TFVARS secret — never commit the token.
+# `ahlog_…`, shown once) and store it in GitHub secret AGENT_HUB_AHLOG_TOKEN
+# (release injects TF_VAR_agent_hub_ahlog_token) or a local secrets.tfvars
+# overlay — never commit the token.
 
 variable "agent_hub_ahlog_token" {
-  description = "AHLOG_TOKEN for server/log-shipper.ts. The plaintext `ahlog_` ingest token minted from a Hub log source. Empty/null disables self log-shipping. Sensitive — supply via prod.tfvars (PROD_TFVARS secret), never commit it."
+  description = "AHLOG_TOKEN for server/log-shipper.ts. The plaintext `ahlog_` ingest token minted from a Hub log source. Empty/null disables self log-shipping. Sensitive — supply via GitHub secret AGENT_HUB_AHLOG_TOKEN (CI) or secrets.tfvars (local), never commit it."
   type        = string
   default     = ""
   sensitive   = true

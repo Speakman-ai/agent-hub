@@ -9,8 +9,9 @@ import { describe, expect, it } from 'vitest';
  *
  * The deploy targets are configured twice — the DOCKER_DEPLOY_INSTANCE_ID /
  * DOCKER_DEPLOY_DEV_INSTANCE_ID repo Variables read by rollout workflows, and
- * the Terraform inputs that scope the CI role's SSM grant. Both live in private stores (repo Variables, the
- * PROD_TFVARS secret), so nothing in-tree could diff them. When the sandbox was
+ * the Terraform inputs that scope the CI role's SSM grant. The tfvars side is
+ * committed (`environments/prod/prod.tfvars`); the Variable lives in GitHub
+ * repo settings. When the sandbox was
  * rebuilt, the Variable moved to the new instance and the IAM policy kept naming
  * the old one, so every release failed at the SSM step.
  *
@@ -360,5 +361,139 @@ describe('ecr-publish-rollout-docker-dev.yml SSM failure diagnostics', () => {
     expect(failureBlock![1], 'a denied rollout must not be reported as success').toMatch(
       /\n {12}exit 1$/,
     );
+  });
+});
+
+const WIDENED_FINALIZE_INSTANCE_TYPES = [
+  'm7a.xlarge',
+  'm7i.xlarge',
+  'm6a.xlarge',
+  'm6i.xlarge',
+  'm6in.xlarge',
+  'm6id.xlarge',
+  'm6idn.xlarge',
+  'm5.xlarge',
+  'm5a.xlarge',
+  'm5n.xlarge',
+  'm5d.xlarge',
+  'm5dn.xlarge',
+  'm5ad.xlarge',
+  'm5zn.xlarge',
+] as const;
+
+describe('prod.tfvars is committed config; tokens are individual GitHub secrets', () => {
+  const prodTfvarsPath = path.join(tfDir, 'environments', 'prod', 'prod.tfvars');
+  const gitignorePath = path.join(tfDir, '.gitignore');
+  const yml = read(releaseWorkflowPath);
+  const tfJob = yml.match(/\n {2}terraform-apply:\n([\s\S]*?)\n {2}[a-z][a-z-]*:\n/);
+
+  it('commits prod.tfvars so fleet config is reviewable', () => {
+    const tfvars = read(prodTfvarsPath);
+    expect(tfvars.length).toBeGreaterThan(0);
+    expect(tfvars).toMatch(/finalize_runner_max_size\s*=\s*128/);
+    expect(tfvars).toMatch(/enable_finalize_runners\s*=\s*true/);
+  });
+
+  it('does not put instance ids, AMI ids, or fleet bucket names in committed prod.tfvars', () => {
+    const tfvars = read(prodTfvarsPath);
+    expect(tfvars).not.toMatch(/^\s*ci_ssm_deploy_instance_id\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*finalize_runner_ami_id\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*finalize_cache_bucket_name\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*finalize_worktree_bucket_name\s*=/m);
+    expect(tfvars).not.toMatch(/\bi-[0-9a-f]{17}\b/);
+    expect(tfvars).not.toMatch(/\bami-[0-9a-f]+\b/);
+  });
+
+  it('does not put tokens in committed prod.tfvars', () => {
+    const tfvars = read(prodTfvarsPath);
+    expect(tfvars).not.toMatch(/^\s*agent_hub_ahlog_token\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*github_token_for_git_clone\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*agent_hub_api_key\s*=/m);
+    expect(tfvars).not.toMatch(/ahlog_[A-Za-z0-9_-]{8,}/);
+    expect(tfvars).not.toMatch(/ghp_[A-Za-z0-9]/);
+    expect(tfvars).not.toMatch(/AKIA[A-Z0-9]{16}/);
+  });
+
+  it('widens the Finalize Spot pool to 14 full-performance xlarge types', () => {
+    const tfvars = read(prodTfvarsPath);
+    for (const instanceType of WIDENED_FINALIZE_INSTANCE_TYPES) {
+      expect(tfvars).toContain(`"${instanceType}"`);
+    }
+    expect(tfvars).not.toContain('"m7i-flex');
+  });
+
+  it('keeps account-specific identifiers out of committed prod.tfvars', () => {
+    // These moved to the gitignored overlay / TF_VAR_* so the committed file
+    // stays clean of the internal-only identifiers public-repo-hygiene scans.
+    const tfvars = read(prodTfvarsPath);
+    expect(tfvars, 'private deploy domain').not.toMatch(/surveytracker/i);
+    expect(tfvars, 'real AWS account id').not.toMatch(
+      /\b(?:120569607241|350025135582|797611956947)\b/,
+    );
+    expect(tfvars, 'real Route53 zone id').not.toMatch(/Z10407258WTZ0HQ4VDZP/);
+    expect(tfvars, 'real KMS key id').not.toMatch(/8bd60c33-06da-4257-8a77-28a99fd67ee4/);
+    // The account-scoped inputs must not carry live assignments here.
+    expect(tfvars).not.toMatch(/^\s*public_fqdn\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*base_domain\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*root_delegation_role_arn\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*hub_data_kms_key_arn\s*=/m);
+    expect(tfvars).not.toMatch(/^\s*artifacts_bucket_name\s*=/m);
+  });
+
+  it('gitignores the secrets overlay, live backend.hcl, and leftover non-prod files', () => {
+    const gi = read(gitignorePath);
+    expect(gi).toMatch(/environments\/\*\/secrets\.tfvars/);
+    // The live backend.hcl carries the account-ID state bucket → gitignored,
+    // template kept.
+    expect(gi).toMatch(/^environments\/\*\/backend\.hcl$/m);
+    expect(gi).toMatch(/!environments\/\*\/backend\.hcl\.example/);
+    // prod.tfvars stays committed (not caught by a broad tfvars glob).
+    expect(gi).not.toMatch(/environments\/\*\/\*\.tfvars/);
+  });
+
+  it('injects env identifiers from GitHub Variables as TF_VAR_*, failing fast when required ones are unset', () => {
+    expect(tfJob, 'terraform-apply job must exist').toBeTruthy();
+    expect(tfJob![1]).toContain('vars.PUBLIC_FQDN');
+    expect(tfJob![1]).toContain('vars.BASE_DOMAIN');
+    expect(tfJob![1]).toContain('vars.HUB_DATA_KMS_KEY_ARN');
+    expect(tfJob![1]).toContain('vars.ARTIFACTS_BUCKET_NAME');
+    expect(tfJob![1]).toContain('TF_VAR_public_fqdn');
+    expect(tfJob![1]).toContain('TF_VAR_hub_data_kms_key_arn');
+    // Required identifiers fail-fast before plan rather than defaulting.
+    expect(tfJob![1]).toContain('require_tf_var');
+  });
+
+  it('does not materialize prod.tfvars from a PROD_TFVARS blob', () => {
+    expect(tfJob, 'terraform-apply job must exist').toBeTruthy();
+    expect(tfJob![1]).not.toMatch(/secrets\.PROD_TFVARS/);
+    expect(tfJob![1]).toContain('Assert committed prod.tfvars is present');
+    expect(tfJob![1]).toContain('-var-file=environments/prod/prod.tfvars');
+  });
+
+  it('sources only tokens (credentials) from GitHub Secrets', () => {
+    expect(tfJob, 'terraform-apply job must exist').toBeTruthy();
+    expect(tfJob![1]).toContain('secrets.AGENT_HUB_AHLOG_TOKEN');
+    expect(tfJob![1]).toContain('secrets.AGENT_HUB_API_KEY');
+    expect(tfJob![1]).toContain('secrets.TF_GITHUB_TOKEN_FOR_GIT_CLONE');
+    // Non-secret deployment identifiers must NOT come from Secrets — Secrets
+    // are reserved for tokens.
+    expect(tfJob![1]).not.toContain('secrets.CI_SSM_DEPLOY_INSTANCE_ID');
+    expect(tfJob![1]).not.toContain('secrets.FINALIZE_RUNNER_AMI_ID');
+    expect(tfJob![1]).not.toContain('secrets.FINALIZE_CACHE_BUCKET_NAME');
+    expect(tfJob![1]).not.toContain('secrets.FINALIZE_WORKTREE_BUCKET_NAME');
+    // Empty secrets must not override Terraform defaults with "".
+    expect(tfJob![1]).toMatch(/if \[ -z "\$value" \]; then/);
+  });
+
+  it('sources deployment identifiers from GitHub Variables, not Secrets', () => {
+    expect(tfJob, 'terraform-apply job must exist').toBeTruthy();
+    expect(tfJob![1]).toContain('vars.CI_SSM_DEPLOY_INSTANCE_ID');
+    expect(tfJob![1]).toContain('vars.FINALIZE_RUNNER_AMI_ID');
+    expect(tfJob![1]).toContain('vars.FINALIZE_CACHE_BUCKET_NAME');
+    expect(tfJob![1]).toContain('vars.FINALIZE_WORKTREE_BUCKET_NAME');
+    expect(tfJob![1]).toContain('TF_VAR_ci_ssm_deploy_instance_id');
+    expect(tfJob![1]).toContain('TF_VAR_finalize_cache_bucket_name');
+    expect(tfJob![1]).toContain('TF_VAR_finalize_worktree_bucket_name');
+    expect(tfJob![1]).toContain('TF_VAR_finalize_runner_ami_id');
   });
 });

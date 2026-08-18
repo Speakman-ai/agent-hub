@@ -33,8 +33,7 @@ describe('PR-environments Terraform removal contract', () => {
   const outputsTf = readFileSync(resolve(tfDir, 'outputs.tf'), 'utf8');
   const userData = readFileSync(resolve(tfDir, 'agent-hub-user-data.tftpl'), 'utf8');
   const tfvarsExample = readFileSync(resolve(tfDir, 'terraform.tfvars.example'), 'utf8');
-  // Real per-env tfvars are gitignored (AH-1388); the ryan sandbox env dir was
-  // renamed to the generic `dev`. Assert against the tracked .example template.
+  // Assert against the tracked .example template (dev env is decommissioned).
   const devTfvarsExample = readFileSync(
     resolve(tfDir, 'environments/dev/dev.tfvars.example'),
     'utf8',

@@ -24,7 +24,7 @@ directory instead and is wired to an npm script.
 
 DEV Hub (dev.agenthub.*) was decommissioned 2026-08-17 — merges to `main` no longer bake a DEV fleet AMI. Busy prod runner hosts keep their current AMI and jobs. Only **new** scale-outs boot the baked image. Prune never deletes an AMI still on an instance, the SSM pin, or the launch-template `$Default`.
 
-Digest skip: CI stores `/agenthub/<fleet>/finalize-runner-image-digest` and skips bake when unchanged (`force: true` overrides). Prod Terraform apply injects `TF_VAR_finalize_runner_ami_id` from the bake/SSM pin so `PROD_TFVARS` cannot revert a fresher AMI. After each bake, CI keeps the newest **3** AMIs per fleet and deletes the rest (snapshots included).
+Digest skip: CI stores `/agenthub/<fleet>/finalize-runner-image-digest` and skips bake when unchanged (`force: true` overrides). Prod Terraform apply injects `TF_VAR_finalize_runner_ami_id` from the bake/SSM pin so a stale `FINALIZE_RUNNER_AMI_ID` GitHub Variable cannot revert a fresher pin. After each bake, CI keeps the newest **3** AMIs per fleet and deletes the rest (snapshots included).
 
 OIDC role: `vars.AWS_TERRAFORM_ROLE_ARN` (needs EC2 run/create-image, SSM send-command, launch-template update, SSM PutParameter).
 

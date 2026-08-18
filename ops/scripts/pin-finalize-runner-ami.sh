@@ -5,7 +5,7 @@
 # from the new AMI (non-disruptive).
 #
 # Also writes SSM `/agenthub/<fleet>/finalize-runner-ami-id` so release
-# terraform apply can override gitignored tfvars via TF_VAR_finalize_runner_ami_id
+# terraform apply can override committed tfvars via TF_VAR_finalize_runner_ami_id
 # and not revert the pin.
 #
 # Usage:

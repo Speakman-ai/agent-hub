@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import { readdirSync, readFileSync, statSync } from 'fs';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -12,10 +13,11 @@ import { describe, it, expect } from 'vitest';
  * cryptic "Backend configuration required" message. These tests catch that
  * at PR time instead of at apply time.
  *
- * The real per-env `backend.hcl` is gitignored (it carries the account-specific
- * state bucket — see AH-1388); operators copy the tracked `backend.hcl.example`
- * template. These invariants are asserted against the committed `.example`
- * templates, which are the only backend configs present in a fresh checkout.
+ * The live `backend.hcl` carries the account-ID state bucket, so it is
+ * gitignored (CI passes the same values inline from GitHub Variables; local
+ * operators copy the template). These invariants are asserted against the
+ * committed `.example` templates so every env can bootstrap remote state from
+ * a fresh checkout.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -23,6 +25,23 @@ const tfDir = resolve(here, '..', 'ops', 'terraform');
 
 function readText(p: string): string {
   return readFileSync(p, 'utf8');
+}
+
+// Simple HCL-ish parser for `key = value` lines. Matches the parser in
+// scripts/tf-init.sh — if this drifts, the script will too.
+function parseBackendKV(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/#.*$/, '').trim();
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+      v = v.slice(1, -1);
+    }
+    out[m[1]] = v;
+  }
+  return out;
 }
 
 describe('ops/terraform/backend.tf', () => {
@@ -42,27 +61,9 @@ describe('ops/terraform/environments/*/backend.hcl.example', () => {
     return statSync(p).isDirectory();
   });
 
-  // Simple HCL-ish parser for `key = value` lines. Matches the parser in
-  // scripts/tf-init.sh — if this drifts, the script will too.
-  function parseKV(text: string): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const raw of text.split('\n')) {
-      const line = raw.replace(/#.*$/, '').trim();
-      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
-      if (!m) continue;
-      let v = m[2].trim();
-      // Strip surrounding quotes
-      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-        v = v.slice(1, -1);
-      }
-      out[m[1]] = v;
-    }
-    return out;
-  }
-
   it('every env ships a backend.hcl.example template', () => {
-    // The real backend.hcl is gitignored; every env must still commit a
-    // sanitized template so operators can bootstrap remote state.
+    // Every env must still commit a sanitized template so operators can
+    // bootstrap remote state; live backend.hcl is additional, not a replacement.
     for (const env of envs) {
       const p = join(envsDir, env, BACKEND_TEMPLATE);
       expect(() => statSync(p), `missing ${p}`).not.toThrow();
@@ -72,7 +73,7 @@ describe('ops/terraform/environments/*/backend.hcl.example', () => {
   it('each backend.hcl.example sets bucket, region, and encrypt=true', () => {
     for (const env of envs) {
       const p = join(envsDir, env, BACKEND_TEMPLATE);
-      const cfg = parseKV(readText(p));
+      const cfg = parseBackendKV(readText(p));
       expect(cfg.bucket, `${env}: bucket`).toBeTruthy();
       expect(cfg.region, `${env}: region`).toBeTruthy();
       expect(cfg.encrypt, `${env}: encrypt must be true`).toBe('true');
@@ -82,7 +83,7 @@ describe('ops/terraform/environments/*/backend.hcl.example', () => {
   it('each backend.hcl.example specifies either use_lockfile=true OR dynamodb_table (state locking is required)', () => {
     for (const env of envs) {
       const p = join(envsDir, env, BACKEND_TEMPLATE);
-      const cfg = parseKV(readText(p));
+      const cfg = parseBackendKV(readText(p));
       const hasNativeLock = cfg.use_lockfile === 'true';
       const hasDdbLock = typeof cfg.dynamodb_table === 'string' && cfg.dynamodb_table.length > 0;
       expect(
@@ -95,9 +96,31 @@ describe('ops/terraform/environments/*/backend.hcl.example', () => {
   it('each backend.hcl.example key matches the convention <env>/terraform.tfstate', () => {
     for (const env of envs) {
       const p = join(envsDir, env, BACKEND_TEMPLATE);
-      const cfg = parseKV(readText(p));
+      const cfg = parseBackendKV(readText(p));
       expect(cfg.key, `${env}: key convention`).toBe(`${env}/terraform.tfstate`);
     }
+  });
+});
+
+describe('ops/terraform/environments/*/backend.hcl (live)', () => {
+  it('no live backend.hcl is git-tracked (only *.example)', () => {
+    // The live backend.hcl names the account-ID state bucket, so it stays
+    // gitignored. Enumerate git-tracked backend files and assert every one is
+    // a template.
+    // Git pathspecs are cwd-relative, so pass a relative path (run from tfDir),
+    // never an absolute one (which git rejects as outside the repository).
+    const out = execFileSync('git', ['ls-files', '-z', '--', 'environments'], {
+      cwd: tfDir,
+      encoding: 'utf8',
+    });
+    const liveBackends = out
+      .split('\0')
+      .filter(Boolean)
+      .filter((rel) => /\/backend\.hcl$/.test(rel));
+    expect(
+      liveBackends,
+      `live backend.hcl must be gitignored (only *.example committed):\n${liveBackends.join('\n')}`,
+    ).toEqual([]);
   });
 });
 

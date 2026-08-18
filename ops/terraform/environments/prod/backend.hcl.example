@@ -1,6 +1,9 @@
 # S3 backend for the PRODUCTION Agent Hub (dedicated account, own AWS profile).
-# Copy to backend.hcl and fill in your account-specific bucket. The real
-# backend.hcl is gitignored and must never be committed.
+# Template for an environment's remote state. The live backend.hcl names the
+# account-ID state bucket, so it stays a gitignored local overlay — copy this
+# template and fill it in. CI never reads the file: it passes the same values
+# inline from GitHub Variables (TF_STATE_BUCKET / TF_STATE_LOCK_TABLE /
+# AWS_REGION) on `terraform init`.
 #
 #   cp environments/prod/backend.hcl.example environments/prod/backend.hcl
 #   AWS_PROFILE=<profile> terraform init -reconfigure -backend-config=environments/prod/backend.hcl

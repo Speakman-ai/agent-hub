@@ -4,8 +4,9 @@
 # Templates stay so the stack can be stood back up; do not apply until that is
 # an intentional revive. See `.github/workflows/deploy-dev-hub-on-main.yml`.
 #
-# Copy to dev.tfvars and fill in your account-specific values. The real
-# dev.tfvars is gitignored and must never be committed.
+# Copy to dev.tfvars and fill in account-specific values. dev.tfvars is a
+# gitignored local overlay (only prod commits its live config today); tokens
+# go in secrets.tfvars.
 #
 #   cp environments/dev/dev.tfvars.example environments/dev/dev.tfvars
 #   AWS_PROFILE=<profile> ./scripts/tf-init.sh dev

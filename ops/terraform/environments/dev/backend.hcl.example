@@ -1,6 +1,8 @@
 # S3 backend for the `dev` environment (personal dev sandbox).
-# Copy to backend.hcl and fill in your account-specific bucket. The real
-# backend.hcl is gitignored and must never be committed.
+# Copy to backend.hcl (a gitignored local overlay) and fill in the
+# account-specific bucket. The live file is never committed — CI passes the
+# same values inline from GitHub Variables (TF_STATE_BUCKET /
+# TF_STATE_LOCK_TABLE / AWS_REGION).
 #
 #   cp environments/dev/backend.hcl.example environments/dev/backend.hcl
 #   AWS_PROFILE=<profile> ./scripts/tf-init.sh dev

@@ -38,8 +38,8 @@ the ALB cert had only the apex SAN.
 
 Preconditions (already true on the agenthub.example.com deploy): the apex
 ACM cert + ALB exist, so `enable_dedicated_alb = true` and a Route 53 zone for
-`base_domain` are in place. Set the toggle in the **live** tfvars (external /
-gitignored — NOT committed; `terraform.tfvars.example` documents it):
+`base_domain` are in place. Set the toggle in the **live** committed `environments/prod/prod.tfvars`
+(`prod.tfvars.example` documents the same knob for new environments):
 
 ```hcl
 enable_preview_subdomain = true

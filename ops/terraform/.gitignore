@@ -5,10 +5,26 @@
 terraform.tfvars
 !terraform.tfvars.example
 
-# Real per-environment inputs carry live account IDs / ARNs / instance IDs and
-# must never be committed. Operators copy the tracked *.example templates and
-# fill in real values locally (or source them from CI via TF_VAR_*).
-environments/*/*.tfvars
+# prod.tfvars is committed non-secret fleet/sizing config (reviewable in PRs).
+# public-repo-hygiene.test.ts scans it, so account-specific identifiers stay
+# out of it and out of the tree:
+#   - secrets.tfvars — tokens + identifiers overlay for local apply.
+#   - backend.hcl    — carries the account-ID state bucket; CI passes the same
+#                      values inline from GitHub Variables (TF_STATE_*), local
+#                      copies backend.hcl.example, so the live file is never
+#                      committed.
+# CI injects secrets/identifiers as TF_VAR_* (see release-all.yml); local
+# applies use the overlay:
+#
+#   terraform apply -var-file=environments/prod/prod.tfvars \
+#                   -var-file=environments/prod/secrets.tfvars
+environments/*/secrets.tfvars
 environments/*/backend.hcl
-!environments/*/*.tfvars.example
 !environments/*/backend.hcl.example
+
+# Leftover local overlays for non-prod envs (DEV Hub was decommissioned).
+# Prod config is committed; do not resurrect a blob secret for it.
+environments/dev/*.tfvars
+!environments/dev/*.tfvars.example
+environments/test/*.tfvars
+!environments/test/*.tfvars.example
