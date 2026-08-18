@@ -15,6 +15,7 @@ import {
 } from 'fs';
 import path from 'path';
 import { homedir } from 'os';
+import { createRequire } from 'module';
 import config from './config.js';
 import type { SessionRow } from './types.js';
 import {
@@ -1546,6 +1547,55 @@ function needsDependencyInstall(cloneDir: string): boolean {
   return !existsSync(eslintBin);
 }
 
+/**
+ * Locate THIS server's own compiled `node-pty` module dir so session-worktree
+ * installs that can't build node-pty (host without a C toolchain) can heal it by
+ * copying a guaranteed ABI-matched prebuilt (see
+ * `scripts/ensure-native-modules.mjs`). Resolving through the server's own module
+ * graph makes the donor correct on ANY deployment topology — Docker
+ * (`/app/server/node_modules/node-pty`), PM2 / bare host
+ * (`~/projects/agent-hub/server/node_modules/node-pty`), etc. — instead of relying
+ * on the healer's hardcoded `/app` fallback. Returns null when this server itself
+ * has no node-pty (nothing to donate; the healer then degrades the Terminal).
+ *
+ * `requireResolve` is injectable so the resolution is unit-testable without a real
+ * node-pty on disk.
+ */
+export function resolveHostNodePtyDonor(
+  requireResolve: (id: string) => string = createRequire(import.meta.url).resolve,
+): string | null {
+  try {
+    // node-pty/package.json is always present when the module is installed; its
+    // dir is the module root the healer copies from.
+    return path.dirname(requireResolve('node-pty/package.json'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Precedence for the session-install `AGENT_HUB_NODE_PTY_DONOR`:
+ *   1. An operator-provided value on the Hub process env always wins.
+ *   2. Otherwise default to this server's own node-pty (`hostDonor`).
+ *   3. If neither exists, contribute nothing (the healer degrades the Terminal).
+ * Returns the env patch to merge into the install env — `{}` in cases 1 and 3
+ * (case 1 already carries the value through the `process.env` spread). Pure and
+ * unit-testable.
+ */
+export function nodePtyDonorEnvOverride(
+  env: NodeJS.ProcessEnv,
+  hostDonor: string | null,
+): NodeJS.ProcessEnv {
+  if (env.AGENT_HUB_NODE_PTY_DONOR || !hostDonor) return {};
+  return { AGENT_HUB_NODE_PTY_DONOR: hostDonor };
+}
+
+/**
+ * This server's own node-pty, used as the default donor for the session-install
+ * env (see {@link nodePtyDonorEnvOverride}).
+ */
+const hostNodePtyDonor = resolveHostNodePtyDonor();
+
 const installChildEnv: NodeJS.ProcessEnv = {
   // Scrub leaked PYTHONHOME/PYTHONPATH/VIRTUAL_ENV and pin the system Python so
   // node-gyp can compile native addons during a cold host-worktree `npm ci`.
@@ -1564,6 +1614,12 @@ const installChildEnv: NodeJS.ProcessEnv = {
   // `PIP_REQUIRE_VIRTUALENV=1` in their host environment — pip honours that over
   // PIP_BREAK_SYSTEM_PACKAGES.
   PIP_BREAK_SYSTEM_PACKAGES: '1',
+  // node-pty is an OPTIONAL dependency the Terminal needs; it has no linux-x64
+  // prebuild, so session worktrees on a toolchain-less host can't build it. The
+  // `postinstall` healer copies a compatible prebuilt from a donor — point it at
+  // this server's own node-pty (resolved above) unless the operator already set
+  // AGENT_HUB_NODE_PTY_DONOR, which survives the process.env spread and wins.
+  ...nodePtyDonorEnvOverride(process.env, hostNodePtyDonor),
 };
 
 /**
