@@ -1,10 +1,10 @@
 /**
- * Tests for the scheduled-work queue wrapper (heartbeats + crons).
+ * Tests for the scheduled-work queue wrapper (crons + leftover heartbeat type).
  *
  * Runs against a real in-memory better-sqlite3 so the jobs schema, enqueue,
  * and worker loop are exercised end-to-end. Handlers here are plain spies —
- * the heavy runHeartbeat / runCronJob live in heartbeat.ts and are covered by
- * the heartbeat-dispatch test, which mocks the CLI wrapper per
+ * the heavy runCronJob lives in heartbeat.ts and is covered by the
+ * heartbeat-dispatch test, which mocks the CLI wrapper per
  * server/test/setup.ts. Nothing here spawns a real CLI.
  */
 import Database from 'better-sqlite3';

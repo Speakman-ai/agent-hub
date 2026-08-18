@@ -54,7 +54,7 @@ describe('buildProjectAwsPromptSection', () => {
   it('names the monitoring profile as the unattended fallback when one is designated', () => {
     const out = buildProjectAwsPromptSection('agent-hub', ['agenthub', 'monitoring'], 'monitoring');
     expect(out).toMatch(/--profile monitoring/);
-    expect(out).toMatch(/heartbeat, cron, autonomous dispatch/i);
+    expect(out).toMatch(/cron, autonomous dispatch/i);
     expect(out).toMatch(/without an interactive login/i);
   });
 

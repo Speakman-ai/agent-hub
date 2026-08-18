@@ -587,7 +587,7 @@ export function WorkflowProjectForm({ onSubmit, onBack, onClose }: any) {
         <div className="mx-auto w-full max-w-2xl space-y-5">
           <p className="text-sm text-gray-400">
             Workflow projects skip the code scaffolding step. You&apos;ll get kanban, wiki, agents,
-            sessions, heartbeats, and crons — no repo, no worktrees.
+            sessions and crons — no repo, no worktrees.
           </p>
 
           <div>

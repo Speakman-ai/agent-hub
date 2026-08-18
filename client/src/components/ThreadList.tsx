@@ -1,6 +1,10 @@
 import { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
-import { Clock, Activity, Cpu, AlertCircle, List } from 'lucide-react';
+import { Clock, Cpu, AlertCircle, List } from 'lucide-react';
 import { api } from '../utils/api';
+import {
+  excludeRetiredHeartbeatThreads,
+  isRetiredHeartbeatThread,
+} from '@shared/utils/retiredHeartbeatThread';
 
 function relativeTime(ts: any) {
   if (!ts) return '';
@@ -20,7 +24,7 @@ function ThreadListInner({ projectId, onSelectThread }: any, ref: any) {
   const [threads, setThreads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
-  const [filter, setFilter] = useState('all'); // 'all' | 'cron' | 'heartbeat'
+  const [filter, setFilter] = useState('all'); // 'all' | 'cron'
 
   useEffect(() => {
     let cancelled = false;
@@ -30,7 +34,7 @@ function ThreadListInner({ projectId, onSelectThread }: any, ref: any) {
     api
       .getThreads(projectId, filter === 'all' ? undefined : filter)
       .then((data: any) => {
-        if (!cancelled) setThreads(data);
+        if (!cancelled) setThreads(excludeRetiredHeartbeatThreads(data));
       })
       .catch((err: any) => {
         if (!cancelled) setError(err.message);
@@ -46,6 +50,7 @@ function ThreadListInner({ projectId, onSelectThread }: any, ref: any) {
 
   // Accept new thread from WebSocket
   const addThread = (thread: any) => {
+    if (isRetiredHeartbeatThread(thread)) return;
     setThreads((prev: any) => {
       if (prev.some((t: any) => t.id === thread.id)) return prev;
       return [thread, ...prev];
@@ -84,7 +89,7 @@ function ThreadListInner({ projectId, onSelectThread }: any, ref: any) {
         <List size={16} className="text-gray-400" />
         <h2 className="text-sm font-medium text-gray-200">Threads</h2>
         <div className="flex items-center gap-1 ml-auto">
-          {['all', 'heartbeat', 'cron'].map((f: any) => (
+          {['all', 'cron'].map((f: any) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -94,7 +99,7 @@ function ThreadListInner({ projectId, onSelectThread }: any, ref: any) {
                   : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
               }`}
             >
-              {f === 'all' ? 'All' : f === 'heartbeat' ? 'Heartbeat' : 'Cron'}
+              {f === 'all' ? 'All' : 'Cron'}
             </button>
           ))}
         </div>
@@ -107,24 +112,19 @@ function ThreadListInner({ projectId, onSelectThread }: any, ref: any) {
             <Clock size={36} className="mb-3 text-gray-700" />
             <p className="text-sm">No threads yet</p>
             <p className="text-xs text-gray-700 mt-1">
-              Threads are created automatically by cron jobs and heartbeats
+              Threads are created automatically by cron jobs
             </p>
           </div>
         ) : (
           <div className="p-2 space-y-0.5">
             {threads.map((thread: any) => {
-              const isHeartbeat = thread.type === 'heartbeat';
               return (
                 <button
                   key={thread.id}
                   onClick={() => onSelectThread(thread)}
                   className="w-full text-left px-3 py-3 rounded-lg flex items-center gap-3 transition-colors hover:bg-gray-800/60 group"
                 >
-                  {isHeartbeat ? (
-                    <Activity size={14} className="text-rose-400 flex-shrink-0" />
-                  ) : (
-                    <Cpu size={14} className="text-blue-400 flex-shrink-0" />
-                  )}
+                  <Cpu size={14} className="text-blue-400 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm text-gray-300 group-hover:text-gray-100 truncate">
                       {thread.name}
@@ -133,11 +133,7 @@ function ThreadListInner({ projectId, onSelectThread }: any, ref: any) {
                       {relativeTime(thread.created_at)}
                     </div>
                   </div>
-                  <span
-                    className={`text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0 ${
-                      isHeartbeat ? 'bg-rose-500/20 text-rose-400' : 'bg-blue-500/20 text-blue-400'
-                    }`}
-                  >
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0 bg-blue-500/20 text-blue-400">
                     {thread.type}
                   </span>
                 </button>

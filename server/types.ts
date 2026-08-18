@@ -3530,7 +3530,7 @@ export interface AppConfig {
    */
   schedulerTimezone: string;
   /**
-   * When true (default), scheduled heartbeat and cron ticks ENQUEUE a job onto
+   * When true (default), scheduled cron ticks ENQUEUE a job onto
    * the in-house SQLite job queue instead of executing inline in their
    * node-cron timer callbacks. A single worker loop then drains the queue.
    * node-cron still owns scheduling (timezone / interval / missed-run
@@ -3540,8 +3540,8 @@ export interface AppConfig {
    */
   scheduledJobsViaQueue: boolean;
   /**
-   * Max scheduled jobs (heartbeats + crons) the queue worker runs at once.
-   * Only smooths load — runHeartbeat has its own in-flight guard and each run
+   * Max scheduled jobs (crons) the queue worker runs at once.
+   * Only smooths load — each run
    * records its own logs, so this never changes user-visible output. Env:
    * `AGENT_HUB_SCHEDULED_JOBS_CONCURRENCY`; config.json: `scheduledJobsConcurrency`.
    */

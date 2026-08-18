@@ -164,7 +164,6 @@ import createLogMetricsRoutes from './routes/log-metrics.js';
 import createLogIngestRoutes from './routes/log-ingest.js';
 import createLogQueryRoutes from './routes/log-query.js';
 import createLogIssueRoutes from './routes/log-issues.js';
-import createHeartbeatRoutes from './routes/heartbeats.js';
 import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
 import createDesignRoutes from './routes/designs.js';
@@ -1878,7 +1877,6 @@ app.use(createLogIngestRoutes(routeDeps));
 // operator's own account. Public on the same terms; self-authenticates from an
 // `ahhealth_` token.
 app.use(createInfraHealthIngestRoutes(routeDeps));
-app.use(createHeartbeatRoutes(routeDeps));
 app.use(createCronRoutes(routeDeps));
 app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));
 app.use(createSkillRoutes(routeDeps));

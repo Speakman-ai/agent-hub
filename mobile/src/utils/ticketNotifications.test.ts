@@ -81,6 +81,14 @@ describe('mapBroadcastToNotification', () => {
         expect(entry.event).toBe('thread_message');
         expect(entry.title).toBe('Thread error');
     });
+    it('suppresses retired heartbeat thread entries', () => {
+        expect(mapBroadcastToNotification({
+            type: 'thread_entry_created',
+            threadName: 'Daily Check',
+            threadType: 'heartbeat',
+            entry: { content: 'ok' },
+        })).toBeNull();
+    });
     it('maps support_ticket_created and webhook_pr_merged', () => {
         expect(mapBroadcastToNotification({
             type: 'support_ticket_created',

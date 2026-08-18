@@ -4,7 +4,7 @@ import { api } from '../utils/api';
 
 /**
  * Admin observability pane for the host-wide background job queue
- * (heartbeats, crons, and future autonomous tasks all drain it).
+ * (crons and future autonomous tasks all drain it).
  *
  * Lists jobs with a status + type filter, requeues a dead-lettered job,
  * and deletes a row. Backed by GET/POST/DELETE /api/jobs (Admin-gated).
@@ -134,8 +134,8 @@ export default function JobQueueSection() {
           Background Jobs
         </h3>
         <p className="text-xs text-gray-500 mb-4">
-          The host-wide job queue that heartbeats, crons, and autonomous background tasks drain.
-          Requeue a dead-lettered job to retry it, or delete a stale row.
+          The host-wide job queue that crons and autonomous background tasks drain. Requeue a
+          dead-lettered job to retry it, or delete a stale row.
         </p>
 
         {counts && (

@@ -761,7 +761,7 @@ export function buildProjectAwsPromptSection(
   // the monitoring profile gives that session the one profile that authenticates
   // with nobody watching. Interactive sessions keep asking the user.
   const monitoringLine = monitoringProfile
-    ? `\n\n**Unattended runs (heartbeat, cron, autonomous dispatch):** use \`--profile ${monitoringProfile}\`. It is this project's designated monitoring profile and authenticates without an interactive login, so it is the only profile that still works when no human is present to re-authenticate. Do not use it to stand in for a profile the user named.`
+    ? `\n\n**Unattended runs (cron, autonomous dispatch):** use \`--profile ${monitoringProfile}\`. It is this project's designated monitoring profile and authenticates without an interactive login, so it is the only profile that still works when no human is present to re-authenticate. Do not use it to stand in for a profile the user named.`
     : '';
   return `\n\n## Project AWS
 Configured AWS profiles for this project: ${profileNames.join(', ')}.${monitoringLine}

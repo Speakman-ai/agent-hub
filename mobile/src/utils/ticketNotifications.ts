@@ -5,6 +5,7 @@
  * banners use the same wording as Expo push payloads.
  */
 import { shouldDeliverProjectNotification, shouldNotifyUserForProject, } from '@shared/utils/notificationProjectScope';
+import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 /** @typedef {{ title: string, body: string }} NotificationContent */
 export function awaitingFeedbackNotification({ sessionName }: any) {
     const subject = sessionName ? `"${sessionName}"` : 'A session';
@@ -122,6 +123,8 @@ export function mapBroadcastToNotification(data: any, opts: any = {}) {
             return { event: 'support_ticket_created', title, body };
         }
         case 'thread_entry_created': {
+            if (isRetiredHeartbeatThread({ type: data.threadType }))
+                return null;
             const content = data.entry?.content || '';
             const isError = content.startsWith('ERROR:');
             const preview = content.replace(/\n+/g, ' ').trim();

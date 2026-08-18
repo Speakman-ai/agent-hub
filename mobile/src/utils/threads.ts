@@ -3,6 +3,8 @@
  * live under the vitest include pattern and can be unit tested without a
  * React / React Native runtime.
  */
+import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
+export { excludeRetiredHeartbeatThreads, isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 /**
  * Format an ISO-8601 / SQLite timestamp as "HH:MM:SS · <relative>".
  * Handles SQLite datetimes without a trailing "Z" by treating them as UTC,
@@ -91,11 +93,13 @@ export function mergeLiveEntry(existing: any, entry: any) {
  * the map is returned unchanged (the user is already looking at the entry).
  *
  * @param {Record<string, number>} counts
- * @param {{projectId?: string, threadId?: string}} event
+ * @param {{projectId?: string, threadId?: string, threadType?: string}} event
  * @param {string|null} viewingThreadId
  * @returns {Record<string, number>}
  */
 export function applyEntryUnread(counts: any, event: any, viewingThreadId: any) {
+    if (isRetiredHeartbeatThread({ type: event?.threadType }))
+        return counts;
     if (!event?.projectId)
         return counts;
     if (event.threadId && viewingThreadId === event.threadId)

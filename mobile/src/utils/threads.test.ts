@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { formatEntryTimestamp, shouldShowDateSeparator, mergeLiveThread, mergeLiveEntry, applyEntryUnread, clearProjectUnread, } from './threads';
+import { formatEntryTimestamp, shouldShowDateSeparator, mergeLiveThread, mergeLiveEntry, applyEntryUnread, clearProjectUnread, excludeRetiredHeartbeatThreads, } from './threads';
 describe('formatEntryTimestamp', () => {
     it('returns empty string for falsy input', () => {
         expect(formatEntryTimestamp('')).toBe('');
@@ -103,11 +103,23 @@ describe('applyEntryUnread', () => {
         const counts = { p1: 1 };
         expect(applyEntryUnread(counts, { threadId: 't1' }, null)).toBe(counts);
     });
+    it('is a no-op for retired heartbeat threads', () => {
+        const counts = { p1: 1 };
+        expect(applyEntryUnread(counts, { projectId: 'p1', threadId: 't1', threadType: 'heartbeat' }, null)).toBe(counts);
+    });
     it('returns a new object (does not mutate)', () => {
         const counts = { p1: 1 };
         const next = applyEntryUnread(counts, { projectId: 'p1', threadId: 't1' }, null);
         expect(next).not.toBe(counts);
         expect(counts).toEqual({ p1: 1 });
+    });
+});
+describe('excludeRetiredHeartbeatThreads', () => {
+    it('hides historical heartbeat rows from the thread list', () => {
+        expect(excludeRetiredHeartbeatThreads([
+            { id: 'h', type: 'heartbeat' },
+            { id: 'c', type: 'cron' },
+        ])).toEqual([{ id: 'c', type: 'cron' }]);
     });
 });
 describe('clearProjectUnread', () => {

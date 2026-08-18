@@ -2229,16 +2229,14 @@ describe('Crons', () => {
 
 describe('Heartbeats', () => {
   describe('GET /api/heartbeats', () => {
-    it('lists heartbeat configs', async () => {
-      const res = await request.get('/api/heartbeats').expect(200);
-      expect(Array.isArray(res.body)).toBe(true);
+    it('is gone', async () => {
+      await request.get('/api/heartbeats').expect(404);
     });
   });
 
   describe('GET /api/heartbeats/state', () => {
-    it('returns heartbeat state', async () => {
-      const res = await request.get('/api/heartbeats/state').expect(200);
-      expect(typeof res.body).toBe('object');
+    it('is gone', async () => {
+      await request.get('/api/heartbeats/state').expect(404);
     });
   });
 });

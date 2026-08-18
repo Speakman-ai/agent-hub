@@ -9,7 +9,7 @@ export const PUSH_EVENT_OPTIONS = [
     { key: 'ready_to_push', label: 'Ready to push', desc: 'Finalize passed — ready to ship' },
     { key: 'pushed', label: 'Pushed', desc: 'Changes were pushed to GitHub' },
     { key: 'support_ticket_created', label: 'Support ticket created', desc: 'New support ticket' },
-    { key: 'thread_message', label: 'Thread messages', desc: 'New cron or heartbeat message' },
+    { key: 'thread_message', label: 'Thread messages', desc: 'New cron thread message' },
     { key: 'review_assigned_to_you', label: 'Review assigned to you', desc: 'PR or card needs review' },
     { key: 'pr_merged', label: 'PR merged', desc: 'Linked PR was merged' },
     { key: 'infra_alert', label: 'Infrastructure alerts', desc: 'AWS monitoring state changes' },

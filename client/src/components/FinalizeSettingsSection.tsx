@@ -232,7 +232,7 @@ export default function FinalizeSettingsSection({
         {projectId && (
           <ProjectSecretsEditor
             projectId={projectId}
-            hint="Encrypted key/value pairs merged into Runner step runs, chat spawns, heartbeats, crons, and preview for this project. Leave secret values blank when editing to keep the stored value."
+            hint="Encrypted key/value pairs merged into Runner step runs, chat spawns, crons, and preview for this project. Leave secret values blank when editing to keep the stored value."
           />
         )}
       </div>

@@ -45,7 +45,7 @@ export const WORKSPACES_ROOT: string = path.join(homedir(), '.agent-hub', 'works
  *
  * The whole `getOrCreateProcessWorktree` / `ensureSessionWorkspace` graph runs
  * at the top of every heartbeat tick and every cron tick (see
- * `runHeartbeat` / `runCronJob` in heartbeat.ts). Synchronous git calls there
+ * `runCronJob` in heartbeat.ts). Synchronous git calls there
  * froze the loop for up to ~60s under network slowness, which manifested as
  * the node-cron `missed execution` warning bursts on PID 19954.
  */

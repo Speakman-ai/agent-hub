@@ -6,7 +6,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import { formatEntryTimestamp, shouldShowDateSeparator, mergeLiveThread, mergeLiveEntry, } from '../utils/threads';
+import { formatEntryTimestamp, shouldShowDateSeparator, mergeLiveThread, mergeLiveEntry, excludeRetiredHeartbeatThreads, isRetiredHeartbeatThread, } from '../utils/threads';
 import { SidebarContext } from '../context/SidebarContext';
 const mdStyles = {
     body: { color: colors.gray300, fontSize: 14 },
@@ -40,7 +40,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
     const deepLinkThreadId = route?.params?.threadId;
     const project = projects?.find((p: any) => p.id === projectId);
     const [threads, setThreads] = useState<any[]>([]);
-    const [filter, setFilter] = useState('all'); // all | heartbeat | cron
+    const [filter, setFilter] = useState('all'); // all | cron
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<any>(null);
     // Detail view state (kept in the same screen to mirror NotesScreen pattern)
@@ -77,7 +77,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
         setError(null);
         try {
             const data = await api.getThreads(projectId, filter === 'all' ? undefined : filter);
-            setThreads(Array.isArray(data) ? data : []);
+            setThreads(excludeRetiredHeartbeatThreads(Array.isArray(data) ? data : []));
         }
         catch (err: any) {
             setError(err.message || 'Failed to load threads');
@@ -97,6 +97,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
         if (type === 'thread_created' && evtProjectId === projectId) {
             const { thread } = lastThreadEvent;
             if (thread &&
+                !isRetiredHeartbeatThread(thread) &&
                 (filter === 'all' || thread.type === filter)) {
                 setThreads((prev: any) => mergeLiveThread(prev, thread));
             }
@@ -123,6 +124,8 @@ export default function ThreadsScreen({ route, navigation }: any) {
         }
     }, [entries]);
     const handleSelectThread = useCallback(async (thread: any) => {
+        if (isRetiredHeartbeatThread(thread))
+            return;
         setSelectedThread(thread);
         setActiveThread(thread.id);
         setEntriesLoading(true);
@@ -133,7 +136,14 @@ export default function ThreadsScreen({ route, navigation }: any) {
                 api.getThread(thread.id).catch(() => thread),
                 api.getThreadEntries(thread.id),
             ]);
-            setSelectedThread(threadDetail || thread);
+            const resolved = threadDetail || thread;
+            if (isRetiredHeartbeatThread(resolved)) {
+                setSelectedThread(null);
+                setEntries([]);
+                setActiveThread(null);
+                return;
+            }
+            setSelectedThread(resolved);
             setEntries(Array.isArray(entriesData) ? entriesData : []);
         }
         catch (err: any) {
@@ -151,7 +161,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
         if (deepLinkHandledRef.current === deepLinkThreadId)
             return;
         const thread = threads.find((t: any) => t.id === deepLinkThreadId);
-        if (!thread)
+        if (!thread || isRetiredHeartbeatThread(thread))
             return;
         deepLinkHandledRef.current = deepLinkThreadId;
         handleSelectThread(thread);
@@ -223,8 +233,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
     };
     // ── Detail view ──
     if (selectedThread) {
-        const isHeartbeat = selectedThread.type === 'heartbeat';
-        const typeColor = isHeartbeat ? colors.rose400 : colors.blue400;
+        const typeColor = colors.blue400;
         return (<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <View style={styles.topBar}>
           <TouchableOpacity onPress={handleBack} style={styles.menuButton}>
@@ -354,7 +363,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
       </View>
 
       <View style={styles.filterRow}>
-        {['all', 'heartbeat', 'cron'].map((f: any) => (<TouchableOpacity key={f} onPress={() => setFilter(f)} style={[
+        {['all', 'cron'].map((f: any) => (<TouchableOpacity key={f} onPress={() => setFilter(f)} style={[
                 styles.filterButton,
                 filter === f && styles.filterButtonActive,
             ]}>
@@ -362,7 +371,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
                 styles.filterText,
                 filter === f && styles.filterTextActive,
             ]}>
-              {f === 'all' ? 'All' : f === 'heartbeat' ? 'Heartbeat' : 'Cron'}
+              {f === 'all' ? 'All' : 'Cron'}
             </Text>
           </TouchableOpacity>))}
       </View>
@@ -374,11 +383,10 @@ export default function ThreadsScreen({ route, navigation }: any) {
         </View>) : threads.length === 0 ? (<View style={styles.centerState}>
           <Text style={styles.emptyTitle}>No threads yet</Text>
           <Text style={styles.emptyDesc}>
-            Threads are created automatically by cron jobs and heartbeats
+            Threads are created automatically by cron jobs
           </Text>
         </View>) : (<FlatList data={threads} keyExtractor={(item: any) => item.id} contentContainerStyle={{ padding: 12 }} renderItem={({ item }: any) => {
-                const isHeartbeat = item.type === 'heartbeat';
-                const typeColor = isHeartbeat ? colors.rose400 : colors.blue400;
+                const typeColor = colors.blue400;
                 return (<TouchableOpacity style={styles.threadItem} onPress={() => handleSelectThread(item)}>
                 <View style={[styles.typeDot, { backgroundColor: typeColor }]}/>
                 <View style={styles.threadInfo}>

@@ -112,7 +112,7 @@ session replay, and convert a ticket into a kanban card with one click.
   injected into agent context, so agents actually know your project.
 - **Code review & PRs** — webhook-driven GitHub PR lifecycle with automated
   agent reviews.
-- **Scheduled work** — cron jobs and per-agent heartbeat check-ins.
+- **Scheduled work** — project-scoped cron jobs.
 - **Slack** — a multi-agent Slack bot for talking to agents from your chat tool.
 - **Cross-platform clients** — web, mobile (React Native / Expo), and desktop
   (Electron), all with the same features.
@@ -435,7 +435,6 @@ The server exposes a REST API at `http://localhost:3051/api`:
 | Wiki       | `/api/projects/:id/wiki`     | Knowledge base with full-text search    |
 | Webhooks   | `/api/webhooks`              | GitHub webhook configuration            |
 | Crons      | `/api/crons`                 | Scheduled task management               |
-| Heartbeats | `/api/agents/:id/heartbeat`  | Agent health check scheduling           |
 | Config     | `/api/config`                | Server configuration                    |
 
 The full surface is generated from Zod schemas in
@@ -497,7 +496,7 @@ agent-hub/
 │   ├── db.ts               # SQLite setup with auto-migrations
 │   ├── config.ts           # Centralized configuration resolution
 │   ├── wiki.ts             # Wiki CRUD + FTS5 full-text search
-│   ├── heartbeat.ts        # Cron and heartbeat scheduling
+│   ├── heartbeat.ts        # Cron scheduling and one-shot CLI runner
 │   ├── finalize/           # In-hub CI gating on isolated DinD runners
 │   └── worktree.ts         # Git worktree management
 ├── mobile/                 # React Native + Expo mobile app (TypeScript)

@@ -683,14 +683,7 @@ export const api = {
     logoutGemini: () => fetchJSON('/config/gemini-auth', { method: 'DELETE' }),
     exportConfig: () => fetchJSON('/config/export'),
     importConfig: (data: any) => fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
-    // Heartbeats
-    getHeartbeats: () => fetchJSON('/heartbeats'),
-    getHeartbeatLogs: (agentId: any, limit: any = 50) => fetchJSON(`/heartbeats/${agentId}/logs?limit=${limit}`),
-    updateHeartbeat: (agentId: any, config: any) => fetchJSON(`/heartbeats/${agentId}`, {
-        method: 'PUT',
-        body: JSON.stringify(config),
-    }),
-    runHeartbeat: (agentId: any) => fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST' }),
+
     // Crons
     getCrons: () => fetchJSON('/crons'),
     getCronLogs: (id: any, limit: any = 3) => fetchJSON(`/crons/${id}/logs?limit=${limit}`),
@@ -1466,7 +1459,7 @@ export const api = {
             ...(suppress === false ? { suppress: false } : {}),
         }),
     }),
-    // Threads (persistent output logs for crons & heartbeats)
+    // Threads (persistent output logs for crons)
     getThreads: (projectId: any, type: any) => {
         const qs = type ? `?type=${encodeURIComponent(type)}` : '';
         return fetchJSON(`/projects/${projectId}/threads${qs}`);

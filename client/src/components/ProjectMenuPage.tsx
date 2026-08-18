@@ -1,11 +1,10 @@
-import { Bot, Clock, FolderGit2, HeartPulse } from 'lucide-react';
-import { AgentConfigSection, CronSection, HeartbeatSection, ProjectsSection } from './SettingsPage';
+import { Bot, Clock, FolderGit2 } from 'lucide-react';
+import { AgentConfigSection, CronSection, ProjectsSection } from './SettingsPage';
 
 const TAB_META = {
   agents: { label: 'Agents', Icon: Bot },
   settings: { label: 'Project settings', Icon: FolderGit2 },
   crons: { label: 'Cron Jobs', Icon: Clock },
-  heartbeats: { label: 'Heartbeats', Icon: HeartPulse },
 } as Record<string, any>;
 
 /**
@@ -23,7 +22,8 @@ export default function ProjectMenuPage({
   onNavigate,
   showToast,
 }: any) {
-  const meta = TAB_META[tab] || TAB_META.agents;
+  const activeTab = TAB_META[tab] ? tab : 'agents';
+  const meta = TAB_META[activeTab];
   const Icon = meta.Icon;
   const projectName = project?.name || 'Project';
   const projectColor = project?.color || '#6366f1';
@@ -49,7 +49,7 @@ export default function ProjectMenuPage({
           sections.
         </p>
 
-        {tab === 'agents' && (
+        {activeTab === 'agents' && (
           <AgentConfigSection
             agents={agents}
             projects={projects}
@@ -58,7 +58,7 @@ export default function ProjectMenuPage({
             showToast={showToast}
           />
         )}
-        {tab === 'settings' && (
+        {activeTab === 'settings' && (
           <ProjectsSection
             projects={projects}
             projectId={projectId}
@@ -66,16 +66,13 @@ export default function ProjectMenuPage({
             showToast={showToast}
           />
         )}
-        {tab === 'crons' && (
+        {activeTab === 'crons' && (
           <CronSection
             projects={projects}
             projectId={projectId}
             onNavigate={onNavigate}
             showToast={showToast}
           />
-        )}
-        {tab === 'heartbeats' && (
-          <HeartbeatSection projectId={projectId} onNavigate={onNavigate} showToast={showToast} />
         )}
       </div>
     </div>

@@ -637,8 +637,8 @@ export default function ProjectWorkflowBuilder({
                     </div>
                     <p className="text-xs text-gray-500">
                       Uses the same <code className="text-gray-400">node-cron</code> engine as
-                      heartbeats. Leave off and rely on manual runs only, or pick a preset / custom
-                      5-field expression.
+                      project crons. Leave off and rely on manual runs only, or pick a preset /
+                      custom 5-field expression.
                     </p>
                     <div>
                       <label className="block text-xs font-medium text-gray-400 mb-1">Preset</label>

@@ -30,6 +30,20 @@ const AGENTS = [
   { id: 'agent-b', name: 'Beta', engine: 'claude-code', projectName: 'Proj', active: true },
 ];
 
+describe('ThreadView — retired heartbeat threads', () => {
+  it('does not render historical heartbeat logs', async () => {
+    vi.mocked(api.getThread).mockResolvedValueOnce({
+      id: 'hb1',
+      name: 'Daily Check',
+      type: 'heartbeat',
+    });
+    render(<ThreadView threadId="hb1" agents={AGENTS} onBack={vi.fn()} />);
+    expect(await screen.findByText('This thread is no longer available')).toBeInTheDocument();
+    expect(screen.queryByTestId('thread-entry-forward')).not.toBeInTheDocument();
+    expect(screen.queryByText('Daily Check')).not.toBeInTheDocument();
+  });
+});
+
 describe('ThreadView — forward a message to an agent', () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -12,7 +12,7 @@ import { applyDetectedFlag } from '../utils/worktreeState';
 import { isWorkflowProject } from '../utils/project-mode';
 import { isSessionConsultModeEnabled } from '../utils/sessionDerivedState';
 import { selectSessionToActivate } from '../utils/sessionSelection';
-import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
+import { applyEntryUnread, clearProjectUnread, isRetiredHeartbeatThread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 import { routeNotificationTap, notificationRouteToNavigation, } from '../utils/notificationRouting';
@@ -82,7 +82,7 @@ export function AppProvider({ children }: any) {
     const [artifactReloadBySession, setArtifactReloadBySession] = useState<any>({});
     // Cron-linked sessions
     const [cronSessions, setCronSessions] = useState<any[]>([]);
-    // Threads (persistent output logs for crons & heartbeats)
+    // Threads (persistent output logs for crons)
     // Unread entry counts keyed by projectId
     const [unreadThreadCounts, setUnreadThreadCounts] = useState<any>({});
     // The last raw thread event received from the server. Screens listening for
@@ -817,6 +817,8 @@ export function AppProvider({ children }: any) {
                 break;
             // ── Thread events (persistent output logs) ───────────────
             case 'thread_created':
+                if (isRetiredHeartbeatThread(data.thread))
+                    break;
                 setLastThreadEvent({
                     type: 'thread_created',
                     projectId: data.projectId,
@@ -825,7 +827,9 @@ export function AppProvider({ children }: any) {
                 });
                 break;
             case 'thread_entry_created': {
-                setUnreadThreadCounts((prev: any) => applyEntryUnread(prev, { projectId: data.projectId, threadId: data.threadId }, activeThreadIdRef.current));
+                if (isRetiredHeartbeatThread({ type: data.threadType }))
+                    break;
+                setUnreadThreadCounts((prev: any) => applyEntryUnread(prev, { projectId: data.projectId, threadId: data.threadId, threadType: data.threadType }, activeThreadIdRef.current));
                 setLastThreadEvent({
                     type: 'thread_entry_created',
                     projectId: data.projectId,

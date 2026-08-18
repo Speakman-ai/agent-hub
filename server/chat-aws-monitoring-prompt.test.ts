@@ -117,7 +117,7 @@ describe('buildEnrichedPrompt — AWS monitoring designation', () => {
 
     expect(prompt).toContain('## Project AWS');
     expect(prompt).toMatch(/--profile monitoring/);
-    expect(prompt).toMatch(/heartbeat, cron, autonomous dispatch/i);
+    expect(prompt).toMatch(/cron, autonomous dispatch/i);
   });
 
   it('says nothing about unattended runs when no profile is designated', () => {

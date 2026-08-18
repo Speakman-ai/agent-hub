@@ -81,7 +81,6 @@ import {
   Settings as SettingsIcon,
   Building2,
   Bot,
-  HeartPulse,
   Clock,
   MessageSquare,
   BarChart3,
@@ -1736,8 +1735,8 @@ export function ProjectsSection({
         <p className="text-xs text-gray-500">
           <strong>Dev</strong> (default): kanban lifecycle, per-session worktrees, and GitHub PR
           flows. <strong>Workflow</strong>: work in the project checkout; session PR flows stay off.
-          For a <strong>tasks-only project</strong> (just wiki, board, sessions, crons, heartbeats —
-          no git or GitHub), pick <em>Workflow</em>.
+          For a <strong>tasks-only project</strong> (just wiki, board, sessions, crons — no git or
+          GitHub), pick <em>Workflow</em>.
         </p>
         <select
           value={isWorkflowProject(p) ? 'workflow' : 'dev'}
@@ -1885,416 +1884,6 @@ export function ProjectsSection({
             );
           })}
         </div>
-      </div>
-    </div>
-  );
-}
-
-export function HeartbeatSection({
-  onNavigate,
-  showToast,
-  projectId = null,
-  refreshMs = 60_000,
-}: any) {
-  const [heartbeats, setHeartbeats] = useState<any[]>([]);
-  const [expandedAgent, setExpandedAgent] = useState<any>(null);
-  const [logs, setLogs] = useState<Record<string, any>>({});
-  const [running, setRunning] = useState<Record<string, any>>({});
-  const [editingId, setEditingId] = useState<any>(null);
-  const [editForm, setEditForm] = useState({
-    interval: '',
-    prompt: '',
-    model: '',
-    shared: false,
-  });
-  // Heartbeats always spawn the Claude CLI, so the picker is locked to the
-  // claude-code engine catalog from /api/config/models. We fetch it lazily
-  // on mount; an empty list means Claude is unauthenticated and the picker
-  // hides itself.
-  const [claudeModels, setClaudeModels] = useState<any[]>([]);
-  // Tick every 30s so the "next run in Xm" badges decrement live without
-  // hitting the network. Server is re-polled every 60s for fresh state.
-  const [, setTick] = useState(0);
-
-  const visibleHeartbeats = useMemo(
-    () => (projectId ? heartbeats.filter((hb: any) => hb.projectId === projectId) : heartbeats),
-    [heartbeats, projectId],
-  );
-
-  useEffect(() => {
-    const refresh = () => api.getHeartbeats().then(setHeartbeats).catch(console.error);
-    refresh();
-    api
-      .getModelConfig()
-      .then((cfg: any) => setClaudeModels(cfg?.engineValidModels?.['claude-code'] || []))
-      .catch((err: any) => console.warn('[HeartbeatSection] getModelConfig failed:', err?.message));
-    const pollId = setInterval(refresh, refreshMs);
-    const tickId = setInterval(() => setTick((t: any) => t + 1), 30_000);
-    return () => {
-      clearInterval(pollId);
-      clearInterval(tickId);
-    };
-  }, [refreshMs]);
-
-  useEffect(() => {
-    if (!editingId) return;
-    const editingHeartbeat = visibleHeartbeats.find((hb: any) => hb.agentId === editingId);
-    if (editingHeartbeat && !editingHeartbeat.can_manage) {
-      setEditingId(null);
-    }
-  }, [editingId, visibleHeartbeats]);
-
-  const loadLogs = async (agentId: any) => {
-    if (expandedAgent === agentId) {
-      setExpandedAgent(null);
-      return;
-    }
-    setExpandedAgent(agentId);
-    const data = await api.getHeartbeatLogs(agentId, 20);
-    setLogs((prev: any) => ({ ...prev, [agentId]: data }));
-  };
-
-  const toggleHeartbeat = async (agentId: any, current: any) => {
-    try {
-      const updated = await api.updateHeartbeat(agentId, { enabled: !current });
-      setHeartbeats((prev: any) =>
-        prev.map((h: any) => (h.agentId === agentId ? { ...h, ...updated } : h)),
-      );
-    } catch (e: any) {
-      console.error('Failed to update heartbeat:', e);
-      showToast?.(e?.message || 'Failed to update heartbeat.', 'error');
-    }
-  };
-
-  const triggerRun = async (agentId: any) => {
-    setRunning((prev: any) => ({ ...prev, [agentId]: true }));
-    try {
-      await api.runHeartbeat(agentId);
-    } catch (e: any) {
-      console.error(e);
-    }
-    setTimeout(() => setRunning((prev: any) => ({ ...prev, [agentId]: false })), 3000);
-  };
-
-  const viewThread = async (hb: any) => {
-    if (!onNavigate) return;
-    try {
-      const { thread } = await api.getHeartbeatThread(hb.agentId);
-      if (thread) {
-        onNavigate('threads', { projectId: thread.project_id, threadId: thread.id, thread });
-      } else {
-        showToast?.('No thread yet — run this heartbeat at least once to create a thread.', 'info');
-      }
-    } catch (e: any) {
-      console.error('Failed to fetch heartbeat thread:', e);
-      showToast?.('Failed to load heartbeat thread.', 'error');
-    }
-  };
-
-  const startEdit = (hb: any) => {
-    setEditingId(hb.agentId);
-    setEditForm({
-      interval: hb.heartbeat.interval || '',
-      prompt: hb.heartbeat.prompt || '',
-      model: hb.heartbeat.model || '',
-      shared: !!hb.shared,
-    });
-  };
-
-  const saveEdit = async (e: any) => {
-    e.preventDefault();
-    const heartbeat = visibleHeartbeats.find((hb: any) => hb.agentId === editingId);
-    if (!heartbeat?.can_manage) {
-      setEditingId(null);
-      return;
-    }
-    // Send empty string explicitly so the server can clear an existing
-    // model override (PUT route maps "" → undefined).
-    try {
-      const updated = await api.updateHeartbeat(editingId, {
-        interval: editForm.interval,
-        prompt: editForm.prompt,
-        model: editForm.model || '',
-        shared: editForm.shared,
-      });
-      setHeartbeats((prev: any) =>
-        prev.map((h: any) => (h.agentId === editingId ? { ...h, ...updated } : h)),
-      );
-      setEditingId(null);
-    } catch (e: any) {
-      console.error('Failed to save heartbeat:', e);
-      showToast?.(e?.message || 'Failed to save heartbeat.', 'error');
-    }
-  };
-
-  return (
-    <div>
-      <h3 className="text-lg font-semibold mb-4">Agent Heartbeats</h3>
-      <div className="space-y-3">
-        {visibleHeartbeats.map((hb: any) => (
-          <div key={hb.agentId} className="bg-gray-800 rounded-xl overflow-hidden">
-            {editingId === hb.agentId && hb.can_manage ? (
-              <form onSubmit={saveEdit} className="p-4 space-y-3">
-                <div className="flex items-center gap-2 mb-2">
-                  <span
-                    className="w-3 h-3 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: hb.color }}
-                  />
-                  <span className="font-medium text-sm">{hb.agentName}</span>
-                </div>
-                <input
-                  value={editForm.interval}
-                  onChange={(e: any) => setEditForm({ ...editForm, interval: e.target.value })}
-                  placeholder="Cron schedule (e.g. 0 */12 * * *)"
-                  required
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
-                />
-                {editForm.interval && humanCron(editForm.interval) !== editForm.interval && (
-                  <p className="text-xs text-blue-400 mt-1 ml-1">
-                    ↳ {humanCron(editForm.interval)}
-                  </p>
-                )}
-                <textarea
-                  value={editForm.prompt}
-                  onChange={(e: any) => setEditForm({ ...editForm, prompt: e.target.value })}
-                  placeholder="Heartbeat prompt"
-                  required
-                  rows={4}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
-                />
-                {claudeModels.length > 0 && (
-                  <div>
-                    <label
-                      htmlFor={`heartbeat-model-${hb.agentId}`}
-                      className="block text-xs font-medium text-gray-400 mb-1"
-                    >
-                      Model
-                    </label>
-                    <select
-                      id={`heartbeat-model-${hb.agentId}`}
-                      value={editForm.model || ''}
-                      onChange={(e: any) => setEditForm({ ...editForm, model: e.target.value })}
-                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
-                    >
-                      <option value="">CLI default</option>
-                      {claudeModels.map((m: any) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Forwarded as <code className="font-mono">--model</code> to the Claude CLI for
-                      both scheduled and manual runs. Leave on “CLI default” to fall back to the
-                      binary’s built-in default.
-                    </p>
-                  </div>
-                )}
-                <label className="flex items-start gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={!!editForm.shared}
-                    onChange={(e: any) => setEditForm({ ...editForm, shared: e.target.checked })}
-                    className="mt-0.5 accent-blue-500"
-                  />
-                  <span className="text-xs text-gray-300">
-                    Shared
-                    <span className="block text-gray-500">
-                      Visible to the org. Runs still use the owner credentials.
-                    </span>
-                  </span>
-                </label>
-                <div className="flex gap-2">
-                  <button
-                    type="submit"
-                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingId(null)}
-                    className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1.5 rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <div className="flex items-center gap-3 p-4">
-                <span
-                  className="w-3 h-3 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: hb.color }}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium text-sm">{hb.agentName}</span>
-                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">
-                      {hb.shared ? 'Shared' : 'Private'}
-                    </span>
-                    {hb.owner_username && (
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-900 text-gray-400 border border-gray-700">
-                        Owner: {hb.owner_username}
-                      </span>
-                    )}
-                    <span className="text-xs text-gray-500 font-mono" title={hb.heartbeat.interval}>
-                      {hb.heartbeat.interval ? humanCron(hb.heartbeat.interval) : 'not set'}
-                    </span>
-                    {hb.heartbeat.enabled &&
-                      hb.state?.next_run_at &&
-                      (() => {
-                        const { label, overdue } = relativeFuture(hb.state.next_run_at);
-                        return (
-                          <span
-                            title={`Next run: ${formatDateTime(hb.state.next_run_at)}`}
-                            className={`text-xs px-1.5 py-0.5 rounded font-mono ${
-                              overdue
-                                ? 'bg-amber-900/40 text-amber-400'
-                                : 'bg-gray-700/60 text-gray-400'
-                            }`}
-                          >
-                            {label}
-                          </span>
-                        );
-                      })()}
-                  </div>
-                  <p className="text-xs text-gray-500 truncate mt-0.5">
-                    {hb.heartbeat.prompt || 'No prompt configured'}
-                  </p>
-                  {hb.heartbeat.model && (
-                    <p className="text-xs text-gray-500 mt-0.5 font-mono" title="Heartbeat model">
-                      model: {hb.heartbeat.model}
-                    </p>
-                  )}
-                  <label className="mt-2 inline-flex items-center gap-2 text-xs text-gray-300">
-                    <input
-                      type="checkbox"
-                      checked={!!hb.shared}
-                      disabled={!hb.can_manage}
-                      onChange={async (e: any) => {
-                        try {
-                          const updated = await api.updateHeartbeat(hb.agentId, {
-                            shared: e.target.checked,
-                          });
-                          setHeartbeats((prev: any) =>
-                            prev.map((h: any) =>
-                              h.agentId === hb.agentId ? { ...h, ...updated } : h,
-                            ),
-                          );
-                        } catch (err: any) {
-                          console.error('Failed to update heartbeat sharing:', err);
-                          showToast?.(
-                            err?.message || 'Failed to update heartbeat sharing.',
-                            'error',
-                          );
-                        }
-                      }}
-                      className="accent-blue-500 disabled:opacity-40"
-                    />
-                    Shared
-                  </label>
-                  {hb.latestLog && (
-                    <p className="text-xs text-gray-600 mt-0.5">
-                      Last run: {relativeTime(hb.latestLog.timestamp)} —{' '}
-                      <span
-                        className={
-                          hb.latestLog.status === 'success'
-                            ? 'text-emerald-500'
-                            : hb.latestLog.status === 'error'
-                              ? 'text-red-400'
-                              : 'text-yellow-400'
-                        }
-                      >
-                        {hb.latestLog.status}
-                      </span>
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5 sm:gap-2">
-                  {onNavigate && (
-                    <button
-                      onClick={() => viewThread(hb)}
-                      className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                      title="View thread"
-                    >
-                      <ScrollText size={14} />
-                    </button>
-                  )}
-                  <button
-                    onClick={() => startEdit(hb)}
-                    disabled={!hb.can_manage}
-                    aria-label="Edit heartbeat"
-                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <button
-                    onClick={() => triggerRun(hb.agentId)}
-                    disabled={running[hb.agentId] || !hb.can_manage}
-                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                  >
-                    {running[hb.agentId] ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <Play size={14} />
-                    )}
-                  </button>
-                  <button
-                    onClick={() => toggleHeartbeat(hb.agentId, hb.heartbeat.enabled)}
-                    disabled={!hb.can_manage}
-                    className={`text-xs px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-40 min-h-[36px] sm:min-h-0 flex items-center ${
-                      hb.heartbeat.enabled
-                        ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                    }`}
-                  >
-                    {hb.heartbeat.enabled ? 'ON' : 'OFF'}
-                  </button>
-                  <button
-                    onClick={() => loadLogs(hb.agentId)}
-                    className="text-xs text-gray-400 hover:text-white px-2 py-2 sm:py-1 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                  >
-                    <span className="text-2xl leading-none flex items-center">
-                      {expandedAgent === hb.agentId ? '▲' : '▼'}
-                    </span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {expandedAgent === hb.agentId && (
-              <div className="border-t border-gray-700 p-4 max-h-64 overflow-y-auto">
-                {(logs[hb.agentId] || []).length === 0 ? (
-                  <p className="text-xs text-gray-500">No logs yet</p>
-                ) : (
-                  <div className="space-y-2">
-                    {(logs[hb.agentId] || []).map((log: any) => (
-                      <div key={log.id} className="bg-gray-900 rounded-lg p-3 text-xs">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span
-                            className={`px-1.5 py-0.5 rounded text-xs ${
-                              log.status === 'success'
-                                ? 'bg-emerald-900/50 text-emerald-400'
-                                : log.status === 'error'
-                                  ? 'bg-red-900/50 text-red-400'
-                                  : 'bg-yellow-900/50 text-yellow-400'
-                            }`}
-                          >
-                            {log.status}
-                          </span>
-                          <span className="text-gray-500">{relativeTime(log.timestamp)}</span>
-                        </div>
-                        <pre className="text-gray-300 whitespace-pre-wrap text-xs max-h-32 overflow-y-auto">
-                          {log.result || '(running...)'}
-                        </pre>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
       </div>
     </div>
   );
@@ -2767,7 +2356,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
             <span className="text-xs text-gray-300">
               Send a push notification on every run
               <span className="block text-gray-500">
-                Off by default — thread/heartbeat logs are written either way.
+                Off by default — thread logs are written either way.
               </span>
             </span>
           </label>
@@ -2939,7 +2528,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                   <span className="text-xs text-gray-300">
                     Send a push notification on every run
                     <span className="block text-gray-500">
-                      Off by default — thread/heartbeat logs are written either way.
+                      Off by default — thread logs are written either way.
                     </span>
                   </span>
                 </label>
@@ -4205,7 +3794,6 @@ export function AgentConfigSection({
     avatar: '',
     systemPrompt: '',
     isDev: false,
-    heartbeat: { enabled: false, interval: '', prompt: '' },
   });
 
   useEffect(() => {
@@ -4459,15 +4047,6 @@ export function AgentConfigSection({
     }));
   };
 
-  const setHeartbeatEdit = (agentId: any, field: any, value: any) => {
-    const current = getEdit(agentId);
-    const hb = {
-      ...(current.heartbeat || { enabled: false, interval: '', prompt: '' }),
-      [field]: value,
-    };
-    setEdit(agentId, 'heartbeat', hb);
-  };
-
   const handleSave = async (agentId: any) => {
     setSaving((prev: any) => ({ ...prev, [agentId]: true }));
     try {
@@ -4525,7 +4104,6 @@ export function AgentConfigSection({
         avatar: '',
         systemPrompt: '',
         isDev: false,
-        heartbeat: { enabled: false, interval: '', prompt: '' },
       });
       if (onAgentsChange) onAgentsChange();
     } catch (e: any) {
@@ -5345,80 +4923,6 @@ export function AgentConfigSection({
                       placeholder="github-username"
                       className={inputClass}
                     />
-                  </div>
-
-                  {/* Heartbeat settings */}
-                  <div className="border-t border-gray-700 pt-3">
-                    <div className="flex items-center gap-3 mb-3">
-                      <label className="text-xs text-gray-400 font-medium">Heartbeat</label>
-                      <button
-                        onClick={() =>
-                          setHeartbeatEdit(agent.id, 'enabled', !edit.heartbeat?.enabled)
-                        }
-                        className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                          edit.heartbeat?.enabled
-                            ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                            : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                        }`}
-                      >
-                        {edit.heartbeat?.enabled ? 'ON' : 'OFF'}
-                      </button>
-                    </div>
-                    <div className="space-y-3">
-                      <div>
-                        <label className={labelClass}>
-                          Interval (cron expression, e.g. */30 * * * * = every 30 min)
-                        </label>
-                        <input
-                          value={edit.heartbeat?.interval || ''}
-                          onChange={(e: any) =>
-                            setHeartbeatEdit(agent.id, 'interval', e.target.value)
-                          }
-                          placeholder="*/30 * * * *"
-                          className={inputClass}
-                        />
-                        {edit.heartbeat?.interval &&
-                          humanCron(edit.heartbeat.interval) !== edit.heartbeat.interval && (
-                            <p className="text-xs text-blue-400 mt-1">
-                              ↳ {humanCron(edit.heartbeat.interval)}
-                            </p>
-                          )}
-                      </div>
-                      <div>
-                        <label className={labelClass}>Heartbeat Prompt</label>
-                        <textarea
-                          value={edit.heartbeat?.prompt || ''}
-                          onChange={(e: any) =>
-                            setHeartbeatEdit(agent.id, 'prompt', e.target.value)
-                          }
-                          rows={3}
-                          className={inputClass + ' resize-none'}
-                        />
-                      </div>
-                      {(modelConfig?.engineValidModels?.['claude-code'] || []).length > 0 && (
-                        <div>
-                          <label className={labelClass}>Heartbeat Model</label>
-                          <select
-                            value={edit.heartbeat?.model || ''}
-                            onChange={(e: any) =>
-                              setHeartbeatEdit(agent.id, 'model', e.target.value)
-                            }
-                            className={inputClass}
-                          >
-                            <option value="">CLI default</option>
-                            {(modelConfig.engineValidModels['claude-code'] || []).map((m: any) => (
-                              <option key={m} value={m}>
-                                {m}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="text-xs text-gray-500 mt-1">
-                            Heartbeats always run via the Claude CLI, so only{' '}
-                            <code className="font-mono">claude-code</code> models apply.
-                          </p>
-                        </div>
-                      )}
-                    </div>
                   </div>
 
                   <div className="flex items-center justify-between pt-2">
@@ -6522,7 +6026,6 @@ const SETTINGS_ICONS = {
   Key,
   Globe,
   GitBranch,
-  HeartPulse,
   Clock,
   MessageSquare,
   BarChart3,
@@ -6631,7 +6134,7 @@ export default function SettingsPage({
   }, [tab, isAdminPlus]);
 
   // Preview & Finalize moved to the per-project sidebar (Preview / Runners).
-  // Agents, Project settings, Cron Jobs, and heartbeats moved to the
+  // Agents, Project settings, and Cron Jobs moved to the
   // per-project sidebar menu — fall back when old deep links land here.
   useEffect(() => {
     if (

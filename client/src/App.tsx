@@ -76,6 +76,7 @@ import DashboardView from './components/DashboardView';
 import WikiBrowser from './components/WikiBrowser';
 import ThreadList from './components/ThreadList';
 import ThreadView from './components/ThreadView';
+import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 import CustomerSupportPage from './components/CustomerSupportPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
@@ -2951,6 +2952,7 @@ export default function App({ initialView }: any = {}) {
 
         // ── Thread notifications ─────────────────────────────────
         case 'thread_created': {
+          if (isRetiredHeartbeatThread(data.thread)) break;
           // Live-update ThreadList if viewing threads for this project
           if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
             threadListRef.current.addThread(data.thread);
@@ -2973,6 +2975,7 @@ export default function App({ initialView }: any = {}) {
         }
 
         case 'thread_entry_created': {
+          if (isRetiredHeartbeatThread({ type: data.threadType })) break;
           const isError = data.entry?.content?.startsWith('ERROR:');
           // Live-update ThreadView if viewing this thread
           if (threadViewRef.current && activeThreadIdRef.current === data.threadId) {
@@ -6296,6 +6299,7 @@ export default function App({ initialView }: any = {}) {
                     ref={threadListRef}
                     projectId={threadsProjectId}
                     onSelectThread={(thread: any) => {
+                      if (isRetiredHeartbeatThread(thread)) return;
                       setActiveThreadId(thread.id);
                       setActiveThread(thread);
                     }}

@@ -40,7 +40,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 **Server (`/server`)** — **TypeScript** (strict mode, ESM)
 - **Express.js** backend with WebSocket support for real-time chat
 - **TypeScript** with `strict: true`, using `tsx` for runtime and `tsc --noEmit` for type checking
-- **SQLite database** (`better-sqlite3`) for sessions, messages, heartbeats, crons
+- **SQLite database** (`better-sqlite3`) for sessions, messages, crons
 - **Project→Agent hierarchy** - Projects are top-level entities (with `cwd`, `ahw` workspace, color); each project contains one or more agents. Defined in `server/projects.json`.
 - **Centralized config** - `~/.agent-hub/data/config.json` holds port, CLI binary paths (`claudeBin`, `cursorBin`), and `defaultCwd`. Falls back to `server/config.json` (legacy) if the data-dir copy doesn't exist. Edit here rather than hardcoding.
 - **Agent management** - CRUD operations for AI agent configurations
@@ -57,7 +57,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Agent selection** and configuration interface
 - **Session management** with persistent chat history
 - **Skills browser** - View and manage agent-specific skills
-- **Settings pages** - Configure agents, heartbeats, cron jobs
+- **Settings pages** - Configure agents, cron jobs
 - **Memory interface** - View and edit agent memory files
 
 **Mobile (`/mobile`)**
@@ -83,7 +83,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 
 - **sessions**: Chat sessions linked to agents with engine/model info
 - **messages**: Individual chat messages with role (user/assistant) 
-- **heartbeat_logs**: Scheduled agent check-in results
+- **heartbeat_logs**: Historical per-agent check-in rows (no longer written)
 - **crons**: Automated task definitions and execution logs
 - **slack_messages**: Slack bot interaction history
 - **delegations** / **handoffs** (legacy): historical read surfaces are transitional and scheduled for removal with the history cleanup migration. The dispatch modules are gone, and new rows are no longer written.

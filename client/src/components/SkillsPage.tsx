@@ -731,8 +731,8 @@ export function SkillCard({
                       Multi-user orgs: interactive chat, session summarize/rewind, and delegation
                       use the session owner&apos;s saved keys when known. Conference rooms and
                       Design Studio use the authenticated connection when present, otherwise the org
-                      owner. Scheduled work (heartbeats, crons, workflows), Slack, and room
-                      summarize use the org owner&apos;s vault.
+                      owner. Scheduled work (crons, workflows), Slack, and room summarize use the
+                      org owner&apos;s vault.
                     </p>
                   </div>
                   {credLoading ? (

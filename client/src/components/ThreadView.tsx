@@ -1,15 +1,7 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import {
-  ArrowLeft,
-  Clock,
-  Activity,
-  Cpu,
-  AlertCircle,
-  Send,
-  User,
-  ArrowLeftRight,
-} from 'lucide-react';
+import { ArrowLeft, Clock, Cpu, AlertCircle, Send, User, ArrowLeftRight } from 'lucide-react';
 import { api } from '../utils/api';
+import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 import { MarkdownContent } from './MarkdownRenderer';
 import ForwardSessionModal from './ForwardSessionModal';
 
@@ -74,6 +66,12 @@ function ThreadViewInner(
           api.getThreadEntries(threadId),
         ]);
         if (cancelled) return;
+        if (isRetiredHeartbeatThread(threadData)) {
+          setError('This thread is no longer available');
+          setThread(null);
+          setEntries([]);
+          return;
+        }
         setThread(threadData);
         setEntries(entriesData);
       } catch (err: any) {
@@ -163,20 +161,14 @@ function ThreadViewInner(
   };
 
   const typeIcon =
-    thread?.type === 'heartbeat' ? (
-      <Activity size={14} className="text-rose-400" />
-    ) : thread?.type === 'cron' ? (
+    thread?.type === 'cron' ? (
       <Cpu size={14} className="text-blue-400" />
     ) : (
       <Clock size={14} className="text-gray-400" />
     );
 
   const typeBadgeColor =
-    thread?.type === 'heartbeat'
-      ? 'bg-rose-500/20 text-rose-400'
-      : thread?.type === 'cron'
-        ? 'bg-blue-500/20 text-blue-400'
-        : 'bg-gray-500/20 text-gray-400';
+    thread?.type === 'cron' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400';
 
   if (loading) {
     return (

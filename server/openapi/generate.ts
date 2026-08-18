@@ -208,7 +208,6 @@ async function main(): Promise<void> {
         description: 'Per-project kanban boards (columns, cards, epics, comments).',
       },
       { name: 'Wiki', description: 'Per-project wiki with FTS5 + semantic search.' },
-      { name: 'Heartbeats', description: 'Per-agent scheduled check-ins.' },
       { name: 'Crons', description: 'Project-scoped automated jobs.' },
       { name: 'Jobs', description: 'Host-wide background job queue admin surface.' },
       { name: 'Admin', description: 'Owner-only administrative endpoints.' },

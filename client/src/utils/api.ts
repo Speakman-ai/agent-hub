@@ -1798,18 +1798,6 @@ export const api = {
       return null;
     }),
 
-  // Heartbeats
-  getHeartbeats: () => fetchJSON('/heartbeats'),
-  getHeartbeatLogs: (agentId: any, limit: any = 50) =>
-    fetchJSON(`/heartbeats/${agentId}/logs?limit=${limit}`),
-  updateHeartbeat: (agentId: any, config: any) =>
-    fetchJSON(`/heartbeats/${agentId}`, {
-      method: 'PUT',
-      body: JSON.stringify(config),
-    }),
-  runHeartbeat: (agentId: any) =>
-    fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST', timeout: 120000 }),
-
   // Cron Sessions
   getCronSessions: () => fetchJSON('/sessions/cron'),
 
@@ -2800,7 +2788,6 @@ export const api = {
       timeout: 30000,
     }),
   getCronThread: (cronId: any) => fetchJSON(`/crons/${cronId}/thread`),
-  getHeartbeatThread: (agentId: any) => fetchJSON(`/heartbeats/${agentId}/thread`),
 
   // Notes
   getNotes: (projectId: any, query?: any, limit?: any) => {

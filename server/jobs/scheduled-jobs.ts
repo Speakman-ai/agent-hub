@@ -1,27 +1,27 @@
 /**
  * Scheduled-work consumer of the in-house SQLite job queue.
  *
- * Heartbeats and crons no longer execute inline in their node-cron timer
- * callbacks. Instead each tick ENQUEUES a job here and a single worker loop
- * drains the queue. node-cron still decides WHEN work fires (timezone,
- * interval, missed-run accounting all unchanged); the queue owns HOW it runs.
+ * Crons no longer execute inline in their node-cron timer callbacks. Instead
+ * each tick ENQUEUES a job here and a single worker loop drains the queue.
+ * node-cron still decides WHEN work fires (timezone, interval, missed-run
+ * accounting all unchanged); the queue owns HOW it runs.
  *
  * Parity guarantees (why the migration is invisible to users):
  *   - Jobs are enqueued with `maxAttempts = 1`, so the queue never retries a
  *     failed run — the next scheduled tick IS the retry, exactly as before.
  *     This also means the stuck-job reaper can only ever dead-letter a crashed
- *     job, never re-run it, so there is no risk of a duplicate heartbeat/cron
- *     execution.
- *   - `runHeartbeat` / `runCronJob` still write heartbeat_logs, cron threads,
- *     and next-run bookkeeping themselves, so user-visible history is identical
- *     whether a run executes inline (legacy) or via a queue worker.
- *   - `runHeartbeat` keeps its own in-flight guard. The queue concurrency cap
- *     bounds how many scheduled runs execute at once — it does not change WHAT
- *     each run records, but note it is a single shared budget across heartbeats
- *     AND crons, so under heavy contention (e.g. many slow crons in flight) a
- *     due run can be delayed until a slot frees. Legacy node-cron ran each on
- *     its own timer with unbounded total concurrency; the cap is the one
- *     intentional load-shaping change, tunable via `scheduledJobsConcurrency`.
+ *     job, never re-run it, so there is no risk of a duplicate cron execution.
+ *   - `runCronJob` still writes cron threads and next-run bookkeeping itself,
+ *     so user-visible history is identical whether a run executes inline
+ *     (legacy) or via a queue worker.
+ *   - The queue concurrency cap bounds how many scheduled runs execute at once.
+ *     Under heavy contention a due run can be delayed until a slot frees.
+ *     Legacy node-cron ran each on its own timer with unbounded total
+ *     concurrency; the cap is the one intentional load-shaping change,
+ *     tunable via `scheduledJobsConcurrency`.
+ *
+ * `scheduled.heartbeat` remains a recognized job type so leftover rows from
+ * an older process drain as no-ops. New heartbeat jobs are not enqueued.
  *
  * A config flag (`scheduledJobsViaQueue`, default on) lets an operator fall
  * back to the legacy direct-execution path for one release; the dispatch
@@ -104,9 +104,10 @@ export function getScheduledJobQueue(): JobQueue | null {
 }
 
 /**
- * Enqueue a heartbeat run. `maxAttempts = 1`: no queue-level retry — the next
- * scheduled tick is the retry. Returns the job id, or null if the queue is not
- * initialised (caller should fall back to inline execution).
+ * Enqueue a leftover heartbeat job. New heartbeats are not scheduled; this
+ * stays so an in-flight `scheduled.heartbeat` row from an older process can
+ * still drain (the registered handler is a no-op). Returns the job id, or
+ * null if the queue is not initialised.
  */
 export function enqueueHeartbeatJob(agentId: string): string | null {
   if (!queue) return null;

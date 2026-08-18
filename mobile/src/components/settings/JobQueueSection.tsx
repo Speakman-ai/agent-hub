@@ -5,7 +5,7 @@ import { colors } from '../../theme/colors';
 
 /**
  * Mobile parity for the web JobQueueSection — Admin observability pane for
- * the host-wide background job queue (heartbeats, crons, autonomous tasks).
+ * the host-wide background job queue (crons, autonomous tasks).
  * Lists jobs with a status filter, requeues a dead-lettered job, deletes a
  * row. Backed by GET/POST/DELETE /api/jobs (server enforces the Admin gate).
  */
@@ -101,7 +101,7 @@ export default function JobQueueSection() {
     return (<View style={styles.container}>
       <Text style={styles.title}>Background Jobs</Text>
       <Text style={styles.hint}>
-        Host-wide job queue drained by heartbeats, crons, and autonomous tasks. Retry a dead-lettered
+        Host-wide job queue drained by crons and autonomous tasks. Retry a dead-lettered
         job or delete a stale row.
       </Text>
 

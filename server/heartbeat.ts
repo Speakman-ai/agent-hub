@@ -16,14 +16,12 @@ import { getOrCreateProcessWorktree } from './worktree.js';
 import { runWorkspacePurge } from './session-purge.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
-import { getProjects, saveProjects, getEnrichedAgent } from './project-model.js';
+import { getProjects } from './project-model.js';
 import {
   initScheduledJobQueue,
   getScheduledJobQueue,
-  enqueueHeartbeatJob,
   enqueueCronJob,
 } from './jobs/scheduled-jobs.js';
-import { backfillHeartbeatOwner, backfillHeartbeatOwners } from './heartbeat-ownership.js';
 import { setSessionOwner } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
@@ -33,16 +31,12 @@ import { runOneShotPromptWithFailover, formatFailoverSummary } from './one-shot-
 import type { SupportedEngine } from './engine-availability.js';
 import type {
   EnrichedAgent,
-  Agent,
   CronRow,
-  HeartbeatStateRow,
   ThreadRow,
   ThreadEntryRow,
   SessionRow,
   Project,
   BroadcastFn,
-  Stmts,
-  AppConfig,
 } from './types.js';
 
 const db = _db!;
@@ -53,12 +47,6 @@ const SLACK_WEBHOOK_URL: string | null = config.slackWebhookUrl;
 
 const scheduledTasks = new Map<string, ScheduledTask>();
 
-const runningHeartbeats = new Set<string>();
-
-function persistedProjectAgents(): Agent[] {
-  return getProjects().flatMap((project) => project.agents ?? []);
-}
-
 let onCronSessionUpdate: ((data: Record<string, unknown>) => void) | null = null;
 export function setOnCronSessionUpdate(fn: (data: Record<string, unknown>) => void): void {
   onCronSessionUpdate = fn;
@@ -67,59 +55,6 @@ export function setOnCronSessionUpdate(fn: (data: Record<string, unknown>) => vo
 let broadcastFn: BroadcastFn | null = null;
 export function setBroadcast(fn: BroadcastFn): void {
   broadcastFn = fn;
-}
-
-function getOrCreateHeartbeatThread(agent: EnrichedAgent): ThreadRow | null {
-  const projectId = agent.projectId;
-  if (!projectId) {
-    console.warn(
-      `[Heartbeat] No projectId for agent ${agent.name} (${agent.id}) — skipping thread`,
-    );
-    return null;
-  }
-
-  let thread = stmts.getThreadBySourceId.get(projectId, 'heartbeat', agent.id) as
-    | ThreadRow
-    | undefined;
-  if (thread) return thread;
-
-  const id = uuidv4();
-  const name = `${agent.name} heartbeat`;
-  stmts.createThread.run(id, projectId, name, 'heartbeat', agent.id);
-  thread = stmts.getThread.get(id) as ThreadRow | undefined;
-
-  if (broadcastFn) {
-    broadcastFn({ type: 'thread_created', projectId, thread });
-  }
-
-  return thread ?? null;
-}
-
-function appendToHeartbeatThread(agent: EnrichedAgent, content: string): void {
-  try {
-    const thread = getOrCreateHeartbeatThread(agent);
-    if (!thread) return;
-
-    const entryId = uuidv4();
-    stmts.createThreadEntry.run(entryId, thread.id, content);
-    const entry = stmts.getThreadEntry.get(entryId) as ThreadEntryRow | undefined;
-
-    if (broadcastFn) {
-      broadcastFn({
-        type: 'thread_entry_created',
-        threadId: thread.id,
-        projectId: thread.project_id,
-        threadName: thread.name,
-        threadType: thread.type,
-        entry,
-      });
-    }
-  } catch (err) {
-    console.error(
-      `[Heartbeat] Failed to append to thread for ${agent.name}:`,
-      (err as Error).message,
-    );
-  }
 }
 
 function isoOrNull(date: Date | null | undefined): string | null {
@@ -138,37 +73,12 @@ function cronTimezone(timezone?: string | null): string {
   }
 }
 
-function persistNextRun(
-  kind: 'heartbeat' | 'cron',
-  id: string | number,
-  task: ScheduledTask,
-): void {
+function persistNextRun(id: string | number, task: ScheduledTask): void {
   try {
     const next = isoOrNull(task.getNextRun?.());
-    if (kind === 'heartbeat') {
-      stmts.upsertHeartbeatState.run(id, next, null);
-    } else if (kind === 'cron') {
-      stmts.updateCronNextRun.run(next, id);
-    }
+    stmts.updateCronNextRun.run(next, id);
   } catch (err) {
-    console.error(
-      `[Scheduler] Failed to persist next run for ${kind}:${id}:`,
-      (err as Error).message,
-    );
-  }
-}
-
-function persistLastRun(kind: 'heartbeat' | 'cron', id: string | number, when = new Date()): void {
-  const iso = isoOrNull(when);
-  try {
-    if (kind === 'heartbeat') {
-      stmts.upsertHeartbeatState.run(id, null, iso);
-    }
-  } catch (err) {
-    console.error(
-      `[Scheduler] Failed to persist last run for ${kind}:${id}:`,
-      (err as Error).message,
-    );
+    console.error(`[Scheduler] Failed to persist next run for cron:${id}:`, (err as Error).message);
   }
 }
 
@@ -358,161 +268,13 @@ async function notifySlack(agentName: string, result: string): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        text: `🤖 *${agentName} Heartbeat*\n${result.substring(0, 2000)}`,
+        text: `🤖 *${agentName}*\n${result.substring(0, 2000)}`,
       }),
     });
   } catch (err) {
     console.error('Failed to send Slack notification:', (err as Error).message);
   }
 }
-interface HeartbeatResult {
-  id: number | bigint;
-  status: 'success' | 'error';
-  result: string;
-}
-
-export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResult | null> {
-  if (!agent.heartbeat?.prompt) return null;
-
-  if (runningHeartbeats.has(agent.id)) {
-    console.log(`[Heartbeat] Skipping ${agent.name} — already running`);
-    return null;
-  }
-  runningHeartbeats.add(agent.id);
-
-  console.log(`[Heartbeat] Running for ${agent.name}...`);
-  persistLastRun('heartbeat', agent.id);
-  const logEntry = stmts.addHeartbeatLog.run(agent.id, agent.heartbeat.prompt, 'running');
-  const logId = logEntry.lastInsertRowid;
-
-  try {
-    const hbProject = getProjects().find((p) => p.id === agent.projectId);
-    const persistedAgent = hbProject?.agents.find((a) => a.id === agent.id);
-    if (persistedAgent) backfillHeartbeatOwner(persistedAgent, saveProjects);
-    const persistedHeartbeat = persistedAgent?.heartbeat;
-    if (persistedHeartbeat?.owner_user_id && !agent.heartbeat.owner_user_id) {
-      agent.heartbeat = {
-        ...agent.heartbeat,
-        owner_user_id: persistedHeartbeat.owner_user_id,
-        shared: persistedHeartbeat.shared ?? agent.heartbeat.shared,
-      };
-    }
-    const heartbeatCwd = await getOrCreateProcessWorktree(
-      agent.cwd,
-      `heartbeat-${agent.id}`,
-      undefined,
-      undefined,
-      hbProject?.repoUrl ?? null,
-      hbProject?.id,
-      hbProject?.githubRepo ?? null,
-      hbProject ? hostedBarePathForProject(hbProject) : null,
-    );
-    const isDocsAgent = agent.role === 'docs';
-    const timeoutMs =
-      (agent.heartbeat as EnrichedAgent['heartbeat'] & { timeoutMs?: number })?.timeoutMs ||
-      (isDocsAgent ? config.docsTimeoutMs : config.defaultTimeoutMs);
-    const heartbeatModel =
-      typeof agent.heartbeat.model === 'string' && agent.heartbeat.model.trim()
-        ? agent.heartbeat.model.trim()
-        : undefined;
-    // Resolve the engine just-in-time so a heartbeat run can fall back to
-    // any other authenticated CLI when Claude is unavailable. Throws
-    // NoEnginesAvailableError when nothing is configured — caught below
-    // and surfaced as a clear "set up credentials" error in the log.
-    const preferredEngine = (agent as EnrichedAgent & { engine?: string }).engine ?? 'claude-code';
-    const heartbeatOwnerId =
-      typeof agent.heartbeat.owner_user_id === 'string' && agent.heartbeat.owner_user_id.trim()
-        ? agent.heartbeat.owner_user_id.trim()
-        : null;
-    const resolved = await resolveOneShotEngine(config, {
-      preferred: preferredEngine,
-      preferredModel: heartbeatModel,
-      userId: heartbeatOwnerId,
-      agentId: agent.id,
-    });
-    // Rebuilt per attempt: if the run fails over to another engine, that CLI
-    // needs its own per-account credentials and engine-specific env.
-    const buildHeartbeatEnv = (engine: SupportedEngine): NodeJS.ProcessEnv => {
-      const heartbeatEnv = buildSpawnEnv(config, {
-        userId: heartbeatOwnerId,
-        // Inject the owner's stored per-account AI credentials. Without this the
-        // spawned CLI runs logged-out for DB-stored-credential users (no host
-        // fallback for claude/cursor/codex/grok). Null owner => host behavior.
-        userOverride: resolveUserCliCredOverride(heartbeatOwnerId),
-        engine,
-      });
-      if (hbProject) {
-        mergeSkillCredentialSpawnEnv(heartbeatEnv, {
-          ownerId: heartbeatOwnerId,
-          agentId: agent.id,
-          project: hbProject,
-        });
-        // sessionId: null — heartbeats are scheduled, not driven by an
-        // interactive chat session; decrypt-failure audit entries attribute to
-        // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
-        mergeProjectSecretsSpawnEnv(heartbeatEnv, { projectId: hbProject.id, sessionId: null });
-        mergeProjectAwsSpawnEnv(heartbeatEnv, hbProject);
-      }
-      return heartbeatEnv;
-    };
-    if (resolved.fallbackUsed) {
-      console.warn(
-        `[Heartbeat] ${agent.name}: preferred engine "${preferredEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
-      );
-    }
-    // Pre-flight resolution above only proves the engine was authenticated
-    // when the run STARTED. If it runs out of quota mid-run, hand off to the
-    // next engine in its chain instead of logging a dead heartbeat.
-    const runOutcome = await runOneShotPromptWithFailover(
-      {
-        scope: `heartbeat "${agent.name}"`,
-        engine: resolved.engine,
-        model: resolved.model,
-        userId: heartbeatOwnerId,
-        agentId: agent.id,
-        prompt: agent.heartbeat.prompt,
-        systemPrompt: agent.systemPrompt,
-        cwd: heartbeatCwd,
-        timeoutMs,
-        buildEnv: buildHeartbeatEnv,
-      },
-      config,
-    );
-    // The log records the substitute engine so a user reading the heartbeat
-    // history can see it did not run on the engine they configured.
-    const result = runOutcome.output + formatFailoverSummary(runOutcome.failovers);
-    stmts.updateHeartbeatLog.run(result, 'success', logId);
-    console.log(`[Heartbeat] ${agent.name} completed successfully`);
-
-    appendToHeartbeatThread(agent, result);
-
-    await notifySlack(agent.name, result);
-    return { id: logId, status: 'success', result };
-  } catch (err) {
-    const isNoEngines = err instanceof NoEnginesAvailableError;
-    const rawMsg = (err as Error).message || 'Unknown error';
-    const errorMsg = isNoEngines
-      ? `No AI engine credentials available — heartbeat cannot run.\n${rawMsg}`
-      : rawMsg;
-    stmts.updateHeartbeatLog.run(errorMsg, 'error', logId);
-    console.error(`[Heartbeat] ${agent.name} failed:`, errorMsg);
-
-    appendToHeartbeatThread(agent, `ERROR: ${errorMsg}`);
-
-    return { id: logId, status: 'error', result: errorMsg };
-  } finally {
-    runningHeartbeats.delete(agent.id);
-    const task = scheduledTasks.get(`heartbeat:${agent.id}`);
-    if (task) persistNextRun('heartbeat', agent.id, task);
-    try {
-      const thread = getOrCreateHeartbeatThread(agent);
-      if (thread) {
-        stmts.pruneThreadEntries.run(thread.id, thread.id);
-      }
-    } catch {}
-  }
-}
-
 function findProjectForCron(cronJob: CronRow): Project | null {
   const projects = getProjects();
   return (
@@ -877,7 +639,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     return { id: logId, status: 'error', result: errorMsg };
   } finally {
     const task = scheduledTasks.get(`cron:${cronJob.id}`);
-    if (task) persistNextRun('cron', cronJob.id, task);
+    if (task) persistNextRun(cronJob.id, task);
     try {
       stmts.pruneCronLogs.run(cronJob.id, cronJob.id);
     } catch {}
@@ -891,11 +653,9 @@ function scheduledJobsEnabled(): boolean {
 
 /**
  * Lazily construct + start the scheduled-work job queue and register the
- * heartbeat / cron handlers. Idempotent. No-op when the config flag is off
- * (legacy direct-execution path). The handlers resolve their subject fresh at
- * run time — the same "read the current row, then run" contract the legacy
- * timer callbacks used — so a config edit between enqueue and execution is
- * honoured, and a deleted agent / disabled cron simply skips.
+ * cron handler. Idempotent. No-op when the config flag is off (legacy
+ * direct-execution path). Leftover `scheduled.heartbeat` jobs from an older
+ * process are drained as no-ops so they cannot spawn an agent.
  */
 export function ensureScheduledJobQueue(): void {
   if (!scheduledJobsEnabled()) return;
@@ -903,13 +663,7 @@ export function ensureScheduledJobQueue(): void {
     db,
     concurrency: config.scheduledJobsConcurrency,
     heartbeatHandler: async (job) => {
-      const { agentId } = job.payload;
-      const agent = getEnrichedAgent(agentId);
-      if (!agent) {
-        console.warn(`[Scheduler] Heartbeat job for unknown agent ${agentId} — skipping`);
-        return;
-      }
-      await runHeartbeat(agent);
+      console.warn(`[Scheduler] Skipping leftover heartbeat job for agent ${job.payload.agentId}`);
     },
     cronHandler: async (job) => {
       const { cronId } = job.payload;
@@ -919,19 +673,6 @@ export function ensureScheduledJobQueue(): void {
       }
     },
   });
-}
-
-/**
- * Run a heartbeat from a scheduler tick. In queue mode the tick just enqueues
- * a job (the worker resolves the agent fresh and runs it); in legacy mode the
- * captured agent runs inline exactly as before.
- */
-export function dispatchHeartbeat(agent: EnrichedAgent): void | Promise<unknown> {
-  if (scheduledJobsEnabled() && getScheduledJobQueue()) {
-    enqueueHeartbeatJob(agent.id);
-    return;
-  }
-  return runHeartbeat(agent);
 }
 
 /**
@@ -948,7 +689,7 @@ export function dispatchCron(cronId: number): void | Promise<unknown> {
   if (fresh && fresh.enabled) return runCronJob(fresh);
 }
 
-export function scheduleAll(agents: EnrichedAgent[]): void {
+export function scheduleAll(_agents?: EnrichedAgent[]): void {
   ensureScheduledJobQueue();
 
   for (const [, task] of scheduledTasks) {
@@ -956,63 +697,30 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   }
   scheduledTasks.clear();
 
-  backfillHeartbeatOwners(persistedProjectAgents, saveProjects);
-
   try {
     const cleaned = db!
       .prepare(
-        `UPDATE heartbeat_logs SET status = 'error', result = 'Server restarted — run abandoned' WHERE status = 'running'`,
+        `UPDATE heartbeat_logs SET status = 'error', result = 'Abandoned — per-agent heartbeats are no longer scheduled' WHERE status = 'running'`,
       )
       .run();
     if (cleaned.changes > 0) {
-      console.log(
-        `[Heartbeat] Cleaned up ${cleaned.changes} stale "running" log(s) from previous boot`,
-      );
+      console.log(`[Scheduler] Abandoned ${cleaned.changes} leftover heartbeat log(s)`);
     }
   } catch (err) {
-    console.error('[Heartbeat] Failed to clean stale logs:', (err as Error).message);
+    console.error('[Scheduler] Failed to abandon leftover heartbeat logs:', (err as Error).message);
+  }
+
+  try {
+    const dropped = db!.prepare(`DELETE FROM heartbeat_state`).run();
+    if (dropped.changes > 0) {
+      console.log(`[Scheduler] Dropped ${dropped.changes} leftover heartbeat_state row(s)`);
+    }
+  } catch (err) {
+    console.error('[Scheduler] Failed to drop leftover heartbeat_state:', (err as Error).message);
   }
 
   const now = Date.now();
   const missed: Array<() => void | Promise<unknown>> = [];
-
-  for (const agent of agents) {
-    if (agent.heartbeat?.enabled && agent.heartbeat?.interval) {
-      if (!cron.validate(agent.heartbeat.interval)) {
-        console.error(
-          `[Heartbeat] Invalid cron expression for ${agent.name}: ${agent.heartbeat.interval}`,
-        );
-        continue;
-      }
-      const task = cron.schedule(
-        agent.heartbeat.interval,
-        wrapCronTick(() => dispatchHeartbeat(agent), `heartbeat:${agent.id}`),
-        defaultTickOptions({
-          intervalSeconds: estimateIntervalSeconds(agent.heartbeat.interval),
-          name: `heartbeat:${agent.id}`,
-          timezone: cronTimezone(),
-        }),
-      );
-      scheduledTasks.set(`heartbeat:${agent.id}`, task);
-      console.log(`[Heartbeat] Scheduled ${agent.name}: ${agent.heartbeat.interval}`);
-
-      const state = stmts.getHeartbeatState.get(agent.id) as HeartbeatStateRow | undefined;
-      const prevNext = state?.next_run_at ? Date.parse(state.next_run_at) : NaN;
-      if (Number.isFinite(prevNext) && prevNext < now) {
-        const lateBySec = Math.round((now - prevNext) / 1000);
-        console.log(
-          `[Heartbeat] ${agent.name} missed a run (was due ${lateBySec}s ago) — catching up`,
-        );
-        missed.push(() => dispatchHeartbeat(agent));
-      }
-
-      persistNextRun('heartbeat', agent.id, task);
-    } else {
-      try {
-        stmts.deleteHeartbeatState.run(agent.id);
-      } catch {}
-    }
-  }
 
   const crons = stmts.getCrons.all() as CronRow[];
   for (const cronJob of crons) {
@@ -1042,7 +750,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
         missed.push(() => dispatchCron(cronJob.id));
       }
 
-      persistNextRun('cron', cronJob.id, task);
+      persistNextRun(cronJob.id, task);
     } else {
       try {
         stmts.updateCronNextRun.run(null, cronJob.id);
@@ -1201,7 +909,7 @@ export function rescheduleCron(cronJob: CronRow): void {
       }),
     );
     scheduledTasks.set(key, task);
-    persistNextRun('cron', cronJob.id, task);
+    persistNextRun(cronJob.id, task);
     console.log(`[Cron] Rescheduled "${cronJob.name}": ${cronJob.schedule}`);
   } else {
     try {
@@ -1211,10 +919,9 @@ export function rescheduleCron(cronJob: CronRow): void {
 }
 
 /**
- * Tear down any in-memory heartbeat task for the agent and drop its persisted
- * `heartbeat_state` row. Used by hard-delete (`DELETE /api/agents/:id`) so a
- * removed agent can't keep firing scheduled work. Safe to call when no task
- * exists.
+ * Drop leftover heartbeat_state for a deleted agent. Heartbeats are no longer
+ * scheduled; this stays so hard-delete (`DELETE /api/agents/:id`) can still
+ * clean historical rows. Safe to call when no row exists.
  */
 export function unscheduleHeartbeat(agentId: string): void {
   const key = `heartbeat:${agentId}`;
@@ -1234,36 +941,7 @@ export function unscheduleHeartbeat(agentId: string): void {
   }
 }
 
-export function rescheduleHeartbeat(agent: EnrichedAgent): void {
-  // Queue is initialised at boot by scheduleAll(); dispatchHeartbeat falls back
-  // to inline execution if it is not up yet, so no ensure call is needed here.
-  const key = `heartbeat:${agent.id}`;
-  const existing = scheduledTasks.get(key);
-  if (existing) {
-    existing.stop();
-    scheduledTasks.delete(key);
-  }
-
-  if (
-    agent.heartbeat?.enabled &&
-    agent.heartbeat?.interval &&
-    cron.validate(agent.heartbeat.interval)
-  ) {
-    const task = cron.schedule(
-      agent.heartbeat.interval,
-      wrapCronTick(() => dispatchHeartbeat(agent), `heartbeat:${agent.id}`),
-      defaultTickOptions({
-        intervalSeconds: estimateIntervalSeconds(agent.heartbeat.interval),
-        name: `heartbeat:${agent.id}`,
-        timezone: cronTimezone(),
-      }),
-    );
-    scheduledTasks.set(key, task);
-    persistNextRun('heartbeat', agent.id, task);
-    console.log(`[Heartbeat] Rescheduled ${agent.name}: ${agent.heartbeat.interval}`);
-  } else {
-    try {
-      stmts.deleteHeartbeatState.run(agent.id);
-    } catch {}
-  }
+/** In-memory scheduled task keys. Exported for tests. */
+export function scheduledTaskKeys(): string[] {
+  return [...scheduledTasks.keys()];
 }

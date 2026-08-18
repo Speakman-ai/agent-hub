@@ -1,5 +1,5 @@
 /**
- * Parity test for the heartbeat/cron → job-queue migration.
+ * Parity test for the cron → job-queue migration.
  *
  * Proves the core behaviour change: with the (default-on) `scheduledJobsViaQueue`
  * flag, a scheduler tick ENQUEUES a job instead of running the work inline; with
@@ -36,25 +36,9 @@ vi.mock('child_process', () => {
 });
 
 const { default: config } = await import('./config.js');
-const { dispatchHeartbeat, dispatchCron, ensureScheduledJobQueue } = await import('./heartbeat.js');
-const {
-  initScheduledJobQueue,
-  getScheduledJobQueue,
-  shutdownScheduledJobQueue,
-  HEARTBEAT_JOB_TYPE,
-  CRON_JOB_TYPE,
-} = await import('./jobs/scheduled-jobs.js');
-
-import type { EnrichedAgent } from './types.js';
-
-function fakeAgent(id: string): EnrichedAgent {
-  return {
-    id,
-    name: id,
-    engine: 'claude-code',
-    heartbeat: { enabled: true, interval: '* * * * *', prompt: 'ping' },
-  } as unknown as EnrichedAgent;
-}
+const { dispatchCron, ensureScheduledJobQueue } = await import('./heartbeat.js');
+const { initScheduledJobQueue, getScheduledJobQueue, shutdownScheduledJobQueue, CRON_JOB_TYPE } =
+  await import('./jobs/scheduled-jobs.js');
 
 const origFlag = config.scheduledJobsViaQueue;
 let db: Database.Database;
@@ -90,19 +74,6 @@ afterEach(async () => {
 });
 
 describe('scheduled dispatch', () => {
-  it('queue mode: enqueues a heartbeat job instead of running inline', () => {
-    initIsolatedQueue();
-    expect(getScheduledJobQueue()).not.toBeNull();
-
-    dispatchHeartbeat(fakeAgent('agent-hb'));
-
-    // A heartbeat job row exists (inline execution would never touch the jobs
-    // table). Row persists with its type/payload regardless of worker status.
-    const hb = jobRows().find((r) => r.type === HEARTBEAT_JOB_TYPE);
-    expect(hb).toBeTruthy();
-    expect(JSON.parse(hb!.payload)).toEqual({ agentId: 'agent-hb' });
-  });
-
   it('queue mode: enqueues a cron job with the numeric cronId', () => {
     initIsolatedQueue();
 

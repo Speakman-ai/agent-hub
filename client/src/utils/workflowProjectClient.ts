@@ -3,7 +3,7 @@
  * non-code path of the New Project wizard.
  *
  * A "workflow" project is one without a code repo / scaffolding step:
- * pure kanban + wiki + agents + sessions + heartbeats + crons. Server-side
+ * pure kanban + wiki + agents + sessions + crons. Server-side
  * this is just `POST /api/projects` with `mode: 'workflow'` (and no
  * `githubRepo`). Validated by `server/test/api.test.ts` →
  * "creates a tasks-only project (mode=workflow, no githubRepo)".

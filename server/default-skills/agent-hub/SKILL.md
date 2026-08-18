@@ -6,7 +6,7 @@ description: >-
   (agent-hub-kanban, agent-hub-wiki, agent-hub-sessions,
   agent-hub-heartbeats-crons). Covers the Agent Hub API at
   http://localhost:3051, kanban boards, epics, per-project wiki (FTS5),
-  sessions, heartbeats, crons, and card auto-close via
+  sessions, crons, and card auto-close via
   <agenthub:close-card>. TRIGGER on Agent-Hub signals: env vars
   AGENT_HUB_URL / AGENT_HUB_API_KEY / AGENT_HUB_SESSION_ID / PROJECT_ID;
   URLs under localhost:3051 or /api/projects/<slug>/; the name "Agent Hub";
@@ -56,7 +56,7 @@ their own `references/<domain>.md` and trigger only on domain vocabulary.
 | `agent-hub-kanban` | Cards, columns, comments, epics, blockers, Done-state contract |
 | `agent-hub-wiki` | FTS5 search, pages, categories, slug conventions |
 | `agent-hub-sessions` | Messages, ask mode, session ownership, `<agenthub:close-card>` |
-| `agent-hub-heartbeats-crons` | Scheduled agents, threads, persistent logs |
+| `agent-hub-heartbeats-crons` | Project crons, threads, persistent logs |
 
 To load one mid-turn, end your turn with:
 
@@ -200,7 +200,7 @@ Concrete recipes live under **[examples/](examples/)**:
 | Recipe | When to use |
 | --- | --- |
 | [create-ticket-from-bug-report](examples/create-ticket-from-bug-report.md) | User drops a bug report and wants a kanban card created |
-| [post-heartbeat-summary](examples/post-heartbeat-summary.md) | End a heartbeat run with a structured thread summary |
+| [post-heartbeat-summary](examples/post-heartbeat-summary.md) | End a scheduled cron run with a structured thread summary |
 | [search-and-link-wiki-page](examples/search-and-link-wiki-page.md) | FTS-search the wiki and link the page in a card comment |
 | [move-card-through-workflow](examples/move-card-through-workflow.md) | Walk a card To Do → In Progress (merge writes Done) |
 

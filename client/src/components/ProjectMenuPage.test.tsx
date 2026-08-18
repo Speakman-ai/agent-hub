@@ -6,7 +6,6 @@ import ProjectMenuPage from './ProjectMenuPage';
   AgentConfigSection: () => <div data-testid="agent-config-section" />,
   ProjectsSection: () => <div data-testid="projects-section" />,
   CronSection: () => <div data-testid="cron-section" />,
-  HeartbeatSection: () => <div data-testid="heartbeat-section" />,
 }));
 
 describe('ProjectMenuPage', () => {
@@ -43,9 +42,9 @@ describe('ProjectMenuPage', () => {
     expect(screen.getByText('Cron Jobs')).toBeInTheDocument();
   });
 
-  it('renders Heartbeats section for heartbeats tab', () => {
+  it('falls back to Agents for the retired heartbeats tab', () => {
     render(<ProjectMenuPage {...baseProps} tab="heartbeats" />);
-    expect(screen.getByTestId('heartbeat-section')).toBeInTheDocument();
-    expect(screen.getByText('Heartbeats')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-config-section')).toBeInTheDocument();
+    expect(screen.queryByText('Heartbeats')).not.toBeInTheDocument();
   });
 });

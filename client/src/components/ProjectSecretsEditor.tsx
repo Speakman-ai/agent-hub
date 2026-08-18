@@ -124,7 +124,7 @@ export default function ProjectSecretsEditor({ projectId, hint }: any) {
         </h5>
         <p className="text-xs text-gray-500">
           {hint ??
-            'Encrypted key/value pairs merged into every session spawn for this project (chat, heartbeat, cron, preview). Values marked secret are never returned in clear — leave blank when editing to keep the stored value. Keys in the '}
+            'Encrypted key/value pairs merged into every session spawn for this project (chat, cron, preview). Values marked secret are never returned in clear — leave blank when editing to keep the stored value. Keys in the '}
           {!hint && (
             <>
               <code className="font-mono">AGENT_HUB_*</code> namespace are rejected.
