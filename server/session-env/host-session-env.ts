@@ -30,6 +30,7 @@ import {
   systemSessionEnvClock,
 } from './session-env.js';
 import { HostWorktreeIo, type SessionWorktreeIo } from './worktree-io.js';
+import { sanitizeSpawnPythonEnv } from '../spawn-python-env.js';
 
 /**
  * Minimal `child_process.spawn`-shaped child. Keeps the adapter decoupled
@@ -187,7 +188,7 @@ export class HostSessionEnv implements SessionEnv {
     this.killFn = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
     this.allocateHostPort = deps.allocateHostPort ?? ((internalPort) => internalPort);
     this.releaseHostPort = deps.releaseHostPort ?? null;
-    this.baseEnv = deps.baseEnv ?? process.env;
+    this.baseEnv = sanitizeSpawnPythonEnv({ ...(deps.baseEnv ?? process.env) });
     this.clock = deps.clock ?? systemSessionEnvClock;
     this.isDirectory = deps.isDirectory ?? defaultIsDirectory;
     this.logger = deps.logger ?? { warn: (msg) => console.warn(msg) };

@@ -120,6 +120,26 @@ describe('buildEnrichedPrompt — session startup setup', () => {
     expect(prompt).toContain('pending');
   });
 
+  it('omits the section on the host adapter even when commands are configured', () => {
+    projectState.sessionStartupCommands = ['python3 -m venv .venv'];
+    const prompt = buildEnrichedPrompt(makeProject() as never, makeAgent() as never, {
+      sessionId: 'sess-1',
+      isFirstMessage: true,
+      sessionEnvAdapter: 'host',
+    });
+    expect(prompt).not.toContain('Session Startup Setup');
+  });
+
+  it('includes the section on an isolated adapter when commands are configured', () => {
+    projectState.sessionStartupCommands = ['python3 -m venv .venv'];
+    const prompt = buildEnrichedPrompt(makeProject() as never, makeAgent() as never, {
+      sessionId: 'sess-1',
+      isFirstMessage: true,
+      sessionEnvAdapter: 'firecracker',
+    });
+    expect(prompt).toContain('Session Startup Setup');
+  });
+
   it('reflects a ready status from the registry', async () => {
     projectState.sessionStartupCommands = ['echo ready'];
     const io: SessionWorktreeIo = {

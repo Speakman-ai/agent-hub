@@ -185,6 +185,20 @@ describe('HostSessionEnv.spawn', () => {
     expect(rec.options.env.HOME).toBe('/home/hub');
   });
 
+  it('strips inherited PYTHONHOME / VIRTUAL_ENV from the Hub process', () => {
+    const { env, records } = makeEnv({
+      baseEnv: {
+        PATH: '/usr/bin',
+        HOME: '/home/hub',
+        PYTHONHOME: '/wt/.venv',
+        VIRTUAL_ENV: '/wt/.venv',
+      },
+    });
+    env.spawn('npm ci');
+    expect(records[0].options.env.PYTHONHOME).toBeUndefined();
+    expect(records[0].options.env.VIRTUAL_ENV).toBeUndefined();
+  });
+
   it('rejects absolute and worktree-escaping cwd', () => {
     const { env } = makeEnv();
     expect(() => env.spawn('ls', { cwd: '/etc' })).toThrow(/relative to the worktree/);

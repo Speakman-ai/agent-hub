@@ -48,7 +48,7 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { isDevServerConfigured } from './dev-server-config.js';
-import type { SessionEnv } from './session-env/session-env.js';
+import type { SessionEnv, SessionEnvKind } from './session-env/session-env.js';
 import { sessionTurnUsesEnvOwnedWorktree } from './session-env/workflow-session-env.js';
 import { resolveSessionEnvAdapterForSession } from './session-env/resolve-session-adapter.js';
 import type { SessionEnvEnsureOpts } from './session-env/session-env-manager.js';
@@ -386,6 +386,11 @@ interface BuildEnrichedPromptOptions {
    * running the wizard. These scoped sessions don't need workspace memory.
    */
   omitWorkspaceMemory?: boolean;
+  /**
+   * Resolved SessionEnv adapter for this session. Host (non-isolated) sessions
+   * omit the Session Startup Setup prompt block — those hooks never run there.
+   */
+  sessionEnvAdapter?: SessionEnvKind;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -831,7 +836,8 @@ You have access to a real Chromium browser in this session. When a user asks you
   }
 
   // Background session-startup hooks (venv / npm install in guest, etc.).
-  if (options.sessionId && projectId) {
+  // Host adapter never runs them — don't advertise a setup that will not happen.
+  if (options.sessionId && projectId && options.sessionEnvAdapter !== 'host') {
     const startupProject = findProject(projectId);
     const startupCmds = startupProject ? getProjectSessionStartupCommands(startupProject) : [];
     if (startupCmds.length > 0) {
@@ -2721,6 +2727,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         epicSpecContext = null;
       }
 
+      // Resolve before buildEnrichedPrompt and before worktree/env ensure so
+      // the prompt gate and spawn path agree on host vs isolated.
+      const sessionEnvAdapter = resolveSessionEnvAdapterForSession({
+        project: project as Project,
+        session,
+      });
+
       let enrichedPrompt = buildEnrichedPrompt(
         project as ProjectWithCommands,
         agent as AgentWithModel,
@@ -2739,6 +2752,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sessionWorktreePath: session!.worktree_path ?? null,
           sessionWorktreeBranch: session!.worktree_branch ?? null,
           omitWorkspaceMemory: isSetupWizardSession(session!),
+          sessionEnvAdapter,
           _getEnrichedAgent: getEnrichedAgent,
         },
       );
@@ -2997,13 +3011,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let sessionEnv: SessionEnv | null = null;
       // Workflow (no-code) projects share project.cwd and must never boot a
       // Firecracker VM — env-owned CLI turns wait on a worktree that never comes.
-      const envOwned = sessionTurnUsesEnvOwnedWorktree(
-        project as Project,
-        resolveSessionEnvAdapterForSession({
-          project: project as Project,
-          session,
-        }),
-      );
+      // sessionEnvAdapter was resolved above (prompt + ensure share one value).
+      const envOwned = sessionTurnUsesEnvOwnedWorktree(project as Project, sessionEnvAdapter);
       const pinnedSpawnCwd =
         typeof msg._spawnCwd === 'string' && msg._spawnCwd.trim() !== ''
           ? msg._spawnCwd.trim()
@@ -3164,11 +3173,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       } else if (
         ensureSessionEnv &&
+        sessionEnvAdapter !== 'host' &&
         getProjectSessionStartupCommands(project as ProjectWithCommands).length > 0
       ) {
-        // Host / sysbox / container: SessionEnvManager.ensure is what starts
-        // project sessionStartupCommands. Without it, the enriched prompt
-        // advertises a permanent "pending" setup that never runs.
+        // Isolated adapters: SessionEnvManager.ensure is what starts project
+        // sessionStartupCommands. Without it, the enriched prompt advertises a
+        // permanent "pending" setup that never runs. Host skips these hooks.
         try {
           sessionEnv = await ensureSessionEnv(sessionId, {
             waitForStartup: msg._fromAutonomousDispatch === true,

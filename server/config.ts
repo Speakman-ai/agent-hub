@@ -26,6 +26,7 @@ import { resolveGoogleOAuthConfig } from './google-oauth-config.js';
 import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
+import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -976,6 +977,10 @@ export function buildSpawnEnv(
       /* best-effort — spawn proceeds; ah-api.sh may still read the file */
     }
   }
+
+  // Strip inherited venv relocation vars and pin npm/node-gyp at the image
+  // Python so a leftover `.venv` cannot break native addon compiles.
+  sanitizeSpawnPythonEnv(env);
 
   return env;
 }

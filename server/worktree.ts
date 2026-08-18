@@ -29,6 +29,7 @@ import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credent
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
 import { rebaseOntoBase } from './pre-push-rebase.js';
 import { isIsolatedModeActive } from './session-mode.js';
+import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
 
 /**
  * Root for all per-session / per-process git clones the workspace manager
@@ -1546,7 +1547,11 @@ function needsDependencyInstall(cloneDir: string): boolean {
 }
 
 const installChildEnv: NodeJS.ProcessEnv = {
-  ...process.env,
+  // Scrub leaked PYTHONHOME/PYTHONPATH/VIRTUAL_ENV and pin the system Python so
+  // node-gyp can compile native addons during a cold host-worktree `npm ci`.
+  // Session startup skips its own hooks on host, but this install can run before
+  // any sanitized chat/HostSessionEnv spawn exists, so it must sanitize too.
+  ...sanitizeSpawnPythonEnv({ ...process.env }),
   // Provisioning and some hosts run the server with NODE_ENV=production, which
   // would otherwise make npm omit devDependencies despite --include=dev in some paths.
   NODE_ENV: 'development',

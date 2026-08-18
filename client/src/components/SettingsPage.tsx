@@ -1312,7 +1312,8 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
         <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
           One shell command per line, run with <code className="text-gray-400">bash</code> in the
           background inside the session environment after every VM/container boot (does not block
-          chat). Each command uses the session workspace cwd — the same worktree root as chat,
+          chat). Not run on host (non-isolated) sessions, so they cannot mutate the operator
+          checkout. Each command uses the session workspace cwd — the same worktree root as chat,
           terminal, and preview (guest <code className="text-gray-400">/workspace</code> when
           env-owned). Each line is a fresh shell, so prefer{' '}
           <code className="text-gray-400">.venv/bin/pip install …</code> over a separate{' '}

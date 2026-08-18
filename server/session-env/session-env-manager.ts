@@ -65,8 +65,9 @@ export interface SessionEnvManagerDeps {
   resolvePublishPorts?: (sessionId: string) => number[] | null;
   /**
    * Project `sessionStartupCommands` for this session (empty = skip).
-   * Looked up after mountWorktree. `ensure()` does not wait for them unless
-   * `{ waitForStartup: true }` is passed (autonomous dispatch).
+   * Looked up after mountWorktree. Ignored on the host adapter. `ensure()`
+   * does not wait for them unless `{ waitForStartup: true }` is passed
+   * (autonomous dispatch).
    */
   resolveStartupCommands?: (sessionId: string) => string[];
   /**
@@ -310,10 +311,12 @@ export class SessionEnvManager {
       }
       this.logger.log(`[session-env] ${sessionId}: ready on "${kind}" adapter`);
 
-      // Project startup hooks. `ensure()` does not await these unless the
-      // caller passed `{ waitForStartup: true }` (autonomous dispatch).
-      // Abort on dispose.
-      const commands = this.deps.resolveStartupCommands?.(sessionId) ?? [];
+      // Project startup hooks. Host has no ephemeral boundary — running
+      // `python3 -m venv` / `npm ci` here mutates the operator checkout and
+      // can poison later shells (PYTHONHOME from a half-empty `.venv`).
+      // `ensure()` does not await these unless the caller passed
+      // `{ waitForStartup: true }` (autonomous dispatch). Abort on dispose.
+      const commands = kind === 'host' ? [] : (this.deps.resolveStartupCommands?.(sessionId) ?? []);
       if (commands.length > 0) {
         const abort = new AbortController();
         entry.startupAbort = abort;

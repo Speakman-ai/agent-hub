@@ -15,6 +15,7 @@ class FakeEnv {
   mountCalls = 0;
   disposeCalls = 0;
   live = 0;
+  spawnCalls: string[] = [];
   private readonly hooks = new Set<() => void>();
   worktreeIo: SessionWorktreeIo;
 
@@ -60,6 +61,7 @@ class FakeEnv {
     return () => this.hooks.delete(cb);
   }
   spawn(command: string) {
+    this.spawnCalls.push(command);
     const run = async () => {
       try {
         return await this.worktreeIo.exec(command);
@@ -580,6 +582,26 @@ describe('SessionEnvManager session startup hooks', () => {
     expect(getSessionStartupStatus('s1')?.status).not.toBe('ready');
     await manager.ensure('s1', { waitForStartup: true });
     expect(getSessionStartupStatus('s1')?.status).toBe('ready');
+  });
+
+  it('skips project startup hooks on the host adapter', async () => {
+    const { manager, created } = makeManager({
+      kind: 'host',
+      resolveStartupCommands: () => ['python3 -m venv .venv'],
+    });
+    await manager.ensure('s1', { waitForStartup: true });
+    expect(getSessionStartupStatus('s1')).toBeNull();
+    expect(created[0]?.spawnCalls).toEqual([]);
+  });
+
+  it('runs project startup hooks on isolated adapters', async () => {
+    const { manager, created } = makeManager({
+      kind: 'firecracker',
+      resolveStartupCommands: () => ['echo ready'],
+    });
+    await manager.ensure('s1', { waitForStartup: true });
+    expect(getSessionStartupStatus('s1')?.status).toBe('ready');
+    expect(created[0]?.spawnCalls.some((c) => c.includes('echo ready'))).toBe(true);
   });
 });
 

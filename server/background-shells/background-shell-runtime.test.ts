@@ -157,6 +157,25 @@ describe('BackgroundShellRuntime.start', () => {
     expect(h.lastSpawnOpts()).toMatchObject({ cwd: '/wt/sess-1', detached: true });
   });
 
+  it('does not leak PYTHONHOME / VIRTUAL_ENV from the Hub process into the shell', () => {
+    const prevHome = process.env.PYTHONHOME;
+    const prevVenv = process.env.VIRTUAL_ENV;
+    process.env.PYTHONHOME = '/tmp/poison-venv';
+    process.env.VIRTUAL_ENV = '/tmp/poison-venv';
+    try {
+      const h = makeHarness();
+      h.runtime.start(START);
+      const env = h.lastSpawnOpts()?.env as NodeJS.ProcessEnv;
+      expect(env.PYTHONHOME).toBeUndefined();
+      expect(env.VIRTUAL_ENV).toBeUndefined();
+    } finally {
+      if (prevHome === undefined) delete process.env.PYTHONHOME;
+      else process.env.PYTHONHOME = prevHome;
+      if (prevVenv === undefined) delete process.env.VIRTUAL_ENV;
+      else process.env.VIRTUAL_ENV = prevVenv;
+    }
+  });
+
   it('captures stdout/stderr into the log tail', () => {
     const h = makeHarness();
     const row = h.runtime.start(START);

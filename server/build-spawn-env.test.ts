@@ -759,3 +759,27 @@ describe('buildSpawnEnv — agent-hub skill-script contract', () => {
     }
   });
 });
+
+describe('buildSpawnEnv — Python hygiene', () => {
+  it('strips inherited PYTHONHOME / PYTHONPATH / VIRTUAL_ENV', () => {
+    const prevHome = process.env.PYTHONHOME;
+    const prevPath = process.env.PYTHONPATH;
+    const prevVenv = process.env.VIRTUAL_ENV;
+    process.env.PYTHONHOME = '/tmp/poison-venv';
+    process.env.PYTHONPATH = '/tmp/poison-venv/lib';
+    process.env.VIRTUAL_ENV = '/tmp/poison-venv';
+    try {
+      const env = buildSpawnEnv();
+      expect(env.PYTHONHOME).toBeUndefined();
+      expect(env.PYTHONPATH).toBeUndefined();
+      expect(env.VIRTUAL_ENV).toBeUndefined();
+    } finally {
+      if (prevHome === undefined) delete process.env.PYTHONHOME;
+      else process.env.PYTHONHOME = prevHome;
+      if (prevPath === undefined) delete process.env.PYTHONPATH;
+      else process.env.PYTHONPATH = prevPath;
+      if (prevVenv === undefined) delete process.env.VIRTUAL_ENV;
+      else process.env.VIRTUAL_ENV = prevVenv;
+    }
+  });
+});

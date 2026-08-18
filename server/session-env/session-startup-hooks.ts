@@ -6,7 +6,8 @@
  * Config lives on the Hub project (`sessionStartupCommands`). Commands run
  * via {@link SessionEnv.spawn} with cwd at the session worktree root (the same
  * workspace chat, terminal, and preview use — guest `/workspace` for
- * env-owned / container envs, host worktree path for the host adapter). Status
+ * env-owned / container envs). The host adapter skips these hooks — there is
+ * no ephemeral guest, so they would mutate the operator checkout. Status
  * is kept in-memory for the enriched prompt / spawn env and mirrored to a
  * status file **outside** the git worktree (`GUEST_RUNTIME_ROOT` in guests,
  * `$HOME/.agent-hub-runtime/…` on the host) so `git add -A` cannot pick it up.

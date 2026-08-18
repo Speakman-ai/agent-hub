@@ -44,6 +44,7 @@ import {
   clampBackgroundShellTimeoutMs,
   formatBackgroundShellTimeoutCap,
 } from './background-shell-timeout.js';
+import { sanitizeSpawnPythonEnv } from '../spawn-python-env.js';
 
 /**
  * Default `/proc/<pid>/cmdline` reader for the boot-orphan reaper. argv is
@@ -451,7 +452,7 @@ export class BackgroundShellRuntime {
     try {
       child = this.spawn('sh', ['-c', input.command], {
         cwd: input.cwd,
-        env: process.env,
+        env: sanitizeSpawnPythonEnv({ ...process.env }),
         stdio: ['ignore', 'pipe', 'pipe'],
         // Own process-group leader so `kill(-pid)` reaches the whole tree.
         detached: true,

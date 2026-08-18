@@ -2,7 +2,7 @@
 FROM node:22-slim AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ \
+    python3 python3-packaging python3-setuptools make g++ \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -67,10 +67,13 @@ FROM node:22-slim AS runtime
 # the repo; lint-staged / husky pre-commit then fail. Trust all paths in this
 # single-tenant agent image.
 #
-# Python 3 (+ venv + pip) is included so agents can run Python scripts and,
-# under PEP 668, create a venv to pip-install ad-hoc deps. The build stage
-# already installs python3 to compile better-sqlite3, but that stage is
-# discarded, so we install it again here for the runtime container.
+# Python 3 (+ venv + pip + packaging/setuptools) so agents can run Python
+# scripts and, under PEP 668, create a venv to pip-install ad-hoc deps.
+# `python3-packaging` is required by node-gyp 10+ (`from packaging.version
+# import Version`) when a session compiles native addons such as node-pty.
+# The build stage already installs python3 to compile better-sqlite3, but
+# that stage is discarded, so we install it again here for the runtime
+# container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \
@@ -86,6 +89,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
     python3-pip \
+    python3-packaging \
+    python3-setuptools \
  && git config --system --add safe.directory '*' \
  && rm -rf /var/lib/apt/lists/*
 
@@ -115,7 +120,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # we opt out at the env level so projects' install commands don't have to
 # learn about `--break-system-packages` to run.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv python-is-python3 \
+    python3 python3-pip python3-venv python3-packaging python3-setuptools python-is-python3 \
  && ln -sf /usr/bin/pip3 /usr/local/bin/pip \
  && rm -rf /var/lib/apt/lists/*
 ENV PIP_BREAK_SYSTEM_PACKAGES=1

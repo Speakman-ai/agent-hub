@@ -52,6 +52,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     python3-pip \
     python3-venv \
+    python3-packaging \
+    python3-setuptools \
     libpq-dev \
     build-essential \
     imagemagick \
