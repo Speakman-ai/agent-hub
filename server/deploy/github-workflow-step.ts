@@ -374,11 +374,32 @@ export function compileGithubWorkflowResumeRun(spec: GithubWorkflowResumeSpec): 
       `CREATED_AFTER=${shSingleQuote(createdAfter ?? '')}`,
       `export CREATED_AFTER`,
       `echo "Recovering workflow run \${WORKFLOW} on \${REF} ..."`,
+      // Capture the lookup's exit status separately from its output. Folding a
+      // `gh` failure (auth / network / rate limit / API error) into `|| true`
+      // would make a lookup FAILURE indistinguishable from a CONFIRMED-empty
+      // listing — and then we'd wrongly assure the operator that nothing ran.
+      // `LOOKUP_OK=0` iff the CLI itself failed.
+      `RUN_ID=""`,
+      `LOOKUP_OK=1`,
       `RUN_ID="$(gh run list --workflow "\${WORKFLOW}" --branch "\${REF}" --event workflow_dispatch \\`,
       `  --limit 100 --json databaseId,createdAt \\`,
-      `  --jq '[.[] | select(.createdAt >= env.CREATED_AFTER)] | sort_by(.createdAt) | last | .databaseId // empty' 2>/dev/null || true)"`,
+      `  --jq '[.[] | select(.createdAt >= env.CREATED_AFTER)] | sort_by(.createdAt) | last | .databaseId // empty' 2>/dev/null)" || LOOKUP_OK=0`,
       `if [ -z "\${RUN_ID}" ]; then`,
-      `  echo "github_workflow recovery: could not find a workflow_dispatch run for \${WORKFLOW} on \${REF} after \${CREATED_AFTER}" >&2`,
+      // We deliberately do NOT auto-re-dispatch from recovery: a gated environment
+      // requires a fresh human approval, and a re-dispatch could double-release if
+      // a run was in fact created. An empty RUN_ID does NOT prove no run exists, so
+      // neither branch claims categorically that nothing ran — both send the
+      // operator to the Actions tab to establish dispatch state before re-running.
+      `  if [ "\${LOOKUP_OK}" -eq 1 ]; then`,
+      // gh succeeded but listed no run at/after CREATED_AFTER. Most likely the Hub
+      // was interrupted (self-deploy) before `gh workflow run` created a run — but a
+      // just-dispatched run can also be briefly unlistable, so this stays hedged and
+      // makes no claim about whether a release ran until the Actions tab is checked.
+      `    echo "github_workflow recovery: no workflow_dispatch run for \${WORKFLOW} on \${REF} was listed created at/after \${CREATED_AFTER}, and no GitHub run id was recorded. This does not confirm a release was or was not dispatched: the deployment may have been interrupted before dispatch, or a just-dispatched run can be briefly unlistable. Check the Actions tab for \${WORKFLOW} on \${REF} and re-run the deployment only if no run exists." >&2`,
+      `  else`,
+      // gh itself failed — empty output proves nothing about dispatch state.
+      `    echo "github_workflow recovery: could not query workflow runs for \${WORKFLOW} on \${REF} (gh run list failed); cannot determine whether a release was dispatched. Check the Actions tab for \${WORKFLOW} on \${REF} before re-running the deployment to avoid a duplicate release." >&2`,
+      `  fi`,
       `  exit 1`,
       `fi`,
     );

@@ -319,6 +319,43 @@ describe('compileGithubWorkflowResumeRun', () => {
     expect(script).not.toContain('gh workflow run');
   });
 
+  it('distinguishes a lookup failure from a confirmed-empty rediscovery and never claims nothing ran', () => {
+    // Regression: a Hub self-deploy restart can interrupt a github_workflow step
+    // after it is marked running but before `gh workflow run` records a run id.
+    // Recovery rediscovers by time; an empty RUN_ID can mean EITHER the CLI failed
+    // (auth/network/rate limit — `2>/dev/null`) OR the listing was genuinely empty.
+    // Neither proves nothing ran (a just-dispatched run can be briefly unlistable),
+    // so recovery must NOT categorically assure the operator no release happened —
+    // re-running a gated deploy on that false assurance could double-release.
+    const script = compileGithubWorkflowResumeRun({
+      workflow: 'release-all.yml',
+      ref: 'main',
+      createdAfter: '2026-08-18T02:33:37Z',
+    });
+    // The gh exit status is captured separately, not folded into `|| true`.
+    expect(script).toContain('LOOKUP_OK=1');
+    expect(script).toContain('|| LOOKUP_OK=0');
+    expect(script).toContain('if [ "${LOOKUP_OK}" -eq 1 ]; then');
+    // Lookup-failure branch: cannot determine dispatch state.
+    expect(script).toContain('gh run list failed');
+    expect(script).toContain('cannot determine whether a release was dispatched');
+    // Confirmed-empty branch stays hedged, not categorical.
+    expect(script).toContain('was listed created at/after');
+    expect(script).toContain('a just-dispatched run can be briefly unlistable');
+    expect(script).toContain('This does not confirm a release was or was not dispatched');
+    // Both branches steer the operator to verify before re-running.
+    expect(script).toContain('Check the Actions tab');
+    // No residual categorical assurance that nothing ran.
+    expect(script).not.toContain('so no release was dispatched');
+    expect(script).not.toContain('nothing released');
+    // Still keeps the stable log prefix the orchestrator asserts on.
+    expect(script).toContain('github_workflow recovery:');
+    // Recovery never dispatches — no double-release, gate stays intact.
+    expect(script).not.toContain('gh workflow run');
+    // Both empty-run-id branches still fail the step.
+    expect(script).toContain('exit 1');
+  });
+
   it('never captures a release version (no pre-dispatch snapshot on recovery)', () => {
     const byRunId = compileGithubWorkflowResumeRun({ runId: '4242' });
     const byRediscovery = compileGithubWorkflowResumeRun({
