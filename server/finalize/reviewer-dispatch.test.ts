@@ -937,6 +937,81 @@ describe('buildLocalDiffReviewerPrompt', () => {
     });
     expect(prompt).toContain('_(no files changed)_');
   });
+
+  // Regression: support ticket 5dcd7790 "Grok Review Looping". A large diff
+  // (36 of 58 patches omitted) made the reviewer request changes because it
+  // "cannot confirm the change is complete from the supplied diff"; the diff
+  // never shrinks, so the review looped every round. The reviewer runs in the
+  // worktree with read-only file access, so truncation must point it at the
+  // worktree, not fail the change.
+  describe('truncated diff points the reviewer at the worktree, not a coverage gap', () => {
+    it('omitted patches: instructs a worktree read and forbids failing solely for the omission', () => {
+      const prompt = buildLocalDiffReviewerPrompt({
+        inputs: { ...fakeInputs, omittedFileCount: 36 },
+        card: fakeCard,
+        project: fakeProject,
+      });
+      expect(prompt).toContain('36 file patch(es) were omitted');
+      expect(prompt).toContain('Read the\n> affected files directly');
+      expect(prompt).toContain('read-only');
+      expect(prompt).toContain('size-budget limit, not a coverage gap');
+      // Must not tell the reviewer to just scope to the visible diff.
+      expect(prompt).not.toContain('Scope your findings to what is visible');
+      // The "complete input" claim must flip to partial + worktree.
+      expect(prompt).not.toContain('The diff below is the complete input.');
+      expect(prompt).toContain('The diff below is **partial**');
+    });
+
+    it('severed patch also gets the worktree-read directive', () => {
+      const prompt = buildLocalDiffReviewerPrompt({
+        inputs: { ...fakeInputs, severedPatch: true, omittedFileCount: 2 },
+        card: fakeCard,
+        project: fakeProject,
+      });
+      expect(prompt).toContain('cut off mid-file');
+      expect(prompt).toContain('Read the\n> affected files directly');
+      expect(prompt).toContain('size-budget limit, not a coverage gap');
+    });
+
+    it('degraded (stat-only) diff also gets the worktree-read directive', () => {
+      const prompt = buildLocalDiffReviewerPrompt({
+        inputs: { ...fakeInputs, diffDegraded: true },
+        card: fakeCard,
+        project: fakeProject,
+      });
+      expect(prompt).toContain('per-file summary rather than the full');
+      expect(prompt).toContain('Read the\n> affected files directly');
+    });
+
+    it('acceptance-criteria coverage cites the worktree when the diff is truncated', () => {
+      const prompt = buildLocalDiffReviewerPrompt({
+        inputs: { ...fakeInputs, omittedFileCount: 5 },
+        card: {
+          ...fakeCard,
+          description: ['**Acceptance Criteria**:', '- [ ] ship the thing'].join('\n'),
+        },
+        project: fakeProject,
+      });
+      expect(prompt).toContain('from the diff plus any omitted files you read from the worktree');
+      expect(prompt).not.toContain('from the diff alone');
+    });
+
+    it('a complete diff keeps the tight "complete input" / "from the diff alone" wording', () => {
+      const prompt = buildLocalDiffReviewerPrompt({
+        inputs: fakeInputs,
+        card: {
+          ...fakeCard,
+          description: ['**Acceptance Criteria**:', '- [ ] ship the thing'].join('\n'),
+        },
+        project: fakeProject,
+      });
+      expect(prompt).toContain('The diff below is the complete input.');
+      expect(prompt).toContain('from the diff alone');
+      // No truncation notice / worktree directive when nothing was dropped.
+      expect(prompt).not.toContain('Partial input');
+      expect(prompt).not.toContain('Read the\n> affected files directly');
+    });
+  });
 });
 
 /**

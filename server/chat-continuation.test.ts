@@ -3,6 +3,7 @@ import {
   AUTO_CONTINUATION_MAX_RETRIES,
   AUTO_CONTINUATION_PROMPT,
   buildGrokHeadlessPrompt,
+  engineResumesAcrossTurns,
   buildAutoContinuationPrompt,
   clipUtf8StringToMaxBytes,
   detectReActBlock,
@@ -15,29 +16,51 @@ import {
 import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
 
 describe('buildGrokHeadlessPrompt', () => {
-  it('does not prepend the enriched prompt again on history-bootstrap turns', () => {
+  // Grok has no --resume flag, so the enriched system prompt (identity,
+  // shipping contract, no-direct-ship rules) must ride every turn. Dropping it
+  // on continuation turns let Grok revert to its stock CLI persona — it invented
+  // its own push/PR workflow and referenced trackers (Linear) from pretraining.
+  it('always prepends the enriched prompt, including on continuation turns', () => {
     const out = buildGrokHeadlessPrompt({
       enrichedPrompt: 'SYSTEM INSTRUCTIONS',
       finalPrompt: 'Previous conversation:\nHuman: hello\n\nHuman: continue',
-      needsHistoryBootstrap: true,
-      forceSystemPromptThisTurn: false,
     });
 
-    expect(out).toBe('Previous conversation:\nHuman: hello\n\nHuman: continue');
-    expect(out).not.toContain('SYSTEM INSTRUCTIONS');
+    expect(out).toBe(
+      'SYSTEM INSTRUCTIONS\n\nPrevious conversation:\nHuman: hello\n\nHuman: continue',
+    );
+    expect(out).toContain('SYSTEM INSTRUCTIONS');
+    expect(out).toContain('Previous conversation:');
   });
 
-  it('reinjects the enriched prompt when a pending skill forces it', () => {
+  it('keeps loaded-skill context ahead of the transcript', () => {
     const out = buildGrokHeadlessPrompt({
       enrichedPrompt: 'SYSTEM INSTRUCTIONS\n\n## Loaded Skill: test',
       finalPrompt: 'Previous conversation:\nHuman: hello\n\nHuman: use the skill',
-      needsHistoryBootstrap: true,
-      forceSystemPromptThisTurn: true,
     });
 
     expect(out).toContain('SYSTEM INSTRUCTIONS');
     expect(out).toContain('## Loaded Skill: test');
-    expect(out).toContain('Previous conversation:');
+    expect(out.indexOf('## Loaded Skill: test')).toBeLessThan(
+      out.indexOf('Previous conversation:'),
+    );
+  });
+});
+
+describe('engineResumesAcrossTurns', () => {
+  it('classifies claude/cursor/codex as resuming (keep first-message-only gate)', () => {
+    expect(engineResumesAcrossTurns('claude-code')).toBe(true);
+    expect(engineResumesAcrossTurns('cursor-agent')).toBe(true);
+    expect(engineResumesAcrossTurns('codex-cli')).toBe(true);
+  });
+
+  it('classifies grok/gemini as non-resuming (must re-send full prompt each turn)', () => {
+    expect(engineResumesAcrossTurns('grok-cli')).toBe(false);
+    expect(engineResumesAcrossTurns('gemini-cli')).toBe(false);
+  });
+
+  it('defaults unknown engines to non-resuming so the full prompt is re-sent', () => {
+    expect(engineResumesAcrossTurns('some-future-cli')).toBe(false);
   });
 });
 

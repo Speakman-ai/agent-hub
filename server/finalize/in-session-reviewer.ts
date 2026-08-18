@@ -723,7 +723,7 @@ You are reviewing the **local diff** of a feature branch in **${projectLabel}** 
 
 **Constraints:**
 - Do NOT edit files, run mutating shell commands, commit, or push.
-- Do NOT call \`gh\`, the GitHub API, or any HTTP endpoint to fetch PR data — **no PR exists yet**. Missing PR number / dispatch metadata is expected. The diff in the user prompt is the complete input. Do **not** stop or ask for a PR URL.
+- Do NOT call \`gh\`, the GitHub API, or any HTTP endpoint to fetch PR data — **no PR exists yet**. Missing PR number / dispatch metadata is expected. The user prompt carries your input; if it flags a **Partial input** (the diff was trimmed to a size budget), read the named files directly from the worktree (read-only) rather than treating the omission as a coverage gap or asking for the complete patches. Do **not** stop or ask for a PR URL.
 - Write your review as a normal chat message — prose first, then a SINGLE structured tail block.
 
 **Output contract — end your turn with this block (and nothing after it):**

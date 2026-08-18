@@ -776,6 +776,22 @@ This session sets \`AWS_CONFIG_FILE\` and \`AWS_SHARED_CREDENTIALS_FILE\` to pro
 Do not print access keys or session tokens.`;
 }
 
+/**
+ * Whether an engine's CLI persists the turn-1 system prompt across turns via a
+ * resume mechanism. claude-code (`--resume`), cursor-agent (`--resume`), and
+ * codex-cli (`resume <id>`) keep their own session store, so the Hub can gate
+ * the heavy first-message instructional blocks (shipping contract, lifecycle)
+ * behind `isFirstMessage` to save tokens. gemini-cli and grok-cli have no
+ * resume flag — each spawn starts blank — so the full enriched system prompt
+ * must be re-sent every turn or the model reverts to its stock CLI persona
+ * (ignores the no-direct-ship contract, references trackers like Linear that
+ * only exist in its pretraining). Callers force `isFirstMessage` true for the
+ * non-resuming engines so the full prompt rides every turn.
+ */
+export function engineResumesAcrossTurns(engine: string): boolean {
+  return engine === 'claude-code' || engine === 'cursor-agent' || engine === 'codex-cli';
+}
+
 export function buildEnrichedPrompt(
   projectOrAgent: ProjectWithCommands | EnrichedAgent,
   maybeAgent?: AgentWithModel,
@@ -1908,14 +1924,17 @@ export function augmentChatTurnForDesignMode(args: {
 export function buildGrokHeadlessPrompt(args: {
   enrichedPrompt: string;
   finalPrompt: string;
-  needsHistoryBootstrap: boolean;
-  forceSystemPromptThisTurn: boolean;
 }): string {
-  const { enrichedPrompt, finalPrompt, needsHistoryBootstrap, forceSystemPromptThisTurn } = args;
-  if (needsHistoryBootstrap && !forceSystemPromptThisTurn) {
-    return finalPrompt;
-  }
-  return `${enrichedPrompt}\n\n${finalPrompt}`;
+  // Grok has no --resume flag, so every spawn starts with a blank system
+  // prompt — the model retains nothing across turns. The enriched prompt
+  // (identity, shipping contract / no-direct-ship rules, lifecycle,
+  // CLAUDE.md/AGENTS.md context) must therefore ride EVERY turn, exactly like
+  // the gemini-cli branch below. Dropping it on continuation turns left Grok
+  // running on its stock CLI persona: it invented its own push/PR workflow and
+  // referenced trackers (Linear) that only exist in its pretraining. The
+  // enriched prompt is already forced to the full first-message form for
+  // non-resuming engines at the buildEnrichedPrompt call site.
+  return `${args.enrichedPrompt}\n\n${args.finalPrompt}`;
 }
 
 // ─── createChatHandler (factory) ───────────────────────────────────
@@ -2739,7 +2758,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         agent as AgentWithModel,
         {
           useWorktree: sessionUsesWorktree(session!),
-          isFirstMessage,
+          // Non-resuming engines (grok-cli, gemini-cli) start each spawn with a
+          // blank system prompt, so treat every turn as a first message and
+          // re-send the full enriched prompt. Resuming engines keep the
+          // token-saving first-message-only gate.
+          isFirstMessage: isFirstMessage || !engineResumesAcrossTurns(engine),
           sessionId,
           orchestrationPhase: session!.orchestration_phase ?? null,
           orchestrationMetaJson: session!.orchestration_meta ?? null,
@@ -3619,18 +3642,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         //                            Claude's bypassPermissions; omitted in Ask Mode
         //   --no-auto-update         skip background update checks in automation
         //
-        // Grok does not expose a resume flag we key off here. After the first
-        // turn, the history-bootstrap path above has already assembled the
-        // prior transcript into `finalPrompt`, so do not prepend the enriched
-        // prompt again unless a pending skill explicitly forced reinjection.
-        // The prompt rides in a single `-p` argv element, so the same kernel
+        // Grok does not expose a resume flag, so the enriched system prompt is
+        // re-injected on every turn (see buildGrokHeadlessPrompt / the
+        // non-resuming-engine gate at the buildEnrichedPrompt call). The prompt
+        // rides in a single `-p` argv element, so the same kernel
         // MAX_ARG_STRLEN cap as cursor/gemini applies.
-        const rawPrompt = buildGrokHeadlessPrompt({
-          enrichedPrompt,
-          finalPrompt,
-          needsHistoryBootstrap,
-          forceSystemPromptThisTurn,
-        });
+        const rawPrompt = buildGrokHeadlessPrompt({ enrichedPrompt, finalPrompt });
         const capped = applyArgvPromptCap(rawPrompt);
         if (capped.truncated) {
           logArgvCapTruncation('grok-cli', sessionId, capped.originalBytes, rawPrompt.length);
