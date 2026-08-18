@@ -46,15 +46,16 @@ export type StartSessionPreviewResult =
   | { ok: true; started: true }
   | { ok: false; error: string; statusCode: number };
 
+// Landing route for a preview when the caller passes no explicit route. Prefer
+// the first configured capture route, else the app root. healthPath is a
+// readiness probe, NOT a landing page: falling back to it lands the iframe on
+// something like /api/health, so the preview renders `{"status":"ok"}` instead
+// of the app.
 function defaultPreviewRoute(project: Project): string {
   const routes = project.prEnv?.devServer?.captureRoutes;
   if (Array.isArray(routes) && routes.length > 0 && typeof routes[0] === 'string') {
     const t = routes[0].trim();
     if (t.startsWith('/')) return t;
-  }
-  const healthPath = project.prEnv?.devServer?.healthPath;
-  if (typeof healthPath === 'string' && healthPath.trim().startsWith('/')) {
-    return healthPath.trim();
   }
   return '/';
 }

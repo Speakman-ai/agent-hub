@@ -123,6 +123,69 @@ describe('startSessionPreview', () => {
     expect(result).toEqual({ ok: true, started: true });
   });
 
+  it('defaults to the app root, not healthPath, when no captureRoutes are set', async () => {
+    // healthPath is a readiness probe; landing the iframe on it renders
+    // `{"status":"ok"}` instead of the app.
+    const healthOnly = {
+      ...project,
+      prEnv: {
+        enabled: false,
+        devServer: {
+          ...(project as unknown as { prEnv: { devServer: object } }).prEnv.devServer,
+          healthPath: '/api/health',
+        },
+      },
+    } as unknown as Project;
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast: vi.fn(),
+      findAgent: () => ({ project: healthOnly, agent: { id: 'a1' } }),
+      getDevServerRuntime: () => null,
+      getSession: () => session,
+    });
+    expect(result).toEqual({ ok: true, started: true });
+    const task = vi.mocked(handlePreviewBlock).mock.calls[0]?.[1];
+    expect(task?.route).toBe('/');
+  });
+
+  it('defaults to the first capture route when one is configured', async () => {
+    const withCapture = {
+      ...project,
+      prEnv: {
+        enabled: false,
+        devServer: {
+          ...(project as unknown as { prEnv: { devServer: object } }).prEnv.devServer,
+          healthPath: '/api/health',
+          captureRoutes: ['/dashboard', '/settings'],
+        },
+      },
+    } as unknown as Project;
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      broadcast: vi.fn(),
+      findAgent: () => ({ project: withCapture, agent: { id: 'a1' } }),
+      getDevServerRuntime: () => null,
+      getSession: () => session,
+    });
+    expect(result).toEqual({ ok: true, started: true });
+    const task = vi.mocked(handlePreviewBlock).mock.calls[0]?.[1];
+    expect(task?.route).toBe('/dashboard');
+  });
+
+  it('honours an explicit body.route over the default', async () => {
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      body: { route: '/board' },
+      broadcast: vi.fn(),
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getDevServerRuntime: () => null,
+      getSession: () => session,
+    });
+    expect(result).toEqual({ ok: true, started: true });
+    const task = vi.mocked(handlePreviewBlock).mock.calls[0]?.[1];
+    expect(task?.route).toBe('/board');
+  });
+
   it('returns 409 before worktree provisioning finishes', async () => {
     const result = await startSessionPreview({
       sessionId: 'sess-1',
