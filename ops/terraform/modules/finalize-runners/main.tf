@@ -134,6 +134,21 @@ resource "aws_autoscaling_group" "fleet" {
   # pool-diversity guardrail.
   capacity_rebalance = var.spot
 
+  # Suspend AZRebalance on the Spot fleet. AZRebalance tries to keep instance
+  # counts EVEN across the AZs, but capacity-optimized deliberately piles into
+  # whichever AZ pools are deepest and drains the shallow ones to zero. The two
+  # fight: when one AZ is Spot-starved (observed 2026-08-18 us-east-2 — az2 spot
+  # placement score 1/10, 0 instances, while az1/az3 held the fleet),
+  # AZRebalance repeatedly launches replacements into the starved AZ purely to
+  # balance zones, and those launches fail `UnfulfillableCapacity` (4 such Failed
+  # activities in one recent window) — churn that buys nothing since
+  # capacity-optimized already placed where capacity exists. Suspending
+  # AZRebalance does NOT touch Launch/Terminate/HealthCheck/ReplaceUnhealthy or
+  # the ECS capacity provider's SetDesiredCapacity, so scaling and reclaim
+  # handling are unaffected. On-demand fleets don't get reclaimed and don't need
+  # this, so it tracks var.spot.
+  suspended_processes = var.spot ? ["AZRebalance"] : []
+
   # Spot fleet (interruptible — CI re-runs) across a diversified pool of 32 GB
   # instance types so Spot stays available. capacity-optimized picks the deepest
   # pools (fewest interruptions). spot=false → 100% on-demand.

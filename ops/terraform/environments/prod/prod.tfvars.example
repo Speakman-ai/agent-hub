@@ -115,14 +115,20 @@ manage_shared_finalize_infra = true # this account owns its buckets/ECR
 # across families/generations to keep on-demand/Spot fulfillable. instance_type
 # is kept in sync as the no-override fallback but is otherwise inert here.
 finalize_runner_instance_type = "m7a.xlarge"
-# Deepened Spot pool: 10 full-performance 16 GB / 4 vCPU m-family xlarge types,
-# all offered across all 3 us-east-2 AZs → 30 capacity-optimized Spot pools, so
+# Deepened Spot pool: 14 full-performance 16 GB / 4 vCPU m-family xlarge types,
+# all offered across all 3 us-east-2 AZs → 42 capacity-optimized Spot pools, so
 # a single capacity-pool reclaim touches a smaller fraction of the fleet.
+# Widened 10→14 (2026-08-18): the fleet had concentrated 53/57 instances on a
+# single type (m7a.xlarge), so one m7a capacity event could interrupt almost the
+# whole fleet at once (correlated reclaims). Adding m5zn/m5ad/m5dn/m6idn lifted
+# single-AZ spot placement scores (target 64: az1 4→5, az3 6→7) and kept the
+# region-wide score at 9/10 while decorrelating interruptions across more pools.
 # Intentionally EXCLUDES burstable m7i-flex (baseline-CPU throttling would
 # reintroduce the timing-sensitive E2E flakes the GitHub-parity caps prevent).
 finalize_runner_instance_types = [
   "m7a.xlarge", "m7i.xlarge", "m6a.xlarge", "m6i.xlarge", "m6in.xlarge",
-  "m6id.xlarge", "m5.xlarge", "m5a.xlarge", "m5n.xlarge", "m5d.xlarge",
+  "m6id.xlarge", "m6idn.xlarge", "m5.xlarge", "m5a.xlarge", "m5n.xlarge",
+  "m5d.xlarge", "m5dn.xlarge", "m5ad.xlarge", "m5zn.xlarge",
 ]
 finalize_runner_task_memory_mib = 12288 # ~12 GB on a 16 GB host → still one job/instance
 # gp3 free baseline (3000 IOPS / 125 MB/s) — sampled CI I/O well under the
@@ -130,7 +136,7 @@ finalize_runner_task_memory_mib = 12288 # ~12 GB on a 16 GB host → still one j
 finalize_runner_root_iops       = 3000
 finalize_runner_root_throughput = 125
 # Spot is the INTENTIONAL steady state (~⅔ cheaper; lost jobs retry on a fresh
-# agent). Reclaim survivability is engineered (capacity_rebalance, a 30-pool
+# agent). Reclaim survivability is engineered (capacity_rebalance, a 42-pool
 # override, and a generous Hub reclaim-retry budget). Do NOT flip this to false
 # to "fix" reclaim failures — that silently converts the fleet to ~3x-cost
 # on-demand; harden Spot instead.
