@@ -129,6 +129,49 @@ export function getTerminalWsUrl(sessionId: string) {
 }
 
 /**
+ * Rebase a server-issued absolute WebSocket URL onto the origin the browser
+ * is actually talking to.
+ *
+ * Routes that hand back an absolute `wsUrl` (e.g. POST /api/projects/provision)
+ * build it from the *server's* view of the request `Host` header. Behind a
+ * reverse proxy / Docker port-map that Host can differ from the origin the
+ * browser used — most commonly the externally-published port is stripped
+ * (`req.get('host')` → `10.0.0.5` while the app is served from `10.0.0.5:8080`).
+ * Opening the server's URL verbatim then dials the wrong port (`:80`) where
+ * nothing listens; the socket fails before auth even runs, and the stream
+ * client mislabels the drop as STREAM_DROPPED ("Provisioning stream dropped
+ * and could not be resumed").
+ *
+ * We keep only the path + query + hash from the server URL and rebuild the
+ * origin with the same precedence as `getWsUrl()` / `getTerminalWsUrl()`:
+ * remote config → VITE_API_PORT dev → same-origin. Non-string / unparseable
+ * input, or a non-browser caller (no `window.location`), is returned unchanged
+ * so transport tests and SSR paths are unaffected.
+ */
+export function rebaseWsUrlToClientOrigin(wsUrl: any) {
+  if (typeof wsUrl !== 'string' || !wsUrl) return wsUrl;
+  if (typeof window === 'undefined' || !window.location) return wsUrl;
+  let pathPart: string;
+  try {
+    const parsed = new URL(wsUrl);
+    pathPart = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    // Not an absolute URL we can safely rebase — leave it to the caller.
+    return wsUrl;
+  }
+  const config = getConnectionConfig();
+  if (config.mode === 'remote' && config.remoteUrl) {
+    const base = config.remoteUrl.trim().replace(/\/+$/, '').replace(/^http/, 'ws');
+    return `${base}${pathPart}`;
+  }
+  if (import.meta.env.VITE_API_PORT) {
+    return `ws://${window.location.hostname}:${import.meta.env.VITE_API_PORT}${pathPart}`;
+  }
+  const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${wsProto}//${window.location.host}${pathPart}`;
+}
+
+/**
  * Append the caller's auth credential (JWT preferred, apiKey fallback) to
  * an absolute server-issued WebSocket URL.
  *

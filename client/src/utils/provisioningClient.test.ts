@@ -6,16 +6,19 @@ import { provisionProject, subscribeProvisioningEvents } from './provisioningCli
 // overridden per-test (see `setAppendAuth` below) so suites can verify
 // both the no-credential and credential-present paths.
 let mockAppendAuth = (url: any) => url;
+let mockRebase = (url: any) => url;
 (vi as any).mock('./connection.js', () => ({
   getApiBase: () => 'http://localhost:3051/api',
   getAuthHeaders: () => ({ Authorization: 'Bearer test' }),
   appendAuthToWsUrl: (url: any) => mockAppendAuth(url),
+  rebaseWsUrlToClientOrigin: (url: any) => mockRebase(url),
 }));
 function setAppendAuth(fn: any) {
   mockAppendAuth = fn;
 }
 afterEach(() => {
   mockAppendAuth = (url: any) => url;
+  mockRebase = (url: any) => url;
 });
 
 describe('provisionProject', () => {
@@ -435,6 +438,33 @@ describe('subscribeProvisioningEvents', () => {
         clearTimeoutFn: vi.fn(),
       });
       expect(sockets[0].url).toBe('ws://job?token=jwt-abc');
+    });
+
+    // Regression: behind a reverse proxy / Docker port-map the server-issued
+    // wsUrl carries the wrong host:port (Host header stripped to bare IP), so
+    // the browser dials the wrong port and the socket fails before auth —
+    // surfacing as "Provisioning stream dropped and could not be resumed".
+    // The client MUST rebase the URL onto its own origin, then append auth.
+    it('rebases the server wsUrl onto the client origin before appending auth', () => {
+      // Simulate the docker bug: server minted ws://10.0.0.5 (no port); the
+      // browser actually reached 10.0.0.5:8080. rebase rewrites the origin,
+      // appendAuth then splices the credential onto the rebased URL.
+      setAppendAuth((url: any) => `${url}${url.includes('?') ? '&' : '?'}token=jwt-abc`);
+      mockRebase = (url: any) => url.replace('ws://10.0.0.5/', 'ws://10.0.0.5:8080/');
+      const sockets: any[] = [];
+      const factory = (url: any) => {
+        const sock = { url, onmessage: null, onclose: null, onerror: null, close: vi.fn() };
+        sockets.push(sock);
+        return sock;
+      };
+      subscribeProvisioningEvents('ws://10.0.0.5/api/provisioning/job-9/events', {
+        onEvent: vi.fn(),
+        watchdogMs: 60_000,
+        webSocketFactory: factory,
+        setTimeoutFn: () => 1,
+        clearTimeoutFn: vi.fn(),
+      });
+      expect(sockets[0].url).toBe('ws://10.0.0.5:8080/api/provisioning/job-9/events?token=jwt-abc');
     });
 
     it('leaves the wsUrl unchanged when no credential is available', () => {

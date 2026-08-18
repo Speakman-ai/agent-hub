@@ -29,7 +29,12 @@
  * ─────────────────────────────────────────────────────────────────────
  */
 
-import { getApiBase, getAuthHeaders, appendAuthToWsUrl } from './connection';
+import {
+  getApiBase,
+  getAuthHeaders,
+  appendAuthToWsUrl,
+  rebaseWsUrlToClientOrigin,
+} from './connection';
 
 /**
  * Kick off a provisioning job.
@@ -317,7 +322,7 @@ export function subscribeProvisioningEvents(wsUrl: any, handlers: any) {
           // rotated since the initial connect, and the server's `?since=`
           // replay still requires a valid credential.
           const nextUrl = appendSinceQuery(
-            appendAuthToWsUrl(wsUrl),
+            appendAuthToWsUrl(rebaseWsUrlToClientOrigin(wsUrl)),
             state.lastSeq >= 0 ? state.lastSeq : undefined,
           );
           attachSocket(nextUrl, { isReconnect: true });
@@ -379,7 +384,7 @@ export function subscribeProvisioningEvents(wsUrl: any, handlers: any) {
   // the server's WS auth path only reads `?token=` / `?apiKey=` from the
   // URL, so we splice the credential in here. Single-user dev (no JWT
   // configured) falls through unchanged.
-  const authedInitialUrl = appendAuthToWsUrl(wsUrl);
+  const authedInitialUrl = appendAuthToWsUrl(rebaseWsUrlToClientOrigin(wsUrl));
   attachSocket(authedInitialUrl, { isReconnect: false });
 
   return {

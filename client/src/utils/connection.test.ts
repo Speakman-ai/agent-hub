@@ -15,7 +15,12 @@ let mockJwt: any = null;
   getToken: () => mockJwt,
 }));
 
-import { appendAuthToWsUrl, getTerminalWsUrl, saveConnectionConfig } from './connection';
+import {
+  appendAuthToWsUrl,
+  getTerminalWsUrl,
+  rebaseWsUrlToClientOrigin,
+  saveConnectionConfig,
+} from './connection';
 
 describe('appendAuthToWsUrl', () => {
   beforeEach(() => {
@@ -98,6 +103,94 @@ describe('getTerminalWsUrl', () => {
 
     expect(getTerminalWsUrl('session/a')).toBe(
       'wss://hub.example.test/api/sessions/session%2Fa/terminal/ws?token=jwt-terminal',
+    );
+  });
+});
+
+describe('rebaseWsUrlToClientOrigin', () => {
+  let savedWindow: any;
+  let hadLocalStorage: boolean;
+  let savedLocalStorage: any;
+  beforeEach(() => {
+    savedWindow = (globalThis as any).window;
+    hadLocalStorage = 'localStorage' in (globalThis as any);
+    savedLocalStorage = (globalThis as any).localStorage;
+    const store = new Map();
+    (globalThis as any).localStorage = {
+      getItem: (k: any) => (store.has(k) ? store.get(k) : null),
+      setItem: (k: any, v: any) => store.set(k, String(v)),
+      removeItem: (k: any) => store.delete(k),
+      clear: () => store.clear(),
+    };
+  });
+  afterEach(() => {
+    (globalThis as any).window = savedWindow;
+    // Restore the pre-existing localStorage instead of deleting it wholesale,
+    // so a shared test environment doesn't lose its implementation and later
+    // suites stay order-independent.
+    if (hadLocalStorage) {
+      (globalThis as any).localStorage = savedLocalStorage;
+    } else {
+      delete (globalThis as any).localStorage;
+    }
+  });
+
+  // The exact Docker / reverse-proxy bug: the app is served from
+  // 192.168.50.127:8080 but the server minted ws://192.168.50.127 (port
+  // stripped from the Host header). Verbatim, the browser dials :80 and the
+  // socket fails before auth, mislabelled as STREAM_DROPPED. The rebase must
+  // keep the path but swap in the origin the browser actually used.
+  it('rewrites a port-stripped server origin to the same browser origin', () => {
+    (globalThis as any).window = {
+      location: { protocol: 'http:', hostname: '192.168.50.127', host: '192.168.50.127:8080' },
+    };
+    expect(rebaseWsUrlToClientOrigin('ws://192.168.50.127/api/provisioning/abc-123/events')).toBe(
+      'ws://192.168.50.127:8080/api/provisioning/abc-123/events',
+    );
+  });
+
+  it('preserves the query string (e.g. ?since=) while rebasing the origin', () => {
+    (globalThis as any).window = {
+      location: { protocol: 'http:', hostname: '10.0.0.5', host: '10.0.0.5:8080' },
+    };
+    expect(rebaseWsUrlToClientOrigin('ws://10.0.0.5/api/provisioning/j/events?since=7')).toBe(
+      'ws://10.0.0.5:8080/api/provisioning/j/events?since=7',
+    );
+  });
+
+  it('uses wss when the page is served over https', () => {
+    (globalThis as any).window = {
+      location: { protocol: 'https:', hostname: 'hub.example.test', host: 'hub.example.test' },
+    };
+    expect(rebaseWsUrlToClientOrigin('ws://internal-host/api/provisioning/j/events')).toBe(
+      'wss://hub.example.test/api/provisioning/j/events',
+    );
+  });
+
+  it('rebases onto the configured remote base in remote mode', () => {
+    (globalThis as any).window = {
+      location: { protocol: 'https:', hostname: 'browser', host: 'browser' },
+    };
+    saveConnectionConfig({ mode: 'remote', remoteUrl: 'https://hub.example.test/' });
+    expect(rebaseWsUrlToClientOrigin('ws://internal-host/api/provisioning/j/events')).toBe(
+      'wss://hub.example.test/api/provisioning/j/events',
+    );
+  });
+
+  it('returns non-string / unparseable input unchanged', () => {
+    (globalThis as any).window = {
+      location: { protocol: 'http:', hostname: 'h', host: 'h:8080' },
+    };
+    expect(rebaseWsUrlToClientOrigin(null)).toBe(null);
+    expect(rebaseWsUrlToClientOrigin(undefined)).toBe(undefined);
+    expect(rebaseWsUrlToClientOrigin('')).toBe('');
+    expect(rebaseWsUrlToClientOrigin('not a url')).toBe('not a url');
+  });
+
+  it('returns the URL unchanged when there is no browser window', () => {
+    (globalThis as any).window = undefined;
+    expect(rebaseWsUrlToClientOrigin('ws://internal-host/api/provisioning/j/events')).toBe(
+      'ws://internal-host/api/provisioning/j/events',
     );
   });
 });
