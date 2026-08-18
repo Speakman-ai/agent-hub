@@ -10,7 +10,8 @@
     "typecheck": "node ./scripts/assert-dev-types.mjs && node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "postinstall": "node ../scripts/ensure-native-modules.mjs"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.5.0",
@@ -41,7 +42,6 @@
     "googleapis": "^173.0.0",
     "gray-matter": "^4.0.3",
     "node-cron": "^4.2.1",
-    "node-pty": "^1.1.0",
     "nodemailer": "^9.0.1",
     "playwright": "^1.59.1",
     "swagger-ui-express": "^5.0.1",
@@ -69,6 +69,9 @@
     "supertest": "^7.2.2",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
   },
   "engines": {
     "node": ">=22.14.0 <23.0.0"
