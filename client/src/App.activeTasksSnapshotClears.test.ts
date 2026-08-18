@@ -26,6 +26,10 @@ const mobileSource = readFileSync(
   join(here, '..', '..', 'mobile', 'src', 'context', 'AppContext.tsx'),
   'utf8',
 );
+const mobileChatSource = readFileSync(
+  join(here, '..', '..', 'mobile', 'src', 'screens', 'ChatScreen.tsx'),
+  'utf8',
+);
 
 const SURFACES: Array<[string, string]> = [
   ['web client', appSource],
@@ -35,9 +39,7 @@ const SURFACES: Array<[string, string]> = [
 describe('active-tasks-snapshot streaming reconciliation', () => {
   for (const [name, source] of SURFACES) {
     it(`${name} imports the shared reconciler`, () => {
-      expect(source).toMatch(
-        /import \{ resolveStreamingFromSnapshot \} from '@shared\/utils\/activeTaskSnapshot'/,
-      );
+      expect(source).toMatch(/resolveStreamingFromSnapshot/);
     });
 
     it(`${name} reconciles the snapshot instead of only restoring from it`, () => {
@@ -49,4 +51,17 @@ describe('active-tasks-snapshot streaming reconciliation', () => {
       expect(branch).not.toMatch(/if \(sid && next\[sid\]\)/);
     });
   }
+});
+
+describe('live stream identity', () => {
+  it('web client labels the live tail with resolveLiveStreamIdentity, not the session agent', () => {
+    expect(appSource).toMatch(/resolveLiveStreamIdentity/);
+    expect(appSource).toMatch(/agentName=\{liveStream\.agentName\}/);
+    expect(appSource).not.toMatch(/Label the live tail with the active session's agent, not a/);
+  });
+
+  it('mobile chat labels the live stream with resolveLiveStreamIdentity', () => {
+    expect(mobileChatSource).toMatch(/resolveLiveStreamIdentity/);
+    expect(mobileChatSource).toMatch(/agentName=\{liveStream\.agentName\}/);
+  });
 });

@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { GitBranch, Loader2, Check, Lock, RefreshCw } from 'lucide-react';
 import { api } from '../utils/api';
 import { isSessionWorktreeEnabled } from '../utils/sessionDerivedState';
+import {
+  sessionActionControlClass,
+  sessionActionSubmenuClass,
+  type SessionActionControlVariant,
+} from '../utils/sessionActionMenu';
 
 /**
  * Toolbar control to position a session worktree on an EXISTING remote branch
@@ -21,7 +26,11 @@ export default function SessionBranchPicker({
   projectId,
   disabled,
   onError,
-}: any) {
+  variant = 'toolbar',
+}: {
+  variant?: SessionActionControlVariant;
+  [key: string]: any;
+}) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -102,8 +111,10 @@ export default function SessionBranchPicker({
   // push to it — and the session's own default branch pattern is never listed).
   const selectable = branches.filter((b: any) => !b.isDefault);
 
+  const isMenu = variant === 'menu';
+
   return (
-    <div className="relative shrink-0" ref={rootRef}>
+    <div className={isMenu ? 'relative w-full' : 'relative shrink-0'} ref={rootRef}>
       <button
         type="button"
         data-testid="session-branch-picker"
@@ -112,22 +123,38 @@ export default function SessionBranchPicker({
         disabled={disabled}
         onClick={toggleOpen}
         title={title}
-        className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
-          provisioned && !canSwitchProvisioned
-            ? 'bg-gray-900/60 text-gray-400 border-gray-800 cursor-default'
-            : provisioned
-              ? 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
-              : chosen
-                ? 'bg-emerald-800/60 text-emerald-50 border-emerald-600 hover:bg-emerald-700/60'
-                : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
-        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+        className={sessionActionControlClass(
+          variant,
+          `${
+            provisioned && !canSwitchProvisioned
+              ? isMenu
+                ? 'text-gray-400 cursor-default'
+                : 'bg-gray-900/60 text-gray-400 border-gray-800 cursor-default'
+              : provisioned
+                ? isMenu
+                  ? ''
+                  : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+                : chosen
+                  ? isMenu
+                    ? 'text-emerald-200'
+                    : 'bg-emerald-800/60 text-emerald-50 border-emerald-600 hover:bg-emerald-700/60'
+                  : isMenu
+                    ? ''
+                    : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+          } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`,
+        )}
       >
         {provisioned && !canSwitchProvisioned ? <Lock size={12} /> : <GitBranch size={13} />}
         <span className="truncate max-w-[120px]">{label}</span>
       </button>
 
       {open && (!provisioned || canSwitchProvisioned) && (
-        <div className="absolute z-30 bottom-full mb-1 left-0 w-72 max-h-80 overflow-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl p-1 text-xs">
+        <div
+          className={sessionActionSubmenuClass(
+            variant,
+            'absolute z-30 bottom-full mb-1 left-0 w-72 max-h-80 overflow-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl p-1 text-xs',
+          )}
+        >
           <div className="flex items-center justify-between px-2 py-1.5 text-[11px] uppercase tracking-wide text-gray-500">
             <span>{provisioned ? 'Switch session to…' : 'Start session on…'}</span>
             <button

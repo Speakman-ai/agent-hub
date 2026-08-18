@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { parseFinalizeChecksRoundMetadata } from '../../../utils/finalizeTimeline';
+import { checksRoundAnchorId } from '@shared/utils/sessionTimeline';
 import { relativeTime } from '../../../utils/time';
 import FinalizeStepLogModal from '../FinalizeStepLogModal';
 import { FinalizeChecksStepList } from './FinalizeChecksStepList';
@@ -19,7 +20,12 @@ export default function FinalizeChecksRoundBlock({ message, projectId }: any) {
 
   return (
     <>
-      <div className="flex justify-center mb-4" data-testid="finalize-checks-round-block">
+      <div
+        className="flex justify-center mb-4"
+        data-testid="finalize-checks-round-block"
+        data-message-id={message.id}
+        data-timeline-anchor={message.id ? checksRoundAnchorId(String(message.id)) : undefined}
+      >
         <div className="max-w-[95%] sm:max-w-[90%] w-full bg-slate-900/50 border border-slate-700/60 rounded-xl px-4 py-3">
           <header className="flex items-center justify-between gap-2 mb-2">
             <span className="text-sm font-medium text-slate-200">{roundLabel}</span>

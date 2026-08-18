@@ -1,5 +1,9 @@
 import { Monitor, Loader2, Settings2 } from 'lucide-react';
 import { isPreviewConfigured } from '../utils/sessionPreviewState';
+import {
+  sessionActionControlClass,
+  type SessionActionControlVariant,
+} from '../utils/sessionActionMenu';
 
 /**
  * Toolbar control to boot the session worktree preview (POST .../preview/start).
@@ -14,10 +18,15 @@ export default function SessionPreviewStartButton({
   workspaceNotReady,
   onStart,
   onConfigure,
-}: any) {
+  variant = 'toolbar',
+}: {
+  variant?: SessionActionControlVariant;
+  [key: string]: any;
+}) {
   const configured = isPreviewConfigured(project);
   const kind = previewEvent?.kind;
   const busy = starting || kind === 'preview_starting';
+  const isMenu = variant === 'menu';
 
   if (!configured) {
     return (
@@ -25,7 +34,12 @@ export default function SessionPreviewStartButton({
         type="button"
         onClick={onConfigure}
         disabled={disabled || !onConfigure}
-        className="flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs text-amber-200/90 hover:text-amber-100 border border-amber-800/50 rounded-lg px-2.5 py-1.5 bg-amber-950/30 sm:w-auto sm:min-w-0"
+        className={sessionActionControlClass(
+          variant,
+          isMenu
+            ? 'text-amber-200'
+            : 'text-amber-200/90 hover:text-amber-100 border-amber-800/50 bg-amber-950/30',
+        )}
         data-testid="session-preview-configure-button"
       >
         <Settings2 size={14} />
@@ -54,7 +68,12 @@ export default function SessionPreviewStartButton({
             ? 'Waiting for the session worktree'
             : undefined
       }
-      className="flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs font-medium text-sky-200 hover:text-white border border-sky-700/60 rounded-lg px-2.5 py-1.5 bg-sky-950/40 hover:bg-sky-900/50 disabled:opacity-50 sm:w-auto sm:min-w-0"
+      className={sessionActionControlClass(
+        variant,
+        isMenu
+          ? 'text-sky-200'
+          : 'font-medium text-sky-200 hover:text-white border-sky-700/60 bg-sky-950/40 hover:bg-sky-900/50 disabled:opacity-50',
+      )}
       data-testid="session-start-preview-button"
     >
       {busy ? <Loader2 size={14} className="animate-spin" /> : <Monitor size={14} />}

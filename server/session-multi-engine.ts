@@ -15,12 +15,15 @@ import {
   SAFE_ARG_STRLEN_BYTES,
   writeSystemPromptFile,
 } from './spawn-prompt-payload.js';
+import { resolveGrokSpawnModel } from './config.js';
+import type { AppConfig } from './types.js';
 
 export const SESSION_MULTI_ENGINES = [
   'claude-code',
   'cursor-agent',
   'gemini-cli',
   'codex-cli',
+  'grok-cli',
 ] as const;
 
 export type SessionMultiEngine = (typeof SESSION_MULTI_ENGINES)[number];
@@ -40,6 +43,7 @@ export interface SessionSpawnBins {
   cursor: string;
   gemini: string;
   codex: string;
+  grok?: string;
 }
 
 export interface BuildSessionMultiSpawnArgsInput {
@@ -62,6 +66,8 @@ export interface BuildSessionMultiSpawnArgsInput {
   /** Used for `--system-prompt-file` temp paths and argv-cap logging. */
   sessionId?: string;
   codexEnv?: NodeJS.ProcessEnv;
+  /** Needed to allowlist/alias the grok `--model` flag. */
+  config?: Pick<AppConfig, 'engineValidModels' | 'engineDefaultModels'>;
 }
 
 export interface SessionMultiSpawnPlan {
@@ -132,6 +138,32 @@ export function buildSessionMultiSpawnArgs(
       args.push('--yolo');
     }
     return { bin: bins.gemini, args, stdinPrompt: null, systemPromptFileCleanup: null };
+  }
+
+  if (engine === 'grok-cli') {
+    if (!bins.grok) {
+      throw new Error('buildSessionMultiSpawnArgs: grok-cli requires bins.grok');
+    }
+    // Grok has no `--system-prompt`; concatenate like Gemini. streaming-json is
+    // required because callers (in-session reviewer, multi-agent advisors) feed
+    // stdout through createStreamParser('grok-cli'). Omit `--always-approve` on
+    // advisory turns to match chat Ask Mode.
+    const rawPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    const capped = applyArgvPromptCap(rawPrompt);
+    if (capped.truncated && input.sessionId) {
+      logArgvCapTruncation('grok-cli', input.sessionId, capped.originalBytes, rawPrompt.length);
+    }
+    const args = ['-p', capped.prompt, '--output-format', 'streaming-json', '--no-auto-update'];
+    const grokModel = input.config
+      ? resolveGrokSpawnModel(model, input.config)
+      : model?.trim() || undefined;
+    if (grokModel) {
+      args.push('--model', grokModel);
+    }
+    if (!advisory) {
+      args.push('--always-approve');
+    }
+    return { bin: bins.grok, args, stdinPrompt: null, systemPromptFileCleanup: null };
   }
 
   if (engine === 'codex-cli') {

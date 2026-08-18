@@ -7,6 +7,7 @@ describe('buildSessionMultiSpawnArgs', () => {
     cursor: '/bin/cursor',
     gemini: '/bin/gemini',
     codex: '/bin/codex',
+    grok: '/bin/grok',
   };
 
   it('advisory claude uses plan permission mode', () => {
@@ -105,10 +106,46 @@ describe('buildSessionMultiSpawnArgs', () => {
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(plan.args[idx + 1]).toBe('my-profile');
   });
+
+  it('grok-cli uses the grok bin, streaming-json, and omits --always-approve when advisory', () => {
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'grok-cli',
+      model: 'grok-4.6',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      advisory: true,
+    });
+    expect(plan.bin).toBe('/bin/grok');
+    expect(plan.args[0]).toBe('-p');
+    expect(plan.args[1]).toContain('sys');
+    expect(plan.args[1]).toContain('user');
+    expect(plan.args).toContain('streaming-json');
+    expect(plan.args).toContain('--no-auto-update');
+    expect(plan.args).toContain('--model');
+    expect(plan.args).toContain('grok-4.6');
+    expect(plan.args).not.toContain('--always-approve');
+  });
+
+  it('grok-cli adds --always-approve on non-advisory turns', () => {
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'grok-cli',
+      model: 'grok-4.6',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      advisory: false,
+    });
+    expect(plan.args).toContain('--always-approve');
+  });
 });
 
 describe('normalizeSessionMultiEngine', () => {
   it('defaults unknown to claude-code', () => {
     expect(normalizeSessionMultiEngine('unknown')).toBe('claude-code');
+  });
+
+  it('keeps grok-cli instead of rewriting it to claude-code', () => {
+    expect(normalizeSessionMultiEngine('grok-cli')).toBe('grok-cli');
   });
 });

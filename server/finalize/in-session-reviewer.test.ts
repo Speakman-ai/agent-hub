@@ -116,12 +116,14 @@ const fakeConfig: AppConfig = {
     'codex-cli': ['gpt-5.4'],
     'cursor-agent': ['composer-2.5'],
     'gemini-cli': ['gemini-2.5-pro'],
+    'grok-cli': ['grok-4.6'],
   },
   engineDefaultModels: {
     'claude-code': 'claude-opus-4-8',
     'codex-cli': 'gpt-5.4',
     'cursor-agent': 'composer-2.5',
     'gemini-cli': 'gemini-2.5-pro',
+    'grok-cli': 'grok-4.6',
   },
   codexDangerBypass: true,
   codexProfile: null,
@@ -198,6 +200,34 @@ function makeCodexSpawnFake(assistantText: string): {
   return { spawnFn, capturedArgs: captured };
 }
 
+function makeGrokSpawnFake(assistantText: string): {
+  spawnFn: typeof import('child_process').spawn;
+  capturedArgs: Array<{ bin: string; args: string[] }>;
+} {
+  const captured: Array<{ bin: string; args: string[] }> = [];
+  const spawnFn = ((bin: string, args: string[]) => {
+    captured.push({ bin, args });
+    const proc = new FakeProc();
+    setImmediate(() => {
+      const payload = JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: 'grok-1',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: assistantText },
+          },
+        },
+      });
+      proc.stdout.emit('data', Buffer.from(payload + '\n'));
+      proc.emit('close', 0);
+    });
+    return proc as unknown as ChildProcess;
+  }) as unknown as typeof import('child_process').spawn;
+  return { spawnFn, capturedArgs: captured };
+}
+
 /**
  * Spawn fake that dispatches on the CLI binary path: the first entry whose
  * `bin` matches is used, so a test can make claude fail and codex succeed to
@@ -206,7 +236,7 @@ function makeCodexSpawnFake(assistantText: string): {
  * text to stream cleanly.
  */
 function makeDispatchSpawnFake(
-  behaviours: Array<{ bin: string; fail?: string; text?: string; codex?: boolean }>,
+  behaviours: Array<{ bin: string; fail?: string; text?: string; codex?: boolean; grok?: boolean }>,
 ): {
   spawnFn: typeof import('child_process').spawn;
   capturedArgs: Array<{ bin: string; args: string[] }>;
@@ -234,6 +264,23 @@ function makeDispatchSpawnFake(
           ),
         );
         proc.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'turn.completed' }) + '\n'));
+      } else if (behaviour.grok) {
+        proc.stdout.emit(
+          'data',
+          Buffer.from(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'session/update',
+              params: {
+                sessionId: 'grok-1',
+                update: {
+                  sessionUpdate: 'agent_message_chunk',
+                  content: { type: 'text', text },
+                },
+              },
+            }) + '\n',
+          ),
+        );
       } else {
         proc.stdout.emit(
           'data',
@@ -347,6 +394,7 @@ function makeDeps(
       getCursorBin: () => '/fake/cursor',
       getGeminiBin: () => '/fake/gemini',
       getCodexBin: () => '/fake/codex',
+      getGrokBin: () => '/fake/grok',
       getConfig: () => fakeConfig,
       spawn: spawnFn,
       timeoutMs: 5_000,
@@ -444,6 +492,54 @@ describe('runReviewerTurn — happy path (approved)', () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.content).toBe('Looks fine.');
     expect(messages[0]?.agentId).toBe('rev-1');
+  });
+
+  it('spawns grok-cli when the reviewer agent is configured for grok', async () => {
+    const assistantText = `Looks fine.
+
+<agenthub:review-verdict>
+{"verdict":"approved","threads":[]}
+</agenthub:review-verdict>`;
+    const { spawnFn, capturedArgs } = makeGrokSpawnFake(assistantText);
+    const grokReviewer = { ...makeReviewer(), engine: 'grok-cli', model: 'grok-4.6' };
+    const { deps } = makeDeps(spawnFn, {
+      getEnrichedAgent: vi.fn().mockReturnValue(grokReviewer),
+    });
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-grok',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: {
+        ...fakeProject,
+        agents: [{ ...fakeProject.agents[0] }, { ...fakeProject.agents[1], engine: 'grok-cli' }],
+      },
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('approved');
+    expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/grok']);
+    expect(capturedArgs[0]?.args).toContain('streaming-json');
+    expect(capturedArgs[0]?.args).toContain('grok-4.6');
+    const frames = (deps.broadcast as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(frames).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'thinking',
+          engine: 'grok-cli',
+          model: 'grok-4.6',
+          agentId: grokReviewer.id,
+          agentName: grokReviewer.name,
+        }),
+        expect.objectContaining({
+          type: 'stream',
+          engine: 'grok-cli',
+          model: 'grok-4.6',
+          agentId: grokReviewer.id,
+        }),
+      ]),
+    );
   });
 
   it('uses the configured reviewer engine instead of a stale per-user engine override', async () => {
@@ -954,30 +1050,27 @@ describe('runReviewerTurn — engine failover', () => {
     expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude', '/fake/codex']);
   });
 
-  it('does not fail over to grok-cli, which the reviewer spawn path cannot launch', async () => {
-    // Only claude (exhausted) and grok are authenticated. grok is in the chain
-    // but unspawnable here, so the walk finds nothing and surfaces the original
-    // failure as review_failed rather than mis-spawning grok on the claude path.
+  it('fails over to grok-cli when Claude is exhausted and grok is authenticated', async () => {
     const { spawnFn, capturedArgs } = makeDispatchSpawnFake([
       { bin: '/fake/claude', fail: 'Claude AI usage limit reached.' },
+      { bin: '/fake/grok', grok: true, text: VERDICT_OK },
     ]);
     const probeAvailability = vi
       .fn()
       .mockResolvedValue(availabilityWith(['claude-code', 'grok-cli']));
     const { deps } = makeDeps(spawnFn, { probeAvailability });
 
-    await expect(
-      runReviewerTurn(deps, {
-        runId: 'run-grok-skip',
-        worktreePath: '/tmp/wt',
-        card: fakeCard,
-        project: fakeProject,
-        inputs: fakeInputs,
-        sessionId: 'sess-1',
-      }),
-    ).rejects.toThrow(/usage limit reached/);
-    // Only the original engine was ever spawned.
-    expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude']);
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-grok-failover',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('approved');
+    expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude', '/fake/grok']);
   });
 
   it('does not fail over a non-quota reviewer bug (surfaces the original error)', async () => {
@@ -1088,12 +1181,11 @@ describe('runReviewerTurn — engine failover', () => {
 });
 
 describe('restrictToSpawnableEngines', () => {
-  it('forces grok-cli unavailable while leaving session-multi engines untouched', () => {
+  it('keeps grok-cli available now that the in-session reviewer can spawn it', () => {
     const restricted = restrictToSpawnableEngines(
       availabilityWith(['claude-code', 'codex-cli', 'grok-cli']),
     );
-    expect(restricted['grok-cli'].available).toBe(false);
-    expect(restricted['grok-cli'].detail).toMatch(/not supported/);
+    expect(restricted['grok-cli'].available).toBe(true);
     expect(restricted['claude-code'].available).toBe(true);
     expect(restricted['codex-cli'].available).toBe(true);
   });

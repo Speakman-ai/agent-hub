@@ -408,12 +408,13 @@ describe('FinalizeButton', () => {
     });
   });
 
-  it('shows Push to GitHub when GitHub is connected', async () => {
+  it('shows Push changes when GitHub is connected', async () => {
     render(<FinalizeButton {...baseProps} />);
-    expect(await screen.findByTestId('finalize-push-to-github-button')).toBeInTheDocument();
+    const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
+    expect(pushBtn).toHaveTextContent('Push changes');
   });
 
-  it('shows Push to Agent Hub for hosted projects even without GitHub OAuth', async () => {
+  it('shows Push changes for hosted projects even without GitHub OAuth', async () => {
     (fetchMock as any).mockResolvedValue({
       ok: true,
       json: async () => ({ connected: false }) as any,
@@ -421,7 +422,7 @@ describe('FinalizeButton', () => {
     render(<FinalizeButton {...baseProps} hosted />);
     const pushBtn = await screen.findByTestId('finalize-push-to-github-button');
     expect(pushBtn).toBeInTheDocument();
-    expect(pushBtn).toHaveTextContent('Push to Agent Hub');
+    expect(pushBtn).toHaveTextContent('Push changes');
   });
 
   it('hides Push for GitHub-backed projects when GitHub is not connected', async () => {

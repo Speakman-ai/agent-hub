@@ -6345,6 +6345,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         getCursorBin,
         getGeminiBin,
         getCodexBin,
+        getGrokBin,
         getConfig: () => config,
         getMaxQueueSize: () => MAX_QUEUE_SIZE,
         runExecutorTurn: (ws, internalMsg) => handleChat(ws, internalMsg),

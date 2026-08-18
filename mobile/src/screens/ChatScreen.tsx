@@ -18,8 +18,9 @@ import ChangesReadyBox from '../components/ChangesReadyBox';
 import FinalizeBar from '../components/FinalizeBar';
 import SessionDesignFilesPanel from '../components/SessionDesignFilesPanel';
 import SessionArtifactsPanel from '../components/SessionArtifactsPanel';
+import SessionTimelinePanel from '../components/SessionTimelinePanel';
 import MobileTerminalPane from '../components/MobileTerminalPane';
-import { SquareTerminal } from 'lucide-react-native';
+import { ChevronDown, History, SquareTerminal } from 'lucide-react-native';
 import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
 import { useSessionCommittable } from '../hooks/useSessionCommittable';
 import { isWorkflowProject } from '../utils/project-mode';
@@ -27,14 +28,18 @@ import ResolveSessionPrBanner from '../components/ResolveSessionPrBanner';
 import { shouldShowViewChanges } from '../utils/sessionExtras';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle, parseResolvePrNumberFromTitle, } from '@shared/utils/sessionTitlePr';
 import { latestSessionEnvLaunchStatus } from '@shared/utils/sessionEnvLaunch';
+import { resolveLiveStreamIdentity } from '@shared/utils/activeTaskSnapshot';
 export default function ChatScreen() {
-    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, handleCredentialSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, artifactReloadBySession, } = useApp();
+    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingAgent, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, handleCredentialSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, artifactReloadBySession, } = useApp();
     // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
     // plain declaration here previously made this module fail to parse.
     const navigation = useNavigation<any>();
     const flatListRef = useRef<any>(null);
     const [showSwitcher, setShowSwitcher] = useState(false);
     const [showTerminal, setShowTerminal] = useState(false);
+    const [showTimeline, setShowTimeline] = useState(false);
+    const [showActions, setShowActions] = useState(false);
+    const [selectedTimelineAnchor, setSelectedTimelineAnchor] = useState<string | null>(null);
     // Reload the active session's messages every time the Chat screen gains
     // focus — either from a cold launch, returning from another stack screen,
     // or the user tapping a session in the drawer (which routes through
@@ -62,8 +67,12 @@ export default function ChatScreen() {
     const workflowProject = isWorkflowProject(activeProject);
     const activeSession = useMemo<any>(() => sessions?.find((s: any) => s.id === activeSessionId) ?? null, [sessions, activeSessionId]);
     useEffect(() => {
-        if (!activeSessionId)
+        if (!activeSessionId) {
             setShowTerminal(false);
+            setShowTimeline(false);
+            setShowActions(false);
+            setSelectedTimelineAnchor(null);
+        }
     }, [activeSessionId]);
     const activeResolvePrBannerInfo = useMemo<any>(() => {
         if (!activeSession?.name || !isResolvePrSessionTitle(activeSession.name))
@@ -90,6 +99,13 @@ export default function ChatScreen() {
         enabled: showFinalizeBar && !workflowProject,
     });
     const hasCommittableChanges = useSessionCommittable(activeSessionId, { pendingChanges });
+    const liveStream = resolveLiveStreamIdentity({
+        streamingAgent,
+        streamingEngine,
+        sessionAgentName: activeAgent?.name,
+        sessionAgentColor: activeAgent?.color,
+        sessionModel,
+    });
     // Build list data: messages + thinking + streaming indicators
     const listData = [
         ...messages.map((msg: any) => ({ type: 'message', key: msg.id, data: msg })),
@@ -97,7 +113,7 @@ export default function ChatScreen() {
             ? [{ type: 'thinking', key: 'thinking' }]
             : []),
         ...(streamingContent
-            ? [{ type: 'streaming', key: 'streaming', data: { content: streamingContent, engine: streamingEngine } }]
+            ? [{ type: 'streaming', key: 'streaming', data: { content: streamingContent, engine: liveStream.engine } }]
             : []),
         ...(activeDelegation?.tasks?.length > 0
             ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
@@ -122,12 +138,12 @@ export default function ChatScreen() {
           </View>);
             }
             case 'thinking':
-                return (<ThinkingIndicator agentColor={activeAgent?.color} statusText={latestSessionEnvLaunchStatus(streamingMsgId ? eventsByMessage[streamingMsgId] : undefined) === 'started'
+                return (<ThinkingIndicator agentColor={liveStream.agentColor} statusText={latestSessionEnvLaunchStatus(streamingMsgId ? eventsByMessage[streamingMsgId] : undefined) === 'started'
                         ? 'Launching session VM…'
                         : undefined}/>);
             case 'streaming':
                 return (<View>
-            <StreamingMessage content={item.data.content} agentColor={activeAgent?.color} agentName={activeAgent?.name} engine={item.data.engine} onInterrupt={handleCancel}/>
+            <StreamingMessage content={item.data.content} agentColor={liveStream.agentColor} agentName={liveStream.agentName} engine={item.data.engine} onInterrupt={handleCancel}/>
             {/* Parity with web (client/src/App.jsx): render a SessionTail for
                                 the live-streaming message so stream events like
                                 `ask_user_question` surface their picker in real time, rather
@@ -137,9 +153,10 @@ export default function ChatScreen() {
                             id: streamingMsgId,
                             session_id: activeSessionId,
                             role: 'assistant',
-                            engine: streamingEngine,
-                            model: sessionModel,
-                        }} events={eventsByMessage[streamingMsgId]} agentColor={activeAgent?.color} streaming onEventsLoaded={handleEventsLoaded} onAskSubmit={handleAskSubmit} onCredentialSubmit={handleCredentialSubmit} askSubmittedIds={askSubmitted} browserScreenshots={(activeSessionId &&
+                            engine: liveStream.engine,
+                            model: liveStream.model,
+                            agent_name: liveStream.agentName,
+                        }} events={eventsByMessage[streamingMsgId]} agentColor={liveStream.agentColor} streaming onEventsLoaded={handleEventsLoaded} onAskSubmit={handleAskSubmit} onCredentialSubmit={handleCredentialSubmit} askSubmittedIds={askSubmitted} browserScreenshots={(activeSessionId &&
                             browserScreensBySession[activeSessionId]?.[streamingMsgId]) ||
                             {}}/>)}
           </View>);
@@ -173,21 +190,64 @@ export default function ChatScreen() {
       {activeSessionId && activeSession?.session_mode === 'design' ? (<SessionDesignFilesPanel sessionId={activeSessionId} reloadNonce={isProcessing ? 0 : messages.length}/>) : null}
       {activeSessionId ? (<SessionArtifactsPanel sessionId={activeSessionId} reloadNonce={artifactReloadBySession?.[activeSessionId] || 0}/>) : null}
       {activeSessionId ? (<SessionAgentsPanel sessionId={activeSessionId} sessionAgents={sessionAgents} maxTurns={activeSession?.max_turns} agents={agents} onUpdated={handleSessionAgentsUpdated}/>) : null}
-      {activeSessionId && activeSession?.session_mode !== 'consult' ? (<>
-        <View style={styles.terminalToggleRow}>
-          <TouchableOpacity
-            testID="toggle-mobile-terminal"
-            accessibilityRole="button"
-            accessibilityState={{ expanded: showTerminal }}
-            onPress={() => setShowTerminal((open) => !open)}
-            style={[styles.terminalToggle, showTerminal && styles.terminalToggleActive]}
-          >
-            <SquareTerminal size={14} color={showTerminal ? colors.teal300 : colors.gray300}/>
-            <Text style={styles.terminalToggleText}>{showTerminal ? 'Hide terminal' : 'Open terminal'}</Text>
-          </TouchableOpacity>
-        </View>
-        {showTerminal ? <MobileTerminalPane sessionId={activeSessionId} onClose={() => setShowTerminal(false)}/> : null}
-      </>) : null}
+      {activeSessionId ? (
+        <>
+          <View style={styles.terminalToggleRow}>
+            <TouchableOpacity
+              testID="toggle-mobile-actions"
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showActions }}
+              onPress={() => setShowActions((open) => !open)}
+              style={[styles.terminalToggle, showActions && styles.timelineToggleActive]}
+            >
+              <ChevronDown size={14} color={showActions ? colors.gray200 : colors.gray300}/>
+              <Text style={styles.terminalToggleText}>Actions</Text>
+            </TouchableOpacity>
+          </View>
+          {showActions ? (
+            <View style={styles.actionsMenu} testID="mobile-session-actions-menu">
+              <TouchableOpacity
+                testID="toggle-mobile-timeline"
+                accessibilityRole="button"
+                accessibilityState={{ expanded: showTimeline }}
+                onPress={() => setShowTimeline((open) => !open)}
+                style={[styles.actionRow, showTimeline && styles.actionRowActive]}
+              >
+                <History size={14} color={showTimeline ? colors.gray200 : colors.gray300}/>
+                <Text style={styles.terminalToggleText}>{showTimeline ? 'Hide timeline' : 'Timeline'}</Text>
+              </TouchableOpacity>
+              {activeSession?.session_mode !== 'consult' ? (
+                <TouchableOpacity
+                  testID="toggle-mobile-terminal"
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showTerminal }}
+                  onPress={() => setShowTerminal((open) => !open)}
+                  style={[styles.actionRow, showTerminal && styles.actionRowActive]}
+                >
+                  <SquareTerminal size={14} color={showTerminal ? colors.teal300 : colors.gray300}/>
+                  <Text style={styles.terminalToggleText}>{showTerminal ? 'Hide terminal' : 'Open terminal'}</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          ) : null}
+          {showTimeline ? (
+            <SessionTimelinePanel
+              messages={messages}
+              selectedAnchorId={selectedTimelineAnchor}
+              onSelect={(marker) => {
+                setSelectedTimelineAnchor(marker.anchorId);
+                const idx = messages.findIndex((m: any) => m.id === marker.messageId);
+                if (idx >= 0) {
+                  flatListRef.current?.scrollToIndex?.({ index: idx, animated: true, viewPosition: 0.25 });
+                }
+              }}
+            />
+          ) : null}
+          {showTerminal && activeSession?.session_mode !== 'consult' ? (
+            <MobileTerminalPane sessionId={activeSessionId} onClose={() => setShowTerminal(false)}/>
+          ) : null}
+        </>
+      ) : null}
       {pendingChanges && !workflowProject ? (<ChangesReadyBox sessionId={activeSessionId} changes={pendingChanges} onTrigger={triggerCreateTicketAndPr} onDismiss={dismissChangesReady} isSessionProcessing={isProcessing} shipFailureAt={shipFailureAt}/>) : null}
       {sessionRoundProcessing ? (<View style={styles.roundBanner}>
           <Text style={styles.roundBannerText}>Multi-agent round in progress…</Text>
@@ -195,7 +255,7 @@ export default function ChatScreen() {
 
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
         {/* Messages */}
-        <FlatList ref={flatListRef} data={listData} renderItem={renderItem} keyExtractor={(item: any) => item.key} ListEmptyComponent={!thinking && !streamingContent ? renderEmpty : null} contentContainerStyle={listData.length === 0 ? styles.emptyListContent : styles.listContent} showsVerticalScrollIndicator={false} onContentSizeChange={() => {
+        <FlatList ref={flatListRef} data={listData} renderItem={renderItem} keyExtractor={(item: any) => item.key} ListEmptyComponent={!thinking && !streamingContent ? renderEmpty : null} contentContainerStyle={listData.length === 0 ? styles.emptyListContent : styles.listContent} showsVerticalScrollIndicator={false} onScrollToIndexFailed={() => undefined} onContentSizeChange={() => {
             if (listData.length > 0) {
                 flatListRef.current?.scrollToEnd({ animated: false });
             }
@@ -230,6 +290,9 @@ const styles = StyleSheet.create({
         borderBottomColor: colors.gray800,
         paddingHorizontal: 12,
         paddingVertical: 6,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
     },
     terminalToggle: {
         alignSelf: 'flex-start',
@@ -246,6 +309,29 @@ const styles = StyleSheet.create({
     terminalToggleActive: {
         borderColor: colors.teal500,
         backgroundColor: colors.teal900_30,
+    },
+    timelineToggleActive: {
+        borderColor: colors.gray500,
+        backgroundColor: colors.gray800,
+    },
+    actionsMenu: {
+        borderBottomWidth: 1,
+        borderBottomColor: colors.gray800,
+        paddingHorizontal: 8,
+        paddingBottom: 8,
+        gap: 4,
+        backgroundColor: colors.gray950,
+    },
+    actionRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        borderRadius: 6,
+    },
+    actionRowActive: {
+        backgroundColor: colors.gray800,
     },
     terminalToggleText: { color: colors.gray200, fontSize: 12 },
     listContent: {

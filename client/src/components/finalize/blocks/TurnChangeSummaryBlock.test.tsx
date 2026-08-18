@@ -83,6 +83,14 @@ describe('TurnChangeSummaryBlock', () => {
     expect(screen.queryByTestId('turn-change-summary-manual-step')).toBeNull();
   });
 
+  it('exposes a timeline scroll anchor', () => {
+    render(<TurnChangeSummaryBlock message={turnMessage()} />);
+    expect(screen.getByTestId('turn-change-summary-block')).toHaveAttribute(
+      'data-timeline-anchor',
+      'change-summary:m1',
+    );
+  });
+
   it('renders nothing for metadata that is not a turn-change summary', () => {
     const { container } = render(
       <TurnChangeSummaryBlock message={{ metadata: JSON.stringify({ kind: 'other' }) }} />,

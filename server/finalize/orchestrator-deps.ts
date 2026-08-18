@@ -69,6 +69,7 @@ export function buildOrchestratorDeps(
     getCursorBin: routeDeps.getCursorBin ?? (() => 'cursor-agent'),
     getGeminiBin: routeDeps.getGeminiBin ?? (() => 'gemini'),
     getCodexBin: routeDeps.getCodexBin ?? (() => 'codex'),
+    getGrokBin: routeDeps.getGrokBin ?? (() => 'grok'),
     getConfig: () => routeDeps.config,
     activeProcesses: routeDeps.activeProcesses,
   });

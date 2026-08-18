@@ -1110,3 +1110,29 @@ describe('eventsToBlocks — thinking coalescing', () => {
     expect(thinking[1].event.text).toBe('second thought');
   });
 });
+
+describe('SessionTail — live header identity', () => {
+  it('shows the streaming agent, grok engine, and grok model', () => {
+    render(
+      <SessionTail
+        message={{
+          id: 'm-live',
+          role: 'assistant',
+          engine: 'grok-cli',
+          model: 'grok-4.6',
+          agent_name: 'Portfolio Reviewer',
+          content: 'Reviewing the local diff…',
+          created_at: '2026-01-01T00:00:00Z',
+        }}
+        events={[]}
+        agentColor="#1D9BF0"
+        agentName="Portfolio Reviewer"
+        streaming
+      />,
+    );
+    expect(screen.getByText('Portfolio Reviewer')).toBeTruthy();
+    expect(screen.getByTitle('Grok')).toBeTruthy();
+    expect(screen.getByText(/grok 4\.6/i)).toBeTruthy();
+    expect(screen.queryByText(/opus/i)).toBeNull();
+  });
+});

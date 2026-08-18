@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, ClipboardCheck, FileDiff } from 'lucide-react';
 import { parseTurnChangeSummaryMetadata } from '../../../utils/turnChangeSummary';
+import { changeSummaryAnchorId } from '@shared/utils/sessionTimeline';
 import { relativeTime } from '../../../utils/time';
 
 /**
@@ -22,6 +23,8 @@ export default function TurnChangeSummaryBlock({ message }: any) {
     <div
       className="flex justify-center mb-4"
       data-testid="turn-change-summary-block"
+      data-message-id={message.id}
+      data-timeline-anchor={message.id ? changeSummaryAnchorId(String(message.id)) : undefined}
       aria-label="Change summary"
     >
       <div className="max-w-[95%] sm:max-w-[90%] w-full bg-slate-900/50 border border-slate-700/60 rounded-xl px-4 py-3">

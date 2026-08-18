@@ -13,6 +13,7 @@ import {
   hasCommittableChangesFromReady,
   noCommittableChangesTooltip,
 } from '../../utils/committableChanges';
+import { SESSION_ACTION_MENU_ITEM_CLASS } from '../../utils/sessionActionMenu';
 
 const OPTIMISTIC_BLOCK_MS = 1500;
 const WORKTREE_POLL_MS = 15_000;
@@ -274,6 +275,7 @@ export default function FinalizeButton({
   }, [projectId, runId, stopping, onError]);
 
   const compact = variant === 'compact';
+  const isMenu = variant === 'menu';
   const runningStep = steps.find((s: any) => s.state === 'running');
   let phaseLabel = inFlight
     ? optimisticBlock && !isFinalizeInFlight(status)
@@ -284,11 +286,19 @@ export default function FinalizeButton({
     phaseLabel = `${phaseLabel}: ${runningStep.name}`;
   }
 
-  const baseBtnClasses = compact
-    ? 'inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border transition-colors'
-    : 'flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors sm:w-auto sm:min-w-0 sm:inline-flex';
+  const baseBtnClasses = isMenu
+    ? SESSION_ACTION_MENU_ITEM_CLASS
+    : compact
+      ? 'inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border transition-colors'
+      : 'flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors sm:w-auto sm:min-w-0 sm:inline-flex';
   // While the run executes its trigger flips into a red "Stop" affordance.
   const triggerClasses = (busy: any, passed: any) => {
+    if (isMenu) {
+      if (busy) return `${baseBtnClasses} text-red-200`;
+      if (!canShip) return `${baseBtnClasses} text-purple-300/50`;
+      if (passed) return `${baseBtnClasses} text-emerald-200`;
+      return `${baseBtnClasses} text-purple-200`;
+    }
     if (busy) {
       return `${baseBtnClasses} border-red-700/60 bg-red-950/40 text-red-100 hover:bg-red-900/50 hover:text-white ${
         stopping ? 'cursor-wait opacity-90' : 'cursor-pointer'
@@ -302,7 +312,9 @@ export default function FinalizeButton({
           : 'text-purple-100 hover:bg-purple-900/50 hover:text-white'
     }`;
   };
-  const pushClasses = `${baseBtnClasses} border-emerald-700/60 bg-emerald-950/40 text-emerald-100 hover:bg-emerald-900/50 hover:text-white disabled:opacity-60 disabled:cursor-not-allowed`;
+  const pushClasses = isMenu
+    ? `${SESSION_ACTION_MENU_ITEM_CLASS} text-emerald-200`
+    : `${baseBtnClasses} border-emerald-700/60 bg-emerald-950/40 text-emerald-100 hover:bg-emerald-900/50 hover:text-white disabled:opacity-60 disabled:cursor-not-allowed`;
 
   const triggerDisabled = inFlight || !canShip;
   // A busy run can only be stopped once its run row (with an id) has landed.
@@ -317,7 +329,13 @@ export default function FinalizeButton({
   const showPush = !!sessionId && (hosted || githubConnected);
 
   return (
-    <div className="relative flex shrink-0 gap-2 sm:inline-flex sm:items-center sm:gap-1">
+    <div
+      className={
+        isMenu
+          ? 'relative flex w-full flex-col'
+          : 'relative flex shrink-0 gap-2 sm:inline-flex sm:items-center sm:gap-1'
+      }
+    >
       <button
         type="button"
         onClick={inFlight ? handleStop : handleStart}
@@ -367,7 +385,7 @@ export default function FinalizeButton({
                   ? `Review and checks passed — push branch and open PR on ${hosted ? 'Agent Hub' : 'GitHub'}`
                   : 'Push anyway (review and checks have not both passed)'
           }
-          aria-label={hosted ? 'Push to Agent Hub' : 'Push to GitHub'}
+          aria-label="Push changes"
           aria-busy={pushPending}
           data-testid="finalize-push-to-github-button"
           className={pushClasses}
@@ -377,7 +395,7 @@ export default function FinalizeButton({
           ) : (
             <Upload size={compact ? 12 : 14} />
           )}
-          {hosted ? 'Push to Agent Hub' : 'Push to GitHub'}
+          Push changes
         </button>
       ) : null}
     </div>

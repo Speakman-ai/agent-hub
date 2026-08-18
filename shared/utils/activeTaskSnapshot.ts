@@ -24,8 +24,65 @@ export interface StreamingReconciliation {
   streamingMsgId: string | null;
   streamingContent: string;
   streamingEngine: string | null;
+  streamingModel: string | null;
   agentId: string | null;
   thinking: boolean;
+}
+
+/** Who/what is producing the in-flight assistant turn (may differ from the session agent). */
+export interface LiveStreamingAgent {
+  agentId: string;
+  agentName: string;
+  agentColor?: string | null;
+  engine?: string | null;
+  model?: string | null;
+}
+
+/**
+ * Header identity for the live tail. Prefer the streamer's agent/engine/model
+ * (e.g. an in-session Reviewer on grok-cli) over the session's Claude/Opus
+ * dropdown — otherwise the bubble looks like the session agent is still typing.
+ */
+export function resolveLiveStreamIdentity(input: {
+  streamingAgent: LiveStreamingAgent | null | undefined;
+  streamingEngine?: string | null;
+  sessionAgentName?: string | null;
+  sessionAgentColor?: string | null;
+  sessionModel?: string | null;
+}): {
+  agentName: string | undefined;
+  agentColor: string | undefined;
+  engine: string | null;
+  model: string | null | undefined;
+} {
+  return {
+    agentName: input.streamingAgent?.agentName || input.sessionAgentName || undefined,
+    agentColor: input.streamingAgent?.agentColor || input.sessionAgentColor || undefined,
+    engine: input.streamingEngine || input.streamingAgent?.engine || null,
+    model: input.streamingAgent?.model || input.sessionModel || undefined,
+  };
+}
+
+export function buildStreamingAgentState(
+  data: {
+    agentId?: string | null;
+    agentName?: string | null;
+    agentColor?: string | null;
+    engine?: string | null;
+    model?: string | null;
+  },
+  agents?: ReadonlyArray<{ id: string; name?: string | null; color?: string | null }>,
+  prev?: LiveStreamingAgent | null,
+): LiveStreamingAgent | null {
+  if (!data.agentId) return null;
+  const agent = agents?.find((a) => a.id === data.agentId);
+  return {
+    agentId: data.agentId,
+    agentName: data.agentName || agent?.name || data.agentId,
+    agentColor: data.agentColor ?? agent?.color,
+    engine: data.engine ?? prev?.engine ?? null,
+    model: data.model ?? prev?.model ?? null,
+  };
 }
 
 /**
@@ -43,6 +100,7 @@ export function resolveStreamingFromSnapshot(
       streamingMsgId: null,
       streamingContent: '',
       streamingEngine: null,
+      streamingModel: null,
       agentId: null,
       thinking: false,
     };
@@ -52,6 +110,7 @@ export function resolveStreamingFromSnapshot(
     streamingMsgId: task.messageId,
     streamingContent: content,
     streamingEngine: task.engine ?? null,
+    streamingModel: task.model ?? null,
     agentId: task.agentId ?? null,
     // No text yet means the turn is still spinning up.
     thinking: !content,

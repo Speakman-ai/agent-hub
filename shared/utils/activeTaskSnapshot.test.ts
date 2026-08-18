@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveStreamingFromSnapshot,
+  resolveLiveStreamIdentity,
+  buildStreamingAgentState,
   type ActiveTaskSnapshotEntry,
 } from './activeTaskSnapshot.js';
 
@@ -19,6 +21,7 @@ describe('resolveStreamingFromSnapshot', () => {
       streamingMsgId: 'msg-1',
       streamingContent: 'partial answer',
       streamingEngine: 'claude-code',
+      streamingModel: 'claude-opus-4-8',
       agentId: 'agent-1',
       thinking: false,
     });
@@ -40,6 +43,7 @@ describe('resolveStreamingFromSnapshot', () => {
       streamingMsgId: null,
       streamingContent: '',
       streamingEngine: null,
+      streamingModel: null,
       agentId: null,
       thinking: false,
     });
@@ -62,8 +66,68 @@ describe('resolveStreamingFromSnapshot', () => {
       streamingMsgId: 'm',
       streamingContent: '',
       streamingEngine: null,
+      streamingModel: null,
       agentId: null,
       thinking: true,
     });
+  });
+});
+
+describe('resolveLiveStreamIdentity', () => {
+  it('labels an in-session reviewer with its own name, engine, and model', () => {
+    expect(
+      resolveLiveStreamIdentity({
+        streamingAgent: {
+          agentId: 'portfolio-reviewer',
+          agentName: 'Portfolio Reviewer',
+          engine: 'grok-cli',
+          model: 'grok-4.6',
+        },
+        streamingEngine: 'grok-cli',
+        sessionAgentName: 'Portfolio Dev',
+        sessionAgentColor: '#111',
+        sessionModel: 'claude-opus-5',
+      }),
+    ).toEqual({
+      agentName: 'Portfolio Reviewer',
+      agentColor: '#111',
+      engine: 'grok-cli',
+      model: 'grok-4.6',
+    });
+  });
+
+  it('falls back to the session agent when nobody else is streaming', () => {
+    expect(
+      resolveLiveStreamIdentity({
+        streamingAgent: null,
+        streamingEngine: null,
+        sessionAgentName: 'Portfolio Dev',
+        sessionAgentColor: '#111',
+        sessionModel: 'claude-opus-5',
+      }),
+    ).toEqual({
+      agentName: 'Portfolio Dev',
+      agentColor: '#111',
+      engine: null,
+      model: 'claude-opus-5',
+    });
+  });
+});
+
+describe('buildStreamingAgentState', () => {
+  it('returns null when the frame has no agentId (session agent)', () => {
+    expect(buildStreamingAgentState({ engine: 'claude-code' })).toBeNull();
+  });
+
+  it('keeps engine/model from the thinking frame when a later stream omits them', () => {
+    const prev = buildStreamingAgentState({
+      agentId: 'rev-1',
+      agentName: 'Reviewer',
+      engine: 'grok-cli',
+      model: 'grok-4.6',
+    });
+    expect(
+      buildStreamingAgentState({ agentId: 'rev-1', agentName: 'Reviewer' }, undefined, prev),
+    ).toMatchObject({ engine: 'grok-cli', model: 'grok-4.6' });
   });
 });

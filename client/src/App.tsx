@@ -25,6 +25,11 @@ import DesignsList from './components/DesignsList';
 import DesignView from './components/DesignView';
 import DelegationPanel from './components/DelegationPanel';
 import SessionSummarySidebar from './components/SessionSummarySidebar';
+import SessionTimelineSidebar, {
+  readTimelinePaneOpen,
+  writeTimelinePaneOpen,
+} from './components/SessionTimelineSidebar';
+import { TIMELINE_ANCHOR_NAVIGATE_EVENT } from '@shared/utils/sessionTimeline';
 import SessionPreviewPane from './components/SessionPreviewPane';
 import BackgroundShellsPanel from './components/BackgroundShellsPanel';
 import SessionDesignPane from './components/SessionDesignPane';
@@ -40,6 +45,7 @@ import LinkDesignModal from './components/LinkDesignModal';
 import SessionPreviewStartButton from './components/SessionPreviewStartButton';
 import SessionBranchPicker from './components/SessionBranchPicker';
 import AwsSsoLoginMenu from './components/AwsSsoLoginMenu';
+import SessionActionsMenu from './components/SessionActionsMenu';
 import {
   paneOpenStorageKey,
   clearSessionPreviewStorage,
@@ -170,6 +176,7 @@ import {
   Package,
   SquareTerminal,
   PanelLeftOpen,
+  History,
 } from 'lucide-react';
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
 import {
@@ -219,10 +226,15 @@ import {
 } from './utils/sessionDerivedState';
 import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
-import { resolveStreamingFromSnapshot } from '@shared/utils/activeTaskSnapshot';
+import {
+  resolveStreamingFromSnapshot,
+  resolveLiveStreamIdentity,
+  buildStreamingAgentState,
+} from '@shared/utils/activeTaskSnapshot';
 import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentColor';
 import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLive';
 import { deriveSessionState } from './utils/deriveSessionState';
+import { deriveSessionTimelineMarkers } from '@shared/utils/sessionTimeline';
 
 /**
  * @param {object} [props]
@@ -412,6 +424,11 @@ export default function App({ initialView }: any = {}) {
   const [terminalPaneOpenBySession, setTerminalPaneOpenBySession] = useState<Record<string, any>>(
     {},
   );
+  /** Per-session activity timeline (change summaries / finalize checks / review comments). */
+  const [timelinePaneOpenBySession, setTimelinePaneOpenBySession] = useState<Record<string, any>>(
+    {},
+  );
+  const [selectedTimelineAnchor, setSelectedTimelineAnchor] = useState<string | null>(null);
   /**
    * Running + recently finished Hub background shells, for Terminal job tabs.
    * Distinct from `backgroundShellsBySession`, which drops finished rows so
@@ -1400,6 +1417,41 @@ export default function App({ initialView }: any = {}) {
     });
   }, []);
 
+  const scrollToTimelineAnchor = useCallback((anchorId: string) => {
+    const container = scrollContainerRef.current;
+    if (!container || !anchorId) return;
+    isNearBottomRef.current = false;
+    setShowScrollBtn(true);
+    setSelectedTimelineAnchor(anchorId);
+    // Let blocks that collapse content (review file groups) expand the group
+    // owning this anchor first, so the scroll target is actually in the DOM.
+    try {
+      window.dispatchEvent(
+        new CustomEvent(TIMELINE_ANCHOR_NAVIGATE_EVENT, { detail: { anchorId } }),
+      );
+    } catch {
+      /* CustomEvent unavailable */
+    }
+    const escaped =
+      typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(anchorId)
+        : anchorId.replace(/"/g, '\\"');
+    const selector = `[data-timeline-anchor="${escaped}"]`;
+    // A just-expanded group renders on the next frame; retry a few frames.
+    let attempts = 0;
+    const tryScroll = () => {
+      const target = container.querySelector(selector);
+      if (target) {
+        target.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+        return;
+      }
+      if (attempts++ < 5 && typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(tryScroll);
+      }
+    };
+    tryScroll();
+  }, []);
+
   useEffect(() => {
     streamingMsgIdRef.current = streamingMsgId;
   }, [streamingMsgId]);
@@ -1431,6 +1483,7 @@ export default function App({ initialView }: any = {}) {
     isNearBottomRef.current = true;
     lastScrollTopRef.current = 0;
     setShowScrollBtn(false);
+    setSelectedTimelineAnchor(null);
   }, [activeSessionId]);
 
   // Auto-scroll on new content, but only if user is near the bottom or it's initial load.
@@ -1712,15 +1765,15 @@ export default function App({ initialView }: any = {}) {
             setStreamingContent(streaming.streamingContent);
             setStreamingEngine(streaming.streamingEngine);
             setThinking(streaming.thinking);
-            const agent = agentsRef.current.find((a: any) => a.id === streaming.agentId);
             setStreamingAgent(
-              streaming.agentId
-                ? {
-                    agentId: streaming.agentId,
-                    agentName: agent?.name || streaming.agentId,
-                    agentColor: agent?.color,
-                  }
-                : null,
+              buildStreamingAgentState(
+                {
+                  agentId: streaming.agentId,
+                  engine: streaming.streamingEngine,
+                  model: streaming.streamingModel,
+                },
+                agentsRef.current,
+              ),
             );
           }
           break;
@@ -1819,6 +1872,7 @@ export default function App({ initialView }: any = {}) {
               content: '',
               engine: data.engine || null,
               model: data.model || null,
+              agentId: data.agentId || null,
             },
           }));
           if (forActiveSession) {
@@ -1826,15 +1880,18 @@ export default function App({ initialView }: any = {}) {
             setStreamingMsgId(data.messageId);
             setStreamingEngine(data.engine || null);
             setStreamingContent('');
-            if (data.agentId) {
-              setStreamingAgent({
-                agentId: data.agentId,
-                agentName: data.agentName,
-                agentColor: data.agentColor,
-              });
-            } else {
-              setStreamingAgent(null);
-            }
+            setStreamingAgent(
+              buildStreamingAgentState(
+                {
+                  agentId: data.agentId,
+                  agentName: data.agentName,
+                  agentColor: data.agentColor,
+                  engine: data.engine,
+                  model: data.model,
+                },
+                agentsRef.current,
+              ),
+            );
           }
           break;
         case 'stream':
@@ -1844,20 +1901,29 @@ export default function App({ initialView }: any = {}) {
               ...(prev[data.sessionId] || {}),
               messageId: data.messageId,
               content: data.content,
-              engine: data.engine || null,
+              engine: data.engine || prev[data.sessionId]?.engine || null,
+              model: data.model || prev[data.sessionId]?.model || null,
+              agentId: data.agentId || prev[data.sessionId]?.agentId || null,
             },
           }));
           if (forActiveSession) {
             setThinking(false);
             setStreamingContent(data.content);
-            setStreamingEngine(data.engine || null);
-            if (data.agentId) {
-              setStreamingAgent({
-                agentId: data.agentId,
-                agentName: data.agentName,
-                agentColor: data.agentColor,
-              });
-            }
+            if (data.engine) setStreamingEngine(data.engine);
+            setStreamingAgent(
+              (prev: any) =>
+                buildStreamingAgentState(
+                  {
+                    agentId: data.agentId,
+                    agentName: data.agentName,
+                    agentColor: data.agentColor,
+                    engine: data.engine,
+                    model: data.model,
+                  },
+                  agentsRef.current,
+                  prev,
+                ) || prev,
+            );
           }
           break;
         case 'session-event': {
@@ -3470,6 +3536,7 @@ export default function App({ initialView }: any = {}) {
       setStreamingContent('');
       setStreamingMsgId(null);
       setStreamingEngine(null);
+      setStreamingAgent(null);
     }
   }, [activeSessionId, send, pinChatTail]);
 
@@ -4039,6 +4106,7 @@ export default function App({ initialView }: any = {}) {
       setStreamingContent('');
       setStreamingMsgId(null);
       setStreamingEngine(null);
+      setStreamingAgent(null);
       return;
     }
     const t = activeTasks[activeSessionId];
@@ -4047,11 +4115,22 @@ export default function App({ initialView }: any = {}) {
       setStreamingContent(t.content);
       setStreamingEngine(t.engine);
       setThinking(!t.content);
+      setStreamingAgent(
+        buildStreamingAgentState(
+          {
+            agentId: t.agentId,
+            engine: t.engine,
+            model: t.model,
+          },
+          agentsRef.current,
+        ),
+      );
     } else {
       setThinking(false);
       setStreamingContent('');
       setStreamingMsgId(null);
       setStreamingEngine(null);
+      setStreamingAgent(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run only on session change; `activeTasks` updates stream case-by-case
   }, [activeSessionId]);
@@ -4373,6 +4452,13 @@ export default function App({ initialView }: any = {}) {
       activePreviewEvent,
       paneOpenBySession: previewPaneOpenBySession,
     });
+  const showSessionTimeline =
+    !!activeSessionId &&
+    (timelinePaneOpenBySession[activeSessionId] ?? readTimelinePaneOpen(activeSessionId)) === true;
+  const timelineMarkerCount = useMemo(
+    () => deriveSessionTimelineMarkers({ messages }).length,
+    [messages],
+  );
 
   // Load full design detail + messages when the active design changes.
   useEffect(() => {
@@ -5069,6 +5155,14 @@ export default function App({ initialView }: any = {}) {
   );
 
   const sessionConsultActive = isSessionConsultModeEnabled(activeSession);
+
+  const liveStream = resolveLiveStreamIdentity({
+    streamingAgent,
+    streamingEngine,
+    sessionAgentName: activeAgent?.name,
+    sessionAgentColor: activeAgent?.color,
+    sessionModel,
+  });
 
   // "Run in terminal" on a code fence / Bash tool card: open the shared
   // terminal (it may be closed, and it shares the right-hand slot with the
@@ -6385,7 +6479,23 @@ export default function App({ initialView }: any = {}) {
                       onUpdated={handleSessionAgentsUpdated}
                     />
                   )}
-                  <div className="flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden lg:flex-row">
+                  <div className="relative flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden lg:flex-row">
+                    {showSessionTimeline && (
+                      <SessionTimelineSidebar
+                        sessionId={activeSessionId}
+                        messages={messages}
+                        selectedAnchorId={selectedTimelineAnchor}
+                        onSelectAnchor={scrollToTimelineAnchor}
+                        onClose={() => {
+                          if (!activeSessionId) return;
+                          setTimelinePaneOpenBySession((prev: any) => ({
+                            ...prev,
+                            [activeSessionId]: false,
+                          }));
+                          writeTimelinePaneOpen(activeSessionId, false);
+                        }}
+                      />
+                    )}
                     <div className="flex flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
                       {/* Messages */}
                       <RunInTerminalProvider onRun={runInTerminalHandler}>
@@ -6643,16 +6753,18 @@ export default function App({ initialView }: any = {}) {
                                         id: streamingMsgId,
                                         session_id: activeSessionId,
                                         role: 'assistant',
-                                        engine: streamingEngine,
-                                        model: sessionModel,
+                                        engine: liveStream.engine,
+                                        model: liveStream.model,
+                                        agent_name: liveStream.agentName,
                                         content: streamingContent,
                                       }}
                                       events={eventsByMessage[streamingMsgId]}
-                                      agentColor={streamingAgent?.agentColor || activeAgent?.color}
-                                      // Label the live tail with the active session's agent, not a
-                                      // cross-agent streamer (e.g. a Reviewer streaming in): the
-                                      // retired grey cross-agent bubble must not resurrect its label.
-                                      agentName={activeAgent?.name}
+                                      agentColor={liveStream.agentColor}
+                                      // Show whoever is actually streaming (in-session
+                                      // Reviewer, advisor, session agent) — the header
+                                      // Claude/Opus dropdown is the session agent, not
+                                      // this turn.
+                                      agentName={liveStream.agentName}
                                       streaming
                                       onInterrupt={handleCancel}
                                       onAskSubmit={handleAskSubmit}
@@ -6799,120 +6911,139 @@ export default function App({ initialView }: any = {}) {
                       {activeSessionId && (
                         <div className="shrink-0 border-t border-gray-800/80">
                           <div className="px-3 md:px-6 pb-2 flex flex-wrap justify-center gap-2 sm:flex-nowrap sm:justify-start sm:items-center pt-2">
-                            {/* Changes (code diff) toggle — opens the diff pane on
-                            the right, replacing the preview pane if open. Stays
-                            visible in Consult mode when the session has a worktree
-                            so users can inspect the diff a pushed session shipped. */}
-                            {shouldShowSessionChangesButton({
-                              isWorkflowProject: chatProjectIsWorkflow,
-                              consultActive: sessionConsultActive,
-                              session: activeSession,
-                            }) && (
-                              <button
-                                type="button"
-                                data-testid="toggle-changes-pane"
-                                aria-pressed={showSessionDiffPane}
-                                onClick={() => {
-                                  const opening = !diffPaneOpenBySession[activeSessionId];
-                                  setDiffPaneOpenBySession((prev: any) => ({
-                                    ...prev,
-                                    [activeSessionId]: opening,
-                                  }));
-                                  if (opening) {
-                                    setArtifactsPaneOpenBySession((prev: any) => ({
+                            <SessionActionsMenu
+                              items={[
+                                {
+                                  id: 'timeline',
+                                  testId: 'toggle-timeline-pane',
+                                  label: 'Timeline',
+                                  icon: History,
+                                  title: 'Show or hide the session timeline',
+                                  pressed: showSessionTimeline,
+                                  badge: timelineMarkerCount,
+                                  onSelect: () => {
+                                    if (!activeSessionId) return;
+                                    const opening = !showSessionTimeline;
+                                    setTimelinePaneOpenBySession((prev: any) => ({
                                       ...prev,
-                                      [activeSessionId]: false,
+                                      [activeSessionId]: opening,
                                     }));
-                                    setTerminalPaneOpenBySession((prev: any) => ({
-                                      ...prev,
-                                      [activeSessionId]: false,
-                                    }));
-                                  }
-                                }}
-                                title="View session file changes"
-                                className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
-                                  showSessionDiffPane
-                                    ? 'bg-sky-700/70 text-sky-50 border-sky-600'
-                                    : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
-                                }`}
-                              >
-                                <GitBranch size={13} /> Changes
-                                {diffFileCountBySession[activeSessionId] > 0 && (
-                                  <span className="ml-0.5 rounded-full bg-sky-500/30 text-sky-100 px-1.5 text-[10px] font-semibold">
-                                    {diffFileCountBySession[activeSessionId]}
-                                  </span>
-                                )}
-                              </button>
-                            )}
-                            {/* Artifacts toggle — opens the artifacts pane, which
-                            shares the right slot with Changes/preview. */}
-                            <button
-                              type="button"
-                              data-testid="toggle-artifacts-pane"
-                              aria-pressed={showSessionArtifactsPane}
-                              onClick={() => {
-                                const opening = !artifactsPaneOpenBySession[activeSessionId];
-                                setArtifactsPaneOpenBySession((prev: any) => ({
-                                  ...prev,
-                                  [activeSessionId]: opening,
-                                }));
-                                if (opening) {
-                                  setDiffPaneOpenBySession((prev: any) => ({
-                                    ...prev,
-                                    [activeSessionId]: false,
-                                  }));
-                                  setTerminalPaneOpenBySession((prev: any) => ({
-                                    ...prev,
-                                    [activeSessionId]: false,
-                                  }));
-                                }
-                              }}
-                              title="View documents the agent generated"
-                              className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
-                                showSessionArtifactsPane
-                                  ? 'bg-violet-700/70 text-violet-50 border-violet-600'
-                                  : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
-                              }`}
-                            >
-                              <Package size={13} /> Artifacts
-                              {artifactCountBySession[activeSessionId] > 0 && (
-                                <span className="ml-0.5 rounded-full bg-violet-500/30 text-violet-100 px-1.5 text-[10px] font-semibold">
-                                  {artifactCountBySession[activeSessionId]}
-                                </span>
-                              )}
-                            </button>
-                            {!chatProjectIsWorkflow && !sessionConsultActive && (
-                              <button
-                                type="button"
-                                data-testid="toggle-terminal-pane"
-                                aria-pressed={showSessionTerminalPane}
-                                onClick={() => {
-                                  const opening = !terminalPaneOpenBySession[activeSessionId];
-                                  setTerminalPaneOpenBySession((prev: any) => ({
-                                    ...prev,
-                                    [activeSessionId]: opening,
-                                  }));
-                                  if (opening) {
+                                    writeTimelinePaneOpen(activeSessionId, opening);
+                                  },
+                                },
+                                {
+                                  id: 'changes',
+                                  testId: 'toggle-changes-pane',
+                                  label: 'Changes',
+                                  icon: GitBranch,
+                                  title: 'View session file changes',
+                                  hidden: !shouldShowSessionChangesButton({
+                                    isWorkflowProject: chatProjectIsWorkflow,
+                                    consultActive: sessionConsultActive,
+                                    session: activeSession,
+                                  }),
+                                  pressed: showSessionDiffPane,
+                                  badge: diffFileCountBySession[activeSessionId],
+                                  onSelect: () => {
+                                    const opening = !diffPaneOpenBySession[activeSessionId];
                                     setDiffPaneOpenBySession((prev: any) => ({
                                       ...prev,
-                                      [activeSessionId]: false,
+                                      [activeSessionId]: opening,
                                     }));
+                                    if (opening) {
+                                      setArtifactsPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                      setTerminalPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                    }
+                                  },
+                                },
+                                {
+                                  id: 'artifacts',
+                                  testId: 'toggle-artifacts-pane',
+                                  label: 'Artifacts',
+                                  icon: Package,
+                                  title: 'View documents the agent generated',
+                                  pressed: showSessionArtifactsPane,
+                                  badge: artifactCountBySession[activeSessionId],
+                                  onSelect: () => {
+                                    const opening = !artifactsPaneOpenBySession[activeSessionId];
                                     setArtifactsPaneOpenBySession((prev: any) => ({
                                       ...prev,
-                                      [activeSessionId]: false,
+                                      [activeSessionId]: opening,
                                     }));
+                                    if (opening) {
+                                      setDiffPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                      setTerminalPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                    }
+                                  },
+                                },
+                                {
+                                  id: 'terminal',
+                                  testId: 'toggle-terminal-pane',
+                                  label: 'Terminal',
+                                  icon: SquareTerminal,
+                                  title: 'Open the shared session terminal',
+                                  hidden: chatProjectIsWorkflow || sessionConsultActive,
+                                  pressed: showSessionTerminalPane,
+                                  onSelect: () => {
+                                    const opening = !terminalPaneOpenBySession[activeSessionId];
+                                    setTerminalPaneOpenBySession((prev: any) => ({
+                                      ...prev,
+                                      [activeSessionId]: opening,
+                                    }));
+                                    if (opening) {
+                                      setDiffPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                      setArtifactsPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                    }
+                                  },
+                                },
+                              ]}
+                            >
+                              {!chatProjectIsWorkflow && (
+                                <SessionPreviewStartButton
+                                  variant="menu"
+                                  sessionId={activeSessionId}
+                                  project={activeChatProject}
+                                  previewEvent={previewEventBySession[activeSessionId]}
+                                  disabled={!connected || !activeChatProject}
+                                  starting={!!previewStartingBySession[activeSessionId]}
+                                  workspaceEnsuring={!!workspaceEnsuringBySession[activeSessionId]}
+                                  workspaceNotReady={
+                                    !!activeSession &&
+                                    isSessionWorktreeEnabled(activeSession) &&
+                                    !isSessionWorkspaceReady(activeSession)
                                   }
-                                }}
-                                title="Open the shared session terminal"
-                                className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
-                                  showSessionTerminalPane
-                                    ? 'bg-cyan-800/70 text-cyan-50 border-cyan-600'
-                                    : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
-                                }`}
-                              >
-                                <SquareTerminal size={13} /> Terminal
-                              </button>
-                            )}
+                                  onStart={handleStartSessionPreview}
+                                  onConfigure={handlePreviewConfigure}
+                                />
+                              )}
+                              {activeSessionId && activeChatProject?.id ? (
+                                <AwsSsoLoginMenu
+                                  variant="menu"
+                                  projectId={activeChatProject.id}
+                                  project={activeChatProject}
+                                  disabled={!connected}
+                                  onError={(msg: any) => showToast(msg, 'error', 8000)}
+                                />
+                              ) : null}
+                            </SessionActionsMenu>
                             {!chatProjectIsWorkflow && !sessionConsultActive && (
                               <SessionBranchPicker
                                 sessionId={activeSessionId}
@@ -6920,23 +7051,6 @@ export default function App({ initialView }: any = {}) {
                                 projectId={activeChatProject?.id}
                                 disabled={!connected || !activeChatProject}
                                 onError={(msg: any) => showToast(msg, 'error', 8000)}
-                              />
-                            )}
-                            {!chatProjectIsWorkflow && (
-                              <SessionPreviewStartButton
-                                sessionId={activeSessionId}
-                                project={activeChatProject}
-                                previewEvent={previewEventBySession[activeSessionId]}
-                                disabled={!connected || !activeChatProject}
-                                starting={!!previewStartingBySession[activeSessionId]}
-                                workspaceEnsuring={!!workspaceEnsuringBySession[activeSessionId]}
-                                workspaceNotReady={
-                                  !!activeSession &&
-                                  isSessionWorktreeEnabled(activeSession) &&
-                                  !isSessionWorkspaceReady(activeSession)
-                                }
-                                onStart={handleStartSessionPreview}
-                                onConfigure={handlePreviewConfigure}
                               />
                             )}
                             {activeSessionId && activeChatProject?.id ? (
@@ -6963,12 +7077,6 @@ export default function App({ initialView }: any = {}) {
                                     isResolveSession={isResolvePrSessionTitle(activeSession?.name)}
                                   />
                                 )}
-                                <AwsSsoLoginMenu
-                                  projectId={activeChatProject.id}
-                                  project={activeChatProject}
-                                  disabled={!connected}
-                                  onError={(msg: any) => showToast(msg, 'error', 8000)}
-                                />
                               </>
                             ) : null}
                           </div>

@@ -106,6 +106,7 @@ export interface InSessionReviewerDeps {
   getCursorBin: () => string;
   getGeminiBin: () => string;
   getCodexBin: () => string;
+  getGrokBin: () => string;
   getConfig: () => AppConfig;
   /** Track active CLIs so handleMultiAgentCancel can SIGTERM them. */
   activeProcesses?: Map<string, ActiveChatProcess>;
@@ -357,6 +358,8 @@ export async function runReviewerTurn(
       agentName: reviewer.name,
       agentColor: reviewer.color,
       messageId: assistantMsgId,
+      engine,
+      model,
     });
 
     // Runtime engine failover: the reviewer's configured engine can die
@@ -387,6 +390,7 @@ export async function runReviewerTurn(
             cursor: deps.getCursorBin(),
             gemini: deps.getGeminiBin(),
             codex: deps.getCodexBin(),
+            grok: deps.getGrokBin(),
           },
           cwd,
           spawnEnv: buildSpawnEnv(engine),
@@ -403,6 +407,7 @@ export async function runReviewerTurn(
           reviewerColor: reviewer.color,
           reviewerId: reviewer.id,
           assistantMsgId,
+          config,
         });
         succeeded = true;
       } catch (err: unknown) {
@@ -429,9 +434,8 @@ export async function runReviewerTurn(
 
         // The reviewer spawn path (buildSessionMultiSpawnArgs) only knows how
         // to launch the session-multi engines; a chain candidate it cannot
-        // spawn (e.g. grok-cli) must be treated as unavailable so the planner
-        // skips it rather than falling through to the claude branch with the
-        // wrong model.
+        // spawn must be treated as unavailable so the planner skips it rather
+        // than falling through to the claude branch with the wrong model.
         const reviewerAvailability = restrictToSpawnableEngines(availability);
 
         const plan = planEngineFailover({
@@ -639,11 +643,10 @@ export function pickReviewerAgentId(project: Project): string | null {
  * spawn to `available: false`.
  *
  * `buildSessionMultiSpawnArgs` only launches the {@link SESSION_MULTI_ENGINES}
- * (claude-code / cursor-agent / gemini-cli / codex-cli). The failover chains in
- * `engine-failover.ts` also include `grok-cli`, which has no branch there and
- * would fall through to the claude spawn path with a grok model. Marking those
- * engines unavailable makes {@link planEngineFailover} skip them instead of
- * picking one this path cannot honour.
+ * (claude-code / cursor-agent / gemini-cli / codex-cli / grok-cli). Failover
+ * chains may grow extra engines that have no spawn branch; marking those
+ * unavailable makes {@link planEngineFailover} skip them instead of picking one
+ * this path cannot honour.
  *
  * Exported for tests.
  */
@@ -749,6 +752,7 @@ interface OneTurnArgs {
     cursor: string;
     gemini: string;
     codex: string;
+    grok?: string;
   };
   cwd: string;
   spawnEnv: NodeJS.ProcessEnv;
@@ -765,6 +769,7 @@ interface OneTurnArgs {
   reviewerColor: string | null | undefined;
   reviewerId: string;
   assistantMsgId: string;
+  config?: Pick<AppConfig, 'engineValidModels' | 'engineDefaultModels'>;
 }
 
 /**
@@ -802,6 +807,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
           advisory: true,
           sessionId: args.sessionId,
           codexEnv: args.spawnEnv,
+          config: args.config,
         });
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));
@@ -880,6 +886,8 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
               agentColor: args.reviewerColor,
               messageId: args.assistantMsgId,
               content: finalText || partialFallback,
+              engine: args.engine,
+              model: args.model,
             });
           }
           if (ev.type === 'result' && ev.isError && ev.text) {

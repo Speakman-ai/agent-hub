@@ -267,15 +267,15 @@ describe('App — interrupt queued message with persisted attachments', () => {
     expect(api.uploadFile).not.toHaveBeenCalled();
   });
 
-  // The legacy heavy grey "cross-agent" streaming bubble (which rendered the
-  // *other* agent's name as a `text-gray-500` label whenever the streaming
-  // agent differed from the active agent) was retired from the web client —
-  // it kept mistriggering. Web now always streams through <SessionTail/>, whose
-  // header is labeled with the ACTIVE session's agent (never a cross-agent
-  // streamer). This guards that a cross-agent reviewer stream never resurrects a
-  // grey "Reviewer" streaming label, while the active-tasks-snapshot swap into
-  // the primary agent's output still works.
-  it('never renders a grey cross-agent streaming label (retired bubble)', async () => {
+  // The legacy heavy grey "cross-agent" streaming bubble (a separate
+  // StreamingMessage component) was retired — web now always streams through
+  // <SessionTail/>. Its thin header is labeled via resolveLiveStreamIdentity
+  // with whoever is *actually* producing the turn: an in-session Reviewer
+  // stream shows the Reviewer's own identity (its whole point — see
+  // App.activeTasksSnapshotClears.test.ts), not the session agent. Once the
+  // active-tasks-snapshot swaps the primary agent's run back in, the tail
+  // relabels to the session agent and the Reviewer label is gone.
+  it('labels the live tail with the streaming agent, then swaps on snapshot', async () => {
     localStorage.setItem('activeAgentId', 'agent-1');
 
     render(<App initialView="chat" />);
@@ -311,15 +311,16 @@ describe('App — interrupt queued message with persisted attachments', () => {
         engine: 'claude-code',
       });
     });
-    // No grey "Reviewer" streaming label — the bubble is gone. The live tail is
-    // labeled with the active session's agent ("A1"), never the cross-agent
-    // streamer ("Reviewer").
-    await waitFor(() => expect(reviewerStreamLabels()).toHaveLength(0));
+    // The live tail carries the streamer's identity: the in-session Reviewer,
+    // not the session agent. Exactly one grey "Reviewer" label (the SessionTail
+    // header) — the retired heavy bubble would have been a second, distinct
+    // node. The session agent ("A1") is not shown while the reviewer streams.
+    await waitFor(() => expect(reviewerStreamLabels()).toHaveLength(1));
     expect(
       screen
         .queryAllByText('A1')
         .filter((el: any) => String(el.className || '').includes('text-gray-500')),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
 
     // The active-tasks snapshot swaps in the primary agent's stream.
     await act(async () => {

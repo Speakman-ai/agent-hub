@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Cloud, ChevronDown, ExternalLink, Loader2 } from 'lucide-react';
 import { api } from '../utils/api';
+import {
+  sessionActionControlClass,
+  sessionActionSubmenuClass,
+  type SessionActionControlVariant,
+} from '../utils/sessionActionMenu';
 
 /**
  * Pure helper: given the `{ name: stanza }` map returned by GET
@@ -26,7 +31,16 @@ export function extractSsoProfileNames(profiles: any): string[] {
  * the AWS settings page: POST /aws-sso/login returns a device URL we open in
  * a new tab, then the user re-checks status (GET /aws-sso/status) to confirm.
  */
-export default function AwsSsoLoginMenu({ projectId, project, disabled = false, onError }: any) {
+export default function AwsSsoLoginMenu({
+  projectId,
+  project,
+  disabled = false,
+  onError,
+  variant = 'toolbar',
+}: {
+  variant?: SessionActionControlVariant;
+  [key: string]: any;
+}) {
   const enabled = !!project?.awsEnabled && !!projectId;
   const [names, setNames] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
@@ -107,8 +121,16 @@ export default function AwsSsoLoginMenu({ projectId, project, disabled = false, 
 
   if (!enabled || names.length === 0) return null;
 
+  const isMenu = variant === 'menu';
+
   return (
-    <div className="relative flex w-[150px] min-w-[150px] shrink-0 sm:inline-flex sm:w-auto sm:min-w-0">
+    <div
+      className={
+        isMenu
+          ? 'relative w-full'
+          : 'relative flex w-[150px] min-w-[150px] shrink-0 sm:inline-flex sm:w-auto sm:min-w-0'
+      }
+    >
       <button
         type="button"
         disabled={disabled}
@@ -117,7 +139,12 @@ export default function AwsSsoLoginMenu({ projectId, project, disabled = false, 
         data-testid="aws-sso-login-trigger"
         title="Log in to an AWS SSO profile"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full justify-center items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 sm:w-auto sm:inline-flex"
+        className={sessionActionControlClass(
+          variant,
+          isMenu
+            ? ''
+            : 'font-medium border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60',
+        )}
       >
         <Cloud size={14} className="opacity-80 shrink-0" />
         <span>Login to AWS</span>
@@ -126,17 +153,22 @@ export default function AwsSsoLoginMenu({ projectId, project, disabled = false, 
 
       {open ? (
         <>
-          <button
-            type="button"
-            aria-label="Close AWS login menu"
-            className="fixed inset-0 z-40 cursor-default"
-            onClick={() => setOpen(false)}
-          />
+          {!isMenu ? (
+            <button
+              type="button"
+              aria-label="Close AWS login menu"
+              className="fixed inset-0 z-40 cursor-default"
+              onClick={() => setOpen(false)}
+            />
+          ) : null}
           <ul
             role="listbox"
             aria-label="AWS SSO profiles"
             data-testid="aws-sso-login-menu"
-            className="absolute left-0 bottom-full mb-1 z-50 min-w-[240px] max-w-[320px] rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1"
+            className={sessionActionSubmenuClass(
+              variant,
+              'absolute left-0 bottom-full mb-1 z-50 min-w-[240px] max-w-[320px] rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1',
+            )}
           >
             {names.map((name) => {
               const lg = loginState[name];

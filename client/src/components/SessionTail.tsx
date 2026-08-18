@@ -759,6 +759,14 @@ const ENGINE_BADGES = {
     icon: <span className="w-2.5 h-2.5 rounded-full bg-sky-500 inline-block" />,
     label: 'Codex',
   },
+  'grok-cli': {
+    icon: <span className="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block" />,
+    label: 'Grok',
+  },
+  'gemini-cli': {
+    icon: <span className="w-2.5 h-2.5 rounded-full bg-blue-400 inline-block" />,
+    label: 'Gemini',
+  },
 } as Record<string, any>;
 
 /** Full markdown + CodeBlock stack — same as ChatMessage for readable diffs / fences. */

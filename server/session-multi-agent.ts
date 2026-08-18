@@ -42,6 +42,7 @@ interface MultiAgentDeps {
   getCursorBin: () => string;
   getGeminiBin: () => string;
   getCodexBin: () => string;
+  getGrokBin: () => string;
   getConfig: () => AppConfig;
   getMaxQueueSize: () => number;
   runExecutorTurn: (ws: WebSocketLike | null, msg: InternalMultiAgentMsg) => Promise<void>;
@@ -449,6 +450,8 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     agentName: advisor.name,
     agentColor: advisor.color,
     messageId: assistantMsgId,
+    engine,
+    model,
   });
 
   // Advisors may belong to another project; always run against the session workspace.
@@ -502,6 +505,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
             cursor: d.getCursorBin(),
             gemini: d.getGeminiBin(),
             codex: d.getCodexBin(),
+            grok: d.getGrokBin(),
           },
           logTag: `session ${sessionId} advisor ${advisor.id}`,
           codexDangerBypass: !!config.codexDangerBypass,
@@ -509,6 +513,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
           advisory: true,
           sessionId,
           codexEnv: spawnEnv,
+          config,
         });
         bin = plan.bin;
         args = plan.args;
@@ -570,6 +575,8 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
             agentColor: advisor.color,
             messageId: assistantMsgId,
             content: finalText || partialFallback,
+            engine,
+            model,
           });
         }
         if (event.type === 'result' && event.isError && event.text) {

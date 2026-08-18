@@ -9,6 +9,10 @@ import {
   sessionControlValueForProject,
 } from '../../utils/finalizeAutomation';
 import { sessionControlIcon } from '../../utils/sessionControlIcons';
+import {
+  sessionActionControlClass,
+  sessionActionSubmenuClass,
+} from '../../utils/sessionActionMenu';
 
 function SessionControlIcon({
   value,
@@ -116,6 +120,7 @@ export default function FinalizeAutomationSelect({
   if (!sessionId) return null;
 
   const compact = variant === 'compact';
+  const isMenu = variant === 'menu';
   const selectedValue = sessionControlValueForProject(project, {
     sessionMode,
     askMode: legacyAskMode,
@@ -133,7 +138,13 @@ export default function FinalizeAutomationSelect({
     SESSION_CONTROL_OPTIONS[2];
 
   return (
-    <div className="relative flex w-[150px] min-w-[150px] shrink-0 sm:inline-flex sm:w-auto sm:min-w-0">
+    <div
+      className={
+        isMenu
+          ? 'relative w-full'
+          : 'relative flex w-[150px] min-w-[150px] shrink-0 sm:inline-flex sm:w-auto sm:min-w-0'
+      }
+    >
       <button
         type="button"
         disabled={disabled || pending}
@@ -143,9 +154,11 @@ export default function FinalizeAutomationSelect({
         title={selected.description}
         onClick={() => setOpen((v: any) => !v)}
         className={
-          compact
-            ? 'flex w-full justify-center items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 sm:w-auto sm:inline-flex'
-            : 'flex w-full justify-center items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 sm:w-auto sm:inline-flex'
+          isMenu
+            ? sessionActionControlClass('menu')
+            : compact
+              ? 'flex w-full justify-center items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 sm:w-auto sm:inline-flex'
+              : 'flex w-full justify-center items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 sm:w-auto sm:inline-flex'
         }
       >
         <SessionControlIcon value={selectedValue} size={compact ? 12 : 14} className="opacity-80" />
@@ -155,16 +168,21 @@ export default function FinalizeAutomationSelect({
 
       {open ? (
         <>
-          <button
-            type="button"
-            aria-label="Close runner automation menu"
-            className="fixed inset-0 z-40 cursor-default"
-            onClick={() => setOpen(false)}
-          />
+          {!isMenu ? (
+            <button
+              type="button"
+              aria-label="Close runner automation menu"
+              className="fixed inset-0 z-40 cursor-default"
+              onClick={() => setOpen(false)}
+            />
+          ) : null}
           <ul
             role="listbox"
             aria-label="Runner automation"
-            className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] max-h-[min(70vh,20rem)] overflow-y-auto overscroll-contain rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1"
+            className={sessionActionSubmenuClass(
+              isMenu ? 'menu' : 'toolbar',
+              'absolute left-0 bottom-full mb-1 z-50 min-w-[220px] max-h-[min(70vh,20rem)] overflow-y-auto overscroll-contain rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1',
+            )}
           >
             {optionList.map((option: any) => {
               const active = option.value === selectedValue;

@@ -1,6 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, AlertTriangle, FileText, ChevronDown, ChevronRight } from 'lucide-react';
 import { parseFinalizeReviewRoundMetadata } from '../../../utils/finalizeTimeline';
+import {
+  reviewCommentAnchorId,
+  TIMELINE_ANCHOR_NAVIGATE_EVENT,
+} from '@shared/utils/sessionTimeline';
 import { relativeTime } from '../../../utils/time';
 
 function VerdictPill({ verdict }: any) {
@@ -47,16 +51,48 @@ export default function FinalizeReviewRoundBlock({ message }: any) {
   );
   const [collapsedFiles, setCollapsedFiles] = useState<Set<any>>(() => new Set());
 
+  // Group threads by file but keep each thread's index in the original flat
+  // array. The timeline derives id-less anchors from that flat index, so the
+  // rendered anchor must use the same index (not a group-local one) or markers
+  // past the first file would point at anchors that never render.
   const grouped = useMemo(() => {
-    const map = new Map();
-    for (const thread of meta?.threads ?? []) {
+    const map = new Map<string, Array<{ thread: any; index: number }>>();
+    (meta?.threads ?? []).forEach((thread: any, index: number) => {
       const filePath = thread.file_path ?? thread.filePath ?? '(unknown)';
       const list = map.get(filePath) ?? [];
-      list.push(thread);
+      list.push({ thread, index });
       map.set(filePath, list);
-    }
+    });
     return map;
   }, [meta?.threads]);
+
+  // A collapsed file group unmounts its thread anchors, so a timeline jump to
+  // one of them would silently fail. When the timeline announces a navigation,
+  // expand the group that owns the target anchor before the scroll runs.
+  useEffect(() => {
+    const messageId = message?.id;
+    if (messageId == null) return;
+    const handler = (event: Event) => {
+      const anchorId = (event as CustomEvent).detail?.anchorId;
+      if (!anchorId) return;
+      for (const [filePath, entries] of grouped.entries()) {
+        const owns = entries.some(
+          ({ thread, index }) =>
+            reviewCommentAnchorId(String(messageId), thread, filePath, index) === anchorId,
+        );
+        if (!owns) continue;
+        setCollapsedFiles((prev) => {
+          if (!prev.has(filePath)) return prev;
+          const next = new Set(prev);
+          next.delete(filePath);
+          return next;
+        });
+        return;
+      }
+    };
+    window.addEventListener(TIMELINE_ANCHOR_NAVIGATE_EVENT, handler);
+    return () => window.removeEventListener(TIMELINE_ANCHOR_NAVIGATE_EVENT, handler);
+  }, [grouped, message?.id]);
 
   if (!meta) return null;
 
@@ -78,6 +114,8 @@ export default function FinalizeReviewRoundBlock({ message }: any) {
     <div
       className="flex justify-center mb-4"
       data-testid="finalize-review-round-block"
+      data-message-id={message.id}
+      data-timeline-anchor={message.id ? `review-comment:${message.id}` : undefined}
       aria-label={accessibleLabel}
     >
       <div className="max-w-[95%] sm:max-w-[90%] w-full bg-slate-900/50 border border-slate-700/60 rounded-xl px-4 py-3">
@@ -123,10 +161,15 @@ export default function FinalizeReviewRoundBlock({ message }: any) {
                   </button>
                   {!collapsed ? (
                     <ol className="divide-y divide-slate-700/60 border-t border-slate-700/60">
-                      {threads.map((t: any, i: any) => (
+                      {threads.map(({ thread: t, index }: any) => (
                         <li
-                          key={t.id ?? `${filePath}-${i}`}
+                          key={t.id ?? `${filePath}-${index}`}
                           data-testid="finalize-review-thread"
+                          data-timeline-anchor={
+                            message.id
+                              ? reviewCommentAnchorId(String(message.id), t, filePath, index)
+                              : undefined
+                          }
                           className="px-3 py-2 text-xs text-slate-300"
                         >
                           <div className="mb-0.5 font-mono text-[10px] text-slate-500">

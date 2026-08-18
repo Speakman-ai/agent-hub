@@ -61,7 +61,7 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
     const fullyValidated = isFullyValidated(phases);
     const btn = deriveFinalizeButton({ status, fullyValidated, hasChanges });
     const pushEnabled = canPush({ status, hasChanges }) && !!run?.id;
-    const pushLabel = 'Push';
+    const pushLabel = 'Push changes';
     const selectedValue = sessionControlValueForProject(project, { sessionMode: mode, askMode, automation });
     const consultActive = selectedValue === 'consult';
     const dropdownLabel = sessionControlLabel(selectedValue);
@@ -192,7 +192,7 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
             </TouchableOpacity>
 
             {/* Push */}
-            <TouchableOpacity style={[styles.pushBtn, (!pushEnabled || pushing) && styles.btnDisabled]} onPress={handlePush} disabled={!pushEnabled || pushing} testID="finalize-push-button" accessibilityLabel={hosted ? 'Push to Agent Hub' : 'Push to GitHub'}>
+            <TouchableOpacity style={[styles.pushBtn, (!pushEnabled || pushing) && styles.btnDisabled]} onPress={handlePush} disabled={!pushEnabled || pushing} testID="finalize-push-button" accessibilityLabel="Push changes">
               {pushing ? (<ActivityIndicator size="small" color={colors.emerald300}/>) : (<AppIcon name="cloud-upload-outline" size={12} color={colors.emerald300}/>)}
               <Text style={styles.pushText} numberOfLines={1}>
                 {pushLabel}

@@ -26,6 +26,7 @@ describe('normalizeSessionMultiEngine / isSessionMultiEngine', () => {
 
   it('recognizes supported engines', () => {
     expect(isSessionMultiEngine('cursor-agent')).toBe(true);
+    expect(isSessionMultiEngine('grok-cli')).toBe(true);
     expect(isSessionMultiEngine('gpt-5')).toBe(false);
   });
 });
@@ -36,6 +37,7 @@ describe('buildSessionMultiSpawnArgs advisory flag', () => {
     cursor: '/bin/cursor',
     gemini: '/bin/gemini',
     codex: '/bin/codex',
+    grok: '/bin/grok',
   };
 
   it('uses plan permission mode for advisory claude turns', () => {
@@ -143,6 +145,7 @@ describe('multi-agent worktree lock', () => {
       getCursorBin: vi.fn(() => '/bin/cursor'),
       getGeminiBin: vi.fn(() => '/bin/gemini'),
       getCodexBin: vi.fn(() => '/bin/codex'),
+      getGrokBin: vi.fn(() => '/bin/grok'),
       getConfig: vi.fn(() => ({}) as AppConfig),
       getMaxQueueSize: vi.fn(() => 10),
       runExecutorTurn,

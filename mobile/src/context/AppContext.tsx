@@ -23,7 +23,7 @@ import { deriveSessionState } from '../utils/deriveSessionState';
 import { firstEngineWithAuthenticatedModels, defaultModelForAuthenticatedEngine, } from '../utils/authModelEngines';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
 import { usePendingLessonTotal } from '../hooks/usePendingLessonTotal';
-import { resolveStreamingFromSnapshot } from '@shared/utils/activeTaskSnapshot';
+import { resolveStreamingFromSnapshot, buildStreamingAgentState } from '@shared/utils/activeTaskSnapshot';
 import { buildInterruptQueuedMessageDispatch, isPersistedUploadAttachment, } from '@shared/utils/queuedMessageAttachments';
 import { appendImportEvent } from '@shared/utils/projectImportWizard';
 import { addKanbanRefreshProject, createRefreshScheduler } from '@shared/utils/kanbanRefresh';
@@ -322,6 +322,7 @@ export function AppProvider({ children }: any) {
                 for (const t of data.tasks || []) {
                     next[t.sessionId] = {
                         messageId: t.messageId,
+                        agentId: t.agentId || null,
                         content: t.content || '',
                         engine: t.engine || null,
                         model: t.model || null,
@@ -337,6 +338,11 @@ export function AppProvider({ children }: any) {
                     setStreamingContent(streaming.streamingContent);
                     setStreamingEngine(streaming.streamingEngine);
                     setThinking(streaming.thinking);
+                    setStreamingAgent(buildStreamingAgentState({
+                        agentId: streaming.agentId,
+                        engine: streaming.streamingEngine,
+                        model: streaming.streamingModel,
+                    }, agentsRef.current));
                 }
                 break;
             }
@@ -370,6 +376,7 @@ export function AppProvider({ children }: any) {
                         content: '',
                         engine: data.engine || null,
                         model: data.model || null,
+                        agentId: data.agentId || null,
                     },
                 }));
                 if (forActiveSession) {
@@ -377,16 +384,13 @@ export function AppProvider({ children }: any) {
                     setStreamingMsgId(data.messageId);
                     setStreamingEngine(data.engine || null);
                     setStreamingContent('');
-                    if (data.agentId) {
-                        setStreamingAgent({
-                            agentId: data.agentId,
-                            agentName: data.agentName,
-                            agentColor: data.agentColor,
-                        });
-                    }
-                    else {
-                        setStreamingAgent(null);
-                    }
+                    setStreamingAgent(buildStreamingAgentState({
+                        agentId: data.agentId,
+                        agentName: data.agentName,
+                        agentColor: data.agentColor,
+                        engine: data.engine,
+                        model: data.model,
+                    }, agentsRef.current));
                 }
                 break;
             case 'stream':
@@ -396,20 +400,23 @@ export function AppProvider({ children }: any) {
                         ...(prev[data.sessionId] || {}),
                         messageId: data.messageId,
                         content: data.content,
-                        engine: data.engine || null,
+                        engine: data.engine || prev[data.sessionId]?.engine || null,
+                        model: data.model || prev[data.sessionId]?.model || null,
+                        agentId: data.agentId || prev[data.sessionId]?.agentId || null,
                     },
                 }));
                 if (forActiveSession) {
                     setThinking(false);
                     setStreamingContent(data.content);
-                    setStreamingEngine(data.engine || null);
-                    if (data.agentId) {
-                        setStreamingAgent({
-                            agentId: data.agentId,
-                            agentName: data.agentName,
-                            agentColor: data.agentColor,
-                        });
-                    }
+                    if (data.engine)
+                        setStreamingEngine(data.engine);
+                    setStreamingAgent((prev: any) => buildStreamingAgentState({
+                        agentId: data.agentId,
+                        agentName: data.agentName,
+                        agentColor: data.agentColor,
+                        engine: data.engine,
+                        model: data.model,
+                    }, agentsRef.current, prev) || prev);
                 }
                 break;
             case 'interrupted':
@@ -1432,6 +1439,7 @@ export function AppProvider({ children }: any) {
             setStreamingContent('');
             setStreamingMsgId(null);
             setStreamingEngine(null);
+            setStreamingAgent(null);
             return;
         }
         const t = activeTasks[activeSessionId];
@@ -1440,12 +1448,18 @@ export function AppProvider({ children }: any) {
             setStreamingContent(t.content);
             setStreamingEngine(t.engine);
             setThinking(!t.content);
+            setStreamingAgent(buildStreamingAgentState({
+                agentId: t.agentId,
+                engine: t.engine,
+                model: t.model,
+            }, agentsRef.current));
         }
         else {
             setThinking(false);
             setStreamingContent('');
             setStreamingMsgId(null);
             setStreamingEngine(null);
+            setStreamingAgent(null);
         }
     }, [activeSessionId]);
     const handleSwitchOrg = useCallback(async (orgId: any) => {
@@ -1737,6 +1751,7 @@ export function AppProvider({ children }: any) {
             setStreamingContent('');
             setStreamingMsgId(null);
             setStreamingEngine(null);
+            setStreamingAgent(null);
         }
     }, [send]);
     // Derived from persisted message history: any user message containing an
@@ -2139,6 +2154,7 @@ export function AppProvider({ children }: any) {
         streamingContent,
         streamingMsgId,
         streamingEngine,
+        streamingAgent,
         sessionEngine,
         sessionModel,
         sessionReasoningEffort,
