@@ -40,6 +40,36 @@ export interface AutoReviewDeps {
   handleChat: RouteDeps['handleChat'];
 }
 
+/**
+ * Outcome of a review-dispatch attempt. `dispatched` is true ONLY when a
+ * reviewer session was actually created and handed to the engine — callers use
+ * it to decide whether a pending state is real. Every no-op path (no reviewer,
+ * unavailable engine, dedup, guard, error) returns `dispatched: false` with a
+ * `reason`, so a caller never latches a "review requested" state that will
+ * never produce a durable flag or verdict.
+ */
+export interface AutoReviewResult {
+  dispatched: boolean;
+  sessionId?: string;
+  reason?: string;
+}
+
+/**
+ * How long a durable agent-review claim stays authoritative before it is
+ * treated as stale and reclaimable. This is the crash-recovery backstop: the
+ * in-flight flag is normally released when the reviewer turn ends, but if the
+ * server dies mid-review that in-memory release never runs, so the flag would
+ * otherwise wedge the PR as "under review" forever. A claim older than this is
+ * assumed dead and the next request may reclaim it. Defaults to 60 minutes —
+ * longer than any real review turn (so a live review is never pre-empted), and
+ * aligned with the Finalize dispatch's 60-minute budget backstop. Operators can
+ * override with AGENT_REVIEW_CLAIM_TTL_MS.
+ */
+export function agentReviewClaimTtlMs(): number {
+  const raw = Number(process.env.AGENT_REVIEW_CLAIM_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60 * 60 * 1000;
+}
+
 export interface AutoReviewOpts {
   /** Test seam: bypass the vitest env guard (handleChat mocked). */
   force?: boolean;
@@ -100,18 +130,22 @@ export async function maybeRunPrAutoReview(
   pr: Pick<PullRequestRow, 'number' | 'head_branch' | 'status' | 'author'>,
   deps: AutoReviewDeps,
   opts: AutoReviewOpts = {},
-): Promise<void> {
+): Promise<AutoReviewResult> {
+  // Set to the owning session id once the atomic claim below succeeds, so the
+  // catch can roll the claim back if anything throws synchronously after it.
+  let claimedSessionId: string | null = null;
   try {
-    if (process.env.AGENT_HUB_DISABLE_AUTO_REVIEW === '1' && !opts.force) return;
-    if (project.gitHost !== 'agenthub') return;
+    if (process.env.AGENT_HUB_DISABLE_AUTO_REVIEW === '1' && !opts.force)
+      return { dispatched: false, reason: 'disabled' };
+    if (project.gitHost !== 'agenthub') return { dispatched: false, reason: 'not_hosted' };
     const manual = opts.trigger === 'manual_request';
-    if (pr.status && pr.status !== 'open') return;
-    if (!hostedRepoExists(project.id)) return;
+    if (pr.status && pr.status !== 'open') return { dispatched: false, reason: 'not_open' };
+    if (!hostedRepoExists(project.id)) return { dispatched: false, reason: 'repo_missing' };
 
     const reviewer = (project.agents || []).find((a) => a.role === 'reviewer');
     if (!reviewer) {
       console.warn(`[auto-review] ${project.id}: no reviewer agent exists — skipping`);
-      return;
+      return { dispatched: false, reason: 'no_reviewer' };
     }
 
     // Post-Finalize-push lock: if this PR already shipped through Finalize, the
@@ -129,17 +163,17 @@ export async function maybeRunPrAutoReview(
         buildNativePrUrl(project.id, pr.number),
       )
     ) {
-      return;
+      return { dispatched: false, reason: 'finalize_locked' };
     }
 
     const repoPath = bareRepoPath(project.id);
     const headSha = await revParse(repoPath, `refs/heads/${pr.head_branch}`);
-    if (!headSha) return; // branch gone
+    if (!headSha) return { dispatched: false, reason: 'branch_gone' }; // branch gone
 
     // Session-validation passthrough: Finalize already reviewed this sha.
     // A manual request overrides this — the human asked for a fresh review.
     if (!manual && deps.stmts.getValidatedFinalizeRunForSha.get(project.id, headSha)) {
-      return;
+      return { dispatched: false, reason: 'already_validated' };
     }
 
     // Per-head-sha dedup keeps external-push triggers from re-dispatching. A
@@ -147,7 +181,7 @@ export async function maybeRunPrAutoReview(
     // re-review of the same head), so it neither consults nor records the key.
     const key = `${project.id}#${pr.number}@${headSha}`;
     if (!manual) {
-      if (dispatched.has(key)) return;
+      if (dispatched.has(key)) return { dispatched: false, reason: 'deduped' };
       dispatched.add(key);
     }
 
@@ -168,7 +202,7 @@ export async function maybeRunPrAutoReview(
         `[auto-review] ${project.id} pr#${pr.number}: head update has no attributed Hub pusher — skipping`,
       );
       dispatched.delete(key);
-      return;
+      return { dispatched: false, reason: 'no_pusher' };
     }
     const engine = reviewer.engine || 'claude-code';
     const model = resolveEffectiveModel(deps.config, engine, {
@@ -210,7 +244,7 @@ export async function maybeRunPrAutoReview(
         }) — skipping`,
       );
       dispatched.delete(key);
-      return;
+      return { dispatched: false, reason: 'engine_env_unavailable' };
     }
 
     if (isSupportedEngine(engine)) {
@@ -223,9 +257,50 @@ export async function maybeRunPrAutoReview(
           `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${engine}" unavailable (${probe.reason ?? 'unknown'}) — skipping`,
         );
         dispatched.delete(key);
-        return;
+        return { dispatched: false, reason: 'engine_unavailable' };
       }
     }
+    // Atomic dispatch guard: claim the in-flight slot BEFORE creating the
+    // reviewer session. A manual request intentionally bypasses the in-memory
+    // per-sha dedup above, so without this two clients (or repeated REST calls)
+    // could both reach here and spawn concurrent Reviewer sessions for the same
+    // PR. The conditional UPDATE (…WHERE agent_review_requested_at IS NULL) is
+    // atomic on the single better-sqlite3 connection: exactly one caller sees
+    // changes===1 and proceeds; the rest bail out as already-in-flight. The
+    // claim records the owning sessionId so only this dispatch can later release
+    // it (rollback on failure) without clobbering a newer claim.
+    const claimNow = Date.now();
+    const staleCutoff = claimNow - agentReviewClaimTtlMs();
+    const claim = deps.stmts.claimPullRequestAgentReview.run(
+      claimNow,
+      sessionId,
+      claimNow,
+      project.id,
+      pr.number,
+      staleCutoff,
+    );
+    if (claim.changes === 1) {
+      // We won the claim — this dispatch owns the in-flight flag and may release it.
+      claimedSessionId = sessionId;
+    } else {
+      // changes===0 means either a review is genuinely in flight, or there is no
+      // persisted PR row yet to claim. Distinguish so we only block on the former.
+      const existing = deps.stmts.getPullRequestByNumber.get(project.id, pr.number) as
+        | { agent_review_requested_at: number | null }
+        | undefined;
+      if (existing && existing.agent_review_requested_at != null) {
+        // Another review is already in flight. Release the per-sha dedup key we
+        // may have added so a later attempt can run once this one resolves.
+        if (!manual) dispatched.delete(key);
+        console.log(
+          `[auto-review] ${project.id} pr#${pr.number}: a review is already in flight — skipping`,
+        );
+        return { dispatched: false, reason: 'already_in_flight' };
+      }
+      // No persisted PR row to guard — proceed without the durable claim,
+      // preserving legacy dispatch behavior (the flag is a no-op without a row).
+    }
+
     const sessionName = manual
       ? `[Review PR #${pr.number}] requested @ ${headSha.slice(0, 8)}`.slice(0, 100)
       : `[Review PR #${pr.number}] external push @ ${headSha.slice(0, 8)}`.slice(0, 100);
@@ -253,19 +328,56 @@ export async function maybeRunPrAutoReview(
       `\`git fetch origin ${pr.head_branch}\` if you need the head commits locally.\n\n` +
       `### How to post your verdict (REQUIRED last step)\n` +
       `POST \`$AGENT_HUB_URL/api/projects/${project.id}/pulls/${pr.number}/reviews\` with ` +
-      `\`X-API-Key: $AGENT_HUB_API_KEY\` and JSON body:\n` +
+      `\`X-API-Key: $AGENT_HUB_API_KEY\`, the header \`X-Agent-Hub-Session-Id: ${sessionId}\` ` +
+      `(this is your review session — it must be sent verbatim so your verdict resolves the ` +
+      `pending review), and JSON body:\n` +
       `\`{"state": "approved" | "changes_requested", "body": "<your findings>", "reviewer": ${JSON.stringify(reviewer.name)}}\`\n\n` +
       `Use your severity rubric: any finding scoring > 3 is a BLOCKER → changes_requested with ` +
       `file:line specifics; otherwise approved (non-blocking notes welcome in the body). You are ` +
       `READ-ONLY: never edit code, never push, never merge.`;
 
     deps.stmts.insertBackgroundTask.run(taskId, sessionId, reviewer.id, prompt);
-    deps.handleChat(null, {
-      type: 'chat',
-      agentId: reviewer.id,
-      sessionId,
-      content: prompt,
-    });
+    // The durable in-flight flag was already set by the atomic claim above.
+    // Hand off to the reviewer turn. handleChat is fire-and-forget, but we attach
+    // a terminal resolver: whether the turn rejects (spawn/handoff failure) or
+    // simply ends without a verdict, releasePullRequestAgentReviewBySession
+    // rolls the claim back so the PR does not stay marked "under review" with no
+    // review running. It is session-scoped, so a normal verdict (which already
+    // cleared+nulled the session) or a newer claim is left untouched. Wrapping in
+    // Promise.resolve keeps a synchronous throw from handleChat propagating to the
+    // outer catch (which also releases), while a returned promise settles here.
+    const releaseClaim = (): void => {
+      const released = deps.stmts.releasePullRequestAgentReviewBySession.run(
+        Date.now(),
+        project.id,
+        pr.number,
+        sessionId,
+      );
+      if (released.changes > 0) {
+        deps.broadcast({
+          type: 'native_pr_update',
+          projectId: project.id,
+          prNumber: pr.number,
+          action: 'agent_review_request_cleared',
+        });
+      }
+    };
+    void Promise.resolve(
+      deps.handleChat(null, {
+        type: 'chat',
+        agentId: reviewer.id,
+        sessionId,
+        content: prompt,
+      }),
+    )
+      .catch((err: unknown) => {
+        console.warn(
+          `[auto-review] ${project.id} pr#${pr.number}: reviewer turn failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      })
+      .finally(releaseClaim);
     deps.broadcast({
       type: 'pr_auto_review_started',
       projectId: project.id,
@@ -273,14 +385,46 @@ export async function maybeRunPrAutoReview(
       sessionId,
       headSha,
     });
+    // Nudge connected clients to refresh the PR so the durable pending flag
+    // surfaces immediately (the list/detail payloads derive agent_review_requested).
+    deps.broadcast({
+      type: 'native_pr_update',
+      projectId: project.id,
+      prNumber: pr.number,
+      action: 'agent_review_requested',
+    });
     console.log(
       `[auto-review] ${project.id} pr#${pr.number} @ ${headSha.slice(0, 8)}: reviewer session ${sessionId} dispatched`,
     );
+    return { dispatched: true, sessionId };
   } catch (err: unknown) {
     console.warn(
       `[auto-review] ${project.id} pr#${pr.number}: dispatch failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
+    // A synchronous failure after we won the claim (e.g. handleChat throwing
+    // before returning a promise) must roll the in-flight flag back, or the PR
+    // stays marked under review forever. Session-scoped, so it only clears our
+    // own claim.
+    if (claimedSessionId) {
+      try {
+        deps.stmts.releasePullRequestAgentReviewBySession.run(
+          Date.now(),
+          project.id,
+          pr.number,
+          claimedSessionId,
+        );
+        deps.broadcast({
+          type: 'native_pr_update',
+          projectId: project.id,
+          prNumber: pr.number,
+          action: 'agent_review_request_cleared',
+        });
+      } catch {
+        /* best-effort rollback */
+      }
+    }
+    return { dispatched: false, reason: 'error' };
   }
 }

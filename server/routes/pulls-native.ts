@@ -349,17 +349,40 @@ registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/pulls/{number}/request-review',
   tags: ['Projects'],
-  summary: 'Flag (or unflag) a native pull request for human review',
+  summary: 'Request a review on a native pull request (human flag and/or agent)',
+  description:
+    "With requested=true: kind='human' flips the human-review flag only; kind='agent' dispatches the project Reviewer agent only, leaving the flag untouched; kind='both' (the default when omitted) does both, preserving legacy behavior. requested=false always clears the human-review flag and never dispatches, regardless of kind.",
   request: {
     params: z.object({ projectId: z.string(), number: z.string() }),
     body: {
-      content: jsonContent(z.object({ requested: z.boolean().optional() })),
+      content: jsonContent(
+        z.object({
+          requested: z.boolean().optional(),
+          kind: z.enum(['agent', 'human', 'both']).optional(),
+        }),
+      ),
       required: false,
     },
   },
   responses: {
-    200: { description: 'Updated PR summary.', content: jsonContent(PrActionOkSchema) },
-    400: { description: 'Not Hub-hosted.', content: jsonContent(PrErrorSchema) },
+    200: {
+      description:
+        'Updated PR summary. agent_review_dispatched is true only when a Reviewer agent session was actually dispatched (present only for agent/both requests).',
+      content: jsonContent(
+        z.object({
+          pr: z.record(z.string(), z.unknown()),
+          agent_review_dispatched: z.boolean().optional(),
+          agent_review_reason: z.string().optional().openapi({
+            description:
+              "Why an agent dispatch did not occur, e.g. 'already_in_flight', 'no_reviewer', 'engine_unavailable'.",
+          }),
+        }),
+      ),
+    },
+    400: {
+      description: "Not Hub-hosted, or kind is not one of 'agent' | 'human' | 'both'.",
+      content: jsonContent(PrErrorSchema),
+    },
     404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
     409: { description: 'PR is not open.', content: jsonContent(PrErrorSchema) },
   },
@@ -383,6 +406,10 @@ registerPath({
             .string()
             .optional()
             .openapi({ description: 'Reviewer-name override (agent reviews).' }),
+          session_id: z.string().nullable().optional().openapi({
+            description:
+              'Acting session id (also accepted via the X-Agent-Hub-Session-Id header). A verdict clears the in-flight agent-review claim only when this matches the session that owns it.',
+          }),
         }),
       ),
       required: true,
@@ -869,24 +896,70 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
 
   router.post(
     '/api/projects/:projectId/pulls/:number/request-review',
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const ctx = resolveActionContext(req, res);
       if (!ctx) return;
-      const requestedRaw = (req.body as Record<string, unknown> | undefined)?.requested;
+      const body = (req.body as Record<string, unknown> | undefined) ?? {};
+      const requestedRaw = body.requested;
       const requested = requestedRaw === undefined ? true : requestedRaw === true;
+      // `kind` splits the two reviewer surfaces:
+      //   'human' — flip the human-review flag only (no agent dispatch)
+      //   'agent' — dispatch the Reviewer agent only (leave the human flag alone)
+      //   'both'  — the pre-split behavior; legacy callers that omit `kind`
+      //             (flag + dispatch) land here for backward compatibility.
+      // Enforce the registered enum at runtime: a typo must 400, not silently
+      // fall back to 'both' (which would flag AND dispatch unexpectedly).
+      const kindRaw = body.kind;
+      if (
+        kindRaw !== undefined &&
+        kindRaw !== 'agent' &&
+        kindRaw !== 'human' &&
+        kindRaw !== 'both'
+      ) {
+        return res.status(400).json({ error: "kind must be 'agent', 'human', or 'both'" });
+      }
+      const kind: 'agent' | 'human' | 'both' = (kindRaw as 'agent' | 'human' | 'both') ?? 'both';
       const areq = req as AuthenticatedRequest;
       try {
-        const { row } = deps.nativePr!.setReviewRequested({
-          project: ctx.project,
-          number: ctx.number,
-          requested,
-          actor: areq.authUser ?? areq.authUserId ?? 'user',
-        });
-        // Flagging for review should actually produce one: dispatch the project
-        // Reviewer agent against this PR. Fire-and-forget — a missing reviewer
-        // agent or an unavailable engine logs and no-ops inside the helper, so
-        // the flag still lands and the response is unaffected. Clearing the flag
-        // (requested=false) never dispatches.
+        let row: {
+          number: number;
+          head_branch: string;
+          status: 'open' | 'closed' | 'merged';
+          author: string;
+        };
+        // Write the human-review flag except for an agent-only *set*
+        // (kind='agent' && requested): that dispatches without flagging.
+        // A clear (requested=false) always goes through the flag path — clearing
+        // is inherently a human-flag action — so kind='agent' + requested=false
+        // still clears the flag, matching the documented contract.
+        const writeFlag = !requested || kind !== 'agent';
+        if (writeFlag) {
+          ({ row } = deps.nativePr!.setReviewRequested({
+            project: ctx.project,
+            number: ctx.number,
+            requested,
+            actor: areq.authUser ?? areq.authUserId ?? 'user',
+          }));
+        } else {
+          // Agent-only set: don't touch the human-review flag. Load and guard the
+          // PR ourselves so 404 (unknown) / 409 (not open) match setReviewRequested.
+          const pr = deps.stmts.getPullRequestByNumber.get(ctx.project.id, ctx.number) as
+            | typeof row
+            | undefined;
+          if (!pr) throw new NativePrError(`PR #${ctx.number} not found`, 404);
+          if (pr.status !== 'open') {
+            throw new NativePrError(`PR #${ctx.number} is ${pr.status}`, 409);
+          }
+          row = pr;
+        }
+        // Dispatch the project Reviewer agent against this PR for agent/both
+        // requests. We AWAIT the dispatch and report whether it actually
+        // happened: the helper no-ops (no reviewer agent, unavailable engine,
+        // dedup, guard) return dispatched:false, and only a real dispatch stamps
+        // the durable agent_review_requested flag. Reporting the outcome lets the
+        // client avoid latching a "review requested" state that will never
+        // produce a flag or verdict. Awaiting is bounded: the helper kicks off
+        // handleChat without waiting for the review to finish.
         //
         // We deliberately do NOT pass `force`: that is a test-only seam to
         // bypass the `AGENT_HUB_DISABLE_AUTO_REVIEW` guard, which is set ONLY in
@@ -894,8 +967,10 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
         // dispatches normally; under test it stays inert (no real Reviewer CLI
         // spawn). The route→dispatch wiring is covered by spying on the helper
         // in pulls-native.test.ts, independent of that guard.
-        if (requested) {
-          void maybeRunPrAutoReview(
+        let agentReviewDispatched: boolean | undefined;
+        let agentReviewReason: string | undefined;
+        if (requested && kind !== 'human') {
+          const result = await maybeRunPrAutoReview(
             ctx.project,
             {
               number: row.number,
@@ -911,8 +986,14 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
             },
             { trigger: 'manual_request', pushedByUserId: areq.authUserId ?? null },
           );
+          agentReviewDispatched = result?.dispatched === true;
+          agentReviewReason = result?.reason;
         }
-        res.json({ pr: row });
+        res.json({
+          pr: row,
+          agent_review_dispatched: agentReviewDispatched,
+          agent_review_reason: agentReviewReason,
+        });
       } catch (err: unknown) {
         sendNativeError(res, err);
       }
@@ -942,6 +1023,29 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       typeof body.reviewer === 'string' && body.reviewer.trim()
         ? body.reviewer.trim().slice(0, 80)
         : null;
+    // Owning session id used to clear the in-flight agent-review claim. This is
+    // an AUTHORIZATION signal, so it must NOT be a plain caller-supplied value:
+    // session ids are broadcast in `pr_auto_review_started`, so any authenticated
+    // project user could replay one to clear a live claim. We therefore trust
+    // only:
+    //   1. `authSpawnSessionId` — the cryptographically bound session id derived
+    //      by the auth layer from the reviewer spawn's per-session `spawn:<id>`
+    //      key (no-global-apiKey deployments). Not forgeable by another user.
+    //   2. the caller-supplied session id, but ONLY under the global break-glass
+    //      apiKey (`authViaApiKey`) — that key is server-injected into reviewer
+    //      spawns when a global apiKey is configured, so the request is
+    //      server-originated and the prompt-baked X-Agent-Hub-Session-Id header
+    //      is trustworthy. A regular JWT / per-user-key caller gets null here and
+    //      cannot clear the claim by replaying an id.
+    // Mirrors the break-glass identity resolution in aws-sso-caller-identity.ts.
+    const bound = areq.authSpawnSessionId;
+    let claimSessionId: string | null = null;
+    if (typeof bound === 'string' && bound.trim()) {
+      claimSessionId = bound.trim();
+    } else if (areq.authViaApiKey) {
+      const bodySessionId = typeof body.session_id === 'string' ? body.session_id : undefined;
+      claimSessionId = resolveCardSessionId(req, bodySessionId);
+    }
     try {
       const { review } = deps.nativePr!.submitReview({
         project: ctx.project,
@@ -949,6 +1053,7 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
         state,
         body: reviewBody,
         reviewer: reviewerOverride ?? areq.authUser ?? areq.authUserId ?? 'user',
+        sessionId: claimSessionId,
       });
       res.status(201).json({ review });
     } catch (err: unknown) {

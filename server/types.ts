@@ -879,6 +879,10 @@ export interface PullRequestRow {
   /** Set when a human flagged the PR for review (cleared by approve/changes-requested). */
   review_requested_at: number | null;
   review_requested_by: string | null;
+  /** Set while an agent (Reviewer) review is in flight; cleared when the reviewer posts a verdict or the turn ends. */
+  agent_review_requested_at: number | null;
+  /** Session id that owns the in-flight agent review (the atomic-claim guard). */
+  agent_review_session_id: string | null;
   /**
    * Revert commit that undid {@link merged_sha} on the base branch. Set once;
    * the PR stays `merged` (the merge happened) with the revert recorded
@@ -2868,6 +2872,12 @@ export interface Stmts {
   markPullRequestReverted: Stmt;
   /** Review-request flag. Params: (requested_at|null, requested_by|null, updated_at, id). */
   setPullRequestReviewRequested: Stmt;
+  /** Durable agent-review-in-flight flag (seed/test helper). Params: (agent_review_requested_at|null, updated_at, project_id, number). */
+  setPullRequestAgentReviewRequested: Stmt;
+  /** Atomic claim of the agent-review-in-flight slot; reclaims a stale claim older than the cutoff. Params: (agent_review_requested_at, agent_review_session_id, updated_at, project_id, number, stale_cutoff). .changes===1 wins. */
+  claimPullRequestAgentReview: Stmt;
+  /** Release the agent-review claim only if this session still owns it. Params: (updated_at, project_id, number, agent_review_session_id). */
+  releasePullRequestAgentReviewBySession: Stmt;
   /** Insert a human review row. Params: (id, project_id, pr_number, reviewer, state, body, created_at). */
   insertPullRequestReview: Stmt;
   listPullRequestReviewsForPr: Stmt;

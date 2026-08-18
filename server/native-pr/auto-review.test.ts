@@ -120,6 +120,9 @@ describe('maybeRunPrAutoReview', () => {
     expect(msg.agentId).toBe(`${project.id}-reviewer`);
     expect(msg.content).toContain(`/projects/${project.id}/pulls/1`);
     expect(msg.content).toContain('"reviewer": "' + project.id + ' Reviewer"');
+    // The prompt bakes the reviewer's own session id into the verdict POST so the
+    // verdict can prove it owns the in-flight claim.
+    expect(msg.content).toContain(`X-Agent-Hub-Session-Id: ${msg.sessionId}`);
     const session = stmts.getSession.get(msg.sessionId) as { agent_id: string; name: string };
     expect(session.agent_id).toBe(`${project.id}-reviewer`);
     expect(session.name).toContain(headSha.slice(0, 8));
@@ -132,6 +135,187 @@ describe('maybeRunPrAutoReview', () => {
       { force: true, trigger: 'pr_create' },
     );
     expect(handleChat).toHaveBeenCalledOnce();
+  });
+
+  it('stamps the durable agent-review-in-flight flag on dispatch', async () => {
+    const { project, branch } = await hostedPrProject();
+    const now = Date.now();
+    // A persisted PR row for the durable flag to land on (the flag is keyed by
+    // project+number). Without a row the stamp is a harmless no-op UPDATE.
+    stmts.insertPullRequest.run(
+      `pr-${project.id}-1`,
+      project.id,
+      1,
+      'T',
+      '',
+      branch,
+      'main',
+      'deadbeef',
+      'ryan',
+      now,
+      now,
+    );
+    const before = stmts.getPullRequestByNumber.get(project.id, 1) as {
+      agent_review_requested_at: number | null;
+      agent_review_session_id: string | null;
+    };
+    expect(before.agent_review_requested_at).toBeNull();
+
+    // A never-settling reviewer turn keeps the claim in flight so we can observe
+    // the durable flag (a settled turn would release it via the terminal path).
+    const handleChat = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const result = await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'manual_request' },
+    );
+    expect(handleChat).toHaveBeenCalledOnce();
+    expect(result.dispatched).toBe(true);
+    expect(result.sessionId).toBeTruthy();
+    const after = stmts.getPullRequestByNumber.get(project.id, 1) as {
+      agent_review_requested_at: number | null;
+      agent_review_session_id: string | null;
+    };
+    expect(after.agent_review_requested_at).toBeTruthy();
+    // The claim records the owning session id (the atomic-guard key).
+    expect(after.agent_review_session_id).toBe(result.sessionId);
+  });
+
+  it('atomic claim blocks a second concurrent dispatch (no duplicate reviewer session)', async () => {
+    const { project, branch } = await hostedPrProject();
+    const now = Date.now();
+    stmts.insertPullRequest.run(
+      `pr-${project.id}-1`,
+      project.id,
+      1,
+      'T',
+      '',
+      branch,
+      'main',
+      'deadbeef',
+      'ryan',
+      now,
+      now,
+    );
+    // First dispatch claims and stays in flight (never-settling turn).
+    const handleChat = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+    };
+    const first = await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'manual_request' },
+    );
+    expect(first.dispatched).toBe(true);
+
+    // A second manual request (bypasses per-sha dedup) must NOT dispatch again.
+    const second = await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'manual_request' },
+    );
+    expect(second.dispatched).toBe(false);
+    expect(second.reason).toBe('already_in_flight');
+    expect(handleChat).toHaveBeenCalledOnce();
+  });
+
+  it('reclaims a STALE claim (crash recovery) instead of blocking forever', async () => {
+    const { project, branch } = await hostedPrProject();
+    const now = Date.now();
+    stmts.insertPullRequest.run(
+      `pr-${project.id}-1`,
+      project.id,
+      1,
+      'T',
+      '',
+      branch,
+      'main',
+      'deadbeef',
+      'ryan',
+      now,
+      now,
+    );
+    // Simulate a claim left behind by a crashed server: flag set two hours ago
+    // (older than the 60-min TTL), with no live release possible.
+    stmts.setPullRequestAgentReviewRequested.run(now - 2 * 60 * 60 * 1000, now, project.id, 1);
+
+    const handleChat = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const result = await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'manual_request' },
+    );
+    // The stale claim was reclaimed rather than rejected as already_in_flight.
+    expect(result.dispatched).toBe(true);
+    expect(handleChat).toHaveBeenCalledOnce();
+    const row = stmts.getPullRequestByNumber.get(project.id, 1) as {
+      agent_review_requested_at: number | null;
+      agent_review_session_id: string | null;
+    };
+    expect(row.agent_review_requested_at).toBeGreaterThan(now - 60 * 60 * 1000);
+    expect(row.agent_review_session_id).toBe(result.sessionId);
+  });
+
+  it('rolls the in-flight claim back when the reviewer turn fails', async () => {
+    const { project, branch } = await hostedPrProject();
+    const now = Date.now();
+    stmts.insertPullRequest.run(
+      `pr-${project.id}-1`,
+      project.id,
+      1,
+      'T',
+      '',
+      branch,
+      'main',
+      'deadbeef',
+      'ryan',
+      now,
+      now,
+    );
+    // The reviewer turn rejects — the terminal resolver must clear the flag.
+    const handleChat = vi.fn().mockRejectedValue(new Error('spawn failed'));
+    const result = await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'manual_request' },
+    );
+    expect(result.dispatched).toBe(true);
+    // Let the rejection's terminal .finally run.
+    await vi.waitFor(() => {
+      const row = stmts.getPullRequestByNumber.get(project.id, 1) as {
+        agent_review_requested_at: number | null;
+      };
+      expect(row.agent_review_requested_at).toBeNull();
+    });
+    const cleared = stmts.getPullRequestByNumber.get(project.id, 1) as {
+      agent_review_session_id: string | null;
+    };
+    expect(cleared.agent_review_session_id).toBeNull();
+  });
+
+  it('reports dispatched:false with a reason when no reviewer agent exists', async () => {
+    const { project, branch } = await hostedPrProject();
+    // Strip the reviewer agent that hostedPrProject added.
+    project.agents = project.agents.filter((a) => a.role !== 'reviewer');
+    const handleChat = vi.fn();
+    const result = await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'manual_request' },
+    );
+    expect(handleChat).not.toHaveBeenCalled();
+    expect(result.dispatched).toBe(false);
+    expect(result.reason).toBe('no_reviewer');
   });
 
   it('dispatches even when approval is not required to merge', async () => {

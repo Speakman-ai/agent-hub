@@ -43,6 +43,7 @@ import { api } from '../utils/api';
     createNativePr: vi.fn(),
     revertNativePr: vi.fn(),
     dismissNativePrReview: vi.fn(),
+    requestNativePrReview: vi.fn(),
   },
 }));
 
@@ -1363,5 +1364,128 @@ describe('<PullRequestsPage /> — PR deep linking', () => {
     // Back on the list: the detail-only "Back to list" affordance is gone.
     await waitFor(() => expect(screen.queryByRole('button', { name: /back to list/i })).toBeNull());
     expect(await screen.findByText('Fix the flaky test')).toBeInTheDocument();
+  });
+});
+
+describe('<PullRequestsPage /> — Request Agent/Human Review buttons', () => {
+  beforeEach(() => {
+    (api.getProjectPulls as any).mockReset();
+    (api.getProjectPullDetail as any).mockReset();
+    (api.requestNativePrReview as any).mockReset();
+    // Default: the server confirms a reviewer was dispatched.
+    (api.requestNativePrReview as any).mockResolvedValue({
+      pr: prSummary,
+      agent_review_dispatched: true,
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // The buttons only render for open, Agent-Hub-hosted (native) PRs.
+  async function openNativeDetail(props: any = {}) {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      ...detailResponse,
+      source: 'agenthub',
+    });
+    render(<PullRequestsPage projectId="proj-1" project={project} {...props} />);
+    fireEvent.click((await screen.findByText('Fix the flaky test')) as any);
+    return await screen.findByTestId('pr-request-agent-review-button');
+  }
+
+  it('Request Agent Review dispatches the agent only (kind=agent)', async () => {
+    const agentBtn = await openNativeDetail();
+    fireEvent.click(agentBtn as any);
+    await waitFor(() => expect(api.requestNativePrReview).toHaveBeenCalledTimes(1));
+    expect(api.requestNativePrReview).toHaveBeenCalledWith('proj-1', 123, true, 'agent');
+  });
+
+  it('agent button latches to a disabled "requested" state, blocking duplicate dispatch', async () => {
+    const agentBtn = await openNativeDetail();
+    fireEvent.click(agentBtn as any);
+    await waitFor(() => expect(api.requestNativePrReview).toHaveBeenCalledTimes(1));
+
+    // The button reflects the persistent requested state and is disabled, so a
+    // second click cannot dispatch a duplicate while the review is pending.
+    const latched = await screen.findByTestId('pr-request-agent-review-button');
+    await waitFor(() => expect(latched).toBeDisabled());
+    expect(latched).toHaveTextContent(/agent review requested/i);
+    fireEvent.click(latched as any);
+    expect(api.requestNativePrReview).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT latch when the server reports no reviewer was dispatched', async () => {
+    // No reviewer agent / unavailable engine → dispatch no-ops. The button must
+    // NOT stick in a false "requested" state; the user is told instead.
+    (api.requestNativePrReview as any).mockResolvedValue({
+      pr: prSummary,
+      agent_review_dispatched: false,
+    });
+    const onToast = vi.fn();
+    const agentBtn = await openNativeDetail({ onToast });
+    fireEvent.click(agentBtn as any);
+    await waitFor(() => expect(api.requestNativePrReview).toHaveBeenCalledTimes(1));
+
+    const btn = await screen.findByTestId('pr-request-agent-review-button');
+    await waitFor(() => expect(btn).toBeEnabled());
+    expect(btn).toHaveTextContent(/request agent review/i);
+    expect(onToast).toHaveBeenCalledWith(
+      expect.stringMatching(/no reviewer agent/i),
+      'error',
+      6000,
+    );
+  });
+
+  it('latches (does not error) when a review is already in flight', async () => {
+    // A concurrent request lost the server-side atomic claim: dispatched=false
+    // but a review IS pending, so the button should reflect requested, not error.
+    (api.requestNativePrReview as any).mockResolvedValue({
+      pr: prSummary,
+      agent_review_dispatched: false,
+      agent_review_reason: 'already_in_flight',
+    });
+    const onToast = vi.fn();
+    const agentBtn = await openNativeDetail({ onToast });
+    fireEvent.click(agentBtn as any);
+    await waitFor(() => expect(api.requestNativePrReview).toHaveBeenCalledTimes(1));
+
+    const btn = await screen.findByTestId('pr-request-agent-review-button');
+    await waitFor(() => expect(btn).toBeDisabled());
+    expect(btn).toHaveTextContent(/agent review requested/i);
+    expect(onToast).toHaveBeenCalledWith(
+      expect.stringMatching(/already in progress/i),
+      'success',
+      4000,
+    );
+  });
+
+  it('initializes the agent button from the server pending flag (survives remount)', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      ...detailResponse,
+      source: 'agenthub',
+      pr: { ...detailResponse.pr, agent_review_requested: true },
+    });
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click((await screen.findByText('Fix the flaky test')) as any);
+
+    // No click happened in this component's lifetime, yet the button reflects the
+    // durable server-side pending state — the requested state survives a remount.
+    const btn = await screen.findByTestId('pr-request-agent-review-button');
+    await waitFor(() => expect(btn).toBeDisabled());
+    expect(btn).toHaveTextContent(/agent review requested/i);
+    fireEvent.click(btn as any);
+    expect(api.requestNativePrReview).not.toHaveBeenCalled();
+  });
+
+  it('Request Human Review flips the human flag only (kind=human)', async () => {
+    await openNativeDetail();
+    const humanBtn = await screen.findByTestId('pr-request-review-button');
+    fireEvent.click(humanBtn as any);
+    await waitFor(() => expect(api.requestNativePrReview).toHaveBeenCalledTimes(1));
+    // review_requested is falsy on the summary, so the toggle requests true.
+    expect(api.requestNativePrReview).toHaveBeenCalledWith('proj-1', 123, true, 'human');
   });
 });

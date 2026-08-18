@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Wrench,
   Eye,
+  Bot,
   Zap,
   ZapOff,
   Undo2,
@@ -541,6 +542,16 @@ function PrDetail({
   const [reverting, setReverting] = useState(false);
   const [confirmingRevert, setConfirmingRevert] = useState(false);
   const [togglingReview, setTogglingReview] = useState(false);
+  const [dispatchingAgentReview, setDispatchingAgentReview] = useState(false);
+  // Latched once an agent review is dispatched so the button reflects a
+  // persistent "requested" state and cannot dispatch duplicates while the
+  // reviewer is still working. This is only the OPTIMISTIC half — it bridges the
+  // gap between the click and the durable server flag (`pr.agent_review_requested`)
+  // landing. Durability across reloads / remounts / other clients comes from the
+  // server flag, which this component ORs in below. Cleared when the reviewer
+  // posts its verdict (a new review row appears) or when we switch to a different PR.
+  const [agentReviewRequested, setAgentReviewRequested] = useState(false);
+  const agentReviewReviewCount = useRef(0);
   const [togglingAutoMerge, setTogglingAutoMerge] = useState(false);
   const [reviewVerdict, setReviewVerdict] = useState('approved');
   const [reviewBody, setReviewBody] = useState('');
@@ -553,7 +564,27 @@ function PrDetail({
   // A dismissed review renders collapsed (GitHub parity); this holds the id of
   // the one whose body the user chose to expand.
   const [expandedDismissedId, setExpandedDismissedId] = useState<string | null>(null);
+
+  // Drop the "agent review requested" latch when we move to a different PR.
+  useEffect(() => {
+    setAgentReviewRequested(false);
+  }, [pr?.number]);
+
+  // A new review row (the reviewer posted its verdict) resolves the pending
+  // agent review, so re-enable the button for a fresh request. The server clears
+  // its durable flag on the same verdict, so both halves fall together.
+  const reviewCount = Array.isArray(detail?.reviews) ? detail.reviews.length : 0;
+  useEffect(() => {
+    if (agentReviewRequested && reviewCount > agentReviewReviewCount.current) {
+      setAgentReviewRequested(false);
+    }
+  }, [reviewCount, agentReviewRequested]);
+
   if (!pr) return null;
+
+  // Durable server signal ORed with the optimistic local latch. Survives reloads,
+  // remounts, and is visible to every client because it is derived server-side.
+  const agentReviewPending = agentReviewRequested || Boolean(pr.agent_review_requested);
 
   const toastErr = (err: any) => {
     if (onToast) onToast(String(err?.message || err || 'Request failed'), 'error', 6000);
@@ -647,15 +678,50 @@ function PrDetail({
     }
   };
 
+  // Human review: flip the review-request flag only (no agent dispatch).
   const handleToggleReviewRequest = async () => {
     setTogglingReview(true);
     try {
-      await api.requestNativePrReview(projectId, pr.number, !pr.review_requested);
+      await api.requestNativePrReview(projectId, pr.number, !pr.review_requested, 'human');
       onRefresh();
     } catch (err: any) {
       toastErr(err);
     } finally {
       setTogglingReview(false);
+    }
+  };
+
+  // Agent review: dispatch the project Reviewer agent against this PR without
+  // touching the human-review flag. Always a fresh request (no toggle).
+  const handleRequestAgentReview = async () => {
+    setDispatchingAgentReview(true);
+    try {
+      const res = await api.requestNativePrReview(projectId, pr.number, true, 'agent');
+      // Latch the requested state only when a review is genuinely pending — either
+      // this call dispatched one, or one was already in flight (the server-side
+      // atomic claim rejected a concurrent dispatch). If no reviewer agent is
+      // configured or its engine is unavailable, the dispatch no-ops and no
+      // durable flag or verdict will ever arrive — latching there would leave the
+      // button falsely "requested" forever, so we surface an error instead.
+      const alreadyInFlight = res?.agent_review_reason === 'already_in_flight';
+      if (res?.agent_review_dispatched || alreadyInFlight) {
+        agentReviewReviewCount.current = Array.isArray(detail?.reviews) ? detail.reviews.length : 0;
+        setAgentReviewRequested(true);
+        if (onToast) {
+          onToast(
+            alreadyInFlight ? 'Agent review already in progress' : 'Agent review requested',
+            'success',
+            4000,
+          );
+        }
+      } else if (onToast) {
+        onToast('No reviewer agent is available to review this PR.', 'error', 6000);
+      }
+      onRefresh();
+    } catch (err: any) {
+      toastErr(err);
+    } finally {
+      setDispatchingAgentReview(false);
     }
   };
 
@@ -826,18 +892,39 @@ function PrDetail({
           {isNative && isOpen && (
             <button
               type="button"
+              onClick={handleRequestAgentReview}
+              disabled={dispatchingAgentReview || agentReviewPending}
+              title={
+                agentReviewPending
+                  ? 'Agent review in progress — the Reviewer agent is working on this PR'
+                  : 'Request an agent review — dispatches the project Reviewer agent against this PR'
+              }
+              data-testid="pr-request-agent-review-button"
+              className="flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
+            >
+              {dispatchingAgentReview ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Bot size={14} />
+              )}
+              {agentReviewPending ? 'Agent review requested' : 'Request Agent Review'}
+            </button>
+          )}
+          {isNative && isOpen && (
+            <button
+              type="button"
               onClick={handleToggleReviewRequest}
               disabled={togglingReview}
               title={
                 pr.review_requested
-                  ? 'Clear the review-request flag'
-                  : 'Request a review — dispatches the project Reviewer agent against this PR'
+                  ? 'Clear the human review-request flag'
+                  : 'Flag this PR for human review'
               }
               data-testid="pr-request-review-button"
               className="flex items-center gap-1.5 text-sm text-amber-300 hover:text-amber-100 transition-colors disabled:opacity-50"
             >
               {togglingReview ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
-              {pr.review_requested ? 'Review requested' : 'Request review'}
+              {pr.review_requested ? 'Human review requested' : 'Request Human Review'}
             </button>
           )}
           {isOpen && (

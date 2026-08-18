@@ -488,11 +488,17 @@ describe('native PR review lifecycle', () => {
     const { id, branch } = await hostedProjectWithBranch();
     await postPulls(id).send({ headBranch: branch, title: 'Needs review' }).expect(201);
 
-    const spy = vi.spyOn(autoReview, 'maybeRunPrAutoReview').mockResolvedValue(undefined);
+    const spy = vi
+      .spyOn(autoReview, 'maybeRunPrAutoReview')
+      .mockResolvedValue({ dispatched: true, sessionId: 'sess-test' });
     try {
       // requested=true → dispatch fires with the manual_request trigger and the
       // PR identity, and crucially WITHOUT `force` (a production-faithful call).
-      await authedPost(`/api/projects/${id}/pulls/1/request-review`).send({}).expect(200);
+      // The route reports the dispatch outcome back to the caller.
+      const res = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({})
+        .expect(200);
+      expect(res.body.agent_review_dispatched).toBe(true);
       expect(spy).toHaveBeenCalledTimes(1);
       const call = spy.mock.calls[0]!;
       const prArg = call[1] as { number: number; head_branch: string; status: string };
@@ -507,6 +513,202 @@ describe('native PR review lifecycle', () => {
         .send({ requested: false })
         .expect(200);
       expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('request-review kind=human flags without dispatching; kind=agent dispatches without flagging', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Split review' }).expect(201);
+
+    const spy = vi
+      .spyOn(autoReview, 'maybeRunPrAutoReview')
+      .mockResolvedValue({ dispatched: true, sessionId: 'sess-test' });
+    try {
+      // kind=human: flip the human-review flag, no agent dispatch.
+      const human = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ kind: 'human' })
+        .expect(200);
+      expect(human.body.pr.review_requested_at).toBeTruthy();
+      expect(human.body.agent_review_dispatched).toBeUndefined();
+      expect(spy).not.toHaveBeenCalled();
+
+      // kind=agent: dispatch the Reviewer agent, leave the human flag untouched
+      // (it is still set from the human request above, and not re-cleared).
+      const agent = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ kind: 'agent' })
+        .expect(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect((spy.mock.calls[0]![3] as { trigger?: string }).trigger).toBe('manual_request');
+      expect(agent.body.agent_review_dispatched).toBe(true);
+      // The flag is unchanged by the agent request.
+      expect(agent.body.pr.review_requested_at).toBeTruthy();
+
+      // Clearing via kind=human does not dispatch.
+      const cleared = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ requested: false, kind: 'human' })
+        .expect(200);
+      expect(cleared.body.pr.review_requested_at).toBeNull();
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('agent_review_requested surfaces in list + detail; a replayed session id from an untrusted caller cannot clear it', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Agent flag' }).expect(201);
+
+    // Seed an in-flight claim owned by a specific reviewer session id (what a
+    // real dispatch records via the atomic claim).
+    const { stmts } = await import('../db.js');
+    const now = Date.now();
+    const OWNER = 'reviewer-session-owner';
+    stmts!.claimPullRequestAgentReview.run(now, OWNER, now, id, 1, now - 60_000);
+
+    let detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr.agent_review_requested).toBe(true);
+    const list = await authedGet(`/api/projects/${id}/pulls`).expect(200);
+    expect(list.body.pulls[0].agent_review_requested).toBe(true);
+
+    // ATTACK: a normal JWT user replays the (broadcast) owning session id in the
+    // header. Because they are neither the bound spawn session nor the global
+    // break-glass key, the id is NOT honored and the claim is NOT cleared.
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
+      .set('X-Agent-Hub-Session-Id', OWNER)
+      .send({ state: 'changes_requested', body: 'replayed owner id', reviewer: 'Project Reviewer' })
+      .expect(201);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr.agent_review_requested).toBe(true);
+
+    // Same for a body-supplied session id from the untrusted caller.
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
+      .send({ state: 'approved', body: 'via body', session_id: OWNER })
+      .expect(201);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr.agent_review_requested).toBe(true);
+
+    // TRUSTED: the global break-glass apiKey (server-injected into reviewer
+    // spawns) carrying the owning session id DOES clear the claim.
+    const priorApiKey = config.apiKey;
+    config.apiKey = 'break-glass-test-key';
+    try {
+      // A trusted caller with the WRONG (stale) session still cannot clear the
+      // newer claim — the release is session-scoped.
+      await request
+        .post(`/api/projects/${id}/pulls/1/reviews`)
+        .set('x-api-key', 'break-glass-test-key')
+        .set('X-Agent-Hub-Session-Id', 'stale-session')
+        .send({ state: 'changes_requested', body: 'stale' })
+        .expect(201);
+      detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+      expect(detail.body.pr.agent_review_requested).toBe(true);
+
+      // A comment from the owning session does not resolve the review.
+      await request
+        .post(`/api/projects/${id}/pulls/1/reviews`)
+        .set('x-api-key', 'break-glass-test-key')
+        .set('X-Agent-Hub-Session-Id', OWNER)
+        .send({ state: 'commented', body: 'still looking' })
+        .expect(201);
+      detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+      expect(detail.body.pr.agent_review_requested).toBe(true);
+
+      // The owning session's verdict clears it.
+      await request
+        .post(`/api/projects/${id}/pulls/1/reviews`)
+        .set('x-api-key', 'break-glass-test-key')
+        .set('X-Agent-Hub-Session-Id', OWNER)
+        .send({ state: 'changes_requested', body: 'rename this' })
+        .expect(201);
+      detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+      expect(detail.body.pr.agent_review_requested).toBe(false);
+    } finally {
+      config.apiKey = priorApiKey;
+    }
+  });
+
+  it('request-review rejects an unknown kind with 400 (no flag write, no dispatch)', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Bad kind' }).expect(201);
+
+    const spy = vi
+      .spyOn(autoReview, 'maybeRunPrAutoReview')
+      .mockResolvedValue({ dispatched: true, sessionId: 'sess-test' });
+    try {
+      const bad = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ kind: 'humna' })
+        .expect(400);
+      expect(bad.body.error).toMatch(/kind must be/i);
+      // Neither the human flag nor an agent dispatch happened.
+      expect(spy).not.toHaveBeenCalled();
+      const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+      expect(detail.body.pr.review_requested).toBe(false);
+      expect(detail.body.pr.agent_review_requested).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('request-review reports agent_review_dispatched=false when no reviewer is dispatched', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'No reviewer' }).expect(201);
+
+    const spy = vi
+      .spyOn(autoReview, 'maybeRunPrAutoReview')
+      .mockResolvedValue({ dispatched: false, reason: 'no_reviewer' });
+    try {
+      const res = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ kind: 'agent' })
+        .expect(200);
+      expect(res.body.agent_review_dispatched).toBe(false);
+      expect(res.body.agent_review_reason).toBe('no_reviewer');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('request-review surfaces already_in_flight when a review is already running', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Concurrent' }).expect(201);
+
+    // The atomic claim inside the helper rejected a concurrent dispatch.
+    const spy = vi
+      .spyOn(autoReview, 'maybeRunPrAutoReview')
+      .mockResolvedValue({ dispatched: false, reason: 'already_in_flight' });
+    try {
+      const res = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ kind: 'agent' })
+        .expect(200);
+      expect(res.body.agent_review_dispatched).toBe(false);
+      expect(res.body.agent_review_reason).toBe('already_in_flight');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('request-review requested=false clears the human flag even with kind=agent, and never dispatches', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Clear via agent' }).expect(201);
+
+    const spy = vi
+      .spyOn(autoReview, 'maybeRunPrAutoReview')
+      .mockResolvedValue({ dispatched: true, sessionId: 'sess-test' });
+    try {
+      // Set the human flag first.
+      const flagged = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ kind: 'human' })
+        .expect(200);
+      expect(flagged.body.pr.review_requested_at).toBeTruthy();
+
+      // requested=false + kind=agent must still clear the flag (clearing is a
+      // human-flag action) and must NOT dispatch the reviewer agent.
+      const cleared = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ requested: false, kind: 'agent' })
+        .expect(200);
+      expect(cleared.body.pr.review_requested_at).toBeNull();
+      expect(spy).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }

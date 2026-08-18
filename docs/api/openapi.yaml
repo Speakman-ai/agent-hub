@@ -37876,7 +37876,8 @@ paths:
     post:
       tags:
         - Projects
-      summary: Flag (or unflag) a native pull request for human review
+      summary: Request a review on a native pull request (human flag and/or agent)
+      description: "With requested=true: kind='human' flips the human-review flag only; kind='agent' dispatches the project Reviewer agent only, leaving the flag untouched; kind='both' (the default when omitted) does both, preserving legacy behavior. requested=false always clears the human-review flag and never dispatches, regardless of kind."
       parameters:
         - schema:
             type: string
@@ -37897,9 +37898,15 @@ paths:
               properties:
                 requested:
                   type: boolean
+                kind:
+                  type: string
+                  enum:
+                    - agent
+                    - human
+                    - both
       responses:
         "200":
-          description: Updated PR summary.
+          description: Updated PR summary. agent_review_dispatched is true only when a Reviewer agent session was actually dispatched (present only for agent/both requests).
           content:
             application/json:
               schema:
@@ -37909,10 +37916,15 @@ paths:
                     type: object
                     additionalProperties:
                       nullable: true
+                  agent_review_dispatched:
+                    type: boolean
+                  agent_review_reason:
+                    type: string
+                    description: Why an agent dispatch did not occur, e.g. 'already_in_flight', 'no_reviewer', 'engine_unavailable'.
                 required:
                   - pr
         "400":
-          description: Not Hub-hosted.
+          description: Not Hub-hosted, or kind is not one of 'agent' | 'human' | 'both'.
           content:
             application/json:
               schema:
@@ -37979,6 +37991,10 @@ paths:
                 reviewer:
                   type: string
                   description: Reviewer-name override (agent reviews).
+                session_id:
+                  type: string
+                  nullable: true
+                  description: Acting session id (also accepted via the X-Agent-Hub-Session-Id header). A verdict clears the in-flight agent-review claim only when this matches the session that owns it.
               required:
                 - state
       responses:

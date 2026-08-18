@@ -1253,6 +1253,8 @@ function initDb(dataDir: string): void {
       closed_at INTEGER,
       review_requested_at INTEGER,
       review_requested_by TEXT,
+      agent_review_requested_at INTEGER,
+      agent_review_session_id TEXT,
       revert_sha TEXT,
       reverted_at INTEGER,
       reverted_by TEXT,
@@ -1335,6 +1337,8 @@ function initDb(dataDir: string): void {
   for (const col of [
     'review_requested_at INTEGER',
     'review_requested_by TEXT',
+    'agent_review_requested_at INTEGER',
+    'agent_review_session_id TEXT',
     'revert_sha TEXT',
     'reverted_at INTEGER',
     'reverted_by TEXT',
@@ -7059,6 +7063,35 @@ function initDb(dataDir: string): void {
     // Review-request flag. Params: (requested_at|null, requested_by|null, updated_at, id).
     setPullRequestReviewRequested: db.prepare(
       'UPDATE pull_requests SET review_requested_at = ?, review_requested_by = ?, updated_at = ? WHERE id = ?',
+    ),
+    // Durable "an agent review is in flight" flag, keyed by project+number.
+    // Test/seed helper only — production uses the atomic claim/release/clear
+    // trio below. Params: (agent_review_requested_at|null, updated_at, project_id, number).
+    setPullRequestAgentReviewRequested: db.prepare(
+      'UPDATE pull_requests SET agent_review_requested_at = ?, updated_at = ? WHERE project_id = ? AND number = ?',
+    ),
+    // Atomic dispatch claim: sets the in-flight flag + owning session when no
+    // review is in flight OR the existing claim is STALE (older than the caller's
+    // cutoff). The staleness clause is the crash-recovery seam: if the server
+    // died after a claim, the in-memory release never ran, so the row would stay
+    // marked forever — the cutoff lets the next request reclaim it. A .changes of
+    // 1 means this caller won and may dispatch; 0 means a fresh review is genuinely
+    // running (the guard against two concurrent Reviewer sessions for one PR).
+    // Params: (agent_review_requested_at, agent_review_session_id, updated_at,
+    //          project_id, number, stale_cutoff).
+    claimPullRequestAgentReview: db.prepare(
+      `UPDATE pull_requests
+         SET agent_review_requested_at = ?, agent_review_session_id = ?, updated_at = ?
+       WHERE project_id = ? AND number = ?
+         AND (agent_review_requested_at IS NULL OR agent_review_requested_at < ?)`,
+    ),
+    // Release the claim ONLY if this session still owns it — used to roll back a
+    // failed handoff / terminated reviewer turn without clobbering a newer claim.
+    // Params: (updated_at, project_id, number, agent_review_session_id).
+    releasePullRequestAgentReviewBySession: db.prepare(
+      `UPDATE pull_requests
+         SET agent_review_requested_at = NULL, agent_review_session_id = NULL, updated_at = ?
+       WHERE project_id = ? AND number = ? AND agent_review_session_id = ?`,
     ),
     insertPullRequestReview: db.prepare(
       `INSERT INTO pull_request_reviews (id, project_id, pr_number, reviewer, state, body, created_at)

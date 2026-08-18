@@ -182,6 +182,14 @@ export interface NativePrService {
     state: 'approved' | 'changes_requested' | 'commented';
     body: string;
     reviewer: string;
+    /**
+     * Acting session id of the submitter. When it matches the PR's
+     * agent_review_session_id (the dispatched Reviewer session that owns the
+     * in-flight claim), a verdict clears that claim. Absent / non-owning
+     * submitters (a human, or a stale reviewer session after TTL reclamation)
+     * never clear it.
+     */
+    sessionId?: string | null;
   }): { review: Record<string, unknown> };
   /**
    * Dismiss a submitted verdict review (GitHub "Dismiss review"). The row is
@@ -286,6 +294,8 @@ function summarize(
     check_rollup: null,
     review_requested: row.review_requested_at !== null && row.review_requested_at !== undefined,
     review_requested_by: row.review_requested_by ?? null,
+    agent_review_requested:
+      row.agent_review_requested_at !== null && row.agent_review_requested_at !== undefined,
     reverted: row.revert_sha !== null && row.revert_sha !== undefined,
     revert_sha: row.revert_sha ?? null,
     reverted_at: toIso(row.reverted_at ?? null),
@@ -1109,7 +1119,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       return { row: requirePr(stmts, project, number) };
     },
 
-    submitReview({ project, number, state, body, reviewer }) {
+    submitReview({ project, number, state, body, reviewer, sessionId }) {
       requireHostedRepo(project);
       const row = requirePr(stmts, project, number);
       if (row.status !== 'open') {
@@ -1121,6 +1131,21 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       // A verdict answers the outstanding review request; comments leave it.
       if (state !== 'commented' && row.review_requested_at) {
         stmts.setPullRequestReviewRequested.run(null, null, now, row.id);
+      }
+      // Resolve the in-flight AGENT review only when THIS verdict comes from the
+      // session that actually owns the claim (agent_review_session_id). Ownership
+      // is by session identity, not reviewer name: a human spoofing the reviewer
+      // name cannot clear a live claim, and a late verdict from a stale reviewer
+      // session (after TTL reclamation handed the slot to a newer session) clears
+      // 0 rows — the session-scoped release leaves the newer claim intact. The
+      // reviewer turn's terminal handler is the backstop if no verdict arrives.
+      if (
+        state !== 'commented' &&
+        row.agent_review_requested_at &&
+        typeof sessionId === 'string' &&
+        sessionId
+      ) {
+        stmts.releasePullRequestAgentReviewBySession.run(now, project.id, number, sessionId);
       }
       broadcast({
         type: 'native_pr_update',
