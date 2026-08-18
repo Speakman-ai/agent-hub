@@ -37,9 +37,11 @@ import {
   runReviewerTurn,
   pickReviewerAgentId,
   composeReviewerSystemPrompt,
+  restrictToSpawnableEngines,
   FINALIZE_REVIEWER_TURN_OVERRIDE,
   REVIEWER_GENERAL_FEEDBACK_ANCHOR,
 } from './in-session-reviewer.js';
+import type { EngineAvailability, SupportedEngine } from '../engine-availability.js';
 import { initOrgsDb } from '../orgs.js';
 import { createUser } from '../users-store.js';
 import { replaceUserPreferencesJson } from '../user-preferences-store.js';
@@ -194,6 +196,86 @@ function makeCodexSpawnFake(assistantText: string): {
     return proc as unknown as ChildProcess;
   }) as unknown as typeof import('child_process').spawn;
   return { spawnFn, capturedArgs: captured };
+}
+
+/**
+ * Spawn fake that dispatches on the CLI binary path: the first entry whose
+ * `bin` matches is used, so a test can make claude fail and codex succeed to
+ * exercise the failover walk. Each behaviour is either an error string (close
+ * non-zero with it on stderr and no assistant text → rejects) or the assistant
+ * text to stream cleanly.
+ */
+function makeDispatchSpawnFake(
+  behaviours: Array<{ bin: string; fail?: string; text?: string; codex?: boolean }>,
+): {
+  spawnFn: typeof import('child_process').spawn;
+  capturedArgs: Array<{ bin: string; args: string[] }>;
+} {
+  const captured: Array<{ bin: string; args: string[] }> = [];
+  const spawnFn = ((bin: string, args: string[]) => {
+    captured.push({ bin, args });
+    const behaviour = behaviours.find((b) => b.bin === bin) ?? behaviours[behaviours.length - 1]!;
+    const proc = new FakeProc();
+    setImmediate(() => {
+      if (behaviour.fail) {
+        proc.stderr.emit('data', Buffer.from(behaviour.fail));
+        proc.emit('close', 1);
+        return;
+      }
+      const text = behaviour.text ?? '';
+      if (behaviour.codex) {
+        proc.stdout.emit(
+          'data',
+          Buffer.from(
+            JSON.stringify({
+              type: 'item.completed',
+              item: { id: 'msg-1', type: 'agent_message', text },
+            }) + '\n',
+          ),
+        );
+        proc.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'turn.completed' }) + '\n'));
+      } else {
+        proc.stdout.emit(
+          'data',
+          Buffer.from(
+            JSON.stringify({
+              type: 'assistant',
+              message: { content: [{ type: 'text', text }] },
+            }) + '\n',
+          ),
+        );
+        proc.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify({ type: 'result', is_error: false }) + '\n'),
+        );
+      }
+      proc.emit('close', 0);
+    });
+    return proc as unknown as ChildProcess;
+  }) as unknown as typeof import('child_process').spawn;
+  return { spawnFn, capturedArgs: captured };
+}
+
+/** Full availability map with the named engines authenticated. */
+function availabilityWith(
+  authenticated: SupportedEngine[],
+): Record<SupportedEngine, EngineAvailability> {
+  const all: SupportedEngine[] = [
+    'claude-code',
+    'cursor-agent',
+    'codex-cli',
+    'gemini-cli',
+    'grok-cli',
+  ];
+  const auth = new Set(authenticated);
+  return Object.fromEntries(
+    all.map((e) => [
+      e,
+      auth.has(e)
+        ? { engine: e, available: true }
+        : { engine: e, available: false, reason: 'no-credentials', detail: 'no creds' },
+    ]),
+  ) as Record<SupportedEngine, EngineAvailability>;
 }
 
 // ─── Common deps factory ─────────────────────────────────────────────
@@ -792,5 +874,232 @@ describe('runReviewerTurn — eject lifecycle', () => {
     // and then ejected by the finally.
     expect(attached).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
     expect(removed).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+  });
+});
+
+// ─── Runtime engine failover ─────────────────────────────────────────
+// The reviewer's configured engine can die mid-turn on usage exhaustion, an
+// auth rejection, or a wedged provider that only surfaces as a timeout. Rather
+// than failing the whole Finalize run, the reviewer turn re-runs the same
+// scoped prompt on the next authenticated engine in the chain.
+
+const VERDICT_OK = `Looks fine.
+
+<agenthub:review-verdict>{"verdict":"approved","threads":[]}</agenthub:review-verdict>`;
+
+describe('runReviewerTurn — engine failover', () => {
+  it('switches to the next authenticated engine when the reviewer engine is usage-exhausted', async () => {
+    const { spawnFn, capturedArgs } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'Claude AI usage limit reached. Resets in 3 hours.' },
+      { bin: '/fake/codex', codex: true, text: VERDICT_OK },
+    ]);
+    const probeAvailability = vi
+      .fn()
+      .mockResolvedValue(availabilityWith(['claude-code', 'codex-cli']));
+    // Reviewer carries a Claude-specific model. If the failover carried it onto
+    // Codex, the replacement CLI would be invoked with a model it does not
+    // offer — the assertion on the codex `--model` arg below guards that.
+    const { deps, messages } = makeDeps(spawnFn, {
+      probeAvailability,
+      getEnrichedAgent: vi.fn().mockReturnValue({ ...makeReviewer(), model: 'claude-opus-4-8' }),
+    });
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-failover',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    // The review still completes — on Codex.
+    expect(result.verdict).toBe('approved');
+    // Both engines were spawned: claude first (died), then codex.
+    expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude', '/fake/codex']);
+    // The replacement CLI runs Codex's OWN default model, not the source
+    // engine's Claude-specific reviewer model.
+    const codexCall = capturedArgs.find((c) => c.bin === '/fake/codex')!;
+    expect(codexCall.args).toContain('--model');
+    expect(codexCall.args).toContain('gpt-5.4');
+    expect(codexCall.args).not.toContain('claude-opus-4-8');
+    // A single message is persisted, carrying the switch banner above the review.
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.content).toContain('Switched to Codex');
+    expect(messages[0]?.content).toContain('Looks fine.');
+    expect(probeAvailability).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails over on a bare timeout (a wedged/maxed provider that never returns)', async () => {
+    // No usage string — just the harness timeout wording the reviewer turn emits.
+    const { spawnFn, capturedArgs } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'reviewer turn timed out after 5000ms' },
+      { bin: '/fake/codex', codex: true, text: VERDICT_OK },
+    ]);
+    const probeAvailability = vi
+      .fn()
+      .mockResolvedValue(availabilityWith(['claude-code', 'codex-cli']));
+    const { deps } = makeDeps(spawnFn, { probeAvailability });
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-timeout-failover',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('approved');
+    expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude', '/fake/codex']);
+  });
+
+  it('does not fail over to grok-cli, which the reviewer spawn path cannot launch', async () => {
+    // Only claude (exhausted) and grok are authenticated. grok is in the chain
+    // but unspawnable here, so the walk finds nothing and surfaces the original
+    // failure as review_failed rather than mis-spawning grok on the claude path.
+    const { spawnFn, capturedArgs } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'Claude AI usage limit reached.' },
+    ]);
+    const probeAvailability = vi
+      .fn()
+      .mockResolvedValue(availabilityWith(['claude-code', 'grok-cli']));
+    const { deps } = makeDeps(spawnFn, { probeAvailability });
+
+    await expect(
+      runReviewerTurn(deps, {
+        runId: 'run-grok-skip',
+        worktreePath: '/tmp/wt',
+        card: fakeCard,
+        project: fakeProject,
+        inputs: fakeInputs,
+        sessionId: 'sess-1',
+      }),
+    ).rejects.toThrow(/usage limit reached/);
+    // Only the original engine was ever spawned.
+    expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude']);
+  });
+
+  it('does not fail over a non-quota reviewer bug (surfaces the original error)', async () => {
+    const { spawnFn, capturedArgs } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'reviewer exited with code 1' },
+    ]);
+    const probeAvailability = vi
+      .fn()
+      .mockResolvedValue(availabilityWith(['claude-code', 'codex-cli']));
+    const { deps } = makeDeps(spawnFn, { probeAvailability });
+
+    await expect(
+      runReviewerTurn(deps, {
+        runId: 'run-nonfailover',
+        worktreePath: '/tmp/wt',
+        card: fakeCard,
+        project: fakeProject,
+        inputs: fakeInputs,
+        sessionId: 'sess-1',
+      }),
+    ).rejects.toThrow(/exited with code 1/);
+    // An unrecognized failure never walks the chain.
+    expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude']);
+    expect(probeAvailability).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fail over a cancellation', async () => {
+    const { spawnFn } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'cancelled' },
+      { bin: '/fake/codex', codex: true, text: VERDICT_OK },
+    ]);
+    const probeAvailability = vi
+      .fn()
+      .mockResolvedValue(availabilityWith(['claude-code', 'codex-cli']));
+    const { deps } = makeDeps(spawnFn, { probeAvailability });
+    const signal = { aborted: true, onAbort: () => () => undefined };
+
+    await expect(
+      runReviewerTurn(deps, {
+        runId: 'run-cancel-nofailover',
+        worktreePath: '/tmp/wt',
+        card: fakeCard,
+        project: fakeProject,
+        inputs: fakeInputs,
+        sessionId: 'sess-1',
+        signal,
+      }),
+    ).rejects.toThrow(/cancelled/);
+    // Cancellation must not trigger a probe or a switch.
+    expect(probeAvailability).not.toHaveBeenCalled();
+  });
+
+  it("honors the session owner's per-user model pick for the fallback engine", async () => {
+    // The owner has selected a non-default Codex model in the Reviewer model
+    // dropdown (their per-user agentModelOverrides). On failover to Codex the
+    // replacement CLI must run THAT model, not Codex's application default —
+    // i.e. ownerUserId + agentId are still passed when resolving the fallback.
+    const ownerId = 'owner-with-codex-pick';
+    initOrgsDb();
+    createUser({ id: ownerId, username: ownerId, passwordHash: 'x' });
+    replaceUserPreferencesJson(ownerId, {
+      agentModelOverrides: { 'rev-1': 'gpt-5.4-mini' },
+    });
+
+    const { spawnFn, capturedArgs } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'Claude AI usage limit reached.' },
+      { bin: '/fake/codex', codex: true, text: VERDICT_OK },
+    ]);
+    const probeAvailability = vi
+      .fn()
+      .mockResolvedValue(availabilityWith(['claude-code', 'codex-cli']));
+    // Config advertises a second selectable Codex model so the owner's pick is
+    // distinguishable from the default.
+    const configWithCodexPick = {
+      ...fakeConfig,
+      engineValidModels: {
+        ...fakeConfig.engineValidModels,
+        'codex-cli': ['gpt-5.4', 'gpt-5.4-mini'],
+      },
+    } as unknown as AppConfig;
+    const { deps } = makeDeps(spawnFn, {
+      probeAvailability,
+      getConfig: () => configWithCodexPick,
+      getEnrichedAgent: vi.fn().mockReturnValue({ ...makeReviewer(), model: 'claude-opus-4-8' }),
+    });
+    const getSession = (
+      deps as unknown as { stmts: { getSession: { get: ReturnType<typeof vi.fn> } } }
+    ).stmts.getSession.get;
+    getSession.mockReturnValue({ ...fakeSession, owner_user_id: ownerId });
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-owner-model-pick',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('approved');
+    const codexCall = capturedArgs.find((c) => c.bin === '/fake/codex')!;
+    expect(codexCall.args).toContain('--model');
+    // Owner's dropdown pick wins over the Codex default (gpt-5.4).
+    expect(codexCall.args).toContain('gpt-5.4-mini');
+    expect(codexCall.args).not.toContain('gpt-5.4');
+    expect(codexCall.args).not.toContain('claude-opus-4-8');
+  });
+});
+
+describe('restrictToSpawnableEngines', () => {
+  it('forces grok-cli unavailable while leaving session-multi engines untouched', () => {
+    const restricted = restrictToSpawnableEngines(
+      availabilityWith(['claude-code', 'codex-cli', 'grok-cli']),
+    );
+    expect(restricted['grok-cli'].available).toBe(false);
+    expect(restricted['grok-cli'].detail).toMatch(/not supported/);
+    expect(restricted['claude-code'].available).toBe(true);
+    expect(restricted['codex-cli'].available).toBe(true);
+  });
+
+  it('leaves an already-unavailable grok entry as-is', () => {
+    const restricted = restrictToSpawnableEngines(availabilityWith(['claude-code']));
+    expect(restricted['grok-cli'].available).toBe(false);
   });
 });

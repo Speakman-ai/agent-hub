@@ -42,7 +42,19 @@ import { createStreamParser } from '../stream-parser.js';
 import {
   buildSessionMultiSpawnArgs,
   normalizeSessionMultiEngine,
+  SESSION_MULTI_ENGINES,
 } from '../session-multi-engine.js';
+import {
+  planEngineFailover,
+  buildEngineFailoverNotice,
+  formatFailoverLogLine,
+} from '../engine-failover.js';
+import {
+  probeAllEngineAvailability,
+  type EngineAvailability,
+  type SupportedEngine,
+} from '../engine-availability.js';
+import { TRANSIENT_TURN_ERROR_MAX_RETRIES } from '../turn-error.js';
 import {
   buildLocalDiffReviewerPrompt,
   type ReviewerCancelSignal,
@@ -65,6 +77,13 @@ import type {
 
 /** Wall-clock cap on a single reviewer turn (ms). */
 export const REVIEWER_TURN_TIMEOUT_MS_DEFAULT = 10 * 60 * 1000;
+
+/**
+ * Hard cap on reviewer engine-failover attempts — one pass through the chain,
+ * never more. Matches the four selectable coding engines so a run can walk the
+ * whole chain once but can never loop.
+ */
+export const REVIEWER_FAILOVER_MAX_ATTEMPTS = 4;
 
 export interface InSessionReviewerDeps {
   stmts: Pick<
@@ -92,6 +111,15 @@ export interface InSessionReviewerDeps {
   activeProcesses?: Map<string, ActiveChatProcess>;
   /** Override for tests; production uses the live spawn pipeline. */
   spawn?: typeof spawn;
+  /**
+   * Probe per-account engine availability so the reviewer turn can fail over
+   * to another authenticated CLI when its engine runs out of quota / auth.
+   * Defaults to {@link probeAllEngineAvailability}; tests inject a stub.
+   */
+  probeAvailability?: (
+    cfg: AppConfig,
+    opts: { userId?: string | null },
+  ) => Promise<Record<SupportedEngine, EngineAvailability>>;
   /** Per-call wall-clock cap; defaults to {@link REVIEWER_TURN_TIMEOUT_MS_DEFAULT}. */
   timeoutMs?: number;
   /** Deterministic id minter (defaults to uuid v4). */
@@ -265,8 +293,13 @@ export async function runReviewerTurn(
     // override from older releases. Letting that hidden value win makes the
     // visible Reviewer setting lie (for example, Codex is displayed while
     // Finalize still spawns Claude). The model remains per-user by design.
-    const engine = normalizeSessionMultiEngine(reviewer.engine);
-    const model = resolveEffectiveModel(config, engine, {
+    let engine: SupportedEngine = normalizeSessionMultiEngine(reviewer.engine);
+    // The reviewer's shared `model` is keyed to this originally-configured
+    // engine; it is only valid to pass as `agentModel` while resolving THIS
+    // engine's model. A failover to a different engine must resolve that
+    // engine's own model instead (see the loop below).
+    const reviewerBaseEngine: SupportedEngine = engine;
+    let model = resolveEffectiveModel(config, engine, {
       agentModel: reviewer.model as string | undefined,
       ownerUserId: roomOwnerId,
       // Honor the Reviewer page's per-user model dropdown for the session owner.
@@ -278,31 +311,36 @@ export async function runReviewerTurn(
     // does not yet carry one.
     const cwd = session.worktree_path || worktreePath || reviewer.cwd || process.env.HOME || '/';
 
-    // Spawn env: orchestrator env + agent's project secrets / aws / skill
-    // credentials so the reviewer CLI carries through the project's
-    // configured auth surface without leaking the executor's identity.
-    const spawnEnv: NodeJS.ProcessEnv = {
-      ...resolveSessionCliSpawnEnv({
-        cfg: config,
-        ownerId: roomOwnerId,
-        credsOwnerId: roomOwnerId,
-        sessionId,
-        engine,
-      }),
-    };
     const reviewerProject = deps.findAgent?.(reviewer.id)?.project ?? project;
-    if (reviewerProject && roomOwnerId) {
-      mergeSkillCredentialSpawnEnv(spawnEnv, {
-        ownerId: roomOwnerId,
-        agentId: reviewer.id,
-        project: reviewerProject,
-      });
-      mergeProjectSecretsSpawnEnv(spawnEnv, {
-        projectId: reviewerProject.id,
-        sessionId,
-      });
-      mergeProjectAwsSpawnEnv(spawnEnv, reviewerProject);
-    }
+
+    // Spawn env is engine-specific: per-account credentials, HOME, and
+    // engine env all differ between CLIs, so a failover to another engine
+    // must rebuild the env from scratch or it would spawn the new CLI logged
+    // out. Built per attempt via this closure.
+    const buildSpawnEnv = (eng: SupportedEngine): NodeJS.ProcessEnv => {
+      const spawnEnv: NodeJS.ProcessEnv = {
+        ...resolveSessionCliSpawnEnv({
+          cfg: config,
+          ownerId: roomOwnerId,
+          credsOwnerId: roomOwnerId,
+          sessionId,
+          engine: eng,
+        }),
+      };
+      if (reviewerProject && roomOwnerId) {
+        mergeSkillCredentialSpawnEnv(spawnEnv, {
+          ownerId: roomOwnerId,
+          agentId: reviewer.id,
+          project: reviewerProject,
+        });
+        mergeProjectSecretsSpawnEnv(spawnEnv, {
+          projectId: reviewerProject.id,
+          sessionId,
+        });
+        mergeProjectAwsSpawnEnv(spawnEnv, reviewerProject);
+      }
+      return spawnEnv;
+    };
 
     // Pre-spawn cancel check — beats the persist-message write so a
     // cancellation race with attach + spawn does not leave a partial chat
@@ -321,39 +359,151 @@ export async function runReviewerTurn(
       messageId: assistantMsgId,
     });
 
-    const rawText = await runOneTurn({
-      engine,
-      model,
-      systemPrompt,
-      userPrompt,
-      bins: {
-        claude: deps.getClaudeBin(),
-        cursor: deps.getCursorBin(),
-        gemini: deps.getGeminiBin(),
-        codex: deps.getCodexBin(),
-      },
-      cwd,
-      spawnEnv,
-      logTag: `finalize ${runId} reviewer ${reviewer.id}`,
-      codexDangerBypass: !!config.codexDangerBypass,
-      codexProfile: config.codexProfile,
-      timeoutMs,
-      signal: args.signal,
-      sessionId,
-      activeProcesses: deps.activeProcesses,
-      spawnFn,
-      broadcast: deps.broadcast,
-      reviewerName: reviewer.name,
-      reviewerColor: reviewer.color,
-      reviewerId: reviewer.id,
-      assistantMsgId,
-    });
+    // Runtime engine failover: the reviewer's configured engine can die
+    // mid-turn on usage exhaustion ("Claude AI usage limit reached"), an auth
+    // rejection, or a wedged provider that only surfaces as a timeout. When
+    // that happens Finalize used to fail the whole run (`review_failed`) and
+    // strand the card — nobody is watching an autonomous Finalize to switch the
+    // engine picker. Instead we re-run the same scoped prompt on the next
+    // authenticated engine in the chain, exactly like the interactive chat and
+    // background one-shot paths. The reviewer turn has no in-place retry budget
+    // of its own, so a transient failure is switchable immediately.
+    const probe = deps.probeAvailability ?? probeAllEngineAvailability;
+    const tried: string[] = [];
+    const failoverNotices: string[] = [];
+    let rawText = '';
+    let succeeded = false;
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt < REVIEWER_FAILOVER_MAX_ATTEMPTS && !succeeded; attempt++) {
+      try {
+        rawText = await runOneTurn({
+          engine,
+          model,
+          systemPrompt,
+          userPrompt,
+          bins: {
+            claude: deps.getClaudeBin(),
+            cursor: deps.getCursorBin(),
+            gemini: deps.getGeminiBin(),
+            codex: deps.getCodexBin(),
+          },
+          cwd,
+          spawnEnv: buildSpawnEnv(engine),
+          logTag: `finalize ${runId} reviewer ${reviewer.id}`,
+          codexDangerBypass: !!config.codexDangerBypass,
+          codexProfile: config.codexProfile,
+          timeoutMs,
+          signal: args.signal,
+          sessionId,
+          activeProcesses: deps.activeProcesses,
+          spawnFn,
+          broadcast: deps.broadcast,
+          reviewerName: reviewer.name,
+          reviewerColor: reviewer.color,
+          reviewerId: reviewer.id,
+          assistantMsgId,
+        });
+        succeeded = true;
+      } catch (err: unknown) {
+        lastError = err;
+        // Never fail over a user/Finalize cancel — that is an intentional stop,
+        // not an engine problem.
+        if (args.signal?.aborted || (err instanceof Error && err.message === 'cancelled')) {
+          throw err;
+        }
+        const errorText = err instanceof Error ? err.message : String(err);
+
+        // A probe hiccup must never mask the real turn error.
+        let availability: Record<SupportedEngine, EngineAvailability>;
+        try {
+          availability = await probe(config, { userId: roomOwnerId });
+        } catch (probeErr) {
+          log(
+            `[in-session-reviewer] run=${runId}: availability probe failed during failover: ${
+              probeErr instanceof Error ? probeErr.message : String(probeErr)
+            }`,
+          );
+          throw err;
+        }
+
+        // The reviewer spawn path (buildSessionMultiSpawnArgs) only knows how
+        // to launch the session-multi engines; a chain candidate it cannot
+        // spawn (e.g. grok-cli) must be treated as unavailable so the planner
+        // skips it rather than falling through to the claude branch with the
+        // wrong model.
+        const reviewerAvailability = restrictToSpawnableEngines(availability);
+
+        const plan = planEngineFailover({
+          errorText,
+          currentEngine: engine,
+          transientRetries: TRANSIENT_TURN_ERROR_MAX_RETRIES,
+          triedEngines: tried,
+          availability: reviewerAvailability,
+        });
+
+        if (!plan.failover) {
+          // Not failover-worthy (a real reviewer bug, a permanent error), or a
+          // switch was warranted but nothing else is authenticated. Either way
+          // surface the original error so the orchestrator records
+          // `review_failed` as before.
+          throw err;
+        }
+
+        const toModel = resolveEffectiveModel(config, plan.toEngine, {
+          // Do NOT carry the reviewer's shared `model` across engines: it is
+          // keyed to `reviewerBaseEngine` (e.g. a Claude-specific model), and
+          // handing it to a different CLI asks that CLI to run a model it does
+          // not offer — which is exactly the failure we are recovering from.
+          // Only pass it when the fallback happens to be the base engine; the
+          // target otherwise resolves its own per-user / default model. Mirrors
+          // `resolveEffectiveEngineAndModel`'s engine-divergence guard.
+          agentModel:
+            plan.toEngine === reviewerBaseEngine ? (reviewer.model as string | undefined) : null,
+          // Same owner-preference inputs as the initial resolution above:
+          // ownerUserId + agentId are what let resolveEffectiveModel honor the
+          // session owner's Reviewer model dropdown (their per-user
+          // `agentModelOverrides` pick for the fallback engine). Dropping them
+          // here would fall the failover back to the engine's application
+          // default instead of the owner's configured model.
+          ownerUserId: roomOwnerId,
+          agentId: reviewer.id,
+        });
+        const noticeInput = {
+          trigger: plan.trigger,
+          fromEngine: engine,
+          fromModel: model,
+          toEngine: plan.toEngine,
+          toModel,
+          errorText,
+        };
+        log(formatFailoverLogLine(`finalize ${runId} reviewer`, noticeInput));
+        failoverNotices.push(buildEngineFailoverNotice(noticeInput));
+        tried.splice(0, tried.length, ...plan.tried);
+        engine = plan.toEngine;
+        model = toModel;
+      }
+    }
+
+    if (!succeeded) {
+      // Defensive: planEngineFailover returns `no-engine-available` (and we
+      // throw above) once the chain is spent, so the loop normally exits via a
+      // throw. This only fires if MAX_ATTEMPTS is somehow reached with every
+      // attempt still failover-worthy.
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    }
 
     // Parse the tail before persisting so JSON-only reviewer replies do
     // not leak the machine payload into chat. Missing or malformed tails
     // still persist the original text below, then throw after broadcast.
     const parsed = detectReviewVerdictBlock(rawText);
-    const visibleText = buildVisibleReviewerText(rawText, parsed.task);
+    // Prepend any engine-switch notices so the human reading the review knows a
+    // different model produced it — the user did not ask for the switch, so it
+    // has to be visible rather than letting another engine answer silently.
+    const visibleText = prependFailoverNotices(
+      buildVisibleReviewerText(rawText, parsed.task),
+      failoverNotices,
+    );
 
     // Persist the assistant message into the session timeline. Use the
     // SAME id we used for the streaming events so subscribers can join
@@ -482,6 +632,46 @@ export function pickReviewerAgentId(project: Project): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Force any failover-chain engine the in-session reviewer cannot actually
+ * spawn to `available: false`.
+ *
+ * `buildSessionMultiSpawnArgs` only launches the {@link SESSION_MULTI_ENGINES}
+ * (claude-code / cursor-agent / gemini-cli / codex-cli). The failover chains in
+ * `engine-failover.ts` also include `grok-cli`, which has no branch there and
+ * would fall through to the claude spawn path with a grok model. Marking those
+ * engines unavailable makes {@link planEngineFailover} skip them instead of
+ * picking one this path cannot honour.
+ *
+ * Exported for tests.
+ */
+export function restrictToSpawnableEngines(
+  availability: Record<SupportedEngine, EngineAvailability>,
+): Record<SupportedEngine, EngineAvailability> {
+  const spawnable = new Set<string>(SESSION_MULTI_ENGINES);
+  const out = { ...availability };
+  for (const key of Object.keys(out) as SupportedEngine[]) {
+    if (!spawnable.has(key) && out[key]?.available) {
+      out[key] = {
+        ...out[key],
+        available: false,
+        reason: 'unknown',
+        detail: 'not supported by the in-session reviewer spawn path',
+      };
+    }
+  }
+  return out;
+}
+
+/**
+ * Prepend engine-switch notices (if any) above the reviewer's visible text,
+ * separated by a rule so the switch banner reads distinctly from the review.
+ */
+function prependFailoverNotices(visibleText: string, notices: readonly string[]): string {
+  if (notices.length === 0) return visibleText;
+  return `${notices.join('\n\n')}\n\n---\n\n${visibleText}`;
 }
 
 function buildVisibleReviewerText(
