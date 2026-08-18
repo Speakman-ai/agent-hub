@@ -1315,6 +1315,19 @@ function initDb(dataDir: string): void {
       resolved_at INTEGER NOT NULL,
       PRIMARY KEY (project_id, pr_number, file_path, line, side)
     );
+
+    -- Pending "arm auto-merge" intents recorded by a \`git push -o automerge\`
+    -- (or the API) for a branch that has no open PR yet. Consumed when a PR is
+    -- opened for that branch, which sets the PR's auto_merge flag. Keyed by
+    -- branch so a re-push simply refreshes the intent; a matching open PR is
+    -- armed directly instead (no intent row needed).
+    CREATE TABLE IF NOT EXISTS pr_auto_merge_intents (
+      project_id TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      requested_by TEXT,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, branch)
+    );
   `);
 
   // Columns added to pull_requests after the table shipped — heal existing
@@ -1325,6 +1338,9 @@ function initDb(dataDir: string): void {
     'revert_sha TEXT',
     'reverted_at INTEGER',
     'reverted_by TEXT',
+    // Persisted per-PR auto-merge arming. 1 = merge once the head's checks
+    // pass and the PR is otherwise mergeable; 0 = off (default).
+    'auto_merge INTEGER NOT NULL DEFAULT 0',
   ]) {
     try {
       db.exec(`ALTER TABLE pull_requests ADD COLUMN ${col}`);
@@ -6996,6 +7012,24 @@ function initDb(dataDir: string): void {
     // Title/body edit from the PR detail UI — open PRs only.
     updatePullRequestText: db.prepare(
       `UPDATE pull_requests SET title = ?, body = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+    ),
+    // Arm/disarm per-PR auto-merge (PR-page toggle or push-option). Open PRs
+    // only — a merged/closed PR cannot be armed.
+    setPullRequestAutoMerge: db.prepare(
+      `UPDATE pull_requests SET auto_merge = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+    ),
+    // Pending auto-merge intents for a branch with no open PR yet.
+    upsertPrAutoMergeIntent: db.prepare(
+      `INSERT INTO pr_auto_merge_intents (project_id, branch, requested_by, created_at)
+         VALUES (?, ?, ?, ?)
+       ON CONFLICT(project_id, branch)
+         DO UPDATE SET requested_by = excluded.requested_by, created_at = excluded.created_at`,
+    ),
+    getPrAutoMergeIntent: db.prepare(
+      'SELECT * FROM pr_auto_merge_intents WHERE project_id = ? AND branch = ?',
+    ),
+    deletePrAutoMergeIntent: db.prepare(
+      'DELETE FROM pr_auto_merge_intents WHERE project_id = ? AND branch = ?',
     ),
     markPullRequestMerged: db.prepare(
       `UPDATE pull_requests

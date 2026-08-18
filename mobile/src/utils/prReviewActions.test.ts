@@ -148,6 +148,22 @@ describe('prDetailCapabilities', () => {
             canViewFiles: true,
         });
     });
+    it('native open PR: auto-merge available and reflects the boolean flag', () => {
+        expect(prDetailCapabilities(nativeOpen)).toMatchObject({
+            canAutoMerge: true,
+            autoMergeEnabled: false,
+        });
+        const armed = prDetailCapabilities({
+            source: 'agenthub',
+            pr: { state: 'open', html_url: 'x', auto_merge: true },
+        });
+        expect(armed).toMatchObject({ canAutoMerge: true, autoMergeEnabled: true });
+        // Not offered on a closed native PR.
+        expect(
+            prDetailCapabilities({ source: 'agenthub', pr: { state: 'closed', html_url: 'x' } })
+                .canAutoMerge,
+        ).toBe(false);
+    });
     it('native closed (not merged) PR: only reopen', () => {
         const caps = prDetailCapabilities({
             source: 'agenthub',

@@ -53,6 +53,24 @@ describe('native-pr store', () => {
     expect(createOrGetOpenPullRequest(stmts, freshArgs(p2)).row.number).toBe(1);
   });
 
+  it('consumes a pending auto-merge intent when a PR is created for the branch', () => {
+    const projectId = `np-${uuidv4().slice(0, 8)}`;
+    const args = freshArgs(projectId);
+    stmts.upsertPrAutoMergeIntent.run(projectId, args.headBranch, 'pusher', Date.now());
+
+    const created = createOrGetOpenPullRequest(stmts, args);
+    expect(created.created).toBe(true);
+    expect(created.row.auto_merge).toBe(1);
+    // Intent is one-shot: consumed on create.
+    expect(stmts.getPrAutoMergeIntent.get(projectId, args.headBranch)).toBeUndefined();
+  });
+
+  it('leaves auto_merge off when there is no intent for the branch', () => {
+    const projectId = `np-${uuidv4().slice(0, 8)}`;
+    const created = createOrGetOpenPullRequest(stmts, freshArgs(projectId));
+    expect(created.row.auto_merge).toBe(0);
+  });
+
   it('reuses the open PR for the same head branch and refreshes head/title/body', () => {
     const projectId = `np-${uuidv4().slice(0, 8)}`;
     const args = freshArgs(projectId);

@@ -181,10 +181,25 @@ URL=$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$NOTIFY_
 SECRET=$(sed -n 's/.*"secret"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$NOTIFY_FILE")
 PROJECT=$(sed -n 's/.*"projectId"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$NOTIFY_FILE")
 [ -n "$URL" ] || exit 0
+# Forward client push options (git push -o <opt>) as a comma-joined header so
+# the Hub can act on them (e.g. "automerge"). Only safe tokens are passed
+# through; anything with unexpected characters is dropped rather than escaped.
+PUSH_OPTS=""
+i=0
+count=\${GIT_PUSH_OPTION_COUNT:-0}
+while [ "$i" -lt "$count" ]; do
+  eval "opt=\\$GIT_PUSH_OPTION_$i"
+  case "$opt" in
+    "" | *[!A-Za-z0-9_.:=-]*) : ;;
+    *) PUSH_OPTS="\${PUSH_OPTS}\${opt}," ;;
+  esac
+  i=$((i + 1))
+done
 curl -fsS -m 10 -X POST "$URL" \\
   -H "Content-Type: text/plain" \\
   -H "X-AgentHub-Project: $PROJECT" \\
   -H "X-AgentHub-Secret: $SECRET" \\
+  -H "X-AgentHub-Push-Options: $PUSH_OPTS" \\
   --data-binary @- >/dev/null 2>&1 || true
 exit 0
 `;

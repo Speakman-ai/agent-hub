@@ -39,6 +39,7 @@ import type { SecurityAutofixDeps } from './security-audit/autofix.js';
 import { createSecurityAuditStore } from './security-audit/findings-store.js';
 import { recordRecentPush } from './git-host/recent-pushes.js';
 import { createNativePrService } from './native-pr/service.js';
+import { tryAutoMergeArmedNativePr } from './native-pr/auto-merge-armed.js';
 import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
 import {
   initProjects,
@@ -689,12 +690,44 @@ app.use(
       // Finalize-validated. Merge policy does not suppress review.
       // routeDeps is initialized later in module order but long before
       // the server accepts pushes.
+      // `git push -o automerge` (or `-o auto-merge`): arm auto-merge for each
+      // pushed branch. An already-open PR is armed (and merged now if green);
+      // a branch with no PR yet records a pending intent that the next PR
+      // opened for it consumes. Push CI running for the head completes the
+      // merge once its checks pass (see maybeAutoMergeAfterChecks).
+      const wantsAutoMerge = (ctx?.pushOptions ?? []).some(
+        (o) => o === 'automerge' || o === 'auto-merge',
+      );
       for (const ref of refs) {
         if (!ref.startsWith('refs/heads/')) continue;
         const branch = ref.slice('refs/heads/'.length);
         const open = stmts!.getOpenPullRequestByHeadBranch.get(project.id, branch) as
           | import('./types.js').PullRequestRow
           | undefined;
+        if (wantsAutoMerge && project.gitHost === 'agenthub') {
+          if (open) {
+            try {
+              nativePr.setAutoMerge({ project, number: open.number, enabled: true });
+              void tryAutoMergeArmedNativePr(
+                { stmts: stmts!, nativePr },
+                { project, number: open.number },
+              ).catch(() => {});
+            } catch (err: unknown) {
+              console.warn(
+                `[native-pr] push-option auto-merge arm failed for ${project.id}#${open.number}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          } else {
+            stmts!.upsertPrAutoMergeIntent.run(
+              project.id,
+              branch,
+              ctx?.pushedByUserId ?? null,
+              Date.now(),
+            );
+          }
+        }
         if (open) {
           void maybeRunPrAutoReview(
             project,

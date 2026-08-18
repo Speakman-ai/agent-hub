@@ -125,6 +125,10 @@ export function prDetailCapabilities(detail: any) {
         canEdit: isNative && isOpen,
         canReopen: isNative && !isOpen && !isMerged,
         canRevert: isNative && isMerged && !isReverted,
+        // Native PR auto-merge arming (web parity). Boolean flag surfaced by the
+        // server's PR summary.
+        canAutoMerge: isNative && isOpen,
+        autoMergeEnabled: pr?.auto_merge === true || pr?.auto_merge === 1,
         // Native html_urls are in-app client routes — only real GitHub URLs
         // get an external "open" affordance (web parity).
         externalUrl: prUrl && /^https?:\/\//i.test(prUrl) ? prUrl : null,

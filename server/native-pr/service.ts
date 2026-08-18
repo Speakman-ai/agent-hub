@@ -74,6 +74,7 @@ async function ciEmptyStateNote(repoPath: string, sha: string): Promise<string |
   return 'Checks have not started yet for the head commit.';
 }
 import { mergePullRequest, type MergeMethod } from './merge.js';
+import { tryAutoMergeArmedNativePr } from './auto-merge-armed.js';
 import { revertPullRequest } from './revert.js';
 import { handleCardOnMerge } from './card-on-merge.js';
 
@@ -166,6 +167,14 @@ export interface NativePrService {
     requested: boolean;
     actor: string;
   }): { row: PullRequestRow };
+  /**
+   * Arm or disarm auto-merge on an open PR. Armed PRs merge once the head's
+   * checks pass and the PR is otherwise mergeable — the completion is driven
+   * by the checks-passed hook (and an immediate attempt when already green).
+   */
+  setAutoMerge(args: { project: Project; number: number; enabled: boolean }): {
+    row: PullRequestRow;
+  };
   /** Record a human review; approve/changes-requested clears the request flag. */
   submitReview(args: {
     project: Project;
@@ -281,6 +290,9 @@ function summarize(
     revert_sha: row.revert_sha ?? null,
     reverted_at: toIso(row.reverted_at ?? null),
     reverted_by: row.reverted_by ?? null,
+    // Native PR auto-merge arming (boolean; the GitHub path surfaces an
+    // `auto_merge` object instead — the client toggle handles both shapes).
+    auto_merge: row.auto_merge === 1,
     ...extra,
   };
 }
@@ -714,7 +726,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
     });
   };
 
-  return {
+  const service: NativePrService = {
     createOrGetOpenPr({ project, headBranch, baseBranch, headSha, title, body, author }) {
       requireHostedRepo(project);
       if (!isKnownHubUserId(author)) {
@@ -740,6 +752,25 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         deps.onPrHeadChanged?.(project, row, { reason: created ? 'created' : 'head_updated' });
       } catch {
         /* CI trigger must never fail PR creation */
+      }
+      // A brand-new PR that consumed a pending `git push -o automerge` intent is
+      // armed (auto_merge=1) but has no completing event of its own: if the
+      // head's CI already finished green BEFORE the PR existed, the
+      // checks-passed hook already ran and will not fire again. Attempt the
+      // merge now — best-effort and detached, so it never fails PR creation. If
+      // checks are still running / the PR is not yet mergeable, merge() returns
+      // 409 and the PR stays armed for the checks-passed hook to complete.
+      if (created && row.auto_merge === 1) {
+        void tryAutoMergeArmedNativePr(
+          { stmts, nativePr: service },
+          { project, number: row.number },
+        ).catch((err: unknown) => {
+          console.warn(
+            `[native-pr] intent auto-merge attempt failed for ${prUrl}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
       }
       return { row, prUrl, created };
     },
@@ -1062,6 +1093,22 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       return { row: requirePr(stmts, project, number) };
     },
 
+    setAutoMerge({ project, number, enabled }) {
+      requireHostedRepo(project);
+      const row = requirePr(stmts, project, number);
+      if (row.status !== 'open') {
+        throw new NativePrError(`PR #${number} is ${row.status} — auto-merge cannot be armed`, 409);
+      }
+      stmts.setPullRequestAutoMerge.run(enabled ? 1 : 0, Date.now(), row.id);
+      broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: enabled ? 'auto_merge_enabled' : 'auto_merge_disabled',
+      });
+      return { row: requirePr(stmts, project, number) };
+    },
+
     submitReview({ project, number, state, body, reviewer }) {
       requireHostedRepo(project);
       const row = requirePr(stmts, project, number);
@@ -1261,6 +1308,8 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       };
     },
   };
+
+  return service;
 }
 
 function randomReviewId(): string {

@@ -37717,6 +37717,83 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/auto-merge:
+    post:
+      tags:
+        - Projects
+      summary: Arm or disarm auto-merge on a native pull request
+      description: "Arms (or disarms) auto-merge on an open Agent Hub-hosted PR. An armed PR merges once its head checks pass and it is otherwise mergeable; if it is already green and mergeable, it merges immediately (response `merged: true`). Same behaviour as `git push -o automerge`. Agent Hub-hosted projects only; merged/closed PRs are rejected (409)."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: The updated PR summary plus whether an immediate merge fired.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                  merged:
+                    type: boolean
+                required:
+                  - pr
+                  - merged
+        "400":
+          description: Not Hub-hosted or invalid body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is merged or closed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/pulls/{number}/revert:
     post:
       tags:

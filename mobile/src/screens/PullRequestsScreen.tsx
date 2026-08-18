@@ -188,6 +188,7 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
     const [editOpen, setEditOpen] = useState(false);
     const [reopening, setReopening] = useState(false);
     const [reverting, setReverting] = useState(false);
+    const [togglingAutoMerge, setTogglingAutoMerge] = useState(false);
     // The review currently being dismissed (drives the dismiss sheet), or null.
     const [dismissTarget, setDismissTarget] = useState<any>(null);
     // Which dismissed review's collapsed body the user chose to expand.
@@ -247,6 +248,22 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
             setReverting(false);
         }
     }, [projectId, prNumber, onRefresh]);
+    const handleToggleAutoMerge = useCallback(async () => {
+        if (togglingAutoMerge || !prNumber)
+            return;
+        const next = !caps.autoMergeEnabled;
+        setTogglingAutoMerge(true);
+        try {
+            await api.setPullAutoMerge(projectId, prNumber, next);
+            onRefresh();
+        }
+        catch (err: any) {
+            Alert.alert('Auto-merge failed', err?.message || 'Failed to update auto-merge');
+        }
+        finally {
+            setTogglingAutoMerge(false);
+        }
+    }, [projectId, prNumber, togglingAutoMerge, caps.autoMergeEnabled, onRefresh]);
     const handleRevert = useCallback(() => {
         if (reverting || !prNumber)
             return;
@@ -333,6 +350,9 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
           </TouchableOpacity>) : null}
         {caps.canRevert ? (<TouchableOpacity style={[styles.prActionButton, reverting && styles.resolveButtonDisabled]} onPress={handleRevert} disabled={reverting} accessibilityLabel="Revert PR" accessibilityState={{ disabled: reverting, busy: reverting }}>
             {reverting ? (<ActivityIndicator size="small" color={colors.amber400}/>) : (<Text style={[styles.prActionButtonText, { color: colors.amber400 }]}>Revert</Text>)}
+          </TouchableOpacity>) : null}
+        {caps.canAutoMerge ? (<TouchableOpacity style={[styles.prActionButton, togglingAutoMerge && styles.resolveButtonDisabled]} onPress={handleToggleAutoMerge} disabled={togglingAutoMerge} accessibilityLabel="Toggle auto-merge" accessibilityState={{ disabled: togglingAutoMerge, busy: togglingAutoMerge, selected: caps.autoMergeEnabled }}>
+            {togglingAutoMerge ? (<ActivityIndicator size="small" color={colors.emerald400}/>) : (<Text style={[styles.prActionButtonText, caps.autoMergeEnabled && { color: colors.emerald400 }]}>{caps.autoMergeEnabled ? 'Auto-merge on' : 'Auto-merge'}</Text>)}
           </TouchableOpacity>) : null}
       </View>
 

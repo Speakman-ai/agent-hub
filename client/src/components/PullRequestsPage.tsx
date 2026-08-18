@@ -614,15 +614,30 @@ function PrDetail({
   const handleToggleAutoMerge = async (nextEnabled: boolean) => {
     setTogglingAutoMerge(true);
     try {
-      await api.setPrAutoMerge(pr.html_url, nextEnabled, 'squash');
-      if (onToast) {
-        onToast(
-          nextEnabled
-            ? `Auto-merge armed for PR #${pr.number} — GitHub will merge once checks and reviews pass.`
-            : `Auto-merge disabled for PR #${pr.number}.`,
-          'success',
-          4000,
-        );
+      if (isNative) {
+        const res = await api.setNativePrAutoMerge(projectId, pr.number, nextEnabled);
+        if (onToast) {
+          onToast(
+            res?.merged
+              ? `PR #${pr.number} auto-merged — checks were already green.`
+              : nextEnabled
+                ? `Auto-merge armed for PR #${pr.number} — Agent Hub will merge once checks pass.`
+                : `Auto-merge disabled for PR #${pr.number}.`,
+            'success',
+            4000,
+          );
+        }
+      } else {
+        await api.setPrAutoMerge(pr.html_url, nextEnabled, 'squash');
+        if (onToast) {
+          onToast(
+            nextEnabled
+              ? `Auto-merge armed for PR #${pr.number} — GitHub will merge once checks and reviews pass.`
+              : `Auto-merge disabled for PR #${pr.number}.`,
+            'success',
+            4000,
+          );
+        }
       }
       onRefresh();
     } catch (err: any) {
@@ -762,7 +777,7 @@ function PrDetail({
       ? 'No PR URL available'
       : mergeState.reason;
 
-  const autoMergeState = autoMergeToggleState(pr);
+  const autoMergeState = autoMergeToggleState(pr, { isNative });
   const autoMergeTitle = togglingAutoMerge
     ? 'Updating auto-merge…'
     : autoMergeState.enabled

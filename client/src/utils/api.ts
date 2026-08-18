@@ -1537,6 +1537,13 @@ export const api = {
     fetchJSON(`/projects/${projectId}/git-host/recent-pushes`),
   reopenNativePr: (projectId: any, number: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/reopen`, { method: 'POST' }),
+  // Arm/disarm auto-merge on a native (Agent Hub-hosted) PR. Returns
+  // { pr, merged } — `merged: true` when arming an already-green PR merged it.
+  setNativePrAutoMerge: (projectId: any, number: any, enabled: boolean) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/auto-merge`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
   // Undo a merged PR: commits the inverse on the base branch and pushes the
   // moved branch to the GitHub mirror. Adds a commit; never rewrites history.
   revertNativePr: (projectId: any, number: any) =>

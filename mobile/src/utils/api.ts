@@ -1246,6 +1246,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({}),
     }),
+    // Arm/disarm native PR auto-merge. Returns { pr, merged }.
+    setPullAutoMerge: (projectId: any, number: any, enabled: boolean) => fetchJSON(`/projects/${projectId}/pulls/${number}/auto-merge`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled }),
+    }),
     // Undo a merged PR: commits the inverse on the base branch and pushes the
     // moved branch to the GitHub mirror. Adds a commit; no history rewrite.
     revertPull: (projectId: any, number: any) => fetchJSON(`/projects/${projectId}/pulls/${number}/revert`, {

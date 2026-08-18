@@ -887,6 +887,12 @@ export interface PullRequestRow {
   revert_sha: string | null;
   reverted_at: number | null;
   reverted_by: string | null;
+  /**
+   * 1 = auto-merge armed: the Hub merges this PR once its head's checks pass
+   * and it is otherwise mergeable. 0/absent = off. Armed via the PR-page
+   * toggle or a `git push -o automerge`.
+   */
+  auto_merge?: number;
 }
 
 /** Inline (per-line) review comment on a native PR diff. */
@@ -2841,6 +2847,14 @@ export interface Stmts {
   updatePullRequestHead: Stmt;
   /** Title/body edit (open PRs only). Params: (title, body, updated_at, id). */
   updatePullRequestText: Stmt;
+  /** Arm/disarm per-PR auto-merge (open PRs only). Params: (auto_merge, updated_at, id). */
+  setPullRequestAutoMerge: Stmt;
+  /** Upsert a pending auto-merge intent for a branch. Params: (project_id, branch, requested_by, created_at). */
+  upsertPrAutoMergeIntent: Stmt;
+  /** Params: (project_id, branch). */
+  getPrAutoMergeIntent: Stmt;
+  /** Params: (project_id, branch). */
+  deletePrAutoMergeIntent: Stmt;
   /** Guarded `status='open'` → 'merged' transition. */
   markPullRequestMerged: Stmt;
   /** Guarded `status='open'` → 'closed' transition. */

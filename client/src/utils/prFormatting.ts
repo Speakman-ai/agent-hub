@@ -299,30 +299,48 @@ export function mergeButtonState(pr: any) {
 
 /**
  * Decide whether the "Auto-merge" toggle should show for a PR, and its current
- * on/off state. GitHub's native auto-merge (arm-and-wait) only applies to
- * GitHub-hosted PRs — native (Agent Hub-hosted) PRs are covered by the session
- * Finalize automation level, so the toggle is hidden for them.
+ * on/off state. Both surfaces support arm-and-wait auto-merge:
  *
- * `available` gates whether the toggle renders at all; `enabled` reflects
- * whether GitHub currently has auto-merge armed (from the REST `auto_merge`
- * object surfaced by the server).
+ * - **Native (Agent Hub-hosted)** PRs carry a boolean `auto_merge`; the Hub
+ *   merges once the head's checks pass and the PR is otherwise mergeable.
+ * - **GitHub** PRs carry GitHub's REST `auto_merge` object (or null); the
+ *   toggle arms/disarms GitHub's own native auto-merge.
+ *
+ * `available` gates whether the toggle renders at all; `enabled` reflects the
+ * armed state. Pass `opts.isNative` when the caller already knows the source
+ * (from `detail.source === 'agenthub'`); otherwise it is inferred from the URL.
  *
  * @param {{state?:string, merged_at?:string|null, draft?:boolean,
- *          html_url?:string|null, auto_merge?:object|null}} pr
+ *          html_url?:string|null, auto_merge?:object|boolean|null}} pr
+ * @param {{isNative?:boolean}} [opts]
  * @returns {{available:boolean, enabled:boolean, method:string|null, reason:string}}
  */
-export function autoMergeToggleState(pr: any) {
+export function autoMergeToggleState(pr: any, opts: { isNative?: boolean } = {}) {
   const off = (reason: string) => ({ available: false, enabled: false, method: null, reason });
   if (!pr) return off('No PR data');
   const url = String(pr.html_url || '');
-  // GitHub native auto-merge only — hide for native (Agent Hub-hosted) PRs.
-  if (!/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(url)) {
-    return off('Auto-merge is available for GitHub PRs only');
-  }
+  const isNative = opts.isNative ?? /\/projects\/[^/]+\/pulls\/\d+/.test(url);
+  const isGithub = /github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(url);
+
   if (pr.merged_at) return off('Already merged');
   const s = (pr.state || '').toLowerCase();
   if (s && s !== 'open') return off(`PR is ${s}`);
   if (pr.draft) return off('PR is a draft');
+
+  if (isNative) {
+    const enabled = pr.auto_merge === true || pr.auto_merge === 1;
+    return {
+      available: true,
+      enabled,
+      method: 'squash',
+      reason: enabled
+        ? 'Agent Hub will merge automatically once the checks pass'
+        : 'Arm auto-merge: merge automatically once the checks pass',
+    };
+  }
+
+  // GitHub native auto-merge (arm-and-wait). Hidden for anything else.
+  if (!isGithub) return off('Auto-merge is available for GitHub or Agent Hub PRs only');
 
   const auto = pr.auto_merge && typeof pr.auto_merge === 'object' ? pr.auto_merge : null;
   const enabled = Boolean(auto);

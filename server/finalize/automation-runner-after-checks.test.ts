@@ -32,6 +32,8 @@ function makeSession(overrides: Partial<SessionRow>): SessionRow {
 
 function wire(opts: {
   pr?: Partial<PullRequestRow> | undefined;
+  /** Row returned by getPullRequestByNumber (armed-flag path). Defaults to `pr`. */
+  prByNumber?: Partial<PullRequestRow> | undefined;
   pushRun?: Partial<FinalizeRunRow> | undefined;
   session?: SessionRow | undefined;
   merge?: ReturnType<typeof vi.fn>;
@@ -41,6 +43,7 @@ function wire(opts: {
   setFinalizeAutomationRouteDeps({
     stmts: {
       getOpenPullRequestByHeadBranch: { get: () => opts.pr },
+      getPullRequestByNumber: { get: () => opts.prByNumber ?? opts.pr },
       getFinalizeRunByPrUrl: { get: () => opts.pushRun },
       getSession: { get: () => opts.session },
     },
@@ -67,6 +70,38 @@ describe('maybeAutoMergeAfterChecks', () => {
     expect(merge).toHaveBeenCalledWith(
       expect.objectContaining({ number: 4, mergeMethod: 'squash', actor: 'finalize-automation' }),
     );
+  });
+
+  it('merges when the PR itself is auto-merge armed, regardless of session level', async () => {
+    const { merge } = wire({
+      pr: { number: 9, status: 'open', auto_merge: 1 },
+      // A below-merge session level must NOT suppress a PR-level arming.
+      pushRun: { session_id: 's1' },
+      session: makeSession({ finalize_automation: 'manual' }),
+    });
+    await maybeAutoMergeAfterChecks({ project: PROJECT as never, branch: 'feat/x' });
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(merge).toHaveBeenCalledWith(
+      expect.objectContaining({ number: 9, mergeMethod: 'squash', actor: 'auto-merge' }),
+    );
+  });
+
+  it('an armed PR that is not yet mergeable stays open (no session fallback)', async () => {
+    const merge = vi.fn(async () => ({
+      ok: false as const,
+      status: 409,
+      error: 'Branch protection: checks are still running',
+    }));
+    wire({
+      pr: { number: 9, status: 'open', auto_merge: 1 },
+      pushRun: { session_id: 's1' },
+      session: makeSession({ finalize_automation: 'merge' }),
+      merge,
+    });
+    await maybeAutoMergeAfterChecks({ project: PROJECT as never, branch: 'feat/x' });
+    // Attempted once via the armed path; the session-automation path is not
+    // also tried (it would double-merge / mis-route).
+    expect(merge).toHaveBeenCalledTimes(1);
   });
 
   it('does NOT merge when the originating session is below Auto Merge level (push)', async () => {

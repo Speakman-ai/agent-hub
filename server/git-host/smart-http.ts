@@ -66,7 +66,7 @@ export interface GitSmartHttpDeps {
   onPush?: (
     project: Project,
     updatedRefs: string[],
-    ctx?: { pushedByUserId?: string | null },
+    ctx?: { pushedByUserId?: string | null; pushOptions?: string[] },
   ) => void;
   dataDir?: string;
 }
@@ -137,6 +137,33 @@ function serviceArgv(service: GitService): string {
   return service.replace(/^git-/, '');
 }
 
+/**
+ * `git -c <cfg>` prefix for a spawned service. Enables push-option
+ * advertisement on receive-pack so a client's `git push -o <opt>` is accepted
+ * and delivered to the post-receive hook as `GIT_PUSH_OPTION_*`. No-op (and
+ * harmless) for upload-pack. Applied to BOTH the advertise and the RPC spawn —
+ * the capability must appear in the ref advertisement for the client to send
+ * options at all.
+ */
+function gitServiceConfigArgs(service: GitService): string[] {
+  return service === 'git-receive-pack' ? ['-c', 'receive.advertisePushOptions=true'] : [];
+}
+
+/**
+ * Parse the comma-joined `X-AgentHub-Push-Options` header the post-receive hook
+ * forwards (the client's `git push -o <opt>` values, already filtered to a safe
+ * charset by the hook). Returns a de-duped, non-empty token list.
+ */
+export function parsePushOptionsHeader(header: string | string[] | undefined): string[] {
+  const raw = Array.isArray(header) ? header.join(',') : (header ?? '');
+  const seen = new Set<string>();
+  for (const tok of raw.split(',')) {
+    const t = tok.trim();
+    if (t) seen.add(t);
+  }
+  return [...seen];
+}
+
 export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
   const router = Router();
 
@@ -171,6 +198,7 @@ export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
     const child = spawn(
       'git',
       [
+        ...gitServiceConfigArgs(service as GitService),
         serviceArgv(service as GitService),
         '--stateless-rpc',
         '--advertise-refs',
@@ -212,10 +240,19 @@ export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
       res.set('Content-Type', `application/x-${service}-result`);
       noCacheHeaders(res);
 
-      const child = spawn('git', [serviceArgv(service), '--stateless-rpc', resolved.repoPath], {
-        env: packEnv(req),
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      const child = spawn(
+        'git',
+        [
+          ...gitServiceConfigArgs(service),
+          serviceArgv(service),
+          '--stateless-rpc',
+          resolved.repoPath,
+        ],
+        {
+          env: packEnv(req),
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      );
 
       // Request body → child stdin (gunzip when the client compressed it).
       const encoding = req.headers['content-encoding'];
@@ -298,10 +335,11 @@ export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
       }
       if (project && deps.onPush) {
         const pushedByUserId = takeRecentPusher(project.id);
+        const pushOptions = parsePushOptionsHeader(req.headers['x-agenthub-push-options']);
         deps.onPush(
           project,
           updates.map((u) => u.ref),
-          { pushedByUserId },
+          { pushedByUserId, pushOptions },
         );
       }
       res.status(204).end();

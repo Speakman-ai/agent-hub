@@ -18,6 +18,7 @@ import { buildNativePrUrl } from '../native-pr/url.js';
 import { isRetryableMergeBlock } from '../native-pr/merge-block.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from '../auto-git.js';
 import { AUTO_MERGE_ACTOR, autoMergeReadyPr } from './auto-merge-ready-pr.js';
+import { tryAutoMergeArmedNativePr } from '../native-pr/auto-merge-armed.js';
 import { handleGithubCardOnMerge } from '../github-card-on-merge.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
 import { runFinalizePush } from './push-run.js';
@@ -144,6 +145,26 @@ export async function maybeAutoMergeAfterChecks(args: {
   if (!pr) return;
 
   const prUrl = buildNativePrUrl(args.project.id, pr.number);
+
+  // PR-level arming (PR-page toggle or `git push -o automerge`) is independent
+  // of any originating session's automation level: if the PR itself is armed,
+  // merge it now that its checks are green and stop — never fall through to the
+  // session/github dispatch for an armed native PR.
+  if (pr.auto_merge === 1) {
+    if (deps.nativePr) {
+      const outcome = await tryAutoMergeArmedNativePr(
+        { stmts: deps.stmts, nativePr: deps.nativePr },
+        { project: args.project, number: pr.number },
+      );
+      if (outcome.merged) {
+        console.log(`[native-pr] auto-merge completed for ${prUrl} after checks passed`);
+      } else if (outcome.reason) {
+        console.log(`[native-pr] auto-merge for ${prUrl} still blocked: ${outcome.reason}`);
+      }
+    }
+    return;
+  }
+
   const pushRun = deps.stmts.getFinalizeRunByPrUrl.get(prUrl) as FinalizeRunRow | undefined;
   if (!pushRun?.session_id) return;
 

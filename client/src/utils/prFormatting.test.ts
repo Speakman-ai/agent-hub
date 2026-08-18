@@ -673,8 +673,32 @@ describe('autoMergeToggleState', () => {
     expect(s.method).toBe('squash');
   });
 
-  it('is unavailable for native (non-github) PR URLs', () => {
-    const s = autoMergeToggleState({ state: 'open', html_url: '/projects/demo/pulls/3' });
+  it('is available for open native PRs and reflects the boolean auto_merge flag', () => {
+    const off = autoMergeToggleState({ state: 'open', html_url: '/projects/demo/pulls/3' });
+    expect(off.available).toBe(true);
+    expect(off.enabled).toBe(false);
+    expect(off.method).toBe('squash');
+
+    const on = autoMergeToggleState({
+      state: 'open',
+      html_url: '/projects/demo/pulls/3',
+      auto_merge: true,
+    });
+    expect(on.available).toBe(true);
+    expect(on.enabled).toBe(true);
+  });
+
+  it('honors an explicit isNative hint regardless of URL shape', () => {
+    const s = autoMergeToggleState(
+      { state: 'open', html_url: '', auto_merge: true },
+      { isNative: true },
+    );
+    expect(s.available).toBe(true);
+    expect(s.enabled).toBe(true);
+  });
+
+  it('is unavailable for a URL that is neither GitHub nor a native PR route', () => {
+    const s = autoMergeToggleState({ state: 'open', html_url: 'https://example.com/x' });
     expect(s.available).toBe(false);
   });
 

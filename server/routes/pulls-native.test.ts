@@ -238,6 +238,81 @@ describe('PATCH /api/projects/:projectId/pulls/:number', () => {
   });
 });
 
+describe('POST /api/projects/:projectId/pulls/:number/auto-merge', () => {
+  it('arms auto-merge; a green/mergeable PR (no protection) merges immediately', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Auto' }).expect(201);
+
+    // No branch protection → the PR is already mergeable, so arming merges now.
+    const armed = await authedPost(`/api/projects/${id}/pulls/1/auto-merge`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(armed.body.merged).toBe(true);
+    expect(armed.body.pr).toMatchObject({ status: 'merged' });
+  });
+
+  it('persists the flag when the PR is not yet mergeable; disarm clears it', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    // Require an approving review so arming cannot merge immediately.
+    await authedPatch(`/api/projects/${id}`)
+      .send({ branchProtection: { requiredReview: true } })
+      .expect(200);
+    await postPulls(id).send({ headBranch: branch, title: 'Deferred' }).expect(201);
+
+    // Action routes return the raw PR row (auto_merge as the stored 0/1),
+    // matching the reopen/revert siblings.
+    const armed = await authedPost(`/api/projects/${id}/pulls/1/auto-merge`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(armed.body.merged).toBe(false);
+    expect(armed.body.pr).toMatchObject({ status: 'open', auto_merge: 1 });
+
+    // The summarized detail payload (what the PR page reads) exposes a boolean.
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr.auto_merge).toBe(true);
+
+    // Disarm.
+    const disarmed = await authedPost(`/api/projects/${id}/pulls/1/auto-merge`)
+      .send({ enabled: false })
+      .expect(200);
+    expect(disarmed.body).toMatchObject({ merged: false, pr: { auto_merge: 0 } });
+    const detailOff = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detailOff.body.pr.auto_merge).toBe(false);
+  });
+
+  it('validates the body and unknown PRs', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Validate' }).expect(201);
+    await authedPost(`/api/projects/${id}/pulls/1/auto-merge`).send({}).expect(400);
+    await authedPost(`/api/projects/${id}/pulls/1/auto-merge`).send({ enabled: 'yes' }).expect(400);
+    await authedPost(`/api/projects/${id}/pulls/99/auto-merge`).send({ enabled: true }).expect(404);
+  });
+
+  it('a push-option intent consumed on PR create fires the immediate merge (green head)', async () => {
+    // Regression for the `git push -o automerge` race: CI can finish green
+    // BEFORE the PR is opened, so the checks-passed hook has already run and
+    // will not fire again. Creating the PR consumes the intent (arms it) AND
+    // must trigger the merge itself — otherwise it stays armed forever.
+    const { id, branch } = await hostedProjectWithBranch();
+    const { stmts } = await import('../db.js');
+    stmts!.upsertPrAutoMergeIntent.run(id, branch, null, Date.now());
+
+    await postPulls(id).send({ headBranch: branch, title: 'Intent merge' }).expect(201);
+
+    // The create path fires the merge asynchronously (fire-and-forget) — no
+    // branch protection, so the PR is immediately mergeable and lands.
+    await vi.waitFor(
+      async () => {
+        const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+        expect(detail.body.pr.merged).toBe(true);
+      },
+      { timeout: 10_000 },
+    );
+    // The intent is consumed (one-shot), not left dangling.
+    expect(stmts!.getPrAutoMergeIntent.get(id, branch)).toBeUndefined();
+  });
+});
+
 describe('native PR review lifecycle', () => {
   it('close → reopen round-trips; merged PRs cannot reopen', async () => {
     const { id, branch } = await hostedProjectWithBranch();

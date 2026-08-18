@@ -20,6 +20,7 @@ import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
 import { isSafeBranchName } from '../git-host/repo-read.js';
 import { git, prCommits, prDiff, prDiffStat, prFiles, revParse } from '../native-pr/git-read.js';
 import { NativePrError } from '../native-pr/errors.js';
+import { tryAutoMergeArmedNativePr } from '../native-pr/auto-merge-armed.js';
 import { maybeRunPrAutoReview } from '../native-pr/auto-review.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import { resolveCardSessionId } from '../kanban-caller-session.js';
@@ -283,6 +284,32 @@ registerPath({
     400: { description: 'Not Hub-hosted.', content: jsonContent(PrErrorSchema) },
     404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
     409: { description: 'PR is merged or already open.', content: jsonContent(PrErrorSchema) },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/pulls/{number}/auto-merge',
+  tags: ['Projects'],
+  summary: 'Arm or disarm auto-merge on a native pull request',
+  description:
+    'Arms (or disarms) auto-merge on an open Agent Hub-hosted PR. An armed PR merges once its head checks pass and it is otherwise mergeable; if it is already green and mergeable, it merges immediately (response `merged: true`). Same behaviour as `git push -o automerge`. Agent Hub-hosted projects only; merged/closed PRs are rejected (409).',
+  request: {
+    params: z.object({ projectId: z.string(), number: z.string() }),
+    body: {
+      content: jsonContent(z.object({ enabled: z.boolean() })),
+    },
+  },
+  responses: {
+    200: {
+      description: 'The updated PR summary plus whether an immediate merge fired.',
+      content: jsonContent(
+        z.object({ pr: z.record(z.string(), z.unknown()), merged: z.boolean() }),
+      ),
+    },
+    400: { description: 'Not Hub-hosted or invalid body.', content: jsonContent(PrErrorSchema) },
+    404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
+    409: { description: 'PR is merged or closed.', content: jsonContent(PrErrorSchema) },
   },
 });
 
@@ -783,6 +810,40 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       sendNativeError(res, err);
     }
   });
+
+  router.post(
+    '/api/projects/:projectId/pulls/:number/auto-merge',
+    async (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      if (typeof body.enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled (boolean) is required' });
+      }
+      try {
+        const { row } = deps.nativePr!.setAutoMerge({
+          project: ctx.project,
+          number: ctx.number,
+          enabled: body.enabled,
+        });
+        // Arming a PR that is already green + mergeable merges it now rather
+        // than waiting for the next checks-passed event.
+        if (body.enabled) {
+          const outcome = await tryAutoMergeArmedNativePr(
+            { stmts: deps.stmts, nativePr: deps.nativePr! },
+            { project: ctx.project, number: ctx.number },
+          );
+          if (outcome.merged) {
+            const merged = deps.stmts.getPullRequestByNumber.get(ctx.project.id, ctx.number);
+            return res.json({ pr: merged, merged: true });
+          }
+        }
+        return res.json({ pr: row, merged: false });
+      } catch (err: unknown) {
+        sendNativeError(res, err);
+      }
+    },
+  );
 
   router.post(
     '/api/projects/:projectId/pulls/:number/revert',

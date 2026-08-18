@@ -61,6 +61,15 @@ export function createOrGetOpenPullRequest(
       now,
       now,
     );
+    // Consume a pending `git push -o automerge` intent recorded before the PR
+    // existed: arm the freshly-created PR and clear the intent so it fires once.
+    const intent = stmts.getPrAutoMergeIntent.get(args.projectId, args.headBranch) as
+      | { branch: string }
+      | undefined;
+    if (intent) {
+      stmts.setPullRequestAutoMerge.run(1, now, id);
+      stmts.deletePrAutoMergeIntent.run(args.projectId, args.headBranch);
+    }
     const row = stmts.getPullRequestByNumber.get(args.projectId, number) as PullRequestRow;
     return { row, created: true };
   });
