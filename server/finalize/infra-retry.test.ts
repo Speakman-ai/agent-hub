@@ -246,6 +246,7 @@ describe('classifyFailureReason', () => {
       'runner_workspace_unwritable',
       'spot_reclaimed',
       'hub_unavailable',
+      'runner_lost',
     ]);
   });
 
@@ -313,12 +314,21 @@ describe('classifyFailureReason', () => {
     expect((INFRA_FAILURE_REASONS as readonly string[]).includes('hub_unavailable')).toBe(true);
   });
 
+  it('runner_lost classifies as infra and earns the generous cap, but is not a Spot reclaim', () => {
+    expect(classifyFailureReason('runner_lost')).toBe('infra');
+    expect(isInfraFailureReason('runner_lost')).toBe(true);
+    expect(earnsGenerousRetryCap('runner_lost')).toBe(true);
+    expect(isReclaimFailureReason('runner_lost')).toBe(false);
+    expect((INFRA_FAILURE_REASONS as readonly string[]).includes('runner_lost')).toBe(true);
+  });
+
   it('earnsGenerousRetryCap is true exactly for the generous set', () => {
     expect([...GENEROUS_RETRY_FAILURE_REASONS].sort()).toEqual(
-      ['hub_unavailable', 'spot_reclaimed'].sort(),
+      ['hub_unavailable', 'runner_lost', 'spot_reclaimed'].sort(),
     );
     expect(earnsGenerousRetryCap('spot_reclaimed')).toBe(true);
     expect(earnsGenerousRetryCap('hub_unavailable')).toBe(true);
+    expect(earnsGenerousRetryCap('runner_lost')).toBe(true);
     expect(earnsGenerousRetryCap('container_unavailable')).toBe(false);
     expect(earnsGenerousRetryCap('runner_cancelled')).toBe(false);
     expect(earnsGenerousRetryCap(null)).toBe(false);
@@ -563,12 +573,20 @@ describe('openInfraRetryRun', () => {
     expect(resolveRetryGenerationCap('hub_unavailable')).toBe(3);
   });
 
+  it('runner_lost earns the generous cap (3), same as a Spot reclaim', () => {
+    // A single expired lease (Spot kill that missed IMDS, crash, OOM) used to
+    // park as container_unavailable after the conservative generations. It is
+    // never the change set, so it shares the generous cap.
+    expect(resolveRetryGenerationCap('runner_lost')).toBe(3);
+  });
+
   it('FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS also governs hub_unavailable (shared generous cap)', () => {
     const saved = process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS;
     try {
       process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = '5';
       expect(resolveRetryGenerationCap('hub_unavailable')).toBe(5);
       expect(resolveRetryGenerationCap('spot_reclaimed')).toBe(5);
+      expect(resolveRetryGenerationCap('runner_lost')).toBe(5);
       // Generic infra is unaffected by the generous-class override.
       expect(resolveRetryGenerationCap('container_unavailable')).toBe(2);
     } finally {

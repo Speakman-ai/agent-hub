@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CiConfig, CiStep } from './ci-config.js';
 import { spotReclaimDetail } from './spot-interruption.js';
 import { hubUnavailableDetail } from './hub-unavailable.js';
+import { runnerLostDetail } from './runner-lost.js';
 import {
   STEP_OUTPUT_TAIL_LINES,
   STEP_ACTIVE_SECONDS_PER_STEP,
@@ -1373,7 +1374,7 @@ describe('runJobSteps — spawn errors', () => {
   it('classifies a generic spawn-error as container_unavailable', async () => {
     const stmts = makeStmts();
     const spawnStep: SpawnStepFn = () => {
-      throw new Error('runner agent lost — lease expired with no heartbeat');
+      throw new Error('docker: cannot connect to the Docker daemon');
     };
     const deps: StepRunnerDeps = {
       stmts: stmts as never,
@@ -1449,6 +1450,35 @@ describe('runJobSteps — spawn errors', () => {
     });
     expect(result.status).toBe('infra_error');
     expect(result.failureReason).toBe('hub_unavailable');
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('classifies a runner-lost-marked spawn-error as runner_lost', async () => {
+    // A single expired lease (Spot kill that missed IMDS, crash, OOM) is marked
+    // runner_lost by the fleet reaper so it earns the generous retry cap instead
+    // of parking as container_unavailable.
+    const stmts = makeStmts();
+    const spawnStep: SpawnStepFn = () => {
+      throw new Error(
+        runnerLostDetail(
+          'runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)',
+        ),
+      );
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const result = await runJobSteps(deps, {
+      runId: RUN_ID,
+      config: makeConfig([{ name: 'step 1', run: 'echo hi' }]),
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('runner_lost');
     expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
   });
 });

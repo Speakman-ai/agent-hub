@@ -177,6 +177,11 @@ export const INFRA_FAILURE_REASONS = [
   // `container_unavailable` cap that would park a run caught by back-to-back
   // restart windows before the Hub stabilises.
   'hub_unavailable',
+  // A single runner vanished (lease expired, no IMDS notice, not a mass reap).
+  // Crash / OOM / scale-in / Spot kill that missed the 2-minute notice — never
+  // the change set. Generous cap so an IMDS-missed Spot storm does not park
+  // after one conservative `container_unavailable` generation.
+  'runner_lost',
 ] as const;
 
 /**
@@ -189,14 +194,20 @@ export const RECLAIM_FAILURE_REASONS = ['spot_reclaimed'] as const;
 
 /**
  * Infra-class reasons that earn the GENEROUS retry-generation cap. These are the
- * known-transient EXTERNAL events — an EC2 Spot reclaim (`spot_reclaimed`) or a
- * Hub restart / brief unreachability (`hub_unavailable`) — that recover on their
- * own and are never about the change set, so a run caught by back-to-back windows
- * survives more generations before parking. Every other infra reason
- * (`container_unavailable`, `worktree_create_failed`, …) keeps the conservative
- * cap, since it may be a deterministic environment fault that would only livelock.
+ * known-transient EXTERNAL events — an EC2 Spot reclaim (`spot_reclaimed`), a
+ * Hub restart / brief unreachability (`hub_unavailable`), or a single dead
+ * runner whose lease expired (`runner_lost`, including Spot kills that missed
+ * IMDS) — that recover on their own and are never about the change set, so a
+ * run caught by back-to-back windows survives more generations before parking.
+ * Every other infra reason (`container_unavailable`, `worktree_create_failed`,
+ * …) keeps the conservative cap, since it may be a deterministic environment
+ * fault that would only livelock.
  */
-export const GENEROUS_RETRY_FAILURE_REASONS = ['spot_reclaimed', 'hub_unavailable'] as const;
+export const GENEROUS_RETRY_FAILURE_REASONS = [
+  'spot_reclaimed',
+  'hub_unavailable',
+  'runner_lost',
+] as const;
 
 export type CiFailureReason = (typeof CI_FAILURE_REASONS)[number];
 export type InfraFailureReason = (typeof INFRA_FAILURE_REASONS)[number];
@@ -576,7 +587,7 @@ export function composeInfraTerminalMessageBody(args: {
   }
   lines.push('');
   lines.push(
-    `Original run \`${args.parentRunId}\` failed with the same code; the one automatic retry (run \`${args.retryRunId}\`) hit the same class of failure.`,
+    `Original run \`${args.parentRunId}\` failed with the same code; automatic retries (last run \`${args.retryRunId}\`) hit the same class of failure.`,
   );
   lines.push('');
   lines.push(

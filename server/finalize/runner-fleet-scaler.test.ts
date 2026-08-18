@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import {
   __resetFleetScalerStateForTests,
+  queueDepthForScale,
   desiredAgents,
   desiredAgentsDynamic,
   planFleetChange,
@@ -25,6 +26,7 @@ import {
 } from './runner-queue.js';
 import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
 import { detailIsHubUnavailable } from './hub-unavailable.js';
+import { detailIsRunnerLost } from './runner-lost.js';
 
 describe('desiredAgents', () => {
   it('scales to zero (min) when the queue is empty', () => {
@@ -43,6 +45,18 @@ describe('desiredAgents', () => {
 
   it('never drops below the floor while work is queued', () => {
     expect(desiredAgents(2, 4, 8)).toBe(4);
+  });
+});
+
+describe('queueDepthForScale', () => {
+  it('adds just-reaped jobs so replacements scale up for the imminent retry', () => {
+    expect(queueDepthForScale(8, 1)).toBe(9);
+    expect(queueDepthForScale(15, 3)).toBe(18);
+  });
+
+  it('is a no-op when nothing was reaped', () => {
+    expect(queueDepthForScale(8, 0)).toBe(8);
+    expect(queueDepthForScale(0, 0)).toBe(0);
   });
 });
 
@@ -103,6 +117,20 @@ describe('planFleetChange', () => {
     });
     expect(p.target).toBe(5);
     expect(p.state.emptySinceMs).toBe(0);
+  });
+
+  it('scales up for lost jobs that will retry (depth includes reaped count)', () => {
+    // 8 live + 1 just-reaped → replacement agent, not "already at 8".
+    const p = planFleetChange({
+      depth: queueDepthForScale(8, 1),
+      current: 8,
+      min: 0,
+      max: 128,
+      reapedThisTick: 1,
+      now: 1_000,
+      state: FRESH,
+    });
+    expect(p.target).toBe(9);
   });
 
   it('leaves the service unchanged when target already equals current', () => {
@@ -619,9 +647,11 @@ describe('reapDeadRunnerJobs (liveness backstop, card d8a76929)', () => {
     await Promise.resolve();
     expect(failure).not.toBeNull();
     expect(failure!.message).toMatch(/runner agent lost — lease expired with no heartbeat/);
-    // A SINGLE reap is ambiguous (crash / OOM / deploy / Hub blip), so it stays
-    // the conservative container_unavailable reason — no hub_unavailable marker.
+    // A SINGLE reap is still a dead agent (crash / OOM / Spot that missed IMDS),
+    // never the change set — runner_lost earns the generous cap. It is NOT a
+    // Hub-side mass blip.
     expect(detailIsHubUnavailable(failure!.message)).toBe(false);
+    expect(detailIsRunnerLost(failure!.message)).toBe(true);
     removeJobChannel(claimed!.id);
   });
 

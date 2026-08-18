@@ -37,6 +37,7 @@ import { clearHubTaskProtection, loadHubTaskProtectionConfig } from './hub-task-
 import { getJobChannel } from './runner-job-channel.js';
 import { spotReclaimDetail } from './spot-interruption.js';
 import { hubUnavailableDetail } from './hub-unavailable.js';
+import { runnerLostDetail } from './runner-lost.js';
 import { DEFAULT_FLEET_MAX_AGENTS, DEFAULT_FLEET_MIN_AGENTS } from './runner-fleet-constants.js';
 
 interface FleetScalerConfig {
@@ -150,6 +151,16 @@ export interface FleetPlan {
   target: number | null;
   /** Hysteresis state to carry into the next reconcile tick. */
   state: ScalerHysteresis;
+}
+
+/**
+ * Live queue depth plus jobs this tick just marked `lost`. Those lost jobs
+ * re-enqueue on a fresh agent within milliseconds; planning against the
+ * post-reap hole would refuse to scale up replacements (Spot kill → 1 lost
+ * running job → depth drops → desired stays flat while the retry waits).
+ */
+export function queueDepthForScale(liveDepth: number, reapedThisTick: number): number {
+  return liveDepth + Math.max(0, reapedThisTick);
 }
 
 /**
@@ -297,23 +308,21 @@ export function reapDeadRunnerJobs(now: number = Date.now()): ReapedRunnerJob[] 
     // For a job whose agent reported an EC2 Spot interruption notice (IMDS)
     // before its lease expired, we KNOW the loss is capacity reclamation, not a
     // crash — fail it with the spot_reclaimed marker so step-runner picks the
-    // generous reclaim retry cap. For the rest, the message states only what we
-    // OBSERVED — a missing heartbeat — and does NOT guess "Spot reclaim" (the
-    // lease can expire from an agent crash, an OOM kill, a deploy/scale-in, OR
-    // the Hub being briefly unreachable). A whole batch reaped in one tick
-    // points at the Hub side, not N independent agent deaths — mark those with
-    // the hub_unavailable seam so they earn the generous transient retry cap
-    // (a Hub restart recovers on its own, exactly like a Spot reclaim) instead
-    // of the conservative `container_unavailable` cap that parks a run caught by
-    // back-to-back restart windows. A single reap stays ambiguous (crash / OOM /
-    // deploy / Hub blip), so it keeps the conservative reason.
+    // generous reclaim retry cap. A whole batch reaped in one tick points at
+    // the Hub side, not N independent agent deaths — mark those hub_unavailable.
+    // A SINGLE expired lease is still a dead agent (crash / OOM / scale-in /
+    // Spot kill that missed IMDS), never the change set — mark it runner_lost
+    // so it earns the same generous cap instead of parking as
+    // container_unavailable after one conservative generation.
     const genericDetail =
       reaped.length > 1
         ? hubUnavailableDetail(
             `runner agent lost — lease expired with no heartbeat; ${reaped.length} jobs reaped in one tick, ` +
               `so the Hub was likely briefly unreachable or restarting (not a per-agent crash)`,
           )
-        : `runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)`;
+        : runnerLostDetail(
+            `runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)`,
+          );
     // Clear Hub task protection on each reaped agent's task. The lease expired,
     // so either the task is already gone (clear is a harmless no-op) or it's a
     // stuck-but-alive worker — in which case it would otherwise stay protected
@@ -344,7 +353,9 @@ export async function reconcileFleetCapacity(now: number = Date.now()): Promise<
   reconciling = true;
   try {
     const reaped = reapDeadRunnerJobs(now);
-    const depth = runnerQueueDepth(); // queued + claimed + running, across all orgs
+    // Include just-reaped jobs: they re-enqueue immediately, and the post-reap
+    // COUNT would otherwise under-scale (no replacement agent for the retry).
+    const depth = queueDepthForScale(runnerQueueDepth(), reaped.length);
     // claimed+running only — the floor a dynamic shrink must never cross. Cheap
     // extra COUNT, so only taken when dynamic scale-down is actually enabled.
     const inflight = cfg.dynamicScaleDown ? runnerInflightCount() : depth;

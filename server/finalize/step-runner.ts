@@ -98,6 +98,7 @@ import {
 } from './timeline-message.js';
 import { detailIsSpotReclaim, spotReclaimDetail } from './spot-interruption.js';
 import { detailIsHubUnavailable } from './hub-unavailable.js';
+import { detailIsRunnerLost } from './runner-lost.js';
 import type { RunnerJobLossProbe } from './runner-queue.js';
 import { hasTestFailureSummary, isRunnerTeardownExit } from './runner-teardown.js';
 import { isRunnerCancellationCollateral } from './step-cancellation.js';
@@ -725,13 +726,17 @@ export async function runStepsSequence(
       // Hub-side blip (restart / brief unreachability) — the reaper marks those
       // `hub_unavailable`, which also earns the generous cap because a Hub restart
       // is a known-transient external event that recovers on its own. Every other
-      // spawn failure stays the conservative `container_unavailable`. All three are
-      // infra-class, so the retry path is the same — only the cap differs.
+      // spawn failure stays the conservative `container_unavailable`. A single
+      // expired lease (no IMDS notice) is `runner_lost` — still generous, because
+      // a dead agent is never the change set. All four are infra-class; only the
+      // cap differs.
       const failureReason = detailIsSpotReclaim(runOutcome.detail)
         ? 'spot_reclaimed'
         : detailIsHubUnavailable(runOutcome.detail)
           ? 'hub_unavailable'
-          : 'container_unavailable';
+          : detailIsRunnerLost(runOutcome.detail)
+            ? 'runner_lost'
+            : 'container_unavailable';
       return finishStepSequence(
         deps,
         opts,
