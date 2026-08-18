@@ -249,21 +249,53 @@ export interface FetchJsonOptions extends Omit<RequestInit, 'signal'> {
   signal?: AbortSignal;
 }
 
+/** True when `fetch` rejected because AbortSignal.timeout fired. */
+export function isFetchTimeoutError(err: unknown): err is Error {
+  return err instanceof Error && err.name === 'TimeoutError';
+}
+
+/**
+ * Human copy for a fetchJSON AbortSignal.timeout. The browser's own
+ * message is "The operation was aborted due to timeout" — no method, path,
+ * or deadline — which is why these show up as mystery "signal timeout"
+ * toasts and console warnings.
+ */
+export function fetchTimeoutMessage(method: string, url: string, timeoutMs: number): string {
+  return `Request timed out after ${timeoutMs}ms: ${method} ${url}`;
+}
+
 async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): Promise<T> {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
   const { timeout: timeoutOption, ...fetchOpts } = options;
   const timeoutMs =
     timeoutOption === null ? null : !timeoutOption || timeoutOption <= 0 ? 15000 : timeoutOption;
-  const res = await fetch(`${base}${url}`, {
-    ...fetchOpts,
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeaders,
-      ...(fetchOpts.headers as Record<string, string> | undefined),
-    },
-    signal: fetchOpts.signal || (timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)),
-  });
+  // Only remap TimeoutError when *we* attached AbortSignal.timeout. A
+  // caller-supplied signal (unmount, session switch) must stay an abort.
+  const usedOwnTimeout = timeoutMs !== null && !fetchOpts.signal;
+  let res: Response;
+  try {
+    res = await fetch(`${base}${url}`, {
+      ...fetchOpts,
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+        ...(fetchOpts.headers as Record<string, string> | undefined),
+      },
+      signal: fetchOpts.signal || (timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)),
+    });
+  } catch (err) {
+    if (usedOwnTimeout && isFetchTimeoutError(err)) {
+      const timedOut = new Error(fetchTimeoutMessage(fetchOpts.method || 'GET', url, timeoutMs), {
+        cause: err,
+      });
+      // Keep the DOM name so existing `err.name === 'TimeoutError'` checks
+      // (and isFetchTimeoutError itself) still match the remapped error.
+      timedOut.name = 'TimeoutError';
+      throw timedOut;
+    }
+    throw err;
+  }
   if (!res.ok) {
     // The error body can only be read once — parse it up front so both
     // the dead-session check and the thrown detail can use it.

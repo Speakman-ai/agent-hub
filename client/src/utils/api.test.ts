@@ -15,7 +15,7 @@ vi.mock('./auth', () => ({
   isLocalBundledDeployment: () => false,
 }));
 
-import { api, errorDetail } from './api';
+import { api, errorDetail, fetchTimeoutMessage, isFetchTimeoutError } from './api';
 
 const reload = vi.fn();
 const originalLocation = window.location;
@@ -135,6 +135,73 @@ describe('fetchJSON — /auth/me/* 401 disambiguation', () => {
     await expect(api.getMyGrokAuth()).rejects.toThrow(/401/);
     expect(clearToken).toHaveBeenCalledTimes(1);
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+});
+
+function timeoutError(message = 'The operation was aborted due to timeout'): Error {
+  const err = new Error(message);
+  err.name = 'TimeoutError';
+  return err;
+}
+
+describe('fetchJSON AbortSignal timeout', () => {
+  it('remaps TimeoutError from its own signal to method + path + deadline', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(timeoutError());
+
+    await expect(api.getProjects()).rejects.toThrow(
+      'Request timed out after 15000ms: GET /projects',
+    );
+  });
+
+  it('includes a caller-specified timeout in the remapped message', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(timeoutError());
+
+    await expect(api.summarizeSession('sess-1')).rejects.toThrow(
+      'Request timed out after 120000ms: POST /sessions/sess-1/summarize',
+    );
+  });
+
+  it('does not remap TimeoutError when the caller supplied the AbortSignal', async () => {
+    const raw = timeoutError();
+    globalThis.fetch = vi.fn().mockRejectedValue(raw);
+    const signal = new AbortController().signal;
+
+    await expect(api.getReviewerThreads('proj-1', 'run-1', { signal })).rejects.toBe(raw);
+  });
+
+  it('does not remap a non-timeout fetch failure', async () => {
+    const raw = new TypeError('Failed to fetch');
+    globalThis.fetch = vi.fn().mockRejectedValue(raw);
+
+    await expect(api.getProjects()).rejects.toBe(raw);
+  });
+});
+
+describe('isFetchTimeoutError / fetchTimeoutMessage', () => {
+  it('recognizes TimeoutError by name', () => {
+    expect(isFetchTimeoutError(timeoutError())).toBe(true);
+    expect(isFetchTimeoutError(new Error('The operation was aborted due to timeout'))).toBe(false);
+    expect(isFetchTimeoutError('timeout')).toBe(false);
+  });
+
+  it('keeps the TimeoutError name and original cause on the remapped error', async () => {
+    const raw = timeoutError();
+    globalThis.fetch = vi.fn().mockRejectedValue(raw);
+
+    const err = await api.getProjects().then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.name).toBe('TimeoutError');
+    expect(isFetchTimeoutError(err)).toBe(true);
+    expect(err!.cause).toBe(raw);
+  });
+
+  it('names the request that died', () => {
+    expect(fetchTimeoutMessage('GET', '/projects', 15000)).toBe(
+      'Request timed out after 15000ms: GET /projects',
+    );
   });
 });
 
