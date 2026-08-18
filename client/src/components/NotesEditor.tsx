@@ -195,6 +195,20 @@ const PROCESS_TARGETS = [
   { value: 'plan', label: 'Kanban', desc: 'Create kanban cards from action items' },
 ];
 
+// A new note needs a non-empty title for the server to accept the create.
+// Prefer what the user typed; otherwise derive from the first non-blank line
+// of the content, falling back to 'Untitled'.
+export function deriveNoteTitle(title: string, content: string): string {
+  const t = (title || '').trim();
+  if (t) return t;
+  const firstLine = (content || '')
+    .split('\n')
+    .map((l) => l.replace(/^#+\s*/, '').trim())
+    .find((l) => l.length > 0);
+  if (firstLine) return firstLine.slice(0, 100);
+  return 'Untitled';
+}
+
 export default function NotesEditor({ projectId }: any) {
   const [notes, setNotes] = useState<any[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<any>(null);
@@ -221,6 +235,35 @@ export default function NotesEditor({ projectId }: any) {
   const [ticketResult, setTicketResult] = useState<any>(null); // { status, message }
   const searchTimerRef = useRef<any>(null);
   const saveTimerRef = useRef<any>(null);
+  // Live mirrors of the edit buffers + mode so the debounced auto-save reads
+  // the latest values instead of a stale closure captured at keystroke time.
+  const editTitleRef = useRef('');
+  const editContentRef = useRef('');
+  const creatingRef = useRef(false);
+  const selectedNoteIdRef = useRef<any>(null);
+  // Bumped whenever the active draft/selection changes (new, cancel, edit,
+  // select). An async save captures the generation before its await and only
+  // applies selection/UI state if it is still current, so a create that
+  // resolves after the user navigated away persists without hijacking nav.
+  const draftGenRef = useRef(0);
+  // Serialized write queue. Each entry is a SELF-CONTAINED snapshot of a write
+  // (its own target + buffer + generation), captured at enqueue time, so a
+  // queued save is never re-derived from the live refs after the user has
+  // navigated away. Writes drain FIFO through a single loop; a create records
+  // its new id under createdIdByGen so a later same-draft write targets it.
+  // This is what guarantees no edit is lost when navigation happens while a
+  // save is already in flight.
+  const writeQueueRef = useRef<any[]>([]);
+  const drainingRef = useRef(false);
+  const createdIdByGenRef = useRef<Map<number, string>>(new Map());
+  // Generations whose create has already been dispatched (in flight or done).
+  // Once a gen is here its note exists (or soon will), so an empty trailing
+  // buffer must be preserved as a clear — not swallowed by the empty-create
+  // guard — and later converted to an update on the created id.
+  const createDispatchedGensRef = useRef<Set<number>>(new Set());
+  // True when the current buffer has unsaved edits — gates flush-on-leave so
+  // navigating past an unchanged note issues no redundant write.
+  const dirtyRef = useRef(false);
   const textareaRef = useRef<any>(null);
   const dropdownRef = useRef<any>(null);
   const columnsCacheRef = useRef<any>(null); // cached board columns for ticket creation
@@ -279,6 +322,7 @@ export default function NotesEditor({ projectId }: any) {
 
   // Fetch selected note
   useEffect(() => {
+    selectedNoteIdRef.current = selectedNoteId;
     if (selectedNoteId) {
       fetchNote(selectedNoteId);
     } else {
@@ -328,6 +372,13 @@ export default function NotesEditor({ projectId }: any) {
   }, [showTargetDropdown]);
 
   const handleCreate = () => {
+    // Persist whatever draft is currently open before abandoning it.
+    flushCurrentDraft();
+    draftGenRef.current += 1;
+    creatingRef.current = true;
+    editTitleRef.current = '';
+    editContentRef.current = '';
+    dirtyRef.current = false;
     setCreating(true);
     setEditing(true);
     setEditTitle('');
@@ -344,6 +395,11 @@ export default function NotesEditor({ projectId }: any) {
 
   const handleEdit = () => {
     if (!selectedNote) return;
+    draftGenRef.current += 1;
+    creatingRef.current = false;
+    editTitleRef.current = selectedNote.title || '';
+    editContentRef.current = selectedNote.content || '';
+    dirtyRef.current = false;
     setEditing(true);
     setCreating(false);
     setEditTitle(selectedNote.title);
@@ -353,83 +409,158 @@ export default function NotesEditor({ projectId }: any) {
   };
 
   const handleCancel = () => {
+    // "Done" on an existing note flushes pending edits; "Cancel" on a brand-new
+    // note is an explicit discard, so we just drop the buffer.
+    if (creatingRef.current) {
+      clearTimeout(saveTimerRef.current);
+    } else {
+      flushCurrentDraft();
+    }
+    draftGenRef.current += 1;
+    dirtyRef.current = false;
     setEditing(false);
     setCreating(false);
-    clearTimeout(saveTimerRef.current);
+    creatingRef.current = false;
   };
 
-  const handleSave = async () => {
-    if (!editTitle.trim()) return;
+  // Drain the write queue one entry at a time. Each snapshot carries its own
+  // target, so navigation/generation changes never redirect a queued write.
+  // A snapshot captured while its draft's create was still in flight arrives
+  // tagged `kind: 'create'`; once that create resolves we know the new id and
+  // rewrite it to an update, so the later buffer lands on the created note.
+  const drainWrites = useCallback(async (): Promise<void> => {
+    if (drainingRef.current) return;
+    drainingRef.current = true;
     setSaving(true);
     try {
-      if (creating) {
-        const note = await api.createNote(projectId, {
-          title: editTitle,
-          content: editContent,
-        });
-        setEditing(false);
-        setCreating(false);
-        await fetchNotes(searchQuery);
-        setSelectedNoteId(note.id);
-      } else if (selectedNoteId) {
-        const note = await api.updateNote(projectId, selectedNoteId, {
-          title: editTitle,
-          content: editContent,
-        });
-        setSelectedNote(note);
-        // Don't exit editing — keep user in edit mode for quick iteration
-        fetchNotes(searchQuery);
-      }
-    } catch (err: any) {
-      console.error('Failed to save note:', err);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Auto-save on content change (debounced, only when editing an existing note)
-  const handleContentChange = (value: any) => {
-    setEditContent(value);
-    if (!creating && selectedNoteId && editTitle.trim()) {
-      clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(async () => {
-        setSaving(true);
+      while (writeQueueRef.current.length > 0) {
+        let snap = writeQueueRef.current.shift();
+        // A create for a draft that has already been created (an earlier queued
+        // create for the same generation) becomes an update to that new note.
+        if (snap.kind === 'create' && createdIdByGenRef.current.has(snap.gen)) {
+          snap = { ...snap, kind: 'update', noteId: createdIdByGenRef.current.get(snap.gen) };
+        }
+        const title = deriveNoteTitle(snap.rawTitle, snap.content);
         try {
-          const note = await api.updateNote(projectId, selectedNoteId, {
-            title: editTitle,
-            content: value,
-          });
-          setSelectedNote(note);
-          fetchNotes(searchQuery);
+          if (snap.kind === 'create') {
+            if (!snap.rawTitle.trim() && !snap.content.trim()) continue;
+            createDispatchedGensRef.current.add(snap.gen);
+            const note = await api.createNote(projectId, { title, content: snap.content });
+            createdIdByGenRef.current.set(snap.gen, note.id);
+            // Only adopt the created note as the active selection if the user
+            // has not moved on; otherwise it is persisted without hijacking nav.
+            if (snap.gen === draftGenRef.current) {
+              creatingRef.current = false;
+              selectedNoteIdRef.current = note.id;
+              setCreating(false);
+              setSelectedNoteId(note.id);
+              setSelectedNote(note);
+              // Backfill the derived title only when the note began title-less,
+              // the field is still blank, AND the content still matches the
+              // snapshot this title was derived from. If the title was
+              // typed/cleared or the content changed during the POST, the
+              // response title is stale — leave the field blank so the trailing
+              // update re-derives from the latest content instead of writing a
+              // stale title back into the buffer.
+              if (
+                snap.titleBlankAtStart &&
+                !editTitleRef.current.trim() &&
+                editContentRef.current === snap.content
+              ) {
+                editTitleRef.current = note.title;
+                setEditTitle(note.title);
+              }
+            }
+            fetchNotes(searchQuery);
+          } else if (snap.noteId) {
+            const note = await api.updateNote(projectId, snap.noteId, {
+              title,
+              content: snap.content,
+            });
+            if (snap.gen === draftGenRef.current) setSelectedNote(note);
+            fetchNotes(searchQuery);
+          }
         } catch (err: any) {
           console.error('Auto-save failed:', err);
-        } finally {
-          setSaving(false);
         }
-      }, 1000);
+      }
+    } finally {
+      drainingRef.current = false;
+      setSaving(false);
     }
+  }, [projectId, searchQuery, fetchNotes]);
+
+  // Capture a self-contained snapshot of the current buffer and enqueue it.
+  // Writes for the same draft (generation) coalesce to the latest buffer;
+  // writes for different drafts are preserved as separate queued entries.
+  const enqueueWrite = useCallback(() => {
+    const snap = {
+      gen: draftGenRef.current,
+      kind: creatingRef.current ? 'create' : 'update',
+      noteId: selectedNoteIdRef.current,
+      rawTitle: editTitleRef.current,
+      content: editContentRef.current,
+      titleBlankAtStart: !editTitleRef.current.trim(),
+    };
+    // Drop a truly-empty brand-new note, but NOT when a create for this draft
+    // is already in flight/done: there the empty buffer is a clear that must be
+    // persisted (drainWrites rewrites it to an update once the id is known).
+    if (
+      snap.kind === 'create' &&
+      !snap.rawTitle.trim() &&
+      !snap.content.trim() &&
+      !createDispatchedGensRef.current.has(snap.gen)
+    ) {
+      return;
+    }
+    if (snap.kind === 'update' && !snap.noteId) return;
+    dirtyRef.current = false;
+    const q = writeQueueRef.current;
+    if (q.length > 0 && q[q.length - 1].gen === snap.gen) {
+      q[q.length - 1] = snap; // same draft still queued — keep only the latest
+    } else {
+      q.push(snap);
+    }
+    void drainWrites();
+  }, [drainWrites]);
+
+  const scheduleAutoSave = useCallback(() => {
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      enqueueWrite();
+    }, 700);
+  }, [enqueueWrite]);
+
+  // Persist the current draft's buffer immediately, cancelling any pending
+  // debounce. Must run BEFORE the caller bumps the generation or repoints the
+  // selection refs, because it snapshots the live refs — which still describe
+  // the outgoing draft at call time. Only fires when the buffer is dirty, so
+  // navigating past an unchanged note issues no redundant write. This is what
+  // prevents a note typed within the 700ms window (or edits made while a save
+  // was already in flight) from being lost when the user navigates away.
+  const flushCurrentDraft = useCallback(() => {
+    clearTimeout(saveTimerRef.current);
+    if (dirtyRef.current) enqueueWrite();
+  }, [enqueueWrite]);
+
+  // Explicit save (Create button / Cmd+S) — flush immediately, bypass debounce.
+  const handleSave = () => {
+    clearTimeout(saveTimerRef.current);
+    enqueueWrite();
+  };
+
+  const handleContentChange = (value: any) => {
+    setEditContent(value);
+    editContentRef.current = value;
+    dirtyRef.current = true;
+    if (editing) scheduleAutoSave();
   };
 
   const handleTitleChange = (value: any) => {
     setEditTitle(value);
-    if (!creating && selectedNoteId && value.trim()) {
-      clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(async () => {
-        setSaving(true);
-        try {
-          const note = await api.updateNote(projectId, selectedNoteId, {
-            title: value,
-            content: editContent,
-          });
-          setSelectedNote(note);
-          fetchNotes(searchQuery);
-        } catch (err: any) {
-          console.error('Auto-save failed:', err);
-        } finally {
-          setSaving(false);
-        }
-      }, 1000);
-    }
+    editTitleRef.current = value;
+    dirtyRef.current = true;
+    if (editing) scheduleAutoSave();
   };
 
   const handleDelete = async (noteId: any) => {
@@ -649,6 +780,12 @@ export default function NotesEditor({ projectId }: any) {
                   if (deleteConfirm === note.id) setDeleteConfirm(null);
                 }}
                 onClick={() => {
+                  // Persist the current draft before switching away — otherwise
+                  // a note typed within the debounce window would be lost.
+                  flushCurrentDraft();
+                  draftGenRef.current += 1;
+                  creatingRef.current = false;
+                  dirtyRef.current = false;
                   setSelectedNoteId(note.id);
                   setEditing(false);
                   setCreating(false);
@@ -656,7 +793,6 @@ export default function NotesEditor({ projectId }: any) {
                   setScopeResult(null);
                   setTicketResult(null);
                   columnsCacheRef.current = null;
-                  clearTimeout(saveTimerRef.current);
                 }}
                 className={`px-3 py-2.5 cursor-pointer border-b border-gray-800/50 transition-colors ${
                   selectedNoteId === note.id
@@ -757,7 +893,7 @@ export default function NotesEditor({ projectId }: any) {
                 {creating && (
                   <button
                     onClick={handleSave}
-                    disabled={!editTitle.trim()}
+                    disabled={!editTitle.trim() && !editContent.trim()}
                     className="flex items-center gap-1.5 px-2.5 py-1 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Save size={14} />
