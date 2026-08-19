@@ -16,6 +16,7 @@ import {
   writeSystemPromptFile,
 } from './spawn-prompt-payload.js';
 import { resolveGrokSpawnModel } from './config.js';
+import { withLocalCommitReminder } from './local-commit-reminder.js';
 import type { AppConfig } from './types.js';
 
 export const SESSION_MULTI_ENGINES = [
@@ -148,7 +149,9 @@ export function buildSessionMultiSpawnArgs(
     // required because callers (in-session reviewer, multi-agent advisors) feed
     // stdout through createStreamParser('grok-cli'). Omit `--always-approve` on
     // advisory turns to match chat Ask Mode.
-    const rawPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    const rawPrompt = advisory
+      ? `${systemPrompt}\n\n${userPrompt}`
+      : withLocalCommitReminder(`${systemPrompt}\n\n${userPrompt}`);
     const capped = applyArgvPromptCap(rawPrompt);
     if (capped.truncated && input.sessionId) {
       logArgvCapTruncation('grok-cli', input.sessionId, capped.originalBytes, rawPrompt.length);

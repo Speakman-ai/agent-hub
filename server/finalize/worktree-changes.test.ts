@@ -29,6 +29,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const io = fakeEnvOwnedIo();
     const probe = vi.fn(async () => true);
@@ -43,6 +44,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: false,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io);
     expect(out.ok).toBe(false);
@@ -55,6 +57,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     // Probe reports a net diff → publishable.
     const out = await getSessionCommittableChanges(io, { probe: async () => true });
@@ -68,6 +71,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     // Probe reports no net diff → nothing would land → not committable. The
     // session is not empty (it has commits), so the reason names what is wrong
@@ -83,6 +87,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     // Probe undeterminable (null) → never worse than reachability-only behavior.
     const out = await getSessionCommittableChanges(io, { probe: async () => null });
@@ -101,6 +106,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: false,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const probe = vi.fn(async () => true);
     const out = await getSessionCommittableChanges(io, { probe });
@@ -121,6 +127,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: false,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io);
     expect(out.ok).toBe(false);
@@ -136,6 +143,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, { probe: async () => true });
     expect(out.ok).toBe(true);
@@ -147,6 +155,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     // Explicit base + undeterminable probe (null) → fail closed with a distinct,
     // actionable reason (NOT "no changes"). This is the stale/missing feature-
@@ -168,6 +177,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     // Regression: an injected probe must NOT be able to bypass the fail-closed
     // path for an unresolved base. Even a probe that reports a real net diff is
@@ -188,6 +198,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, { base: { kind: 'unresolved' } });
     expect(out.ok).toBe(false);
@@ -200,6 +211,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: true,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, {
       base: { kind: 'explicit', baseBranch: 'feature/epic' },
@@ -214,6 +226,7 @@ describe('getSessionCommittableChanges', () => {
       hasUnpushed: false,
       branch: 'feature/x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, { base: { kind: 'unresolved' } });
     expect(out.ok).toBe(false);
@@ -233,6 +246,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: false,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
@@ -254,6 +268,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: false,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const probe = vi.fn(async () => false);
     await getSessionCommittableChanges(io, { requirePushableHead: true, probe });
@@ -266,6 +281,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: true,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
@@ -283,6 +299,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: false,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
@@ -300,6 +317,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: true,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
@@ -317,6 +335,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: false,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
@@ -335,6 +354,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: true,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, { probe: async () => null });
     expect(out.ok).toBe(true);
@@ -346,6 +366,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: false,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const out = await getSessionCommittableChanges(io, {
       requirePushableHead: true,
@@ -362,6 +383,7 @@ describe('getSessionCommittableChanges with requirePushableHead (the ship gate)'
       hasUnpushed: false,
       branch: 'agent-hub/dev/session-x',
       headSha: 'abc123',
+      porcelain: '',
     });
     const probe = vi.fn(async () => true);
     const out = await getSessionCommittableChanges(io, {

@@ -184,6 +184,8 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
   if (engine === 'grok-cli') {
     // Grok Build CLI is stateless here (like Gemini) — no resume flag, so the
     // system prompt + history bootstrap ride in the prompt body each turn.
+    // Do not pin the local-commit reminder: Design writes HTML/CSS/JS into
+    // an artifact directory, not a Finalize-tracked session worktree.
     const prompt = `${systemPrompt}\n\n${promptWithHistory}`;
     const args = ['-p', prompt, '--output-format', 'streaming-json', '--no-auto-update'];
     const grokModel = resolveGrokSpawnModel(model, config);

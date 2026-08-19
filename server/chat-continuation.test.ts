@@ -13,6 +13,7 @@ import {
   stripAssistantControlBlocks,
   utf8SuffixMaxBytes,
 } from './chat.js';
+import { LOCAL_COMMIT_REMINDER_MARKER } from './local-commit-reminder.js';
 import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
 
 describe('buildGrokHeadlessPrompt', () => {
@@ -24,19 +25,32 @@ describe('buildGrokHeadlessPrompt', () => {
     const out = buildGrokHeadlessPrompt({
       enrichedPrompt: 'SYSTEM INSTRUCTIONS',
       finalPrompt: 'Previous conversation:\nHuman: hello\n\nHuman: continue',
+      committable: true,
     });
 
-    expect(out).toBe(
-      'SYSTEM INSTRUCTIONS\n\nPrevious conversation:\nHuman: hello\n\nHuman: continue',
-    );
+    expect(out.startsWith('SYSTEM INSTRUCTIONS\n\nPrevious conversation:')).toBe(true);
     expect(out).toContain('SYSTEM INSTRUCTIONS');
     expect(out).toContain('Previous conversation:');
+    expect(out).toContain(LOCAL_COMMIT_REMINDER_MARKER);
+  });
+
+  it('omits the local-commit reminder when the session is not committable', () => {
+    const out = buildGrokHeadlessPrompt({
+      enrichedPrompt: 'SYSTEM INSTRUCTIONS',
+      finalPrompt: 'Previous conversation:\nHuman: hello\n\nHuman: continue',
+      committable: false,
+    });
+
+    expect(out).toContain('SYSTEM INSTRUCTIONS');
+    expect(out).not.toContain(LOCAL_COMMIT_REMINDER_MARKER);
+    expect(out).not.toContain('git commit');
   });
 
   it('keeps loaded-skill context ahead of the transcript', () => {
     const out = buildGrokHeadlessPrompt({
       enrichedPrompt: 'SYSTEM INSTRUCTIONS\n\n## Loaded Skill: test',
       finalPrompt: 'Previous conversation:\nHuman: hello\n\nHuman: use the skill',
+      committable: true,
     });
 
     expect(out).toContain('SYSTEM INSTRUCTIONS');

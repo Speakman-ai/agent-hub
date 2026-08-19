@@ -270,6 +270,7 @@ import {
   autoCommitAndPR,
   resolveSlashSkill,
   setTriggerAutoSessionShip,
+  setTriggerUncommittedCommitNudge,
   resolveUserGithubToken,
 } from './auto-git.js';
 import {
@@ -277,6 +278,10 @@ import {
   type TriggerSessionShipArgs,
   markSessionFinalizeAutomation,
 } from './session-ship.js';
+import {
+  triggerUncommittedCommitNudge,
+  type TriggerUncommittedCommitNudgeArgs,
+} from './uncommitted-commit-nudge.js';
 import { setReadyToPushAutomationHook } from './finalize/orchestrator.js';
 import {
   maybeAutoPushReadyFinalizeRun,
@@ -2112,6 +2117,22 @@ setTriggerAutoSessionShip(async ({ sessionId, project, agent, session }) => {
     activeProcesses,
     handleChat: handleChat as TriggerSessionShipArgs['handleChat'],
     source: 'auto_session_end',
+  });
+  if (result.ok) return { ok: true as const };
+  return { ok: false as const, code: result.code, error: result.error };
+});
+
+setTriggerUncommittedCommitNudge(async ({ sessionId, agent, session, branch, porcelain }) => {
+  const result = triggerUncommittedCommitNudge({
+    sessionId,
+    session,
+    agent,
+    stmts: stmts!,
+    broadcast,
+    activeProcesses,
+    branch,
+    porcelain,
+    handleChat: handleChat as TriggerUncommittedCommitNudgeArgs['handleChat'],
   });
   if (result.ok) return { ok: true as const };
   return { ok: false as const, code: result.code, error: result.error };

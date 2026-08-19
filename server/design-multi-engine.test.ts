@@ -228,6 +228,9 @@ describe('buildDesignSpawnArgs', () => {
     expect(args).toContain('--always-approve');
     expect(args).toContain('--model');
     expect(args).toContain('grok-composer-2.5-fast');
+    // Design artifacts are not a Finalize-tracked worktree.
+    expect(args[1]).not.toContain('agent-hub-local-commit');
+    expect(args[1]).not.toContain('git commit');
   });
 
   it('codex-cli: first exec has no resume subcommand', () => {

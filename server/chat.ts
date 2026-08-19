@@ -169,6 +169,7 @@ import {
   resolveChatTerminationOnClose,
 } from './process-termination.js';
 import { ensureSpawnCwd } from './spawn-cwd.js';
+import { shouldPinLocalCommitReminder, withLocalCommitReminder } from './local-commit-reminder.js';
 import {
   detectSessionIdInUseError,
   buildSessionIdInUseRecoveryMessage,
@@ -1927,6 +1928,8 @@ export function augmentChatTurnForDesignMode(args: {
 export function buildGrokHeadlessPrompt(args: {
   enrichedPrompt: string;
   finalPrompt: string;
+  /** False for ask mode / no-worktree / Design — skip the local-commit suffix. */
+  committable: boolean;
 }): string {
   // Grok has no --resume flag, so every spawn starts with a blank system
   // prompt — the model retains nothing across turns. The enriched prompt
@@ -1937,7 +1940,14 @@ export function buildGrokHeadlessPrompt(args: {
   // referenced trackers (Linear) that only exist in its pretraining. The
   // enriched prompt is already forced to the full first-message form for
   // non-resuming engines at the buildEnrichedPrompt call site.
-  return `${args.enrichedPrompt}\n\n${args.finalPrompt}`;
+  //
+  // The local-commit reminder is pinned at the *end* so applyArgvPromptCap
+  // (which keeps the tail) cannot drop it. Grok's stock CLI persona waits
+  // for the user to say "commit"; without this suffix that habit wins
+  // whenever the shipping-contract head is trimmed. Only pin it when the
+  // session is writing into a Finalize-tracked worktree.
+  const combined = `${args.enrichedPrompt}\n\n${args.finalPrompt}`;
+  return args.committable ? withLocalCommitReminder(combined) : combined;
 }
 
 // ─── createChatHandler (factory) ───────────────────────────────────
@@ -3575,6 +3585,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const legacyAskSession = Number(session!.ask_mode ?? 0) !== 0;
       const hubOnlySession = workflowSession || consultModeSession;
       const readOnlyCliSession = legacyAskSession && !hubOnlySession;
+      const committable = shouldPinLocalCommitReminder({
+        hasWorktree: effectiveCwd !== project.cwd,
+        askMode: readOnlyCliSession,
+      });
       if (engine === 'cursor-agent') {
         const rawPrompt =
           isNewEngineSession || forceSystemPromptThisTurn
@@ -3617,7 +3631,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // `needsHistoryBootstrap` branch earlier already concatenates prior
         // messages into `finalPrompt` when engineSessionId is null, which is
         // exactly the shape Gemini expects.
-        const rawPrompt = `${enrichedPrompt}\n\n${finalPrompt}`;
+        const combined = `${enrichedPrompt}\n\n${finalPrompt}`;
+        const rawPrompt = committable ? withLocalCommitReminder(combined) : combined;
         // Gemini CLI takes the prompt as a single `-p` argv string with
         // no documented stdin/file alternative. Same kernel cap applies
         // as cursor-agent — see spawn-prompt-payload.ts.
@@ -3650,7 +3665,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // non-resuming-engine gate at the buildEnrichedPrompt call). The prompt
         // rides in a single `-p` argv element, so the same kernel
         // MAX_ARG_STRLEN cap as cursor/gemini applies.
-        const rawPrompt = buildGrokHeadlessPrompt({ enrichedPrompt, finalPrompt });
+        const rawPrompt = buildGrokHeadlessPrompt({
+          enrichedPrompt,
+          finalPrompt,
+          committable,
+        });
         const capped = applyArgvPromptCap(rawPrompt);
         if (capped.truncated) {
           logArgvCapTruncation('grok-cli', sessionId, capped.originalBytes, rawPrompt.length);

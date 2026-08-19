@@ -52,6 +52,11 @@ import {
 } from './session-ship.js';
 import { rebaseOntoBase } from './pre-push-rebase.js';
 import { handleGithubCardOnMerge } from './github-card-on-merge.js';
+import { findUnansweredAskIds } from '../shared/utils/awaitingInput.js';
+import {
+  hasCommitNudgeSinceLastUser,
+  shouldNudgeUncommittedCommit,
+} from './local-commit-reminder.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -883,6 +888,16 @@ export type TriggerAutoSessionShipFn = (args: {
   session: SessionRow;
 }) => Promise<{ ok: true } | { ok: false; code?: string; error?: string }>;
 
+export type TriggerUncommittedCommitNudgeFn = (args: {
+  sessionId: string;
+  agentId: string;
+  project: Project;
+  agent: Agent;
+  session: SessionRow;
+  branch: string;
+  porcelain: string;
+}) => Promise<{ ok: true } | { ok: false; code?: string; error?: string }>;
+
 export interface AutoCommitAndPROptions {
   allowFinalizeAutoStart?: boolean;
 }
@@ -893,6 +908,7 @@ interface AutoGitDeps {
   getConfig: () => AppConfig;
   DEFAULT_SKILLS_DIR: string;
   triggerAutoSessionShip?: TriggerAutoSessionShipFn;
+  triggerUncommittedCommitNudge?: TriggerUncommittedCommitNudgeFn;
   /**
    * Native PR service for Agent Hub-hosted projects (`gitHost:
    * 'agenthub'`) — `commitPushAndCreatePR` creates Hub PRs through this
@@ -903,6 +919,7 @@ interface AutoGitDeps {
 }
 
 let triggerAutoSessionShipImpl: TriggerAutoSessionShipFn | null = null;
+let triggerUncommittedCommitNudgeImpl: TriggerUncommittedCommitNudgeFn | null = null;
 
 interface SlashSkillResult {
   skillName: string;
@@ -927,11 +944,17 @@ function getDeps(): AutoGitDeps {
 export function initAutoGit(d: AutoGitDeps): void {
   deps = d;
   triggerAutoSessionShipImpl = d.triggerAutoSessionShip ?? null;
+  triggerUncommittedCommitNudgeImpl = d.triggerUncommittedCommitNudge ?? null;
 }
 
 /** Wire after `handleChat` exists (avoids circular import with chat.ts). */
 export function setTriggerAutoSessionShip(fn: TriggerAutoSessionShipFn): void {
   triggerAutoSessionShipImpl = fn;
+}
+
+/** Wire after `handleChat` exists (avoids circular import with chat.ts). */
+export function setTriggerUncommittedCommitNudge(fn: TriggerUncommittedCommitNudgeFn): void {
+  triggerUncommittedCommitNudgeImpl = fn;
 }
 
 // ─── Slash-command skill resolution ─────────────────────────────────
@@ -1391,6 +1414,8 @@ export interface WorktreeChanges {
   /** Current worktree HEAD SHA — used to invalidate stale Finalize phase
    * done-states ("Tested" / "Reviewed") once new commits land. */
   headSha: string;
+  /** Raw `git status --porcelain` (trimmed). Empty when the tree is clean. */
+  porcelain: string;
 }
 
 /**
@@ -1404,7 +1429,8 @@ export interface WorktreeChanges {
  */
 export async function checkWorktreeChanges(io: SessionWorktreeIo): Promise<WorktreeChanges> {
   const status = await io.git(['status', '--porcelain'], { throwOnNonZero: true });
-  const hasUncommitted = !!status.stdout.trim();
+  const porcelain = status.stdout.trim();
+  const hasUncommitted = !!porcelain;
 
   let hasUnpushed = false;
   const upstreamLog = await io.git(['log', '@{upstream}..HEAD', '--oneline']);
@@ -1435,7 +1461,13 @@ export async function checkWorktreeChanges(io: SessionWorktreeIo): Promise<Workt
   const headOut = await io.git(['rev-parse', 'HEAD']);
   const headSha = headOut.exitCode === 0 ? headOut.stdout.trim() : '';
 
-  return { hasUncommitted, hasUnpushed, branch: branchOut.stdout.trim(), headSha };
+  return {
+    hasUncommitted,
+    hasUnpushed,
+    branch: branchOut.stdout.trim(),
+    headSha,
+    porcelain,
+  };
 }
 
 // ─── Core commit + PR + review pipeline ─────────────────────────────
@@ -2801,6 +2833,56 @@ export async function autoCommitAndPR(
         ownerUserId: getSessionOwner(sessionId),
         ...changesReadyData,
       });
+
+      // Grok (and other engines that ignore "commit locally") leave a dirty
+      // worktree with no session commits. Finalize is then disabled. Kick one
+      // follow-up turn that tells the agent to commit, at most once per
+      // user-authored turn (alreadyNudged is true if a commit_nudge exists
+      // since the last user message — later system rows must not re-arm it).
+      // ReAct checkpoints and ask/plan mode do not fire.
+      if (allowFinalizeAutoStart && triggerUncommittedCommitNudgeImpl && sessionRow) {
+        let alreadyNudged = false;
+        let awaitingAsk = false;
+        try {
+          const messages =
+            (d.stmts.getMessages?.all?.(sessionId) as MessageRow[] | undefined) ?? [];
+          alreadyNudged = hasCommitNudgeSinceLastUser(messages);
+          awaitingAsk = findUnansweredAskIds(messages).length > 0;
+        } catch {
+          /* best-effort — treat as not-yet-nudged */
+        }
+        if (
+          shouldNudgeUncommittedCommit({
+            hasUncommitted: changes.hasUncommitted,
+            hasUnpushed: changes.hasUnpushed,
+            allowFinalizeAutoStart,
+            askMode: Number(sessionRow.ask_mode ?? 0) !== 0,
+            alreadyNudged,
+            awaitingAsk,
+            role: agent.role,
+          })
+        ) {
+          console.log(
+            `[auto-commit] Session ${sessionId} — dirty worktree with no committable commits, nudging agent to commit`,
+          );
+          void triggerUncommittedCommitNudgeImpl({
+            sessionId,
+            agentId,
+            project,
+            agent,
+            session: sessionRow,
+            branch: changes.branch,
+            porcelain: changes.porcelain,
+          }).catch((err: unknown) => {
+            console.error(
+              `[auto-commit] Session ${sessionId} — commit nudge failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+        }
+      }
+
       // Fire-and-forget post-turn briefing: the same summary + manual-testing
       // sections the Finalize summary carries, but for a plain code-change turn.
       // Best-effort and self-gated (no-op without an OpenAI key); a failure here

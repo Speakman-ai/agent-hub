@@ -820,6 +820,188 @@ describe('autoCommitAndPR — ad-hoc session with existing PR (no auto-push)', (
     existsSyncMock.mockImplementation(() => false);
   });
 
+  it('nudges the agent to commit when the worktree is dirty and Finalize has no commits', async () => {
+    const triggerUncommittedCommitNudge = vi.fn().mockResolvedValue({ ok: true });
+    const mockStmtsAdHoc = {
+      getKanbanCardBySession: { get: vi.fn(() => undefined) },
+      getSession: {
+        get: vi.fn(() => ({
+          id: 'sess-nudge',
+          name: 'Grok work',
+          ask_mode: 0,
+          agent_id: 'agent-1',
+          worktree_path: '/worktree',
+        })),
+      },
+      getMessages: { all: vi.fn(() => [{ role: 'user', metadata: null }]) },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+    } as Record<string, unknown>;
+    const broadcast = vi.fn();
+
+    initAutoGit({
+      stmts: mockStmtsAdHoc as never,
+      broadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+      triggerUncommittedCommitNudge,
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M server/foo.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/nudge\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'test-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-nudge', 'agent-1', project, agent, '/worktree', '');
+    await Promise.resolve();
+
+    expect(triggerUncommittedCommitNudge).toHaveBeenCalledTimes(1);
+    expect(triggerUncommittedCommitNudge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'sess-nudge',
+        branch: 'feature/nudge',
+        porcelain: 'M server/foo.ts',
+      }),
+    );
+  });
+
+  it('does not re-nudge when a commit_nudge exists since the last user message', async () => {
+    const triggerUncommittedCommitNudge = vi.fn().mockResolvedValue({ ok: true });
+    const mockStmtsAdHoc = {
+      getKanbanCardBySession: { get: vi.fn(() => undefined) },
+      getSession: {
+        get: vi.fn(() => ({
+          id: 'sess-nudge-2',
+          name: 'Grok work',
+          ask_mode: 0,
+          agent_id: 'agent-1',
+          worktree_path: '/worktree',
+        })),
+      },
+      getMessages: {
+        all: vi.fn(() => [
+          { role: 'user', metadata: null },
+          { role: 'system', metadata: JSON.stringify({ kind: 'commit_nudge' }) },
+          { role: 'assistant', metadata: null },
+        ]),
+      },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmtsAdHoc as never,
+      broadcast: vi.fn(),
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+      triggerUncommittedCommitNudge,
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M server/foo.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/nudge\n');
+        return ok('');
+      },
+    );
+
+    await autoCommitAndPR(
+      'sess-nudge-2',
+      'agent-1',
+      { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never,
+      { name: 'test-agent', role: 'dev' } as never,
+      '/worktree',
+      '',
+    );
+    await Promise.resolve();
+
+    expect(triggerUncommittedCommitNudge).not.toHaveBeenCalled();
+  });
+
+  it('does not re-nudge when a later system row lands after the commit nudge', async () => {
+    const triggerUncommittedCommitNudge = vi.fn().mockResolvedValue({ ok: true });
+    const mockStmtsAdHoc = {
+      getKanbanCardBySession: { get: vi.fn(() => undefined) },
+      getSession: {
+        get: vi.fn(() => ({
+          id: 'sess-nudge-3',
+          name: 'Grok work',
+          ask_mode: 0,
+          agent_id: 'agent-1',
+          worktree_path: '/worktree',
+        })),
+      },
+      getMessages: {
+        all: vi.fn(() => [
+          { role: 'user', metadata: null },
+          { role: 'system', metadata: JSON.stringify({ kind: 'commit_nudge' }) },
+          { role: 'assistant', metadata: null },
+          { role: 'system', metadata: JSON.stringify({ kind: 'close_card_rejected' }) },
+        ]),
+      },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmtsAdHoc as never,
+      broadcast: vi.fn(),
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+      triggerUncommittedCommitNudge,
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M server/foo.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/nudge\n');
+        return ok('');
+      },
+    );
+
+    await autoCommitAndPR(
+      'sess-nudge-3',
+      'agent-1',
+      { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never,
+      { name: 'test-agent', role: 'dev' } as never,
+      '/worktree',
+      '',
+    );
+    await Promise.resolve();
+
+    expect(triggerUncommittedCommitNudge).not.toHaveBeenCalled();
+  });
+
   it('auto-starts Finalize at turn end when automation was selected during the turn', async () => {
     const existsSyncMock = existsSync as unknown as ReturnType<typeof vi.fn>;
     existsSyncMock.mockImplementation((filePath: string) =>

@@ -137,6 +137,19 @@ describe('buildSessionMultiSpawnArgs', () => {
       advisory: false,
     });
     expect(plan.args).toContain('--always-approve');
+    expect(plan.args[1]).toContain('agent-hub-local-commit');
+  });
+
+  it('grok-cli omits the local-commit reminder on advisory turns', () => {
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'grok-cli',
+      model: 'grok-4.6',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      advisory: true,
+    });
+    expect(plan.args[1]).not.toContain('agent-hub-local-commit');
   });
 });
 
