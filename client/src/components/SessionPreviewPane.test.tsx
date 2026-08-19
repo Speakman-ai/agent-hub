@@ -392,6 +392,153 @@ describe('SessionPreviewPane', () => {
     );
   });
 
+  it('shows a boot-log-only footer when ready with log lines and no terminal slot', async () => {
+    await renderReady({ event: { ...readyEvent, logTail: ['vite ready'] } });
+    expect(screen.getByTestId('session-preview-pane-footer-toggle')).toHaveTextContent(
+      /boot log \(1 lines\)/i,
+    );
+    expect(screen.queryByTestId('session-preview-pane-footer-tab-boot')).toBeNull();
+    expect(screen.queryByTestId('session-preview-pane-footer-tab-terminal')).toBeNull();
+    expect(screen.getByTestId('session-preview-pane-log')).toHaveTextContent('vite ready');
+  });
+
+  it('tabs between boot log and terminal without unmounting the iframe', async () => {
+    const onFooterTabChange = vi.fn();
+    await renderReady({
+      event: { ...readyEvent, logTail: ['listening on :4101'] },
+      terminal: <div data-testid="embedded-terminal">pty</div>,
+      onFooterTabChange,
+    });
+
+    expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
+    expect(screen.getByTestId('session-preview-pane-footer-tab-boot')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('session-preview-pane-log')).toHaveTextContent('listening on :4101');
+    expect(screen.getByTestId('session-preview-pane-terminal')).toHaveAttribute('hidden');
+    expect(screen.queryByTestId('embedded-terminal')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('session-preview-pane-footer-tab-terminal'));
+    expect(onFooterTabChange).toHaveBeenCalledWith('terminal');
+    expect(screen.getByTestId('session-preview-pane-footer-tab-terminal')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('session-preview-pane-boot-panel')).toHaveAttribute('hidden');
+    expect(screen.getByTestId('session-preview-pane-terminal')).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('embedded-terminal')).toHaveTextContent('pty');
+    expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('session-preview-pane-footer-tab-boot'));
+    expect(onFooterTabChange).toHaveBeenCalledWith('boot');
+    expect(screen.getByTestId('session-preview-pane-boot-panel')).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('session-preview-pane-terminal')).toHaveAttribute('hidden');
+    expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
+  });
+
+  it('selects the terminal tab when footerTab is controlled', async () => {
+    await renderReady({
+      event: { ...readyEvent, logTail: ['boot'] },
+      terminal: <div data-testid="embedded-terminal">pty</div>,
+      footerTab: 'terminal',
+    });
+    expect(screen.getByTestId('session-preview-pane-footer-tab-terminal')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('session-preview-pane-terminal')).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('embedded-terminal')).toBeInTheDocument();
+  });
+
+  it('shows footer tabs with an empty boot log when a terminal slot is provided', async () => {
+    await renderReady({
+      terminal: <div data-testid="embedded-terminal">pty</div>,
+    });
+    expect(screen.getByTestId('session-preview-pane-footer')).toBeInTheDocument();
+    expect(screen.getByTestId('session-preview-pane-footer-tab-boot')).toBeInTheDocument();
+    expect(screen.getByTestId('session-preview-pane-footer-tab-terminal')).toBeInTheDocument();
+    expect(screen.getByTestId('session-preview-pane-log')).toHaveTextContent(
+      /waiting for first log line/i,
+    );
+  });
+
+  it('collapses footer content while leaving the tab bar visible', async () => {
+    await renderReady({
+      event: { ...readyEvent, logTail: ['line'] },
+      terminal: <div data-testid="embedded-terminal">pty</div>,
+    });
+    fireEvent.click(screen.getByTestId('session-preview-pane-footer-toggle'));
+    expect(screen.getByTestId('session-preview-pane-boot-panel')).toHaveAttribute('hidden');
+    expect(screen.getByTestId('session-preview-pane-footer-tab-boot')).toBeInTheDocument();
+    expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
+  });
+
+  it('exposes tabpanels and moves between footer tabs with arrow keys', async () => {
+    await renderReady({
+      event: { ...readyEvent, logTail: ['line'] },
+      terminal: <div data-testid="embedded-terminal">pty</div>,
+    });
+    const bootTab = screen.getByTestId('session-preview-pane-footer-tab-boot');
+    const terminalTab = screen.getByTestId('session-preview-pane-footer-tab-terminal');
+    const bootPanel = screen.getByTestId('session-preview-pane-boot-panel');
+    const terminalPanel = screen.getByTestId('session-preview-pane-terminal');
+
+    expect(bootTab).toHaveAttribute('aria-controls', 'session-preview-pane-boot-panel');
+    expect(terminalTab).toHaveAttribute('aria-controls', 'session-preview-pane-terminal');
+    expect(bootTab).toHaveAttribute('tabindex', '0');
+    expect(terminalTab).toHaveAttribute('tabindex', '-1');
+    expect(bootPanel).toHaveAttribute('role', 'tabpanel');
+    expect(bootPanel).toHaveAttribute('aria-labelledby', 'session-preview-pane-footer-tab-boot');
+    expect(terminalPanel).toHaveAttribute('role', 'tabpanel');
+    expect(terminalPanel).toHaveAttribute(
+      'aria-labelledby',
+      'session-preview-pane-footer-tab-terminal',
+    );
+
+    bootTab.focus();
+    fireEvent.keyDown(bootTab, { key: 'ArrowRight' });
+    expect(terminalTab).toHaveAttribute('aria-selected', 'true');
+    expect(terminalTab).toHaveAttribute('tabindex', '0');
+    expect(bootTab).toHaveAttribute('tabindex', '-1');
+    expect(terminalPanel).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('embedded-terminal')).toBeInTheDocument();
+
+    fireEvent.keyDown(terminalTab, { key: 'Home' });
+    expect(bootTab).toHaveAttribute('aria-selected', 'true');
+    expect(bootPanel).not.toHaveAttribute('hidden');
+  });
+
+  it('does not keep a hidden footer terminal mounted after sessionId changes', async () => {
+    const { rerender } = await renderReady({
+      sessionId: 's-a',
+      event: { ...readyEvent, sessionId: 's-a', logTail: ['session-a'] },
+      terminal: <div data-testid="embedded-terminal-a">pty-a</div>,
+    });
+    fireEvent.click(screen.getByTestId('session-preview-pane-footer-tab-terminal'));
+    expect(screen.getByTestId('embedded-terminal-a')).toBeInTheDocument();
+
+    rerender(
+      <SessionPreviewPane
+        sessionId="s-b"
+        event={{ ...readyEvent, sessionId: 's-b', logTail: ['session-b'] }}
+        onClose={() => {}}
+        footerTab="boot"
+        terminal={<div data-testid="embedded-terminal-b">pty-b</div>}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('session-preview-pane-log')).toHaveTextContent('session-b');
+    });
+    expect(screen.getByTestId('session-preview-pane-footer-tab-boot')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.queryByTestId('embedded-terminal-a')).toBeNull();
+    expect(screen.queryByTestId('embedded-terminal-b')).toBeNull();
+    expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
+  });
+
   it('loads per-session width when sessionId changes', async () => {
     window.localStorage.setItem('previewPaneWidth:s-a', '420');
     window.localStorage.setItem('previewPaneWidth:s-b', '900');

@@ -12,6 +12,8 @@ import {
   GripVertical,
   Smartphone,
   Tablet,
+  ScrollText,
+  SquareTerminal,
 } from 'lucide-react';
 import {
   derivePaneState,
@@ -56,7 +58,44 @@ import { getApiBase, getAuthHeaders } from '../utils/connection';
  *   call (30 s window). The handler is wired by the parent to a POST to
  *   the runtime touch endpoint so the idle-TTL reaper doesn't kill an
  *   actively-used preview.
+ *
+ * Ready-state footer:
+ *   Collapsible boot log, plus an optional Terminal tab that embeds the
+ *   shared session shell so the iframe stays visible.
  */
+export type PreviewFooterTab = 'boot' | 'terminal';
+
+const FOOTER_TABS: PreviewFooterTab[] = ['boot', 'terminal'];
+
+const FOOTER_TAB_IDS: Record<PreviewFooterTab, string> = {
+  boot: 'session-preview-pane-footer-tab-boot',
+  terminal: 'session-preview-pane-footer-tab-terminal',
+};
+
+const FOOTER_PANEL_IDS: Record<PreviewFooterTab, string> = {
+  boot: 'session-preview-pane-boot-panel',
+  terminal: 'session-preview-pane-terminal',
+};
+
+function footerTabClass(selected: boolean) {
+  return `-mb-px inline-flex items-center gap-1 border-b-2 px-2.5 py-1.5 text-[11px] ${
+    selected ? 'border-sky-500 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'
+  }`;
+}
+
+function nextFooterTab(current: PreviewFooterTab, key: string): PreviewFooterTab | null {
+  const index = FOOTER_TABS.indexOf(current);
+  if (key === 'ArrowRight' || key === 'ArrowDown') {
+    return FOOTER_TABS[(index + 1) % FOOTER_TABS.length];
+  }
+  if (key === 'ArrowLeft' || key === 'ArrowUp') {
+    return FOOTER_TABS[(index - 1 + FOOTER_TABS.length) % FOOTER_TABS.length];
+  }
+  if (key === 'Home') return FOOTER_TABS[0];
+  if (key === 'End') return FOOTER_TABS[FOOTER_TABS.length - 1];
+  return null;
+}
+
 export default function SessionPreviewPane({
   sessionId,
   event,
@@ -69,6 +108,12 @@ export default function SessionPreviewPane({
   electronApi, // optional injectable for tests — defaults to window.electronAPI
   // Boot logs stay open by default when we have lines (user can collapse).
   defaultFooterOpen = false,
+  // Optional shared-terminal surface. When provided, the ready footer shows
+  // Boot log | Terminal tabs instead of a boot-log-only toggle.
+  terminal = null,
+  footerTab: footerTabProp,
+  onFooterTabChange,
+  defaultFooterTab = 'boot',
 }: any) {
   const state = useMemo(() => derivePaneState(event), [event]);
   const bootLogRef = useRef<any>(null);
@@ -89,17 +134,78 @@ export default function SessionPreviewPane({
   const hasMultiPort = ports.length > 1;
   const [selectedInternalPort, setSelectedInternalPort] = useState<any>(null);
   const hasBootLog = Array.isArray(state.logTail) && state.logTail.length > 0;
-  const [footerOpen, setFooterOpen] = useState(defaultFooterOpen || hasBootLog);
+  const hasTerminal = terminal != null;
+  const [internalFooter, setInternalFooter] = useState<{
+    sessionId: string;
+    tab: PreviewFooterTab;
+  }>({
+    sessionId,
+    tab: defaultFooterTab === 'terminal' && hasTerminal ? 'terminal' : 'boot',
+  });
+  const resolvedInternalTab =
+    internalFooter.sessionId === sessionId
+      ? internalFooter.tab
+      : defaultFooterTab === 'terminal' && hasTerminal
+        ? 'terminal'
+        : 'boot';
+  const footerTab: PreviewFooterTab =
+    footerTabProp === 'terminal' && hasTerminal
+      ? 'terminal'
+      : footerTabProp === 'boot'
+        ? 'boot'
+        : resolvedInternalTab === 'terminal' && hasTerminal
+          ? 'terminal'
+          : 'boot';
+  const [footerOpen, setFooterOpen] = useState(
+    defaultFooterOpen || hasBootLog || footerTab === 'terminal',
+  );
+  // Session-scoped: the pane is reused across sessions (see widthKey). A
+  // boolean would keep a hidden PTY/WebSocket mounted after switching away.
+  const [openedTerminalSessionId, setOpenedTerminalSessionId] = useState<string | null>(
+    footerTab === 'terminal' ? sessionId : null,
+  );
+  const terminalEverOpened = footerTab === 'terminal' || openedTerminalSessionId === sessionId;
+  const bootTabRef = useRef<HTMLButtonElement | null>(null);
+  const terminalTabRef = useRef<HTMLButtonElement | null>(null);
+
+  const selectFooterTab = useCallback(
+    (tab: PreviewFooterTab) => {
+      if (tab === 'terminal' && !hasTerminal) return;
+      if (footerTabProp == null) setInternalFooter({ sessionId, tab });
+      onFooterTabChange?.(tab);
+      setFooterOpen(true);
+    },
+    [footerTabProp, hasTerminal, onFooterTabChange, sessionId],
+  );
+
+  const handleFooterTabKeyDown = useCallback(
+    (event: { key: string; preventDefault: () => void }, current: PreviewFooterTab) => {
+      const next = nextFooterTab(current, event.key);
+      if (!next) return;
+      event.preventDefault();
+      selectFooterTab(next);
+      (next === 'boot' ? bootTabRef : terminalTabRef).current?.focus();
+    },
+    [selectFooterTab],
+  );
 
   useEffect(() => {
     if (hasBootLog) setFooterOpen(true);
   }, [hasBootLog, state.status]);
 
   useEffect(() => {
+    if (footerTabProp === 'terminal' && hasTerminal) setFooterOpen(true);
+  }, [footerTabProp, hasTerminal]);
+
+  useEffect(() => {
+    if (footerTab === 'terminal') setOpenedTerminalSessionId(sessionId);
+  }, [footerTab, sessionId]);
+
+  useEffect(() => {
     const el = bootLogRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [state.logTail, state.status, footerOpen]);
+  }, [state.logTail, state.status, footerOpen, footerTab]);
   const [isResizing, setIsResizing] = useState(false);
   const poppedWindowRef = useRef<any>(null);
 
@@ -756,29 +862,110 @@ export default function SessionPreviewPane({
         )}
       </div>
 
-      {/* Boot log — collapsible; kept after Ready so long compose builds stay visible. */}
-      {state.status === 'ready' && hasBootLog && (
-        <div className="border-t border-gray-800 bg-gray-900/40 text-xs shrink-0">
-          <button
-            type="button"
-            onClick={() => setFooterOpen((v: any) => !v)}
-            className="w-full text-left px-3 py-1.5 text-gray-400 hover:text-gray-100"
-            data-testid="session-preview-pane-footer-toggle"
-            aria-expanded={footerOpen}
+      {/* Ready footer — collapsible boot log, plus Terminal when the parent
+          supplies a shared-shell slot. Tabs keep the iframe on screen. */}
+      {state.status === 'ready' && (hasBootLog || hasTerminal) && (
+        <div
+          className="border-t border-gray-800 bg-gray-900/40 text-xs shrink-0"
+          data-testid="session-preview-pane-footer"
+        >
+          {hasTerminal ? (
+            <div className="flex items-center gap-1 px-1">
+              <div
+                role="tablist"
+                aria-label="Preview pane footer"
+                className="flex min-w-0 flex-1 items-center"
+              >
+                <button
+                  ref={bootTabRef}
+                  type="button"
+                  id={FOOTER_TAB_IDS.boot}
+                  role="tab"
+                  aria-selected={footerTab === 'boot'}
+                  aria-controls={FOOTER_PANEL_IDS.boot}
+                  tabIndex={footerTab === 'boot' ? 0 : -1}
+                  data-testid="session-preview-pane-footer-tab-boot"
+                  onClick={() => selectFooterTab('boot')}
+                  onKeyDown={(event) => handleFooterTabKeyDown(event, 'boot')}
+                  className={footerTabClass(footerTab === 'boot')}
+                >
+                  <ScrollText size={12} aria-hidden />
+                  Boot log
+                  {hasBootLog ? ` (${state.logTail.length})` : ''}
+                </button>
+                <button
+                  ref={terminalTabRef}
+                  type="button"
+                  id={FOOTER_TAB_IDS.terminal}
+                  role="tab"
+                  aria-selected={footerTab === 'terminal'}
+                  aria-controls={FOOTER_PANEL_IDS.terminal}
+                  tabIndex={footerTab === 'terminal' ? 0 : -1}
+                  data-testid="session-preview-pane-footer-tab-terminal"
+                  onClick={() => selectFooterTab('terminal')}
+                  onKeyDown={(event) => handleFooterTabKeyDown(event, 'terminal')}
+                  className={footerTabClass(footerTab === 'terminal')}
+                >
+                  <SquareTerminal size={12} aria-hidden />
+                  Terminal
+                </button>
+              </div>
+              {typeof state.port === 'number' && (
+                <span className="mr-1 font-mono text-gray-500">:{state.port}</span>
+              )}
+              <button
+                type="button"
+                onClick={() => setFooterOpen((v: any) => !v)}
+                className="px-2 py-1.5 text-gray-400 hover:text-gray-100"
+                data-testid="session-preview-pane-footer-toggle"
+                aria-expanded={footerOpen}
+                aria-label={footerOpen ? 'Collapse footer' : 'Expand footer'}
+              >
+                {footerOpen ? '\u25BC' : '\u25B6'}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setFooterOpen((v: any) => !v)}
+              className="w-full text-left px-3 py-1.5 text-gray-400 hover:text-gray-100"
+              data-testid="session-preview-pane-footer-toggle"
+              aria-expanded={footerOpen}
+            >
+              {footerOpen ? '\u25BC' : '\u25B6'} Boot log ({state.logTail.length} lines)
+              {typeof state.port === 'number' && (
+                <span className="ml-2 text-gray-500 font-mono">:{state.port}</span>
+              )}
+            </button>
+          )}
+          <div
+            id={hasTerminal ? FOOTER_PANEL_IDS.boot : undefined}
+            role={hasTerminal ? 'tabpanel' : undefined}
+            aria-labelledby={hasTerminal ? FOOTER_TAB_IDS.boot : undefined}
+            hidden={!footerOpen || footerTab !== 'boot'}
+            tabIndex={hasTerminal ? 0 : undefined}
+            data-testid="session-preview-pane-boot-panel"
           >
-            {footerOpen ? '\u25BC' : '\u25B6'} Boot log ({state.logTail.length} lines)
-            {typeof state.port === 'number' && state.status === 'ready' && (
-              <span className="ml-2 text-gray-500 font-mono">:{state.port}</span>
-            )}
-          </button>
-          {footerOpen && (
             <pre
               ref={bootLogRef}
               data-testid="session-preview-pane-log"
               className="max-h-[min(50vh,28rem)] overflow-auto bg-black/40 px-3 py-2 font-mono text-[10px] text-gray-300 whitespace-pre-wrap"
             >
-              {state.logTail.join('\n')}
+              {hasBootLog ? state.logTail.join('\n') : '(waiting for first log line\u2026)'}
             </pre>
+          </div>
+          {hasTerminal && (
+            <div
+              id={FOOTER_PANEL_IDS.terminal}
+              role="tabpanel"
+              aria-labelledby={FOOTER_TAB_IDS.terminal}
+              hidden={!footerOpen || footerTab !== 'terminal'}
+              tabIndex={0}
+              className="relative h-[min(40vh,22rem)] min-h-[12rem]"
+              data-testid="session-preview-pane-terminal"
+            >
+              {terminalEverOpened ? <div key={sessionId}>{terminal}</div> : null}
+            </div>
           )}
         </div>
       )}

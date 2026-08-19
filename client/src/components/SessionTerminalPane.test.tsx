@@ -418,4 +418,16 @@ describe('SessionTerminalPane', () => {
       });
     });
   });
+
+  it('embedded variant fills the parent and omits the pane close button', () => {
+    const onClose = vi.fn();
+    render(<SessionTerminalPane embedded sessionId="session-embed" onClose={onClose} />);
+    const pane = screen.getByTestId('session-terminal-pane');
+    expect(pane.tagName).toBe('DIV');
+    expect(pane).toHaveAttribute('data-embedded', 'true');
+    expect(pane.className).not.toMatch(/w-\[600px\]/);
+    expect(screen.queryByTestId('session-terminal-pane-close')).toBeNull();
+    expect(xtermMocks.terminals).toHaveLength(1);
+    expect(MockWebSocket.instances[0].url).toContain('/sessions/session-embed/terminal/ws');
+  });
 });

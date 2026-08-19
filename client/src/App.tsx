@@ -54,6 +54,7 @@ import {
   previewStateApiPath,
   resolvePreviewHydration,
 } from './utils/sessionPreviewState';
+import { resolveSessionRightPaneFlags } from './utils/sessionRightPaneFlags';
 import FinalizeButton from './components/finalize/FinalizeButton';
 import FinalizeAutomationSelect from './components/finalize/FinalizeAutomationSelect';
 import FinalizeChecksLiveBlock from './components/finalize/FinalizeChecksLiveBlock';
@@ -420,8 +421,8 @@ export default function App({ initialView }: any = {}) {
   const [artifactsPaneOpenBySession, setArtifactsPaneOpenBySession] = useState<Record<string, any>>(
     {},
   );
-  /** Per-session shared terminal pane flag. The terminal occupies the same
-   * right-hand slot as preview, Changes, and Artifacts. */
+  /** Per-session shared terminal flag. When preview is open this selects the
+   * Terminal footer tab; otherwise the terminal occupies the right-hand slot. */
   const [terminalPaneOpenBySession, setTerminalPaneOpenBySession] = useState<Record<string, any>>(
     {},
   );
@@ -4218,6 +4219,12 @@ export default function App({ initialView }: any = {}) {
       ...prev,
       [activeSessionId]: false,
     }));
+    // X means "clear the column". The footer Terminal tab shares
+    // `terminalRequested` with the full-size pane — leave it set and
+    // closing a ready preview immediately expands that 600px pane.
+    setTerminalPaneOpenBySession((prev: any) =>
+      prev[activeSessionId] === true ? { ...prev, [activeSessionId]: false } : prev,
+    );
     try {
       const key = paneOpenStorageKey(activeSessionId);
       if (key) window.localStorage.setItem(key, 'false');
@@ -4429,32 +4436,31 @@ export default function App({ initialView }: any = {}) {
   // "no app loaded here" placeholder — the user opens it via the
   // Start preview button below the chat, which seeds a synthetic
   // `preview_starting` event into `activePreviewEvent`.
-  // The Changes (code diff) pane and the preview pane share the right-hand
-  // slot and are mutually exclusive — opening Changes replaces an open
-  // preview (the preview's own state is preserved and returns on close).
-  const showSessionTerminalPane =
+  // The Changes / Artifacts / full-size Terminal panes share the right-hand
+  // slot with preview and are mutually exclusive — except that a running
+  // preview keeps the iframe and hosts the terminal in its footer tabs
+  // (Boot log | Terminal) instead of yielding the slot.
+  const previewEligible = shouldShowSessionPreviewPane({
+    activeSessionId,
+    project: activeChatProject,
+    activePreviewEvent,
+    paneOpenBySession: previewPaneOpenBySession,
+  });
+  const terminalRequested =
     !!activeSessionId && terminalPaneOpenBySession[activeSessionId] === true;
-  const showSessionDiffPane =
-    !showSessionTerminalPane &&
-    !!activeSessionId &&
-    diffPaneOpenBySession[activeSessionId] === true;
-  // The Artifacts pane shares the right-hand slot with Changes/preview and is
-  // mutually exclusive with them. Changes wins if somehow both are flagged.
-  const showSessionArtifactsPane =
-    !showSessionDiffPane &&
-    !showSessionTerminalPane &&
-    !!activeSessionId &&
-    artifactsPaneOpenBySession[activeSessionId] === true;
-  const showSessionPreviewPane =
-    !showSessionDiffPane &&
-    !showSessionArtifactsPane &&
-    !showSessionTerminalPane &&
-    shouldShowSessionPreviewPane({
-      activeSessionId,
-      project: activeChatProject,
-      activePreviewEvent,
-      paneOpenBySession: previewPaneOpenBySession,
-    });
+  const {
+    showSessionTerminalPane,
+    showSessionDiffPane,
+    showSessionArtifactsPane,
+    showSessionPreviewPane,
+    footerTab: previewFooterTab,
+  } = resolveSessionRightPaneFlags({
+    previewEligible,
+    previewKind: activePreviewEvent?.kind,
+    terminalRequested,
+    diffRequested: !!activeSessionId && diffPaneOpenBySession[activeSessionId] === true,
+    artifactsRequested: !!activeSessionId && artifactsPaneOpenBySession[activeSessionId] === true,
+  });
   const showSessionTimeline =
     !!activeSessionId &&
     (timelinePaneOpenBySession[activeSessionId] ?? readTimelinePaneOpen(activeSessionId)) === true;
@@ -5671,6 +5677,45 @@ export default function App({ initialView }: any = {}) {
   const versionCheck = useVersionCheck({
     serverVersion: electronDesktopHealth?.version ?? null,
   });
+
+  const renderSessionTerminalPane = (embedded: boolean) => {
+    if (!activeSessionId) return null;
+    return (
+      <SessionTerminalPane
+        embedded={embedded}
+        sessionId={activeSessionId}
+        jobs={terminalJobsBySession[activeSessionId] ?? []}
+        logsById={backgroundShellLogsBySession[activeSessionId] ?? {}}
+        activeTabId={terminalActiveTabBySession[activeSessionId] ?? PTY_TAB_ID}
+        onActiveTabChange={(tabId) =>
+          setTerminalActiveTabBySession((prev) => ({
+            ...prev,
+            [activeSessionId]: tabId,
+          }))
+        }
+        onDismissJob={(shellId) => {
+          setTerminalJobsBySession((prev) => dismissTerminalJob(prev, activeSessionId, shellId));
+          setTerminalActiveTabBySession((prev) =>
+            prev[activeSessionId] === shellId ? { ...prev, [activeSessionId]: PTY_TAB_ID } : prev,
+          );
+        }}
+        onLogSnapshot={(shellId, snapshot) =>
+          setBackgroundShellLogsBySession((prev) =>
+            applyBackgroundShellLogSnapshot(prev, activeSessionId, shellId, snapshot),
+          )
+        }
+        onClose={
+          embedded
+            ? undefined
+            : () =>
+                setTerminalPaneOpenBySession((prev: any) => ({
+                  ...prev,
+                  [activeSessionId]: false,
+                }))
+        }
+      />
+    );
+  };
 
   // Show loading spinner while connecting to the server and loading org data.
   // Includes an org switcher so users can escape a dead remote org.
@@ -6997,9 +7042,10 @@ export default function App({ initialView }: any = {}) {
                                   testId: 'toggle-terminal-pane',
                                   label: 'Terminal',
                                   icon: SquareTerminal,
-                                  title: 'Open the shared session terminal',
+                                  title:
+                                    'Shared session terminal — docks under preview when one is running',
                                   hidden: chatProjectIsWorkflow || sessionConsultActive,
-                                  pressed: showSessionTerminalPane,
+                                  pressed: terminalRequested,
                                   onSelect: () => {
                                     const opening = !terminalPaneOpenBySession[activeSessionId];
                                     setTerminalPaneOpenBySession((prev: any) => ({
@@ -7139,6 +7185,26 @@ export default function App({ initialView }: any = {}) {
                         onTouch={handlePreviewTouch}
                         onStop={handlePreviewStop}
                         onConfigure={handlePreviewConfigure}
+                        footerTab={previewFooterTab}
+                        onFooterTabChange={(tab: 'boot' | 'terminal') => {
+                          setTerminalPaneOpenBySession((prev: any) => ({
+                            ...prev,
+                            [activeSessionId]: tab === 'terminal',
+                          }));
+                        }}
+                        terminal={
+                          !chatProjectIsWorkflow && !sessionConsultActive ? (
+                            <Suspense
+                              fallback={
+                                <div className="flex h-full items-center justify-center">
+                                  <Loader2 size={16} className="animate-spin text-cyan-300" />
+                                </div>
+                              }
+                            >
+                              {renderSessionTerminalPane(true)}
+                            </Suspense>
+                          ) : null
+                        }
                       />
                     )}
                     {showSessionDiffPane && (
@@ -7205,44 +7271,7 @@ export default function App({ initialView }: any = {}) {
                           </aside>
                         }
                       >
-                        <SessionTerminalPane
-                          sessionId={activeSessionId}
-                          jobs={terminalJobsBySession[activeSessionId] ?? []}
-                          logsById={backgroundShellLogsBySession[activeSessionId] ?? {}}
-                          activeTabId={terminalActiveTabBySession[activeSessionId] ?? PTY_TAB_ID}
-                          onActiveTabChange={(tabId) =>
-                            setTerminalActiveTabBySession((prev) => ({
-                              ...prev,
-                              [activeSessionId]: tabId,
-                            }))
-                          }
-                          onDismissJob={(shellId) => {
-                            setTerminalJobsBySession((prev) =>
-                              dismissTerminalJob(prev, activeSessionId, shellId),
-                            );
-                            setTerminalActiveTabBySession((prev) =>
-                              prev[activeSessionId] === shellId
-                                ? { ...prev, [activeSessionId]: PTY_TAB_ID }
-                                : prev,
-                            );
-                          }}
-                          onLogSnapshot={(shellId, snapshot) =>
-                            setBackgroundShellLogsBySession((prev) =>
-                              applyBackgroundShellLogSnapshot(
-                                prev,
-                                activeSessionId,
-                                shellId,
-                                snapshot,
-                              ),
-                            )
-                          }
-                          onClose={() =>
-                            setTerminalPaneOpenBySession((prev: any) => ({
-                              ...prev,
-                              [activeSessionId]: false,
-                            }))
-                          }
-                        />
+                        {renderSessionTerminalPane(false)}
                       </Suspense>
                     )}
                     {linkedDesign && (

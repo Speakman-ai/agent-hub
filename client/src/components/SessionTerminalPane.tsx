@@ -198,6 +198,8 @@ export default function SessionTerminalPane({
   onStopJob,
   onDismissJob,
   onLogSnapshot,
+  // Preview-pane footer: fill the parent instead of taking the right-hand slot.
+  embedded = false,
 }: {
   sessionId: string;
   onClose?: () => void;
@@ -209,6 +211,7 @@ export default function SessionTerminalPane({
   onStopJob?: (shellId: string) => void | Promise<void>;
   onDismissJob?: (shellId: string) => void;
   onLogSnapshot?: (shellId: string, snapshot: string) => void;
+  embedded?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -471,17 +474,27 @@ export default function SessionTerminalPane({
             ? 'Connection error'
             : 'Connecting…';
 
+  const rootClassName = embedded
+    ? 'flex h-full min-h-0 w-full flex-col bg-gray-950'
+    : 'hidden lg:flex w-[600px] shrink-0 flex-col border-l border-gray-800 bg-gray-950';
+  const Root = embedded ? 'div' : 'aside';
+
   return (
-    <aside
+    <Root
       data-testid="session-terminal-pane"
-      className="hidden lg:flex w-[600px] shrink-0 flex-col border-l border-gray-800 bg-gray-950"
+      data-embedded={embedded ? 'true' : undefined}
+      className={rootClassName}
       aria-label="Session terminal"
     >
-      <div className="flex items-center gap-2 border-b border-gray-800 bg-gray-900/70 px-3 py-2">
-        <SquareTerminal size={15} className="shrink-0 text-cyan-300" />
+      <div
+        className={`flex items-center gap-2 border-b border-gray-800 bg-gray-900/70 ${
+          embedded ? 'px-2 py-1' : 'px-3 py-2'
+        }`}
+      >
+        {!embedded && <SquareTerminal size={15} className="shrink-0 text-cyan-300" />}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-xs font-semibold text-gray-100">
-            Terminal
+            {embedded ? null : 'Terminal'}
             {ptyActive ? (
               <span
                 data-testid="session-terminal-status"
@@ -505,11 +518,13 @@ export default function SessionTerminalPane({
               </span>
             )}
           </div>
-          <div className="truncate text-[10px] text-amber-300/90">
-            {activeJob
-              ? activeJob.command
-              : 'Shared — agent may type. Input is echoed by the shared shell.'}
-          </div>
+          {!embedded && (
+            <div className="truncate text-[10px] text-amber-300/90">
+              {activeJob
+                ? activeJob.command
+                : 'Shared — agent may type. Input is echoed by the shared shell.'}
+            </div>
+          )}
         </div>
         {activeJob?.status === 'running' && (
           <button
@@ -549,16 +564,18 @@ export default function SessionTerminalPane({
           <Copy size={14} />
           <span className="sr-only">{copied ? 'Copied' : 'Copy terminal buffer'}</span>
         </button>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-gray-400 hover:text-gray-100"
-          title="Close terminal pane"
-          aria-label="Close terminal pane"
-          data-testid="session-terminal-pane-close"
-        >
-          <X size={14} />
-        </button>
+        {!embedded && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-100"
+            title="Close terminal pane"
+            aria-label="Close terminal pane"
+            data-testid="session-terminal-pane-close"
+          >
+            <X size={14} />
+          </button>
+        )}
       </div>
       {jobs.length > 0 && (
         <div
@@ -642,7 +659,7 @@ export default function SessionTerminalPane({
           />
         )}
       </div>
-    </aside>
+    </Root>
   );
 }
 
