@@ -473,6 +473,7 @@ unless you move it.
 | Command                | Description                                            |
 | ---------------------- | ------------------------------------------------------ |
 | `npm run dev`          | Start client and server concurrently                   |
+| `npm run dev:local`    | Same as `dev` with the local-mode bypass (no login)    |
 | `npm run dev:client`   | Start React client on port 3050                        |
 | `npm run dev:server`   | Start Express server on port 3051                      |
 | `npm run build`        | Build the client for production                        |
