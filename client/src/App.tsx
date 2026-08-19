@@ -4319,7 +4319,7 @@ export default function App({ initialView }: any = {}) {
   );
 
   const handleStartSessionPreview = useCallback(
-    async (sessionId: any) => {
+    async (sessionId: any, mode: 'rebuild' | 'restart-server' = 'rebuild') => {
       if (!sessionId) return;
       // Bump the start generation so any /preview/state poll still in
       // flight for the PREVIOUS run is discarded on arrival rather than
@@ -4348,7 +4348,7 @@ export default function App({ initialView }: any = {}) {
         /* storage unavailable */
       }
       try {
-        await api.startSessionPreview(sessionId);
+        await api.startSessionPreview(sessionId, { mode });
         // Keep `previewStartingBySession` until a WS `agenthub_preview` event
         // arrives — boot can take minutes (clone + compose build).
       } catch (err: any) {

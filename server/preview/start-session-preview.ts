@@ -11,9 +11,17 @@ import { handlePreviewBlock, resolvePreviewHandlerReadyTimeoutMs } from './previ
 import type { PreviewTask } from './preview-block.js';
 import { previewRoutingBlockReason, type PreviewRoutingInputs } from './preview-routing-mode.js';
 
+/**
+ * Which start path to run:
+ * - `rebuild` (default): run `buildCommand` (if set) then `startCommand`.
+ * - `restart-server`: skip the build, recycle only the server process.
+ */
+export type StartSessionPreviewMode = 'rebuild' | 'restart-server';
+
 export interface StartSessionPreviewBody {
   route?: string;
   reason?: string;
+  mode?: StartSessionPreviewMode;
 }
 
 export type StartSessionPreviewDeps = {
@@ -37,6 +45,7 @@ type DevServerRuntimeLike = {
     sessionId: string,
     project: Project,
     worktreePath: string,
+    opts?: { skipBuild?: boolean },
   ) => Promise<{ devServerId: string; url: string; port: number }>;
   getById: (devServerId: string) => { status: 'starting' | 'ready' | 'failed' } | null;
   getLogTail: (devServerId: string) => string[];
@@ -60,10 +69,15 @@ function defaultPreviewRoute(project: Project): string {
   return '/';
 }
 
-function adaptDevServerRuntime(runtime: DevServerRuntimeLike): PreviewRuntimeLike {
+function adaptDevServerRuntime(
+  runtime: DevServerRuntimeLike,
+  opts: { skipBuild: boolean },
+): PreviewRuntimeLike {
   return {
     startPreview: async (sessionId, project, worktreePath) => {
-      const result = await runtime.start(sessionId, project, worktreePath);
+      const result = await runtime.start(sessionId, project, worktreePath, {
+        skipBuild: opts.skipBuild,
+      });
       return { previewId: result.devServerId, url: result.url, port: result.port };
     },
     getById: (previewId) => runtime.getById(previewId),
@@ -127,8 +141,10 @@ export async function startSessionPreview(
     ? (deps.getDevServerRuntime?.() ?? null)
     : null;
 
+  const skipBuild = body?.mode === 'restart-server';
+
   void handlePreviewBlock(sessionId, task, {
-    runtime: devServerRuntime ? adaptDevServerRuntime(devServerRuntime) : null,
+    runtime: devServerRuntime ? adaptDevServerRuntime(devServerRuntime, { skipBuild }) : null,
     broadcast,
     project,
     worktreePath,

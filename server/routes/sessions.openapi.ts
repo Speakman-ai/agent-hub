@@ -1243,6 +1243,10 @@ registerPath({
                 'In-app route to load (must start with `/`). Defaults to first capture route or `/`.',
             }),
             reason: z.string().optional(),
+            mode: z.enum(['rebuild', 'restart-server']).optional().openapi({
+              description:
+                'Start path. `rebuild` (default) runs the configured `buildCommand` then `startCommand`; `restart-server` skips the build and recycles only the server process, reusing the existing build output.',
+            }),
           })
           .openapi({ description: 'Optional preview task overrides.' }),
       ),

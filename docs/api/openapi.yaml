@@ -22476,6 +22476,12 @@ paths:
                   description: In-app route to load (must start with `/`). Defaults to first capture route or `/`.
                 reason:
                   type: string
+                mode:
+                  type: string
+                  enum:
+                    - rebuild
+                    - restart-server
+                  description: Start path. `rebuild` (default) runs the configured `buildCommand` then `startCommand`; `restart-server` skips the build and recycles only the server process, reusing the existing build output.
               description: Optional preview task overrides.
       responses:
         "200":

@@ -92,6 +92,24 @@ const portMapEntrySchema = z.strictObject({
 
 export const devServerConfigSchema = z
   .strictObject({
+    /**
+     * Optional build step run to completion (via `sh -c` from `cwd`)
+     * **before** `startCommand`, after apt packages install. Use it for
+     * work that only needs to happen when the code changes — `npm ci`,
+     * `docker compose build`, a bundler/compile pass — so a plain server
+     * restart can reuse the build output instead of repeating it. When
+     * unset, the runtime skips straight to `startCommand`.
+     *
+     * A non-zero exit fails the start (the build declared a hard
+     * prerequisite). The "Restart Server" action skips this step; "Rebuild
+     * App" runs it. Gets the same env + resolved secrets as `startCommand`.
+     */
+    buildCommand: z
+      .string()
+      .trim()
+      .min(1, 'buildCommand must be a non-empty string')
+      .max(MAX_START_COMMAND_LEN)
+      .optional(),
     /** Shell command run via `sh -c` from `cwd` (or the worktree root). */
     startCommand: z
       .string()

@@ -68,6 +68,7 @@ import {
   describeSystemDepsExit,
   SYSTEM_DEPS_PROCESS_NAME,
 } from './dev-server-system-deps.js';
+import { runDevServerBuild, describeBuildExit, BUILD_PROCESS_NAME } from './dev-server-build.js';
 import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
@@ -103,6 +104,16 @@ export interface StartDevServerResult {
   devServerId: string;
   url: string;
   port: number;
+}
+
+export interface StartDevServerOpts {
+  /**
+   * Skip `buildCommand` and go straight to `startCommand` (still a full
+   * stop+start otherwise), reusing the build's on-disk output — the "Restart
+   * Server" action. Defaults to false ("Rebuild App" / a fresh start runs the
+   * build).
+   */
+  skipBuild?: boolean;
 }
 
 export interface DevServerReapResult {
@@ -318,6 +329,16 @@ export function buildDevServerSpawnEnv(opts: {
   projectSecrets: Record<string, string>;
   envPort: number;
   upstreamHost?: string | null;
+  /**
+   * The pool-allocated, host-unique primary host port, published as
+   * `AGENT_HUB_HOST_PORT`. A dev server whose `startCommand` is a
+   * `docker compose up` (or any process that binds a host port itself,
+   * rather than honoring the injected `PORT`) can interpolate this to
+   * publish a per-session unique port — e.g. `${AGENT_HUB_HOST_PORT}:4200`
+   * in the compose file — instead of a hardcoded `4100`, which two
+   * sessions on the same host collide on ("port is already allocated").
+   */
+  hostPort?: number;
 }): BuildDevServerSpawnEnvResult {
   const env: Record<string, string> = { ...opts.config.env };
   const missingSecretKeys: string[] = [];
@@ -336,6 +357,9 @@ export function buildDevServerSpawnEnv(opts: {
   const upstreamHost = opts.upstreamHost?.trim();
   if (upstreamHost && !('AGENT_HUB_PREVIEW_HEALTH_HOST' in opts.config.env)) {
     env.AGENT_HUB_PREVIEW_HEALTH_HOST = upstreamHost;
+  }
+  if (opts.hostPort !== undefined) {
+    env.AGENT_HUB_HOST_PORT = String(opts.hostPort);
   }
   env.PORT = String(opts.envPort);
   return { env, missingSecretKeys };
@@ -467,8 +491,11 @@ export class DevServerRuntime {
     sessionId: string,
     project: Project,
     worktreePath: string,
+    opts: StartDevServerOpts = {},
   ): Promise<StartDevServerResult> {
-    return this.withSessionLock(sessionId, () => this._start(sessionId, project, worktreePath));
+    return this.withSessionLock(sessionId, () =>
+      this._start(sessionId, project, worktreePath, opts),
+    );
   }
 
   /** Stop-and-start convenience — same replace semantics as `start`. */
@@ -476,8 +503,27 @@ export class DevServerRuntime {
     sessionId: string,
     project: Project,
     worktreePath: string,
+    opts: StartDevServerOpts = {},
   ): Promise<StartDevServerResult> {
-    return this.start(sessionId, project, worktreePath);
+    return this.start(sessionId, project, worktreePath, opts);
+  }
+
+  /**
+   * "Restart Server": replace the running dev server, reusing the existing
+   * build output. This is a full stop+start (`skipBuild: true`) — it stops the
+   * current group, re-reserves ports, remounts the worktree, re-resolves
+   * secrets, and re-runs apt — it does NOT recycle only the process. What it
+   * skips is `buildCommand`, and that is safe because the build's *output*
+   * (node_modules, compiled artifacts) lives on the worktree, which persists on
+   * disk across the replace. So it avoids the expensive recompile, not the rest
+   * of startup.
+   */
+  async restartServer(
+    sessionId: string,
+    project: Project,
+    worktreePath: string,
+  ): Promise<StartDevServerResult> {
+    return this.start(sessionId, project, worktreePath, { skipBuild: true });
   }
 
   /** Active dev server for `sessionId`, matching the managed-runtime surface. */
@@ -849,6 +895,7 @@ export class DevServerRuntime {
     sessionId: string,
     project: Project,
     worktreePath: string,
+    opts: StartDevServerOpts = {},
   ): Promise<StartDevServerResult> {
     const existing = this.getActive(sessionId);
     if (existing) {
@@ -1014,6 +1061,7 @@ export class DevServerRuntime {
       config: cfg,
       projectSecrets,
       envPort: primaryEnvPort,
+      hostPort: primaryEntry.hostPort,
       // Only when it is the env's own address. A loopback mapping means the
       // Hub reaches the process over the gateway translation it already has
       // configured, so overriding it here would name the wrong side.
@@ -1069,6 +1117,48 @@ export class DevServerRuntime {
     }
 
     const processName = primaryEntry.name;
+
+    // Build step. Runs to completion BEFORE startCommand (after apt install, so
+    // a build can rely on native libs). Skipped on a "Restart Server" restart
+    // (opts.skipBuild): the build's on-disk output (node_modules, compiled
+    // artifacts) survives on the worktree across the stop+start, so re-running
+    // the command would only repeat work. A non-zero build exit fails the
+    // start: the project declared the build a hard prerequisite of the server.
+    if (cfg.buildCommand && !opts.skipBuild) {
+      try {
+        const buildResult = await runDevServerBuild({
+          env,
+          buildCommand: cfg.buildCommand,
+          cwd: cfg.cwd,
+          spawnEnv,
+          onLine: (line, stream) => {
+            appendPreviewLogTailLine(record.tail, line, this.logTailLines);
+            if (this.notifyLog) {
+              try {
+                this.notifyLog({
+                  sessionId,
+                  groupId,
+                  processName: BUILD_PROCESS_NAME,
+                  line,
+                  stream,
+                });
+              } catch (err) {
+                this.logger.warn(
+                  `[dev-server ${groupId}] notifyLog threw: ${(err as Error).message}`,
+                );
+              }
+            }
+          },
+        });
+        if (buildResult.exit.code !== 0 || buildResult.exit.error || buildResult.exit.signal) {
+          throw new Error(`build failed: ${describeBuildExit(buildResult.exit)}`);
+        }
+      } catch (err) {
+        await this.rollbackStart(groupId, record);
+        throw err;
+      }
+    }
+
     let proc: SessionEnvProcess;
     try {
       proc = env.spawn(cfg.startCommand, {

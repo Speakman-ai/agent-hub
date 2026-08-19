@@ -2395,7 +2395,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
           return res.status(404).json({ error: 'Session not found' });
         }
-        const body = (req.body ?? {}) as { route?: string; reason?: string };
+        const body = (req.body ?? {}) as {
+          route?: string;
+          reason?: string;
+          mode?: 'rebuild' | 'restart-server';
+        };
         const result = await startSessionPreview({
           sessionId,
           body,

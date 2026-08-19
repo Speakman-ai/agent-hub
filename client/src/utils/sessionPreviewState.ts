@@ -510,6 +510,17 @@ export function isPreviewConfigured(project: any) {
 }
 
 /**
+ * True when the project configures a `buildCommand`. Only then is the
+ * Rebuild-vs-Restart-Server split meaningful — without a build step both
+ * paths just re-run `startCommand`, so the launch control stays a single
+ * button.
+ */
+export function hasDevServerBuildCommand(project: any) {
+  const buildCommand = project?.prEnv?.devServer?.buildCommand;
+  return typeof buildCommand === 'string' && buildCommand.trim().length > 0;
+}
+
+/**
  * Decide whether the SessionPreviewPane should be visible for the active
  * session.
  *

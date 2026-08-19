@@ -20,12 +20,8 @@
  * metacharacter can reach the interpolated command here.
  */
 
-import type {
-  SessionEnv,
-  SessionEnvExit,
-  SessionEnvKind,
-  SessionEnvProcess,
-} from '../session-env/session-env.js';
+import type { SessionEnv, SessionEnvExit, SessionEnvKind } from '../session-env/session-env.js';
+import { waitForEnvProcessExit } from './env-process-exit.js';
 
 /** Stream label used for system-deps log lines in the preview log tail. */
 export const SYSTEM_DEPS_PROCESS_NAME = 'system-deps';
@@ -102,70 +98,6 @@ export interface InstallSystemDepsOpts {
   logger?: { warn: (msg: string) => void };
 }
 
-function splitLines(chunk: string): string[] {
-  return chunk.split('\n').filter((line) => line.length > 0);
-}
-
-function waitForExit(
-  proc: SessionEnvProcess,
-  onLine?: (line: string, stream: 'stdout' | 'stderr') => void,
-): Promise<SessionEnvExit> {
-  return new Promise((resolve) => {
-    // Track every subscription so we can dispose them once the process exits.
-    // Without this, repeated preview starts leak stdout/stderr/exit listeners
-    // (and their closures) onto the retained process records after apt exits.
-    const unsubs: Array<() => void> = [];
-    let settled = false;
-    const disposeAll = () => {
-      for (const unsub of unsubs) {
-        try {
-          unsub();
-        } catch {
-          // A backend whose unsubscribe throws must not mask the exit.
-        }
-      }
-      unsubs.length = 0;
-    };
-
-    if (onLine) {
-      unsubs.push(
-        proc.onStdout((chunk) => {
-          for (const line of splitLines(chunk)) onLine(line, 'stdout');
-        }),
-      );
-      unsubs.push(
-        proc.onStderr((chunk) => {
-          for (const line of splitLines(chunk)) onLine(line, 'stderr');
-        }),
-      );
-    }
-
-    // `onExit` fires the callback synchronously when the process has ALREADY
-    // exited — before it returns its unsubscribe fn. So the callback must not
-    // assume the exit unsub is registered yet: it disposes whatever is in
-    // `unsubs` (stdout/stderr) and sets `settled`. The exit unsub is then
-    // handled after the call returns, based on whether the callback already
-    // ran (sync/already-exited) or not (async — dispose it with the rest).
-    const exitUnsub = proc.onExit((result) => {
-      settled = true;
-      disposeAll();
-      resolve(result);
-    });
-    if (settled) {
-      // Already-exited path: the callback ran during registration and disposed
-      // stdout/stderr; the exit listener already fired and won't fire again, so
-      // just release its subscription too.
-      try {
-        exitUnsub();
-      } catch {
-        // ignore — nothing left to mask.
-      }
-    } else {
-      unsubs.push(exitUnsub);
-    }
-  });
-}
-
 /**
  * Install `aptPackages` inside `env` (when safe) and resolve with the outcome.
  * Never throws for a skip; callers decide whether a non-zero apt exit should
@@ -198,7 +130,7 @@ export async function installDevServerSystemDeps(
     name: `dev-server-system-deps:${opts.env.sessionId}`,
     env: opts.spawnEnv,
   });
-  const exit = await waitForExit(proc, opts.onLine);
+  const exit = await waitForEnvProcessExit(proc, opts.onLine);
   return { ran: true, exit };
 }
 

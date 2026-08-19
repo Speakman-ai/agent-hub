@@ -401,6 +401,25 @@ export default function DevServerSection({
         </View>
       )}
 
+      {/* Build command (optional) */}
+      <View style={styles.card}>
+        <Text style={styles.fieldLabel}>Build command (optional)</Text>
+        <TextInput
+          value={form.buildCommand}
+          onChangeText={(v) => setField('buildCommand', v)}
+          placeholder="docker compose build"
+          placeholderTextColor={colors.gray500}
+          style={styles.monoInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel="build command"
+        />
+        <Text style={styles.hint}>
+          Runs once before the start command. Restart Server reuses the last build; Rebuild App
+          re-runs this first.
+        </Text>
+      </View>
+
       {/* Start command */}
       <View style={styles.card}>
         <Text style={styles.fieldLabel}>Start command</Text>
@@ -414,7 +433,11 @@ export default function DevServerSection({
           autoCorrect={false}
           accessibilityLabel="start command"
         />
-        <Text style={styles.hint}>Run via sh -c from the working directory (or worktree root).</Text>
+        <Text style={styles.hint}>
+          Run via sh -c from the working directory (or worktree root). The Hub publishes a
+          per-session host port as AGENT_HUB_HOST_PORT — a compose-based server can bind
+          ${'${AGENT_HUB_HOST_PORT}'} instead of a hardcoded port so two sessions never collide.
+        </Text>
       </View>
 
       {/* Working directory + health + timeout */}

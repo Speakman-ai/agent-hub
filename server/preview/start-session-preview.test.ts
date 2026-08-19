@@ -90,7 +90,30 @@ describe('startSessionPreview', () => {
     const deps = vi.mocked(handlePreviewBlock).mock.calls[0]?.[2];
     expect(deps).toMatchObject({ broadcast, project, worktreePath: '/tmp/wt' });
     await deps!.runtime!.startPreview('sess-1', project, '/tmp/wt');
-    expect(runtime.start).toHaveBeenCalledWith('sess-1', project, '/tmp/wt');
+    // Default (no mode) is a full rebuild — build then start.
+    expect(runtime.start).toHaveBeenCalledWith('sess-1', project, '/tmp/wt', { skipBuild: false });
+  });
+
+  it('a restart-server mode adapts to a skip-build start', async () => {
+    const runtime = {
+      start: vi
+        .fn()
+        .mockResolvedValue({ devServerId: 'ds-1', url: 'http://localhost:4200', port: 4200 }),
+      getById: vi.fn(),
+      getLogTail: vi.fn(),
+    };
+    const result = await startSessionPreview({
+      sessionId: 'sess-1',
+      body: { mode: 'restart-server' },
+      broadcast: vi.fn(),
+      findAgent: () => ({ project, agent: { id: 'a1' } }),
+      getDevServerRuntime: () => runtime,
+      getSession: () => session,
+    });
+    expect(result).toEqual({ ok: true, started: true });
+    const deps = vi.mocked(handlePreviewBlock).mock.calls[0]?.[2];
+    await deps!.runtime!.startPreview('sess-1', project, '/tmp/wt');
+    expect(runtime.start).toHaveBeenCalledWith('sess-1', project, '/tmp/wt', { skipBuild: true });
   });
 
   it('refuses to start when the deployment can only serve a path-prefix preview', async () => {

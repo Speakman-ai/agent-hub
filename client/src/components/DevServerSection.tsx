@@ -350,6 +350,30 @@ export default function DevServerSection({ projects = [], onProjectsChange, onOp
         </p>
       )}
 
+      {/* Build command (optional) */}
+      <section className="rounded-lg border border-gray-800 p-4 space-y-3">
+        <label
+          htmlFor="dev-server-build-command"
+          className="block text-sm font-medium text-gray-200"
+        >
+          Build command <span className="text-gray-500 font-normal">(optional)</span>
+        </label>
+        <input
+          id="dev-server-build-command"
+          type="text"
+          value={form.buildCommand}
+          onChange={(e) => setField('buildCommand', e.target.value)}
+          placeholder="docker compose build"
+          className={`${inputClass} font-mono`}
+          data-testid="dev-server-build-command"
+        />
+        <p className="text-[11px] text-gray-500">
+          Runs once before the start command (after any apt packages). Leave blank if there is
+          nothing to build. <strong>Restart Server</strong> reuses the last build;{' '}
+          <strong>Rebuild App</strong> re-runs this first.
+        </p>
+      </section>
+
       {/* Start command */}
       <section className="rounded-lg border border-gray-800 p-4 space-y-3">
         <label
@@ -368,7 +392,10 @@ export default function DevServerSection({ projects = [], onProjectsChange, onOp
           data-testid="dev-server-start-command"
         />
         <p className="text-[11px] text-gray-500">
-          Run via <code>sh -c</code> from the working directory below (or the worktree root).
+          Run via <code>sh -c</code> from the working directory below (or the worktree root). The
+          Hub publishes a per-session host port as <code>AGENT_HUB_HOST_PORT</code> — a
+          compose-based server can bind <code>${'{AGENT_HUB_HOST_PORT}'}</code> instead of a
+          hardcoded port so two sessions never collide.
         </p>
       </section>
 

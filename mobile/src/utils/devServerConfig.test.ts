@@ -19,9 +19,20 @@ describe('devServerFormFromProject', () => {
   it('defaults an empty project to the default start command', () => {
     const form = devServerFormFromProject(null, []);
     expect(form.startCommand).toBe(DEV_SERVER_DEFAULT_START_COMMAND);
+    expect(form.buildCommand).toBe('');
     expect(form.envRows).toEqual([]);
     expect(form.secretRows).toEqual([]);
     expect(form.portRows).toEqual([]);
+  });
+
+  it('round-trips a buildCommand through form → config; omits it when blank', () => {
+    const project = {
+      prEnv: { devServer: { startCommand: 'npm run serve', buildCommand: 'npm run build' } },
+    };
+    const form = devServerFormFromProject(project, []);
+    expect(form.buildCommand).toBe('npm run build');
+    expect(buildDevServerConfig(form).buildCommand).toBe('npm run build');
+    expect('buildCommand' in buildDevServerConfig({ ...form, buildCommand: '  ' })).toBe(false);
   });
 
   it('maps a saved devServer config into editable rows', () => {

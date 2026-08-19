@@ -70,6 +70,8 @@ export interface DevServerPortRow {
   primary: boolean;
 }
 export interface DevServerForm {
+  /** Optional build step run before startCommand; empty = none. */
+  buildCommand: string;
   startCommand: string;
   envRows: DevServerEnvRow[];
   secretRows: DevServerSecretRow[];
@@ -97,6 +99,7 @@ export interface StoredSecret {
 
 export function emptyDevServerForm(): DevServerForm {
   return {
+    buildCommand: '',
     startCommand: DEV_SERVER_DEFAULT_START_COMMAND,
     envRows: [],
     secretRows: [],
@@ -121,6 +124,7 @@ export function devServerFormFromProject(
   const secretByKey = new Map((secrets || []).map((s) => [s.key, s]));
   const env = ds.env && typeof ds.env === 'object' ? ds.env : {};
   return {
+    buildCommand: typeof ds.buildCommand === 'string' ? ds.buildCommand : '',
     startCommand:
       typeof ds.startCommand === 'string' && ds.startCommand.trim()
         ? ds.startCommand
@@ -151,6 +155,14 @@ export function devServerFormFromProject(
  * null when the form would pass `parseDevServerConfig`.
  */
 export function validateDevServerForm(form: DevServerForm): DevServerValidationError | null {
+  const buildCommand = (form.buildCommand || '').trim();
+  if (buildCommand.length > MAX_START_COMMAND_LEN) {
+    return {
+      field: 'buildCommand',
+      error: `Build command must be at most ${MAX_START_COMMAND_LEN} characters.`,
+    };
+  }
+
   const startCommand = (form.startCommand || '').trim();
   if (!startCommand) {
     return { field: 'startCommand', error: 'Start command must not be empty.' };
@@ -421,6 +433,9 @@ export function buildDevServerConfig(form: DevServerForm): Record<string, unknow
     secretKeys,
     portMap,
   };
+
+  const buildCommand = (form.buildCommand || '').trim();
+  if (buildCommand) config.buildCommand = buildCommand;
 
   const healthPath = (form.healthPath || '').trim();
   if (healthPath) config.healthPath = healthPath;

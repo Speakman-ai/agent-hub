@@ -355,6 +355,40 @@ describe('DevServerRuntime helpers', () => {
     });
   });
 
+  it('publishes the pool-allocated host port as AGENT_HUB_HOST_PORT when provided', () => {
+    const result = buildDevServerSpawnEnv({
+      config: {
+        startCommand: 'docker compose up',
+        env: {},
+        secretKeys: [],
+        portMap: [],
+        aptPackages: [],
+      },
+      projectSecrets: {},
+      envPort: 4200,
+      hostPort: 4137,
+    });
+    // A compose file can bind `${AGENT_HUB_HOST_PORT}:4200` per session so two
+    // sessions never collide on a hardcoded host port.
+    expect(result.env.AGENT_HUB_HOST_PORT).toBe('4137');
+    expect(result.env.PORT).toBe('4200');
+  });
+
+  it('omits AGENT_HUB_HOST_PORT when no host port is passed', () => {
+    const result = buildDevServerSpawnEnv({
+      config: {
+        startCommand: 'npm run dev',
+        env: {},
+        secretKeys: [],
+        portMap: [],
+        aptPackages: [],
+      },
+      projectSecrets: {},
+      envPort: 4300,
+    });
+    expect('AGENT_HUB_HOST_PORT' in result.env).toBe(false);
+  });
+
   it('lets an explicit dev-server env override the dev-install defaults', () => {
     const result = buildDevServerSpawnEnv({
       config: {
@@ -471,6 +505,7 @@ describe('DevServerRuntime lifecycle', () => {
             TOKEN: 'secret-value',
             NODE_ENV: 'development',
             NPM_CONFIG_INCLUDE: 'dev',
+            AGENT_HUB_HOST_PORT: '4500',
             PORT: '4500',
           },
           name: 'dev-server:session-1',
@@ -994,6 +1029,76 @@ describe('DevServerRuntime lifecycle', () => {
     // apt was the only spawn; the app start command never ran.
     expect(h.envs[0].spawnCalls).toHaveLength(1);
     expect(h.envs[0].spawnCalls[0].command).toContain('apt-get');
+    const groups = h.db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get() as {
+      n: number;
+    };
+    expect(groups.n).toBe(0);
+  });
+
+  it('runs buildCommand to completion before startCommand', async () => {
+    const h = makeHarness({
+      envSetup: (env) => {
+        // The build spawn is the FIRST spawn; make it exit 0 so the start
+        // proceeds. The next (startCommand) spawn stays long-lived.
+        env.preExitNextSpawn = { code: 0, signal: null };
+      },
+    });
+
+    await h.runtime.start(
+      'session-build',
+      makeProject({ buildCommand: 'npm run build', startCommand: 'npm run serve' }),
+      '/worktree',
+    );
+
+    expect(h.envs[0].spawnCalls).toHaveLength(2);
+    expect(h.envs[0].spawnCalls[0].command).toBe('npm run build');
+    expect(h.envs[0].spawnCalls[1].command).toBe('npm run serve');
+  });
+
+  it('skips buildCommand on a restart-server start (skipBuild)', async () => {
+    const h = makeHarness();
+
+    await h.runtime.start(
+      'session-skip-build',
+      makeProject({ buildCommand: 'npm run build', startCommand: 'npm run serve' }),
+      '/worktree',
+      { skipBuild: true },
+    );
+
+    // Only the server process spawned — the build was reused, not re-run.
+    expect(h.envs[0].spawnCalls).toHaveLength(1);
+    expect(h.envs[0].spawnCalls[0].command).toBe('npm run serve');
+  });
+
+  it('restartServer() is a skip-build start', async () => {
+    const h = makeHarness();
+
+    await h.runtime.restartServer(
+      'session-restart-server',
+      makeProject({ buildCommand: 'npm run build', startCommand: 'npm run serve' }),
+      '/worktree',
+    );
+
+    expect(h.envs[0].spawnCalls).toHaveLength(1);
+    expect(h.envs[0].spawnCalls[0].command).toBe('npm run serve');
+  });
+
+  it('fails the start and disposes the env when buildCommand exits non-zero', async () => {
+    const h = makeHarness({
+      envSetup: (env) => {
+        // The build spawn is FIRST; make it fail.
+        env.preExitNextSpawn = { code: 2, signal: null };
+      },
+    });
+
+    await expect(
+      h.runtime.start('session-build-fail', makeProject({ buildCommand: 'exit 2' }), '/worktree'),
+    ).rejects.toThrow(/build failed/);
+
+    expect(h.envs[0].disposed).toBe(true);
+    // The build was the only spawn; the start command never ran.
+    expect(h.envs[0].spawnCalls).toHaveLength(1);
+    expect(h.envs[0].spawnCalls[0].command).toBe('exit 2');
     const groups = h.db.prepare(`SELECT COUNT(*) AS n FROM worktree_preview_groups`).get() as {
       n: number;
     };

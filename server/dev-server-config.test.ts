@@ -38,6 +38,20 @@ describe('parseDevServerConfig — defaults', () => {
     expect(parseOk({ startCommand: '  yarn dev  ' }).startCommand).toBe('yarn dev');
   });
 
+  it('buildCommand is optional and undefined when unset', () => {
+    expect(parseOk({ startCommand: 'npm run dev' }).buildCommand).toBeUndefined();
+  });
+
+  it('trims and keeps an explicit buildCommand', () => {
+    expect(parseOk({ buildCommand: '  docker compose build  ' }).buildCommand).toBe(
+      'docker compose build',
+    );
+  });
+
+  it('rejects an empty (whitespace-only) buildCommand', () => {
+    expect(parseErr({ buildCommand: '   ' })).toMatch(/^prEnv\.devServer\.buildCommand/);
+  });
+
   it('promotes the first portMap entry to primary when none is marked', () => {
     const value = parseOk({
       portMap: [
