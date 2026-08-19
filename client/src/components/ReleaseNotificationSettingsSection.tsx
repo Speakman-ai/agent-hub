@@ -252,8 +252,9 @@ export default function ReleaseNotificationSettingsSection({
         {(loading || saving) && <Loader2 size={14} className="animate-spin text-gray-400" />}
       </div>
       <p className="text-xs text-gray-500 mb-3 max-w-2xl">
-        Guides the release digest tone and grouping. Generation stays limited to selected release
-        items, linked cards, support-ticket summaries, and deployment metadata.
+        Guides the release digest tone, audience, and grouping, including custom outlines such as
+        departments. Generation stays limited to selected release items, linked cards,
+        support-ticket summaries, and deployment metadata.
       </p>
 
       <textarea

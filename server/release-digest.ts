@@ -4,6 +4,7 @@ import type {
   DeploymentRow,
   SupportTicketReleaseState,
 } from './types.js';
+import { RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES } from './release-digest-prompt.js';
 import {
   buildFactBoundedReleaseDigestPrompt,
   getReleaseNotificationSettings,
@@ -19,6 +20,14 @@ export const RELEASE_DIGEST_SHORT_FIELD_MAX_BYTES = 300;
 export const RELEASE_DIGEST_LABEL_LIMIT = 20;
 export const RELEASE_DIGEST_LABEL_MAX_BYTES = 80;
 
+export const RELEASE_DIGEST_FACTS_PREAMBLE =
+  'Generate the release digest from this JSON facts object only:';
+
+export const RELEASE_DIGEST_GENERATION_INSTRUCTIONS = [
+  RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES,
+  'Return a customer-facing markdown email body. Do not include a code fence. Do not include a Subject line.',
+].join('\n');
+
 const TRUNCATED_SUFFIX = '...[truncated]';
 const REDACTED_EMAIL = '[redacted email]';
 const REDACTED_SECRET = '[redacted secret]';
@@ -33,7 +42,13 @@ export const EMPTY_RELEASE_DIGEST_MARKDOWN = [
   'No customer-facing release items were included in this production deployment.',
 ].join('\n');
 
+export type ReleaseDigestItemKind =
+  | 'support-ticket-resolutions'
+  | 'product-changes'
+  | 'other-customer-visible-changes';
+
 export interface ReleaseDigestFact {
+  kind: ReleaseDigestItemKind;
   card: {
     id: string;
     shortId: number | null;
@@ -54,7 +69,7 @@ export interface ReleaseDigestFact {
 }
 
 export interface ReleaseDigestGroup {
-  key: 'support-ticket-resolutions' | 'product-changes' | 'other-customer-visible-changes';
+  key: ReleaseDigestItemKind;
   label: string;
   itemIndexes: number[];
 }
@@ -127,7 +142,7 @@ function clipRequiredFactString(raw: string, maxBytes: number): string {
 }
 
 function itemFact(row: DeploymentReleaseItemDetailRow): ReleaseDigestFact {
-  return {
+  const fact = {
     card: {
       id: row.card_id,
       shortId: row.card_short_id,
@@ -161,9 +176,10 @@ function itemFact(row: DeploymentReleaseItemDetailRow): ReleaseDigestFact {
             }),
           },
   };
+  return { kind: classifyFact(fact), ...fact };
 }
 
-function classifyFact(fact: ReleaseDigestFact): ReleaseDigestGroup['key'] {
+function classifyFact(fact: Omit<ReleaseDigestFact, 'kind'>): ReleaseDigestItemKind {
   if (fact.supportTicket) return 'support-ticket-resolutions';
   const labels = new Set(fact.card.labels.map((label) => label.toLowerCase()));
   if (
@@ -186,8 +202,7 @@ function buildFactGroups(facts: ReleaseDigestFact[]): ReleaseDigestGroup[] {
   } satisfies Record<ReleaseDigestGroup['key'], string>;
   const groups = new Map<ReleaseDigestGroup['key'], number[]>();
   facts.forEach((fact, index) => {
-    const key = classifyFact(fact);
-    groups.set(key, [...(groups.get(key) ?? []), index]);
+    groups.set(fact.kind, [...(groups.get(fact.kind) ?? []), index]);
   });
   return (Object.keys(labels) as ReleaseDigestGroup['key'][])
     .map((key) => ({ key, label: labels[key], itemIndexes: groups.get(key) ?? [] }))
@@ -237,10 +252,10 @@ export function buildDeploymentReleaseDigestGenerationPrompt(args: {
   const prompt = [
     buildFactBoundedReleaseDigestPrompt(settings.releaseDigestPrompt),
     '',
-    'Generate the release digest from this JSON facts object only:',
+    RELEASE_DIGEST_FACTS_PREAMBLE,
     JSON.stringify(facts, null, 2),
     '',
-    'Return a customer-facing markdown email body. Do not include a code fence.',
+    RELEASE_DIGEST_GENERATION_INSTRUCTIONS,
   ].join('\n');
 
   return {

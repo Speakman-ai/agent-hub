@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runModelOnlyReleaseDigest } from './release-digest-model.js';
+import {
+  DEFAULT_RELEASE_DIGEST_MAX_TOKENS,
+  RELEASE_DIGEST_MODEL_ONLY_SYSTEM_PROMPT,
+  runModelOnlyReleaseDigest,
+} from './release-digest-model.js';
+import { RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES } from './release-digest-prompt.js';
 import type { AppConfig } from './types.js';
 
 describe('runModelOnlyReleaseDigest', () => {
@@ -33,6 +38,7 @@ describe('runModelOnlyReleaseDigest', () => {
     );
     expect(body).toMatchObject({
       model: 'gpt-4o-mini',
+      max_tokens: DEFAULT_RELEASE_DIGEST_MAX_TOKENS,
       messages: [
         expect.objectContaining({
           role: 'system',
@@ -41,6 +47,9 @@ describe('runModelOnlyReleaseDigest', () => {
         { role: 'user', content: 'Operator guidance plus release facts' },
       ],
     });
+    expect(body.max_tokens).toBeGreaterThanOrEqual(4096);
+    expect(body.messages[0].content).toBe(RELEASE_DIGEST_MODEL_ONLY_SYSTEM_PROMPT);
+    expect(body.messages[0].content).toContain(RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES);
     expect(body).not.toHaveProperty('tools');
     expect(body).not.toHaveProperty('cwd');
     expect(body).not.toHaveProperty('env');

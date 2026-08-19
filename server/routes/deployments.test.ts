@@ -53,10 +53,13 @@ import {
 } from '../release-notification-outbox.js';
 import {
   EMPTY_RELEASE_DIGEST_MARKDOWN,
+  RELEASE_DIGEST_FACTS_PREAMBLE,
+  RELEASE_DIGEST_GENERATION_INSTRUCTIONS,
   RELEASE_DIGEST_ITEM_LIMIT,
   RELEASE_DIGEST_TEXT_FIELD_MAX_BYTES,
   type ReleaseDigestRunner,
 } from '../release-digest.js';
+import { RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES } from '../release-digest-prompt.js';
 import createDeploymentRoutes, {
   buildDeploySetupKickoffPrompt,
   isDeploySetupWizardSession,
@@ -333,16 +336,18 @@ function insertReleaseCard(
 }
 
 function extractReleaseDigestFacts(prompt: string): {
+  releaseItems: Array<{ kind: string; card: { title: string } }>;
   groups: Array<{ key: string; label: string; itemIndexes: number[] }>;
   factLimits: { excludedReleaseItemCount: number };
 } {
-  const marker = 'Generate the release digest from this JSON facts object only:\n';
+  const marker = `${RELEASE_DIGEST_FACTS_PREAMBLE}\n`;
   const start = prompt.indexOf(marker);
   expect(start).toBeGreaterThanOrEqual(0);
   const jsonStart = start + marker.length;
-  const jsonEnd = prompt.indexOf('\n\nReturn a customer-facing markdown email body.', jsonStart);
+  const jsonEnd = prompt.indexOf(`\n\n${RELEASE_DIGEST_GENERATION_INSTRUCTIONS}`, jsonStart);
   expect(jsonEnd).toBeGreaterThan(jsonStart);
   return JSON.parse(prompt.slice(jsonStart, jsonEnd)) as {
+    releaseItems: Array<{ kind: string; card: { title: string } }>;
     groups: Array<{ key: string; label: string; itemIndexes: number[] }>;
     factLimits: { excludedReleaseItemCount: number };
   };
@@ -1029,7 +1034,10 @@ environments:
     expect(prompts[0]).toContain('Export fails');
     expect(prompts[0]).toContain('CSV export generated blank files for paid workspaces.');
     expect(prompts[0]).not.toContain('Internal migration');
+    expect(prompts[0]).toContain('not a required outline');
+    expect(prompts[0]).toContain('Account for every included release item');
     const facts = extractReleaseDigestFacts(prompts[0]);
+    expect(facts.releaseItems[0]?.kind).toBe('support-ticket-resolutions');
     expect(facts.groups).toEqual([
       {
         key: 'support-ticket-resolutions',
@@ -1044,6 +1052,90 @@ environments:
     });
     expect(response.body).not.toHaveProperty('prompt');
     expect(response.body).not.toHaveProperty('facts');
+  });
+
+  it('treats Hub groups as a hint so operator department grouping can be the outline', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'release-sha',
+      status: 'success',
+    });
+    const ticket = createSupportTicket({
+      projectId: PROJECT_ID,
+      subject: 'Comp report wrong value',
+      body: 'Boundary job showed $11200 instead of $5600',
+      type: 'bug',
+    });
+    recordSupportTicketInvestigation(ticket.id, {
+      summary: 'Sales comp report showed $11,200 for a Boundary job; correct value is $5,600.',
+    });
+    const ticketCardId = insertReleaseCard('release-digest-ticket', PROJECT_ID, {
+      supportTicketId: ticket.id,
+      title: 'Fix comp report for cancelled and recreated orders',
+      description: 'Sales comp now uses the recreated order value.',
+      labels: 'bug',
+    });
+    const draftingCardId = insertReleaseCard('release-digest-drafting', PROJECT_ID, {
+      title: 'Place LE/UE easement labels at the end of the line',
+      description: 'Easement labels render at the end of the line in Beyond CAD.',
+      labels: 'drafting',
+    });
+    const adminCardId = insertReleaseCard('release-digest-admin', PROJECT_ID, {
+      title: 'Revise Pricing and Delivery Estimates for Clarity',
+      description: 'Pricing and delivery estimate copy is clearer on order forms.',
+      labels: 'admin',
+    });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId: ticketCardId });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId: draftingCardId });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId: adminCardId });
+    updateReleaseNotificationSettings({
+      projectId: PROJECT_ID,
+      releaseDigestPrompt: [
+        'Split the digest by departments: Admin, Field, Drafting, Research.',
+        'This goes out to Acme employees from the Product Team.',
+      ].join('\n'),
+      updatedBy: 'admin-1',
+    });
+    const prompts: string[] = [];
+    const releaseDigestRunner: ReleaseDigestRunner = vi.fn(async ({ prompt }) => {
+      prompts.push(prompt);
+      return '## Drafting\n\nEasement labels now sit at the end of the line.';
+    });
+
+    const { app } = makeApp({ role: 'Admin', releaseDigestRunner });
+    await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest`)
+      .send({})
+      .expect(200);
+
+    expect(prompts[0]).toContain(
+      'Split the digest by departments: Admin, Field, Drafting, Research.',
+    );
+    expect(prompts[0]).toContain('This goes out to Acme employees from the Product Team.');
+    expect(prompts[0]).toContain(RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES);
+    expect(RELEASE_DIGEST_GENERATION_INSTRUCTIONS).toContain(
+      RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES,
+    );
+    expect(prompts[0]).toContain('not a required outline');
+    expect(prompts[0]).toContain(
+      'Do not copy those group labels as section headings when operator guidance specifies a different grouping',
+    );
+    expect(prompts[0]).toContain('Account for every included release item');
+    expect(prompts[0]).toContain('do not drop a distinct customer-visible change');
+    expect(prompts[0]).toContain('Do not include a Subject line');
+    expect(prompts[0]).toContain('Place LE/UE easement labels at the end of the line');
+    expect(prompts[0]).toContain('Revise Pricing and Delivery Estimates for Clarity');
+    const facts = extractReleaseDigestFacts(prompts[0]);
+    expect(facts.releaseItems.map((item) => item.kind)).toEqual([
+      'support-ticket-resolutions',
+      'other-customer-visible-changes',
+      'other-customer-visible-changes',
+    ]);
+    expect(facts.groups.map((group) => group.label)).toEqual([
+      'Support-ticket resolutions',
+      'Other customer-visible changes',
+    ]);
   });
 
   it('bounds oversized release digest facts before invoking the model', async () => {

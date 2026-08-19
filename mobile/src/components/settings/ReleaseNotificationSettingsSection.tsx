@@ -179,8 +179,9 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
         {(loading || saving) && <ActivityIndicator color={colors.gray400} size="small"/>}
       </View>
       <Text style={styles.subtitle}>
-        Guides release digest tone and grouping. Generation stays limited to release items, linked
-        cards, support-ticket summaries, and deployment metadata.
+        Guides release digest tone, audience, and grouping, including custom outlines such as
+        departments. Generation stays limited to release items, linked cards, support-ticket
+        summaries, and deployment metadata.
       </Text>
       <TextInput style={styles.textArea} value={value} onChangeText={setValue} multiline textAlignVertical="top" editable={!saving && !!projectId} maxLength={maxLength + 1} placeholder="Release digest guidance" placeholderTextColor={colors.gray600}/>
       <View style={styles.actionRow}>

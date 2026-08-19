@@ -7,8 +7,10 @@ import path from 'path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { initDb } from '../db.js';
 import type { Project, RouteDeps } from '../types.js';
+import { RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES } from '../release-digest-prompt.js';
 import {
   DEFAULT_RELEASE_DIGEST_PROMPT,
+  RELEASE_DIGEST_FACT_BOUNDED_SYSTEM_TEMPLATE,
   buildFactBoundedReleaseDigestPrompt,
 } from '../release-notification-settings.js';
 import createReleaseNotificationSettingsRoutes from './release-notification-settings.js';
@@ -249,5 +251,22 @@ describe('release notification settings routes', () => {
     expect(prompt).toContain('Operator guidance:\nUse friendly language.');
     expect(prompt).toContain('Do not expose secrets');
     expect(prompt).toContain('Allowed source facts:');
+  });
+
+  it('tells the model operator grouping wins over Hub group headings', () => {
+    const prompt = buildFactBoundedReleaseDigestPrompt(
+      'Split by departments: Admin, Field, Drafting.',
+    );
+    expect(prompt).toContain('Operator guidance:\nSplit by departments: Admin, Field, Drafting.');
+    expect(prompt).toContain(RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES);
+    expect(RELEASE_DIGEST_FACT_BOUNDED_SYSTEM_TEMPLATE).toContain(
+      RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES,
+    );
+    expect(prompt).toContain('not a required outline');
+    expect(prompt).toContain(
+      'Do not copy those group labels as section headings when operator guidance specifies a different grouping',
+    );
+    expect(prompt).toContain('every included release item');
+    expect(prompt).toContain('grounding or safety rules');
   });
 });
