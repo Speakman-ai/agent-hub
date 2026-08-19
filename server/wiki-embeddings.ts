@@ -12,8 +12,9 @@
  *   current text-only embedding model on `v1beta:batchEmbedContents`. The
  *   embedding spaces are not compatible across model families — any rows
  *   persisted under the old model name are stale (different dim) and are
- *   filtered out by `runSemantic` so they can't pollute results. Operators
- *   should re-run the backfill endpoint after deploying.
+ *   excluded in SQL (`WHERE model = ?`) so they are never loaded or decoded
+ *   on the retrieval hot path. Operators should re-run the backfill endpoint
+ *   after deploying.
  * - `rankHybrid` blends normalized FTS5 BM25 with cosine similarity (50/50 by
  *   default). Input is a list of FTS hits + a list of embedding rows for the
  *   project; output is a sorted list of (page, score, chunk) triples.
@@ -474,25 +475,23 @@ function runFts(projectId: string, query: string, limit: number): FtsHit[] {
 
 function runSemantic(projectId: string, queryVector: number[], limit: number): SemanticHit[] {
   const s = stmts as Stmts;
-  const rows = s.getWikiEmbeddingsByProject.all(projectId) as EmbeddingRow[];
+  // Filter to the active embedding model in SQL. Embedding spaces across Gemini
+  // models (e.g. text-embedding-004 → gemini-embedding-001) are incompatible and
+  // have different dimensionalities, so mismatched rows are dead weight until a
+  // backfill rewrites them under DEFAULT_MODEL. Excluding them in the query means
+  // we never load or decode their BLOBs on the retrieval hot path.
+  const rows = s.getWikiEmbeddingsByProject.all(projectId, DEFAULT_MODEL) as EmbeddingRow[];
   if (rows.length === 0) return [];
   const q = new Float32Array(queryVector);
-  // Skip rows persisted under a different embedding model — embedding spaces
-  // across Gemini models (e.g. text-embedding-004 → gemini-embedding-001) are
-  // incompatible and have different dimensionalities. Cosine similarity over
-  // mismatched lengths returns 0 anyway, so these rows are dead weight until a
-  // backfill rewrites them under DEFAULT_MODEL.
-  const scored = rows
-    .filter((r) => r.model === DEFAULT_MODEL)
-    .map((r) => {
-      const vec = decodeEmbedding(r.embedding);
-      return {
-        pageId: r.page_id,
-        chunkIdx: r.chunk_idx,
-        chunkText: r.chunk_text,
-        score: cosineSimilarity(q, vec),
-      };
-    });
+  const scored = rows.map((r) => {
+    const vec = decodeEmbedding(r.embedding);
+    return {
+      pageId: r.page_id,
+      chunkIdx: r.chunk_idx,
+      chunkText: r.chunk_text,
+      score: cosineSimilarity(q, vec),
+    };
+  });
   scored.sort((a, b) => b.score - a.score);
   // Over-fetch so rankHybrid still has good coverage per page after dedup.
   return scored.slice(0, Math.max(limit * 5, 25));

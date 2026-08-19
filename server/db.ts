@@ -5623,7 +5623,7 @@ function initDb(dataDir: string): void {
 
     // Wiki embeddings
     getWikiEmbeddingsByProject: db.prepare(
-      'SELECT page_id, chunk_idx, chunk_text, embedding, model FROM wiki_embeddings WHERE project_id = ?',
+      'SELECT page_id, chunk_idx, chunk_text, embedding, model FROM wiki_embeddings WHERE project_id = ? AND model = ?',
     ),
     getWikiEmbeddingsByPage: db.prepare(
       'SELECT page_id, chunk_idx, chunk_text, embedding, model FROM wiki_embeddings WHERE page_id = ? ORDER BY chunk_idx ASC',
@@ -5661,7 +5661,7 @@ function initDb(dataDir: string): void {
     ),
     getCodeEmbeddingsByProject: db.prepare(
       `SELECT rowid, file_path, chunk_idx, chunk_text, start_line, end_line, embedding, model
-       FROM code_chunks WHERE project_id = ?`,
+       FROM code_chunks WHERE project_id = ? AND model = ?`,
     ),
     getCodeFileHashes: db.prepare(
       'SELECT file_path, file_hash FROM code_chunks WHERE project_id = ? GROUP BY file_path',

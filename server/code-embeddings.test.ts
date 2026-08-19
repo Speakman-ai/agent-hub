@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -10,7 +11,14 @@ import {
   searchCode,
   countProjectCodeChunks,
 } from './code-embeddings.js';
-import { setEmbedClient, type EmbedClient, type EmbeddingVector } from './wiki-embeddings.js';
+import {
+  setEmbedClient,
+  encodeEmbedding,
+  DEFAULT_MODEL,
+  type EmbedClient,
+  type EmbeddingVector,
+} from './wiki-embeddings.js';
+import { getStmts } from './db.js';
 
 // ─── Deterministic mock embedder ────────────────────────────────────
 // Maps text → a small bag-of-words vector over a fixed vocabulary so cosine
@@ -264,5 +272,59 @@ describe('indexProjectCode pruning safety (truncated scans)', () => {
     const r = await indexProjectCode(projectId, root, { maxFiles: 0 });
     expect(r.removed).toBe(0);
     expect(countProjectCodeChunks(projectId)).toBe(before);
+  });
+});
+
+describe('searchCode semantic skips stale-model rows in SQL', () => {
+  const projectId = `code-model-filter-${randomUUID().slice(0, 8)}`;
+  const origKey = process.env.GEMINI_API_KEY;
+
+  afterAll(() => {
+    if (origKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = origKey;
+    const s = getStmts();
+    s.deleteCodeChunksByFile.run(projectId, 'src/live.ts');
+    s.deleteCodeChunksByFile.run(projectId, 'src/stale.ts');
+  });
+
+  it('does not return a perfect-match chunk stored under a retired embedding model', async () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    const s = getStmts();
+    const queryVec = [1, 0, 0];
+    s.insertCodeChunk.run(
+      projectId,
+      'src/live.ts',
+      0,
+      'export const live = 1;',
+      1,
+      1,
+      'live-hash',
+      encodeEmbedding([0.2, 0.8, 0]),
+      DEFAULT_MODEL,
+    );
+    s.insertCodeChunk.run(
+      projectId,
+      'src/stale.ts',
+      0,
+      'export const stale = 1;',
+      1,
+      1,
+      'stale-hash',
+      encodeEmbedding(queryVec),
+      'text-embedding-004',
+    );
+
+    const results = await searchCode(projectId, 'anything', {
+      mode: 'semantic',
+      limit: 5,
+      client: {
+        async embedTexts() {
+          return [{ values: queryVec }];
+        },
+      },
+    });
+
+    expect(results.map((r) => r.filePath)).toEqual(['src/live.ts']);
+    expect(results.some((r) => r.filePath === 'src/stale.ts')).toBe(false);
   });
 });

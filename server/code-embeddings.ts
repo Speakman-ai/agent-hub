@@ -573,20 +573,24 @@ function runCodeSemantic(
   queryVector: number[],
   limit: number,
 ): SemanticCodeHit[] {
-  const rows = (stmts as Stmts).getCodeEmbeddingsByProject.all(projectId) as CodeEmbeddingRow[];
+  // Filter to the active embedding model in SQL so mismatched-model rows are
+  // never loaded or decoded on the retrieval hot path (see runSemantic in
+  // wiki-embeddings.ts for the rationale on incompatible embedding spaces).
+  const rows = (stmts as Stmts).getCodeEmbeddingsByProject.all(
+    projectId,
+    DEFAULT_MODEL,
+  ) as CodeEmbeddingRow[];
   if (rows.length === 0) return [];
   const q = new Float32Array(queryVector);
-  const scored = rows
-    .filter((r) => r.model === DEFAULT_MODEL)
-    .map((r) => ({
-      rowid: r.rowid,
-      filePath: r.file_path,
-      chunkIdx: r.chunk_idx,
-      startLine: r.start_line,
-      endLine: r.end_line,
-      text: r.chunk_text,
-      score: cosineSimilarity(q, decodeEmbedding(r.embedding)),
-    }));
+  const scored = rows.map((r) => ({
+    rowid: r.rowid,
+    filePath: r.file_path,
+    chunkIdx: r.chunk_idx,
+    startLine: r.start_line,
+    endLine: r.end_line,
+    text: r.chunk_text,
+    score: cosineSimilarity(q, decodeEmbedding(r.embedding)),
+  }));
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, Math.max(limit * 5, 25));
 }

@@ -2928,15 +2928,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const maxWikiSession = orchestrationBudgets.maxWikiRagCallsPerSession;
 
       if (projectId && !isAutoContinuation) {
-        const wikiRag = await runWikiHybridRagForUserTurn(projectId, content, {
-          wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
-            session!.wiki_hybrid_rag_consumed,
-            session!.wiki_hybrid_rag_budget_version,
-            maxWikiSession,
-          ),
-          maxCallsPerSession: maxWikiSession,
-          slashSkillActive: !!slashResult,
-        });
+        // Wiki-RAG and code-RAG each issue an independent query-embedding round
+        // trip to Gemini and touch disjoint tables, so run them concurrently
+        // instead of back-to-back. Side effects (prompt suffix, budget
+        // accounting) are applied sequentially after both settle.
+        const [wikiRag, codeRag] = await Promise.all([
+          runWikiHybridRagForUserTurn(projectId, content, {
+            wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
+              session!.wiki_hybrid_rag_consumed,
+              session!.wiki_hybrid_rag_budget_version,
+              maxWikiSession,
+            ),
+            maxCallsPerSession: maxWikiSession,
+            slashSkillActive: !!slashResult,
+          }),
+          // Code-RAG: hybrid retrieval over the project's indexed source. No-ops
+          // (no embedding call) unless the project has been indexed and budget
+          // remains. Mirrors the wiki-RAG consumption accounting.
+          runCodeRagForUserTurn(projectId, content, {
+            codeRagUsedCount: session!.code_rag_consumed ?? 0,
+            maxCallsPerSession: MAX_CODE_RAG_CALLS_PER_SESSION,
+            slashSkillActive: !!slashResult,
+          }),
+        ]);
         if (wikiRag.promptSuffix) {
           enrichedPrompt += wikiRag.promptSuffix;
         }
@@ -2965,14 +2979,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           }
         }
 
-        // Code-RAG: hybrid retrieval over the project's indexed source. No-ops
-        // (no embedding call) unless the project has been indexed and budget
-        // remains. Mirrors the wiki-RAG consumption accounting.
-        const codeRag = await runCodeRagForUserTurn(projectId, content, {
-          codeRagUsedCount: session!.code_rag_consumed ?? 0,
-          maxCallsPerSession: MAX_CODE_RAG_CALLS_PER_SESSION,
-          slashSkillActive: !!slashResult,
-        });
         if (codeRag.promptSuffix) {
           enrichedPrompt += codeRag.promptSuffix;
         }

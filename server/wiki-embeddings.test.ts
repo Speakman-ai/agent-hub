@@ -1,4 +1,5 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
+import { randomUUID } from 'crypto';
 import {
   chunkMarkdown,
   cosineSimilarity,
@@ -8,9 +9,11 @@ import {
   decodeEmbedding,
   defaultEmbedClient,
   DEFAULT_MODEL,
+  searchWiki,
   type FtsHit,
   type SemanticHit,
 } from './wiki-embeddings.js';
+import { getStmts } from './db.js';
 import type { WikiPageRow } from './types.js';
 
 function mkPage(id: string, title = 'T', slug = 's'): WikiPageRow {
@@ -349,5 +352,78 @@ describe('defaultEmbedClient', () => {
     const out = await defaultEmbedClient.embedTexts([]);
     expect(out).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('searchWiki semantic skips stale-model rows in SQL', () => {
+  const projectId = `wiki-model-filter-${randomUUID().slice(0, 8)}`;
+  const livePageId = randomUUID();
+  const stalePageId = randomUUID();
+  const origKey = process.env.GEMINI_API_KEY;
+
+  afterAll(() => {
+    if (origKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = origKey;
+    const s = getStmts();
+    s.deleteWikiEmbeddingsByPage.run(livePageId);
+    s.deleteWikiEmbeddingsByPage.run(stalePageId);
+    s.deleteWikiPage.run(projectId, 'live-page');
+    s.deleteWikiPage.run(projectId, 'stale-page');
+  });
+
+  it('does not return a perfect-match row stored under a retired embedding model', async () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    const s = getStmts();
+    s.createWikiPage.run(
+      livePageId,
+      projectId,
+      'Live page',
+      'live-page',
+      'current model chunk',
+      'general',
+      'test',
+    );
+    s.createWikiPage.run(
+      stalePageId,
+      projectId,
+      'Stale page',
+      'stale-page',
+      'retired model chunk',
+      'general',
+      'test',
+    );
+
+    // Query + stale row share [1, 0, 0] (cosine = 1). The live row is a weaker
+    // match. If stale-model rows still reach the JS cosine loop they win.
+    const queryVec = [1, 0, 0];
+    s.upsertWikiEmbedding.run(
+      livePageId,
+      projectId,
+      0,
+      'current model chunk',
+      encodeEmbedding([0.2, 0.8, 0]),
+      DEFAULT_MODEL,
+    );
+    s.upsertWikiEmbedding.run(
+      stalePageId,
+      projectId,
+      0,
+      'retired model chunk',
+      encodeEmbedding(queryVec),
+      'text-embedding-004',
+    );
+
+    const results = await searchWiki(projectId, 'anything', {
+      mode: 'semantic',
+      limit: 5,
+      client: {
+        async embedTexts() {
+          return [{ values: queryVec }];
+        },
+      },
+    });
+
+    expect(results.map((r) => r.id)).toEqual([livePageId]);
+    expect(results.some((r) => r.id === stalePageId)).toBe(false);
   });
 });
