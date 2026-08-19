@@ -303,6 +303,27 @@ describe('eventsToBlocks — thinking coalescing', () => {
         expect(blocks[0].event.text).toBe('The user said Hi');
         expect(blocks[1].kind).toBe('text');
     });
+
+    it('keeps Grok inter-tool narration out of the regular reply after a last-segment final', () => {
+        const blocks = eventsToBlocks(wrap([
+            { type: 'thinking', text: 'planning the commit' },
+            { type: 'assistant_text', text: "I'll inspect the repo.", partial: true },
+            { type: 'tool_use', id: 't1', tool: 'Read', input: { path: 'a.ts' } },
+            { type: 'tool_result', toolUseId: 't1', output: 'ok', isError: false },
+            { type: 'thinking', text: 'ready to answer' },
+            { type: 'assistant_text', text: 'The footer now has tabs.', partial: true },
+            {
+                type: 'assistant_text',
+                text: 'The footer now has tabs.',
+                partial: false,
+                replacesAssistantBuffer: true,
+            },
+        ]));
+        const text = blocks.filter((b: any) => b.kind === 'text');
+        expect(text).toHaveLength(1);
+        expect(text[0].text).toBe('The footer now has tabs.');
+        expect(text[0].text).not.toContain("I'll inspect");
+    });
 });
 describe('describeTool', () => {
     it('matches web headlines for Read/Grep', () => {

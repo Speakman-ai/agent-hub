@@ -1737,6 +1737,29 @@ describe('createStreamParser — Grok Build CLI', () => {
     expect(events).toHaveLength(0);
   });
 
+  it('does not fold earlier ACP narration into the finalized reply after tools', () => {
+    const events = parse([
+      update('agent_thought_chunk', { content: { type: 'text', text: 'planning' } }),
+      update('agent_message_chunk', { content: { type: 'text', text: "I'll inspect the repo." } }),
+      update('tool_call', { toolCallId: 't1', title: 'read_file', rawInput: { path: 'a.ts' } }),
+      update('tool_call_update', {
+        toolCallId: 't1',
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'ok' } }],
+      }),
+      update('agent_message_chunk', {
+        content: { type: 'text', text: 'The footer now has tabs.' },
+      }),
+      JSON.stringify({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } }),
+    ]);
+    const finals = events.filter(
+      (e) => e.type === 'assistant_text' && (e as { partial?: boolean }).partial === false,
+    ) as Array<{ text: string }>;
+    expect(finals).toHaveLength(1);
+    expect(finals[0].text).toBe('The footer now has tabs.');
+    expect(finals[0].text).not.toContain("I'll inspect");
+  });
+
   it('finalizes on the terminal stopReason response with a result event', () => {
     const events = parse([
       update('agent_message_chunk', { content: { type: 'text', text: 'Hi there' } }),
@@ -1806,6 +1829,47 @@ describe('createStreamParser — Grok Build CLI', () => {
       expect((events[0] as { text: string }).text).toBe('ponder');
       expect((events[1] as { text: string }).text).toBe('Hel');
       expect((events[1] as { partial: boolean }).partial).toBe(true);
+    });
+
+    it('treats native thinking frames as thought aliases', () => {
+      const events = parse([JSON.stringify({ type: 'thinking', data: 'pondering' })]);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('thinking');
+      expect((events[0] as { text: string }).text).toBe('pondering');
+    });
+
+    it('does not fold earlier narration into the finalized reply after tools', () => {
+      // Grok 4.6 streams a short public summary as `text` before each tool,
+      // then the real user-facing reply after the last tool. Finalizing the
+      // whole accumulator dumped those summaries into the regular reply box.
+      const events = parse([
+        JSON.stringify({ type: 'thought', data: 'planning the commit' }),
+        JSON.stringify({ type: 'text', data: "I'll inspect the repo." }),
+        JSON.stringify({
+          type: 'tool_call',
+          toolCallId: 't1',
+          title: 'read_file',
+          rawInput: { path: 'a.ts' },
+        }),
+        JSON.stringify({
+          type: 'tool_call_update',
+          toolCallId: 't1',
+          status: 'completed',
+          content: [{ type: 'content', content: { type: 'text', text: 'ok' } }],
+        }),
+        JSON.stringify({ type: 'thought', data: 'ready to answer' }),
+        JSON.stringify({ type: 'text', data: 'The footer now has tabs.' }),
+        JSON.stringify({ type: 'end', stopReason: 'EndTurn' }),
+      ]);
+      const finals = events.filter(
+        (e) => e.type === 'assistant_text' && (e as { partial?: boolean }).partial === false,
+      ) as Array<{ text: string; replacesAssistantBuffer?: boolean }>;
+      expect(finals).toHaveLength(1);
+      expect(finals[0].text).toBe('The footer now has tabs.');
+      expect(finals[0].text).not.toContain("I'll inspect");
+      expect(finals[0].replacesAssistantBuffer).toBe(true);
+      const result = events.find((e) => e.type === 'result') as { text: string };
+      expect(result.text).toBe('The footer now has tabs.');
     });
 
     it('finalizes on native end events with stopReason EndTurn', () => {

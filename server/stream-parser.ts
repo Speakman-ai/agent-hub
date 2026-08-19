@@ -287,8 +287,10 @@ export function createStreamParser(engine: string): StreamParser {
   /** Args emitted on `started` when we did not defer — used to upgrade on `completed`. */
   const cursorFileToolStartedInputs = new Map<string, Record<string, unknown>>();
   // Grok streaming-json is ACP JSON-RPC notifications: `agent_message_chunk`
-  // text arrives as token-level deltas. We accumulate the full message so the
-  // terminal stop event can run ask/step extraction over the whole thing.
+  // text arrives as token-level deltas. Accumulate only the *current* burst
+  // (text since the last tool) so the terminal stop event can run ask/step
+  // extraction over the user-facing reply without folding earlier narration
+  // into the stored message.
   const grokAgentMessage = { text: '' };
   const normalize: NormalizeFn =
     engine === 'cursor-agent'
@@ -1071,6 +1073,7 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
 //
 // **Native NDJSON** (grok-composer / current builds):
 //   { "type":"thought", "data":"..." }  — reasoning delta
+//   { "type":"thinking","data":"..." }  — same as thought (some CLI builds)
 //   { "type":"text",    "data":"..." }  — assistant text delta
 //   { "type":"end",     "stopReason":"EndTurn", "sessionId":"..." }
 //
@@ -1100,6 +1103,10 @@ function finalizeGrokAgentMessageTurn(
   stopReason: string | null,
   usage?: Record<string, unknown>,
 ): StreamEvent[] {
+  // Only the burst since the last tool. Earlier `text` / `agent_message_chunk`
+  // deltas already streamed as partial assistant_text; concatenating them here
+  // dumped thinking-style narration into the regular reply (and the tail
+  // then hid those partials behind this one frame).
   const finalText = agentMessage.text;
   agentMessage.text = '';
   const out: StreamEvent[] = [];
@@ -1182,6 +1189,13 @@ function finalizeGrokError(agentMessage: { text: string }, message: string): Str
 // `rawInput`, and a terminal `status` + `content`. These two helpers accept
 // whichever object holds those fields (the ACP `update` or the raw native line)
 // so the two shapes normalize identically.
+function beginGrokToolCall(agentMessage: { text: string }): void {
+  // Tool calls bound a Grok text burst. Drop the accumulator so `end` / the
+  // JSON-RPC stopReason finalizes only the reply after the last tool, not
+  // every "I'll inspect X" narration from earlier in the turn.
+  agentMessage.text = '';
+}
+
 function grokToolCallEvents(src: Record<string, unknown>): StreamEvent[] {
   const id =
     (src.toolCallId as string) ?? (src.tool_call_id as string) ?? simpleHash(JSON.stringify(src));
@@ -1233,7 +1247,8 @@ function normalizeGrokNativeStream(
     return null;
   }
   switch (kind) {
-    case 'thought': {
+    case 'thought':
+    case 'thinking': {
       const chunk = grokNativeStreamChunk(raw);
       return chunk ? [{ type: 'thinking', text: chunk }] : [];
     }
@@ -1249,6 +1264,7 @@ function normalizeGrokNativeStream(
     // read/grep/exec fell through to the `unhandled grok event` placeholder and
     // flooded the session tail.
     case 'tool_call':
+      beginGrokToolCall(agentMessage);
       return grokToolCallEvents(raw);
     case 'tool_call_update':
       return grokToolCallUpdateEvents(raw);
@@ -1328,6 +1344,7 @@ function normalizeGrok(
         return [{ type: 'thinking', text: contentText }];
       }
       case 'tool_call':
+        beginGrokToolCall(agentMessage);
         return grokToolCallEvents(update);
       case 'tool_call_update':
         return grokToolCallUpdateEvents(update);

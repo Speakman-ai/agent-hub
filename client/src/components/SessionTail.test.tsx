@@ -1109,6 +1109,28 @@ describe('eventsToBlocks — thinking coalescing', () => {
     expect(thinking[0].event.text).toBe('first thought');
     expect(thinking[1].event.text).toBe('second thought');
   });
+
+  it('keeps Grok inter-tool narration out of the regular reply after a last-segment final', () => {
+    const events = wrap([
+      { type: 'thinking', text: 'planning the commit' },
+      { type: 'assistant_text', text: "I'll inspect the repo.", partial: true },
+      { type: 'tool_use', id: 't1', tool: 'Read', input: { path: 'a.ts' } },
+      { type: 'tool_result', toolUseId: 't1', output: 'ok', isError: false },
+      { type: 'thinking', text: 'ready to answer' },
+      { type: 'assistant_text', text: 'The footer now has tabs.', partial: true },
+      {
+        type: 'assistant_text',
+        text: 'The footer now has tabs.',
+        partial: false,
+        replacesAssistantBuffer: true,
+      },
+    ]);
+    const blocks = eventsToBlocks(events);
+    const text = blocks.filter((b: any) => b.kind === 'text');
+    expect(text).toHaveLength(1);
+    expect(text[0].text).toBe('The footer now has tabs.');
+    expect(text[0].text).not.toContain("I'll inspect");
+  });
 });
 
 describe('SessionTail — live header identity', () => {
