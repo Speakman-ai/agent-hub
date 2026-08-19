@@ -29,7 +29,7 @@
  */
 
 import type { ChildProcess } from 'child_process';
-import { spawn, execFile } from 'child_process';
+import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { wrapHostChildProcess, type ActiveChatProcess } from '../active-chat-process.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
@@ -74,6 +74,8 @@ import type {
   SessionRow,
   Stmts,
 } from '../types.js';
+import { createCursorChatBounded } from '../cursor-create-chat.js';
+import { warmCursorAuthForSpawn } from '../cursor-auth-warm.js';
 
 /** Wall-clock cap on a single reviewer turn (ms). */
 export const REVIEWER_TURN_TIMEOUT_MS_DEFAULT = 10 * 60 * 1000;
@@ -408,6 +410,8 @@ export async function runReviewerTurn(
           reviewerId: reviewer.id,
           assistantMsgId,
           config,
+          ownerUserId: roomOwnerId,
+          dataDir: config.dataDir,
         });
         succeeded = true;
       } catch (err: unknown) {
@@ -770,6 +774,9 @@ interface OneTurnArgs {
   reviewerId: string;
   assistantMsgId: string;
   config?: Pick<AppConfig, 'engineValidModels' | 'engineDefaultModels'>;
+  /** Reviewer spawn owner + data dir — used to warm Cursor's OAuth token. */
+  ownerUserId?: string | null;
+  dataDir?: string | null;
 }
 
 /**
@@ -784,6 +791,15 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
     const planAndSpawn = async (): Promise<void> => {
       let cursorChatId: string | null = null;
       if (args.engine === 'cursor-agent') {
+        // Cursor renews its OAuth token only as a side effect of
+        // `cursor-agent status`, never on `create-chat` / `-p`. Warm it so an
+        // expired-but-refreshable login self-heals instead of failing the
+        // review. Mirrors `chat.ts` and `design-chat.ts`.
+        await warmCursorAuthForSpawn({
+          cursorBin: args.bins.cursor,
+          userId: args.ownerUserId ?? null,
+          dataDir: args.dataDir ?? null,
+        });
         try {
           cursorChatId = await createCursorChat(args.bins.cursor, args.cwd, args.spawnEnv);
         } catch (err) {
@@ -959,18 +975,9 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
 }
 
 function createCursorChat(cursorBin: string, cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(cursorBin, ['create-chat'], { cwd, env }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
-        return;
-      }
-      const id = (stdout || '').trim().split(/\s+/).pop();
-      if (!id) {
-        reject(new Error('cursor create-chat returned no id'));
-        return;
-      }
-      resolve(id);
-    });
-  });
+  // Bounded: an unbounded exec strands the whole Finalize review when the
+  // Cursor CLI wedges (an expired login reproduces it) — the run then sits
+  // until the 60-minute Finalize timeout instead of erroring. See
+  // `cursor-create-chat.ts`.
+  return createCursorChatBounded(cursorBin, { cwd, env });
 }

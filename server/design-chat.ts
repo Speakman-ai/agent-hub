@@ -12,7 +12,7 @@
  * After each assistant turn we persist the message, then broadcast both
  * `design_message_added` (chat pane) and `design_updated` (iframe reload).
  */
-import { spawn, execFile, type ChildProcess } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
@@ -29,6 +29,8 @@ import { getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
 import { createStreamParser } from './stream-parser.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
+import { createCursorChatBounded } from './cursor-create-chat.js';
+import { warmCursorAuthForSpawn } from './cursor-auth-warm.js';
 import { applyAssistantTextChunk, accumulateAssistantStream } from './assistant-stream-buffer.js';
 import {
   normalizeDesignEngine,
@@ -101,21 +103,9 @@ export function initDesignChat(d: DesignChatDeps): void {
 // the same userId-aware env to both so the chat id + resume share the
 // same HOME tree.
 function createDesignCursorChat(cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
-  const CURSOR_BIN = getDeps().getCursorBin();
-  return new Promise((resolve, reject) => {
-    execFile(CURSOR_BIN, ['create-chat'], { cwd, env }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
-        return;
-      }
-      const id = (stdout || '').trim().split(/\s+/).pop();
-      if (!id) {
-        reject(new Error('cursor create-chat returned no id'));
-        return;
-      }
-      resolve(id);
-    });
-  });
+  // Bounded: an unbounded exec strands the design turn when the Cursor CLI
+  // wedges (an expired login reproduces it). See `cursor-create-chat.ts`.
+  return createCursorChatBounded(getDeps().getCursorBin(), { cwd, env });
 }
 
 // ─── Cancel ────────────────────────────────────────────────────────────
@@ -306,6 +296,17 @@ export async function handleDesignChat(
         sessionId: `design:${designId}`,
       });
       mergeProjectAwsSpawnEnv(spawnEnv, linkedProject);
+    }
+
+    if (engine === 'cursor-agent') {
+      // Cursor renews its OAuth token only as a side effect of
+      // `cursor-agent status`, never on `create-chat` / `-p`. Warm it so an
+      // expired-but-refreshable login self-heals instead of failing the turn.
+      await warmCursorAuthForSpawn({
+        cursorBin: getDeps().getCursorBin(),
+        userId: designOwnerId,
+        dataDir: config.dataDir,
+      });
     }
 
     if (engine === 'cursor-agent' && !engineSessionId) {

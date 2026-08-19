@@ -1,4 +1,4 @@
-import { spawn, execFile, execSync } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
 import path from 'path';
@@ -105,6 +105,8 @@ import {
   buildNoFailoverEngineNotice,
   formatFailoverLogLine,
 } from './engine-failover.js';
+import { createCursorChatBounded } from './cursor-create-chat.js';
+import { warmCursorAuthForSpawn } from './cursor-auth-warm.js';
 import { probeAllEngineAvailability, type SupportedEngine } from './engine-availability.js';
 import { sessionHasActiveUserPreview } from './preview/preview-worktree-sync.js';
 import { syncPreviewAfterWorktreeTurnIfDirty } from './code-change-tracker.js';
@@ -2161,21 +2163,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
   }
 
   function createCursorChat(cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
-    const CURSOR_BIN = getCursorBin();
-    return new Promise((resolve, reject) => {
-      execFile(CURSOR_BIN, ['create-chat'], { cwd, env }, (err, stdout, stderr) => {
-        if (err) {
-          reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
-          return;
-        }
-        const id = (stdout || '').trim().split(/\s+/).pop();
-        if (!id) {
-          reject(new Error('cursor create-chat returned no id'));
-          return;
-        }
-        resolve(id);
-      });
-    });
+    // Bounded: an unbounded exec here strands the whole turn when the Cursor
+    // CLI wedges (expired login reproduces it). See `cursor-create-chat.ts`.
+    return createCursorChatBounded(getCursorBin(), { cwd, env });
   }
 
   /**
@@ -3347,6 +3337,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           return;
         }
         throw err;
+      }
+
+      if (engine === 'cursor-agent') {
+        // Cursor renews its OAuth token only as a side effect of
+        // `cursor-agent status` — never on `-p` / `create-chat`. Warm it here
+        // so an expired-but-refreshable login self-heals instead of 401ing
+        // into an engine failover (or wedging create-chat).
+        await warmCursorAuthForSpawn({
+          cursorBin: getCursorBin(),
+          userId: credsOwnerId,
+          dataDir: config.dataDir,
+        });
       }
 
       if (engine === 'cursor-agent' && !engineSessionId) {

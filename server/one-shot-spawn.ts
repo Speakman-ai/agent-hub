@@ -40,6 +40,7 @@ import { appendCodexShellEnvironmentPolicyArgs } from './codex-exec-sandbox.js';
 import { resolveGrokSpawnModel } from './config.js';
 import type { AppConfig } from './types.js';
 import { resolveCodexHomeForProbe } from './host-cli-home.js';
+import { warmCursorAuthForHome } from './cursor-auth-warm.js';
 import type { SupportedEngine } from './engine-availability.js';
 
 export interface OneShotSpawnInput {
@@ -178,10 +179,17 @@ export function runOneShotPrompt(
   cfg: AppConfig,
 ): Promise<OneShotDetailed>;
 export function runOneShotPrompt(input: RunOneShotOptions, cfg: AppConfig): Promise<string>;
-export function runOneShotPrompt(
+export async function runOneShotPrompt(
   input: RunOneShotOptions,
   cfg: AppConfig,
 ): Promise<string | OneShotDetailed> {
+  // Cursor renews its OAuth token only as a side effect of `cursor-agent
+  // status`, never on the `--print` path below. Warm it under the spawn env's
+  // pinned HOME so an expired-but-refreshable login self-heals instead of
+  // burning a failover hop. Never throws.
+  if (input.engine === 'cursor-agent') {
+    await warmCursorAuthForHome({ cursorBin: cfg.cursorBin, home: input.env?.HOME });
+  }
   return new Promise((resolve, reject) => {
     if (!existsSync(input.cwd)) {
       return reject(

@@ -1,7 +1,7 @@
 /**
  * Multi-agent session orchestration — advisor ping-pong with primary executor.
  */
-import { execFile, spawn, type ChildProcess } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
@@ -32,6 +32,8 @@ import type {
   ChatMessage,
 } from './types.js';
 import { findAgent } from './project-model.js';
+import { createCursorChatBounded } from './cursor-create-chat.js';
+import { warmCursorAuthForSpawn } from './cursor-auth-warm.js';
 
 interface MultiAgentDeps {
   stmts: Stmts;
@@ -128,20 +130,11 @@ function createAdvisorCursorChat(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(cursorBin, ['create-chat'], { cwd, env }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
-        return;
-      }
-      const id = (stdout || '').trim().split(/\s+/).pop();
-      if (!id) {
-        reject(new Error('cursor create-chat returned no id'));
-        return;
-      }
-      resolve(id);
-    });
-  });
+  // Bounded: an unbounded exec strands the whole conference round when the
+  // Cursor CLI wedges (an expired login reproduces it). The awaiting promise
+  // here gates every remaining planned turn, so a hang costs more than one
+  // advisor. See `cursor-create-chat.ts`.
+  return createCursorChatBounded(cursorBin, { cwd, env });
 }
 
 export function handleMultiAgentCancel(sessionId: string): void {
@@ -481,6 +474,15 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     const planAndSpawn = async (): Promise<void> => {
       let cursorChatId: string | null = null;
       if (engine === 'cursor-agent') {
+        // Cursor renews its OAuth token only as a side effect of
+        // `cursor-agent status`, never on `create-chat` / `-p`. Warm it so an
+        // expired-but-refreshable login self-heals instead of failing the
+        // round. Mirrors `chat.ts` and `design-chat.ts`.
+        await warmCursorAuthForSpawn({
+          cursorBin: d.getCursorBin(),
+          userId: roomOwnerId,
+          dataDir: config.dataDir,
+        });
         try {
           cursorChatId = await createAdvisorCursorChat(d.getCursorBin(), cwd, spawnEnv);
         } catch (err: unknown) {
