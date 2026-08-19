@@ -137,3 +137,40 @@ resource "terraform_data" "finalize_quota_guard" {
     }
   }
 }
+
+# Fleet bucket names arrive as TF_VAR_* from repo Variables
+# (FINALIZE_WORKTREE_BUCKET_NAME / FINALIZE_CACHE_BUCKET_NAME). release-all.yml
+# treats them as optional and skips the export when blank, so a missing Variable
+# silently falls through to the "" default. That degrades quietly instead of
+# failing: the bucket resources already hold the real name in state, so an empty
+# `bucket = ""` is read as omit-not-rename and nothing is replaced — the plan
+# looks clean. What actually lands is an empty interpolation everywhere the name
+# is a string: the Hub env gets `FINALIZE_WORKTREE_BUCKET=`, and both S3 policies
+# get `arn:aws:s3:::/*`. resolveBundleStore() reads the empty bucket as "no
+# store", so every remote job ships without a worktree bundle and the fleet runs
+# control-plane-only until someone re-applies with the Variable set.
+#
+# Fail the plan instead. release-all.yml's comment already promises the fleet
+# bucket names "have downstream Terraform guards"; this is that guard.
+resource "terraform_data" "finalize_bucket_name_guard" {
+  count = var.enable_finalize_runners ? 1 : 0
+
+  # Both names are inputs so a change on either plans a change here, which is
+  # what guarantees the preconditions are evaluated in exactly the scenario they
+  # exist for rather than being skipped as a no-op resource.
+  input = {
+    worktree_bucket_name = var.finalize_worktree_bucket_name
+    cache_bucket_name    = var.finalize_cache_bucket_name
+  }
+
+  lifecycle {
+    precondition {
+      condition     = trimspace(var.finalize_worktree_bucket_name) != ""
+      error_message = "enable_finalize_runners is true but finalize_worktree_bucket_name is empty. Applying would write FINALIZE_WORKTREE_BUCKET= into the Hub env and arn:aws:s3:::/* into the worktree S3 policies, leaving the fleet unable to fetch worktree bundles (every remote job degrades to control-plane-only). Set the FINALIZE_WORKTREE_BUCKET_NAME repo Variable (exported as TF_VAR_finalize_worktree_bucket_name) before applying."
+    }
+    precondition {
+      condition     = trimspace(var.finalize_cache_bucket_name) != ""
+      error_message = "enable_finalize_runners is true but finalize_cache_bucket_name is empty. Applying would write arn:aws:s3:::/* into the fleet task-role cache policy and leave the warm cache unusable. Set the FINALIZE_CACHE_BUCKET_NAME repo Variable (exported as TF_VAR_finalize_cache_bucket_name) before applying."
+    }
+  }
+}
