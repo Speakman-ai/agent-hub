@@ -444,6 +444,33 @@ describe('runAgentJob', () => {
     expect(events[0]).toBe('start:/ws/repo');
   });
 
+  it('skips chown (no agent_lost) when there is no worktreeRef to materialize', async () => {
+    // `clear` already `sudo rm -rf`'d /ws/repo. If materialize is skipped the dest
+    // no longer exists, so an unconditional `sudo chown -R` would fail with
+    // "No such file or directory" and mark the shard agent_lost. It must be gated
+    // on materialize actually having run.
+    const { transport, docker, events } = fakes([{ type: 'finish' }], () => 0);
+    const order: string[] = [];
+    await runAgentJob({
+      jobId: 'j',
+      spec: wire({ worktreeRef: undefined }),
+      workspaceDir: '/ws',
+      transport,
+      docker,
+      clearJobWorktreeDest: async (dest) => {
+        order.push(`clear:${dest}`);
+      },
+      materialize: async () => {
+        order.push('materialize');
+      },
+      ensureJobWorktreeOwnership: async (dest) => {
+        order.push(`chown:${dest}`);
+      },
+    });
+    expect(order).toEqual(['clear:/ws/repo']);
+    expect(events[0]).toBe('start:/ws/repo');
+  });
+
   it('aborts hung bring-up before the first directive poll (bring-up deadline)', async () => {
     const { transport, docker } = fakes([{ type: 'finish' }], () => 0);
     await expect(

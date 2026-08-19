@@ -352,11 +352,15 @@ export async function runAgentJob(args: {
       await (args.clearJobWorktreeDest ?? clearWorktreeDestForRematerialize)(jobWorkspace);
       if (spec.worktreeRef && args.materialize) {
         await args.materialize(spec, jobWorkspace);
+        // Agent image and job image can disagree on `runner`'s uid during a
+        // rollout (agent on :main → 1001, job on a pinned build → 1000). Without
+        // this, npm ci / venv mkdir EACCES across every shard. Only chown when we
+        // just materialized the tree: `clear` already `sudo rm -rf`'d the dest, so
+        // if materialize was skipped the path does not exist and `sudo chown -R`
+        // hard-errors ("No such file or directory"), marking the shard agent_lost
+        // instead of letting startContainer surface a real error.
+        await (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace);
       }
-      // Agent image and job image can disagree on `runner`'s uid during a
-      // rollout (agent on :main → 1001, job on a pinned build → 1000). Without
-      // this, npm ci / venv mkdir EACCES across every shard.
-      await (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace);
       return docker.startContainer(spec, jobWorkspace);
     });
     let seq = 0;
