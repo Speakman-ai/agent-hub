@@ -1111,12 +1111,21 @@ export class DevServerRuntime {
 
     const healthPath = cfg.healthPath ?? '/';
     const readyTimeoutMs = cfg.readyTimeoutMs ?? this.readyTimeoutMs;
+    // Every declared portMap entry is a browsable surface the user can open in
+    // the pane, so readiness must gate on ALL of them binding — not just the
+    // primary. A multi-service stack (e.g. web + api) that flips to ready the
+    // moment the primary answers leaves the user staring at a connection error
+    // when they open the companion port that has not started listening yet.
+    const companionPorts = reserved
+      .filter((r) => !r.primary)
+      .map((r) => ({ label: r.name, hostPort: r.hostPort }));
     void this.runHealthCheck(
       groupId,
       primaryDialHost,
       primaryEntry.hostPort,
       healthPath,
       readyTimeoutMs,
+      companionPorts,
     ).catch((err) => {
       this.logger.error(`[dev-server ${groupId}] health check crashed: ${(err as Error).message}`);
     });
@@ -1442,6 +1451,7 @@ export class DevServerRuntime {
     hostPort: number,
     healthPath: string,
     readyTimeoutMs: number,
+    companionPorts: Array<{ label: string; hostPort: number }> = [],
   ): Promise<void> {
     const healthUrl = `${this.probeUrlBase(dialHost, hostPort)}${healthPath}`;
     const startedAt = this.clock.nowMs();
@@ -1462,6 +1472,13 @@ export class DevServerRuntime {
     let deadline = originalDeadline;
     let boundAtMs: number | null = null;
     let rebased = false;
+    // True once the primary answers 2xx. Kept apart from readiness so the
+    // failure reason can tell "primary never went 2xx" from "primary is fine
+    // but a companion port never came up".
+    let primaryReady = false;
+    // Companion host ports that have accepted a connection. A bound port stays
+    // bound, so probing it again is wasted work — track and skip.
+    const boundCompanions = new Set<number>();
     for (;;) {
       if (this.clock.nowMs() >= deadline) break;
       const status = this.getStatus(groupId);
@@ -1479,8 +1496,14 @@ export class DevServerRuntime {
           }
         }
         if (res.ok) {
-          this.markReady(groupId);
-          return;
+          primaryReady = true;
+          // Hold in `starting` until every companion port is listening too, so
+          // the pane never renders a ready preview whose other service refuses
+          // the connection at the socket level.
+          if (await this.allCompanionsBound(dialHost, companionPorts, boundCompanions)) {
+            this.markReady(groupId);
+            return;
+          }
         }
       } catch {
         // Not bound yet — still building/booting; poll again.
@@ -1488,17 +1511,48 @@ export class DevServerRuntime {
       await this.clock.sleep(this.healthIntervalMs);
     }
     if (this.getStatus(groupId) !== 'starting') return;
-    // Three distinct failures, each naming the window it actually got:
-    // never bound (full budget spent booting), bound-in-budget (full
-    // rebased window granted, no 2xx), and bound-over-budget (rebase
-    // refused, so no post-bind window existed at all).
+    // Distinct failures, each naming what it actually got: never bound (full
+    // budget spent booting), bound-in-budget (full rebased window granted, no
+    // 2xx), bound-over-budget (rebase refused, no post-bind window), and
+    // primary-ready-but-a-companion-never-listened.
+    const unboundCompanions = companionPorts.filter((c) => !boundCompanions.has(c.hostPort));
     const reason =
       boundAtMs === null
         ? `health check timed out after ${readyTimeoutMs}ms (port never bound)`
-        : rebased
-          ? `health check timed out ${readyTimeoutMs}ms after the port bound (no 2xx from ${healthPath})`
-          : `port bound at +${boundAtMs - startedAt}ms, after the ${readyTimeoutMs}ms boot budget expired (no 2xx from ${healthPath})`;
+        : !primaryReady
+          ? rebased
+            ? `health check timed out ${readyTimeoutMs}ms after the port bound (no 2xx from ${healthPath})`
+            : `port bound at +${boundAtMs - startedAt}ms, after the ${readyTimeoutMs}ms boot budget expired (no 2xx from ${healthPath})`
+          : `primary port is ready but companion port(s) never started listening: ${unboundCompanions
+              .map((c) => `${c.label} (:${c.hostPort})`)
+              .join(', ')}`;
     await this.markFailed(groupId, reason);
+  }
+
+  /**
+   * Probe every not-yet-bound companion port and record the ones that answer.
+   * A resolved fetch — any HTTP status, including 4xx/5xx — means the socket is
+   * bound; only a connection error means the service has not started listening.
+   * Returns true once all companions are bound (trivially true with none).
+   */
+  private async allCompanionsBound(
+    dialHost: string | null,
+    companionPorts: Array<{ label: string; hostPort: number }>,
+    bound: Set<number>,
+  ): Promise<boolean> {
+    const pending = companionPorts.filter((c) => !bound.has(c.hostPort));
+    if (pending.length === 0) return true;
+    await Promise.all(
+      pending.map(async (c) => {
+        try {
+          await this.fetch(`${this.probeUrlBase(dialHost, c.hostPort)}/`);
+          bound.add(c.hostPort);
+        } catch {
+          // Not listening yet — leave it pending for the next tick.
+        }
+      }),
+    );
+    return companionPorts.every((c) => bound.has(c.hostPort));
   }
 
   private markReady(groupId: string): void {

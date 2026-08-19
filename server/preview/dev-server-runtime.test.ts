@@ -1209,6 +1209,83 @@ describe('DevServerRuntime two-phase readiness', () => {
 
     expect(h.runtime.getById(started.devServerId)?.status).toBe('ready');
   });
+
+  it('holds in starting until every companion port is listening, then goes ready', async () => {
+    const clock = new FakeClock();
+    // Primary (pooled) answers 2xx immediately; the companion api port 8787
+    // refuses the connection until t>=6. Readiness must wait for it — the
+    // whole point of the fix: a preview must not flip to ready while a
+    // declared service still refuses connections.
+    const fetchImpl = async (url: string): Promise<{ ok: boolean; status: number }> => {
+      if (url.includes(':8787')) {
+        if (clock.now < 6) throw new Error('ECONNREFUSED');
+        return { ok: true, status: 200 };
+      }
+      return { ok: true, status: 200 };
+    };
+    const notifyStatus = vi.fn();
+    const h = makeHarness({
+      clock,
+      fetchImpl,
+      readyTimeoutMs: 50,
+      portRange: { min: 4500, max: 4502 },
+      notifyStatus,
+    });
+    const project = makeProject({
+      portMap: [
+        { internalPort: 5173, label: 'web', primary: true },
+        { internalPort: 8787, label: 'api' },
+      ],
+    });
+
+    const started = await h.runtime.start('session-companion-wait', project, '/worktree');
+    // A snapshot taken before the companion binds must still read as starting,
+    // even though the primary is already serving 2xx.
+    expect(['starting']).toContain(h.runtime.getById(started.devServerId)?.status);
+    await flushMicrotasks(200);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('ready');
+    expect(notifyStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready' }));
+  });
+
+  it('fails naming the companion port when it never starts listening', async () => {
+    const clock = new FakeClock();
+    // Primary is healthy the whole time; the companion api port never binds.
+    // The old behaviour flipped to ready anyway (the reported bug); now it
+    // must fail, and the reason must name the port that stayed down.
+    const fetchImpl = async (url: string): Promise<{ ok: boolean; status: number }> => {
+      if (url.includes(':8787')) throw new Error('ECONNREFUSED');
+      return { ok: true, status: 200 };
+    };
+    const notifyStatus = vi.fn();
+    const h = makeHarness({
+      clock,
+      fetchImpl,
+      readyTimeoutMs: 5,
+      portRange: { min: 4500, max: 4502 },
+      notifyStatus,
+    });
+    const project = makeProject({
+      portMap: [
+        { internalPort: 5173, label: 'web', primary: true },
+        { internalPort: 8787, label: 'api' },
+      ],
+    });
+
+    const started = await h.runtime.start('session-companion-down', project, '/worktree');
+    await flushMicrotasks(120);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('failed');
+    expect(notifyStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('companion port(s) never started listening'),
+      }),
+    );
+    const call = notifyStatus.mock.calls.find((c) => c[0]?.status === 'failed');
+    expect(call?.[0]?.error).toContain('api');
+    expect(call?.[0]?.error).toContain(':8787');
+  });
 });
 
 describe('DevServerRuntime react/snapshot surface', () => {
