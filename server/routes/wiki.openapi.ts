@@ -229,6 +229,13 @@ export const SearchWikiQuerySchema = z.object({
   limit: LimitQuery,
 });
 
+export const DocumentBackfillRequestSchema = z.object({
+  limit: z.number().int().min(1).max(25).optional().openapi({
+    description:
+      'Max undocumented Done cards to hand the docs agent this run (default 10, cap 25). Oldest first. The agent writes at most one page then stops; remaining cards in the batch are skip-marked when trivial.',
+  }),
+});
+
 // ─── OpenAPI path registrations ───────────────────────────────────
 
 const projectIdParams = z.object({
@@ -315,6 +322,53 @@ registerPath({
     404: errorResponse('Project not found.'),
     503: errorResponse('Gemini API key not configured.'),
     500: errorResponse('Backfill failed.'),
+  },
+});
+
+const WikiDocumentBackfillResultComponent = registerComponent(
+  'WikiDocumentBackfillResult',
+  z
+    .object({
+      skipped: z.boolean(),
+      reason: z.string().optional(),
+      reused: z.boolean().optional(),
+      sessionId: z.string().optional(),
+      agentId: z.string().optional(),
+      queued: z.number().int().optional(),
+    })
+    .openapi({
+      description:
+        'Result of an on-demand wiki documentation backfill. `skipped: true` with `reason: none_undocumented` means the Done column has no remaining undocumented cards. Otherwise a docs-agent session was started (or reused) and `queued` is how many cards were handed to it.',
+    }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/wiki/document-backfill',
+  tags: ['Wiki'],
+  summary: 'Start an on-demand wiki documentation backfill',
+  description: [
+    'Spawns the project docs agent to review the oldest undocumented Done cards.',
+    'This is not a scheduled drain; call it when an operator asks to backfill.',
+    'New work is documented automatically when a PR merges (if a docs agent exists and the linked card is still undocumented).',
+    '`documented = 1` means reviewed for the wiki, not that the card has its own article.',
+  ].join(' '),
+  request: {
+    params: projectIdParams,
+    body: { content: jsonContent(DocumentBackfillRequestSchema), required: false },
+  },
+  responses: {
+    200: {
+      description: 'Existing backfill session reused, or nothing left to review.',
+      content: jsonContent(WikiDocumentBackfillResultComponent),
+    },
+    201: {
+      description: 'Docs session started.',
+      content: jsonContent(WikiDocumentBackfillResultComponent),
+    },
+    400: errorResponse('Validation failed (invalid limit).'),
+    404: errorResponse('Project or docs agent not found.'),
+    409: errorResponse('Backfill skipped for another reason.'),
   },
 });
 

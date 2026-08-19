@@ -14440,6 +14440,24 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    WikiDocumentBackfillResult:
+      type: object
+      properties:
+        skipped:
+          type: boolean
+        reason:
+          type: string
+        reused:
+          type: boolean
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        queued:
+          type: integer
+      required:
+        - skipped
+      description: "Result of an on-demand wiki documentation backfill. `skipped: true` with `reason: none_undocumented` means the Done column has no remaining undocumented cards. Otherwise a docs-agent session was started (or reused) and `queued` is how many cards were handed to it."
     EpicPullsResponse:
       type: object
       properties:
@@ -42236,6 +42254,63 @@ paths:
                 $ref: "#/components/schemas/WikiErrorResponse"
         "503":
           description: Gemini API key not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+  /api/projects/{projectId}/wiki/document-backfill:
+    post:
+      tags:
+        - Wiki
+      summary: Start an on-demand wiki documentation backfill
+      description: Spawns the project docs agent to review the oldest undocumented Done cards. This is not a scheduled drain; call it when an operator asks to backfill. New work is documented automatically when a PR merges (if a docs agent exists and the linked card is still undocumented). `documented = 1` means reviewed for the wiki, not that the card has its own article.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 25
+                  description: Max undocumented Done cards to hand the docs agent this run (default 10, cap 25). Oldest first. The agent writes at most one page then stops; remaining cards in the batch are skip-marked when trivial.
+      responses:
+        "200":
+          description: Existing backfill session reused, or nothing left to review.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiDocumentBackfillResult"
+        "201":
+          description: Docs session started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiDocumentBackfillResult"
+        "400":
+          description: Validation failed (invalid limit).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "404":
+          description: Project or docs agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "409":
+          description: Backfill skipped for another reason.
           content:
             application/json:
               schema:

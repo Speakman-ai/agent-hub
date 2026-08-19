@@ -283,6 +283,7 @@ import {
   maybeAutoMergeAfterChecks,
   setFinalizeAutomationRouteDeps,
 } from './finalize/automation-runner.js';
+import { initWikiDocMergeHook } from './wiki-doc-session.js';
 
 import createChatHandler, { type ChatHandlerDeps, type WebSocketLike } from './chat.js';
 
@@ -2117,6 +2118,14 @@ setTriggerAutoSessionShip(async ({ sessionId, project, agent, session }) => {
 });
 
 setFinalizeAutomationRouteDeps(routeDeps);
+initWikiDocMergeHook({
+  stmts: stmts!,
+  config,
+  findProject,
+  findAgent,
+  handleChat: (ws, msg) => handleChat!(ws, msg),
+  broadcast,
+});
 setReadyToPushAutomationHook((sessionId, runId) => {
   void maybeAutoPushReadyFinalizeRun({ sessionId, runId });
 });

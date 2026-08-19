@@ -54,6 +54,9 @@ Prefer durable knowledge that would be lost when the session ends:
 - Troubleshooting playbooks that saved debug time
 
 Avoid transient session notes — those belong in daily notes, not the wiki.
+Do not mint one page per ticket. On merge the Hub starts a docs-agent
+review when the linked card is still undocumented. Historical cards stay
+queued until an operator runs `wiki.sh document-backfill`.
 
 ## What you get back
 

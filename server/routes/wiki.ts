@@ -15,13 +15,22 @@ import {
   isGeminiConfigured,
   type SearchMode,
 } from '../wiki-embeddings.js';
-import type { RouteDeps } from '../types.js';
+import type { KanbanBoardRow, KanbanCardRow, RouteDeps } from '../types.js';
 import {
   CreateWikiPageRequestSchema,
   UpdateWikiPageRequestSchema,
   ListWikiPagesQuerySchema,
   SearchWikiQuerySchema,
+  DocumentBackfillRequestSchema,
 } from './wiki.openapi.js';
+import {
+  dispatchWikiDocBackfill,
+  isWikiDocSkip,
+  maybeMarkLinkedCardDocumented,
+} from '../wiki-doc-session.js';
+import { resolveCardSessionId } from '../kanban-caller-session.js';
+import { resolveOwnerUserId } from '../session-ownership.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 /**
  * Validate `req.body` against a Zod schema. On failure, writes a 400 with
@@ -70,8 +79,23 @@ function parseQuery<T extends z.ZodTypeAny>(
   return result.data;
 }
 
-export default function createWikiRoutes({ findProject, broadcast, stmts }: RouteDeps): Router {
+export default function createWikiRoutes({
+  findProject,
+  findAgent,
+  broadcast,
+  stmts,
+  handleChat,
+  config,
+}: RouteDeps): Router {
   const router = Router({ mergeParams: true });
+
+  function stampLinkedCardDocumented(req: Request, projectId: string): void {
+    const sessionId = resolveCardSessionId(req, undefined);
+    const result = maybeMarkLinkedCardDocumented(stmts, sessionId);
+    if (result.marked) {
+      broadcast({ type: 'kanban_update', projectId });
+    }
+  }
 
   router.get('/api/projects/:projectId/wiki', (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;
@@ -141,6 +165,73 @@ export default function createWikiRoutes({ findProject, broadcast, stmts }: Rout
     }
   });
 
+  // On-demand historical wiki review. Not a scheduled drain: the operator
+  // (or an agent they asked) starts a docs session over the oldest
+  // undocumented Done cards. Forward coverage is merge-driven.
+  router.post('/api/projects/:projectId/wiki/document-backfill', (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    const project = findProject(projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const parsedBody = DocumentBackfillRequestSchema.safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      const first = parsedBody.error.issues[0];
+      return res.status(400).json({
+        error: first?.message ?? 'Validation failed',
+        details: parsedBody.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
+    }
+    const limit = parsedBody.data.limit ?? 10;
+
+    const docsAgent = project.agents?.find((a) => (a.role ?? '').trim().toLowerCase() === 'docs');
+    if (!docsAgent) {
+      return res.status(404).json({
+        error:
+          'No docs agent found for this project. A docs agent is required to backfill wiki coverage.',
+      });
+    }
+
+    const board = stmts.getKanbanBoard.get(projectId) as KanbanBoardRow | undefined;
+    const cards = board
+      ? (stmts.listUndocumentedCards.all(board.id, limit) as KanbanCardRow[])
+      : [];
+
+    const outcome = dispatchWikiDocBackfill(
+      { stmts, config, findProject, findAgent, handleChat, broadcast },
+      {
+        project,
+        cards: cards.map((c) => ({
+          id: c.id,
+          title: c.title,
+          description: c.description,
+          updated_at: c.updated_at,
+        })),
+        ownerUserId: resolveOwnerUserId(req as AuthenticatedRequest),
+      },
+    );
+
+    if (isWikiDocSkip(outcome)) {
+      if (outcome.reason === 'none_undocumented') {
+        return res.json({ skipped: true, reason: 'none_undocumented', queued: 0 });
+      }
+      if (outcome.reason === 'no_docs_agent') {
+        return res.status(404).json({
+          error:
+            'No docs agent found for this project. A docs agent is required to backfill wiki coverage.',
+        });
+      }
+      return res.status(409).json({ error: `Wiki backfill skipped: ${outcome.reason}` });
+    }
+
+    res.status(outcome.reused ? 200 : 201).json({
+      skipped: false,
+      reused: outcome.reused,
+      sessionId: outcome.sessionId,
+      agentId: outcome.agentId,
+      queued: cards.length,
+    });
+  });
+
   router.get('/api/projects/:projectId/wiki/categories', (_req: Request, res: Response) => {
     res.json(WIKI_CATEGORIES);
   });
@@ -166,6 +257,7 @@ export default function createWikiRoutes({ findProject, broadcast, stmts }: Rout
         category: parsed.category,
         updatedBy: parsed.updatedBy,
       });
+      stampLinkedCardDocumented(req, projectId);
       broadcast({ type: 'wiki_update', projectId, page });
       res.status(201).json(page);
     } catch (err) {
@@ -184,6 +276,7 @@ export default function createWikiRoutes({ findProject, broadcast, stmts }: Rout
         category: parsed.category,
         updatedBy: parsed.updatedBy,
       });
+      stampLinkedCardDocumented(req, req.params.projectId as string);
       broadcast({ type: 'wiki_update', projectId: req.params.projectId, page });
       res.json(page);
     } catch (err) {

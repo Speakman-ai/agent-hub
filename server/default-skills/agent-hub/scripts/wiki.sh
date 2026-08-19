@@ -7,6 +7,7 @@
 #   read   <slug>               fetch a single page
 #   create <json>               create a page
 #   update <slug> <json>        update a page
+#   document-backfill [limit]   start an on-demand docs-agent wiki review
 
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,6 +64,14 @@ case "$cmd" in
     [[ -n "$slug" && -n "$body" ]] || usage_die "usage: wiki.sh update <slug> '<json>'"
     hub_api PUT "/api/projects/$PROJECT_ID/wiki/$slug" -d "$body"
     ;;
+  document-backfill)
+    limit="${1:-}"
+    if [[ -n "$limit" ]]; then
+      hub_api POST "/api/projects/$PROJECT_ID/wiki/document-backfill" -d "{\"limit\":${limit}}"
+    else
+      hub_api POST "/api/projects/$PROJECT_ID/wiki/document-backfill" -d '{}'
+    fi
+    ;;
   help|-h|--help|'')
     cat <<EOF
 usage: wiki.sh <subcommand> [args]
@@ -71,6 +80,7 @@ usage: wiki.sh <subcommand> [args]
   read   <slug>
   create <json>
   update <slug> <json>
+  document-backfill [limit]   review oldest undocumented Done cards (on demand)
 EOF
     ;;
   *)

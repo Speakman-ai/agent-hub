@@ -30,6 +30,7 @@ scripts/wiki-upsert.sh <slug> ./page.md --category architecture
 # Subcommand-style wrapper:
 scripts/wiki.sh read <slug>                             # single page
 scripts/wiki.sh list [category]                         # all pages (filtered)
+scripts/wiki.sh document-backfill [limit]               # on-demand historical review
 ```
 
 ## Categories
@@ -54,6 +55,19 @@ operations for any new doc is:
 
 A `409` on create means a slug collision — use upsert instead. See the
 core skill's `references/errors.md` for the recovery flow.
+
+## When pages get written
+
+New work is reviewed when it **merges**. If the shipping session already
+wrote a wiki page, the linked card is stamped `documented` and no extra
+session runs. Otherwise the project's **docs agent** reviews the landed
+change: search first, update or write **at most one** page, or skip.
+`documented` means "reviewed for the wiki", not "has its own article".
+Bugfixes, copy, and chores are not pages. The wiki is not a changelog.
+
+Historical Done cards stay undocumented until someone asks. Then run
+`wiki.sh document-backfill` (optional limit, default 10). Do **not**
+schedule a drain of every old ticket.
 
 ## See also
 

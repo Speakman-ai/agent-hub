@@ -28,6 +28,7 @@ import { findKanbanCardForIncomingPr, linkKanbanCardPrUrl } from '../kanban-pr-l
 import { getOrCreateBoard } from '../routes/board.js';
 import { pickDoneColumn } from '../card-auto-close.js';
 import { buildNativePrUrl } from './url.js';
+import { maybeDispatchWikiDocOnMerge } from '../wiki-doc-session.js';
 
 export interface CardOnMergeDeps {
   stmts: Stmts;
@@ -117,5 +118,13 @@ export function handleCardOnMerge(
     cardId: card?.id,
     cardTitle: card?.title,
     mergedBy,
+  });
+
+  maybeDispatchWikiDocOnMerge({
+    projectId,
+    card: card ?? null,
+    prNumber: pr.number,
+    prTitle: pr.title,
+    prUrl,
   });
 }

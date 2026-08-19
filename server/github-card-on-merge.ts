@@ -12,6 +12,7 @@ import type { BroadcastFn, KanbanCardRow, KanbanColumnRow, Stmts } from './types
 import { pickDoneColumn } from './card-auto-close.js';
 import { findKanbanCardForIncomingPr, linkKanbanCardPrUrl } from './kanban-pr-link.js';
 import { getOrCreateBoard } from './routes/board.js';
+import { maybeDispatchWikiDocOnMerge } from './wiki-doc-session.js';
 
 export interface GithubCardOnMergeDeps {
   stmts: Stmts;
@@ -103,5 +104,13 @@ export function handleGithubCardOnMerge(
     cardId: card?.id,
     cardTitle: card?.title,
     mergedBy: args.mergedBy,
+  });
+
+  maybeDispatchWikiDocOnMerge({
+    projectId,
+    card: card ?? null,
+    prNumber: args.prNumber,
+    prTitle: args.prTitle,
+    prUrl,
   });
 }

@@ -152,6 +152,31 @@ describe('Schema validation — GET /wiki/search (query params)', () => {
   });
 });
 
+describe('Schema validation — POST /wiki/document-backfill', () => {
+  it('rejects a non-integer limit (400)', async () => {
+    const res = await request
+      .post(`/api/projects/${projectId}/wiki/document-backfill`)
+      .send({ limit: 1.5 })
+      .expect(400);
+    expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
+  });
+
+  it('rejects a limit above the cap (400)', async () => {
+    await request
+      .post(`/api/projects/${projectId}/wiki/document-backfill`)
+      .send({ limit: 100 })
+      .expect(400);
+  });
+
+  it('returns 404 when the project has no docs agent', async () => {
+    const res = await request
+      .post(`/api/projects/${projectId}/wiki/document-backfill`)
+      .send({ limit: 5 })
+      .expect(404);
+    expect((res.body as { error: string }).error).toMatch(/docs agent/i);
+  });
+});
+
 describe('Schema validation — DELETE /wiki/:slug', () => {
   it('returns 404 for unknown slug', async () => {
     await request

@@ -1011,7 +1011,8 @@ Still available mid-answer: emit a naked \`<agenthub:react>{"actions":[${example
       // Static instructional blocks — only on first message to save tokens
       if (isFirstMessage) {
         prompt += `\n\n## Wiki Documentation Guidelines
-After significant work, update the wiki to preserve knowledge. Search first (\`GET /api/projects/${projectId}/wiki?q=...\`), update existing pages rather than duplicating. Create via \`POST /api/projects/${projectId}/wiki\` with \`{title, content, category, updatedBy}\`. Update via \`PUT /api/projects/${projectId}/wiki/:slug\`. Categories: general, api-docs, architecture, conventions, test-patterns, troubleshooting, onboarding. Focus on decisions, patterns, and knowledge that would be lost when the session ends.`;
+After significant work, update the wiki to preserve knowledge. Search first (\`wiki-search.sh "<topic>"\`), update existing pages rather than duplicating. Use \`wiki-upsert.sh\`. Categories: general, api-docs, architecture, conventions, test-patterns, troubleshooting, onboarding. Write decisions, conventions, API contracts, and gotchas — not a page per ticket. Bugfixes, copy, and chores are not wiki pages.
+A wiki write from this session auto-stamps the linked card as reviewed (\`documented = 1\`). If you skip writing, that is fine: on merge the project's docs agent reviews the landed change. Historical undocumented cards stay queued until someone asks to backfill (\`wiki.sh document-backfill\`).`;
 
         if (projectMode !== 'workflow') {
           const linkedCardLine = options.sessionHasLinkedCard

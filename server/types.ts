@@ -2286,6 +2286,7 @@ export interface Stmts {
   getSessionIdsByWorktreeBranch: Stmt;
   getKanbanCardByPrUrl: Stmt;
   getNextUndocumentedCard: Stmt;
+  listUndocumentedCards: Stmt;
   markCardDocumented: Stmt;
   deleteKanbanCard: Stmt;
   clearKanbanCardOrphaned: Stmt;

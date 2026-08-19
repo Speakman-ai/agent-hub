@@ -5185,6 +5185,12 @@ function initDb(dataDir: string): void {
        WHERE c.board_id = ? AND col.name = 'Done' AND c.documented = 0
        ORDER BY c.updated_at ASC LIMIT 1`,
     ),
+    listUndocumentedCards: db.prepare(
+      `SELECT c.*, col.name as column_name FROM kanban_cards c
+       JOIN kanban_columns col ON c.column_id = col.id
+       WHERE c.board_id = ? AND col.name = 'Done' AND c.documented = 0
+       ORDER BY c.updated_at ASC LIMIT ?`,
+    ),
     markCardDocumented: db.prepare(
       "UPDATE kanban_cards SET documented = 1, updated_at = datetime('now') WHERE id = ?",
     ),
