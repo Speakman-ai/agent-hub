@@ -1374,7 +1374,7 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
           Leave all empty to clear project-level overrides (server defaults apply).
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
-          {ORCHESTRATION_FIELD_META.map(({ key, label, hint }: any) => (
+          {ORCHESTRATION_FIELD_META.map(({ key, label, hint, placeholder }: any) => (
             <div key={key}>
               <label className="block text-[10px] text-gray-500 mb-0.5" title={hint}>
                 {label}
@@ -1386,7 +1386,7 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
                 onChange={(e: any) =>
                   setOrchestrationFields((prev: any) => ({ ...prev, [key]: e.target.value }))
                 }
-                placeholder="—"
+                placeholder={placeholder}
                 className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
               />
             </div>

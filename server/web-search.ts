@@ -13,7 +13,7 @@ export const MAX_WEB_SEARCH_RESULTS = 5;
 /** Cap formatted markdown returned to the model (UTF-8 bytes). */
 export const MAX_WEB_SEARCH_BLOCK_CHARS = 8000;
 /** Hard cap on Serper calls per chat session (cost / abuse control). */
-export const MAX_WEB_SEARCH_CALLS_PER_SESSION = 8;
+export const MAX_WEB_SEARCH_CALLS_PER_SESSION = 16;
 
 export function getWebSearchApiKey(): string | null {
   const k = process.env.SERPER_API_KEY?.trim() || process.env.WEB_SEARCH_API_KEY?.trim() || '';

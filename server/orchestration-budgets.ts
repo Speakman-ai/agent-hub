@@ -34,10 +34,10 @@ export interface ResolvedOrchestrationBudgets {
 }
 
 export const DEFAULT_ORCHESTRATION_BUDGETS: ResolvedOrchestrationBudgets = {
-  maxContinuationDepth: 4,
+  maxContinuationDepth: 8,
   maxReactWallClockMs: 0,
   maxReactModelTurns: 0,
-  maxReactActionsPerTurn: 6,
+  maxReactActionsPerTurn: 8,
   maxWikiRagCallsPerSession: MAX_WIKI_RAG_CALLS_PER_SESSION,
   maxWebSearchCallsPerSession: MAX_WEB_SEARCH_CALLS_PER_SESSION,
 };
@@ -119,7 +119,15 @@ export function finalizeResolvedBudgets(
     maxReactModelTurns: num(b.maxReactModelTurns, 0, 256, 0),
     maxReactActionsPerTurn: Math.min(
       HOST_REACT_ACTIONS_PARSE_CAP,
-      Math.max(1, num(b.maxReactActionsPerTurn, 1, HOST_REACT_ACTIONS_PARSE_CAP, 6)),
+      Math.max(
+        1,
+        num(
+          b.maxReactActionsPerTurn,
+          1,
+          HOST_REACT_ACTIONS_PARSE_CAP,
+          DEFAULT_ORCHESTRATION_BUDGETS.maxReactActionsPerTurn,
+        ),
+      ),
     ),
     maxWikiRagCallsPerSession: num(
       b.maxWikiRagCallsPerSession,

@@ -1,15 +1,55 @@
 /**
  * ReAct / host orchestration budget fields (mirror server/orchestration-budgets.ts).
  * Empty string or undefined for a field means "do not send" (keep existing server value).
+ * Placeholders show DEFAULT_ORCHESTRATION_BUDGETS so empty inputs still reveal the live cap.
  */
 
+export const DEFAULT_ORCHESTRATION_BUDGETS = {
+  maxContinuationDepth: 8,
+  maxReactWallClockMs: 0,
+  maxReactModelTurns: 0,
+  maxReactActionsPerTurn: 8,
+  maxWikiRagCallsPerSession: 16,
+  maxWebSearchCallsPerSession: 16,
+} as const;
+
 export const ORCHESTRATION_FIELD_META = [
-  { key: 'maxContinuationDepth', label: 'Max continuation depth', hint: 'Default 4' },
-  { key: 'maxReactWallClockMs', label: 'Max chain wall clock (ms)', hint: '0 = unlimited' },
-  { key: 'maxReactModelTurns', label: 'Max model turns / chain', hint: '0 = depth only' },
-  { key: 'maxReactActionsPerTurn', label: 'Max ReAct actions / turn', hint: 'Default 6, max 12' },
-  { key: 'maxWikiRagCallsPerSession', label: 'Wiki hybrid calls / session', hint: 'Default 10' },
-  { key: 'maxWebSearchCallsPerSession', label: 'Web search calls / session', hint: 'Default 8' },
+  {
+    key: 'maxContinuationDepth',
+    label: 'Max continuation depth',
+    hint: 'Default 8',
+    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxContinuationDepth} default`,
+  },
+  {
+    key: 'maxReactWallClockMs',
+    label: 'Max chain wall clock (ms)',
+    hint: '0 = unlimited',
+    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactWallClockMs} unlimited`,
+  },
+  {
+    key: 'maxReactModelTurns',
+    label: 'Max model turns / chain',
+    hint: '0 = depth only',
+    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactModelTurns} (depth only)`,
+  },
+  {
+    key: 'maxReactActionsPerTurn',
+    label: 'Max ReAct actions / turn',
+    hint: 'Default 8, max 12',
+    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactActionsPerTurn} default`,
+  },
+  {
+    key: 'maxWikiRagCallsPerSession',
+    label: 'Wiki hybrid calls / session',
+    hint: 'Default 16',
+    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxWikiRagCallsPerSession} default`,
+  },
+  {
+    key: 'maxWebSearchCallsPerSession',
+    label: 'Web search calls / session',
+    hint: 'Default 16',
+    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxWebSearchCallsPerSession} default`,
+  },
 ];
 
 const KEYS = ORCHESTRATION_FIELD_META.map((m: any) => m.key);

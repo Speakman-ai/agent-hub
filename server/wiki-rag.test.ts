@@ -76,7 +76,7 @@ describe('shouldAttachWikiRag', () => {
   it('skips when this session already used its hybrid RAG budget cap', () => {
     expect(
       shouldAttachWikiRag({
-        wikiHybridRagUsedCount: 10,
+        wikiHybridRagUsedCount: MAX_WIKI_RAG_CALLS_PER_SESSION,
         userMessage: 'how does kanban integration work in this project?',
         slashSkillActive: false,
       }),
@@ -242,7 +242,7 @@ describe('runWikiHybridRagForUserTurn (chat orchestration)', () => {
       'p1',
       'how does the wiki search api work please explain',
       {
-        wikiHybridRagUsedCount: 10,
+        wikiHybridRagUsedCount: MAX_WIKI_RAG_CALLS_PER_SESSION,
         slashSkillActive: false,
       },
     );

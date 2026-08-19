@@ -94,7 +94,7 @@ describe('evaluateReactContinuationBudgets', () => {
       reactLoopEnabled: true,
       continuationContextAdded: true,
       controlFlowPresent: false,
-      continuationDepth: 4,
+      continuationDepth: 8,
       chainStartedAtMs: 0,
       nowMs: 100,
       budgets,
@@ -140,6 +140,10 @@ describe('parseEpicOrchestrationBudgetsJson', () => {
 describe('projectOrchestrationDefaults', () => {
   it('uses defaults when project has no budgets', () => {
     const p = { id: 'x', name: 'n', cwd: '/', ahw: '/', agents: [] } as unknown as Project;
-    expect(projectOrchestrationDefaults(p).maxContinuationDepth).toBe(4);
+    const d = projectOrchestrationDefaults(p);
+    expect(d.maxContinuationDepth).toBe(8);
+    expect(d.maxReactActionsPerTurn).toBe(8);
+    expect(d.maxWikiRagCallsPerSession).toBe(16);
+    expect(d.maxWebSearchCallsPerSession).toBe(16);
   });
 });

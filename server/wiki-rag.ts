@@ -8,7 +8,7 @@ const MAX_EXCERPT_CHARS = 420;
 const MAX_TOTAL_BLOCK_CHARS = 5000;
 /** Hybrid wiki search costs an embedding call — only use on eligible turns with budget left. */
 const MIN_QUERY_CHARS_FOR_FIRST_TURN_RAG = 12;
-export const MAX_WIKI_RAG_CALLS_PER_SESSION = 10;
+export const MAX_WIKI_RAG_CALLS_PER_SESSION = 16;
 
 export { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES };
 
