@@ -307,6 +307,7 @@ import type { BackgroundShellRow } from './background-shells/background-shell-ru
 import {
   createPreviewUrlBase,
   resolveDevServerPortClientUrl,
+  resolvePreviewHealthHost,
 } from './preview/preview-public-url.js';
 import { attachDefaultPreviewProxyUpgrade } from './preview/preview-proxy.js';
 import { PtyHost } from './terminal/pty-host.js';
@@ -1079,7 +1080,15 @@ export const activeProcesses = new Map<
 // the same instance the chat handler + session archive hooks use; a
 // per-tick orphan check tears down rows whose project has been deleted
 // out from under them.
-const previewHealthHost = process.env.AGENT_HUB_PREVIEW_HEALTH_HOST?.trim();
+// Docker-aware: `AGENT_HUB_PREVIEW_HEALTH_HOST` (e.g. `host.docker.internal`)
+// only reaches a preview port when the Hub actually runs in a container across
+// the docker-host boundary. With docker features disabled the preview runs
+// co-resident on the host adapter and answers on loopback, so the readiness
+// probe (and the proxy, via `resolvePreviewUpstreamHost`) must ignore the
+// gateway and fall back to the runtime's `http://127.0.0.1:<port>` default —
+// otherwise the probe dials a dead gateway port and the preview hangs
+// "starting". See resolvePreviewHealthHost.
+const previewHealthHost = resolvePreviewHealthHost() ?? undefined;
 const previewUrlBase = createPreviewUrlBase(config.publicUrl);
 const { devServerRuntime } = createPreviewRuntimes({
   db: getDb(),

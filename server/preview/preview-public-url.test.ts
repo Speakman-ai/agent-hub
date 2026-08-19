@@ -1,10 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   resolvePreviewClientUrl,
   previewUpstreamPath,
   previewProxyMountPath,
   devServerPortProxyPath,
   resolveDevServerPortClientUrl,
+  resolvePreviewHealthHost,
+  resolvePreviewUpstreamHost,
 } from './preview-public-url.js';
 
 describe('resolvePreviewClientUrl', () => {
@@ -70,5 +72,60 @@ describe('previewUpstreamPath', () => {
   it('rewrites proxy mount to upstream root path', () => {
     const mount = previewProxyMountPath('abc');
     expect(previewUpstreamPath(`${mount}/dashboard?x=1`, 'abc')).toBe('/dashboard?x=1');
+  });
+});
+
+describe('resolvePreviewHealthHost', () => {
+  const prev = process.env.AGENT_HUB_PREVIEW_HEALTH_HOST;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.AGENT_HUB_PREVIEW_HEALTH_HOST;
+    else process.env.AGENT_HUB_PREVIEW_HEALTH_HOST = prev;
+  });
+
+  it('returns the configured gateway host when docker features are enabled', () => {
+    process.env.AGENT_HUB_PREVIEW_HEALTH_HOST = 'host.docker.internal';
+    expect(resolvePreviewHealthHost(true)).toBe('host.docker.internal');
+  });
+
+  it('ignores the gateway host when docker features are disabled', () => {
+    // Regression: with docker disabled the preview runs co-resident on the host
+    // adapter (loopback). Probing `host.docker.internal` dials the docker bridge
+    // gateway where nothing published, so the preview hangs "starting" forever
+    // even though Vite is healthy on 127.0.0.1. Fall back to loopback instead.
+    process.env.AGENT_HUB_PREVIEW_HEALTH_HOST = 'host.docker.internal';
+    expect(resolvePreviewHealthHost(false)).toBeNull();
+  });
+
+  it('returns null when the env var is unset even with docker enabled', () => {
+    delete process.env.AGENT_HUB_PREVIEW_HEALTH_HOST;
+    expect(resolvePreviewHealthHost(true)).toBeNull();
+  });
+
+  it('trims whitespace and treats a blank value as unset', () => {
+    process.env.AGENT_HUB_PREVIEW_HEALTH_HOST = '   ';
+    expect(resolvePreviewHealthHost(true)).toBeNull();
+  });
+});
+
+describe('resolvePreviewUpstreamHost', () => {
+  const prev = process.env.AGENT_HUB_PREVIEW_HEALTH_HOST;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.AGENT_HUB_PREVIEW_HEALTH_HOST;
+    else process.env.AGENT_HUB_PREVIEW_HEALTH_HOST = prev;
+  });
+
+  it('uses the gateway host when docker features are enabled', () => {
+    process.env.AGENT_HUB_PREVIEW_HEALTH_HOST = 'host.docker.internal';
+    expect(resolvePreviewUpstreamHost(true)).toBe('host.docker.internal');
+  });
+
+  it('falls back to loopback when docker features are disabled', () => {
+    process.env.AGENT_HUB_PREVIEW_HEALTH_HOST = 'host.docker.internal';
+    expect(resolvePreviewUpstreamHost(false)).toBe('127.0.0.1');
+  });
+
+  it('falls back to loopback when the gateway host is unset', () => {
+    delete process.env.AGENT_HUB_PREVIEW_HEALTH_HOST;
+    expect(resolvePreviewUpstreamHost(true)).toBe('127.0.0.1');
   });
 });

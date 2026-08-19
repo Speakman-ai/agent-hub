@@ -6,6 +6,8 @@
  *   same-origin proxy so remote browsers never hit `localhost` on their laptop.
  */
 
+import { resolveDockerAvailability } from '../docker-availability.js';
+
 export function resolvePreviewClientUrl(
   publicUrl: string | null | undefined,
   sessionId: string,
@@ -21,11 +23,33 @@ export function resolvePreviewClientUrl(
   return previewProxyMountPath(sessionId);
 }
 
+/**
+ * The `AGENT_HUB_PREVIEW_HEALTH_HOST` override (e.g. `host.docker.internal`) the
+ * Hub uses to reach a host-published preview port, or `null` to fall back to
+ * loopback.
+ *
+ * That override is a docker-networking construct: it only reaches a port across
+ * the docker-host boundary from inside a container the Hub actually runs in.
+ * When docker features are disabled the Hub runs previews co-resident on the
+ * host adapter, which binds and answers on loopback (`127.0.0.1`). Honoring the
+ * gateway there dials `host.docker.internal:<port>` — the docker bridge gateway,
+ * where nothing published — so the readiness probe never connects and the
+ * preview hangs "starting" until the ready budget expires, even though the dev
+ * server is perfectly healthy on loopback. Ignoring the override in that mode is
+ * the fix. `dockerEnabled` defaults to the live docker-availability probe.
+ */
+export function resolvePreviewHealthHost(
+  dockerEnabled: boolean = resolveDockerAvailability().enabled,
+): string | null {
+  if (!dockerEnabled) return null;
+  return process.env.AGENT_HUB_PREVIEW_HEALTH_HOST?.trim() || null;
+}
+
 /** Host the Hub container uses to reach host-published preview ports. */
-export function resolvePreviewUpstreamHost(): string {
-  const fromEnv = process.env.AGENT_HUB_PREVIEW_HEALTH_HOST?.trim();
-  if (fromEnv) return fromEnv;
-  return '127.0.0.1';
+export function resolvePreviewUpstreamHost(
+  dockerEnabled: boolean = resolveDockerAvailability().enabled,
+): string {
+  return resolvePreviewHealthHost(dockerEnabled) ?? '127.0.0.1';
 }
 
 export function previewProxyMountPath(sessionId: string): string {
