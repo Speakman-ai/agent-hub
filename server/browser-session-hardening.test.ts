@@ -1,67 +1,64 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { V3 } from '@browserbasehq/stagehand';
-import { installBrowserSessionHardening } from './browser-session-hardening.js';
+import {
+  installBrowserSessionHardening,
+  resolveRoutableBrowserContext,
+} from './browser-session-hardening.js';
 
 describe('installBrowserSessionHardening', () => {
-  it('aborts requests to blocked tracker hosts', async () => {
-    let routeHandler!: (route: {
-      request: () => { url: () => string };
-      abort: () => Promise<void>;
-      continue: () => Promise<void>;
-    }) => void | Promise<void>;
-
-    const route = vi.fn(async (_pattern: string, fn: typeof routeHandler) => {
-      routeHandler = fn;
+  it('cancels downloads when downloads are disallowed', async () => {
+    let downloadHandler!: (dl: { cancel: () => Promise<void> }) => void;
+    const on = vi.fn((evt: string, fn: typeof downloadHandler) => {
+      if (evt === 'download') downloadHandler = fn;
     });
-    const ctx = {
-      on: vi.fn(),
-      route,
-    };
+    const ctx = { on, route: vi.fn(async () => {}) };
     const stagehand = { context: ctx } as unknown as V3;
 
-    await installBrowserSessionHardening(stagehand, {
-      allowDownloads: true,
-      blockAdsTrackers: true,
-    });
+    await installBrowserSessionHardening(stagehand, { allowDownloads: false });
 
-    expect(route).toHaveBeenCalledWith('**/*', expect.any(Function));
-
-    const abort = vi.fn().mockResolvedValue(undefined);
-    const cont = vi.fn().mockResolvedValue(undefined);
-    await routeHandler({
-      request: () => ({ url: () => 'https://stats.g.doubleclick.net/pixel?token=secret&sig=bad' }),
-      abort,
-      continue: cont,
-    });
-    expect(abort).toHaveBeenCalledTimes(1);
-    expect(cont).not.toHaveBeenCalled();
+    expect(on).toHaveBeenCalledWith('download', expect.any(Function));
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    downloadHandler({ cancel });
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('continues non-blocked hosts', async () => {
-    let routeHandler!: (route: {
-      request: () => { url: () => string };
-      abort: () => Promise<void>;
-      continue: () => Promise<void>;
-    }) => void | Promise<void>;
+  it('does not wire a download listener when downloads are allowed', async () => {
+    const on = vi.fn();
+    const ctx = { on, route: vi.fn(async () => {}) };
+    await installBrowserSessionHardening(ctx, { allowDownloads: true });
+    expect(on).not.toHaveBeenCalledWith('download', expect.any(Function));
+  });
 
-    const route = vi.fn(async (_pattern: string, fn: typeof routeHandler) => {
-      routeHandler = fn;
-    });
-    const stagehand = { context: { on: vi.fn(), route } } as unknown as V3;
+  it('never installs a Playwright route (the single Fetch owner is CDP)', async () => {
+    // A context.route('**/*') would be a second Fetch client that races the CDP
+    // guard on the same requestIds. Hardening must not register one.
+    const route = vi.fn(async () => {});
+    const ctx = { on: vi.fn(), route };
+    await installBrowserSessionHardening(ctx, { allowDownloads: false });
+    expect(route).not.toHaveBeenCalled();
+  });
 
-    await installBrowserSessionHardening(stagehand, {
-      allowDownloads: true,
-      blockAdsTrackers: true,
-    });
+  it('no-ops on a Stagehand v3 context that is not a Playwright BrowserContext', async () => {
+    const stagehand = {
+      context: {
+        activePage: () => null,
+        pages: () => [],
+      },
+    } as unknown as V3;
 
-    const abort = vi.fn().mockResolvedValue(undefined);
-    const cont = vi.fn().mockResolvedValue(undefined);
-    await routeHandler({
-      request: () => ({ url: () => 'https://example.com/api?x=1' }),
-      abort,
-      continue: cont,
-    });
-    expect(abort).not.toHaveBeenCalled();
-    expect(cont).toHaveBeenCalledTimes(1);
+    await expect(
+      installBrowserSessionHardening(stagehand, { allowDownloads: false }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('resolveRoutableBrowserContext', () => {
+  it('unwraps a Stagehand wrapper whose inner context is Playwright-routable', () => {
+    const inner = { on: vi.fn(), route: vi.fn() };
+    expect(resolveRoutableBrowserContext({ context: inner })).toBe(inner);
+  });
+
+  it('returns null for a Stagehand v3 context without on/route', () => {
+    expect(resolveRoutableBrowserContext({ context: { activePage: () => null } })).toBeNull();
   });
 });

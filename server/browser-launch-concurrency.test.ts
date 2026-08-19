@@ -1,32 +1,43 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const concurrencyMock = vi.hoisted(() => {
-  let constructCount = 0;
-  class StagehandMock {
-    constructor() {
-      constructCount++;
-    }
-    init = vi.fn(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    close = vi.fn(async () => {});
-  }
+  let launchCount = 0;
   return {
-    StagehandMock,
-    getConstructCount: () => constructCount,
-    resetConstructCount: () => {
-      constructCount = 0;
+    getLaunchCount: () => launchCount,
+    reset: () => {
+      launchCount = 0;
+    },
+    launch: async () => {
+      launchCount++;
+      await new Promise((r) => setTimeout(r, 20));
+      return {
+        newContext: async () => ({
+          newPage: async () => ({
+            setDefaultTimeout: () => {},
+            setDefaultNavigationTimeout: () => {},
+            url: () => 'about:blank',
+            close: async () => {},
+          }),
+          close: async () => {},
+        }),
+        close: async () => {},
+      };
     },
   };
 });
 
 vi.mock('@browserbasehq/stagehand', () => ({
-  Stagehand: concurrencyMock.StagehandMock,
+  Stagehand: class {
+    constructor() {
+      throw new Error('Stagehand must not launch for navigate/screenshot');
+    }
+  },
 }));
 
 vi.mock('playwright', () => ({
   chromium: {
     executablePath: () => '/tmp/fake-chromium-for-tests',
+    launch: concurrencyMock.launch,
   },
 }));
 
@@ -45,7 +56,7 @@ describe('launchBrowserSession — pinned id singleflight', () => {
   beforeEach(() => {
     __resetBrowserRegistryForTests();
     __resetStagehandLoaderForTests();
-    concurrencyMock.resetConstructCount();
+    concurrencyMock.reset();
     resetBrowserSecurityTestOverrides();
     vi.clearAllMocks();
   });
@@ -54,16 +65,18 @@ describe('launchBrowserSession — pinned id singleflight', () => {
     const id = 'chat-session-concurrent';
     const [a, b] = await Promise.all([launchBrowserSession({ id }), launchBrowserSession({ id })]);
     expect(a).toBe(b);
-    expect(concurrencyMock.getConstructCount()).toBe(1);
+    expect(concurrencyMock.getLaunchCount()).toBe(1);
+    expect(a.page).toBeDefined();
+    expect(a.stagehand).toBeUndefined();
   });
 
   it('reuses registered session when launchBrowserSession is called again with same id', async () => {
     const id = 'chat-session-reuse';
     const first = await launchBrowserSession({ id });
-    const afterFirst = concurrencyMock.getConstructCount();
+    const afterFirst = concurrencyMock.getLaunchCount();
     const second = await launchBrowserSession({ id });
     expect(second).toBe(first);
-    expect(concurrencyMock.getConstructCount()).toBe(afterFirst);
+    expect(concurrencyMock.getLaunchCount()).toBe(afterFirst);
   });
 
   it('getOrCreateBrowserSessionForChat does not double-launch the same chat id concurrently', async () => {
@@ -73,7 +86,7 @@ describe('launchBrowserSession — pinned id singleflight', () => {
       getOrCreateBrowserSessionForChat(id),
     ]);
     expect(a).toBe(b);
-    expect(concurrencyMock.getConstructCount()).toBe(1);
+    expect(concurrencyMock.getLaunchCount()).toBe(1);
   });
 
   it('rejects launches that exceed configured global concurrency', async () => {

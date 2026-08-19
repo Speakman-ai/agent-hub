@@ -31,6 +31,7 @@ import {
   __resetBrowserRegistryForTests,
   DEFAULT_TIMEOUT_MS,
 } from './browser.js';
+import { installContextFetchGuard } from './browser-context-fetch-guard.js';
 
 function makeMockPage() {
   const goto = vi.fn(async () => null);
@@ -52,6 +53,15 @@ function makeMockPage() {
     screenshot: vi.fn(async () => Buffer.from([])),
     goBack: vi.fn(async () => {}),
     goForward: vi.fn(async () => {}),
+    title: vi.fn(async () => 'Example'),
+    innerText: vi.fn(async () => 'Hello body'),
+    getByText: vi.fn(() => ({
+      first: () => ({ click: vi.fn(async () => {}), fill: vi.fn(async () => {}) }),
+    })),
+    getByLabel: vi.fn(() => ({
+      first: () => ({ click: vi.fn(async () => {}), fill: vi.fn(async () => {}) }),
+    })),
+    mouse: { wheel: vi.fn(async () => {}) },
   };
   return page;
 }
@@ -148,10 +158,61 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.hostExit).toBe(0);
     expect(page.goto).toHaveBeenCalledWith('https://example.com/path?q=1', {
       waitUntil: 'load',
-      timeoutMs: 30_000,
+      timeout: 30_000,
     });
     expect(r.markdown).toContain('Browser: navigate');
     expect(r.markdown).toContain('"ok": true');
+  });
+
+  it('click: natural-language target uses Playwright getByText, not Stagehand act', async () => {
+    const page = makeMockPage();
+    const stagehand = makeMockStagehand(page);
+    const actFn = stagehand.act as ReturnType<typeof vi.fn>;
+    const clickFn = vi.fn(async () => {});
+    page.getByText = vi.fn(() => ({
+      first: () => ({ click: clickFn, fill: vi.fn(async () => {}) }),
+    }));
+    __registerBrowserSessionForTests({
+      id: 'click-nl',
+      stagehand,
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('click-nl', {
+      op: 'click',
+      target: 'the blue submit button',
+    });
+    expect(r.hostExit).toBe(0);
+    expect(page.getByText).toHaveBeenCalledWith('the blue submit button', { exact: false });
+    expect(clickFn).toHaveBeenCalled();
+    expect(actFn).not.toHaveBeenCalled();
+    expect(r.markdown).toContain('"method": "getByText"');
+  });
+
+  it('click: CSS selector uses locator, not getByText or act', async () => {
+    const page = makeMockPage();
+    const stagehand = makeMockStagehand(page);
+    const actFn = stagehand.act as ReturnType<typeof vi.fn>;
+    const clickFn = vi.fn(async () => {});
+    page.locator = vi.fn(() => ({
+      click: clickFn,
+      fill: vi.fn(async () => {}),
+    }));
+    __registerBrowserSessionForTests({
+      id: 'click-sel',
+      stagehand,
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('click-sel', { op: 'click', target: '#submit' });
+    expect(r.hostExit).toBe(0);
+    expect(page.locator).toHaveBeenCalledWith('#submit');
+    expect(clickFn).toHaveBeenCalled();
+    expect(page.getByText).not.toHaveBeenCalled();
+    expect(actFn).not.toHaveBeenCalled();
+    expect(r.markdown).toContain('"method": "locator"');
   });
 
   it('navigate: prefers sessionLaunchOpts.timeoutMs over cached BrowserSession.timeoutMs', async () => {
@@ -171,7 +232,7 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.hostExit).toBe(0);
     expect(page.goto).toHaveBeenCalledWith('https://example.com/over', {
       waitUntil: 'load',
-      timeoutMs: 60_000,
+      timeout: 60_000,
     });
   });
 
@@ -192,11 +253,29 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.hostExit).toBe(0);
     expect(page.goto).toHaveBeenCalledWith('https://example.com/session-only', {
       waitUntil: 'load',
-      timeoutMs: 12_345,
+      timeout: 12_345,
     });
   });
 
-  it('extract: rejects oversize schema before Stagehand extract', async () => {
+  it('back/forward: do not TDZ-crash on the session host handle', async () => {
+    const page = makeMockPage();
+    __registerBrowserSessionForTests({
+      id: 'hist-ok',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const back = await runBrowserReActStep('hist-ok', { op: 'back' });
+    expect(back.hostExit).toBe(0);
+    expect(page.goBack).toHaveBeenCalled();
+    expect(back.markdown).not.toMatch(/before initialization/);
+    const fwd = await runBrowserReActStep('hist-ok', { op: 'forward' });
+    expect(fwd.hostExit).toBe(0);
+    expect(page.goForward).toHaveBeenCalled();
+  });
+
+  it('extract: rejects oversize schema before snapshotting the page', async () => {
     const page = makeMockPage();
     const stagehand = makeMockStagehand(page);
     const extractFn = stagehand.extract as ReturnType<typeof vi.fn>;
@@ -247,12 +326,29 @@ describe('browser-tools — runBrowserReActStep', () => {
     // The path is what the agent gets — the bytes never enter the markdown.
     expect(r.markdown).toContain(abs);
     expect(r.markdown).toContain('Read that path with your file-reading tool');
+    expect(r.markdown).toContain('Hello body');
     expect(r.markdown).not.toContain('data:image/jpeg;base64,');
 
     // The live chat preview still gets a data URL over the WebSocket.
     expect(r.ui?.screenshotCaptured).toBe(true);
     expect(r.ui?.screenshotWsUrl).toBeTruthy();
     expect(r.ui?.screenshotWsUrl).toContain('data:image/jpeg;base64,');
+  });
+
+  it('screenshot: reports empty visible text when the DOM body is blank', async () => {
+    const page = makeMockPage();
+    page.innerText.mockResolvedValueOnce('');
+    page.screenshot.mockResolvedValueOnce(Buffer.from([0xff, 0xd8, 0xff, 0xdb]));
+    __registerBrowserSessionForTests({
+      id: 'shot-blank',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('shot-blank', { op: 'screenshot' });
+    expect(r.hostExit).toBe(0);
+    expect(r.markdown).toMatch(/Visible text: \(empty — the page looks blank to the DOM\)/);
   });
 
   it('screenshot: markdown stays tiny for a large capture (pending-context regression)', async () => {
@@ -400,25 +496,22 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.markdown).toMatch(/could not be written to disk/i);
   });
 
-  it('extract: large JSON in result is shrunk in markdown', async () => {
-    const big: Record<string, string> = {};
-    const chunk = 'y'.repeat(6000);
-    for (let i = 0; i < 80; i++) big[`f${i}`] = chunk;
+  it('extract: returns a Playwright page snapshot (no nested LLM)', async () => {
     const page = makeMockPage();
+    const stagehand = makeMockStagehand(page);
+    const extractFn = stagehand.extract as ReturnType<typeof vi.fn>;
     __registerBrowserSessionForTests({
-      id: 'ext-big',
-      stagehand: makeMockStagehand(page, { extract: async () => big }),
+      id: 'ext-snap',
+      stagehand,
       createdAt: Date.now(),
       timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
-    const r = await runBrowserReActStep('ext-big', { op: 'extract', instruction: 'get stuff' });
+    const r = await runBrowserReActStep('ext-snap', { op: 'extract', instruction: 'get stuff' });
     expect(r.hostExit).toBe(0);
-    expect(r.markdown).toContain('_browserToolDataTruncated');
-    expect(r.markdown).toContain('approxOriginalJsonBytes');
-    expect(Buffer.byteLength(r.markdown, 'utf-8')).toBeLessThan(
-      Buffer.byteLength(JSON.stringify(big), 'utf-8'),
-    );
+    expect(extractFn).not.toHaveBeenCalled();
+    expect(r.markdown).toContain('Hello body');
+    expect(r.markdown).toMatch(/page snapshot/i);
   });
 
   it('wait: networkidle uses waitForLoadState', async () => {
@@ -432,7 +525,7 @@ describe('browser-tools — runBrowserReActStep', () => {
     });
     const r = await runBrowserReActStep('wait-net', { op: 'wait', condition: 'networkidle' });
     expect(r.hostExit).toBe(0);
-    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', 30_000);
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 30_000 });
     expect(page.waitForSelector).not.toHaveBeenCalled();
     expect(r.markdown).toContain('"kind": "networkidle"');
   });
@@ -451,7 +544,6 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(page.waitForSelector).toHaveBeenCalledWith('#submit', {
       state: 'visible',
       timeout: 30_000,
-      pierceShadow: true,
     });
     expect(r.markdown).toContain('"kind": "selector"');
   });
@@ -483,12 +575,13 @@ describe('browser-tools — runBrowserReActStep', () => {
     const r = await runBrowserReActStep('scr-bad', { op: 'scroll', direction: 'sideways' });
     expect(r.hostExit).toBe(1);
     expect(page.scroll).not.toHaveBeenCalled();
+    expect(page.mouse.wheel).not.toHaveBeenCalled();
     expect(r.markdown).toMatch(/Unknown direction/);
   });
 
-  it('scroll: page.scroll failure surfaces in markdown', async () => {
+  it('scroll: mouse.wheel failure surfaces in markdown', async () => {
     const page = makeMockPage();
-    page.scroll.mockRejectedValueOnce(new Error('scroll failed'));
+    page.mouse.wheel.mockRejectedValueOnce(new Error('scroll failed'));
     __registerBrowserSessionForTests({
       id: 'scr-throw',
       stagehand: makeMockStagehand(page),
@@ -583,13 +676,12 @@ describe('browser-tools — direct helpers', () => {
     const sh = asV3(makeMockStagehand(page));
     const a = await browserWaitFixed(sh, 'network_idle');
     expect(a.ok).toBe(true);
-    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', 30_000);
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 30_000 });
     const b = await browserWaitFixed(sh, 'selector:  .btn');
     expect(b.ok).toBe(true);
     expect(page.waitForSelector).toHaveBeenCalledWith('.btn', {
       state: 'visible',
       timeout: 30_000,
-      pierceShadow: true,
     });
   });
 
@@ -622,6 +714,7 @@ describe('browser-tools — direct helpers', () => {
     expect(r.ok).toBe(false);
     expect(page.evaluate).not.toHaveBeenCalled();
     expect(page.scroll).not.toHaveBeenCalled();
+    expect(page.mouse.wheel).not.toHaveBeenCalled();
   });
 });
 
@@ -806,5 +899,110 @@ describe('installPersistentDocumentNavigationGuard', () => {
     expect(mainSession.off).toHaveBeenCalledWith('Fetch.requestPaused', expect.any(Function));
     expect(send).toHaveBeenCalledWith('Fetch.disable');
     expect(handlers.has('Fetch.requestPaused')).toBe(false);
+  });
+
+  it('the transient CDP session is detached on uninstall (no leaked attachment)', async () => {
+    const { page, mainSession } = makeCdpPage();
+    const detach = vi.fn(async () => {});
+    (mainSession as unknown as { detach: () => Promise<void> }).detach = detach;
+    const sh = asV3(makeMockStagehand(page));
+    const guard = await installPersistentDocumentNavigationGuard(sh, () => true);
+    await guard.uninstall();
+    expect(detach).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('browser-tools — production BrowserSession shape (single CDP Fetch owner)', () => {
+  const PIN = 'http://localhost:4123';
+
+  beforeEach(() => {
+    __resetBrowserRegistryForTests();
+  });
+
+  // The production session is `{ id, page, context }` with `stagehand`
+  // undefined — page is a Playwright Page and `context.newCDPSession` mints the
+  // ONE Fetch client. Older tests only exercised the Stagehand-shaped fake, so
+  // the dual-interceptor race and getActivePage(session) on a real page were
+  // untested. This fixture is the production shape.
+  async function makeProdSession(id: string) {
+    const handlers = new Map<string, (p: unknown) => void>();
+    const cdpSend = vi.fn(async (..._args: unknown[]) => ({}));
+    const cdpSession = {
+      send: cdpSend,
+      on: vi.fn((evt: string, h: (p: unknown) => void) => handlers.set(evt, h)),
+      off: vi.fn((evt: string) => handlers.delete(evt)),
+      detach: vi.fn(async () => {}),
+    };
+    const newCDPSession = vi.fn(async () => cdpSession);
+    const page = makeMockPage();
+    const context = { newCDPSession, route: vi.fn(async () => {}), on: vi.fn() };
+    // Launch installs the sole Fetch owner on the context.
+    const launchGuard = await installContextFetchGuard(
+      context as unknown as Parameters<typeof installContextFetchGuard>[0],
+      cdpSession,
+      { blockAdsTrackers: true },
+    );
+    const session = {
+      id,
+      page,
+      context,
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    };
+    __registerBrowserSessionForTests(session as never);
+    // installContextFetchGuard consumed the launch call; reset so the rest of
+    // the test can prove NO further CDP session is minted.
+    newCDPSession.mockClear();
+    return { session, page, context, cdpSend, handlers, newCDPSession, launchGuard };
+  }
+
+  it('navigate folds document policy into the launch guard — no second Fetch client', async () => {
+    const { page, newCDPSession, cdpSend, handlers } = await makeProdSession('prod-nav');
+    const r = await runBrowserReActStep('prod-nav', {
+      op: 'navigate',
+      url: 'https://example.com/path',
+    });
+    expect(r.hostExit).toBe(0);
+    // getActivePage(session) resolved the real Playwright page.
+    expect(page.goto).toHaveBeenCalledWith('https://example.com/path', {
+      waitUntil: 'load',
+      timeout: 30_000,
+    });
+    // The navigate-time policy rode the launch guard; it never opened a second
+    // CDP Fetch session.
+    expect(newCDPSession).not.toHaveBeenCalled();
+    // Fetch.enable was called exactly once (at launch), not per-goto.
+    const enables = cdpSend.mock.calls.filter((c) => c[0] === 'Fetch.enable');
+    expect(enables).toHaveLength(1);
+    // The single Fetch owner is present and armed.
+    expect(handlers.has('Fetch.requestPaused')).toBe(true);
+  });
+
+  it('persistent origin pin folds in and fails off-pin Documents before egress', async () => {
+    const { session, newCDPSession, cdpSend, handlers } = await makeProdSession('prod-pin');
+    const guard = await installPersistentDocumentNavigationGuard(session as never, (u) =>
+      u.startsWith(`${PIN}/`),
+    );
+    expect(guard.installed).toBe(true);
+    // Folded into the existing launch guard — no new Fetch client.
+    expect(newCDPSession).not.toHaveBeenCalled();
+
+    const h = handlers.get('Fetch.requestPaused')!;
+    // A redirect/click-driven document navigation to a loopback SSRF target is
+    // failed at request time by the sole Fetch owner.
+    h({ requestId: 'p1', resourceType: 'Document', request: { url: 'http://127.0.0.1/admin' } });
+    expect(cdpSend).toHaveBeenCalledWith('Fetch.failRequest', {
+      requestId: 'p1',
+      errorReason: 'BlockedByClient',
+    });
+    // On-pin documents continue.
+    h({ requestId: 'p2', resourceType: 'Document', request: { url: `${PIN}/settings` } });
+    expect(cdpSend).toHaveBeenCalledWith('Fetch.continueRequest', { requestId: 'p2' });
+
+    // Uninstalling the pin restores the launch guard rather than tearing down
+    // the shared Fetch client.
+    await guard.uninstall();
+    expect(cdpSend).not.toHaveBeenCalledWith('Fetch.disable');
   });
 });

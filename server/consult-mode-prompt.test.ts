@@ -41,6 +41,8 @@ describe('consult-mode-prompt', () => {
     expect(noBrowser).not.toContain('is available in this session');
     // web + wiki are still offered even when the browser is off.
     expect(noBrowser).toContain('`web` search and `wiki` retrieval still work');
+    expect(noBrowser).toContain('"tool":"preview"');
+    expect(noBrowser).toContain('"op":"screenshot"');
     expect(noBrowser).toContain('no image-generation tool');
   });
 

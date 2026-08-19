@@ -257,7 +257,6 @@ import {
   runPreviewReActStep,
   resolvePreviewReactRuntime,
   PREVIEW_REACT_OP_SET,
-  PREVIEW_DRIVE_OPS,
 } from './preview/preview-react.js';
 import { startSessionPreview } from './preview/start-session-preview.js';
 import {
@@ -588,11 +587,28 @@ export function agentBrowserToolsEnabled(
 }
 
 /** Auto-continuation user message — browser wording omitted when tools are off for the agent. */
-export function buildAutoContinuationPrompt(browserToolsEnabled = true): string {
-  const loadedCtx = browserToolsEnabled ? 'skill/wiki/web/browser' : 'skill/wiki/web';
-  const toolGuidance = browserToolsEnabled
-    ? 'add more action objects for skill, web, or browser as needed (browser example: {"tool":"browser","op":"navigate","url":"https://example.com"}). '
-    : 'add skill or web actions only — omit browser entries from the actions array (browser tools are disabled for this agent). ';
+export function buildAutoContinuationPrompt(
+  browserToolsEnabled = true,
+  previewEnabled = false,
+): string {
+  const loadedBits = ['skill', 'wiki', 'web'];
+  if (browserToolsEnabled) loadedBits.push('browser');
+  if (previewEnabled) loadedBits.push('preview');
+  const loadedCtx = loadedBits.join('/');
+  let toolGuidance: string;
+  if (browserToolsEnabled && previewEnabled) {
+    toolGuidance =
+      'add more action objects for skill, web, browser, or preview as needed (browser example: {"tool":"browser","op":"navigate","url":"https://example.com"}; preview screenshot: {"tool":"preview","op":"screenshot"}). Do not probe localhost ports with Bash. ';
+  } else if (browserToolsEnabled) {
+    toolGuidance =
+      'add more action objects for skill, web, or browser as needed (browser example: {"tool":"browser","op":"navigate","url":"https://example.com"}). ';
+  } else if (previewEnabled) {
+    toolGuidance =
+      'add skill, web, or preview actions — omit browser entries from the actions array (browser tools are disabled for this agent). Preview example: {"tool":"preview","op":"screenshot"}. Do not probe localhost ports with Bash. ';
+  } else {
+    toolGuidance =
+      'add skill or web actions only — omit browser entries from the actions array (browser tools are disabled for this agent). ';
+  }
   return (
     `Continue your previous answer using the newly loaded ${loadedCtx} context from this same turn. ` +
     'Use a think -> act -> observe loop when needed. ' +
@@ -851,7 +867,10 @@ export function buildEnrichedPrompt(
   // reminder on later turns).
   if (browserToolsOn) {
     prompt += `\n\n## Browser Automation Available
-You have access to a real Chromium browser in this session. When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — not the generic browser tool (loopback is blocked there).`;
+You have access to a real Chromium browser in this session (host Playwright). When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — not the generic browser tool (loopback is blocked there). To see whether the running app rendered, emit \`{"tool":"preview","op":"screenshot"}\` (naked XML tag, never a code fence) then read the saved image path if your engine can view images — the observation also includes visible page text so every engine can tell if \`/\` is blank.`;
+  } else if (isDevServerConfigured(project.prEnv?.devServer)) {
+    prompt += `\n\n## Preview screenshots
+The generic \`browser\` tool is off for this agent, but you can still verify **this session's running preview** with a naked \`<agenthub:react>{"actions":[{"tool":"preview","op":"screenshot"}]}</agenthub:react>\` block (never a code fence). The host returns a saved image path plus visible page text. Do not probe localhost ports with Bash.`;
   }
 
   // Background session-startup hooks (venv / npm install in guest, etc.).
@@ -955,11 +974,11 @@ ${skillsList.join('\n')}`;
       ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
       : '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}';
     const browserToolLines = browserToolsOn
-      ? `- \`browser\` — host Chromium via Stagehand (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — natural language or CSS/XPath; \`type\` also needs \`text\`), \`extract\` (optional \`instruction\`, optional JSON \`schema\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool to actually see the picture; the bytes are never inlined into the observation. Requires Playwright Chromium on the server and an LLM API key for natural-language \`act\`/\`extract\` (override model with \`STAGEHAND_MODEL\`).
-- **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
-      : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
+      ? `- \`browser\` — host Chromium via Playwright (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — CSS/XPath preferred; natural-language labels use Playwright getByText), \`extract\` (page text snapshot — you parse it; optional \`instruction\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool if you can view images; the observation also includes visible page text. Requires Playwright Chromium on the server.
+- **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
+      : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them. Preview screenshot/navigate (below) still work when a dev server is configured.`;
     const previewToolLines = previewEnabledForPrompt
-      ? `\n- \`preview\` — observe, start, and drive **this session's dev preview** (field: \`op\` + operands). Lifecycle: \`start\` (optional \`route\`, \`reason\`) boots the same stack as the toolbar **Start preview** (first boot can take several minutes — poll \`state\`/\`logs\` until ready). Observe ops (always on): \`state\`, \`logs\` (optional \`tail\`, default 200). Drive ops (host Chromium pinned to the preview's origin${browserToolsOn ? '' : ' — currently OFF because browser tools are disabled for this agent'}): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. As with the \`browser\` tool, \`screenshot\` returns the absolute path of a saved image file to open with your file-reading tool. You cannot stop the preview — ask the human to use **Stop preview**.`
+      ? `\n- \`preview\` — observe, start, and drive **this session's dev preview** (field: \`op\` + operands). Lifecycle: \`start\` (optional \`route\`, \`reason\`) boots the same stack as the toolbar **Start preview** (first boot can take several minutes — poll \`state\`/\`logs\` until ready). Observe: \`state\`, \`logs\` (optional \`tail\`, default 200). Drive (host Chromium pinned to the preview origin — available on every engine, including when the generic \`browser\` tool is off): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. \`screenshot\` returns a saved image path plus visible page text. You cannot stop the preview — ask the human to use **Stop preview**.`
       : '';
     const terminalToolLines = `\n- \`terminal\` — co-observe and take a turn on **this session's shared terminal** the human opened (field: \`op\`). \`state\` — is a shell running, is it at an idle prompt. \`read\` — the current terminal screen + scrollback. \`inject\` (\`command\`) — run ONE command line at an idle prompt through the shared single-writer queue; it lands only when the shell is output-quiet and no human keystrokes are in flight (turn-taking), otherwise it's deferred with a retryable reason. The command is one line (no embedded newlines; the trailing newline is added for you). You cannot open or kill the shell — if none is running, ask the human to open the **Terminal** tab. This is for deliberate co-observation, not your primary command path — use your normal Bash tool for scripted work.`;
 
@@ -993,10 +1012,14 @@ The host executes actions, appends a compact observation + loaded context, and m
     toolNames.push('`terminal`');
     const exampleAction = browserToolsOn
       ? '{"tool":"browser","op":"navigate","url":"https://example.com"}'
-      : '{"tool":"wiki","query":"..."}';
+      : previewEnabledForPrompt
+        ? '{"tool":"preview","op":"screenshot"}'
+        : '{"tool":"wiki","query":"..."}';
     const browserReminder = browserToolsOn
       ? `\n**You have a real Chromium browser in this session** — ops \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. Do not claim you lack a browser or web access; drive it with a \`browser\` action.`
-      : `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array.`;
+      : previewEnabledForPrompt
+        ? `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array. You can still verify the running preview with \`{"tool":"preview","op":"screenshot"}\`.`
+        : `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array.`;
     const humanStartedLine = previewEnabledForPrompt
       ? `\n\`preview\` can boot via \`{"tool":"preview","op":"start"}\` (same as toolbar **Start preview**), then observe/drive; stop stays human-only. \`terminal\` acts on a shell the human opened (the **Terminal** tab) — you cannot open one yourself.`
       : `\n\`terminal\` acts on a shell the human has already opened (the **Terminal** tab) — you cannot open one yourself, and you'll get a "not running" observation when none is up.`;
@@ -5244,17 +5267,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 ? `${assistantContextToAppend}\n\n${gateMsg}`
                 : gateMsg;
             }
-            // Preview drive/screenshot ops ride the same Chromium capability —
-            // strip them too. `state` / `logs` are plain reads and stay allowed.
-            const isPreviewDrive = (a: ReActAction) =>
-              a.tool === 'preview' && PREVIEW_DRIVE_OPS.has(a.op ?? '');
-            const removedPreviewDrive = boundedActions.filter(isPreviewDrive).length;
-            if (removedPreviewDrive > 0) {
-              boundedActions = boundedActions.filter((a) => !isPreviewDrive(a));
-              reactObservations.push(
-                `- ${removedPreviewDrive} preview browser action(s) skipped: browser tools are disabled for agent "${agent.id}" (preview \`state\`/\`logs\` remain available).`,
-              );
-            }
+            // Preview screenshot/navigate stay allowed: they are origin-pinned
+            // to this session's preview, which every engine must be able to
+            // verify. Only the public-web `browser` tool is gated.
           }
           for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
             // A Stop landing mid-chain (the process already deregistered, so
@@ -6122,7 +6137,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               type: 'chat',
               agentId,
               sessionId,
-              content: buildAutoContinuationPrompt(effectiveBrowserToolsEnabled(agent, project)),
+              content: buildAutoContinuationPrompt(
+                effectiveBrowserToolsEnabled(agent, project),
+                isDevServerConfigured(project.prEnv?.devServer),
+              ),
               _autoContinuation: true,
               _continuationDepth: continuationDepth + 1,
               _chainStartedAtMs: chainStartedAtMs,

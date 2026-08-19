@@ -88,6 +88,21 @@ describe('buildAutoContinuationPrompt', () => {
     expect(p).not.toContain('"tool":"browser"');
     expect(p).not.toContain('skill, web, or browser');
     expect(p).toContain('browser tools are disabled');
+    expect(p).not.toContain('"tool":"preview"');
+  });
+
+  it('names preview screenshot on continuation when a dev server is configured', () => {
+    const withBrowser = buildAutoContinuationPrompt(true, true);
+    expect(withBrowser).toContain('"tool":"preview"');
+    expect(withBrowser).toContain('"op":"screenshot"');
+    expect(withBrowser).toContain('skill/wiki/web/browser/preview');
+
+    const browserOff = buildAutoContinuationPrompt(false, true);
+    expect(browserOff).not.toContain('"tool":"browser"');
+    expect(browserOff).toContain('"tool":"preview"');
+    expect(browserOff).toContain('"op":"screenshot"');
+    expect(browserOff).toContain('browser tools are disabled');
+    expect(browserOff).toMatch(/Do not probe localhost ports with Bash/);
   });
 });
 

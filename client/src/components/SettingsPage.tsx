@@ -4699,8 +4699,11 @@ export function AgentConfigSection({
                             When ON, the enriched prompt documents{' '}
                             <code className="font-mono">{'{"tool":"browser",...}'}</code> in{' '}
                             <code className="font-mono">&lt;agenthub:react&gt;</code> and the host
-                            runs Stagehand/Playwright steps. When OFF, browser actions are stripped.
-                            Uses the project default when this agent has no explicit setting
+                            runs Playwright steps against the public web. When OFF, public{' '}
+                            <code className="font-mono">browser</code> actions are stripped. Preview
+                            screenshot/navigate still work on every engine when a dev server is
+                            configured. Uses the project default when this agent has no explicit
+                            setting
                             {projRow?.browserToolsDefaultEnabled === false
                               ? ' (this project defaults to OFF).'
                               : '.'}

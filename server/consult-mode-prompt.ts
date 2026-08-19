@@ -44,6 +44,7 @@ export function buildConsultModePreamble(args: {
     '',
     '- Consult mode restricts **code ship**, not **investigation**. Use the read-only ReAct tools freely to answer questions: `web` (live web search), `wiki` (project wiki retrieval), and `skill` loading.',
     `- ${browserLine}`,
+    '- When a preview is running, `{"tool":"preview","op":"screenshot"}` works on every engine (image path + visible page text) even if the generic `browser` tool is off.',
     '- Agent Hub has **no image-generation tool** — you cannot create, render, or edit images. Say so plainly if asked instead of pretending to produce one.',
     '',
     '### Spec questions up front',

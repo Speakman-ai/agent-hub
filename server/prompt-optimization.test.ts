@@ -167,6 +167,37 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('## Browser Automation Available');
   });
 
+  it('still advertises preview screenshot when browser tools are off but a dev server is configured', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject({ prEnv: { devServer: { startCommand: 'npm run dev' } } }),
+      makeAgent({ browserToolsEnabled: false }),
+      { isFirstMessage: true },
+    );
+    expect(prompt).toContain('## Preview screenshots');
+    expect(prompt).toContain('"tool":"preview"');
+    expect(prompt).toContain('"op":"screenshot"');
+    expect(prompt).not.toContain('currently OFF because browser tools are disabled');
+    expect(prompt).toMatch(/available on every engine/i);
+  });
+
+  it('keeps the Preview screenshots callout on follow-up turns when browser tools are off', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject({ prEnv: { devServer: { startCommand: 'npm run dev' } } }),
+      makeAgent({ browserToolsEnabled: false }),
+      { isFirstMessage: false },
+    );
+    expect(prompt).toContain('## Preview screenshots');
+    expect(prompt).toContain('"tool":"preview"');
+    expect(prompt).toContain('"op":"screenshot"');
+  });
+
+  it('describes host Chromium as Playwright, not Stagehand', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+    expect(prompt).toMatch(/host Playwright/i);
+    expect(prompt).not.toContain('Stagehand');
+    expect(prompt).not.toContain('STAGEHAND_MODEL');
+  });
+
   it('keeps the "Browser Automation Available" callout on subsequent messages so mid-session refusals stop', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: false,

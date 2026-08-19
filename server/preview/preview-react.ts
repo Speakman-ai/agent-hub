@@ -27,7 +27,6 @@
 
 import type { BrowserSessionOptions } from '../browser.js';
 import { closeBrowserSession, DEFAULT_TIMEOUT_MS } from '../browser.js';
-import type { V3 } from '@browserbasehq/stagehand';
 import {
   browserClick,
   browserExtract,
@@ -37,7 +36,10 @@ import {
   browserScroll,
   browserType,
   browserWaitFixed,
+  capturePageSnapshot,
+  getActivePage,
   getOrCreateBrowserSessionForChat,
+  pageSnapshotObservationLines,
   installPersistentDocumentNavigationGuard,
   shrinkBrowserToolResultForMarkdown,
   BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS,
@@ -75,10 +77,11 @@ export type PreviewReActOp = (typeof PREVIEW_REACT_OPS)[number];
 export const PREVIEW_REACT_OP_SET: ReadonlySet<string> = new Set(PREVIEW_REACT_OPS);
 
 /**
- * Ops that need a server-side Chromium pointed at the preview. Gated behind
- * the same `browserToolsEnabled` flag as the regular `browser` tool so an
- * operator who turned Chromium off for an agent doesn't get it back via the
- * preview tool. `start` / `state` / `logs` are host-side and always on.
+ * Ops that need a server-side Chromium pointed at the preview. These are
+ * origin-pinned to this session's preview (not the public web), so they stay
+ * available even when the generic `browser` tool is off — every engine can
+ * screenshot the running app. `start` / `state` / `logs` are host-side and
+ * always on.
  */
 export const PREVIEW_DRIVE_OPS: ReadonlySet<string> = new Set([
   'screenshot',
@@ -214,7 +217,6 @@ const previewDocumentGuards = new Map<string, PreviewDocumentGuardEntry>();
 async function ensurePreviewOriginDocumentGuard(
   browserSessionId: string,
   sessionObj: unknown,
-  sh: V3,
   origin: string,
 ): Promise<boolean> {
   const existing = previewDocumentGuards.get(browserSessionId);
@@ -225,7 +227,9 @@ async function ensurePreviewOriginDocumentGuard(
     await existing.uninstall().catch(() => {});
     previewDocumentGuards.delete(browserSessionId);
   }
-  const res = await installPersistentDocumentNavigationGuard(sh, (url) => isOnOrigin(url, origin));
+  const res = await installPersistentDocumentNavigationGuard(sessionObj, (url) =>
+    isOnOrigin(url, origin),
+  );
   previewDocumentGuards.set(browserSessionId, {
     sessionObj,
     origin,
@@ -269,20 +273,9 @@ function fmtResult(r: BrowserToolResult, title: string): string {
   return [`## ${title}`, '', '```json', JSON.stringify(display, null, 2), '```'].join('\n');
 }
 
-function asV3(stagehand: unknown): V3 {
-  return stagehand as V3;
-}
-
-function activePage(sh: V3) {
-  let page = sh.context.activePage();
-  if (!page) page = sh.context.pages()[0];
-  if (!page) throw new Error('No active browser page');
-  return page;
-}
-
-function currentPageUrl(sh: V3): string | null {
+function currentPageUrl(host: unknown): string | null {
   try {
-    return activePage(sh).url();
+    return getActivePage(host).url();
   } catch {
     return null;
   }
@@ -529,7 +522,7 @@ export async function runPreviewReActStep(
       { errorLine: msg },
     );
   }
-  const sh = asV3(session.stagehand);
+  const host = session;
   const opTimeoutMs = deps.launchOpts?.timeoutMs ?? session.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   // Keep the idle reaper from tearing the preview down mid-drive.
@@ -543,7 +536,6 @@ export async function runPreviewReActStep(
   const requestGuardInstalled = await ensurePreviewOriginDocumentGuard(
     previewBrowserSessionId(chatSessionId),
     session,
-    sh,
     origin,
   );
 
@@ -555,11 +547,11 @@ export async function runPreviewReActStep(
    *  apply. Callers wrap the result in `guardEscape` either way. */
   const navigateOnPin = async (url: string): Promise<BrowserToolResult> => {
     if (!requestGuardInstalled) {
-      return browserNavigate(sh, url, opTimeoutMs, policy);
+      return browserNavigate(host, url, opTimeoutMs, policy);
     }
     try {
-      const page = activePage(sh);
-      await page.goto(url, { waitUntil: 'load', timeoutMs: opTimeoutMs });
+      const page = getActivePage(host);
+      await page.goto(url, { waitUntil: 'load', timeout: opTimeoutMs });
       return { ok: true, op: 'navigate', data: { url: page.url() } };
     } catch (e) {
       return { ok: false, op: 'navigate', error: e instanceof Error ? e.message : String(e) };
@@ -579,7 +571,7 @@ export async function runPreviewReActStep(
    *  content captured from a foreign page is never returned to the agent. */
   const guardEscape = async (r: BrowserToolResult): Promise<BrowserToolResult> => {
     if (!r.ok) return r;
-    const landed = currentPageUrl(sh);
+    const landed = currentPageUrl(host);
     if (!landed || isOnOrigin(landed, origin)) return r;
     await navigateOnPin(`${origin}/`).catch(() => undefined);
     let landedOrigin: string;
@@ -624,7 +616,7 @@ export async function runPreviewReActStep(
   // preview first (fresh browser sessions sit on about:blank). Same
   // origin-pin applies: a preview root that redirects off-origin is an error,
   // not a page the op may run against.
-  if (!isOnOrigin(currentPageUrl(sh), origin)) {
+  if (!isOnOrigin(currentPageUrl(host), origin)) {
     const nav = await guardEscape(await navigateOnPin(`${origin}/`));
     if (!nav.ok) {
       return outcome(
@@ -639,7 +631,7 @@ export async function runPreviewReActStep(
 
   switch (op) {
     case 'click': {
-      const r = await guardEscape(await browserClick(sh, input.target ?? ''));
+      const r = await guardEscape(await browserClick(host, input.target ?? ''));
       return outcome(
         fmtResult(r, 'Preview: click'),
         r.ok ? 0 : 1,
@@ -649,7 +641,7 @@ export async function runPreviewReActStep(
       );
     }
     case 'type': {
-      const r = await guardEscape(await browserType(sh, input.target ?? '', input.text ?? ''));
+      const r = await guardEscape(await browserType(host, input.target ?? '', input.text ?? ''));
       return outcome(
         fmtResult(r, 'Preview: type'),
         r.ok ? 0 : 1,
@@ -659,7 +651,7 @@ export async function runPreviewReActStep(
       );
     }
     case 'scroll': {
-      const r = await guardEscape(await browserScroll(sh, input.direction ?? ''));
+      const r = await guardEscape(await browserScroll(host, input.direction ?? ''));
       return outcome(
         fmtResult(r, 'Preview: scroll'),
         r.ok ? 0 : 1,
@@ -669,7 +661,7 @@ export async function runPreviewReActStep(
       );
     }
     case 'wait': {
-      const r = await guardEscape(await browserWaitFixed(sh, input.condition ?? '', opTimeoutMs));
+      const r = await guardEscape(await browserWaitFixed(host, input.condition ?? '', opTimeoutMs));
       return outcome(
         fmtResult(r, 'Preview: wait'),
         r.ok ? 0 : 1,
@@ -682,7 +674,7 @@ export async function runPreviewReActStep(
       // guardEscape AFTER the read: a client-side redirect between the pre-op
       // origin check and the read (TOCTOU) means the captured text may belong
       // to the foreign page — the escape result drops it.
-      const r = await guardEscape(await browserReadPage(sh));
+      const r = await guardEscape(await browserReadPage(host));
       return outcome(
         fmtResult(r, 'Preview: read_page'),
         r.ok ? 0 : 1,
@@ -692,7 +684,7 @@ export async function runPreviewReActStep(
       );
     }
     case 'extract': {
-      const r = await guardEscape(await browserExtract(sh, input.instruction, input.schema));
+      const r = await guardEscape(await browserExtract(host, input.instruction, input.schema));
       return outcome(
         fmtResult(r, 'Preview: extract'),
         r.ok ? 0 : 1,
@@ -704,7 +696,7 @@ export async function runPreviewReActStep(
     case 'screenshot': {
       // Same TOCTOU note as read_page — an off-origin landing voids the
       // capture; guardEscape's replacement result carries no imageBase64.
-      const r = await guardEscape(await browserScreenshot(sh));
+      const r = await guardEscape(await browserScreenshot(host));
       const { imageBase64, ...rest } = r;
       const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
       const captured = r.ok && imageBase64 ? imageBase64 : undefined;
@@ -729,6 +721,11 @@ export async function runPreviewReActStep(
       let screenshotWsUrl: string | undefined;
       if (captured) {
         lines.push(...screenshotObservationLines(saved, mime));
+        try {
+          lines.push(...pageSnapshotObservationLines(await capturePageSnapshot(host)));
+        } catch {
+          // Snapshot is advisory — never fail a successful capture.
+        }
         const dataUrl = `data:${mime};base64,${captured}`;
         if (dataUrl.length <= BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS) {
           screenshotWsUrl = dataUrl;

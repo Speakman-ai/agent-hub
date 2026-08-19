@@ -1,35 +1,30 @@
 /**
- * browser.ts — Shared Stagehand/Playwright browser plumbing.
+ * browser.ts — Shared Playwright browser plumbing.
  *
- * This module centralizes the configuration and lifecycle management for the
- * Stagehand-wrapped Playwright browser instances agents use during chat
- * sessions. It purposefully does not expose raw Playwright types to the rest
- * of the server; higher-level tools live in `browser-tools.ts` and interact
- * with a session through the `BrowserSession` handle returned from
- * `launchBrowserSession()`.
+ * This module centralizes Chromium lifecycle for agent chat sessions. Higher-level
+ * tools live in `browser-tools.ts` and drive a session through the
+ * `BrowserSession` handle returned from `launchBrowserSession()`.
  *
  * Design notes:
- *   • Each call to `launchBrowserSession()` spins up a dedicated Stagehand
- *     (and thus a dedicated Chromium context). That gives every agent
- *     session cookie/storage isolation — two agents acting on the same URL
- *     cannot see each other's auth state.
- *   • All launches share a single defaults object (`DEFAULT_STAGEHAND_OPTIONS`)
- *     tuned for headless operation on our EC2 Linux hosts. Callers may
- *     override any field via the `BrowserSessionOptions` argument.
+ *   • Each call to `launchBrowserSession()` spins up a dedicated Playwright
+ *     Chromium + BrowserContext. That gives every agent session cookie/storage
+ *     isolation — two agents acting on the same URL cannot see each other's
+ *     auth state.
+ *   • Navigate / screenshot / selector click use Playwright. Natural-language
+ *     `act` / `extract` may still talk to Stagehand when a test fake (or a
+ *     future attach) provides `session.stagehand`.
  *   • A module-level `sessions` registry tracks live sessions so that a
- *     graceful process shutdown (or an ad-hoc admin endpoint) can close all
- *     of them in one call.
- *   • Global concurrency, idle auto-close, Playwright route guards (ads /
- *     trackers, downloads), and operator audit lines are configured via
- *     `AppConfig` (`browserMaxConcurrentContexts`, `browserIdleTimeoutMs`, …).
- *   • The heavy `@browserbasehq/stagehand` import is deferred to the first
- *     launch so `import './browser.js'` stays cheap at module-load time
- *     (unit tests and the API bootstrap do not need to pay for it).
+ *     graceful process shutdown can close all of them in one call.
+ *   • Global concurrency, idle auto-close, the single CDP Fetch guard (ad /
+ *     tracker blocking + document URL policy), the download listener, and
+ *     operator audit lines are configured via `AppConfig`
+ *     (`browserMaxConcurrentContexts`, `browserIdleTimeoutMs`, …).
+ *   • The `playwright` import is deferred to the first launch so
+ *     `import './browser.js'` stays cheap at module-load time.
  */
 
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
-import type { V3 } from '@browserbasehq/stagehand';
 import {
   browserAllowDownloadsFromConfig,
   browserBlockAdsTrackersFromConfig,
@@ -37,6 +32,7 @@ import {
   getBrowserMaxConcurrentContexts,
 } from './browser-host-policy.js';
 import { installBrowserSessionHardening } from './browser-session-hardening.js';
+import { installContextFetchGuard, type CdpSessionLike } from './browser-context-fetch-guard.js';
 
 // ─── Public defaults ────────────────────────────────────────────
 
@@ -80,9 +76,8 @@ export interface BrowserSessionOptions {
    */
   executablePath?: string;
   /**
-   * Optional LLM model name passed through to Stagehand for act()/extract().
-   * If omitted, agents can still drive raw Playwright via `session.stagehand.context`
-   * but natural-language methods will error at call-time.
+   * Optional LLM model name for Stagehand act()/extract() when a Stagehand
+   * instance is attached to the session. Navigate / screenshot do not use it.
    */
   model?: string;
   /** Optional stable session id — useful when the caller already owns one (agent session id). */
@@ -92,14 +87,21 @@ export interface BrowserSessionOptions {
 /**
  * A live browser session handle.
  *
- * `stagehand` is typed as `unknown` in the public surface because the
- * concrete `Stagehand` type pulls the entire dependency graph into every
- * consumer's type-checking. Call sites that need to talk to Stagehand can
- * narrow via `import type { Stagehand } from '@browserbasehq/stagehand'`.
+ * `page` / `context` are Playwright objects in production (typed `unknown` so
+ * this module does not pull Playwright types into every consumer). Test fakes
+ * may omit them and provide `stagehand` with `context.activePage()` instead.
  */
 export interface BrowserSession {
   id: string;
-  stagehand: unknown;
+  /** Playwright Page (production). */
+  page?: unknown;
+  /** Playwright BrowserContext (production) — hardening + CDP. */
+  context?: unknown;
+  /**
+   * Optional Stagehand instance for natural-language act/extract fallback.
+   * Production launches do not attach one; unit tests still register fakes.
+   */
+  stagehand?: unknown;
   createdAt: number;
   /** Per-op timeout used for navigation waits (see {@link BrowserSessionOptions.timeoutMs}). */
   timeoutMs: number;
@@ -153,7 +155,7 @@ type StagehandOptions = {
  * unit tests can stub it out without importing the full Playwright runtime.
  *
  * Returns `undefined` if Playwright cannot resolve a path — in that case
- * Stagehand falls back to chrome-launcher's system Chrome discovery.
+ * launch fails rather than probing system Chrome.
  */
 export async function resolveDefaultChromiumPath(): Promise<string | undefined> {
   try {
@@ -169,7 +171,7 @@ export async function resolveDefaultChromiumPath(): Promise<string | undefined> 
 /**
  * Build a one-line, human-readable diagnostic describing how Chromium will be
  * located for a launch. Surfaced in the error message (and a server log) when
- * Stagehand's `init()` fails, so a bare `ECONNREFUSED` / spawn error becomes
+ * Chromium launch fails, so a bare `ECONNREFUSED` / spawn error becomes
  * actionable: it tells you the resolved executable path, whether that path
  * actually exists on disk, and the value of `PLAYWRIGHT_BROWSERS_PATH` (the env
  * that pins the browser location across image build vs. runtime).
@@ -182,7 +184,7 @@ export function describeChromiumLaunchEnv(executablePath: string | undefined): s
     process.env.PLAYWRIGHT_BROWSERS_PATH || '(unset → defaults to ~/.cache/ms-playwright)';
   let execNote: string;
   if (!executablePath) {
-    execNote = 'executablePath=(unresolved — Stagehand falls back to system Chrome discovery)';
+    execNote = 'executablePath=(unresolved — Playwright Chromium is not installed)';
   } else {
     const exists = existsSync(executablePath) ? 'exists' : 'MISSING ON DISK';
     execNote = `executablePath=${executablePath} [${exists}]`;
@@ -280,26 +282,44 @@ export function bumpBrowserSessionActivity(id: string): void {
   scheduleBrowserIdleClose(id);
 }
 
-/** Minimal shape we rely on from the Stagehand constructor at runtime. */
-interface StagehandLike {
-  init: () => Promise<void>;
-  close: (opts?: { force?: boolean }) => Promise<void>;
+type PlaywrightPage = {
+  setDefaultTimeout?: (ms: number) => void;
+  setDefaultNavigationTimeout?: (ms: number) => void;
+  close?: () => Promise<void>;
+};
+
+type PlaywrightContext = {
+  newPage: () => Promise<PlaywrightPage>;
+  close: () => Promise<void>;
+  on?: (event: string, handler: (...args: unknown[]) => void) => void;
+  route?: (pattern: string, handler: (...args: unknown[]) => unknown) => Promise<unknown>;
+  newCDPSession?: (page: PlaywrightPage) => Promise<CdpSessionLike>;
+};
+
+type PlaywrightBrowser = {
+  newContext: (opts?: {
+    viewport?: { width: number; height: number };
+  }) => Promise<PlaywrightContext>;
+  close: () => Promise<void>;
+};
+
+type PlaywrightChromium = {
+  executablePath: () => string;
+  launch: (opts: {
+    headless?: boolean;
+    executablePath?: string;
+    args?: string[];
+  }) => Promise<PlaywrightBrowser>;
+};
+
+async function loadPlaywrightChromium(): Promise<PlaywrightChromium> {
+  const pw = (await import('playwright')) as unknown as { chromium: PlaywrightChromium };
+  return pw.chromium;
 }
 
-// Lazily imported so module load stays cheap.
-let _stagehandCtor: (new (opts: unknown) => StagehandLike) | null = null;
-async function loadStagehand(): Promise<new (opts: unknown) => StagehandLike> {
-  if (_stagehandCtor) return _stagehandCtor;
-  const mod = (await import('@browserbasehq/stagehand')) as {
-    Stagehand: new (opts: unknown) => StagehandLike;
-  };
-  _stagehandCtor = mod.Stagehand;
-  return _stagehandCtor;
-}
-
-/** Test-only: clear lazy Stagehand constructor cache after `vi.mock('@browserbasehq/stagehand')`. */
+/** Test-only: leftover from the Stagehand launcher — kept so older tests still import it. */
 export function __resetStagehandLoaderForTests(): void {
-  _stagehandCtor = null;
+  /* Playwright launch has no constructor cache. */
 }
 
 /**
@@ -317,15 +337,15 @@ export function exceedsBrowserConcurrencyAfterReservation(
 }
 
 /**
- * Launch an isolated browser session. Each call creates a fresh Stagehand
- * (and therefore a fresh Chromium context) so sessions do not share
- * cookies, local storage, or service-worker caches.
+ * Launch an isolated browser session. Each call creates a fresh Playwright
+ * Chromium + BrowserContext so sessions do not share cookies, local storage,
+ * or service-worker caches.
  *
  * When `opts.id` is set, concurrent calls with the same id share one launch
  * (singleflight) and reuse an existing registered session if present.
  * Unpinned launches always create a new browser.
  *
- * Throws if Chromium is not installed or Stagehand fails to connect.
+ * Throws if Chromium is not installed or Playwright fails to launch.
  */
 export async function launchBrowserSession(
   opts: BrowserSessionOptions = {},
@@ -361,57 +381,102 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
         `Host browser capacity reached (${maxContexts} concurrent contexts). Close an idle browser session or retry later.`,
       );
     }
-    const Stagehand = await loadStagehand();
-    // If the caller didn't pin an executablePath, default to Playwright's
-    // managed Chromium. This avoids Stagehand's chrome-launcher falling back
-    // to system-level Chrome (which isn't installed on our EC2 host).
+    const chromium = await loadPlaywrightChromium();
     const effectiveOpts: BrowserSessionOptions = { ...opts };
     if (!effectiveOpts.executablePath) {
       effectiveOpts.executablePath = await resolveDefaultChromiumPath();
     }
-    const builtOpts = buildStagehandOptions(effectiveOpts);
+    const timeoutMs = effectiveOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const launchDiag = describeChromiumLaunchEnv(effectiveOpts.executablePath);
-    const sh = new Stagehand(builtOpts);
+    let browser: PlaywrightBrowser | undefined;
+    let context: PlaywrightContext | undefined;
+    let page: PlaywrightPage | undefined;
     try {
-      await sh.init();
+      browser = await chromium.launch({
+        headless:
+          effectiveOpts.headless ?? DEFAULT_STAGEHAND_OPTIONS.localBrowserLaunchOptions.headless,
+        executablePath: effectiveOpts.executablePath,
+        args: [...(effectiveOpts.args ?? DEFAULT_CHROMIUM_ARGS)],
+      });
+      context = await browser.newContext({
+        viewport: effectiveOpts.viewport ?? DEFAULT_VIEWPORT,
+      });
+      try {
+        await installBrowserSessionHardening(context, {
+          allowDownloads: browserAllowDownloadsFromConfig(),
+        });
+      } catch (hardErr) {
+        console.warn(`[browser] Session hardening (downloads) failed: ${String(hardErr)}`);
+      }
+      page = await context.newPage();
+      page.setDefaultTimeout?.(timeoutMs);
+      page.setDefaultNavigationTimeout?.(timeoutMs);
+      // The single CDP Fetch owner for this context: ad/tracker blocking plus
+      // the mutable main-frame document URL policy that navigate-time and
+      // preview-origin-pin callers install into it. Installed only when ad
+      // blocking is on — otherwise navigate-time callers open a short-lived CDP
+      // session per goto, so there is still never a second Fetch client.
+      if (browserBlockAdsTrackersFromConfig() && typeof context.newCDPSession === 'function') {
+        try {
+          const cdp = await context.newCDPSession(page);
+          await installContextFetchGuard(context, cdp, { blockAdsTrackers: true });
+        } catch (guardErr) {
+          console.warn(
+            `[browser] Context Fetch guard (ad-block + document policy) failed: ${String(guardErr)}`,
+          );
+        }
+      }
     } catch (initErr) {
       const msg = initErr instanceof Error ? initErr.message : String(initErr);
-      // Best-effort teardown so a half-initialized Stagehand can't leak a
-      // Chromium process when init throws partway through.
       try {
-        await (sh as unknown as { close?: (o?: { force?: boolean }) => Promise<void> }).close?.({
-          force: true,
-        });
+        await page?.close?.();
       } catch {
-        /* already dead — ignore */
+        /* already dead */
       }
-      console.warn(`[browser] Stagehand init failed: ${msg} — ${launchDiag}`);
-      throw new Error(`Chromium launch failed during Stagehand init: ${msg}. ${launchDiag}`);
+      try {
+        await context?.close();
+      } catch {
+        /* already dead */
+      }
+      try {
+        await browser?.close();
+      } catch {
+        /* already dead */
+      }
+      console.warn(`[browser] Playwright launch failed: ${msg} — ${launchDiag}`);
+      throw new Error(`Chromium launch failed: ${msg}. ${launchDiag}`);
     }
-
-    try {
-      await installBrowserSessionHardening(sh as V3, {
-        allowDownloads: browserAllowDownloadsFromConfig(),
-        blockAdsTrackers: browserBlockAdsTrackersFromConfig(),
-      });
-    } catch (hardErr) {
-      console.warn(`[browser] Session hardening (routes / downloads) failed: ${String(hardErr)}`);
+    if (!browser || !context || !page) {
+      throw new Error(`Chromium launch failed: incomplete Playwright session. ${launchDiag}`);
     }
+    const launchedBrowser = browser;
+    const launchedContext = context;
+    const launchedPage = page;
 
     const id = opts.id ?? randomUUID();
     const session: BrowserSession = {
       id,
-      stagehand: sh,
+      page: launchedPage,
+      context: launchedContext,
       createdAt: Date.now(),
-      timeoutMs: builtOpts.actTimeoutMs,
+      timeoutMs,
       close: async () => {
         clearBrowserIdleTimer(id);
         activeBrowserToolOpsBySessionId.delete(id);
         sessions.delete(id);
         try {
-          await sh.close();
+          await launchedPage.close?.();
+        } catch {
+          /* already dead */
+        }
+        try {
+          await launchedContext.close();
         } catch (err) {
-          // Cleanup is best-effort; the underlying process may have already exited.
+          console.warn(`[browser] Failed to close context ${id}: ${String(err)}`);
+        }
+        try {
+          await launchedBrowser.close();
+        } catch (err) {
           console.warn(`[browser] Failed to close session ${id}: ${String(err)}`);
         }
       },
@@ -465,8 +530,7 @@ export async function closeAllBrowserSessions(): Promise<void> {
   await Promise.allSettled(
     snapshot.map(async (s) => {
       try {
-        const sh = s.stagehand as StagehandLike;
-        await sh.close();
+        await s.close();
       } catch (err) {
         console.warn(`[browser] Failed to close session ${s.id}: ${String(err)}`);
       }
@@ -491,7 +555,7 @@ export function __resetBrowserRegistryForTests(): void {
 }
 
 /**
- * Drop a registry entry without calling Stagehand (for fake sessions from
+ * Drop a registry entry without closing Chromium (for fake sessions from
  * {@link __registerBrowserSessionForTests}).
  */
 export function __unregisterBrowserSessionForTests(id: string): void {

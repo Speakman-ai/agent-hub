@@ -1,13 +1,13 @@
 /**
  * browser-tools.ts — High-level browser operations for agent chat sessions.
  *
- * Uses Stagehand (`act`, `extract`, `observe`) for natural-language targets and
- * Stagehand's CDP `Page.locator()` for CSS/XPath-style selectors. One browser
- * per chat session id (see {@link getOrCreateBrowserSessionForChat}).
+ * Playwright drives navigate, screenshot, selector click/type, scroll, wait,
+ * and read_page. Natural-language click/type prefers Playwright getByText, then
+ * falls back to Stagehand `act` when a test fake (or attached instance) provides
+ * it. `extract` returns a Playwright page snapshot — the coding agent parses it;
+ * there is no nested LLM.
  */
 
-import { jsonSchemaToZod, type JsonSchema } from '@browserbasehq/stagehand';
-import type { V3 } from '@browserbasehq/stagehand';
 import {
   validateBrowserNavigationUrl,
   type BrowserNavigationPolicyOpts,
@@ -28,6 +28,12 @@ import {
   redactUrlForBrowserAudit,
   sanitizeBrowserToolAuditDetail,
 } from './browser-tool-audit.js';
+import {
+  getContextFetchGuard,
+  pausedRequestResourceType,
+  type CdpSessionLike,
+  type FetchRequestPausedParams,
+} from './browser-context-fetch-guard.js';
 import {
   resolveScreenshotDataDir,
   saveBrowserScreenshot,
@@ -58,7 +64,7 @@ export const BROWSER_REACT_OP_SET: ReadonlySet<string> = new Set(BROWSER_REACT_O
 /** Max UTF-8 bytes of `data` JSON embedded in ReAct continuation markdown (per tool result). */
 export const BROWSER_TOOL_MARKDOWN_DATA_MAX_BYTES = 24_000;
 
-/** Limits Stagehand `jsonSchemaToZod` work from pathological ReAct-supplied schemas. */
+/** Limits pathological ReAct-supplied extract schemas (size gate only). */
 export const BROWSER_EXTRACT_SCHEMA_MAX_JSON_BYTES = 24_000;
 export const BROWSER_EXTRACT_SCHEMA_MAX_DEPTH = 14;
 export const BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE = 80;
@@ -95,7 +101,7 @@ export interface BrowserReActActionInput {
   target?: string;
   text?: string;
   instruction?: string;
-  /** Optional JSON-schema–shaped object for structured extract (Stagehand). */
+  /** Optional JSON-schema–shaped object (size-gated; extract itself is a page snapshot). */
   schema?: Record<string, unknown>;
   direction?: string;
   condition?: string;
@@ -118,10 +124,6 @@ export function shrinkBrowserToolResultForMarkdown(
       preview: clipUtf8StringToMaxBytes(ser, maxDataJsonBytes),
     },
   };
-}
-
-function asV3(stagehand: unknown): V3 {
-  return stagehand as V3;
 }
 
 type ExtractSchemaWalkState = { nodes: number };
@@ -170,7 +172,7 @@ function walkExtractSchemaJson(
 }
 
 /**
- * Reject oversized / pathological JSON Schema objects before `jsonSchemaToZod`.
+ * Reject oversized / pathological JSON Schema objects (legacy extract payload).
  * Uses JSON round-trip so the walk cannot chase circular structures.
  */
 export function validateBrowserExtractSchema(
@@ -222,57 +224,211 @@ export function looksLikeSelectorTarget(raw: string): boolean {
   return /^[#.[\w*]/.test(t);
 }
 
-function getActivePage(stagehand: V3) {
-  let page = stagehand.context.activePage();
-  if (!page) {
-    const pages = stagehand.context.pages();
-    page = pages[0];
-  }
-  if (!page) throw new Error('No active browser page — navigate first');
-  return page;
-}
-
-/** Minimal CDP session shape (Stagehand Page keeps `mainSession` private). */
-type CdpSessionLike = {
-  send(method: string, params?: object): Promise<unknown>;
-  on(event: string, handler: (params: unknown) => void): void;
-  off(event: string, handler: (params: unknown) => void): void;
+/** Playwright Page surface (production) plus the Stagehand-shaped test fakes. */
+export type HubPage = {
+  url(): string;
+  goto(
+    url: string,
+    opts?: { waitUntil?: string; timeout?: number; timeoutMs?: number },
+  ): Promise<unknown>;
+  screenshot(opts?: { type?: string; quality?: number }): Promise<Buffer | Uint8Array>;
+  locator(selector: string): {
+    click: (opts?: object) => Promise<void>;
+    fill: (text: string) => Promise<void>;
+  };
+  evaluate(script: string): Promise<unknown>;
+  waitForLoadState?: (state: string, opts?: { timeout?: number } | number) => Promise<void>;
+  waitForSelector?: (sel: string, opts?: object) => Promise<void>;
+  goBack?: (opts?: object) => Promise<void>;
+  goForward?: (opts?: object) => Promise<void>;
+  scroll?: (a: number, b: number, c: number, d: number) => Promise<void>;
+  mouse?: { wheel: (x: number, y: number) => Promise<void> };
+  getByText?: (
+    text: string,
+    opts?: { exact?: boolean },
+  ) => {
+    first: () => {
+      click: (opts?: object) => Promise<void>;
+      fill?: (text: string) => Promise<void>;
+    };
+  };
+  getByLabel?: (
+    text: string,
+    opts?: { exact?: boolean },
+  ) => {
+    first: () => {
+      click: (opts?: object) => Promise<void>;
+      fill?: (text: string) => Promise<void>;
+    };
+  };
+  title?: () => Promise<string> | string;
+  innerText?: (selector: string) => Promise<string>;
 };
 
-type PageWithMainSession = { mainSession?: CdpSessionLike };
+export const PAGE_TEXT_EXCERPT_MAX_CHARS = 2_000;
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+}
+
+function pageFromContext(ctx: unknown): HubPage | undefined {
+  const c = asRecord(ctx);
+  if (!c) return undefined;
+  if (typeof c.activePage === 'function') {
+    const p = (c.activePage as () => HubPage | undefined)();
+    if (p) return p;
+  }
+  if (typeof c.pages === 'function') {
+    const pages = (c.pages as () => HubPage[])();
+    if (pages?.[0]) return pages[0];
+  }
+  return undefined;
+}
+
+export function getActivePage(host: unknown): HubPage {
+  const h = asRecord(host);
+  if (!h) throw new Error('No active browser page — navigate first');
+  if (h.page && typeof (h.page as HubPage).url === 'function') return h.page as HubPage;
+  const fromCtx = pageFromContext(h.context);
+  if (fromCtx) return fromCtx;
+  const sh = asRecord(h.stagehand);
+  const fromSh = pageFromContext(sh?.context);
+  if (fromSh) return fromSh;
+  throw new Error('No active browser page — navigate first');
+}
+
+function getAct(host: unknown): ((instruction: string) => Promise<unknown>) | undefined {
+  const h = asRecord(host);
+  if (!h) return undefined;
+  if (typeof h.act === 'function') return h.act as (instruction: string) => Promise<unknown>;
+  const sh = asRecord(h.stagehand);
+  if (typeof sh?.act === 'function') return sh.act as (instruction: string) => Promise<unknown>;
+  return undefined;
+}
+
+/** The raw Playwright context object for `host`, used to key the launch-time Fetch guard. */
+function contextObjectOf(host: unknown): object | undefined {
+  const h = asRecord(host);
+  if (!h) return undefined;
+  const ctx = asRecord(h.context) ?? asRecord(asRecord(h.stagehand)?.context);
+  return ctx ?? undefined;
+}
+
+function playwrightContextOf(host: unknown): {
+  newCDPSession?: (page: HubPage) => Promise<CdpSessionLike>;
+} | null {
+  const ctx = asRecord(contextObjectOf(host));
+  if (!ctx) return null;
+  if (typeof ctx.newCDPSession === 'function') {
+    return ctx as { newCDPSession: (page: HubPage) => Promise<CdpSessionLike> };
+  }
+  return null;
+}
+
+function navOpts(timeoutMs: number): { waitUntil: 'load'; timeout: number } {
+  return { waitUntil: 'load', timeout: timeoutMs };
+}
+
+export async function capturePageSnapshot(host: unknown): Promise<{
+  url: string;
+  title: string;
+  textExcerpt: string;
+}> {
+  const page = getActivePage(host);
+  const url = page.url();
+  let title = '';
+  try {
+    if (typeof page.title === 'function') {
+      const t = await page.title();
+      title = typeof t === 'string' ? t.trim() : '';
+    }
+  } catch {
+    title = '';
+  }
+  let text = '';
+  try {
+    if (typeof page.innerText === 'function') {
+      text = await page.innerText('body');
+    } else {
+      const v = await page.evaluate(
+        `(function(){ const b=document.body; if(!b) return ''; return b.innerText || b.textContent || ''; })()`,
+      );
+      text = typeof v === 'string' ? v : '';
+    }
+  } catch {
+    text = '';
+  }
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  return {
+    url,
+    title,
+    textExcerpt:
+      collapsed.length > PAGE_TEXT_EXCERPT_MAX_CHARS
+        ? `${collapsed.slice(0, PAGE_TEXT_EXCERPT_MAX_CHARS)}…`
+        : collapsed,
+  };
+}
+
+export function pageSnapshotObservationLines(snap: {
+  url: string;
+  title: string;
+  textExcerpt: string;
+}): string[] {
+  const titleBit = snap.title ? ` — title "${snap.title.replace(/"/g, "'")}"` : '';
+  const text = snap.textExcerpt.trim();
+  return [
+    '',
+    `Page: ${snap.url}${titleBit}`,
+    text ? `Visible text:\n${text}` : 'Visible text: (empty — the page looks blank to the DOM).',
+  ];
+}
+
+type PageWithMainSession = HubPage & { mainSession?: CdpSessionLike };
+
+async function resolveCdpSession(host: unknown, page: HubPage): Promise<CdpSessionLike | null> {
+  const pw = playwrightContextOf(host);
+  if (pw?.newCDPSession) {
+    try {
+      return await pw.newCDPSession(page);
+    } catch {
+      // Fall through to Stagehand mainSession on test fakes.
+    }
+  }
+  const ms = (page as PageWithMainSession).mainSession;
+  if (ms) return ms;
+  return null;
+}
 
 /**
  * Pause main-frame document requests during navigation and apply
  * {@link validateBrowserNavigationUrl} so redirect targets cannot bypass policy.
- * Best-effort: if Fetch cannot be enabled, only post-navigation URL checks apply.
+ *
+ * When the context already has the launch-time {@link installContextFetchGuard}
+ * Fetch owner, we install the policy into it (no second Fetch client). Only when
+ * there is no launch guard (ad blocking disabled, or a test fake) do we open a
+ * short-lived CDP session for the duration of the navigation. Best-effort: if
+ * neither is available, only post-navigation URL checks apply.
  */
-/** Shape of a paused-request event as far as the URL policy needs it. */
-type FetchRequestPausedParams = {
-  requestId: string;
-  /** Per the CDP spec, `resourceType` is a TOP-LEVEL event field. */
-  resourceType?: unknown;
-  request: { url: string; resourceType?: unknown };
-};
-
-/**
- * `Network.ResourceType` of a `Fetch.requestPaused` event. The spec puts
- * `resourceType` at the event's top level (NOT inside `request`); the nested
- * fallback tolerates shape drift but real Chromium uses the top-level field.
- */
-function pausedRequestResourceType(params: FetchRequestPausedParams): string | undefined {
-  if (typeof params.resourceType === 'string') return params.resourceType;
-  const nested = params.request?.resourceType;
-  return typeof nested === 'string' ? nested : undefined;
-}
-
 async function withDocumentNavigationUrlPolicy(
-  stagehand: V3,
+  host: unknown,
   run: () => Promise<void>,
   policy?: BrowserNavigationPolicyOpts,
 ): Promise<void> {
-  const page = getActivePage(stagehand);
-  const ms = (page as unknown as PageWithMainSession).mainSession;
-  if (!ms?.send || !ms?.on || !ms?.off) {
+  const launchGuard = getContextFetchGuard(contextObjectOf(host));
+  if (launchGuard?.installed) {
+    const restore = launchGuard.setDocumentPolicy(
+      (url) => validateBrowserNavigationUrl(url, policy).ok,
+    );
+    try {
+      await run();
+    } finally {
+      restore();
+    }
+    return;
+  }
+  const page = getActivePage(host);
+  const ms = await resolveCdpSession(host, page);
+  if (!ms) {
     await run();
     return;
   }
@@ -319,6 +475,8 @@ async function withDocumentNavigationUrlPolicy(
       ms.off('Fetch.requestPaused', handler);
       await ms.send('Fetch.disable').catch(() => {});
     }
+    // Drop the per-navigation CDP session so it does not leak on the target.
+    await ms.detach?.().catch(() => {});
   }
 }
 
@@ -340,26 +498,45 @@ export interface PersistentDocumentGuardHandle {
  *
  * Scope matches the navigate-time policy: only `Document` resource requests
  * are intercepted; subresources are not (see the browser egress note in the
- * ReAct prompt docs). Best-effort: returns `installed: false` when the CDP
- * session is unavailable or `Fetch.enable` fails.
+ * ReAct prompt docs). Best-effort: returns `installed: false` when no Fetch
+ * owner is available.
  *
- * Do not combine with {@link withDocumentNavigationUrlPolicy} on the same
- * page — its `Fetch.disable` on completion would silently disable this
- * guard, and two pause-handlers would race on the same requestId.
+ * When the context has the launch-time {@link installContextFetchGuard} Fetch
+ * owner (ad blocking on — the default), the origin pin is installed into that
+ * single session's document-policy slot, so there is never a second Fetch
+ * client. Only without a launch guard does this open its own persistent CDP
+ * session; in that mode do not also run {@link withDocumentNavigationUrlPolicy}
+ * on the same page (two transient Fetch clients would race the same requestId,
+ * and one's `Fetch.disable` would silently kill the other) — which is why the
+ * preview drive path issues raw `page.goto` while the pin is installed.
  */
 export async function installPersistentDocumentNavigationGuard(
-  stagehand: V3,
+  host: unknown,
   isDocumentUrlAllowed: (url: string) => boolean,
 ): Promise<PersistentDocumentGuardHandle> {
   const noop: PersistentDocumentGuardHandle = { installed: false, uninstall: async () => {} };
-  let ms: CdpSessionLike | undefined;
+  // Prefer the launch-time Fetch owner: install the origin pin into it so there
+  // is never a second Fetch client on the context (which would race requestIds
+  // and let a disallowed document egress before it is failed).
+  const launchGuard = getContextFetchGuard(contextObjectOf(host));
+  if (launchGuard?.installed) {
+    const restore = launchGuard.setDocumentPolicy(isDocumentUrlAllowed);
+    return {
+      installed: true,
+      uninstall: async () => {
+        restore();
+      },
+    };
+  }
+  let ms: CdpSessionLike | null = null;
+  let page: HubPage;
   try {
-    const page = getActivePage(stagehand);
-    ms = (page as unknown as PageWithMainSession).mainSession;
+    page = getActivePage(host);
+    ms = await resolveCdpSession(host, page);
   } catch {
     return noop;
   }
-  if (!ms?.send || !ms?.on || !ms?.off) {
+  if (!ms) {
     return noop;
   }
   const session = ms;
@@ -398,6 +575,9 @@ export async function installPersistentDocumentNavigationGuard(
     uninstall: async () => {
       session.off('Fetch.requestPaused', handler);
       await session.send('Fetch.disable').catch(() => {});
+      // Drop the CDP session so it does not leak on the target for the life of
+      // the preview drive.
+      await session.detach?.().catch(() => {});
     },
   };
 }
@@ -419,7 +599,6 @@ export async function getOrCreateBrowserSessionForChat(
   if (existing) return existing;
   return launchBrowserSession({
     id: chatSessionId,
-    model: extraOpts.model ?? resolveStagehandModelName(),
     ...extraOpts,
   });
 }
@@ -432,7 +611,7 @@ function result(op: BrowserToolOp, ok: boolean, data?: unknown, error?: string):
 }
 
 export async function browserNavigate(
-  stagehand: V3,
+  host: unknown,
   url: string,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
   policyOpts?: BrowserNavigationPolicyOpts,
@@ -444,11 +623,11 @@ export async function browserNavigate(
     return result('navigate', false, undefined, policy.error);
   }
   try {
-    const page = getActivePage(stagehand);
+    const page = getActivePage(host);
     await withDocumentNavigationUrlPolicy(
-      stagehand,
+      host,
       async () => {
-        const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs });
+        const res = await page.goto(policy.href, navOpts(timeoutMs));
         void res;
       },
       policyOpts,
@@ -470,17 +649,34 @@ export async function browserNavigate(
   }
 }
 
-export async function browserClick(stagehand: V3, target: string): Promise<BrowserToolResult> {
+export async function browserClick(host: unknown, target: string): Promise<BrowserToolResult> {
   const t = target.trim();
   if (!t) return result('click', false, undefined, 'target is required');
   try {
+    const page = getActivePage(host);
     if (looksLikeSelectorTarget(t)) {
-      const page = getActivePage(stagehand);
       await page.locator(t).click();
       return result('click', true, { method: 'locator' });
     }
-    await stagehand.act(`Click ${t}`);
-    return result('click', true, { method: 'act' });
+    if (typeof page.getByText === 'function') {
+      try {
+        await page.getByText(t, { exact: false }).first().click({ timeout: 8_000 });
+        return result('click', true, { method: 'getByText' });
+      } catch {
+        // Fall through to Stagehand act, then a selector hint.
+      }
+    }
+    const act = getAct(host);
+    if (act) {
+      await act(`Click ${t}`);
+      return result('click', true, { method: 'act' });
+    }
+    return result(
+      'click',
+      false,
+      undefined,
+      `Could not click "${t}". Pass a CSS selector (e.g. button.submit) or take a screenshot and retry.`,
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('click', false, undefined, msg);
@@ -488,21 +684,52 @@ export async function browserClick(stagehand: V3, target: string): Promise<Brows
 }
 
 export async function browserType(
-  stagehand: V3,
+  host: unknown,
   target: string,
   text: string,
 ): Promise<BrowserToolResult> {
   const t = target.trim();
   if (!t) return result('type', false, undefined, 'target is required');
   try {
+    const page = getActivePage(host);
     if (looksLikeSelectorTarget(t)) {
-      const page = getActivePage(stagehand);
       await page.locator(t).fill(String(text));
       return result('type', true, { method: 'locator' });
     }
-    const escaped = JSON.stringify(String(text));
-    await stagehand.act(`Type ${escaped} into ${t}`);
-    return result('type', true, { method: 'act' });
+    if (typeof page.getByLabel === 'function') {
+      try {
+        const loc = page.getByLabel(t, { exact: false }).first();
+        if (typeof loc.fill === 'function') {
+          await loc.fill(String(text));
+          return result('type', true, { method: 'getByLabel' });
+        }
+      } catch {
+        // Fall through.
+      }
+    }
+    if (typeof page.getByText === 'function') {
+      try {
+        const loc = page.getByText(t, { exact: false }).first();
+        if (typeof loc.fill === 'function') {
+          await loc.fill(String(text));
+          return result('type', true, { method: 'getByText' });
+        }
+      } catch {
+        // Fall through to act.
+      }
+    }
+    const act = getAct(host);
+    if (act) {
+      const escaped = JSON.stringify(String(text));
+      await act(`Type ${escaped} into ${t}`);
+      return result('type', true, { method: 'act' });
+    }
+    return result(
+      'type',
+      false,
+      undefined,
+      `Could not type into "${t}". Pass a CSS selector or take a screenshot and retry.`,
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('type', false, undefined, msg);
@@ -510,7 +737,7 @@ export async function browserType(
 }
 
 export async function browserExtract(
-  stagehand: V3,
+  host: unknown,
   instruction?: string,
   schema?: Record<string, unknown>,
 ): Promise<BrowserToolResult> {
@@ -520,25 +747,24 @@ export async function browserExtract(
       if (!policy.ok) {
         return result('extract', false, undefined, policy.error);
       }
-      const zodSchema = jsonSchemaToZod(policy.parsed as unknown as JsonSchema);
-      const data = await stagehand.extract(instruction.trim(), zodSchema);
-      return result('extract', true, data);
     }
-    if (instruction?.trim()) {
-      const data = await stagehand.extract(instruction.trim());
-      return result('extract', true, data);
-    }
-    const data = await stagehand.extract();
-    return result('extract', true, data);
+    const snap = await capturePageSnapshot(host);
+    return result('extract', true, {
+      url: snap.url,
+      title: snap.title,
+      text: snap.textExcerpt,
+      instruction: instruction?.trim() || undefined,
+      note: 'Host extract is a Playwright page snapshot (no nested LLM). Parse this text yourself; use screenshot if you need layout.',
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('extract', false, undefined, msg);
   }
 }
 
-export async function browserScreenshot(stagehand: V3): Promise<BrowserToolResult> {
+export async function browserScreenshot(host: unknown): Promise<BrowserToolResult> {
   try {
-    const page = getActivePage(stagehand);
+    const page = getActivePage(host);
     const buf = await page.screenshot({ type: 'jpeg', quality: 72 });
     const b64 = Buffer.from(buf).toString('base64');
     if (b64.length > BROWSER_SCREENSHOT_BASE64_MAX_CHARS) {
@@ -556,12 +782,24 @@ export async function browserScreenshot(stagehand: V3): Promise<BrowserToolResul
   }
 }
 
-export async function browserScroll(stagehand: V3, direction: string): Promise<BrowserToolResult> {
+async function scrollBy(page: HubPage, deltaY: number): Promise<void> {
+  if (page.mouse?.wheel) {
+    await page.mouse.wheel(0, deltaY);
+    return;
+  }
+  if (typeof page.scroll === 'function') {
+    await page.scroll(0, 0, 0, deltaY);
+    return;
+  }
+  await page.evaluate(`window.scrollBy(0, ${deltaY})`);
+}
+
+export async function browserScroll(host: unknown, direction: string): Promise<BrowserToolResult> {
   const d = direction.trim().toLowerCase();
   if (!d)
     return result('scroll', false, undefined, 'direction is required (up, down, top, bottom)');
   try {
-    const page = getActivePage(stagehand);
+    const page = getActivePage(host);
     if (d === 'top') {
       await page.evaluate('window.scrollTo(0, 0)');
     } else if (d === 'bottom') {
@@ -569,9 +807,9 @@ export async function browserScroll(stagehand: V3, direction: string): Promise<B
         `window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight))`,
       );
     } else if (d === 'up') {
-      await page.scroll(0, 0, 0, -SCROLL_DELTA_PX);
+      await scrollBy(page, -SCROLL_DELTA_PX);
     } else if (d === 'down') {
-      await page.scroll(0, 0, 0, SCROLL_DELTA_PX);
+      await scrollBy(page, SCROLL_DELTA_PX);
     } else {
       return result(
         'scroll',
@@ -588,16 +826,16 @@ export async function browserScroll(stagehand: V3, direction: string): Promise<B
 }
 
 export async function browserBack(
-  stagehand: V3,
+  host: unknown,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
   policyOpts?: BrowserNavigationPolicyOpts,
 ): Promise<BrowserToolResult> {
   try {
-    const page = getActivePage(stagehand);
+    const page = getActivePage(host);
     await withDocumentNavigationUrlPolicy(
-      stagehand,
+      host,
       async () => {
-        await page.goBack({ waitUntil: 'load', timeoutMs });
+        await page.goBack?.(navOpts(timeoutMs));
       },
       policyOpts,
     );
@@ -619,16 +857,16 @@ export async function browserBack(
 }
 
 export async function browserForward(
-  stagehand: V3,
+  host: unknown,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
   policyOpts?: BrowserNavigationPolicyOpts,
 ): Promise<BrowserToolResult> {
   try {
-    const page = getActivePage(stagehand);
+    const page = getActivePage(host);
     await withDocumentNavigationUrlPolicy(
-      stagehand,
+      host,
       async () => {
-        await page.goForward({ waitUntil: 'load', timeoutMs });
+        await page.goForward?.(navOpts(timeoutMs));
       },
       policyOpts,
     );
@@ -650,33 +888,37 @@ export async function browserForward(
 }
 
 export async function browserWaitFixed(
-  stagehand: V3,
+  host: unknown,
   condition: string,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<BrowserToolResult> {
   const c = condition.trim();
   if (!c) return result('wait', false, undefined, 'condition is required');
   try {
-    const page = getActivePage(stagehand);
+    const page = getActivePage(host);
     const lower = c.toLowerCase();
+    const waitState = async (state: string) => {
+      if (!page.waitForLoadState) throw new Error('waitForLoadState is not available');
+      await page.waitForLoadState(state, { timeout: timeoutMs });
+    };
     if (lower === 'networkidle' || lower === 'network_idle' || lower === 'network-idle') {
-      await page.waitForLoadState('networkidle', timeoutMs);
+      await waitState('networkidle');
       return result('wait', true, { kind: 'networkidle' });
     }
     if (lower === 'load') {
-      await page.waitForLoadState('load', timeoutMs);
+      await waitState('load');
       return result('wait', true, { kind: 'load' });
     }
     if (lower === 'domcontentloaded' || lower === 'dom') {
-      await page.waitForLoadState('domcontentloaded', timeoutMs);
+      await waitState('domcontentloaded');
       return result('wait', true, { kind: 'domcontentloaded' });
     }
     const selPrefix = /^selector:\s*/i.exec(c);
     const selector = selPrefix ? c.slice(selPrefix[0].length).trim() : c;
+    if (!page.waitForSelector) throw new Error('waitForSelector is not available');
     await page.waitForSelector(selector, {
       state: 'visible',
       timeout: timeoutMs,
-      pierceShadow: true,
     });
     return result('wait', true, { kind: 'selector', selector });
   } catch (e) {
@@ -685,9 +927,9 @@ export async function browserWaitFixed(
   }
 }
 
-export async function browserReadPage(stagehand: V3): Promise<BrowserToolResult> {
+export async function browserReadPage(host: unknown): Promise<BrowserToolResult> {
   try {
-    const page = getActivePage(stagehand);
+    const page = getActivePage(host);
     const text = await page.evaluate(`(function(){
       const b=document.body;
       if(!b) return '';
@@ -849,7 +1091,7 @@ export async function runBrowserReActStep(
     };
   }
   const opTimeoutMs = sessionLaunchOpts.timeoutMs ?? session.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const sh = asV3(session.stagehand);
+  const host = session;
 
   const finish = (b: BrowserReActStepOutcome): BrowserReActStepOutcome => {
     logBrowserToolAudit({
@@ -890,15 +1132,15 @@ export async function runBrowserReActStep(
         });
       }
       case 'navigate': {
-        const r = await browserNavigate(sh, input.url ?? '', opTimeoutMs);
-        const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
+        const r = await browserNavigate(host, input.url ?? '', opTimeoutMs);
+        const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return finish({
           markdown: fmt(r, 'Browser: navigate'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? input.url?.slice(0, 120) : r.error,
           ui: r.ok
             ? {
-                summary: host ? `Opened ${host}` : 'Page loaded',
+                summary: openedHost ? `Opened ${openedHost}` : 'Page loaded',
                 targetSummary: input.url?.slice(0, 220),
               }
             : {
@@ -909,7 +1151,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'click': {
-        const r = await browserClick(sh, input.target ?? '');
+        const r = await browserClick(host, input.target ?? '');
         return finish({
           markdown: fmt(r, 'Browser: click'),
           hostExit: r.ok ? 0 : 1,
@@ -924,7 +1166,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'type': {
-        const r = await browserType(sh, input.target ?? '', input.text ?? '');
+        const r = await browserType(host, input.target ?? '', input.text ?? '');
         return finish({
           markdown: fmt(r, 'Browser: type'),
           hostExit: r.ok ? 0 : 1,
@@ -942,7 +1184,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'extract': {
-        const r = await browserExtract(sh, input.instruction, input.schema);
+        const r = await browserExtract(host, input.instruction, input.schema);
         const preview = r.ok ? summarizeJsonPreview(r.data) : undefined;
         return finish({
           markdown: fmt(r, 'Browser: extract'),
@@ -954,7 +1196,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'screenshot': {
-        const r = await browserScreenshot(sh);
+        const r = await browserScreenshot(host);
         const { imageBase64, ...rest } = r;
         const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
         // The image goes to a file, never into continuation markdown — inlined
@@ -989,6 +1231,11 @@ export async function runBrowserReActStep(
         let screenshotWsUrl: string | undefined;
         if (r.ok && imageBase64) {
           lines.push(...screenshotObservationLines(saved, mime));
+          try {
+            lines.push(...pageSnapshotObservationLines(await capturePageSnapshot(host)));
+          } catch {
+            // Snapshot is advisory — never fail a successful capture.
+          }
           const dataUrl = `data:${mime};base64,${imageBase64}`;
           if (dataUrl.length <= BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS) {
             screenshotWsUrl = dataUrl;
@@ -1008,7 +1255,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'scroll': {
-        const r = await browserScroll(sh, input.direction ?? '');
+        const r = await browserScroll(host, input.direction ?? '');
         return finish({
           markdown: fmt(r, 'Browser: scroll'),
           hostExit: r.ok ? 0 : 1,
@@ -1022,31 +1269,31 @@ export async function runBrowserReActStep(
         });
       }
       case 'back': {
-        const r = await browserBack(sh, opTimeoutMs);
-        const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
+        const r = await browserBack(host, opTimeoutMs);
+        const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return finish({
           markdown: fmt(r, 'Browser: back'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { url?: string } | undefined)?.url : r.error,
           ui: r.ok
-            ? { summary: host ? `Back · ${host}` : 'Navigated back' }
+            ? { summary: openedHost ? `Back · ${openedHost}` : 'Navigated back' }
             : { summary: 'Back navigation failed', errorLine: r.error },
         });
       }
       case 'forward': {
-        const r = await browserForward(sh, opTimeoutMs);
-        const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
+        const r = await browserForward(host, opTimeoutMs);
+        const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return finish({
           markdown: fmt(r, 'Browser: forward'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { url?: string } | undefined)?.url : r.error,
           ui: r.ok
-            ? { summary: host ? `Forward · ${host}` : 'Navigated forward' }
+            ? { summary: openedHost ? `Forward · ${openedHost}` : 'Navigated forward' }
             : { summary: 'Forward navigation failed', errorLine: r.error },
         });
       }
       case 'wait': {
-        const r = await browserWaitFixed(sh, input.condition ?? '', opTimeoutMs);
+        const r = await browserWaitFixed(host, input.condition ?? '', opTimeoutMs);
         return finish({
           markdown: fmt(r, 'Browser: wait'),
           hostExit: r.ok ? 0 : 1,
@@ -1057,7 +1304,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'read_page': {
-        const r = await browserReadPage(sh);
+        const r = await browserReadPage(host);
         const body = r.data as { text?: string } | undefined;
         const pageText = body?.text ?? '';
         if (!r.ok) {

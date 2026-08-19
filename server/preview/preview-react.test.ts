@@ -66,11 +66,14 @@ function makeMockPage(initialUrl = 'about:blank') {
     })),
     screenshot: vi.fn(async () => Buffer.from('fake-jpeg-bytes')),
     evaluate: vi.fn(async () => 'page text'),
+    title: vi.fn(async () => 'Preview title'),
+    innerText: vi.fn(async () => 'Hello from preview'),
     waitForLoadState: vi.fn(async () => {}),
     waitForSelector: vi.fn(async () => {}),
     scroll: vi.fn(async () => {}),
     goBack: vi.fn(async () => {}),
     goForward: vi.fn(async () => {}),
+    mouse: { wheel: vi.fn(async () => {}) },
   };
   return page;
 }
@@ -368,6 +371,8 @@ describe('preview-react — drive ops', () => {
     // Path, not inlined bytes — the markdown feeds byte-capped pending context.
     expect(r.markdown).not.toContain('data:image/jpeg;base64,');
     expect(r.markdown).toMatch(/Screenshot saved to `.+\.jpg`/);
+    expect(r.markdown).toContain('Hello from preview');
+    expect(r.markdown).toContain('Visible text:');
     expect(r.ui?.screenshotWsUrl).toContain('data:image/jpeg;base64,');
   });
 
@@ -597,11 +602,11 @@ describe('preview-react — drive ops', () => {
 
   it('extract after a client-side redirect off-origin drops the extracted data', async () => {
     const page = makeMockPage(`${ORIGIN}/`);
-    const stagehandExtras = registerPreviewBrowser(page);
+    registerPreviewBrowser(page);
     const runtime = makeRuntime();
-    stagehandExtras.stagehand.extract.mockImplementation(async () => {
+    page.innerText.mockImplementation(async () => {
       page.__setUrl('https://example.com/external');
-      return { secret: 'EXTERNAL-EXTRACTED-DATA' };
+      return 'EXTERNAL-EXTRACTED-DATA';
     });
     const r = await runPreviewReActStep(SESSION_ID, { op: 'extract' }, { runtime });
     expect(r.hostExit).toBe(1);
