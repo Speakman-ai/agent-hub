@@ -151,6 +151,109 @@ describe('buildSessionMultiSpawnArgs', () => {
     });
     expect(plan.args[1]).not.toContain('agent-hub-local-commit');
   });
+
+  // Finalize reviewer turns are advisory (read-only) but must keep the
+  // engine's auto-approve flag so the reviewer can read worktree files the
+  // inline diff omitted. Without it, headless tool calls block on an approval
+  // that never comes and the reviewer ends with no verdict (review_failed).
+  it('grok-cli keeps --always-approve on reviewerReadOnly advisory turns', () => {
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'grok-cli',
+      model: 'grok-4.6',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      advisory: true,
+      reviewerReadOnly: true,
+    });
+    expect(plan.args).toContain('--always-approve');
+    // Still a review turn, not a build turn: no local-commit reminder.
+    expect(plan.args[1]).not.toContain('agent-hub-local-commit');
+  });
+
+  it('gemini-cli keeps --yolo on reviewerReadOnly advisory turns but omits it on plain advisory', () => {
+    const readOnly = buildSessionMultiSpawnArgs({
+      engine: 'gemini-cli',
+      model: 'gemini-2.5-pro',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      advisory: true,
+      reviewerReadOnly: true,
+    });
+    expect(readOnly.args).toContain('--yolo');
+
+    const plain = buildSessionMultiSpawnArgs({
+      engine: 'gemini-cli',
+      model: 'gemini-2.5-pro',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      advisory: true,
+    });
+    expect(plain.args).not.toContain('--yolo');
+  });
+
+  it('cursor-agent keeps --force on reviewerReadOnly advisory turns but omits it on plain advisory', () => {
+    const readOnly = buildSessionMultiSpawnArgs({
+      engine: 'cursor-agent',
+      model: 'auto',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      cursorChatId: 'chat-1',
+      advisory: true,
+      reviewerReadOnly: true,
+    });
+    expect(readOnly.args).toContain('--force');
+
+    const plain = buildSessionMultiSpawnArgs({
+      engine: 'cursor-agent',
+      model: 'auto',
+      systemPrompt: 'sys',
+      userPrompt: 'user',
+      bins,
+      cursorChatId: 'chat-1',
+      advisory: true,
+    });
+    expect(plain.args).not.toContain('--force');
+  });
+
+  // The reminder is pinned last so applyArgvPromptCap's tail-keep cannot drop
+  // it, even when a huge system prompt shoves the head off the 100 KB cap.
+  it('grok-cli keeps the tail reminder after the argv cap trims an oversized head', () => {
+    const hugeSystem = 'HEAD_MARKER ' + 'x'.repeat(200_000);
+    const reminder = 'TAIL_REMINDER_MARKER emit the verdict block';
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'grok-cli',
+      model: 'grok-4.6',
+      systemPrompt: hugeSystem,
+      userPrompt: 'user',
+      bins,
+      advisory: true,
+      reviewerReadOnly: true,
+      tailReminder: reminder,
+      sessionId: 'sess-1',
+    });
+    expect(plan.args[1]).toContain('TAIL_REMINDER_MARKER');
+    // The head was trimmed away by the argv cap.
+    expect(plan.args[1]).not.toContain('HEAD_MARKER');
+  });
+
+  it('claude keeps the tail reminder appended to the capped user prompt', () => {
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'claude-code',
+      model: 'claude-opus-4-6',
+      systemPrompt: 'sys',
+      userPrompt: 'user body',
+      bins,
+      advisory: true,
+      reviewerReadOnly: true,
+      tailReminder: 'TAIL_REMINDER_MARKER',
+    });
+    // Claude takes the user prompt as the last positional argv element.
+    expect(plan.args[plan.args.length - 1]).toContain('TAIL_REMINDER_MARKER');
+  });
 });
 
 describe('normalizeSessionMultiEngine', () => {

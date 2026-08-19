@@ -64,6 +64,28 @@ export interface BuildSessionMultiSpawnArgsInput {
   codexProfile?: string | null;
   /** When true, force read-only / ask-mode spawn (advisor turns). */
   advisory?: boolean;
+  /**
+   * Finalize in-session reviewer turn: read-only, but the reviewer must be
+   * able to read files from the worktree (its prompt tells it to read patches
+   * that were trimmed from the inline diff). Grok/Gemini/Cursor have no
+   * read-only permission mode, so on a plain `advisory` turn their
+   * auto-approve flag is dropped and every tool call blocks on an approval
+   * that never arrives headless — the reviewer then narrates "I'll read the
+   * omitted files" and ends with no verdict. When this is set we keep the
+   * auto-approve flag so those reads work; the reviewer system prompt still
+   * forbids edits/commits/pushes. Claude's `plan` mode already permits reads,
+   * so this only affects the concatenated-argv engines.
+   */
+  reviewerReadOnly?: boolean;
+  /**
+   * Directive pinned at the very end of the combined prompt. Concatenated-argv
+   * engines (grok/gemini/cursor) push `systemPrompt + userPrompt` through a
+   * single `-p` argument, so a large enriched system prompt plus a big diff can
+   * exceed {@link SAFE_ARG_STRLEN_BYTES}; `applyArgvPromptCap` then keeps the
+   * tail and drops the head (the Finalize "no PR / do not stop" override). A
+   * short reminder placed last survives that trim.
+   */
+  tailReminder?: string;
   /** Used for `--system-prompt-file` temp paths and argv-cap logging. */
   sessionId?: string;
   codexEnv?: NodeJS.ProcessEnv;
@@ -93,7 +115,16 @@ export function buildSessionMultiSpawnArgs(
     codexDangerBypass,
     codexProfile,
     advisory = false,
+    reviewerReadOnly = false,
+    tailReminder,
   } = input;
+
+  // Pin `tailReminder` (if any) as the LAST thing in the combined prompt so
+  // `applyArgvPromptCap`'s tail-keep can never drop it. Reviewer read-only
+  // turns need their worktree-read + emit-verdict contract to survive even
+  // when a large diff pushes the head off the argv cap.
+  const withTailReminder = (prompt: string): string =>
+    tailReminder ? `${prompt}\n\n${tailReminder}` : prompt;
 
   if (engine === 'cursor-agent') {
     if (!cursorChatId) {
@@ -101,7 +132,7 @@ export function buildSessionMultiSpawnArgs(
         'buildSessionMultiSpawnArgs: cursor-agent requires cursorChatId (call createCursorChat first)',
       );
     }
-    const rawPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    const rawPrompt = withTailReminder(`${systemPrompt}\n\n${userPrompt}`);
     const capped = applyArgvPromptCap(rawPrompt);
     if (capped.truncated && input.sessionId) {
       logArgvCapTruncation('cursor-agent', input.sessionId, capped.originalBytes, rawPrompt.length);
@@ -111,7 +142,10 @@ export function buildSessionMultiSpawnArgs(
       args: [
         '-p',
         capped.prompt,
-        ...(advisory ? [] : ['--force']),
+        // `--force` auto-approves tool calls. Reviewer turns need it to read
+        // worktree files even though they are read-only (edits forbidden by
+        // the reviewer system prompt); plain advisor turns still omit it.
+        ...(advisory && !reviewerReadOnly ? [] : ['--force']),
         '--model',
         model,
         '--resume',
@@ -126,7 +160,7 @@ export function buildSessionMultiSpawnArgs(
   }
 
   if (engine === 'gemini-cli') {
-    const rawPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    const rawPrompt = withTailReminder(`${systemPrompt}\n\n${userPrompt}`);
     const capped = applyArgvPromptCap(rawPrompt);
     if (capped.truncated && input.sessionId) {
       logArgvCapTruncation('gemini-cli', input.sessionId, capped.originalBytes, rawPrompt.length);
@@ -135,7 +169,9 @@ export function buildSessionMultiSpawnArgs(
     if (model && model !== 'auto') {
       args.push('--model', model);
     }
-    if (!advisory) {
+    // `--yolo` auto-approves tool calls; reviewer read-only turns keep it so
+    // the reviewer can read worktree files (edits still forbidden by prompt).
+    if (!advisory || reviewerReadOnly) {
       args.push('--yolo');
     }
     return { bin: bins.gemini, args, stdinPrompt: null, systemPromptFileCleanup: null };
@@ -148,10 +184,12 @@ export function buildSessionMultiSpawnArgs(
     // Grok has no `--system-prompt`; concatenate like Gemini. streaming-json is
     // required because callers (in-session reviewer, multi-agent advisors) feed
     // stdout through createStreamParser('grok-cli'). Omit `--always-approve` on
-    // advisory turns to match chat Ask Mode.
-    const rawPrompt = advisory
+    // advisory turns to match chat Ask Mode — but Finalize reviewer turns
+    // (`reviewerReadOnly`) keep it so the reviewer can read worktree files.
+    const combined = advisory
       ? `${systemPrompt}\n\n${userPrompt}`
       : withLocalCommitReminder(`${systemPrompt}\n\n${userPrompt}`);
+    const rawPrompt = withTailReminder(combined);
     const capped = applyArgvPromptCap(rawPrompt);
     if (capped.truncated && input.sessionId) {
       logArgvCapTruncation('grok-cli', input.sessionId, capped.originalBytes, rawPrompt.length);
@@ -163,7 +201,10 @@ export function buildSessionMultiSpawnArgs(
     if (grokModel) {
       args.push('--model', grokModel);
     }
-    if (!advisory) {
+    // `--always-approve` auto-approves tool calls. Reviewer read-only turns
+    // keep it so "read the omitted files from the worktree" actually works;
+    // the reviewer system prompt still forbids edits/commits/pushes.
+    if (!advisory || reviewerReadOnly) {
       args.push('--always-approve');
     }
     return { bin: bins.grok, args, stdinPrompt: null, systemPromptFileCleanup: null };
@@ -200,7 +241,10 @@ export function buildSessionMultiSpawnArgs(
       args.push('--profile', codexProfileVal);
     }
     args.push('-');
-    const prompt = `${systemPrompt}\n\n${userPrompt}`;
+    // Codex reads the prompt from stdin (no argv cap), but keep the tail
+    // reminder for parity so the reviewer contract reads identically across
+    // engines. Ask-mode's read-only sandbox already permits worktree reads.
+    const prompt = withTailReminder(`${systemPrompt}\n\n${userPrompt}`);
     return { bin: bins.codex, args, stdinPrompt: prompt, systemPromptFileCleanup: null };
   }
 
@@ -219,7 +263,7 @@ export function buildSessionMultiSpawnArgs(
   // local-diff reviewer prompt — overflows ARG_MAX and the spawn dies with
   // `spawn E2BIG`. Cap it exactly like the chat path does (the system prompt is
   // already file-backed above, so it's never the culprit).
-  const cappedUserPrompt = applyArgvPromptCap(userPrompt);
+  const cappedUserPrompt = applyArgvPromptCap(withTailReminder(userPrompt));
   if (cappedUserPrompt.truncated && input.sessionId) {
     logArgvCapTruncation(
       'session-multi-user',

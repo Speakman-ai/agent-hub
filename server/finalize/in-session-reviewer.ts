@@ -399,6 +399,8 @@ export async function runReviewerTurn(
           logTag: `finalize ${runId} reviewer ${reviewer.id}`,
           codexDangerBypass: !!config.codexDangerBypass,
           codexProfile: config.codexProfile,
+          reviewerReadOnly: true,
+          tailReminder: FINALIZE_REVIEWER_TAIL_REMINDER,
           timeoutMs,
           signal: args.signal,
           sessionId,
@@ -704,6 +706,23 @@ export const FINALIZE_REVIEWER_TURN_OVERRIDE = `## THIS TURN (Finalize Code Chan
 You are reviewing a **local diff that is already in the user prompt**. There is no pull request yet, so there is no PR number, repository, or dispatch PR metadata — that is expected. Do **not** stop, refuse, or ask for a PR URL. Do **not** call \`gh\` or any PR API. Review the provided diff and emit \`<agenthub:review-verdict>\`.`;
 
 /**
+ * Compact directive pinned at the very END of the reviewer's combined prompt.
+ *
+ * Grok/Gemini/Cursor pass `systemPrompt + userPrompt` through a single `-p`
+ * argument; a large enriched system prompt plus a big diff can exceed the argv
+ * cap, and `applyArgvPromptCap` keeps the tail and drops the head — taking the
+ * Finalize override ({@link FINALIZE_REVIEWER_TURN_OVERRIDE}) and the diff with
+ * it. This reminder rides last so the load-bearing contract (no PR, read the
+ * worktree, emit the verdict, do not stop) survives that trim intact.
+ */
+export const FINALIZE_REVIEWER_TAIL_REMINDER = `---
+
+REMINDER — Finalize local-diff review (read-only). This survives even if the text above was trimmed to fit:
+- There is NO GitHub PR yet. Do not call \`gh\`, fetch a PR, or ask for a PR URL. The change to review is the local diff above; any patch trimmed or omitted from it is still on disk in this worktree — read the file directly (read-only) to finish.
+- Do NOT stop after announcing a plan to read files. Actually read them, complete the review, and end THIS turn with the \`<agenthub:review-verdict>\` block. A turn that ends without that block fails the review.
+- Do not edit, commit, or push anything.`;
+
+/**
  * Compose the reviewer's system prompt: a hard Finalize override, then the
  * enriched workspace prompt, then a read-only reinforcement that no GitHub
  * PR exists yet.
@@ -763,6 +782,10 @@ interface OneTurnArgs {
   logTag: string;
   codexDangerBypass: boolean;
   codexProfile: string | null | undefined;
+  /** Keep the engine's auto-approve flag so the reviewer can read worktree files. */
+  reviewerReadOnly: boolean;
+  /** Directive pinned at the tail of the combined prompt (survives the argv cap). */
+  tailReminder: string;
   timeoutMs: number;
   signal?: ReviewerCancelSignal;
   sessionId: string;
@@ -821,6 +844,8 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
           codexDangerBypass: args.codexDangerBypass,
           codexProfile: args.codexProfile,
           advisory: true,
+          reviewerReadOnly: args.reviewerReadOnly,
+          tailReminder: args.tailReminder,
           sessionId: args.sessionId,
           codexEnv: args.spawnEnv,
           config: args.config,

@@ -522,6 +522,13 @@ describe('runReviewerTurn — happy path (approved)', () => {
     expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/grok']);
     expect(capturedArgs[0]?.args).toContain('streaming-json');
     expect(capturedArgs[0]?.args).toContain('grok-4.6');
+    // Reviewer turns are read-only but need tool access to read worktree files
+    // the inline diff omitted; without --always-approve grok stalls on approval
+    // and ends with no verdict (the reported "not finalizing with grok" bug).
+    expect(capturedArgs[0]?.args).toContain('--always-approve');
+    // The verdict/read-worktree contract is pinned at the prompt tail so the
+    // argv cap can never drop it.
+    expect(capturedArgs[0]?.args[1]).toContain('REMINDER — Finalize local-diff review');
     const frames = (deps.broadcast as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
     expect(frames).toEqual(
       expect.arrayContaining([
