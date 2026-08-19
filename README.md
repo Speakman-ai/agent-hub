@@ -72,8 +72,7 @@ in-hub review, and runs your test suite on an isolated Docker-in-Docker runner
 sized to match a GitHub-hosted runner. You see the review notes and each check
 pass or fail, then decide whether to push or merge.
 
-<img width="1470" height="803" alt="Screenshot 2026-07-21 at 9 52 45 AM" src="https://github.com/user-attachments/assets/f6992a9b-6283-41b8-b2ed-5ab06c122e4f" />
-<img width="1472" height="803" alt="Screenshot 2026-07-21 at 9 52 32 AM" src="https://github.com/user-attachments/assets/367a6dcc-c117-4973-b410-e46651c3747b" />
+![Finalize Code Changes](docs/media/finalize.png)
 
 ### Session replay (RUM)
 
@@ -82,7 +81,7 @@ Agent Hub can record real user sessions of your app with
 clicks, dead clicks, error clicks). Watch a replay, link it to a ticket — a
 self-hosted alternative to LogRocket or FullStory.
 
-<img width="1161" height="901" alt="Screenshot 2026-07-21 at 9 57 14 AM" src="https://github.com/user-attachments/assets/94090463-6e7a-4456-871b-f6469691829a" />
+![Session replay](docs/media/replay.png)
 
 ### Security scanning
 
@@ -146,7 +145,7 @@ cd agent-hub
 # Use the pinned Node version (reads .nvmrc)
 nvm use
 
-# Install everything (root, server, client, mobile)
+# Install everything (root, server, shared, client, mobile)
 npm run install:all
 
 # Start the client + server together
@@ -286,6 +285,7 @@ the data dir:
   "cursorBin": "/usr/local/bin/agent",
   "geminiBin": "/usr/local/bin/gemini",
   "codexBin": "/usr/local/bin/codex",
+  "grokBin": "/usr/local/bin/grok",
   "defaultCwd": "/home/youruser",
   "apiKey": null,
   "publicUrl": null
@@ -426,20 +426,22 @@ refetches. That's how boards, chats, and the wiki stay live across devices.
 
 The server exposes a REST API at `http://localhost:3051/api`:
 
-| Resource   | Endpoints                    | Description                             |
-| ---------- | ---------------------------- | --------------------------------------- |
-| Projects   | `/api/projects`              | CRUD for projects and their agents      |
-| Sessions   | `/api/sessions`              | Chat session management                 |
-| Messages   | `/api/sessions/:id/messages` | Message history                         |
-| Kanban     | `/api/projects/:id/board`    | Boards, columns, cards, epics, comments |
-| Wiki       | `/api/projects/:id/wiki`     | Knowledge base with full-text search    |
-| Webhooks   | `/api/webhooks`              | GitHub webhook configuration            |
-| Crons      | `/api/crons`                 | Scheduled task management               |
-| Config     | `/api/config`                | Server configuration                    |
+| Resource | Endpoints                    | Description                             |
+| -------- | ---------------------------- | --------------------------------------- |
+| Projects | `/api/projects`              | CRUD for projects and their agents      |
+| Sessions | `/api/sessions`              | Chat session management                 |
+| Messages | `/api/sessions/:id/messages` | Message history                         |
+| Kanban   | `/api/projects/:id/board`    | Boards, columns, cards, epics, comments |
+| Wiki     | `/api/projects/:id/wiki`     | Knowledge base with full-text search    |
+| Webhooks | `/api/webhooks`              | GitHub webhook configuration            |
+| Crons    | `/api/crons`                 | Scheduled task management               |
+| Config   | `/api/config`                | Server configuration                    |
 
 The full surface is generated from Zod schemas in
-[`docs/api/openapi.yaml`](docs/api/openapi.yaml). Auth is optional; when `apiKey`
-is set, send the `X-API-Key` header or `?apiKey=` query parameter.
+[`docs/api/openapi.yaml`](docs/api/openapi.yaml). First-run setup creates the
+Owner account (`/api/auth/setup`); browser clients then use JWT. The optional
+`apiKey` is a break-glass Owner credential: send it as `X-API-Key` or
+`?apiKey=`.
 
 ### Database
 
@@ -468,17 +470,19 @@ unless you move it.
 
 ## Available scripts
 
-| Command                | Description                            |
-| ---------------------- | -------------------------------------- |
-| `npm run dev`          | Start client and server concurrently   |
-| `npm run dev:client`   | Start React client on port 3050        |
-| `npm run dev:server`   | Start Express server on port 3051      |
-| `npm run build`        | Build the client for production        |
-| `npm run install:all`  | Install deps for all packages          |
-| `npm run mobile`       | Start Expo dev server for mobile       |
-| `npm run electron:dev` | Start Electron desktop app in dev mode |
-| `npm test`             | Run server tests                       |
-| `npm run test:watch`   | Run tests in watch mode                |
+| Command                | Description                                            |
+| ---------------------- | ------------------------------------------------------ |
+| `npm run dev`          | Start client and server concurrently                   |
+| `npm run dev:client`   | Start React client on port 3050                        |
+| `npm run dev:server`   | Start Express server on port 3051                      |
+| `npm run build`        | Build the client for production                        |
+| `npm run install:all`  | Install deps for all packages                          |
+| `npm run mobile`       | Start Expo dev server for mobile                       |
+| `npm run electron:dev` | Start Electron desktop app in dev mode                 |
+| `npm test`             | Run client, server, electron, mobile, and shared tests |
+| `npm run test:server`  | Run server tests only                                  |
+| `npm run test:watch`   | Watch server tests                                     |
+| `npm run typecheck`    | Type-check all packages                                |
 
 ## Project structure
 
@@ -601,9 +605,9 @@ Never commit directly to `main`, and never merge your own PR.
 | `better-sqlite3` build fails               | Install build tools: `sudo apt install build-essential python3` (Linux) or `xcode-select --install` (macOS). Then `npm rebuild better-sqlite3`.                                        |
 | WebSocket connection refused               | Verify the server is running on port 3051 and no firewall is blocking it.                                                                                                              |
 | Browser API calls fail with CORS error     | Set `ALLOWED_ORIGINS=<your-origin>` (comma-separated for multiple). Default is `http://localhost:3050,http://127.0.0.1:3050`. Electron / mobile / curl don't need this.                |
-| CLI binary not found                       | Update `claudeBin`/`cursorBin`/`geminiBin`/`codexBin` in `~/.agent-hub/data/config.json`, set the matching env var, or use **Settings → Engines**.                                     |
+| CLI binary not found                       | Update `claudeBin`/`cursorBin`/`geminiBin`/`codexBin`/`grokBin` in `~/.agent-hub/data/config.json`, set the matching env var, or use **Settings → Engines**.                           |
 | Electron app can't reach the remote server | Confirm `connConfig.mode = 'remote'` and `remoteUrl` is correct in `app.getPath('userData')/connection.json`. Auth headers are injected only for hosts matching the configured remote. |
-| `npm run install:all` fails                | Delete `node_modules` in root, client, server, and mobile, then retry.                                                                                                                 |
+| `npm run install:all` fails                | Delete `node_modules` in root, client, server, shared, and mobile, then retry.                                                                                                         |
 | Vitest missing devDependency               | With `NODE_ENV=production`, npm omits devDependencies. Use `npm run install:all` or `npm ci --include=dev` per package.                                                                |
 
 ---
