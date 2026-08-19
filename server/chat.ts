@@ -4715,6 +4715,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             agentColor: agent.color ?? null,
             assembled,
           });
+          // A Finalize fix-dispatch / rebase-conflict wait blocks on a turn-end
+          // signal for this session. A terminated turn never reaches the
+          // success `notifyFinalizeSessionTurnEnd` below, so without this the
+          // wait hangs until the ~60-min active-time budget (no stall watchdog
+          // under the automation-driven `agent_block` trigger). Signal
+          // spawn-failed so the orchestrator settles the run promptly instead.
+          // No-op unless a Finalize wait subscriber is registered for the id.
+          try {
+            notifyFinalizeSessionSpawnFailed(sessionId);
+          } catch (err) {
+            console.warn(
+              `[chat] finalize spawn-failed notify (termination) threw for ${sessionId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
           // The `active_tasks` row is gone (deleted at the top of this handler),
           // so the session is no longer `working`. Without this the cached
           // `sessions.state` and the sidebar glyph stay stuck until a refetch.
@@ -4984,6 +5000,25 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts: S, broadcast },
             { sessionId, agentId, error: errorMsg },
           );
+          // Terminal errored close (non-transient exit, no output, no failover
+          // left). A Finalize fix-dispatch / rebase-conflict wait for this
+          // session blocks on a turn-end signal and this branch never reaches
+          // the success `notifyFinalizeSessionTurnEnd` below. Non-resuming
+          // engines (grok-cli, gemini-cli) re-send the full first-message
+          // prompt every turn, so an empty errored exit is their common failure
+          // mode — and under the automation-driven `agent_block` trigger the
+          // stall watchdog is disabled, so the wait would otherwise hang until
+          // the ~60-min budget. Signal spawn-failed to settle the run promptly.
+          // No-op unless a Finalize wait subscriber is registered for the id.
+          try {
+            notifyFinalizeSessionSpawnFailed(sessionId);
+          } catch (err) {
+            console.warn(
+              `[chat] finalize spawn-failed notify (errored close) threw for ${sessionId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
           drainQueue(sessionId);
           return;
         }
