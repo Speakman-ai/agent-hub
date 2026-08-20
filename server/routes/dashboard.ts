@@ -14,6 +14,7 @@ import { reviewDecisionFor } from '../native-pr/review-decision.js';
 import { mapWithConcurrency } from '../git-host/recent-pushes.js';
 import { computeSessionState } from '../session-state.js';
 import { getUserById } from '../users-store.js';
+import { isHubAssistantAgentId } from '../../shared/utils/hub.js';
 
 /**
  * Mirrors `authIsConfigured` in routes/orgs.ts. When neither JWT-backed user
@@ -288,6 +289,9 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       .filter(
         (r) =>
           agentsById.has(r.agent_id) &&
+          // The Hub assistant is the org/user home helper, not project work —
+          // its sessions never belong in the org's in-flight work queue.
+          !isHubAssistantAgentId(r.agent_id) &&
           (!mergedSessionIds.has(r.id) || runningTaskBySession.has(r.id)),
       )
       .map((r) => ({ r, state: computeSessionState(stmts, r.id) }))

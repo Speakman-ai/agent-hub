@@ -332,6 +332,48 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(body.headline.activeSessions).toBe(body.activeSessions.length);
   });
 
+  it('excludes the Hub assistant agent sessions from the queue + count', async () => {
+    // The Hub assistant (`__hub_assistant__`) is the org/user home helper, not
+    // project work. Its sessions land in the org DB just like any other, and
+    // the assistant agent IS in the roster, so without an explicit filter they
+    // leak into the "Active sessions" work queue. Regression for card 5ba06f3e.
+    const { ensureHubAssistantAgent } = await import('../hub-assistant.js');
+    const hubAgent = ensureHubAssistantAgent();
+
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+
+    const hubSessionId = `hub-assistant-session-${Date.now()}`;
+    db.prepare(
+      `INSERT OR REPLACE INTO sessions (id, agent_id, name, created_at, updated_at)
+       VALUES (?, ?, ?, datetime('now'), datetime('now'))`,
+    ).run(hubSessionId, hubAgent.id, 'Hub');
+
+    // A running task on the hub session — the strongest reason a row would
+    // otherwise surface (streaming activity ranks above every terminal state).
+    db.prepare(
+      `INSERT OR REPLACE INTO active_tasks
+         (session_id, message_id, agent_id, pid, prompt, streamed_output, engine, model, status, started_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, 'running', ?)`,
+    ).run(
+      hubSessionId,
+      'msg-hub-1',
+      hubAgent.id,
+      9998,
+      'Consult on Agent Hub',
+      'claude-code',
+      null,
+      '2026-06-09 00:00:05',
+    );
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    expect(body.activeSessions.some((s) => s.sessionId === hubSessionId)).toBe(false);
+    expect(body.activeSessions.some((s) => s.agentId === hubAgent.id)).toBe(false);
+    expect(body.headline.activeSessions).toBe(body.activeSessions.length);
+  });
+
   it('does not let a flood of merged sessions truncate older non-merged ones (cap applies after filtering)', async () => {
     // Regression for the review finding: the display cap must be applied AFTER
     // the merged/roster filter. We seed MORE THAN the 200-row display cap worth
