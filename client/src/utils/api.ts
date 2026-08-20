@@ -869,6 +869,10 @@ export const api = {
     fetchJSON<DailySummaryWire>('/me/daily-summary', {
       method: 'POST',
       body: JSON.stringify({ tz: opts.tz }),
+      // Generation spawns an LLM one-shot; the server allows up to
+      // GENERATE_TIMEOUT_MS (90s) for a large hub. The default 15s client
+      // timeout aborts long before that, so give it headroom past the server.
+      timeout: 120_000,
     }),
   listGoogleCalendarEvents: ({
     calendarId,

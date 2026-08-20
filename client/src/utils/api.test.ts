@@ -161,6 +161,16 @@ describe('fetchJSON AbortSignal timeout', () => {
     );
   });
 
+  it('generateDailySummary uses a timeout past the 90s server generation window, not the 15s default', async () => {
+    // The server allows GENERATE_TIMEOUT_MS (90s) to spawn the LLM one-shot; the
+    // default 15s client timeout aborted long before that on a busy hub.
+    globalThis.fetch = vi.fn().mockRejectedValue(timeoutError());
+
+    await expect(api.generateDailySummary({ tz: 'UTC' })).rejects.toThrow(
+      'Request timed out after 120000ms: POST /me/daily-summary',
+    );
+  });
+
   it('does not remap TimeoutError when the caller supplied the AbortSignal', async () => {
     const raw = timeoutError();
     globalThis.fetch = vi.fn().mockRejectedValue(raw);
