@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseFinalizeTimelineKind,
+  parseFinalizeRebaseMetadata,
   parseFinalizeReviewRoundMetadata,
   parseFinalizeTerminalMetadata,
   isFinalizeStepOutputMessage,
@@ -22,6 +23,39 @@ describe('finalizeTimeline utils', () => {
     expect(meta?.runId).toBe('run-1');
     expect(meta?.round).toBe(2);
     expect(meta?.threads).toHaveLength(1);
+  });
+
+  it('parses a rebase re-loop reason so the UI can explain the extra round', () => {
+    const base = parseFinalizeRebaseMetadata(
+      JSON.stringify({ kind: 'finalize_rebase_result', round: 3, ok: true }),
+    );
+    expect(base?.reloopReason).toBeNull();
+
+    const baseDrift = parseFinalizeRebaseMetadata(
+      JSON.stringify({
+        kind: 'finalize_rebase_result',
+        round: 3,
+        ok: true,
+        reloopReason: 'base_branch_moved',
+      }),
+    );
+    expect(baseDrift?.reloopReason).toBe('base_branch_moved');
+
+    const headMoved = parseFinalizeRebaseMetadata(
+      JSON.stringify({
+        kind: 'finalize_rebase_result',
+        round: 2,
+        ok: true,
+        reloopReason: 'head_sha_moved',
+      }),
+    );
+    expect(headMoved?.reloopReason).toBe('head_sha_moved');
+
+    // An unknown/garbage reason must not leak through as a truthy value.
+    const garbage = parseFinalizeRebaseMetadata(
+      JSON.stringify({ kind: 'finalize_rebase_result', round: 1, ok: true, reloopReason: 'nope' }),
+    );
+    expect(garbage?.reloopReason).toBeNull();
   });
 
   it('parses terminal metadata with bypassedGates flag', () => {

@@ -1016,6 +1016,12 @@ export async function runFinalize(
     // `origin/<base>` as of this round's rebase; baseline for the base-drift
     // check at the push gate. Null when the base could not be resolved.
     let baseValidatedAgainst: string | null = null;
+    // Why the NEXT round re-entered rebase, when it was a push-gate re-loop
+    // (base drifted, or HEAD moved between snapshot and push) rather than a
+    // reviewer/checks fix. Set right before the gate's `continue`, consumed +
+    // cleared when the next round writes its rebase timeline message so the
+    // user sees why a fresh round appeared with no action on their part.
+    let pendingReloopReason: 'base_branch_moved' | 'head_sha_moved' | null = null;
     // §6 no-progress reruns: how many same-SHA reruns we've already spent this
     // streak. Reset to 0 whenever HEAD advances (a real commit landed). Bounds
     // the relaxed fix_no_progress path so a stuck run can't livelock.
@@ -1321,7 +1327,11 @@ export async function runFinalize(
         ok: true,
         conflict: (rebaseOutcome.conflictsDispatchedCount ?? 0) > 0,
         headSha: headValidatedAgainst,
+        reloopReason: pendingReloopReason,
       });
+      // Consumed by this round's rebase message; clear so a later fix-driven
+      // round is not mislabeled as a push-gate re-loop.
+      pendingReloopReason = null;
 
       // ── No-progress guard (§6) ──────────────────────────────────────
       // If we re-entered the loop after a fix dispatch but the post-rebase
@@ -1985,6 +1995,9 @@ export async function runFinalize(
             `[finalize-orchestrator] push gate refused for run=${runId}: ` +
               `${gateOutcome.detail}; re-entering rebase`,
           );
+          // Annotate the next round's rebase message so the user sees why a
+          // fresh review/checks round appeared: a commit landed under us.
+          pendingReloopReason = 'head_sha_moved';
           // We do not bill active-seconds here — the gate is a pure check.
           // The next loop iteration will burn the rebase + review + tasks
           // budget for the new head.
@@ -2023,6 +2036,9 @@ export async function runFinalize(
             `[finalize-orchestrator] base drift refused push for run=${runId}: ` +
               `${baseDrift.detail}; re-entering rebase`,
           );
+          // Annotate the next round's rebase message so the user sees why a
+          // fresh review/checks round appeared: the base branch advanced.
+          pendingReloopReason = 'base_branch_moved';
           continue;
         }
 

@@ -1767,7 +1767,7 @@ describe('runFinalize — push gate refuses on new HEAD', () => {
       .mockResolvedValueOnce('iter2-snapshot') // iter 2 baseline
       .mockResolvedValueOnce('iter2-snapshot'); // iter 2 gate (stable)
 
-    const { deps } = makeDeps({
+    const { deps, stmts } = makeDeps({
       resolveHeadSha: resolveHead,
     });
 
@@ -1777,6 +1777,21 @@ describe('runFinalize — push gate refuses on new HEAD', () => {
     expect(deps.runRebasePhase).toHaveBeenCalledTimes(2);
     expect(deps.pushAndCreatePr).not.toHaveBeenCalled();
     expect(resolveHead).toHaveBeenCalledTimes(4);
+
+    // Regression: the push-gate re-loop must tell the user WHY a fresh round
+    // appeared. Round 1's rebase carries no reason; round 2's rebase (the one
+    // triggered by the silent gate refusal) is annotated `head_sha_moved` in
+    // both the rendered content and the metadata payload.
+    const rebaseMsgs = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => ({
+        content: call[3] as string,
+        meta: JSON.parse(call[7] as string) as Record<string, unknown>,
+      }))
+      .filter((m) => m.meta.kind === 'finalize_rebase_result');
+    expect(rebaseMsgs).toHaveLength(2);
+    expect(rebaseMsgs[0].meta.reloopReason).toBeNull();
+    expect(rebaseMsgs[1].meta.reloopReason).toBe('head_sha_moved');
+    expect(rebaseMsgs[1].content).toContain('re-validating after a new commit landed');
   });
 
   it('does NOT refuse when HEAD is the post-rebase sha (even if ≠ trigger sha)', async () => {

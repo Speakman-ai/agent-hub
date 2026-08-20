@@ -6,6 +6,7 @@ import {
   writeFinalizeChecksRoundTimeline,
   writeFinalizeCiAbsentTimeline,
   writeFinalizeFlakeRecoveredTimeline,
+  writeFinalizeRebaseResultTimeline,
   writeFinalizeReviewRoundTimeline,
   writeFinalizeRunTerminalTimeline,
   writeFinalizeTimelineMessage,
@@ -225,6 +226,70 @@ describe('timeline-message', () => {
     const metadata = JSON.parse(String(metadataJson));
     expect(metadata.kind).toBe('finalize_ci_absent');
     expect(metadata.round).toBe(2);
+  });
+
+  it('writeFinalizeRebaseResultTimeline omits a reloop reason on a normal round', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeRebaseResultTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'mr0' },
+      { sessionId: 'sess-1', runId: 'run-1', round: 1, ok: true, headSha: 'abc123' },
+    );
+    const [, , , content, , , , metadataJson] = stmts.addMessage.run.mock.calls[0];
+    expect(String(content)).toBe('Rebase completed · round 1');
+    const metadata = JSON.parse(String(metadataJson));
+    expect(metadata.kind).toBe('finalize_rebase_result');
+    expect(metadata.reloopReason).toBeNull();
+  });
+
+  it('writeFinalizeRebaseResultTimeline explains a base-drift re-loop', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeRebaseResultTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'mr1' },
+      {
+        sessionId: 'sess-1',
+        runId: 'run-1',
+        round: 3,
+        ok: true,
+        headSha: 'def456',
+        reloopReason: 'base_branch_moved',
+      },
+    );
+    const [, , , content, , , , metadataJson] = stmts.addMessage.run.mock.calls[0];
+    expect(String(content)).toContain('round 3');
+    expect(String(content)).toContain('re-validating after the base branch advanced');
+    const metadata = JSON.parse(String(metadataJson));
+    expect(metadata.reloopReason).toBe('base_branch_moved');
+  });
+
+  it('writeFinalizeRebaseResultTimeline explains a head-moved re-loop', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeRebaseResultTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'mr2' },
+      {
+        sessionId: 'sess-1',
+        runId: 'run-1',
+        round: 2,
+        ok: true,
+        headSha: 'aaa111',
+        reloopReason: 'head_sha_moved',
+      },
+    );
+    const [, , , content, , , , metadataJson] = stmts.addMessage.run.mock.calls[0];
+    expect(String(content)).toContain('re-validating after a new commit landed');
+    const metadata = JSON.parse(String(metadataJson));
+    expect(metadata.reloopReason).toBe('head_sha_moved');
   });
 
   it('readFinalizeLoopRound defaults invalid values to 0', () => {

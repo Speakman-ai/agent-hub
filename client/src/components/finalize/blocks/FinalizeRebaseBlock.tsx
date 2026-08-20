@@ -8,6 +8,12 @@ export default function FinalizeRebaseBlock({ message }: any) {
   if (!meta) return null;
 
   const roundLabel = meta.round > 0 ? `Rebase · round ${meta.round}` : 'Rebase';
+  const reloopNote =
+    meta.reloopReason === 'base_branch_moved'
+      ? 'Re-running because the base branch advanced — the previous review and checks were validated against older code.'
+      : meta.reloopReason === 'head_sha_moved'
+        ? 'Re-running because a new commit landed — the previous review and checks were validated against an older commit.'
+        : null;
   const Icon = meta.ok ? CheckCircle2 : XCircle;
   const tone = meta.ok ? 'text-emerald-300' : 'text-red-300';
   const border = meta.ok
@@ -35,6 +41,11 @@ export default function FinalizeRebaseBlock({ message }: any) {
             ) : null}
             {!meta.ok && meta.detail ? (
               <p className="text-xs text-red-200/80 mt-0.5">{meta.detail}</p>
+            ) : null}
+            {reloopNote ? (
+              <p className="text-xs text-amber-200/80 mt-0.5" data-testid="finalize-rebase-reloop">
+                {reloopNote}
+              </p>
             ) : null}
           </div>
         </div>

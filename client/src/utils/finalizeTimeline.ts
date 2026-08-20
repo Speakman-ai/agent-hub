@@ -85,6 +85,10 @@ export function parseFinalizeChecksRoundMetadata(metadataString: any) {
 export function parseFinalizeRebaseMetadata(metadataString: any) {
   const parsed = parseFinalizeTimelineMetadata(metadataString);
   if (!parsed || parsed.kind !== 'finalize_rebase_result') return null;
+  const reloopReason =
+    parsed.reloopReason === 'base_branch_moved' || parsed.reloopReason === 'head_sha_moved'
+      ? parsed.reloopReason
+      : null;
   return {
     runId: parsed.runId ?? parsed.run_id ?? null,
     round: typeof parsed.round === 'number' ? parsed.round : 0,
@@ -92,6 +96,7 @@ export function parseFinalizeRebaseMetadata(metadataString: any) {
     conflict: Boolean(parsed.conflict),
     headSha: typeof parsed.headSha === 'string' ? parsed.headSha : null,
     detail: typeof parsed.detail === 'string' ? parsed.detail : null,
+    reloopReason,
   };
 }
 

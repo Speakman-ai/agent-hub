@@ -157,6 +157,23 @@ export function writeFinalizeRunStartedTimeline(
   });
 }
 
+/**
+ * Why a fix-loop round re-entered rebase without any code change from the
+ * session. Surfaced so a user watching Finalize does not read a fresh
+ * rebase/review/checks round as unexplained churn:
+ *   - `base_branch_moved` — the base branch advanced onto ground this branch
+ *     also touches while review + checks ran, so the prior signals are stale.
+ *   - `head_sha_moved` — a new commit landed on the feature branch between the
+ *     post-rebase snapshot and the push gate, so we re-validate the new HEAD.
+ */
+export type FinalizeRebaseReloopReason = 'base_branch_moved' | 'head_sha_moved';
+
+function reloopReasonText(reason: FinalizeRebaseReloopReason): string {
+  return reason === 'base_branch_moved'
+    ? 're-validating after the base branch advanced'
+    : 're-validating after a new commit landed';
+}
+
 export function writeFinalizeRebaseResultTimeline(
   deps: TimelineMessageDeps,
   args: {
@@ -167,6 +184,12 @@ export function writeFinalizeRebaseResultTimeline(
     conflict?: boolean;
     headSha?: string | null;
     detail?: string | null;
+    /**
+     * Set when this round was triggered by a push-gate re-loop rather than a
+     * reviewer/checks fix. Annotates the message so the user sees why a fresh
+     * round appeared even though nothing they did changed.
+     */
+    reloopReason?: FinalizeRebaseReloopReason | null;
   },
 ): string | null {
   const label = args.ok
@@ -174,10 +197,14 @@ export function writeFinalizeRebaseResultTimeline(
       ? 'Rebase completed (conflicts resolved)'
       : 'Rebase completed'
     : 'Rebase failed';
+  const roundLabel = args.round > 0 ? `${label} · round ${args.round}` : label;
+  const content = args.reloopReason
+    ? `${roundLabel} · ${reloopReasonText(args.reloopReason)}`
+    : roundLabel;
   return writeFinalizeTimelineMessage(deps, {
     sessionId: args.sessionId,
     kind: 'finalize_rebase_result',
-    content: args.round > 0 ? `${label} · round ${args.round}` : label,
+    content,
     payload: {
       runId: args.runId,
       round: args.round,
@@ -185,6 +212,7 @@ export function writeFinalizeRebaseResultTimeline(
       conflict: Boolean(args.conflict),
       headSha: args.headSha ?? null,
       detail: args.detail ?? null,
+      reloopReason: args.reloopReason ?? null,
     },
   });
 }
