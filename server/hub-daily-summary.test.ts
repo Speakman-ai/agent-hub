@@ -138,7 +138,7 @@ describe('collectDailySummaryFacts', () => {
       name: 'Yesterday work',
       updatedAt: '2026-08-18 15:00:00',
     });
-    seedSession({
+    const otherRunningSession = seedSession({
       ownerId: userB,
       name: 'Someone else',
       updatedAt: '2026-08-19 15:00:00',
@@ -168,6 +168,13 @@ describe('collectDailySummaryFacts', () => {
          VALUES (?, ?, 'agent-a', 'working', 'claude-code', 'running')`,
       )
       .run(todaySession, uuidv4());
+    // Another user's running session must never surface in a personal summary.
+    getDb()
+      .prepare(
+        `INSERT INTO active_tasks (session_id, message_id, agent_id, prompt, engine, status)
+         VALUES (?, ?, 'agent-a', 'working', 'claude-code', 'running')`,
+      )
+      .run(otherRunningSession, uuidv4());
 
     const doneToday = createTodo({ userId: userA, title: 'Done today' });
     updateTodo(userA, doneToday.id, { status: 'done' });
@@ -195,6 +202,9 @@ describe('collectDailySummaryFacts', () => {
     expect(facts.todayCards.map((c) => c.title)).toEqual(['Today card']);
     expect(facts.yesterdayCards.map((c) => c.title)).toEqual(['Yesterday card']);
     expect(facts.running.some((r) => r.sessionId === todaySession && r.mine)).toBe(true);
+    // Regression: only the caller's own running sessions, never another user's.
+    expect(facts.running.some((r) => r.sessionId === otherRunningSession)).toBe(false);
+    expect(facts.running.every((r) => r.mine)).toBe(true);
     expect(facts.todayDoneTodos.map((t) => t.title)).toEqual(['Done today']);
 
     const prompt = formatFactsForPrompt(facts);

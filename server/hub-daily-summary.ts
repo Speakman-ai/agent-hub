@@ -255,6 +255,8 @@ function queryUserMessages(
 }
 
 function queryRunning(userId: string): DailySummaryRunningFact[] {
+  // Only the caller's own running sessions. The daily summary is a personal
+  // "my work" report — other users' in-flight sessions must never leak in.
   const rows = getDb()
     .prepare(
       `SELECT at.session_id AS session_id, s.name AS session_name, s.agent_id AS agent_id,
@@ -264,25 +266,19 @@ function queryRunning(userId: string): DailySummaryRunningFact[] {
        JOIN sessions s ON s.id = at.session_id
        WHERE at.status = 'running'
          AND s.deleted_at IS NULL
+         AND s.owner_user_id = ?
        ORDER BY at.started_at ASC
        LIMIT ?`,
     )
-    .all(MAX_RUNNING * 2) as RunningRow[];
-  const mine: DailySummaryRunningFact[] = [];
-  const others: DailySummaryRunningFact[] = [];
-  for (const row of rows) {
-    const fact: DailySummaryRunningFact = {
-      sessionId: row.session_id,
-      sessionName: row.session_name,
-      agentId: row.agent_id,
-      kind: sessionKind(row.agent_id, row.session_mode),
-      mine: row.owner_user_id === userId,
-      startedAt: row.started_at,
-    };
-    if (fact.mine) mine.push(fact);
-    else others.push(fact);
-  }
-  return [...mine, ...others].slice(0, MAX_RUNNING);
+    .all(userId, MAX_RUNNING) as RunningRow[];
+  return rows.map((row) => ({
+    sessionId: row.session_id,
+    sessionName: row.session_name,
+    agentId: row.agent_id,
+    kind: sessionKind(row.agent_id, row.session_mode),
+    mine: true,
+    startedAt: row.started_at,
+  }));
 }
 
 function toCardFact(card: {
@@ -424,7 +420,7 @@ export function formatFactsForPrompt(facts: DailySummaryFacts): string {
     'TODAY — running sessions:',
     linesFor(facts.running, (s) => {
       const name = mdLink(s.sessionName, dailySummarySessionHref(s.sessionId, s.agentId));
-      return `${name} [${s.kind}${s.mine ? ', yours' : ', org'}] agent=${s.agentId} started=${s.startedAt}`;
+      return `${name} [${s.kind}] agent=${s.agentId} started=${s.startedAt}`;
     }),
     'TODAY — open cards assigned to you:',
     linesFor(facts.openCards, (c) => {
