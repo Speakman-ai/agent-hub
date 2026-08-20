@@ -189,6 +189,15 @@ describe('requiredSkillIdsForSession', () => {
     ]);
   });
 
+  it('force-loads Hub operating skills in hub mode', () => {
+    expect(requiredSkillIdsForSession({ session_mode: 'hub' })).toEqual([
+      'agent-hub',
+      'agent-hub-kanban',
+      'agent-hub-sessions',
+      'agent-hub-heartbeats-crons',
+    ]);
+  });
+
   it('loads nothing for chat / default / missing mode', () => {
     expect(requiredSkillIdsForSession({ session_mode: 'chat' })).toEqual([]);
     expect(requiredSkillIdsForSession({ session_mode: null })).toEqual([]);

@@ -7,9 +7,9 @@
  * from the in-memory list (agent switch races, optimistic navigation, etc.).
  */
 
-/** True when the session is in Consult (Hub-only, no code ship / Finalize). */
+/** True when the session is in Consult or Hub (no code ship / Finalize). */
 export function isSessionConsultModeEnabled(session: any) {
-  if (session?.session_mode === 'consult') return true;
+  if (session?.session_mode === 'consult' || session?.session_mode === 'hub') return true;
   return Number(session?.ask_mode ?? 0) !== 0;
 }
 

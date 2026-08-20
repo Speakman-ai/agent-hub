@@ -8,6 +8,8 @@ import {
   isSkillBuilderModeActive,
   isSkillBuilderEligibleAgent,
   isConsultModeActive,
+  isHubModeActive,
+  isNonShippingSessionBehavior,
   isIsolatedModeActive,
   isShippingCompatibleSessionMode,
   defaultSessionModeForProject,
@@ -23,6 +25,7 @@ describe('session-mode helpers', () => {
       'scoping',
       'skill-builder',
       'consult',
+      'hub',
     ]);
     expect(DEFAULT_SESSION_MODE).toBe('chat');
     expect(SESSION_MODES).toContain(DEFAULT_SESSION_MODE);
@@ -122,6 +125,7 @@ describe('session-mode helpers', () => {
       expect(isShippingCompatibleSessionMode('isolated')).toBe(true);
       expect(isShippingCompatibleSessionMode('design')).toBe(false);
       expect(isShippingCompatibleSessionMode('consult')).toBe(false);
+      expect(isShippingCompatibleSessionMode('hub')).toBe(false);
     });
   });
 
@@ -129,6 +133,22 @@ describe('session-mode helpers', () => {
     it('is true only for consult mode rows', () => {
       expect(isConsultModeActive({ session_mode: 'consult' })).toBe(true);
       expect(isConsultModeActive({ session_mode: 'chat' })).toBe(false);
+    });
+  });
+
+  describe('isHubModeActive', () => {
+    it('is true only for hub mode rows', () => {
+      expect(isHubModeActive({ session_mode: 'hub' })).toBe(true);
+      expect(isHubModeActive({ session_mode: 'consult' })).toBe(false);
+    });
+  });
+
+  describe('isNonShippingSessionBehavior', () => {
+    it('covers hub, consult, and legacy ask_mode', () => {
+      expect(isNonShippingSessionBehavior({ session_mode: 'hub' })).toBe(true);
+      expect(isNonShippingSessionBehavior({ session_mode: 'consult' })).toBe(true);
+      expect(isNonShippingSessionBehavior({ session_mode: 'chat', ask_mode: 1 })).toBe(true);
+      expect(isNonShippingSessionBehavior({ session_mode: 'chat', ask_mode: 0 })).toBe(false);
     });
   });
 

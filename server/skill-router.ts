@@ -1,3 +1,4 @@
+import { HUB_PROJECT_ID } from '../shared/utils/hub.js';
 import { normalizeSessionMode } from './session-mode.js';
 
 interface SkillLike {
@@ -14,9 +15,9 @@ interface SkillRouteInput {
   cwd?: string;
   /**
    * Project slug (a.k.a. `project.id`) of the session that produced this
-   * message. Used by the project-default rule (e.g. always inject the
-   * `agent-hub` skill in agent-hub project sessions, even when the user's
-   * message doesn't contain a platform tell).
+   * message. Used by the always-on `agent-hub` skill default (the product
+   * `agent-hub` project and the hidden Hub assistant project `__hub__`),
+   * even when the user's message doesn't contain a platform tell.
    */
   projectSlug?: string;
   /**
@@ -179,6 +180,16 @@ function builtInScore(
   return null;
 }
 
+/** Always-on `agent-hub` skill: product repo sessions and Hub assistant chat. */
+export function shouldAutoloadAgentHubSkill(input: {
+  projectSlug?: string;
+  sessionMode?: string | null;
+}): boolean {
+  if (input.projectSlug === 'agent-hub') return true;
+  if (input.projectSlug === HUB_PROJECT_ID) return true;
+  return normalizeSessionMode(input.sessionMode) === 'hub';
+}
+
 /**
  * Return ALL matching skills for an input, sorted by descending score
  * (ties broken by skillId to keep ordering deterministic). Caller is
@@ -216,14 +227,15 @@ export function routeSkillsFromMessage(input: SkillRouteInput): SkillRouteMatch[
     seen.add(skill.id);
   }
 
-  // Project-default rule: always load the agent-hub skill in agent-hub
-  // project sessions, even when the user's message contains no platform
-  // tell. Score is intentionally lower than the explicit-trigger score
-  // (110) so explicit user intent for other skills still wins on
-  // ordering. Only append when no candidate for `agent-hub` already
-  // exists — the explicit/built-in branch above is strictly better.
+  // Always-on rule: load the agent-hub skill in agent-hub project sessions
+  // and Hub assistant chat (`__hub__` / session_mode=hub), even when the
+  // user's message contains no platform tell. Score is intentionally lower
+  // than the explicit-trigger score (110) so explicit user intent for other
+  // skills still wins on ordering. Only append when no candidate for
+  // `agent-hub` already exists — the explicit/built-in branch above is
+  // strictly better.
   if (
-    input.projectSlug === 'agent-hub' &&
+    shouldAutoloadAgentHubSkill(input) &&
     !seen.has('agent-hub') &&
     input.skills.some((s) => s?.id === 'agent-hub')
   ) {

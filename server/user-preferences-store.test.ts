@@ -387,4 +387,35 @@ describe('user-preferences-store', () => {
       agentModelOverrides: { reviewer: 'gpt-5-codex' },
     });
   });
+
+  it('round-trips hubDailySummary and drops an incomplete blob', () => {
+    const id = uuidv4();
+    createUser({
+      id,
+      username: `u_${id.replace(/-/g, '').slice(0, 8)}`,
+      passwordHash: 'x',
+    });
+    const summary = {
+      date: '2026-08-19',
+      timeZone: 'America/Chicago',
+      markdown: '## Today\n- shipped Daily Summary',
+      engine: 'claude-code',
+      model: 'claude-opus-4-6',
+      generatedAt: '2026-08-19T18:00:00.000Z',
+    };
+    mergeUserPreferencesJson(id, { hubDailySummary: summary });
+    expect(getUserPreferencesRow(id).hubDailySummary).toEqual(summary);
+
+    mergeUserPreferencesJson(id, {
+      hubDailySummary: {
+        date: '',
+        markdown: '',
+        timeZone: '',
+        engine: '',
+        model: '',
+        generatedAt: '',
+      },
+    });
+    expect(getUserPreferencesRow(id).hubDailySummary).toBeUndefined();
+  });
 });

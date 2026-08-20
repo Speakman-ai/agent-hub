@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, FlatList, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, } from 'react-native';
+import { View, Text, FlatList, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, Alert, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useApp } from '../context/AppContext';
@@ -9,6 +9,7 @@ import ChatMessage from '../components/ChatMessage';
 import StreamingMessage from '../components/StreamingMessage';
 import ThinkingIndicator from '../components/ThinkingIndicator';
 import MessageInput from '../components/MessageInput';
+import SessionEngineModelSheet from '../components/SessionEngineModelSheet';
 import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
@@ -29,8 +30,9 @@ import { shouldShowViewChanges } from '../utils/sessionExtras';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle, parseResolvePrNumberFromTitle, } from '@shared/utils/sessionTitlePr';
 import { latestSessionEnvLaunchStatus } from '@shared/utils/sessionEnvLaunch';
 import { resolveLiveStreamIdentity } from '@shared/utils/activeTaskSnapshot';
-export default function ChatScreen() {
-    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingAgent, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, handleCredentialSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, artifactReloadBySession, } = useApp();
+import { HUB_ASSISTANT_AGENT_ID } from '@shared/utils/hub';
+export default function ChatScreen({ embedded = false, composePrefix = '', emptyHint, onClearChat }: { embedded?: boolean; composePrefix?: string; emptyHint?: string; onClearChat?: () => void; } = {}) {
+    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingAgent, streamingMsgId, sessionModel, sessionEngine, sessionReasoningEffort, modelConfig, persistHubModel, handleReasoningEffortChange, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, handleCredentialSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, artifactReloadBySession, hubSessionId, } = useApp();
     // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
     // plain declaration here previously made this module fail to parse.
     const navigation = useNavigation<any>();
@@ -39,6 +41,7 @@ export default function ChatScreen() {
     const [showTerminal, setShowTerminal] = useState(false);
     const [showTimeline, setShowTimeline] = useState(false);
     const [showActions, setShowActions] = useState(false);
+    const [showHubModelPicker, setShowHubModelPicker] = useState(false);
     const [selectedTimelineAnchor, setSelectedTimelineAnchor] = useState<string | null>(null);
     // Reload the active session's messages every time the Chat screen gains
     // focus — either from a cold launch, returning from another stack screen,
@@ -66,6 +69,28 @@ export default function ChatScreen() {
     const activeProject = projects?.find((p: any) => p.id === activeAgent?.projectId);
     const workflowProject = isWorkflowProject(activeProject);
     const activeSession = useMemo<any>(() => sessions?.find((s: any) => s.id === activeSessionId) ?? null, [sessions, activeSessionId]);
+    const hubSession = embedded || activeSession?.session_mode === 'hub';
+    const consultLike =
+        sessionConsultMode || activeSession?.session_mode === 'consult' || hubSession;
+    // In the embedded Hub assistant tab, only send once the live Hub session is
+    // the active one. Before HubScreen's GET resolves (or if it failed) the
+    // active session may still be a restored project row — never post there.
+    const hubComposerLocked = embedded && (!hubSessionId || activeSessionId !== hubSessionId);
+    const sendChat = useCallback((content: any, images: any = [], opts: any = {}) => {
+        if (hubComposerLocked) return;
+        // In the embedded Hub tab, bind the turn to the canonical Hub identity —
+        // `__hub_assistant__` + the live Hub session — never the shared
+        // activeAgentId/activeSessionId, which init/restore can leave on a
+        // project agent (the server spawns from the message's agentId).
+        const merged = embedded
+            ? { ...opts, agentId: HUB_ASSISTANT_AGENT_ID, sessionId: hubSessionId }
+            : opts;
+        if (composePrefix) {
+            const body = typeof content === 'string' ? content : String(content || '');
+            return handleSend([composePrefix, body.trim()].filter(Boolean).join('\n\n'), images, merged);
+        }
+        return handleSend(content, images, merged);
+    }, [composePrefix, handleSend, hubComposerLocked, embedded, hubSessionId]);
     useEffect(() => {
         if (!activeSessionId) {
             setShowTerminal(false);
@@ -171,15 +196,33 @@ export default function ChatScreen() {
         }
     };
     const renderEmpty = () => (<View style={styles.emptyContainer}>
-      <Text style={styles.emptyTitle}>Start a conversation</Text>
-      {activeAgent && (<Text style={styles.emptySubtitle}>with {activeAgent.name}</Text>)}
+      <Text style={styles.emptyTitle}>{hubSession ? 'Ask Hub' : 'Start a conversation'}</Text>
+      {activeAgent && !hubSession ? (<Text style={styles.emptySubtitle}>with {activeAgent.name}</Text>) : null}
       <Text style={styles.emptyHint}>
-        Tap the menu to switch agents
+        {emptyHint
+          ? emptyHint
+          : hubSession
+            ? 'What to focus on next, kick off an agent, or configure Agent Hub.'
+            : 'Tap the menu to switch agents'}
       </Text>
     </View>);
-    return (<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <TopBar />
-      {activeSessionId ? (<FinalizeBar projectId={activeProject?.id} project={activeProject} sessionId={activeSessionId} cardId={activeSession?.card_id ?? null} session={activeSession} sessionAgents={sessionAgents} hosted={activeProject?.gitHost === 'agenthub'} hasChanges={hasCommittableChanges} showViewChanges={shouldShowViewChanges(activeSession)} onViewChanges={() => navigation.navigate('SessionChanges', {
+    return (<SafeAreaView style={styles.container} edges={embedded ? ['bottom'] : ['top', 'bottom']}>
+      {embedded ? null : <TopBar />}
+      {hubSession && onClearChat ? (
+        <TouchableOpacity
+          testID="hub-clear-chat"
+          onPress={() => {
+            Alert.alert('Clear this Hub chat?', 'History is archived for a day.', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Clear', style: 'destructive', onPress: onClearChat },
+            ]);
+          }}
+          style={styles.clearButton}
+        >
+          <Text style={styles.clearLabel}>Clear chat</Text>
+        </TouchableOpacity>
+      ) : null}
+      {activeSessionId && !hubSession ? (<FinalizeBar projectId={activeProject?.id} project={activeProject} sessionId={activeSessionId} cardId={activeSession?.card_id ?? null} session={activeSession} sessionAgents={sessionAgents} hosted={activeProject?.gitHost === 'agenthub'} hasChanges={hasCommittableChanges} showViewChanges={shouldShowViewChanges(activeSession)} onViewChanges={() => navigation.navigate('SessionChanges', {
                 sessionId: activeSessionId,
                 sessionName: activeSession?.name || '',
                 projectId: activeProject?.id || null,
@@ -188,9 +231,9 @@ export default function ChatScreen() {
                 session: activeSession || null,
             })} showFinalize={showFinalizeBar} status={finalize.status} phase={finalize.phase} phases={finalize.phases} run={finalize.run} onChanged={finalize.refetch}/>) : null}
       {activeSessionId && activeSession?.session_mode === 'design' ? (<SessionDesignFilesPanel sessionId={activeSessionId} reloadNonce={isProcessing ? 0 : messages.length}/>) : null}
-      {activeSessionId ? (<SessionArtifactsPanel sessionId={activeSessionId} reloadNonce={artifactReloadBySession?.[activeSessionId] || 0}/>) : null}
-      {activeSessionId ? (<SessionAgentsPanel sessionId={activeSessionId} sessionAgents={sessionAgents} maxTurns={activeSession?.max_turns} agents={agents} onUpdated={handleSessionAgentsUpdated}/>) : null}
-      {activeSessionId ? (
+      {activeSessionId && !hubSession ? (<SessionArtifactsPanel sessionId={activeSessionId} reloadNonce={artifactReloadBySession?.[activeSessionId] || 0}/>) : null}
+      {activeSessionId && !hubSession ? (<SessionAgentsPanel sessionId={activeSessionId} sessionAgents={sessionAgents} maxTurns={activeSession?.max_turns} agents={agents} onUpdated={handleSessionAgentsUpdated}/>) : null}
+      {activeSessionId && !hubSession ? (
         <>
           <View style={styles.terminalToggleRow}>
             <TouchableOpacity
@@ -216,7 +259,7 @@ export default function ChatScreen() {
                 <History size={14} color={showTimeline ? colors.gray200 : colors.gray300}/>
                 <Text style={styles.terminalToggleText}>{showTimeline ? 'Hide timeline' : 'Timeline'}</Text>
               </TouchableOpacity>
-              {activeSession?.session_mode !== 'consult' ? (
+              {activeSession?.session_mode !== 'consult' && !hubSession ? (
                 <TouchableOpacity
                   testID="toggle-mobile-terminal"
                   accessibilityRole="button"
@@ -243,7 +286,7 @@ export default function ChatScreen() {
               }}
             />
           ) : null}
-          {showTerminal && activeSession?.session_mode !== 'consult' ? (
+          {showTerminal && !consultLike ? (
             <MobileTerminalPane sessionId={activeSessionId} onClose={() => setShowTerminal(false)}/>
           ) : null}
         </>
@@ -262,7 +305,19 @@ export default function ChatScreen() {
         }}/>
 
         {/* Input */}
-        <MessageInput onSend={handleSend} onCancel={handleCancel} disabled={!activeAgentId || !connected || isProcessing} isProcessing={isProcessing} agentColor={activeAgent?.color} skills={skills} queueLength={(messageQueues[activeSessionId] || []).length} consultMode={sessionConsultMode || activeSession?.session_mode === 'consult'}/>
+        <MessageInput onSend={sendChat} onCancel={handleCancel} disabled={!activeAgentId || !connected || isProcessing || hubComposerLocked} isProcessing={isProcessing} agentColor={activeAgent?.color} skills={skills} queueLength={(messageQueues[activeSessionId] || []).length} consultMode={consultLike} consultHint={hubSession ? 'Hub assistant — org & account help, no code ship or Finalize' : null} toolbarStart={hubSession ? (<TouchableOpacity testID="hub-model-picker" onPress={() => setShowHubModelPicker(true)} style={styles.hubModelChip} accessibilityLabel="Hub model"><Text style={styles.hubModelLabel} numberOfLines={1}>{sessionModel || 'Model'}</Text></TouchableOpacity>) : null}/>
+      {hubSession ? (<SessionEngineModelSheet visible={showHubModelPicker} onClose={() => setShowHubModelPicker(false)} modelConfig={modelConfig} engine={sessionEngine} model={sessionModel} reasoningEffort={sessionReasoningEffort} onSelectEngine={(engine: string) => {
+            // Never fall back to the previous engine's model — a cross-engine
+            // model is invalid for `engine` and the server would 400 it. Skip
+            // the persist when the new engine has no resolvable default.
+            const next = modelConfig?.engineDefaultModels?.[engine] ||
+                modelConfig?.engineValidModels?.[engine]?.[0] ||
+                '';
+            if (!next) return;
+            void persistHubModel(engine, next);
+        }} onSelectModel={(model: string) => {
+            void persistHubModel(sessionEngine, model);
+        }} onSelectReasoningEffort={handleReasoningEffortChange}/>) : null}
       </KeyboardAvoidingView>
 
       {/* Agent Switcher Modal */}
@@ -364,4 +419,27 @@ const styles = StyleSheet.create({
         color: colors.gray700,
         marginTop: 16,
     },
+    clearButton: {
+        alignSelf: 'flex-end',
+        marginHorizontal: 12,
+        marginTop: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: colors.gray800,
+        backgroundColor: colors.gray900,
+    },
+    clearLabel: { color: colors.gray300, fontSize: 12, fontWeight: '600' },
+    hubModelChip: {
+        alignSelf: 'flex-start',
+        maxWidth: 220,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 8,
+        backgroundColor: colors.gray900,
+        borderWidth: 1,
+        borderColor: colors.gray800,
+    },
+    hubModelLabel: { color: colors.gray200, fontSize: 12, fontWeight: '500' },
 });

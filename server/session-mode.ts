@@ -32,6 +32,7 @@ export const SESSION_MODES = [
   'scoping',
   'skill-builder',
   'consult',
+  'hub',
 ] as const;
 
 export type SessionMode = (typeof SESSION_MODES)[number];
@@ -119,11 +120,34 @@ export function isConsultModeActive(
   return normalizeSessionMode(session?.session_mode) === 'consult';
 }
 
+/**
+ * Whether Hub-assistant mode is active. Hub sessions answer personal/org
+ * operating questions and mutate Hub data (board, todos, support, sessions)
+ * without code ship or Finalize. Distinct from Consult: Consult is
+ * project-scoped; Hub is the org/user home surface.
+ */
+export function isHubModeActive(
+  session: { session_mode?: string | null } | null | undefined,
+): boolean {
+  return normalizeSessionMode(session?.session_mode) === 'hub';
+}
+
 /** Consult behavior: explicit consult mode, or legacy ask_mode rows (Ask retired). */
 export function isConsultBehaviorActive(
   session: { session_mode?: string | null; ask_mode?: number | null } | null | undefined,
 ): boolean {
   return isConsultModeActive(session) || Number(session?.ask_mode ?? 0) !== 0;
+}
+
+/**
+ * No code ship / Finalize: Consult, Hub, or legacy ask_mode. Used by spawn
+ * and the session chrome so Hub and Consult share the non-shipping surface
+ * without treating Hub as a project Consult session.
+ */
+export function isNonShippingSessionBehavior(
+  session: { session_mode?: string | null; ask_mode?: number | null } | null | undefined,
+): boolean {
+  return isHubModeActive(session) || isConsultBehaviorActive(session);
 }
 
 /** Default session_mode for newly created user-facing sessions. */
@@ -143,6 +167,7 @@ export const SKILL_BUILDER_INELIGIBLE_ROLES: readonly string[] = [
   'skill-builder',
   'reviewer',
   'docs',
+  'hub-assistant',
 ];
 
 /**

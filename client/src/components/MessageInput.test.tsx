@@ -741,11 +741,42 @@ describe('MessageInput readOnly (reviewer thread) mode', () => {
     expect(screen.getByRole('textbox')).toBeTruthy();
   });
 
+  it('renders toolbarStart inside the composer', () => {
+    render(
+      <MessageInput
+        {...baseProps}
+        toolbarStart={<span data-testid="hub-model-slot">model-picker</span>}
+      />,
+    );
+    expect(screen.getByTestId('composer-toolbar-start')).toBeInTheDocument();
+    expect(screen.getByTestId('hub-model-slot')).toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+  });
+
   it('readOnly takes precedence over askMode (no composer either way)', () => {
     // A reviewer agent that is also in ask mode should still surface
     // the reviewer banner, not the ask-mode composer.
     render(<MessageInput {...baseProps} readOnly={true} askMode={true} />);
     expect(screen.getByTestId('reviewer-readonly-banner')).toBeTruthy();
     expect(screen.queryByRole('textbox')).toBeNull();
+  });
+
+  it('shows the default consult banner copy when no consultHint is given', () => {
+    render(<MessageInput {...baseProps} consultMode={true} />);
+    expect(screen.getByText(/Consult mode — Hub project updates only/)).toBeInTheDocument();
+  });
+
+  it('overrides the consult banner copy with a Hub-specific consultHint', () => {
+    // The org/user Hub assistant reuses consultMode but is not a project
+    // consult session — it must be able to swap the banner copy.
+    render(
+      <MessageInput
+        {...baseProps}
+        consultMode={true}
+        consultHint="Hub assistant — org & account help, no code ship or Finalize"
+      />,
+    );
+    expect(screen.getByText(/Hub assistant — org & account help/)).toBeInTheDocument();
+    expect(screen.queryByText(/Hub project updates only/)).not.toBeInTheDocument();
   });
 });

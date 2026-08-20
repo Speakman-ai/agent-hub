@@ -28,6 +28,7 @@ describe('project-mode-guards', () => {
     expect(validateSessionModeForProject(workflowProject, 'skill-builder')).toBeNull();
     // Design is now allowed on workflow projects (data-dir artifact store).
     expect(validateSessionModeForProject(workflowProject, 'design')).toBeNull();
+    expect(validateSessionModeForProject(workflowProject, 'hub')).toBeNull();
     expect(validateSessionModeForProject(devProject, 'consult')).toBeNull();
     expect(validateSessionModeForProject(devProject, 'scoping')).toBeNull();
     expect(validateSessionModeForProject(devProject, 'skill-builder')).toBeNull();

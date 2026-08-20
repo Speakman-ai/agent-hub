@@ -210,4 +210,21 @@ describe('PersonalDashboard', () => {
     );
     expect(screen.getByRole('button', { name: /enable gmail/i })).toBeInTheDocument();
   });
+
+  it('renders without crashing when the dashboard payload omits the todos block', async () => {
+    // Regression guard: Hub is now the default landing view, so a sparse or
+    // partial `/api/me/dashboard` response (here, no `todos`) must not throw
+    // out of render and take the whole App tree down. Previously `data?.todos.open`
+    // dereferenced `undefined.open`.
+    vi.mocked(api.getMeDashboard).mockResolvedValue({} as unknown as MeDashboardWire);
+
+    render(
+      <PersonalDashboard onNavigate={noop} onOpenAccountSettings={noop} onOpenKanban={noop} />,
+    );
+
+    // The Dashboard heading renders instead of a thrown error.
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
+    // Todos pane still renders its empty state rather than crashing.
+    expect(screen.getByText('Todos')).toBeInTheDocument();
+  });
 });

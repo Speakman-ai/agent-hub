@@ -20,6 +20,7 @@ describe('agent-autonomy — lock detection', () => {
     expect(isAutonomyLockedOff({ role: 'reviewer' })).toBe(true);
     // Regression: the Skill Builder coach must not default to Dev-on.
     expect(isAutonomyLockedOff({ role: 'skill-builder' })).toBe(true);
+    expect(isAutonomyLockedOff({ role: 'hub-assistant' })).toBe(true);
     expect(isAutonomyLockedOff({ role: 'SKILL-BUILDER' })).toBe(true); // case-insensitive
     expect(isAutonomyLockedOff({ role: 'dev' })).toBe(false);
     // Regression: the retired `intake` role is no longer special — it is not

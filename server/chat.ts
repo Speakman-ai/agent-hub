@@ -119,7 +119,12 @@ import {
 } from './skill-invoke.js';
 import { detectSkillImprovementBlock, handleSkillImprovement } from './skill-improvement.js';
 import { routeSkillsFromMessage } from './skill-router.js';
-import { isDesignModeActive, isConsultModeActive, isScopingModeActive } from './session-mode.js';
+import {
+  isDesignModeActive,
+  isConsultModeActive,
+  isScopingModeActive,
+  isHubModeActive,
+} from './session-mode.js';
 import {
   buildDesignModePreamble,
   requiredSkillIdsForSession,
@@ -129,6 +134,7 @@ import { resolveDesignArtifactLocation } from './design-artifact-store.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
+import { buildHubModePreamble } from './hub-mode-prompt.js';
 import { isSkillBuilderModeActive, isConsultBehaviorActive } from './session-mode.js';
 import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
 import {
@@ -1948,6 +1954,60 @@ export function augmentChatTurnForDesignMode(args: {
   return { skillInjections, preamble, artifactDirReady: prep.ok };
 }
 
+export interface HubModeTurnAugmentation {
+  /** SKILL.md injections to append to the enriched prompt (one per skill). */
+  skillInjections: string[];
+  /** Hub-mode preamble to PREPEND to the enriched prompt ('' when inactive). */
+  preamble: string;
+}
+
+/**
+ * Hub-mode (`session_mode === 'hub'`) turn augmentation. Force-loads the
+ * bundled Hub operating skills (`agent-hub` and siblings) by id so Hub
+ * assistant chat always has the wrappers, independent of the message-driven
+ * router (which previously only auto-loaded `agent-hub` for project slug
+ * `agent-hub`, not the hidden `__hub__` assistant).
+ */
+export function augmentChatTurnForHubMode(args: {
+  session: { session_mode?: string | null };
+  paths: { skillsDir: string };
+  sessionId: string;
+  stmts: Stmts;
+  broadcast: BroadcastFn;
+  loadSkills: boolean;
+  alreadyLoadedSkillIds?: Set<string>;
+  browserToolsEnabled?: boolean;
+}): HubModeTurnAugmentation {
+  const { session, paths, sessionId, stmts, broadcast, loadSkills } = args;
+  if (!isHubModeActive(session)) {
+    return { skillInjections: [], preamble: '' };
+  }
+
+  const alreadyLoaded = args.alreadyLoadedSkillIds ?? new Set<string>();
+  const skillInjections: string[] = [];
+  if (loadSkills) {
+    for (const requiredId of requiredSkillIdsForSession(session)) {
+      if (alreadyLoaded.has(requiredId)) continue;
+      const injection = loadSkillByName({
+        name: requiredId,
+        reason: 'session_mode=hub (required)',
+        paths: { skillsDir: paths.skillsDir },
+        sessionId,
+        stmts,
+        broadcast,
+      });
+      skillInjections.push(injection);
+      alreadyLoaded.add(requiredId);
+    }
+  }
+  return {
+    skillInjections,
+    preamble: buildHubModePreamble({
+      browserToolsEnabled: args.browserToolsEnabled ?? true,
+    }),
+  };
+}
+
 export function buildGrokHeadlessPrompt(args: {
   enrichedPrompt: string;
   finalPrompt: string;
@@ -2909,7 +2969,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         enrichedPrompt = `${skillBuilderPreamble}\n\n${enrichedPrompt}`;
       }
 
-      if (isConsultBehaviorActive(session!)) {
+      if (isHubModeActive(session!)) {
+        const hubTurn = augmentChatTurnForHubMode({
+          session: session!,
+          paths,
+          sessionId,
+          stmts: stmts as Stmts,
+          broadcast,
+          loadSkills: !isAutoContinuation,
+          alreadyLoadedSkillIds: loadedRoutedSkillIds,
+          browserToolsEnabled: effectiveBrowserToolsEnabled(agent, project),
+        });
+        if (hubTurn.skillInjections.length > 0) {
+          enrichedPrompt += `\n\n${hubTurn.skillInjections.join('\n\n')}`;
+        }
+        if (hubTurn.preamble) enrichedPrompt = `${hubTurn.preamble}\n\n${enrichedPrompt}`;
+      } else if (isConsultBehaviorActive(session!)) {
         if (!isAutoContinuation) {
           for (const requiredId of requiredSkillIdsForSession(session!)) {
             if (loadedRoutedSkillIds.has(requiredId)) continue;
@@ -3611,8 +3686,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let systemPromptFileCleanup: (() => void) | null = null;
       const workflowSession = isWorkflowProject(project as Project);
       const consultModeSession = isConsultModeActive(session!);
+      const hubModeSession = isHubModeActive(session!);
       const legacyAskSession = Number(session!.ask_mode ?? 0) !== 0;
-      const hubOnlySession = workflowSession || consultModeSession;
+      const hubOnlySession = workflowSession || consultModeSession || hubModeSession;
       const readOnlyCliSession = legacyAskSession && !hubOnlySession;
       const committable = shouldPinLocalCommitReminder({
         hasWorktree: effectiveCwd !== project.cwd,

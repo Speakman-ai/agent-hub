@@ -20,13 +20,10 @@ import { calendarPaneState, mailPaneState, type GooglePaneState } from '../utils
 import { mailSenderName, formatMailDate, type DashboardMailMessage } from '../utils/mail';
 
 /**
- * Personal Dashboard home — the mobile 1:1 peer of the web `PersonalDashboard`
- * (spec NAV-PLACEMENT). The User Module's global (non-project) landing page:
- * four panes over ONE per-user aggregation call (`GET /api/me/dashboard`, spec
- * AGGREGATION) — My Work (assigned cards across every visible board), Todos
- * (cross-project capture list), Calendar, and Gmail. The Google panes render
- * from the aggregation payload and fall back to a connect-Google affordance
- * when the account isn't linked; Todos and My Work never depend on Google.
+ * Hub Dashboard — the mobile peer of the web Hub Dashboard pane. One aggregation
+ * call (`GET /api/me/dashboard`): My Work, Todos, Calendar, and Mail.
+ * When `embedded`, Hub already owns chrome (title + tabs + drawer), so this
+ * screen skips its own header.
  */
 
 type CardPriority = 'urgent' | 'high' | 'medium' | 'low';
@@ -245,7 +242,7 @@ export function MailRow({ msg, onOpen }: { msg: DashboardMailMessage; onOpen: ()
     );
 }
 
-export default function DashboardHomeScreen({ navigation }: any) {
+export default function DashboardHomeScreen({ navigation, embedded = false }: any) {
     const sidebar = useContext(SidebarContext);
     const { projects, lastUserTodoEvent } = useApp();
     const [data, setData] = useState<any | null>(null);
@@ -305,14 +302,30 @@ export default function DashboardHomeScreen({ navigation }: any) {
     const openCards = (work?.cards ?? []).filter((c: any) => !c.isDone);
 
     return (
-        <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <SafeAreaView style={styles.container} edges={embedded ? [] : ['top', 'bottom']}>
+            {embedded ? (
+                <View style={styles.embeddedToolbar}>
+                    <TouchableOpacity
+                        onPress={() => load(true)}
+                        disabled={refreshing}
+                        style={styles.refreshButton}
+                        accessibilityLabel="Refresh dashboard"
+                    >
+                        {refreshing ? (
+                            <ActivityIndicator size="small" color={colors.gray300} />
+                        ) : (
+                            <Text style={styles.refreshText}>Refresh</Text>
+                        )}
+                    </TouchableOpacity>
+                </View>
+            ) : (
             <View style={styles.topBar}>
                 <TouchableOpacity onPress={sidebar?.toggleSidebar} style={styles.menuButton}>
                     <Text style={styles.menuIcon}>{'☰'}</Text>
                 </TouchableOpacity>
                 <HubIcon name="LayoutGrid" size={20} color={colors.blue400} style={styles.titleIcon} />
                 <View style={{ flex: 1 }}>
-                    <Text style={styles.title}>Home</Text>
+                    <Text style={styles.title}>Dashboard</Text>
                     <Text style={styles.subtitle}>Your work across every project</Text>
                 </View>
                 <TouchableOpacity
@@ -328,6 +341,7 @@ export default function DashboardHomeScreen({ navigation }: any) {
                     )}
                 </TouchableOpacity>
             </View>
+            )}
 
             {loading && !data ? (
                 <View style={styles.centered}>
@@ -456,6 +470,12 @@ const styles = StyleSheet.create({
         borderBottomWidth: 1,
         borderBottomColor: colors.gray800,
         gap: 8,
+    },
+    embeddedToolbar: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
     },
     menuButton: {
         padding: 6,

@@ -1,3 +1,10 @@
+import {
+  DEFAULT_HUB_PANE,
+  hubPaneFromLegacyView,
+  parseHubPane,
+  type HubWorkspacePane,
+} from '@shared/utils/hub';
+
 /**
  * Top-level navigation helpers for the web client.
  *
@@ -6,7 +13,7 @@
  * user on the same surface without requiring server catch-all routes.
  */
 
-export const DEFAULT_VIEW = 'dashboard';
+export const DEFAULT_VIEW = 'hub';
 
 const PROJECT_SCOPED_VIEWS = new Set([
   'wiki',
@@ -15,9 +22,6 @@ const PROJECT_SCOPED_VIEWS = new Set([
   'pulls',
   'threads',
   'support',
-  // 'calendar' is intentionally NOT project-scoped: Calendar is a per-user
-  // Google surface that lives in the global Dashboard tier (`#/calendar`),
-  // never inside a single project. See card 1287 / the Google Workspace spec.
   'deployments',
   'replays',
   'security',
@@ -33,6 +37,8 @@ export type NavigationState = {
   designId?: string | null;
   /** Support view only: deep-link a specific ticket to focus on open. */
   ticketId?: string | null;
+  /** Hub workspace pane when `view` is `hub`. */
+  hubPane?: HubWorkspacePane | null;
 };
 
 function cleanSegment(value: any) {
@@ -72,15 +78,28 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
 
   let view = segments[0];
   let projectId: string | null = null;
+  let hubPane: HubWorkspacePane | null = null;
 
   if (view === 'view' && segments[1]) {
     view = segments[1];
+  } else if (view === 'hub') {
+    hubPane = parseHubPane(segments[1] || DEFAULT_HUB_PANE);
+    view = 'hub';
   } else if (PROJECT_SCOPED_VIEWS.has(view) && segments[1]) {
     projectId = segments[1];
   }
+
+  const legacyPane = hubPaneFromLegacyView(view);
+  if (legacyPane) {
+    hubPane = legacyPane;
+    view = 'hub';
+    projectId = null;
+  }
+
   if (REMOVED_GLOBAL_VIEWS.has(view)) {
     view = DEFAULT_VIEW;
     projectId = null;
+    hubPane = DEFAULT_HUB_PANE;
   }
 
   const explicitProject = cleanSegment(params.get('project'));
@@ -93,6 +112,7 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
     threadId: cleanSegment(params.get('thread')),
     designId: cleanSegment(params.get('design')),
     ticketId: cleanSegment(params.get('ticket')),
+    hubPane: view === 'hub' ? hubPane || DEFAULT_HUB_PANE : null,
   };
 }
 
@@ -103,7 +123,10 @@ export function buildNavigationHash(state: NavigationState) {
 
   const projectId = cleanSegment(state?.projectId);
   let path = '';
-  if (PROJECT_SCOPED_VIEWS.has(view) && projectId) {
+  if (view === 'hub') {
+    const pane = parseHubPane(state?.hubPane);
+    path = pane === DEFAULT_HUB_PANE ? '' : `/hub/${encodeURIComponent(pane)}`;
+  } else if (PROJECT_SCOPED_VIEWS.has(view) && projectId) {
     path = `/${encodeURIComponent(view)}/${encodeURIComponent(projectId)}`;
   } else if (view !== DEFAULT_VIEW) {
     path = `/${encodeURIComponent(view)}`;
@@ -212,5 +235,5 @@ export function getInitialNavigation(requested?: any): NavigationState {
   if (typeof requested === 'string' && requested.trim() !== '') {
     return { view: requested };
   }
-  return readNavigationStateFromLocation() ?? { view: DEFAULT_VIEW };
+  return readNavigationStateFromLocation() ?? { view: DEFAULT_VIEW, hubPane: DEFAULT_HUB_PANE };
 }

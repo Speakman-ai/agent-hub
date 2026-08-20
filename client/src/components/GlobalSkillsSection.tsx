@@ -58,7 +58,11 @@ export default function GlobalSkillsSection({
   // Default target: a non-helper agent, else the first active agent.
   const defaultAgentId = useMemo(() => {
     const dev = selectableAgents.find(
-      (a: any) => a.role !== 'skill-builder' && a.role !== 'reviewer' && a.role !== 'docs',
+      (a: any) =>
+        a.role !== 'skill-builder' &&
+        a.role !== 'reviewer' &&
+        a.role !== 'docs' &&
+        a.role !== 'hub-assistant',
     );
     return (dev || selectableAgents[0] || null)?.id || null;
   }, [selectableAgents]);

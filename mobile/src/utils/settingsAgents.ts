@@ -115,7 +115,7 @@ export function buildUpdateAgentPayload(original: any, edit: any) {
 // Mirror of server/agent-autonomy.ts — keep in sync with the server + web util.
 // `skill-builder` is a conversational coach (not a code-shipping recipient), so
 // its Dev toggle is locked OFF like docs/reviewer.
-const OUT_OF_BAND_ROLES = new Set(['docs', 'reviewer', 'skill-builder']);
+const OUT_OF_BAND_ROLES = new Set(['docs', 'reviewer', 'skill-builder', 'hub-assistant']);
 const DEFAULT_DEV_ROLES = new Set(['dev', 'lead']);
 function autonomyRoleOf(agent: any) {
     return agent && typeof agent.role === 'string' ? agent.role.trim().toLowerCase() : '';

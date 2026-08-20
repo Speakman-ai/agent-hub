@@ -65,6 +65,7 @@ function MessageInput(
     skills,
     askMode,
     consultMode = askMode,
+    consultHint = null,
     readOnly,
     draftKey,
     onFileError,
@@ -73,6 +74,7 @@ function MessageInput(
     onReplaceQueuedMessage,
     sessionAgents = [],
     enableMentions = false,
+    toolbarStart = null,
   }: any,
   ref: any,
 ) {
@@ -962,7 +964,9 @@ function MessageInput(
               clipRule="evenodd"
             />
           </svg>
-          <span>Consult mode — Hub project updates only, no code ship or Finalize</span>
+          <span>
+            {consultHint || 'Consult mode — Hub project updates only, no code ship or Finalize'}
+          </span>
         </div>
       )}
 
@@ -1027,6 +1031,12 @@ function MessageInput(
           ))}
         </div>
       )}
+
+      {toolbarStart ? (
+        <div className="flex items-center gap-2 mb-2 min-w-0" data-testid="composer-toolbar-start">
+          {toolbarStart}
+        </div>
+      ) : null}
 
       <div className="flex items-end gap-2 md:gap-3 mx-auto relative">
         {/* Slash-command autocomplete popup */}

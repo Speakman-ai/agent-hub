@@ -2320,6 +2320,7 @@ components:
             - scoping
             - skill-builder
             - consult
+            - hub
             - null
           description: "Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `isolated` forces a microVM when Firecracker is registered; `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
         reasoning_effort:
@@ -10001,6 +10002,55 @@ components:
         - agentId
         - draft
       description: Logs setup wizard session spawned successfully.
+    MeDailySummaryErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+        - error
+      description: Error envelope for Hub Daily Summary routes.
+    MeDailySummaryReport:
+      type: object
+      properties:
+        date:
+          type: string
+        timeZone:
+          type: string
+        markdown:
+          type: string
+        engine:
+          type: string
+        model:
+          type: string
+        generatedAt:
+          type: string
+      required:
+        - date
+        - timeZone
+        - markdown
+        - engine
+        - model
+        - generatedAt
+      description: The calling user's Daily Summary for one local calendar day. Cleared when the date is no longer today.
+    MeDailySummaryResponse:
+      type: object
+      properties:
+        date:
+          type: string
+        timeZone:
+          type: string
+        report:
+          allOf:
+            - $ref: "#/components/schemas/MeDailySummaryReport"
+            - nullable: true
+      required:
+        - date
+        - timeZone
+        - report
+      description: Today's Daily Summary for the caller, or report=null when none has been generated yet today.
     MeTodosErrorResponse:
       type: object
       properties:
@@ -10380,6 +10430,58 @@ components:
         - todos
         - google
       description: Aggregated personal dashboard for the authenticated user.
+    MeHubErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for Hub session routes.
+    HubAssistantAgent:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+        engine:
+          type: string
+        model:
+          type: string
+        projectId:
+          type: string
+      required:
+        - id
+        - name
+        - engine
+      additionalProperties:
+        nullable: true
+      description: The hidden Hub assistant agent (not on a project roster).
+    MeHubSessionResponse:
+      type: object
+      properties:
+        session:
+          $ref: "#/components/schemas/Session"
+        agent:
+          $ref: "#/components/schemas/HubAssistantAgent"
+      required:
+        - session
+        - agent
+      description: The calling user's persistent Hub assistant session and its agent.
+    MeHubModelResponse:
+      type: object
+      properties:
+        engine:
+          type: string
+        model:
+          type: string
+      required:
+        - engine
+        - model
+      description: Engine and model for Hub chats, Daily Summary, and other Hub-level generation.
     MemoryErrorResponse:
       type: object
       properties:
@@ -20815,6 +20917,7 @@ paths:
                     - scoping
                     - skill-builder
                     - consult
+                    - hub
       responses:
         "200":
           description: New session.
@@ -21087,6 +21190,7 @@ paths:
                     - scoping
                     - skill-builder
                     - consult
+                    - hub
                 ask_mode:
                   type: boolean
       responses:
@@ -22030,6 +22134,7 @@ paths:
                     - scoping
                     - skill-builder
                     - consult
+                    - hub
               required:
                 - mode
       responses:
@@ -33841,6 +33946,72 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogsWizardErrorResponse"
+  /api/me/daily-summary:
+    get:
+      tags:
+        - Hub
+      summary: Read today's Hub Daily Summary without generating
+      description: "Returns the stored Daily Summary when it was generated on the caller's local calendar day (`tz`). A leftover report from a previous day is treated as empty (`report: null`). Never spawns a model."
+      parameters:
+        - schema:
+            type: string
+            description: IANA timezone used to resolve "today". Defaults to UTC.
+          required: false
+          description: IANA timezone used to resolve "today". Defaults to UTC.
+          name: tz
+          in: query
+      responses:
+        "200":
+          description: Stored report for today, or report=null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryErrorResponse"
+    post:
+      tags:
+        - Hub
+      summary: Generate (or regenerate) today's Hub Daily Summary
+      description: Gathers today / right-now / yesterday facts for the caller and runs an available, non-erroring engine. Replaces any existing report for the same local day. GET is never enough to spawn this.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tz:
+                  type: string
+                  description: IANA timezone used to resolve "today". Defaults to UTC.
+      responses:
+        "200":
+          description: Newly generated report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryResponse"
+        "400":
+          description: Engine credentials missing for this account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryErrorResponse"
+        "503":
+          description: No AI engines are configured or available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryErrorResponse"
   /api/me/todos:
     get:
       tags:
@@ -34470,6 +34641,130 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeDashboardErrorResponse"
+  /api/me/hub-session:
+    get:
+      tags:
+        - Hub
+      summary: Get or create the calling user's Hub assistant session
+      description: Idempotent. Returns the existing Hub session for this user, or creates one (session_mode=hub, no worktree) on the hidden Hub assistant agent. Spawn credentials follow the session owner. The Hub project is omitted from GET /api/projects.
+      responses:
+        "200":
+          description: Existing Hub session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubSessionResponse"
+        "201":
+          description: Newly created Hub session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubSessionResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
+    post:
+      tags:
+        - Hub
+      summary: Get or create the calling user's Hub assistant session
+      description: Idempotent. Returns the existing Hub session for this user, or creates one (session_mode=hub, no worktree) on the hidden Hub assistant agent. Spawn credentials follow the session owner. The Hub project is omitted from GET /api/projects.
+      responses:
+        "200":
+          description: Existing Hub session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubSessionResponse"
+        "201":
+          description: Newly created Hub session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubSessionResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
+  /api/me/hub-model:
+    get:
+      tags:
+        - Hub
+      summary: Read the caller's Hub engine and model
+      description: Resolved from the caller's per-user Hub assistant override, else the hidden Hub agent defaults. Daily Summary and other Hub generation use this pick.
+      responses:
+        "200":
+          description: Resolved Hub engine and model.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubModelResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
+    put:
+      tags:
+        - Hub
+      summary: Set the caller's Hub engine and model
+      description: Persists a per-user override on the hidden Hub assistant and updates the caller's live Hub session. Daily Summary generation uses the same pick.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                engine:
+                  type: string
+                model:
+                  type: string
+              required:
+                - engine
+                - model
+      responses:
+        "200":
+          description: Saved Hub engine and model.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubModelResponse"
+        "400":
+          description: Invalid engine or model.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
+  /api/me/hub-session/clear:
+    post:
+      tags:
+        - Hub
+      summary: Clear Hub assistant chat history
+      description: Archives the current Hub chat and creates a fresh empty session with the caller's Hub engine/model. Message history is recoverable from the archived session for 24h.
+      responses:
+        "200":
+          description: New empty Hub session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubSessionResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
   /api/memory/reconcile:
     post:
       tags:

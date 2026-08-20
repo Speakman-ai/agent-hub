@@ -83,6 +83,7 @@ import type {
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
 import { getProjectMode, getWorkflowWorkspaceDir } from '../project-mode.js';
+import { isHubSystemProject } from '../../shared/utils/hub.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -1071,7 +1072,9 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // surface to their owner (and local-bundled / apiKey bypass). Org
     // Owners do NOT get a read bypass — they hit the admin endpoint
     // (`GET /api/admin/projects`) for the kill-switch view.
-    const projects = filterVisibleProjects(getProjects(), caller);
+    const projects = filterVisibleProjects(getProjects(), caller).filter(
+      (p) => !isHubSystemProject(p),
+    );
     const enriched = projects.map((p) => ({
       ...p,
       agents: p.agents.map((a) => {
@@ -1990,6 +1993,17 @@ This workspace has no git repo and no PR automation — your job is planning, or
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
+    // The Hub is a system project hidden from lists; it must also be immutable.
+    // Its id (`__hub__`) is a published constant and the Hub assistant can edit
+    // project config when asked — a PATCH of engine/role/mode here must not be
+    // able to reshape the singleton. Hiding it is not the same as protecting it.
+    if (isHubSystemProject(project)) {
+      return res.status(403).json({
+        error: 'The Hub is a system project and cannot be modified or deleted.',
+        code: 'hub_project_protected',
+      });
+    }
+
     // Mode validation MUST run before any in-place mutation of the shared
     // project object. A mixed PATCH like `{ cwd, mode }` used to rewrite cwd
     // first, then 409 on the mode guard — leaving the rejected cwd live in
@@ -2538,6 +2552,15 @@ This workspace has no git repo and no PR automation — your job is planning, or
     if (idx === -1) return res.status(404).json({ error: 'Project not found' });
 
     const project = projects[idx];
+
+    // The Hub is a system project: never deletable, even by an Owner. Deleting
+    // it would drop every user's Hub chat via the scoped-row cleanup below.
+    if (isHubSystemProject(project)) {
+      return res.status(403).json({
+        error: 'The Hub is a system project and cannot be modified or deleted.',
+        code: 'hub_project_protected',
+      });
+    }
 
     // Visibility gate. Owners get an explicit kill-switch path here even
     // for private projects they don't own — that's the Settings → Projects

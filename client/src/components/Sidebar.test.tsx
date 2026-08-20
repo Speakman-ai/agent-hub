@@ -110,49 +110,24 @@ describe('Sidebar — loading overlay', () => {
   });
 });
 
-describe('Sidebar — global Gmail nav (per-user Google surface)', () => {
-  it('hides the Gmail entry when the Google account is not connected', () => {
-    render(<Sidebar {...buildProps({ googleGmailNavVisible: false })} />);
-    expect(screen.queryByTestId('sidebar-global-gmail')).not.toBeInTheDocument();
-  });
-
-  it('renders the Gmail entry in the global Dashboard tier when connected', () => {
-    const onNavigate = vi.fn();
-    render(<Sidebar {...buildProps({ googleGmailNavVisible: true, onNavigate })} />);
-    const gmailNav = screen.getByTestId('sidebar-global-gmail');
-    expect(gmailNav).toBeInTheDocument();
-    // It navigates to the global 'gmail' view, not a project-scoped route.
-    fireEvent.click(gmailNav);
-    expect(onNavigate).toHaveBeenCalledWith('gmail');
-  });
-
-  it('never nests Gmail inside a per-project block (no per-project mailbox)', () => {
-    render(<Sidebar {...buildProps({ googleGmailNavVisible: true })} />);
-    // Exactly one Gmail entry exists, and it lives in the global tier — there is
-    // no per-project Gmail tab. The project block exposes its own menu items
-    // (Wiki, Kanban, etc.) but never a Gmail one.
-    expect(screen.getAllByTestId('sidebar-global-gmail')).toHaveLength(1);
-    expect(screen.queryByText('Gmail', { selector: 'a' })).not.toBeInTheDocument();
-  });
-});
-
-describe('Sidebar — global Todos nav (per-user, no Google dependency)', () => {
-  it('always renders the Todos entry in the global Dashboard tier', () => {
-    // Unlike Calendar/Gmail, Todos has no Google gate — it shows regardless of
-    // connection status.
+describe('Sidebar — Hub nav (global home)', () => {
+  it('renders a single Hub entry instead of Home/Dashboard/Todos/Calendar/Gmail', () => {
     render(
-      <Sidebar
-        {...buildProps({ googleGmailNavVisible: false, googleCalendarNavVisible: false })}
-      />,
+      <Sidebar {...buildProps({ googleGmailNavVisible: true, googleCalendarNavVisible: true })} />,
     );
-    expect(screen.getByTestId('sidebar-global-todos')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-global-hub')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-global-home')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-global-todos')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-global-calendar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-global-gmail')).not.toBeInTheDocument();
+    expect(screen.queryByText('Dashboard', { selector: 'button span' })).not.toBeInTheDocument();
   });
 
-  it('navigates to the global todos view when clicked', () => {
+  it('navigates to hub', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
-    fireEvent.click(screen.getByTestId('sidebar-global-todos'));
-    expect(onNavigate).toHaveBeenCalledWith('todos');
+    fireEvent.click(screen.getByTestId('sidebar-global-hub'));
+    expect(onNavigate).toHaveBeenCalledWith('hub');
   });
 });
 

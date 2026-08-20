@@ -49,7 +49,7 @@ export async function acceptInviteAndEnterApp({
         onAccepted();
         return response;
     }
-    navigation?.reset?.({ index: 0, routes: [{ name: 'Dashboard' }] });
+    navigation?.reset?.({ index: 0, routes: [{ name: 'Hub' }] });
     return response;
 }
 

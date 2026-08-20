@@ -826,6 +826,19 @@ export const api = {
         return fetchJSON(`/me/dashboard${qs ? `?${qs}` : ''}`);
     },
     getMyWork: () => fetchJSON('/me/work'),
+    getHubSession: () => fetchJSON('/me/hub-session'),
+    clearHubSession: () => fetchJSON('/me/hub-session/clear', { method: 'POST' }),
+    getHubModel: () => fetchJSON('/me/hub-model'),
+    putHubModel: (body: { engine: string; model: string }) =>
+        fetchJSON('/me/hub-model', { method: 'PUT', body: JSON.stringify(body) }),
+    getDailySummary: (opts: { tz?: string } = {}) => {
+        const params = new URLSearchParams();
+        if (opts.tz) params.set('tz', opts.tz);
+        const qs = params.toString();
+        return fetchJSON(`/me/daily-summary${qs ? `?${qs}` : ''}`);
+    },
+    generateDailySummary: (opts: { tz?: string } = {}) =>
+        fetchJSON('/me/daily-summary', { method: 'POST', body: JSON.stringify({ tz: opts.tz }) }),
     // Per-user Google connection (Settings -> Account). Never returns tokens.
     getGoogleStatus: () => fetchJSON('/auth/google/status'),
     // Returns { authorizeUrl }; the caller opens it in the system browser.

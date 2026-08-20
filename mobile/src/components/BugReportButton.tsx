@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { TouchableOpacity, StyleSheet, Alert, Text } from 'react-native';
 import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { captureScreenshot, BUG_REPORT_ENABLED } from '../utils/bugReport';
@@ -9,7 +9,7 @@ import BugReportModal from './BugReportModal';
  * Uses Ionicons (@expo/vector-icons) since the mobile app does not depend
  * on lucide-react-native — matches existing TopBar icons.
  */
-export default function BugReportButton({ projectId, agentId, sourceUrl, buttonStyle }: any) {
+export default function BugReportButton({ projectId, agentId, sourceUrl, buttonStyle, descriptionPrefix, label }: any) {
     const [visible, setVisible] = useState(false);
     const [screenshotUri, setScreenshotUri] = useState<any>(null);
     const [capturing, setCapturing] = useState(false);
@@ -53,15 +53,32 @@ export default function BugReportButton({ projectId, agentId, sourceUrl, buttonS
     if (!BUG_REPORT_ENABLED)
         return null;
     return (<>
-      <TouchableOpacity style={[styles.button, buttonStyle]} onPress={openWithScreenshot} disabled={capturing} accessibilityLabel="Report a bug">
-        <AppIcon name="bug-outline" size={20} color={colors.gray400}/>
+      <TouchableOpacity style={[styles.button, buttonStyle, label ? styles.labeled : null]} onPress={openWithScreenshot} disabled={capturing} accessibilityLabel={label || 'Report a bug'}>
+        <AppIcon name="bug-outline" size={label ? 16 : 20} color={label ? colors.rose400 || colors.gray400 : colors.gray400}/>
+        {label ? <Text style={styles.label}>{label}</Text> : null}
       </TouchableOpacity>
-      <BugReportModal visible={visible} onClose={() => setVisible(false)} screenshotUri={screenshotUri} onRetakeScreenshot={handleRetake} projectId={projectId} agentId={agentId} sourceUrl={sourceUrl || ''}/>
+      <BugReportModal visible={visible} onClose={() => setVisible(false)} screenshotUri={screenshotUri} onRetakeScreenshot={handleRetake} projectId={projectId} agentId={agentId} sourceUrl={sourceUrl || ''} descriptionPrefix={descriptionPrefix || ''}/>
     </>);
 }
 const styles = StyleSheet.create({
     button: {
         padding: 8,
         marginRight: 2,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    labeled: {
+        borderWidth: 1,
+        borderColor: colors.rose900_40,
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        backgroundColor: colors.rose900_40,
+    },
+    label: {
+        color: colors.rose400,
+        fontSize: 12,
+        fontWeight: '600',
     },
 });

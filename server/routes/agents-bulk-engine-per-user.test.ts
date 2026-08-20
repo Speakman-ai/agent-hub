@@ -10,6 +10,11 @@ import { mkdtempSync } from 'fs';
 import path from 'path';
 import type { CodexModelsCache } from '../codex-model-capability.js';
 import type { RouteDeps, Project, Agent } from '../types.js';
+import {
+  HUB_PROJECT_ID,
+  HUB_ASSISTANT_AGENT_ID,
+  HUB_ASSISTANT_ROLE,
+} from '../../shared/utils/hub.js';
 
 const mockConfig = {
   engineValidModels: {
@@ -228,6 +233,36 @@ describe('POST /api/agents/bulk-engine — per-user overrides', () => {
         .send({ engine: 42 })
         .expect(400);
       expect(Array.isArray(res.body.details)).toBe(true);
+    });
+  });
+
+  describe('Hub singleton is skipped', () => {
+    it('never writes an engine/model override for the Hub assistant', async () => {
+      // The Hub project is shared/kind=system so canViewProject includes it, but
+      // agentEngineOverrides[__hub_assistant__] is the same per-user slot PUT
+      // /api/me/hub-model owns. A bulk switch must not clobber the Hub pick.
+      projects.push({
+        id: HUB_PROJECT_ID,
+        name: 'Hub',
+        cwd: '/tmp',
+        ahw: '/tmp/ahw',
+        visibility: 'shared',
+        kind: 'system',
+        agents: [makeAgent({ id: HUB_ASSISTANT_AGENT_ID, role: HUB_ASSISTANT_ROLE, name: 'Hub' })],
+      } as unknown as Project);
+
+      const app = mount(userId);
+      const res = await request(app)
+        .post('/api/agents/bulk-engine')
+        .send({ engine: 'codex-cli', model: 'gpt-5.2' })
+        .expect(200);
+
+      // Only the one real, visible agent is updated — not the Hub assistant.
+      expect(res.body.updated).toBe(1);
+      const prefs = getUserPreferencesRow(userId);
+      expect(prefs.agentEngineOverrides?.['a-shared']).toEqual({ engine: 'codex-cli' });
+      expect(prefs.agentEngineOverrides?.[HUB_ASSISTANT_AGENT_ID]).toBeUndefined();
+      expect(prefs.agentModelOverrides?.[HUB_ASSISTANT_AGENT_ID]).toBeUndefined();
     });
   });
 });

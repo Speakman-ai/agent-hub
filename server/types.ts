@@ -3416,6 +3416,11 @@ export interface Project {
    * in the sidebar. Defaults to `false` (omitted) until an operator opts in.
    */
   infraEnabled?: boolean;
+  /**
+   * System projects (the hidden Hub workspace) never appear in the sidebar
+   * or Settings project list. Identified by `kind: 'system'` and/or id `__hub__`.
+   */
+  kind?: 'system';
   agents: Agent[];
   [key: string]: unknown;
 }

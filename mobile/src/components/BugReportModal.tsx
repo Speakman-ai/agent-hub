@@ -5,7 +5,7 @@ import { colors } from '../theme/colors';
 import { captureScreenshot, submitBugReport } from '../utils/bugReport';
 const SEVERITIES = ['low', 'medium', 'high', 'critical'];
 const TITLE_MAX = 200;
-export default function BugReportModal({ visible, onClose, screenshotUri, onRetakeScreenshot, projectId, agentId, sourceUrl = '', }: any) {
+export default function BugReportModal({ visible, onClose, screenshotUri, onRetakeScreenshot, projectId, agentId, sourceUrl = '', descriptionPrefix = '', }: any) {
     const [title, setTitle] = useState('');
     const [description, setDescription] = useState('');
     const [severity, setSeverity] = useState('medium');
@@ -60,7 +60,7 @@ export default function BugReportModal({ visible, onClose, screenshotUri, onReta
             await submitBugReport({
                 screenshotUri: currentUri,
                 title: title.trim(),
-                description: description.trim(),
+                description: [descriptionPrefix, description.trim()].filter(Boolean).join('\n\n'),
                 severity,
                 sourceUrl,
                 userAgent,

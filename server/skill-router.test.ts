@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { routeSkillFromMessage, routeSkillsFromMessage } from './skill-router.js';
+import {
+  routeSkillFromMessage,
+  routeSkillsFromMessage,
+  shouldAutoloadAgentHubSkill,
+} from './skill-router.js';
+import { HUB_PROJECT_ID, HUB_SESSION_MODE } from '../shared/utils/hub.js';
 
 const ALL_SKILLS = [
   { id: 'agent-hub-kanban', name: 'agent-hub-kanban', description: 'Manage board cards' },
@@ -233,5 +238,37 @@ describe('routeSkillsFromMessage — multi-match + project default', () => {
       projectSlug: 'agent-hub',
     });
     expect(result?.skillId).toBe('agent-hub-kanban');
+  });
+
+  it('(g) autoloads agent-hub for the hidden Hub assistant project', () => {
+    const matches = routeSkillsFromMessage({
+      message: 'what should I focus on',
+      skills: SKILLS,
+      projectSlug: HUB_PROJECT_ID,
+    });
+    const ahMatch = matches.find((m) => m.skillId === 'agent-hub');
+    expect(ahMatch).toBeDefined();
+    expect(ahMatch?.reason).toContain('project default');
+  });
+
+  it('(h) autoloads agent-hub when session_mode is hub even off the Hub project', () => {
+    const matches = routeSkillsFromMessage({
+      message: 'what should I focus on',
+      skills: SKILLS,
+      projectSlug: 'other-project',
+      sessionMode: HUB_SESSION_MODE,
+    });
+    expect(matches.find((m) => m.skillId === 'agent-hub')).toBeDefined();
+  });
+});
+
+describe('shouldAutoloadAgentHubSkill', () => {
+  it('is true for the product repo, hidden Hub project, and hub session mode', () => {
+    expect(shouldAutoloadAgentHubSkill({ projectSlug: 'agent-hub' })).toBe(true);
+    expect(shouldAutoloadAgentHubSkill({ projectSlug: HUB_PROJECT_ID })).toBe(true);
+    expect(shouldAutoloadAgentHubSkill({ sessionMode: HUB_SESSION_MODE })).toBe(true);
+    expect(shouldAutoloadAgentHubSkill({ projectSlug: 'other-project', sessionMode: 'chat' })).toBe(
+      false,
+    );
   });
 });

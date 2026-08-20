@@ -8,9 +8,6 @@ import {
   GitFork,
   Radio,
   ExternalLink,
-  CalendarDays,
-  Mail,
-  ListTodo,
   List,
   ListOrdered,
   Terminal,
@@ -135,11 +132,8 @@ export default function Sidebar({
   /** When true, the per-user Google account is connected, so the global
    *  Calendar nav entry (under Dashboard) is shown. Calendar is NOT a
    *  per-project surface. */
-  googleCalendarNavVisible = false,
-  /** When true, the per-user Google account is connected, so the global
-   *  Gmail nav entry (under Dashboard) is shown. Gmail is NOT a per-project
-   *  surface. */
-  googleGmailNavVisible = false,
+  googleCalendarNavVisible: _googleCalendarNavVisible = false,
+  googleGmailNavVisible: _googleGmailNavVisible = false,
   deploymentsProjectId,
   replaysProjectId,
   securityProjectId,
@@ -596,98 +590,27 @@ export default function Sidebar({
             )}
           </div>
 
-          {/* Personal Dashboard home — the User Module's global (non-project)
-              landing page (spec NAV-PLACEMENT). Four panes (My Work, Todos,
-              Calendar, Gmail) over the per-user aggregation. Always shown; the
-              Google panes self-gate. Distinct from the org "Dashboard" below,
-              which is the org-wide admin overview. */}
+          {/* Hub — org/user home: assistant + Dashboard / Daily Summary / Org / Todos / Calendar / Mail. */}
           <button
-            onClick={() => onNavigate('home')}
-            data-testid="sidebar-global-home"
+            onClick={() => onNavigate('hub')}
+            data-testid="sidebar-global-hub"
             className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
-              currentView === 'home'
+              currentView === 'hub' ||
+              currentView === 'home' ||
+              currentView === 'dashboard' ||
+              currentView === 'todos' ||
+              currentView === 'calendar' ||
+              currentView === 'gmail'
                 ? 'bg-gray-800 text-white'
                 : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
             }`}
           >
             <House size={14} className="flex-shrink-0" />
-            <span className="flex-1 truncate text-sm font-medium">Home</span>
+            <span className="flex-1 truncate text-sm font-medium">Hub</span>
           </button>
 
-          {/* Org-scoped dashboard — sits above the project list because it's
-              not tied to any single project. */}
-          <button
-            onClick={() => onNavigate('dashboard')}
-            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
-              currentView === 'dashboard'
-                ? 'bg-gray-800 text-white'
-                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-            }`}
-          >
-            <BarChart3 size={14} className="flex-shrink-0" />
-            <span className="flex-1 truncate text-sm font-medium">Dashboard</span>
-          </button>
-
-          {/* Cross-project personal Todos — a per-USER capture list (spec
-              TODO-MODEL / NAV-PLACEMENT). Sits in the global Dashboard tier and
-              is ALWAYS shown: unlike Calendar/Gmail it has no Google dependency,
-              so it renders whether or not the user has linked Google. */}
-          <button
-            onClick={() => onNavigate('todos')}
-            data-testid="sidebar-global-todos"
-            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
-              currentView === 'todos'
-                ? 'bg-gray-800 text-white'
-                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-            }`}
-          >
-            <ListTodo size={14} className="flex-shrink-0" />
-            <span className="flex-1 truncate text-sm font-medium">Todos</span>
-          </button>
-
-          {/* Global Calendar — a per-USER Google surface, not project-scoped.
-              Sits in the Dashboard tier and only appears when the user's Google
-              account is connected (`/api/auth/google/status` connected=true).
-              When not connected, the connect affordance lives in
-              Settings -> Account. */}
-          {googleCalendarNavVisible && (
-            <button
-              onClick={() => onNavigate('calendar')}
-              data-testid="sidebar-global-calendar"
-              className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
-                currentView === 'calendar'
-                  ? 'bg-gray-800 text-white'
-                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-              }`}
-            >
-              <CalendarDays size={14} className="flex-shrink-0" />
-              <span className="flex-1 truncate text-sm font-medium">Calendar</span>
-            </button>
-          )}
-
-          {/* Global Gmail — a per-USER Google surface, not project-scoped. Sits
-              in the Dashboard tier and only appears when the user's Google
-              account is connected (`/api/auth/google/status` connected=true).
-              When not connected, the connect affordance lives in
-              Settings -> Account. */}
-          {googleGmailNavVisible && (
-            <button
-              onClick={() => onNavigate('gmail')}
-              data-testid="sidebar-global-gmail"
-              className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
-                currentView === 'gmail'
-                  ? 'bg-gray-800 text-white'
-                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-              }`}
-            >
-              <Mail size={14} className="flex-shrink-0" />
-              <span className="flex-1 truncate text-sm font-medium">Gmail</span>
-            </button>
-          )}
-
-          {/* Org-wide support overview lives on the Dashboard (Support issues
-              panel). Per-project Support links — with unread badges — stay in
-              each project's menu below for drill-in. */}
+          {/* Org-wide support overview lives on Hub → Org. Per-project Support
+              links — with unread badges — stay in each project's menu below. */}
 
           {/* Scheduled Tasks (cron sessions) render per-project inside each
               project block below. But a cron may have no rendered home: its

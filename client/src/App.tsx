@@ -83,6 +83,16 @@ import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import TodosPage from './components/TodosPage';
 import PersonalDashboard from './components/PersonalDashboard';
+import DailySummaryPage from './components/DailySummaryPage';
+import HubPage from './components/HubPage';
+import HubModelPicker, { defaultHubModelForEngine } from './components/HubModelPicker';
+import HubClearChatButton from './components/HubClearChatButton';
+import {
+  parseHubPane,
+  hubPaneFromLegacyView,
+  HUB_ASSISTANT_AGENT_ID,
+  type HubWorkspacePane,
+} from '@shared/utils/hub';
 import { useGoogleStatus } from './hooks/useGoogleStatus';
 import { shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
 import DeploymentsPage from './components/DeploymentsPage';
@@ -253,10 +263,15 @@ export default function App({ initialView }: any = {}) {
   const [projects, setProjects] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
   const [activeAgentId, _setActiveAgentId] = useState<any>(() => {
-    return localStorage.getItem('activeAgentId') || null;
+    const stored = localStorage.getItem('activeAgentId');
+    // Never restore the hidden Hub assistant as the active agent: it is absent
+    // from GET /api/projects, so it can't resolve on reload and would fall
+    // through to a project agent's session.
+    return stored && stored !== HUB_ASSISTANT_AGENT_ID ? stored : null;
   });
   const setActiveAgentId = useCallback((id: any) => {
-    if (id) localStorage.setItem('activeAgentId', id);
+    // Set Hub-assistant focus in memory, but never persist it — see above.
+    if (id && id !== HUB_ASSISTANT_AGENT_ID) localStorage.setItem('activeAgentId', id);
     _setActiveAgentId(id);
   }, []);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -302,6 +317,17 @@ export default function App({ initialView }: any = {}) {
   // The CLI-detection signal (`gitWorktreeDetected`) is similarly retired.
   const [sessionConsultMode, setSessionConsultMode] = useState(false);
   const [currentView, setCurrentView] = useState(initialNavigation.view);
+  const [hubPane, setHubPane] = useState<HubWorkspacePane>(() =>
+    parseHubPane(initialNavigation.hubPane || hubPaneFromLegacyView(initialNavigation.view)),
+  );
+  const [hubMobileTab, setHubMobileTab] = useState<'assistant' | HubWorkspacePane>(() =>
+    parseHubPane(initialNavigation.hubPane || hubPaneFromLegacyView(initialNavigation.view)),
+  );
+  const [hubAgent, setHubAgent] = useState<any>(null);
+  // The live per-user Hub assistant session id, resolved from GET /api/me/hub.
+  // The Hub composer binds and sends ONLY to this session — never a project row.
+  const [hubSessionId, setHubSessionId] = useState<string | null>(null);
+  const [hubClearing, setHubClearing] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showForward, setShowForward] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
@@ -734,6 +760,8 @@ export default function App({ initialView }: any = {}) {
   const messageInputRef = useRef<any>(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const hubSessionIdRef = useRef<string | null>(hubSessionId);
+  hubSessionIdRef.current = hubSessionId;
   // Linked-design id of the active session — kept in a ref so the stable WS
   // handler can decide whether a `design_updated` event should refresh the
   // in-session preview pane. Assigned after `activeSession` is derived below.
@@ -897,8 +925,13 @@ export default function App({ initialView }: any = {}) {
   ]);
 
   const applyNavigationState = useCallback((route: any) => {
-    const view = route?.view || 'dashboard';
+    const view = route?.view || 'hub';
     setCurrentView(view);
+    if (view === 'hub' || hubPaneFromLegacyView(view)) {
+      const pane = parseHubPane(route?.hubPane || hubPaneFromLegacyView(view));
+      setHubPane(pane);
+      setHubMobileTab(pane);
+    }
     if (view === 'wiki') setWikiProjectId(route?.projectId || null);
     if (view === 'notes') setNotesProjectId(route?.projectId || null);
     if (view === 'reviewer') setReviewerProjectId(route?.projectId || null);
@@ -962,6 +995,7 @@ export default function App({ initialView }: any = {}) {
       threadId: activeThreadId,
       designId: activeDesignId,
       ticketId: currentView === 'support' ? supportTicketId : null,
+      hubPane: currentView === 'hub' ? hubPane : null,
     });
     if (window.location.hash === hash) {
       routeUrlInitializedRef.current = true;
@@ -980,6 +1014,7 @@ export default function App({ initialView }: any = {}) {
     pullsOpenPrNumber,
     routeProjectId,
     supportTicketId,
+    hubPane,
   ]);
 
   const isWizardView = (v: any) =>
@@ -1237,7 +1272,9 @@ export default function App({ initialView }: any = {}) {
     };
   }, [projects]);
 
-  const activeAgent = agents.find((a: any) => a.id === activeAgentId);
+  const activeAgent =
+    agents.find((a: any) => a.id === activeAgentId) ||
+    (hubAgent && hubAgent.id === activeAgentId ? hubAgent : undefined);
 
   const workflowEditRoute = useMemo(() => parseWorkflowEditView(currentView), [currentView]);
 
@@ -3741,6 +3778,21 @@ export default function App({ initialView }: any = {}) {
         // `updated_at`) only when neither is available — this is what used to
         // surface as "Claude lost my session" after an Electron reload, because
         // `data[0]` could be an unrelated cron/heartbeat row.
+        // Once the Hub GET has resolved a live Hub session, that session owns the
+        // active chat while the Hub is focused. A late project-agent session
+        // restore (from init's setActiveAgentId(flat[0])) must not stomp it, or
+        // the assistant composer would lock (activeSessionId !== hubSessionId)
+        // until the user clicks a pane. The Hub is also reached via the legacy
+        // views (home/dashboard/todos/calendar/gmail), which applyNavigationState
+        // leaves as currentView='dashboard' etc. rather than normalizing to
+        // 'hub' — treat those as Hub too. Only guard once a Hub session exists;
+        // before it resolves, normal restore must still run.
+        const onHubSurface =
+          currentViewRef.current === 'hub' || !!hubPaneFromLegacyView(currentViewRef.current);
+        if (onHubSurface && hubSessionIdRef.current && agentId !== HUB_ASSISTANT_AGENT_ID) {
+          return;
+        }
+
         let remembered = null;
         try {
           const key = `activeSessionId:${agentId}`;
@@ -4065,6 +4117,40 @@ export default function App({ initialView }: any = {}) {
     [setActiveAgentId],
   );
   focusAgentSessionRef.current = focusAgentSession;
+
+  useEffect(() => {
+    if (currentView !== 'hub' && !hubPaneFromLegacyView(currentView)) return;
+    let cancelled = false;
+    const req = api.getHubSession();
+    req
+      .then((body: any) => {
+        if (cancelled) return;
+        const session = body?.session;
+        const agent = body?.agent;
+        if (agent) setHubAgent(agent);
+        if (session?.id) {
+          setHubSessionId(session.id);
+          pendingSessionIdRef.current = session.id;
+          if (agent?.id) setActiveAgentId(agent.id);
+          setActiveSessionId(session.id);
+          if (session.engine) setSessionEngine(session.engine);
+          if (session.model) setSessionModel(session.model);
+        }
+      })
+      .catch(() => {
+        // Hub assistant is unavailable; workspace panes still render. Leave
+        // hubSessionId null so the assistant composer stays locked rather than
+        // sending into whatever project session happens to be active.
+        setHubSessionId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Fetch the Hub session once per Hub visit — NOT on pane/tab switches.
+    // Depending on hubPane / hubMobileTab re-ran this on every Dashboard→Org
+    // switch and re-stamped agent/session/engine/model, clobbering an in-flight
+    // composer model persist. currentView flips only on entering/leaving Hub.
+  }, [currentView, setActiveAgentId]);
 
   // Keep the active agent aligned with the open session's owner (cross-project switches).
   useLayoutEffect(() => {
@@ -4727,6 +4813,81 @@ export default function App({ initialView }: any = {}) {
     }
   };
 
+  const persistHubModel = async (engine: string, model: string) => {
+    // Snapshot the current pick so a failed PUT can be rolled back instead of
+    // leaving the picker showing an engine/model the server never accepted.
+    const prevEngine = sessionEngine;
+    const prevModel = sessionModel;
+    setSessionEngine(engine);
+    setSessionModel(model);
+    setSessions((prev: any) =>
+      prev.map((s: any) => (s.agent_id === HUB_ASSISTANT_AGENT_ID ? { ...s, engine, model } : s)),
+    );
+    try {
+      const saved = await api.putHubModel({ engine, model });
+      setSessionEngine(saved.engine);
+      setSessionModel(saved.model);
+      setSessions((prev: any) =>
+        prev.map((s: any) =>
+          s.agent_id === HUB_ASSISTANT_AGENT_ID
+            ? { ...s, engine: saved.engine, model: saved.model }
+            : s,
+        ),
+      );
+    } catch (err: any) {
+      // Revert the optimistic stamp so the picker reflects reality.
+      setSessionEngine(prevEngine);
+      setSessionModel(prevModel);
+      setSessions((prev: any) =>
+        prev.map((s: any) =>
+          s.agent_id === HUB_ASSISTANT_AGENT_ID
+            ? { ...s, engine: prevEngine, model: prevModel }
+            : s,
+        ),
+      );
+      showToast(err?.message || 'Failed to save Hub model', 'error', 5000);
+    }
+  };
+
+  const handleHubEngineChange = (engine: string) => {
+    const nextModel = defaultHubModelForEngine(modelConfig, engine);
+    // Never fall back to the previous engine's model — a cross-engine model is
+    // invalid for `engine` and the server would 400 it. If the new engine has no
+    // resolvable default, skip the persist rather than sending a bad pair.
+    if (!nextModel) return;
+    void persistHubModel(engine, nextModel);
+  };
+
+  const handleHubModelChange = (model: string) => {
+    void persistHubModel(sessionEngine, model);
+  };
+
+  const clearActiveHubChat = async () => {
+    if (hubClearing) return;
+    if (!window.confirm('Clear this Hub chat? History is archived for a day.')) return;
+    setHubClearing(true);
+    try {
+      handleCancel();
+      const body = await api.clearHubSession();
+      const session = body?.session as { id?: string; engine?: string; model?: string } | undefined;
+      if (session?.id) {
+        // Clear mints a FRESH Hub session — advance the canonical Hub id too,
+        // or the composer stays locked (activeSessionId !== hubSessionId) until
+        // the user leaves Hub and the GET re-runs.
+        setHubSessionId(session.id);
+        pendingSessionIdRef.current = session.id;
+        setActiveSessionId(session.id);
+        setMessages([]);
+        if (session.engine) setSessionEngine(session.engine);
+        if (session.model) setSessionModel(session.model);
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to clear Hub chat', 'error', 5000);
+    } finally {
+      setHubClearing(false);
+    }
+  };
+
   const handleReasoningEffortChange = async (effort: any) => {
     setSessionReasoningEffort(effort);
     if (activeSessionId) {
@@ -4964,13 +5125,34 @@ export default function App({ initialView }: any = {}) {
     handleSend(messageText);
   };
 
-  const handleSend = async (content: any, images: any = [], { interrupt = false }: any = {}) => {
-    let sessionId = activeSessionIdRef.current;
+  // The agent a turn must run as is a property of the ACTIVE SESSION, not the
+  // shared `activeAgentId` (which init / config-ready / restore can leave on a
+  // project agent). When the active session is the Hub session, the turn runs
+  // as the `__hub_assistant__` agent. The server's handleChat spawns from the
+  // message's agentId, so getting this wrong runs the Hub turn with a project
+  // agent's cwd/skills.
+  const resolveTurnAgentId = () =>
+    activeSessionIdRef.current && activeSessionIdRef.current === hubSessionIdRef.current
+      ? HUB_ASSISTANT_AGENT_ID
+      : activeAgentId;
+
+  const handleSend = async (
+    content: any,
+    images: any = [],
+    { interrupt = false, agentId: agentIdOverride, sessionId: sessionIdOverride }: any = {},
+  ) => {
+    // The agent/session a turn runs as must be passed EXPLICITLY by callers that
+    // are not bound to the shared `activeAgentId` / `activeSessionId` globals
+    // (notably the Hub assistant, whose identity is `__hub_assistant__` + the
+    // per-user Hub session, independent of whatever project agent init/restore
+    // left active). Everyone else falls back to the active globals as before.
+    const targetAgentId = agentIdOverride ?? resolveTurnAgentId();
+    let sessionId = sessionIdOverride ?? activeSessionIdRef.current;
     if (!sessionId) {
-      const coalesceKey = `${activeAgentId}:${sessionConsultMode ? 'consult' : 'run'}`;
+      const coalesceKey = `${targetAgentId}:${sessionConsultMode ? 'consult' : 'run'}`;
       const session = await coalescePromiseByKey(implicitSessionCreateByKeyRef, coalesceKey, () =>
         api
-          .createSession(activeAgentId, undefined, { consultMode: sessionConsultMode })
+          .createSession(targetAgentId, undefined, { consultMode: sessionConsultMode })
           .then((s: any) => {
             setSessions((prev: any) => prependSessionDeduped(prev, s));
             setActiveSessionId(s.id);
@@ -5014,11 +5196,27 @@ export default function App({ initialView }: any = {}) {
 
     send({
       type: 'chat',
-      agentId: activeAgentId,
+      agentId: targetAgentId,
       sessionId,
       content,
       ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
       ...(interrupt ? { interrupt: true } : {}),
+    });
+  };
+
+  const sendHubChat = (content: any, images: any = [], opts: any = {}) => {
+    // Bind the Hub turn to the canonical Hub identity — the `__hub_assistant__`
+    // agent and the live per-user Hub session — NOT the shared activeAgentId /
+    // activeSessionId, which init / config-ready / restore can point at a
+    // project agent. Without an explicit agentId the server's handleChat would
+    // spawn the turn as that project agent (wrong cwd/skills). Refuse to send
+    // until the Hub session is resolved.
+    const hubId = hubSessionIdRef.current;
+    if (!hubId) return;
+    return handleSend(content, images, {
+      ...opts,
+      agentId: HUB_ASSISTANT_AGENT_ID,
+      sessionId: hubId,
     });
   };
 
@@ -5029,7 +5227,9 @@ export default function App({ initialView }: any = {}) {
       if (!sessionId || !message?.id) return;
       const { chat } = buildInterruptQueuedMessageDispatch({
         message,
-        agentId: activeAgentId,
+        // Same session-derived identity as handleSend: a queued Hub message
+        // must re-dispatch as the Hub agent, not whatever activeAgentId holds.
+        agentId: sessionId === hubSessionIdRef.current ? HUB_ASSISTANT_AGENT_ID : activeAgentId,
         sessionId,
       });
       send(chat);
@@ -5121,9 +5321,11 @@ export default function App({ initialView }: any = {}) {
           ? 'skill-builder'
           : activeSession?.session_mode === 'consult'
             ? 'consult'
-            : activeSession?.session_mode === 'isolated'
-              ? 'isolated'
-              : 'chat';
+            : activeSession?.session_mode === 'hub'
+              ? 'hub'
+              : activeSession?.session_mode === 'isolated'
+                ? 'isolated'
+                : 'chat';
   const designModeActive = sessionMode === 'design';
   const scopingModeActive = sessionMode === 'scoping';
   // Skill Builder mode is purely conversational (the coach runs in chat and
@@ -5758,6 +5960,163 @@ export default function App({ initialView }: any = {}) {
     );
   }
 
+  // Shared live-turn chrome: thinking dots + streaming SessionTail. Hub and
+  // project chat both mount this so Hub does not wait for the finished
+  // assistant row before showing output.
+  const liveStreamingAssistantTurn = (
+    <>
+      {thinking && !streamingMsgId && (
+        <ThinkingIndicator
+          agentColor={streamingAgent?.agentColor || activeAgent?.color}
+          agentName={streamingAgent?.agentName}
+        />
+      )}
+      {streamingMsgId && (
+        <SessionTail
+          key={streamingMsgId}
+          message={{
+            id: streamingMsgId,
+            session_id: activeSessionId,
+            role: 'assistant',
+            engine: liveStream.engine,
+            model: liveStream.model,
+            agent_name: liveStream.agentName,
+            content: streamingContent,
+          }}
+          events={eventsByMessage[streamingMsgId]}
+          agentColor={liveStream.agentColor}
+          agentName={liveStream.agentName}
+          streaming
+          onInterrupt={handleCancel}
+          onAskSubmit={handleAskSubmit}
+          onCredentialSubmit={handleCredentialSubmit}
+          askSubmittedIds={askSubmitted}
+          fromAgent={activeAgent}
+          agents={agents}
+          sessionHandoffs={sessionHandoffs}
+          sessionDelegations={delegations[activeSessionId]}
+          delegationDispatchError={delegationDispatchErrors[activeSessionId]}
+          onOpenSession={handleOpenHandoffSession}
+          browserScreenshots={
+            activeSessionId
+              ? (browserScreensBySession[activeSessionId]?.[streamingMsgId] ?? {})
+              : {}
+          }
+        />
+      )}
+    </>
+  );
+
+  const hubModelPicker = (
+    <HubModelPicker
+      modelConfig={modelConfig}
+      engine={sessionEngine}
+      model={sessionModel}
+      onEngineChange={handleHubEngineChange}
+      onModelChange={handleHubModelChange}
+    />
+  );
+  const hubClearButton = <HubClearChatButton onClear={clearActiveHubChat} clearing={hubClearing} />;
+  const hubAssistantChat = (
+    <div className="flex-1 flex flex-col min-h-0">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScrollEvent}
+        data-testid="hub-assistant-scroll"
+        className="flex-1 overflow-y-auto px-3 py-3 space-y-2"
+        style={{ overflowAnchor: 'none' }}
+      >
+        <div ref={messagesColumnRef}>
+          {messages.length === 0 && !thinking && !streamingMsgId && !streamingContent && (
+            <p className="text-sm text-gray-500 px-1">
+              Ask Hub what to focus on next, to kick off an agent, or to configure Agent Hub. It
+              reads your boards, todos, support, and calendar through the API — not by scraping
+              pages.
+            </p>
+          )}
+          {messages.map((msg: any) =>
+            msg.role === 'assistant' ? (
+              <SessionTail
+                key={msg.id}
+                message={msg}
+                events={eventsByMessage[msg.id]}
+                agentColor={msg.agent_color || chatAccentColor}
+                agentName={activeAgent?.name || 'Hub'}
+                onEventsLoaded={handleEventsLoaded}
+                onAskSubmit={handleAskSubmit}
+                onCredentialSubmit={handleCredentialSubmit}
+                askSubmittedIds={askSubmitted}
+                fromAgent={activeAgent}
+                agents={agents}
+                sessionHandoffs={sessionHandoffs}
+                sessionDelegations={delegations[activeSessionId]}
+                delegationDispatchError={delegationDispatchErrors[activeSessionId]}
+                onOpenSession={handleOpenHandoffSession}
+                browserScreenshots={browserScreensBySession[activeSessionId]?.[msg.id] ?? {}}
+              />
+            ) : (
+              <ChatMessage
+                key={msg.id}
+                message={msg}
+                agentColor={chatAccentColor}
+                projectId={activeChatProject?.id}
+                hosted={activeChatProject?.gitHost === 'agenthub'}
+                onOpenPrDetail={handleOpenPrDetail}
+                onStartFollowUp={() => handleStartFollowUpSession(activeSessionId)}
+              />
+            ),
+          )}
+          {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
+            <ReactLoopObservabilityPanel
+              steps={reactLoopStepsBySession[activeSessionId]}
+              streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+            />
+          )}
+          {liveStreamingAssistantTurn}
+        </div>
+      </div>
+      <div className="shrink-0">
+        <MessageInput
+          ref={messageInputRef}
+          onSend={sendHubChat}
+          onCancel={handleCancel}
+          disabled={
+            shouldDisableSessionComposer({
+              hasAgent: !!activeAgent,
+              connected,
+              workspaceEnsureFailed: !!activeSessionWorkspaceEnsureError,
+            }) ||
+            // Lock the composer until the live Hub session is the active one, so
+            // the user can never type into (and send to) a project session that
+            // happens to be active before the Hub GET resolves.
+            !hubSessionId ||
+            activeSessionId !== hubSessionId
+          }
+          isProcessing={isProcessing}
+          queueLength={(messageQueues[activeSessionId] || []).length}
+          agentColor={chatAccentColor}
+          skills={skills}
+          consultMode
+          consultHint="Hub assistant — org & account help, no code ship or Finalize"
+          readOnly={false}
+          draftKey={activeSessionId || 'hub'}
+          onFileError={(msg: any) => showToast(msg, 'error', 6000)}
+          composerPrefill={composerPrefill}
+          onComposerPrefillClear={() => setComposerPrefill(null)}
+          onReplaceQueuedMessage={handleEditQueuedMessage}
+          sessionAgents={sessionAgents}
+          enableMentions={false}
+          toolbarStart={
+            <div className="flex items-center gap-2 min-w-0 w-full">
+              {hubModelPicker}
+              <div className="lg:hidden ml-auto shrink-0">{hubClearButton}</div>
+            </div>
+          }
+        />
+      </div>
+    </div>
+  );
+
   return (
     <div className="flex flex-col h-dvh max-h-dvh overflow-hidden bg-gray-950 text-gray-100">
       {/* "Update available" modal — rendered at the top level so it floats
@@ -6365,23 +6724,106 @@ export default function App({ initialView }: any = {}) {
                     setSidebarOpen(false);
                   }}
                 />
-              ) : currentView === 'home' ? (
-                <PersonalDashboard
-                  onNavigate={setCurrentView}
-                  onOpenAccountSettings={() => setCurrentView('settings:account')}
-                  onOpenKanban={(projectId: any) => {
-                    setCurrentView(`kanban:${projectId}`);
-                    setSidebarOpen(false);
+              ) : currentView === 'hub' ||
+                currentView === 'home' ||
+                currentView === 'dashboard' ||
+                currentView === 'todos' ||
+                currentView === 'calendar' ||
+                currentView === 'gmail' ? (
+                <HubPage
+                  pane={
+                    currentView === 'hub'
+                      ? hubPane
+                      : parseHubPane(hubPaneFromLegacyView(currentView) || hubPane)
+                  }
+                  onPaneChange={(pane) => {
+                    setCurrentView('hub');
+                    setHubPane(pane);
+                    setHubMobileTab(pane);
                   }}
+                  mobileAssistantTab
+                  mobileTab={hubMobileTab}
+                  onMobileTabChange={setHubMobileTab}
+                  assistantActions={hubClearButton}
+                  today={
+                    <PersonalDashboard
+                      onNavigate={(view: any) => {
+                        const pane = hubPaneFromLegacyView(view);
+                        if (pane) {
+                          setCurrentView('hub');
+                          setHubPane(pane);
+                          setHubMobileTab(pane);
+                          return;
+                        }
+                        setCurrentView(view);
+                      }}
+                      onOpenAccountSettings={() => setCurrentView('settings:account')}
+                      onOpenKanban={(projectId: any) => {
+                        setCurrentView(`kanban:${projectId}`);
+                        setSidebarOpen(false);
+                      }}
+                    />
+                  }
+                  summary={
+                    <DailySummaryPage
+                      onOpenCard={(projectId, cardId) => {
+                        setKanbanFocusCardId(cardId);
+                        setCurrentView(`kanban:${projectId}`);
+                        setSidebarOpen(false);
+                      }}
+                      onOpenSession={(agentId, sessionId) => {
+                        focusAgentSession(agentId, sessionId);
+                      }}
+                      onOpenTodos={() => {
+                        setCurrentView('hub');
+                        setHubPane('todos');
+                        setHubMobileTab('todos');
+                      }}
+                      onOpenProject={(projectId) => {
+                        setCurrentView(`kanban:${projectId}`);
+                        setSidebarOpen(false);
+                      }}
+                    />
+                  }
+                  org={
+                    <DashboardView
+                      orgId={getActiveOrgApiId()}
+                      onNavigate={setCurrentView}
+                      onNewProject={openAdaptiveProjectWizard}
+                      onOpenSession={(agentId: any, sessionId: any) =>
+                        focusAgentSession(agentId, sessionId)
+                      }
+                      onOpenKanban={(projectId: any) => {
+                        setCurrentView(`kanban:${projectId}`);
+                        setSidebarOpen(false);
+                      }}
+                      onOpenPulls={(projectId: any) => {
+                        setPullsProjectId(projectId);
+                        setCurrentView('pulls');
+                        setSidebarOpen(false);
+                      }}
+                      onOpenExternalUrl={(url: any) => {
+                        window.open(url, '_blank', 'noopener,noreferrer');
+                      }}
+                      onOpenProjectSupport={(projectId: any) => {
+                        setSupportProjectId(projectId);
+                        setSupportTicketId(null);
+                        setCurrentView('support');
+                        setSidebarOpen(false);
+                      }}
+                    />
+                  }
+                  todos={<TodosPage />}
+                  calendar={
+                    <CalendarAgendaPage
+                      onOpenAccountSettings={() => setCurrentView('settings:account')}
+                    />
+                  }
+                  mail={
+                    <GmailPage onOpenAccountSettings={() => setCurrentView('settings:account')} />
+                  }
+                  assistant={hubAssistantChat}
                 />
-              ) : currentView === 'todos' ? (
-                <TodosPage />
-              ) : currentView === 'calendar' ? (
-                <CalendarAgendaPage
-                  onOpenAccountSettings={() => setCurrentView('settings:account')}
-                />
-              ) : currentView === 'gmail' ? (
-                <GmailPage onOpenAccountSettings={() => setCurrentView('settings:account')} />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage
                   projectId={deploymentsProjectId}
@@ -6428,33 +6870,6 @@ export default function App({ initialView }: any = {}) {
                 />
               ) : currentView === 'releases' ? (
                 <ReleasesView />
-              ) : currentView === 'dashboard' ? (
-                <DashboardView
-                  orgId={getActiveOrgApiId()}
-                  onNavigate={setCurrentView}
-                  onNewProject={openAdaptiveProjectWizard}
-                  onOpenSession={(agentId: any, sessionId: any) =>
-                    focusAgentSession(agentId, sessionId)
-                  }
-                  onOpenKanban={(projectId: any) => {
-                    setCurrentView(`kanban:${projectId}`);
-                    setSidebarOpen(false);
-                  }}
-                  onOpenPulls={(projectId: any) => {
-                    setPullsProjectId(projectId);
-                    setCurrentView('pulls');
-                    setSidebarOpen(false);
-                  }}
-                  onOpenExternalUrl={(url: any) => {
-                    window.open(url, '_blank', 'noopener,noreferrer');
-                  }}
-                  onOpenProjectSupport={(projectId: any) => {
-                    setSupportProjectId(projectId);
-                    setSupportTicketId(null);
-                    setCurrentView('support');
-                    setSidebarOpen(false);
-                  }}
-                />
               ) : currentView.startsWith('skills:') ? (
                 <SkillsPage
                   agents={agents}
@@ -6783,59 +7198,14 @@ export default function App({ initialView }: any = {}) {
                                         />
                                       </div>
                                     )}
-                                  {thinking && !streamingMsgId && (
-                                    <ThinkingIndicator
-                                      agentColor={streamingAgent?.agentColor || activeAgent?.color}
-                                      agentName={streamingAgent?.agentName}
-                                    />
-                                  )}
                                   {/* Streaming assistant turn — always render via
                                     SessionTail (Cursor-style thin stripe). The legacy
                                     heavy grey cross-agent bubble was removed from web:
                                     it mistriggered whenever the streaming agent differed
                                     from the active agent and dumped raw narration text.
-                                    Mobile keeps its own StreamingMessage bubble. */}
-                                  {streamingMsgId && (
-                                    <SessionTail
-                                      key={streamingMsgId}
-                                      message={{
-                                        id: streamingMsgId,
-                                        session_id: activeSessionId,
-                                        role: 'assistant',
-                                        engine: liveStream.engine,
-                                        model: liveStream.model,
-                                        agent_name: liveStream.agentName,
-                                        content: streamingContent,
-                                      }}
-                                      events={eventsByMessage[streamingMsgId]}
-                                      agentColor={liveStream.agentColor}
-                                      // Show whoever is actually streaming (in-session
-                                      // Reviewer, advisor, session agent) — the header
-                                      // Claude/Opus dropdown is the session agent, not
-                                      // this turn.
-                                      agentName={liveStream.agentName}
-                                      streaming
-                                      onInterrupt={handleCancel}
-                                      onAskSubmit={handleAskSubmit}
-                                      onCredentialSubmit={handleCredentialSubmit}
-                                      askSubmittedIds={askSubmitted}
-                                      fromAgent={activeAgent}
-                                      agents={agents}
-                                      sessionHandoffs={sessionHandoffs}
-                                      sessionDelegations={delegations[activeSessionId]}
-                                      delegationDispatchError={
-                                        delegationDispatchErrors[activeSessionId]
-                                      }
-                                      onOpenSession={handleOpenHandoffSession}
-                                      browserScreenshots={
-                                        activeSessionId
-                                          ? (browserScreensBySession[activeSessionId]?.[
-                                              streamingMsgId
-                                            ] ?? {})
-                                          : {}
-                                      }
-                                    />
-                                  )}
+                                    Mobile keeps its own StreamingMessage bubble.
+                                    Hub reuses the same liveStreamingAssistantTurn. */}
+                                  {liveStreamingAssistantTurn}
                                   {doneVerifyLogBySession[activeSessionId] && (
                                     <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
                                       <div className="rounded-lg border border-amber-600/40 bg-amber-950/25 px-3 py-2">

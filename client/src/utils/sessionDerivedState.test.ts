@@ -36,6 +36,10 @@ describe('sessionDerivedState', () => {
       expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'consult' })).toBe(true);
     });
 
+    it('returns true for hub session_mode', () => {
+      expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'hub' })).toBe(true);
+    });
+
     it('returns true for legacy ask_mode rows', () => {
       expect(isSessionConsultModeEnabled({ id: 'x', ask_mode: 1 })).toBe(true);
     });

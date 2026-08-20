@@ -3,7 +3,13 @@ import { Bug } from 'lucide-react';
 import BugReportModal from './BugReportModal';
 import { captureScreenshot, BUG_REPORT_ENABLED } from '../utils/bugReport';
 
-export default function BugReportButton({ projectId, agentId, onToast }: any) {
+export default function BugReportButton({
+  projectId,
+  agentId,
+  onToast,
+  descriptionPrefix,
+  label,
+}: any) {
   const [isOpen, setIsOpen] = useState(false);
   const [screenshotBlob, setScreenshotBlob] = useState<any>(null);
   const [screenshotMissReason, setScreenshotMissReason] = useState<any>(null);
@@ -41,11 +47,16 @@ export default function BugReportButton({ projectId, agentId, onToast }: any) {
         type="button"
         onClick={handleClick}
         disabled={capturing}
-        className="text-gray-400 hover:text-rose-400 p-2 transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center disabled:opacity-50"
+        className={
+          label
+            ? 'inline-flex items-center gap-1.5 rounded-lg border border-rose-900/60 bg-rose-950/40 px-2.5 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-900/40 transition-colors disabled:opacity-50'
+            : 'text-gray-400 hover:text-rose-400 p-2 transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center disabled:opacity-50'
+        }
         title="Report a bug"
         aria-label="Report a bug"
       >
-        <Bug size={18} />
+        <Bug size={label ? 13 : 18} />
+        {label ? <span>{label}</span> : null}
       </button>
       <BugReportModal
         isOpen={isOpen}
@@ -54,6 +65,7 @@ export default function BugReportButton({ projectId, agentId, onToast }: any) {
         initialScreenshotMissReason={screenshotMissReason}
         projectId={projectId}
         agentId={agentId}
+        descriptionPrefix={descriptionPrefix}
         onToast={onToast}
       />
     </>

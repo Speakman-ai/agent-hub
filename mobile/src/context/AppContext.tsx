@@ -21,6 +21,7 @@ import { coalescePromiseByKey } from '../utils/coalesceInFlight';
 import { createReloadMessages } from '../utils/sessionReload';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import { firstEngineWithAuthenticatedModels, defaultModelForAuthenticatedEngine, } from '../utils/authModelEngines';
+import { HUB_ASSISTANT_AGENT_ID } from '@shared/utils/hub';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
 import { usePendingLessonTotal } from '../hooks/usePendingLessonTotal';
 import { resolveStreamingFromSnapshot, buildStreamingAgentState } from '@shared/utils/activeTaskSnapshot';
@@ -39,6 +40,17 @@ export function AppProvider({ children }: any) {
     const [archivedSessions, setArchivedSessions] = useState<any[]>([]);
     const [restoringSessionIds, setRestoringSessionIds] = useState<any>(new Set());
     const [activeSessionId, setActiveSessionId] = useState<any>(null);
+    // The live per-user Hub assistant session id, resolved by HubScreen's GET.
+    // The embedded Hub assistant composer binds/sends ONLY to this session.
+    const [hubSessionId, setHubSessionId] = useState<string | null>(null);
+    const hubSessionIdRef = useRef<string | null>(null);
+    hubSessionIdRef.current = hubSessionId;
+    // Whether the Hub screen is currently focused. While it is, a project-agent
+    // session restore must not retarget the active session out from under the
+    // Hub assistant composer.
+    const [hubFocused, setHubFocused] = useState(false);
+    const hubFocusedRef = useRef(false);
+    hubFocusedRef.current = hubFocused;
     const [messages, setMessages] = useState<any[]>([]);
     const [thinking, setThinking] = useState(false);
     const [streamingContent, setStreamingContent] = useState('');
@@ -1279,6 +1291,18 @@ export function AppProvider({ children }: any) {
             // the "Create PR" button survives page refreshes / reconnects. Merge
             // rather than replace to preserve banners for sessions of other agents.
             setChangesReady((prev: any) => ({ ...prev, ...hydrateChangesReady(data) }));
+            // Once HubScreen's GET has resolved a live Hub session, that session
+            // owns the active chat while the Hub is focused. A late project-agent
+            // restore must not stomp it, or the embedded assistant composer would
+            // re-bind to a project session. Only guard once the Hub session
+            // exists — before then, normal restore still runs.
+            if (
+                hubFocusedRef.current &&
+                hubSessionIdRef.current &&
+                activeAgentId !== HUB_ASSISTANT_AGENT_ID
+            ) {
+                return;
+            }
             // Honor an explicitly requested target session (kanban assign, handoff
             // "Open session" tap, etc.) instead of defaulting to the newest row.
             const target = selectSessionToActivate(data, targetSessionId);
@@ -1642,6 +1666,37 @@ export function AppProvider({ children }: any) {
             setSessions((prev: any) => prev.map((s: any) => (s.id === updated.id ? { ...s, model: updated.model } : s)));
         }
     }, []);
+    const persistHubModel = useCallback(async (engine: string, model: string) => {
+        // Snapshot so a failed PUT rolls back instead of leaving the picker
+        // showing an engine/model the server never accepted. Read the live value
+        // through the functional updater (the callback has empty deps).
+        let prevEngine = 'claude-code';
+        let prevModel = 'claude-opus-5';
+        setSessionEngine((cur: any) => {
+            prevEngine = cur;
+            return engine;
+        });
+        setSessionModel((cur: any) => {
+            prevModel = cur;
+            return model;
+        });
+        setSessions((prev: any) => prev.map((s: any) => s.agent_id === HUB_ASSISTANT_AGENT_ID ? { ...s, engine, model } : s));
+        try {
+            const saved: any = await api.putHubModel({ engine, model });
+            if (saved?.engine) setSessionEngine(saved.engine);
+            if (saved?.model) setSessionModel(saved.model);
+            if (saved?.engine || saved?.model) {
+                setSessions((prev: any) => prev.map((s: any) => s.agent_id === HUB_ASSISTANT_AGENT_ID ? { ...s, engine: saved.engine || s.engine, model: saved.model || s.model } : s));
+            }
+        }
+        catch (err: any) {
+            // Revert the optimistic stamp so the picker reflects reality.
+            setSessionEngine(prevEngine);
+            setSessionModel(prevModel);
+            setSessions((prev: any) => prev.map((s: any) => s.agent_id === HUB_ASSISTANT_AGENT_ID ? { ...s, engine: prevEngine, model: prevModel } : s));
+            Alert.alert('Hub model', err?.message || 'Failed to save Hub model');
+        }
+    }, []);
     // Optimistically persist the Codex reasoning preset ('high' | 'pro'); reverts
     // on server error. Mirrors handleAskModeChange.
     const handleReasoningEffortChange = useCallback(async (effort: any) => {
@@ -1758,6 +1813,25 @@ export function AppProvider({ children }: any) {
             setStreamingAgent(null);
         }
     }, [send]);
+    const clearHubChat = useCallback(async () => {
+        handleCancel();
+        const body: any = await api.clearHubSession();
+        const session = body?.session;
+        if (session?.id) {
+            // Clear mints a FRESH Hub session — advance the canonical Hub id too,
+            // or the embedded composer stays locked (activeSessionId !==
+            // hubSessionId) until Hub is unfocused and remounted.
+            setHubSessionId(session.id);
+            pendingSessionIdRef.current = session.id;
+            setActiveSessionId(session.id);
+            setMessages([]);
+            if (session.engine)
+                setSessionEngine(session.engine);
+            if (session.model)
+                setSessionModel(session.model);
+        }
+        return body;
+    }, [handleCancel]);
     // Derived from persisted message history: any user message containing an
     // `agenthub:ask:answer` block with a matching askId marks that picker as
     // submitted. Surviving reloads requires this — in-memory state is lost on
@@ -1774,12 +1848,24 @@ export function AppProvider({ children }: any) {
             union.add(id);
         return union;
     }, [askSubmittedOptimistic, askSubmittedFromHistory]);
-    const handleSend = useCallback(async (content: any, images: any = [], { interrupt = false }: any = {}) => {
-        let sessionId = activeSessionIdRef.current;
+    const handleSend = useCallback(async (content: any, images: any = [], { interrupt = false, agentId: agentIdOverride, sessionId: sessionIdOverride }: any = {}) => {
+        // Callers not bound to the shared activeAgentId/activeSessionId globals
+        // (the embedded Hub assistant) must pass their agent/session EXPLICITLY —
+        // the Hub turn always runs as `__hub_assistant__` + the Hub session,
+        // regardless of whichever project agent init/restore left active.
+        // The agent a turn runs as is a property of the ACTIVE SESSION, not the
+        // shared activeAgentId. When the active session is the Hub session, the
+        // turn runs as `__hub_assistant__` (the server spawns from this id).
+        const targetAgentId =
+            agentIdOverride ??
+            (activeSessionIdRef.current && activeSessionIdRef.current === hubSessionIdRef.current
+                ? HUB_ASSISTANT_AGENT_ID
+                : activeAgentId);
+        let sessionId = sessionIdOverride ?? activeSessionIdRef.current;
         if (!sessionId) {
-            const coalesceKey = `${activeAgentId}:${sessionConsultMode ? 'consult' : 'run'}`;
+            const coalesceKey = `${targetAgentId}:${sessionConsultMode ? 'consult' : 'run'}`;
             const session = await coalescePromiseByKey(implicitSessionCreateByKeyRef, coalesceKey, () => api
-                .createSession(activeAgentId, undefined, { consultMode: sessionConsultMode })
+                .createSession(targetAgentId, undefined, { consultMode: sessionConsultMode })
                 .then((s: any) => {
                 setSessions((prev: any) => (prev.some((x: any) => x.id === s.id) ? prev : [s, ...prev]));
                 setActiveSessionId(s.id);
@@ -1805,7 +1891,7 @@ export function AppProvider({ children }: any) {
         }
         send({
             type: 'chat',
-            agentId: activeAgentId,
+            agentId: targetAgentId,
             sessionId,
             content,
             ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
@@ -1818,7 +1904,9 @@ export function AppProvider({ children }: any) {
             return;
         const { chat } = buildInterruptQueuedMessageDispatch({
             message,
-            agentId: activeAgentId,
+            // Session-derived identity: a queued Hub message re-dispatches as the
+            // Hub agent, not whatever activeAgentId holds.
+            agentId: sessionId === hubSessionIdRef.current ? HUB_ASSISTANT_AGENT_ID : activeAgentId,
             sessionId,
         });
         send(chat);
@@ -2152,6 +2240,10 @@ export function AppProvider({ children }: any) {
         activeSessionId,
         activeSessionState,
         setActiveSessionId,
+        hubSessionId,
+        setHubSessionId,
+        hubFocused,
+        setHubFocused,
         messages,
         reloadMessages,
         thinking,
@@ -2161,6 +2253,8 @@ export function AppProvider({ children }: any) {
         streamingAgent,
         sessionEngine,
         sessionModel,
+        setSessionEngine,
+        setSessionModel,
         sessionReasoningEffort,
         handleReasoningEffortChange,
         modelConfig,
@@ -2176,6 +2270,8 @@ export function AppProvider({ children }: any) {
         handleStartSkillBuilderMode,
         handleEngineChange,
         handleModelChange,
+        persistHubModel,
+        clearHubChat,
         handleDeleteSession,
         archivedSessions,
         handleRestoreSession,

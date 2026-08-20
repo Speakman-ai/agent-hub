@@ -14,6 +14,7 @@ import KanbanScreen from './src/screens/KanbanScreen';
 import KanbanCardTemplatesScreen from './src/screens/KanbanCardTemplatesScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import DashboardHomeScreen from './src/screens/DashboardHomeScreen';
+import HubScreen from './src/screens/HubScreen';
 import TodosScreen from './src/screens/TodosScreen';
 import WikiScreen from './src/screens/WikiScreen';
 import NotesScreen from './src/screens/NotesScreen';
@@ -208,8 +209,9 @@ function AppContent() {
       <View style={styles.root}>
         <NavigationContainer theme={DarkTheme} ref={navigationRef}>
           <StatusBar style="light"/>
-          <Stack.Navigator initialRouteName="Dashboard" screenOptions={{ headerShown: false, animation: 'none' }}>
+          <Stack.Navigator initialRouteName="Hub" screenOptions={{ headerShown: false, animation: 'none' }}>
             <Stack.Screen name="Chat" component={ChatScreen}/>
+            <Stack.Screen name="Hub" component={HubScreen}/>
             <Stack.Screen name="Home" component={DashboardHomeScreen}/>
             <Stack.Screen name="Dashboard" component={DashboardScreen}/>
             <Stack.Screen name="Todos" component={TodosScreen}/>

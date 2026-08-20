@@ -42,6 +42,14 @@ describe('retired web cross-agent streaming bubble', () => {
     expect(appSource!).toMatch(/streamingMsgId && \(\s*<SessionTail/);
   });
 
+  it('Hub assistant streams through the same SessionTail turn as project chat', () => {
+    expect(appSource!).toContain('data-testid="hub-assistant-scroll"');
+    expect(appSource!).toContain('{liveStreamingAssistantTurn}');
+    expect(
+      (appSource!.match(/\{liveStreamingAssistantTurn\}/g) || []).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
   it('the dead legacy web StreamingMessage component is deleted', () => {
     expect(existsSync(join(here, 'components', 'StreamingMessage.jsx'))).toBe(false);
   });

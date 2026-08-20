@@ -93,7 +93,12 @@ export const SESSION_CONTROL_OPTIONS = [
   ...FINALIZE_AUTOMATION_OPTIONS,
 ];
 
-export const SKILL_BUILDER_INELIGIBLE_ROLES = ['skill-builder', 'reviewer', 'docs'];
+export const SKILL_BUILDER_INELIGIBLE_ROLES = [
+  'skill-builder',
+  'reviewer',
+  'docs',
+  'hub-assistant',
+];
 
 export function isSkillBuilderEligibleAgent(agent: any): boolean {
   if (!agent) return false;
@@ -135,6 +140,7 @@ export function sessionControlValue({ sessionMode, askMode, automation }: any = 
   if (sessionMode === 'scoping') return 'scoping';
   if (sessionMode === 'skill-builder') return 'skill-builder';
   if (sessionMode === 'consult') return 'consult';
+  if (sessionMode === 'hub') return 'consult';
   if (sessionMode === 'isolated') return 'isolated';
   if (askMode) return 'consult';
   return parseFinalizeAutomation(automation);
@@ -156,9 +162,11 @@ export function planSessionControlChange(current: any, target: any, options: any
           ? 'skill-builder'
           : current?.sessionMode === 'consult'
             ? 'consult'
-            : current?.sessionMode === 'isolated'
-              ? 'isolated'
-              : 'chat';
+            : current?.sessionMode === 'hub'
+              ? 'hub'
+              : current?.sessionMode === 'isolated'
+                ? 'isolated'
+                : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });

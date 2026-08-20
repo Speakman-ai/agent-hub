@@ -162,6 +162,21 @@ export interface MeDashboardWire {
   google: DashboardGoogleWire;
 }
 
+export interface DailySummaryReportWire {
+  date: string;
+  timeZone: string;
+  markdown: string;
+  engine: string;
+  model: string;
+  generatedAt: string;
+}
+
+export interface DailySummaryWire {
+  date: string;
+  timeZone: string;
+  report: DailySummaryReportWire | null;
+}
+
 interface CreateTodoBody {
   title: string;
   notes?: string;
@@ -827,6 +842,34 @@ export const api = {
     return fetchJSON<MeDashboardWire>(`/me/dashboard${qs ? `?${qs}` : ''}`);
   },
   getMyWork: () => fetchJSON<DashboardWorkWire>('/me/work'),
+  /** Persistent Hub assistant session for the signed-in user (get-or-create). */
+  getHubSession: () =>
+    fetchJSON<{ session: Record<string, unknown>; agent: Record<string, unknown> }>(
+      '/me/hub-session',
+    ),
+  clearHubSession: () =>
+    fetchJSON<{
+      session: Record<string, unknown>;
+      agent: Record<string, unknown>;
+      clearedSessionId: string | null;
+    }>('/me/hub-session/clear', { method: 'POST' }),
+  getHubModel: () => fetchJSON<{ engine: string; model: string }>('/me/hub-model'),
+  putHubModel: (body: { engine: string; model: string }) =>
+    fetchJSON<{ engine: string; model: string }>('/me/hub-model', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getDailySummary: (opts: { tz?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.tz) params.set('tz', opts.tz);
+    const qs = params.toString();
+    return fetchJSON<DailySummaryWire>(`/me/daily-summary${qs ? `?${qs}` : ''}`);
+  },
+  generateDailySummary: (opts: { tz?: string } = {}) =>
+    fetchJSON<DailySummaryWire>('/me/daily-summary', {
+      method: 'POST',
+      body: JSON.stringify({ tz: opts.tz }),
+    }),
   listGoogleCalendarEvents: ({
     calendarId,
     timeMin,

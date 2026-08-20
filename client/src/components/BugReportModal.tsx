@@ -20,6 +20,7 @@ export default function BugReportModal({
   projectId,
   agentId,
   onToast,
+  descriptionPrefix,
 }: any) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -113,7 +114,7 @@ export default function BugReportModal({
       }
       await submitBugReport({
         title,
-        description,
+        description: [descriptionPrefix, description].filter(Boolean).join('\n\n'),
         severity,
         screenshotBlob,
         screenshotMissReason: screenshotBlob ? null : screenshotMissReason,

@@ -13,6 +13,11 @@ import type { RouteDeps, Agent, Project, HookConfig } from '../types.js';
 import { canViewProject } from '../project-visibility.js';
 import { isAutonomyLocked, agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import {
+  isHubAssistantAgentId,
+  isHubAssistantRole,
+  isHubSystemProject,
+} from '../../shared/utils/hub.js';
 import { getUserPreferencesRow, mergeUserPreferencesJson } from '../user-preferences-store.js';
 import { resolveOwnerUserId } from '../session-ownership.js';
 import { defaultHeartbeatOwnerUserId } from '../heartbeat-ownership.js';
@@ -208,6 +213,36 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     return found;
   }
 
+  /**
+   * Visible AND mutable. The Hub assistant is a shared singleton (a published
+   * constant id, spawned with the `agent-hub` skill and allowed to edit the
+   * roster when asked): a "clean up unused agents" turn must not be able to
+   * PATCH engine/role or hard-delete it — a delete also drops every user's Hub
+   * chat via deleteSessionsByAgent. Reject any mutation of the Hub assistant or
+   * an agent under a system (`kind=system`) project. Hiding it from lists is not
+   * the same as protecting it.
+   */
+  function findAgentMutable(
+    req: Request,
+    res: Response,
+    agentId: string,
+  ): { project: Project; agent: Agent } | null {
+    const found = findAgentVisible(req, res, agentId);
+    if (!found) return null;
+    if (
+      isHubAssistantAgentId(found.agent.id) ||
+      isHubAssistantRole(found.agent.role) ||
+      isHubSystemProject({ id: found.project.id, kind: found.project.kind })
+    ) {
+      res.status(403).json({
+        error: 'The Hub assistant is a system agent and cannot be modified or deleted.',
+        code: 'hub_agent_protected',
+      });
+      return null;
+    }
+    return found;
+  }
+
   const router = Router();
 
   router.post('/api/agents/bulk-engine', (req: Request, res: Response) => {
@@ -244,7 +279,14 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     const agentIds: string[] = [];
     for (const p of deps.getProjects()) {
       if (!canViewProject(p, caller)) continue;
+      // Skip the shared Hub singleton: `agentEngineOverrides[__hub_assistant__]`
+      // is the same per-user slot PUT /api/me/hub-model owns, so a bulk switch
+      // would silently overwrite the Hub composer pick (and the next
+      // getOrCreateHubSession would realign the live Hub chat). Matches the
+      // list/PATCH/DELETE guards.
+      if (isHubSystemProject(p)) continue;
       for (const a of p.agents) {
+        if (isHubAssistantAgentId(a.id) || isHubAssistantRole(a.role)) continue;
         agentIds.push(a.id);
       }
     }
@@ -280,6 +322,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     );
     const enriched = allAgents()
       .filter((a) => visibleProjectIds.has(a.projectId))
+      .filter((a) => !isHubAssistantRole(a.role) && !isHubSystemProject({ id: a.projectId }))
       .map((a) => {
         const sessions = stmts.getSessions.all(a.id) as Array<{ id: string; updated_at: string }>;
         let lastActivity: string | null = null;
@@ -307,7 +350,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.patch('/api/agents/:agentId', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
+    const found = findAgentMutable(req, res, req.params.agentId as string);
     if (!found) return;
     const { agent } = found;
 
@@ -548,7 +591,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   // directory at <project.ahw>/agents/<agentId>/ is also removed so a
   // re-created agent with the same id starts clean.
   router.delete('/api/agents/:agentId', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
+    const found = findAgentMutable(req, res, req.params.agentId as string);
     if (!found) return;
     const { project, agent } = found;
     const agentId = agent.id;
@@ -610,7 +653,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/agents/:agentId/hooks', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
+    const found = findAgentMutable(req, res, req.params.agentId as string);
     if (!found) return;
     const { agent } = found;
 
@@ -656,7 +699,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.delete('/api/agents/:agentId/hooks', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
+    const found = findAgentMutable(req, res, req.params.agentId as string);
     if (!found) return;
     const { agent } = found;
     delete agent.hooks;
@@ -688,7 +731,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/agents/:agentId/context/:filename', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
+    const found = findAgentMutable(req, res, req.params.agentId as string);
     if (!found) return;
     const { project, agent } = found;
     if (!project.ahw) return res.status(400).json({ error: 'No workspace configured' });
@@ -719,7 +762,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/agents/:agentId/memory', (req: Request, res: Response) => {
-    const found = findAgentVisible(req, res, req.params.agentId as string);
+    const found = findAgentMutable(req, res, req.params.agentId as string);
     if (!found) return;
     if (!found.project.ahw) return res.status(400).json({ error: 'No workspace configured' });
 

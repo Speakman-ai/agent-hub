@@ -5,7 +5,7 @@
 import type { Project } from './types.js';
 import { getProjectMode } from './project-mode.js';
 import {
-  isConsultBehaviorActive,
+  isNonShippingSessionBehavior,
   sessionHasUsableWorktree,
   type SessionMode,
 } from './session-mode.js';
@@ -18,6 +18,7 @@ const WORKFLOW_SESSION_MODES = new Set<SessionMode>([
   'scoping',
   'skill-builder',
   'design',
+  'hub',
 ]);
 
 export function isWorkflowProject(project: Project | null | undefined): boolean {
@@ -63,7 +64,7 @@ export function validateSessionModeForProject(
     return {
       error: 'session_mode_not_allowed_on_workflow_project',
       message:
-        'Workflow projects only support Consult, Scoping, Skill Builder, and Design session modes. Use a dev project for build/chat/VM sessions.',
+        'Workflow projects only support Consult, Scoping, Skill Builder, Design, and Hub session modes. Use a dev project for build/chat/VM sessions.',
     };
   }
   return null;
@@ -96,6 +97,6 @@ export function sessionBlocksFinalize(
   session: { session_mode?: string | null; ask_mode?: number | null } | null | undefined,
 ): boolean {
   if (isWorkflowProject(project)) return true;
-  if (isConsultBehaviorActive(session)) return true;
+  if (isNonShippingSessionBehavior(session)) return true;
   return false;
 }

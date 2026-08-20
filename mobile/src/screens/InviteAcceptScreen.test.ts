@@ -95,6 +95,6 @@ describe('InviteAcceptScreen flow helpers', () => {
     });
 
     expect(persistToken).toHaveBeenCalledWith({ token: 'jwt' });
-    expect(navigation.reset).toHaveBeenCalledWith({ index: 0, routes: [{ name: 'Dashboard' }] });
+    expect(navigation.reset).toHaveBeenCalledWith({ index: 0, routes: [{ name: 'Hub' }] });
   });
 });

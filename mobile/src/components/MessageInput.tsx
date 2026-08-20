@@ -26,7 +26,7 @@ function guessMimeFromName(name: any, fallback: any) {
     };
     return map[ext] || fallback;
 }
-export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength, askMode, consultMode = askMode, readOnly, }: any) {
+export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength, askMode, consultMode = askMode, consultHint = null, readOnly, toolbarStart, }: any) {
     const [value, setValue] = useState('');
     // Attachments: [{id, uri, name, kind, dataUrl?, mimeType?, sizeBytes?}]
     // kind ∈ 'image' | 'video' | 'file'
@@ -222,7 +222,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
       {consultMode && (<View style={styles.askModeBanner}>
           <AppIcon name="information-circle" size={14} color={colors.blue400} style={{ marginRight: 4 }}/>
           <Text style={styles.askModeBannerText}>
-            Consult mode — Hub project updates only, no code ship or Finalize
+            {consultHint || 'Consult mode — Hub project updates only, no code ship or Finalize'}
           </Text>
         </View>)}
 
@@ -262,6 +262,8 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
               </TouchableOpacity>
             </View>))}
         </ScrollView>)}
+
+      {toolbarStart ? <View style={styles.toolbarStart}>{toolbarStart}</View> : null}
 
       <View style={styles.inner}>
         {/* Attachment menu (image / video / file) */}
@@ -437,6 +439,9 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'flex-end',
         gap: 8,
+    },
+    toolbarStart: {
+        marginBottom: 8,
     },
     imageButton: {
         width: 36,

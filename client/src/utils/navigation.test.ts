@@ -14,16 +14,17 @@ describe('navigation defaults', () => {
     window.history.replaceState(null, '', '/');
   });
 
-  it('defaults the home view to the dashboard', () => {
-    expect(DEFAULT_VIEW!).toBe('dashboard');
+  it('defaults the home view to Hub', () => {
+    expect(DEFAULT_VIEW!).toBe('hub');
   });
 
-  it('lands on the dashboard when nothing is requested', () => {
-    expect(getInitialView()).toBe('dashboard');
-    expect(getInitialView(undefined)).toBe('dashboard');
-    expect(getInitialView('')).toBe('dashboard');
-    expect(getInitialView('   ')).toBe('dashboard');
-    expect(getInitialView(null)).toBe('dashboard');
+  it('lands on Hub when nothing is requested', () => {
+    expect(getInitialView()).toBe('hub');
+    expect(getInitialView(undefined)).toBe('hub');
+    expect(getInitialView('')).toBe('hub');
+    expect(getInitialView('   ')).toBe('hub');
+    expect(getInitialView(null)).toBe('hub');
+    expect(getInitialNavigation()).toEqual({ view: 'hub', hubPane: 'today' });
   });
 
   it('honors an explicit requested view', () => {
@@ -43,6 +44,7 @@ describe('navigation defaults', () => {
       threadId: null,
       designId: null,
       ticketId: null,
+      hubPane: null,
     });
   });
 
@@ -68,6 +70,7 @@ describe('navigation defaults', () => {
       threadId: null,
       designId: null,
       ticketId: null,
+      hubPane: null,
     });
   });
 
@@ -86,6 +89,7 @@ describe('navigation defaults', () => {
       threadId: null,
       designId: null,
       ticketId: 'ticket-42',
+      hubPane: null,
     });
   });
 
@@ -101,40 +105,61 @@ describe('navigation defaults', () => {
     ).toBe('#/deployments/agent-hub');
   });
 
-  it('treats calendar as a GLOBAL view, not a project-scoped one', () => {
-    // Regression (card 1287): Calendar moved from a per-project tab to the
-    // global Dashboard tier. It must build a bare `#/calendar` hash and never
-    // carry a projectId segment, even if one is passed.
-    expect(buildNavigationHash({ view: 'calendar' })).toBe('#/calendar');
+  it('folds Calendar into Hub and never treats it as project-scoped', () => {
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'calendar' })).toBe('#/hub/calendar');
     expect(buildNavigationHash({ view: 'calendar', projectId: 'agent-hub' })).toBe('#/calendar');
 
     expect(parseNavigationHash('#/calendar')).toEqual({
-      view: 'calendar',
+      view: 'hub',
       projectId: null,
       prNumber: null,
       threadId: null,
       designId: null,
       ticketId: null,
+      hubPane: 'calendar',
     });
   });
 
   it('does not parse a trailing segment after calendar as a projectId', () => {
-    // A stale `#/calendar/agent-hub` deep link (pre-migration) must resolve to
-    // the global calendar view with no project — the second segment is ignored.
     expect(parseNavigationHash('#/calendar/agent-hub')?.projectId).toBeNull();
-    expect(parseNavigationHash('#/calendar/agent-hub')?.view).toBe('calendar');
+    expect(parseNavigationHash('#/calendar/agent-hub')?.view).toBe('hub');
+    expect(parseNavigationHash('#/calendar/agent-hub')?.hubPane).toBe('calendar');
   });
 
-  it('maps stale Sheets and Drive page links back to Dashboard', () => {
+  it('maps Home, Dashboard, Todos, and Gmail into Hub panes', () => {
+    expect(parseNavigationHash('#/home')?.hubPane).toBe('today');
+    expect(parseNavigationHash('#/dashboard')).toMatchObject({ view: 'hub', hubPane: 'org' });
+    expect(parseNavigationHash('#/todos')).toMatchObject({ view: 'hub', hubPane: 'todos' });
+    expect(parseNavigationHash('#/gmail')).toMatchObject({ view: 'hub', hubPane: 'mail' });
+  });
+
+  it('round-trips Hub panes', () => {
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'today' })).toBe('');
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'org' })).toBe('#/hub/org');
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'summary' })).toBe('#/hub/summary');
+    expect(parseNavigationHash('#/hub')).toMatchObject({ view: 'hub', hubPane: 'today' });
+    expect(parseNavigationHash('#/hub/mail')).toMatchObject({ view: 'hub', hubPane: 'mail' });
+    expect(parseNavigationHash('#/hub/summary')).toMatchObject({
+      view: 'hub',
+      hubPane: 'summary',
+    });
+    expect(parseNavigationHash('#/hub/troubleshoot')).toMatchObject({
+      view: 'hub',
+      hubPane: 'today',
+    });
+  });
+
+  it('maps stale Sheets and Drive page links back to Hub', () => {
     expect(parseNavigationHash('#/sheets/agent-hub')).toEqual({
-      view: 'dashboard',
+      view: 'hub',
       projectId: null,
       prNumber: null,
       threadId: null,
       designId: null,
       ticketId: null,
+      hubPane: 'today',
     });
-    expect(parseNavigationHash('#/drive')).toMatchObject({ view: 'dashboard', projectId: null });
+    expect(parseNavigationHash('#/drive')).toMatchObject({ view: 'hub', projectId: null });
   });
 
   it('round-trips currentView strings that already carry their own target', () => {
@@ -196,8 +221,6 @@ describe('path deep links', () => {
   });
 
   it('recovers the PR number from the path when the hash lost it', () => {
-    // The exact URL older builds produced: a pasted path link plus the hash
-    // the app appended, which only carried the project.
     window.history.replaceState(null, '', '/projects/surveytracker/pulls/306#/pulls/surveytracker');
 
     expect(readNavigationStateFromLocation()).toMatchObject({

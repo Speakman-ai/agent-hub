@@ -23,13 +23,11 @@ import { dueLabel, dueState, todoDoDate } from '../utils/todos';
 import { mailSenderName, formatMailDate } from '../utils/mail';
 
 /**
- * Personal Dashboard home — the User Module's global (non-project) landing page
- * (spec NAV-PLACEMENT). Four panes over ONE per-user aggregation call
- * (`GET /api/me/dashboard`, spec AGGREGATION): My Work (assigned cards across
- * every visible board), Todos (cross-project capture list), Calendar, and
- * Gmail. The Google panes render the Workspace surfaces in place from the
- * aggregation payload and fall back to a connect-Google affordance when the
- * account isn't linked; Todos and My Work never depend on Google.
+ * Hub Dashboard — personal work across every project. Lives on Hub with Daily
+ * Summary, Org, Todos, Calendar, Mail, and the Hub assistant. One aggregation
+ * call (`GET /api/me/dashboard`): My Work, Todos, Calendar, and Mail.
+ * Google panes fall back to a connect-Google affordance when the account
+ * isn't linked; Todos and My Work never depend on Google.
  */
 
 interface PersonalDashboardProps {
@@ -218,7 +216,7 @@ export default function PersonalDashboard({
   }
 
   const work = data?.work;
-  const todos = data?.todos.open ?? [];
+  const todos = data?.todos?.open ?? [];
   const google = data?.google;
   const calState = calendarPaneState(google);
   const mailState = mailPaneState(google);
@@ -228,7 +226,7 @@ export default function PersonalDashboard({
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-gray-950">
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center gap-3 mb-5">
-          <h1 className="text-lg font-semibold text-white flex-1">Home</h1>
+          <h1 className="text-lg font-semibold text-white flex-1">Dashboard</h1>
           <button
             type="button"
             onClick={() => load(true)}
@@ -262,7 +260,7 @@ export default function PersonalDashboard({
           <Pane
             title="Todos"
             icon={<ListTodo size={15} />}
-            count={data?.todos.openCount}
+            count={data?.todos?.openCount}
             action={
               <button
                 type="button"
