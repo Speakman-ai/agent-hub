@@ -42,25 +42,48 @@ and kicking off project agents. You do not ship application code.
 
 export { isHubSystemProject } from '../shared/utils/hub.js';
 
-export function ensureHubProject(): Project {
-  const existing = findProject(HUB_PROJECT_ID);
-  if (existing) {
-    if (existing.kind !== 'system') {
-      existing.kind = 'system';
-      if (existing.mode !== 'workflow') existing.mode = 'workflow';
-      saveProjects();
-    }
-    return existing;
-  }
-
+/**
+ * Idempotently create the Hub project's on-disk workspace (spawn cwd) and its
+ * SOUL.md. Safe to call on every `ensureHubProject`: the project row can outlive
+ * its filesystem (data-dir restore, container rebuild, manual cleanup), and any
+ * consumer that spawns a CLI in the Hub cwd — daily summary, heartbeats — throws
+ * ENOENT ("Working directory does not exist") if the dir is gone. Returns the
+ * resolved cwd so a row with an empty/missing cwd can be repaired.
+ */
+function ensureHubWorkspaceFiles(cwd: string): void {
   const dataDir = getProjectDataDir(HUB_PROJECT_ID);
-  const cwd = getWorkflowWorkspaceDir(dataDir);
   mkdirSync(cwd, { recursive: true });
   const soulPath = path.join(dataDir, 'SOUL.md');
   if (!existsSync(soulPath)) {
     mkdirSync(dataDir, { recursive: true });
     writeFileSync(soulPath, HUB_SOUL, 'utf-8');
   }
+}
+
+export function ensureHubProject(): Project {
+  const dataDir = getProjectDataDir(HUB_PROJECT_ID);
+  const existing = findProject(HUB_PROJECT_ID);
+  if (existing) {
+    let dirty = false;
+    if (existing.kind !== 'system') {
+      existing.kind = 'system';
+      dirty = true;
+    }
+    if (existing.mode !== 'workflow') {
+      existing.mode = 'workflow';
+      dirty = true;
+    }
+    if (!existing.cwd?.trim()) {
+      existing.cwd = getWorkflowWorkspaceDir(dataDir);
+      dirty = true;
+    }
+    ensureHubWorkspaceFiles(existing.cwd);
+    if (dirty) saveProjects();
+    return existing;
+  }
+
+  const cwd = getWorkflowWorkspaceDir(dataDir);
+  ensureHubWorkspaceFiles(cwd);
 
   const project: Project = {
     id: HUB_PROJECT_ID,
