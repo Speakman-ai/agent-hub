@@ -3138,6 +3138,44 @@ export interface PrEnvProjectConfig {
  */
 export interface BackgroundAgentsConfig {
   wiki?: BackgroundWikiAgentConfig;
+  /**
+   * User-authored background agents beyond the built-in `wiki` kind. Each
+   * carries its own editable prompt and runs on its own cadence through the
+   * same one-shot failover runner crons use. Absent/empty on projects that
+   * only use the built-in agent.
+   */
+  custom?: BackgroundCustomAgentConfig[];
+}
+
+/**
+ * A user-authored background agent: a named, scheduled prompt that runs
+ * unattended as `ownerUserId` on `schedule`. Distinct from the built-in
+ * `wiki` agent (fixed backfill behavior) — this one runs whatever `prompt`
+ * the operator types, so it is the general "add another background agent"
+ * surface in project settings.
+ */
+export interface BackgroundCustomAgentConfig {
+  /** Stable id (client-generated uuid) — the scheduler task key derives from it. */
+  id: string;
+  /** Human label shown in settings and log lines. */
+  name: string;
+  /** Off by default; toggled per agent in project settings. */
+  enabled?: boolean;
+  /** node-cron expression (validated on write). Defaults to `0 3 * * *`. */
+  schedule?: string;
+  /** IANA timezone the schedule is interpreted in. Defaults to the scheduler tz. */
+  timezone?: string | null;
+  /**
+   * Hub user the run acts as (per-user CLI credentials + spawn HOME).
+   * `null`/absent runs userless (host-global engine only).
+   */
+  ownerUserId?: string | null;
+  /** Optional engine override (e.g. `claude-code`, `cursor`). Null = default chain. */
+  engine?: string | null;
+  /** Optional model override applied to the resolved engine. */
+  model?: string | null;
+  /** The editable prompt dispatched on each run. Required and non-empty. */
+  prompt: string;
 }
 
 /**

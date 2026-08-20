@@ -28,7 +28,7 @@ import {
   patchOnboardContextFilesForShipping,
 } from '../finalize/shipping-prompt.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
-import { rescheduleBackgroundWikiAgent } from '../heartbeat.js';
+import { rescheduleProjectBackgroundAgents } from '../heartbeat.js';
 import { getUserById } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
 import { isOnboardingComplete, markOnboardingComplete } from '../onboarding-complete.js';
@@ -81,6 +81,7 @@ import type {
   ProjectMode,
   StreamEvent,
   GithubWorkflowSettings,
+  BackgroundCustomAgentConfig,
 } from '../types.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
@@ -2385,6 +2386,114 @@ This workspace has no git repo and no PR automation — your job is planning, or
             };
           }
         }
+        if (Object.prototype.hasOwnProperty.call(bg, 'custom')) {
+          const rawCustom = bg.custom;
+          if (rawCustom === null) {
+            const next = { ...(project.backgroundAgents ?? {}) };
+            delete (next as Record<string, unknown>).custom;
+            (project as Record<string, unknown>).backgroundAgents = next;
+          } else if (!Array.isArray(rawCustom)) {
+            return res
+              .status(400)
+              .json({ error: 'backgroundAgents.custom must be an array or null' });
+          } else {
+            const seenIds = new Set<string>();
+            const normalized: BackgroundCustomAgentConfig[] = [];
+            for (let i = 0; i < rawCustom.length; i++) {
+              const raw = rawCustom[i];
+              if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+                return res
+                  .status(400)
+                  .json({ error: `backgroundAgents.custom[${i}] must be an object` });
+              }
+              const c = raw as Record<string, unknown>;
+              if (typeof c.id !== 'string' || !c.id.trim()) {
+                return res
+                  .status(400)
+                  .json({ error: `backgroundAgents.custom[${i}].id is required` });
+              }
+              if (seenIds.has(c.id)) {
+                return res
+                  .status(400)
+                  .json({ error: `backgroundAgents.custom[${i}].id is duplicated` });
+              }
+              seenIds.add(c.id);
+              if (typeof c.name !== 'string' || !c.name.trim()) {
+                return res
+                  .status(400)
+                  .json({ error: `backgroundAgents.custom[${i}].name is required` });
+              }
+              if (typeof c.prompt !== 'string' || !c.prompt.trim()) {
+                return res
+                  .status(400)
+                  .json({ error: `backgroundAgents.custom[${i}].prompt is required` });
+              }
+              const entry: BackgroundCustomAgentConfig = {
+                id: c.id,
+                name: c.name.trim(),
+                prompt: c.prompt,
+                enabled: false,
+              };
+              if (Object.prototype.hasOwnProperty.call(c, 'enabled')) {
+                if (typeof c.enabled !== 'boolean') {
+                  return res
+                    .status(400)
+                    .json({ error: `backgroundAgents.custom[${i}].enabled must be a boolean` });
+                }
+                entry.enabled = c.enabled;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'schedule')) {
+                if (typeof c.schedule !== 'string' || !cron.validate(c.schedule)) {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].schedule must be a valid cron expression`,
+                  });
+                }
+                entry.schedule = c.schedule;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'timezone')) {
+                const tz = c.timezone;
+                if (tz === null || tz === '') entry.timezone = null;
+                else if (typeof tz !== 'string') {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].timezone must be a string or null`,
+                  });
+                } else entry.timezone = tz;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'ownerUserId')) {
+                const raw2 = c.ownerUserId;
+                if (raw2 === null || raw2 === '') entry.ownerUserId = null;
+                else if (typeof raw2 !== 'string' || !getUserById(raw2)) {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].ownerUserId must be a known user id or null`,
+                  });
+                } else entry.ownerUserId = raw2;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'engine')) {
+                const eng = c.engine;
+                if (eng === null || eng === '') entry.engine = null;
+                else if (typeof eng !== 'string') {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].engine must be a string or null`,
+                  });
+                } else entry.engine = eng;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'model')) {
+                const model = c.model;
+                if (model === null || model === '') entry.model = null;
+                else if (typeof model !== 'string') {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].model must be a string or null`,
+                  });
+                } else entry.model = model;
+              }
+              normalized.push(entry);
+            }
+            (project as Record<string, unknown>).backgroundAgents = {
+              ...(project.backgroundAgents ?? {}),
+              custom: normalized,
+            };
+          }
+        }
       }
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'securityScan')) {
@@ -2651,7 +2760,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
     // effect immediately without waiting for the next full scheduler sweep.
     // Only when this PATCH actually touched backgroundAgents — avoids
     // needless stop/restart churn on unrelated project edits.
-    if (backgroundAgentsTouched) rescheduleBackgroundWikiAgent(project);
+    if (backgroundAgentsTouched) rescheduleProjectBackgroundAgents(project);
     res.json(project);
   });
 

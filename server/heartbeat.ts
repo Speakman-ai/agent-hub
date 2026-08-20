@@ -29,7 +29,7 @@ import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { resolveCronEngine } from './cron-engine.js';
 import { type OneShotDetailed } from './one-shot-spawn.js';
 import { runOneShotPromptWithFailover, formatFailoverSummary } from './one-shot-failover.js';
-import type { SupportedEngine } from './engine-availability.js';
+import { ALL_SUPPORTED_ENGINES, type SupportedEngine } from './engine-availability.js';
 import type {
   EnrichedAgent,
   CronRow,
@@ -38,6 +38,7 @@ import type {
   SessionRow,
   Project,
   BroadcastFn,
+  BackgroundCustomAgentConfig,
 } from './types.js';
 
 const db = _db!;
@@ -823,6 +824,7 @@ export function scheduleAll(_agents?: EnrichedAgent[]): void {
   // PR-Env Removal #4 along with the PR-env backing directory.
 
   scheduleBackgroundAgents();
+  scheduleCustomBackgroundAgents();
 
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
 
@@ -1003,6 +1005,183 @@ export function rescheduleBackgroundWikiAgent(project: Project): void {
   );
   scheduledTasks.set(key, task);
   console.log(`[Background Agent] Rescheduled wiki for "${project.name}": ${schedule}`);
+}
+
+/** Scheduler task key for one custom background agent. */
+export function customBackgroundAgentKey(projectId: string, agentId: string): string {
+  return `bg:custom:${projectId}:${agentId}`;
+}
+
+/** Key prefix shared by all of a project's custom background agent tasks. */
+function customBackgroundAgentKeyPrefix(projectId: string): string {
+  return `bg:custom:${projectId}:`;
+}
+
+/** Coerce a stored engine override to a SupportedEngine, defaulting sanely. */
+function coerceBackgroundEngine(raw: string | null | undefined): SupportedEngine {
+  if (raw && (ALL_SUPPORTED_ENGINES as readonly string[]).includes(raw)) {
+    return raw as SupportedEngine;
+  }
+  return 'claude-code';
+}
+
+/** The custom agents on a project that are enabled and have a runnable prompt. */
+function runnableCustomAgents(project: Project): BackgroundCustomAgentConfig[] {
+  const list = project.backgroundAgents?.custom;
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (a): a is BackgroundCustomAgentConfig =>
+      !!a && typeof a.id === 'string' && !!a.enabled && !!a.prompt && a.prompt.trim().length > 0,
+  );
+}
+
+/**
+ * Fire one custom background agent: run its editable prompt as the configured
+ * owner through the same one-shot failover runner crons use. Never throws so a
+ * bad run can't kill the scheduler tick.
+ */
+export async function dispatchBackgroundCustomAgent(
+  projectId: string,
+  agentId: string,
+): Promise<void> {
+  try {
+    const project = getProjects().find((p) => p.id === projectId);
+    if (!project) return;
+    const agent = runnableCustomAgents(project).find((a) => a.id === agentId);
+    if (!agent) return;
+
+    const ownerUserId: string | null = agent.ownerUserId ?? null;
+    const cwd = await getOrCreateProcessWorktree(
+      project.cwd,
+      `bg-custom-${agentId}`,
+      undefined,
+      undefined,
+      project.repoUrl ?? null,
+      project.id,
+      project.githubRepo ?? null,
+      hostedBarePathForProject(project),
+    );
+
+    const preferred = coerceBackgroundEngine(agent.engine);
+    const resolved = await resolveOneShotEngine(config, {
+      preferred,
+      preferredModel: agent.model ?? null,
+      userId: ownerUserId,
+      agentId: null,
+    });
+
+    const buildEnv = (engine: SupportedEngine): NodeJS.ProcessEnv => {
+      const env = buildSpawnEnv(config, {
+        userId: ownerUserId,
+        userOverride: resolveUserCliCredOverride(ownerUserId),
+        engine,
+      });
+      mergeProjectSecretsSpawnEnv(env, { projectId: project.id, sessionId: null });
+      mergeProjectAwsSpawnEnv(env, project);
+      return env;
+    };
+
+    const outcome = await runOneShotPromptWithFailover(
+      {
+        scope: `background agent "${agent.name}"`,
+        engine: resolved.engine,
+        model: resolved.model,
+        userId: ownerUserId,
+        agentId: null,
+        prompt: agent.prompt,
+        cwd,
+        timeoutMs: config.defaultTimeoutMs,
+        buildEnv,
+        detailed: true,
+      },
+      config,
+    );
+    console.log(
+      `[Background Agent] custom "${agent.name}" ran for "${project.name}" via ${outcome.engine}` +
+        formatFailoverSummary(outcome.failovers),
+    );
+  } catch (err: unknown) {
+    console.error(
+      `[Background Agent] custom dispatch threw for ${projectId}/${agentId}:`,
+      (err as Error).message,
+    );
+  }
+}
+
+/** Register scheduler tasks for every enabled custom agent across all projects. */
+export function scheduleCustomBackgroundAgents(): void {
+  let count = 0;
+  for (const project of getProjects()) {
+    for (const agent of runnableCustomAgents(project)) {
+      const schedule = agent.schedule?.trim() || DEFAULT_WIKI_BG_SCHEDULE;
+      if (!cron.validate(schedule)) {
+        console.error(
+          `[Background Agent] Invalid schedule for custom "${agent.name}" in "${project.name}": ${schedule}`,
+        );
+        continue;
+      }
+      const key = customBackgroundAgentKey(project.id, agent.id);
+      const task = cron.schedule(
+        schedule,
+        wrapCronTick(() => dispatchBackgroundCustomAgent(project.id, agent.id), key),
+        defaultTickOptions({
+          intervalSeconds: estimateIntervalSeconds(schedule),
+          name: key,
+          timezone: cronTimezone(agent.timezone),
+        }),
+      );
+      scheduledTasks.set(key, task);
+      count++;
+      console.log(
+        `[Background Agent] Scheduled custom "${agent.name}" for "${project.name}": ${schedule}`,
+      );
+    }
+  }
+  if (count > 0) console.log(`[Background Agent] ${count} custom agent(s) scheduled`);
+}
+
+/**
+ * Reschedule all of a single project's custom background agents after a
+ * settings PATCH: tear down every existing `bg:custom:<project>:*` task
+ * (so removed/disabled agents stop) and re-register the enabled ones.
+ */
+export function rescheduleBackgroundCustomAgents(project: Project): void {
+  const prefix = customBackgroundAgentKeyPrefix(project.id);
+  for (const [key, task] of Array.from(scheduledTasks.entries())) {
+    if (key.startsWith(prefix)) {
+      task.stop();
+      scheduledTasks.delete(key);
+    }
+  }
+  for (const agent of runnableCustomAgents(project)) {
+    const schedule = agent.schedule?.trim() || DEFAULT_WIKI_BG_SCHEDULE;
+    if (!cron.validate(schedule)) {
+      console.error(
+        `[Background Agent] Invalid schedule for custom "${agent.name}" in "${project.name}": ${schedule}`,
+      );
+      continue;
+    }
+    const key = customBackgroundAgentKey(project.id, agent.id);
+    const task = cron.schedule(
+      schedule,
+      wrapCronTick(() => dispatchBackgroundCustomAgent(project.id, agent.id), key),
+      defaultTickOptions({
+        intervalSeconds: estimateIntervalSeconds(schedule),
+        name: key,
+        timezone: cronTimezone(agent.timezone),
+      }),
+    );
+    scheduledTasks.set(key, task);
+  }
+}
+
+/**
+ * Reschedule every background agent kind (wiki + custom) for a project after a
+ * settings PATCH. Single entry point the projects route calls.
+ */
+export function rescheduleProjectBackgroundAgents(project: Project): void {
+  rescheduleBackgroundWikiAgent(project);
+  rescheduleBackgroundCustomAgents(project);
 }
 
 export function rescheduleCron(cronJob: CronRow): void {

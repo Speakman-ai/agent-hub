@@ -34,8 +34,15 @@ vi.mock('./project-model.js', () => ({
   saveProjects: vi.fn(),
 }));
 
-const { rescheduleBackgroundWikiAgent, scheduleBackgroundAgents, wikiBackgroundAgentKey } =
-  await import('./heartbeat.js');
+const {
+  rescheduleBackgroundWikiAgent,
+  scheduleBackgroundAgents,
+  wikiBackgroundAgentKey,
+  rescheduleBackgroundCustomAgents,
+  rescheduleProjectBackgroundAgents,
+  scheduleCustomBackgroundAgents,
+  customBackgroundAgentKey,
+} = await import('./heartbeat.js');
 
 function proj(over: Partial<Project> = {}): Project {
   return {
@@ -103,5 +110,83 @@ describe('scheduleBackgroundAgents', () => {
     expect(mocks.schedule.mock.calls[0]![2]).toMatchObject({
       name: wikiBackgroundAgentKey('on'),
     });
+  });
+});
+
+describe('custom background agents scheduling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.schedule.mockReturnValue({ stop: vi.fn(), getNextRun: vi.fn(() => null) });
+  });
+
+  it('schedules one task per enabled+prompted custom agent', () => {
+    rescheduleBackgroundCustomAgents(
+      proj({
+        backgroundAgents: {
+          custom: [
+            { id: 'a1', name: 'Nightly', enabled: true, schedule: '0 2 * * *', prompt: 'do it' },
+            { id: 'a2', name: 'Disabled', enabled: false, prompt: 'skip' },
+            { id: 'a3', name: 'No prompt', enabled: true, prompt: '  ' },
+          ],
+        },
+      }),
+    );
+    expect(mocks.schedule).toHaveBeenCalledTimes(1);
+    const [expr, , options] = mocks.schedule.mock.calls[0]!;
+    expect(expr).toBe('0 2 * * *');
+    expect(options).toMatchObject({ name: customBackgroundAgentKey('p1', 'a1') });
+  });
+
+  it('tears down a removed custom agent on reschedule', () => {
+    const stop = vi.fn();
+    mocks.schedule.mockReturnValue({ stop, getNextRun: vi.fn(() => null) });
+    // First: one enabled agent gets scheduled.
+    rescheduleBackgroundCustomAgents(
+      proj({ backgroundAgents: { custom: [{ id: 'a1', name: 'A', enabled: true, prompt: 'x' }] } }),
+    );
+    expect(mocks.schedule).toHaveBeenCalledTimes(1);
+    // Then: the agent is gone from config — its existing task must be stopped.
+    rescheduleBackgroundCustomAgents(proj({ backgroundAgents: { custom: [] } }));
+    expect(stop).toHaveBeenCalled();
+  });
+
+  it('rejects an invalid custom cron without scheduling', () => {
+    rescheduleBackgroundCustomAgents(
+      proj({
+        backgroundAgents: {
+          custom: [{ id: 'a1', name: 'Bad', enabled: true, schedule: 'not a cron', prompt: 'x' }],
+        },
+      }),
+    );
+    expect(mocks.schedule).not.toHaveBeenCalled();
+  });
+
+  it('scheduleCustomBackgroundAgents walks every project', () => {
+    mocks.getProjects.mockReturnValue([
+      proj({
+        id: 'p1',
+        backgroundAgents: { custom: [{ id: 'a1', name: 'A', enabled: true, prompt: 'x' }] },
+      }),
+      proj({ id: 'p2' }),
+    ]);
+    scheduleCustomBackgroundAgents();
+    expect(mocks.schedule).toHaveBeenCalledTimes(1);
+    expect(mocks.schedule.mock.calls[0]![2]).toMatchObject({
+      name: customBackgroundAgentKey('p1', 'a1'),
+    });
+  });
+
+  it('rescheduleProjectBackgroundAgents registers both wiki and custom tasks', () => {
+    rescheduleProjectBackgroundAgents(
+      proj({
+        backgroundAgents: {
+          wiki: { enabled: true },
+          custom: [{ id: 'a1', name: 'A', enabled: true, prompt: 'x' }],
+        },
+      }),
+    );
+    const names = mocks.schedule.mock.calls.map((c) => (c[2] as { name: string }).name);
+    expect(names).toContain(wikiBackgroundAgentKey('p1'));
+    expect(names).toContain(customBackgroundAgentKey('p1', 'a1'));
   });
 });
