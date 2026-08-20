@@ -1243,6 +1243,27 @@ function cloneLooksComplete(cloneDir: string): boolean {
 }
 
 /**
+ * Whether opening a session should surface the "Preparing session workspace"
+ * progress step.
+ *
+ * The open-time `POST /workspace/ensure` runs on EVERY session activation and
+ * calls `provisionSessionWorkspace`, which is an idempotent clone-or-reuse. For
+ * an already-cloned session the reuse is a fast no-op, but the progress step
+ * used to fire unconditionally — so browsing through the sidebar flashed
+ * "Preparing session workspace" on session after session (the reported "so many
+ * preparing session workspaces"). Only emit the step when provisioning will do
+ * real work: the seed clone is missing, or present but incomplete (interrupted
+ * clone, or the dir was reaped while the `worktree_path` row survived a Hub
+ * restart). An empty/absent path also means work is pending.
+ */
+export function sessionWorkspaceNeedsProvisionProgress(
+  worktreePath: string | null | undefined,
+): boolean {
+  if (typeof worktreePath !== 'string' || worktreePath.trim().length === 0) return true;
+  return !cloneLooksComplete(worktreePath);
+}
+
+/**
  * If `cloneDir` exists but does not hold a *finished* git clone, remove it so
  * `git clone` can succeed. This recovers from zombie directories left behind
  * by interrupted clones (OOM, disk-full, SIGKILL mid-clone, or a `BUG()` abort

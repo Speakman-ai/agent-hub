@@ -139,6 +139,7 @@ import { isSessionWorktreeLocked } from './session-worktree-lock.js';
 import {
   ensureSessionWorkspace,
   switchSessionWorkspaceBranch,
+  sessionWorkspaceNeedsProvisionProgress,
   type OnBaseBranchAdvancedFn,
 } from './worktree.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
@@ -1786,13 +1787,21 @@ export const routeDeps: RouteDeps = {
     const installCommand =
       (project as { commands?: { install?: string | null } }).commands?.install ?? null;
     const workspaceStartedAt = Date.now();
-    emitSessionWorkspaceProgress({
-      stmts: stmts!,
-      broadcast,
-      sessionId,
-      status: 'started',
-      startedAt: workspaceStartedAt,
-    });
+    // Only surface the "Preparing session workspace" progress step when there is
+    // genuine clone work to do. The open-time ensure runs on every session
+    // activation and is a fast no-op reuse for an already-cloned worktree;
+    // emitting the step unconditionally made browsing the sidebar flash
+    // "Preparing session workspace" on every session (the reported bug).
+    const emitWorkspaceProgress = sessionWorkspaceNeedsProvisionProgress(session.worktree_path);
+    if (emitWorkspaceProgress) {
+      emitSessionWorkspaceProgress({
+        stmts: stmts!,
+        broadcast,
+        sessionId,
+        status: 'started',
+        startedAt: workspaceStartedAt,
+      });
+    }
     let worktreePath: string;
     try {
       worktreePath = await ensureWorktree(
@@ -1808,24 +1817,28 @@ export const routeDeps: RouteDeps = {
         hostedBarePathForProject(project),
       );
     } catch (err) {
+      if (emitWorkspaceProgress) {
+        emitSessionWorkspaceProgress({
+          stmts: stmts!,
+          broadcast,
+          sessionId,
+          status: 'failed',
+          startedAt: workspaceStartedAt,
+          finishedAt: Date.now(),
+        });
+      }
+      throw err;
+    }
+    if (emitWorkspaceProgress) {
       emitSessionWorkspaceProgress({
         stmts: stmts!,
         broadcast,
         sessionId,
-        status: 'failed',
+        status: 'completed',
         startedAt: workspaceStartedAt,
         finishedAt: Date.now(),
       });
-      throw err;
     }
-    emitSessionWorkspaceProgress({
-      stmts: stmts!,
-      broadcast,
-      sessionId,
-      status: 'completed',
-      startedAt: workspaceStartedAt,
-      finishedAt: Date.now(),
-    });
     // Clone-only. This is a SHARED provisioning primitive: Finalize/RUM setup
     // apply and design import also call it just to materialize the host seed
     // worktree while they copy/commit files. Booting the session VM here would
