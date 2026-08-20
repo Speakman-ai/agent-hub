@@ -11,6 +11,7 @@ import type {
   KanbanBoardRow,
   KanbanColumnRow,
   KanbanCardRow,
+  KanbanCardCommentRow,
   KanbanEpicRow,
   KanbanCardTemplateRow,
   KanbanEpicSpecItemRow,
@@ -28,6 +29,11 @@ import {
   PREMATURE_DONE_ERROR,
   PREMATURE_DONE_MESSAGE,
 } from '../kanban-premature-done.js';
+import {
+  blocksDoneStateContractMove,
+  DONE_STATE_CONTRACT_ERROR,
+  DONE_STATE_CONTRACT_MESSAGE,
+} from '../kanban-done-state-contract.js';
 import { deriveCardPrefix } from '../kanban-short-id.js';
 import { topologicallySortPhaseIds, PhaseCycleError } from '../kanban-phase-topo-sort.js';
 import {
@@ -1254,6 +1260,22 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         return res
           .status(409)
           .json({ error: PREMATURE_DONE_ERROR, message: PREMATURE_DONE_MESSAGE });
+      }
+      // Done-state contract: a `[Spec]`/`[Partial]`-titled card may only enter
+      // Done when a comment lists the follow-up card IDs covering the unmet
+      // acceptance criteria. Blocks the silent "relabel partial + park in Done"
+      // pattern (see kanban-done-state-contract.ts). `force` bypasses.
+      if (
+        blocksDoneStateContractMove({
+          card,
+          comments: stmts.getKanbanCardComments.all(card.id) as KanbanCardCommentRow[],
+          targetColumnName: targetColumn.name,
+          force: parsedMove.force,
+        })
+      ) {
+        return res
+          .status(422)
+          .json({ error: DONE_STATE_CONTRACT_ERROR, message: DONE_STATE_CONTRACT_MESSAGE });
       }
       const previousColumnId = card.column_id;
       stmts.moveKanbanCard.run(columnId, position ?? 0, req.params.cardId);

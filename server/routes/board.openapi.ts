@@ -1009,6 +1009,11 @@ registerPath({
       'Premature Done move rejected: the linked session is Finalize-gated and has ' +
         'not pushed yet. Done is written on merge; pass `force: true` to override.',
     ),
+    422: errorResponse(
+      'Done-state contract violation: a [Spec]/[Partial]-titled card cannot move to ' +
+        'Done without a comment listing the follow-up card IDs covering the unmet ' +
+        'acceptance criteria. Pass `force: true` to override.',
+    ),
   },
 });
 

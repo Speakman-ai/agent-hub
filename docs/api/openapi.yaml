@@ -19153,6 +19153,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BoardErrorResponse"
+        "422":
+          description: "Done-state contract violation: a [Spec]/[Partial]-titled card cannot move to Done without a comment listing the follow-up card IDs covering the unmet acceptance criteria. Pass `force: true` to override."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
   /api/projects/{projectId}/board/cards/{cardId}/assign:
     post:
       tags:
