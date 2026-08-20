@@ -333,8 +333,9 @@ export async function maybeRunPrAutoReview(
       `pending review), and JSON body:\n` +
       `\`{"state": "approved" | "changes_requested", "body": "<your findings>", "reviewer": ${JSON.stringify(reviewer.name)}}\`\n\n` +
       `Use your severity rubric: any finding scoring > 3 is a BLOCKER → changes_requested with ` +
-      `file:line specifics; otherwise approved (non-blocking notes welcome in the body). You are ` +
-      `READ-ONLY: never edit code, never push, never merge.`;
+      `file:line specifics — and an acceptance criterion the change does not fully deliver scores > 3, ` +
+      `even when the card is titled \`[Partial]\` or names a follow-up. Otherwise approved (non-blocking ` +
+      `notes welcome in the body). You are READ-ONLY: never edit code, never push, never merge.`;
 
     deps.stmts.insertBackgroundTask.run(taskId, sessionId, reviewer.id, prompt);
     // The durable in-flight flag was already set by the atomic claim above.

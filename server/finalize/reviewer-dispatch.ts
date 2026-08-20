@@ -1543,24 +1543,30 @@ ${inputs.unifiedDiff}
 
 ### Scoring an incomplete change
 
-An under-delivered ticket is a defect, not a style note. Score it:
+An unmet acceptance criterion is a defect, not a style note. **If any
+criterion the card states is not fully delivered in this change, score it
+above 3 so the verdict blocks — finalize must not complete while a stated
+criterion is unmet.** Score it:
 
 - **7** — a criterion has no implementation anywhere in the diff.
 - **6** — a criterion is only partially delivered (scaffolding, a type or
   helper with no caller, a flag nothing reads, one surface updated out of
   the several the criterion names).
-- **3** — deferred for a stated external reason the diff or card actually
-  evidences (an upstream dependency, a blocked migration), **and** a
-  follow-up card id is named. Non-blocking note.
 - **6** — the ticket itself reached you truncated (the spec block says so).
   Coverage you cannot read is coverage you cannot confirm, so an
   unassessable spec blocks rather than defaulting to approval.
 
-"Low priority", "nice to have", "out of scope for now", "follow-up card
-created", and "left as a follow-up" are **not** reasons on their own. A
-trivial omission the author could have finished in this change scores as
-a normal gap — small does not mean optional. Do not soften a gap because
-the code that *is* present looks good.
+A \`[Partial]\` or \`[Spec]\` card title does **not** lower this bar, and
+neither does an author note that the omission is "intentional", "tracked
+as a follow-up", or already covered by another card. Those are the exact
+excuses that let an unmet criterion ship unflagged — a criterion scored
+\`3/10\` and waved through as a "Partial" follow-up is the specific failure
+this rule exists to stop. "Low priority", "nice to have", "out of
+scope for now", "follow-up card created", and "left as a follow-up"
+are **not** reasons on their own to score an unmet criterion ≤ 3. A trivial
+omission the author could have finished in this change scores as a normal
+gap — small does not mean optional. Do not soften a gap because the code
+that *is* present looks good.
 
 ### Severity rubric (1–10)
 

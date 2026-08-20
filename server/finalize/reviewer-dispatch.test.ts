@@ -1160,6 +1160,35 @@ describe('buildLocalDiffReviewerPrompt — acceptance-criteria coverage', () => 
     expect(prompt).toContain('are **not** reasons on their own');
   });
 
+  // Regression for the PR #922 failure: an undelivered criterion ("replace
+  // crons") was scored 3/10 and waved through as a non-blocking `[Partial]`
+  // follow-up, so Finalize approved and pushed with the AC unmet. The prompt
+  // must give the reviewer no score-3 hatch for a deferred criterion and must
+  // deny the `[Partial]` title / follow-up card as downgrade excuses.
+  it('leaves no score-3 hatch for a deferred criterion', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      inputs: fakeInputs,
+      card: { ...fakeCard, description: CRITERIA },
+      project: fakeProject,
+    });
+    // The removed hatch let "deferred for a stated external reason ... and a
+    // follow-up card id is named" score a non-blocking 3. That is the seam #922
+    // slipped through.
+    expect(prompt).not.toContain('deferred for a stated external reason');
+    expect(prompt).not.toContain('Non-blocking note.');
+  });
+
+  it('denies a [Partial] title or follow-up card as a downgrade excuse', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      inputs: fakeInputs,
+      card: { ...fakeCard, title: '[Partial] Ship the badge', description: CRITERIA },
+      project: fakeProject,
+    });
+    expect(prompt).toContain('finalize must not complete while a stated');
+    expect(prompt).toContain('card title does **not** lower this bar');
+    expect(prompt).toContain('waved through as a "Partial" follow-up');
+  });
+
   it('degrades to intent-checking, not invention, when the card has no criteria', () => {
     const prompt = buildLocalDiffReviewerPrompt({
       inputs: fakeInputs,

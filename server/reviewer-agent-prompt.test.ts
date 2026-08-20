@@ -48,6 +48,15 @@ describe('buildReviewerAgentSystemPrompt', () => {
     expect(sp).toMatch(/mergeable as-is/i);
     expect(sp).toMatch(/score\b[^.]*\b(greater than|>)\s*3/i);
   });
+
+  it('blocks on an unmet acceptance criterion and rejects a [Partial]-title excuse', () => {
+    expect(sp).toContain('Unmet acceptance criteria');
+    expect(sp).toContain('A criterion the change does not fully deliver scores > 3');
+    // A `[Partial]`/`[Spec]` title or a named follow-up must not drop the score
+    // below the blocking cut — the PR #922 failure mode.
+    expect(sp).toContain('[Partial]');
+    expect(sp).toContain('do **not** drop an unmet criterion');
+  });
 });
 
 describe('buildReviewerIdentityMarkdown', () => {

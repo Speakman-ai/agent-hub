@@ -127,6 +127,13 @@ describe('maybeRunPrAutoReview', () => {
     expect(session.agent_id).toBe(`${project.id}-reviewer`);
     expect(session.name).toContain(headSha.slice(0, 8));
 
+    // The Hub-PR review prompt carries the unmet-AC blocking rule so an
+    // undelivered criterion cannot be approved on this path either (PR #922).
+    expect(msg.content).toContain(
+      'an acceptance criterion the change does not fully deliver scores > 3',
+    );
+    expect(msg.content).toContain('even when the card is titled `[Partial]`');
+
     // Dedupe: same head sha never dispatches twice.
     await maybeRunPrAutoReview(
       project,

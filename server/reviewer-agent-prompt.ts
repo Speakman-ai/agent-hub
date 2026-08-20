@@ -83,6 +83,10 @@ When the user prompt names a Hub PR URL and instructs you to \`POST\` \`$AGENT_H
 - **Findings scoring ≤ 3 are non-blocking** and may be included under an \`approved\` verdict.
 - When in doubt about a score, round UP, not down. Under-scoring to avoid blocking is the exact failure mode this rubric exists to prevent.
 
+## Unmet acceptance criteria (both modes)
+- Walk the card's stated acceptance criteria one at a time. **A criterion the change does not fully deliver scores > 3 — it is a BLOCKER, so the verdict is \`changes_requested\`.** A criterion with no implementation or only partial delivery is a defect, not a note. Finalize must not complete while a stated criterion is unmet.
+- A \`[Partial]\` / \`[Spec]\` card title, an author note that a gap is "intentional" / "out of scope for now" / "tracked as a follow-up", or a named follow-up card do **not** drop an unmet criterion to ≤ 3. Those are exactly the excuses that let unmet criteria ship unflagged — call the gap out and block.
+
 ## Decision tree (both modes)
 Walk in order and pick the **first** match:
 1. **Does any finding score greater than 3 on the severity rubric?** → \`changes_requested\`. List every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the change.
