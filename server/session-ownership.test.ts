@@ -169,6 +169,26 @@ describe('userOwnsSession — global apiKey / local-bundled break-glass under st
     expect(userOwnsSession({ authLocalOrgBypass: true }, id)).toBe(true);
     expect(userCanReadSession({ authLocalOrgBypass: true }, id)).toBe(true);
   });
+
+  it('org Owner/Admin may READ a non-owned session, but a plain User may not', () => {
+    const id = seedSession();
+    setSessionOwner(id, 'creator');
+    // Non-owner with no elevated role: read is denied (strict).
+    expect(userCanReadSession({ authUserId: 'someone-else', authRole: 'User' }, id)).toBe(false);
+    // Non-owner Admin / Owner of the active org: read is granted.
+    expect(userCanReadSession({ authUserId: 'admin', authRole: 'Admin' }, id)).toBe(true);
+    expect(userCanReadSession({ authUserId: 'owner', authRole: 'Owner' }, id)).toBe(true);
+  });
+
+  it('org admin read grace does NOT leak into the mutation predicate', () => {
+    // userOwnsSession is the write predicate — send / finalize / delete
+    // stay owner-only even for an org Owner/Admin who is not the owner.
+    const id = seedSession();
+    setSessionOwner(id, 'creator');
+    expect(userOwnsSession({ authUserId: 'admin', authRole: 'Admin' }, id)).toBe(false);
+    expect(userOwnsSession({ authUserId: 'owner', authRole: 'Owner' }, id)).toBe(false);
+    expect(userOwnsSession({ authUserId: 'creator', authRole: 'User' }, id)).toBe(true);
+  });
 });
 
 describe('resolveAutonomousOwnerUserId — owner resolution chain', () => {

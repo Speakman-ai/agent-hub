@@ -583,10 +583,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   router.get('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
     const all = stmts.getSessions.all(req.params.agentId) as SessionRow[];
-    // Per-user read filter. Strict ownership for normal sessions; shared
-    // sessions (reviewer threads spawned from GitHub webhooks) are
-    // visible to everyone so all users can inspect a PR review.
-    const sessions = all.filter((s) => userCanReadSession(req as AuthenticatedRequest, s.id));
+    // Sidebar list = the caller's OWN sessions only. We use the strict
+    // `userOwnsSession` predicate (not the permissive `userCanReadSession`)
+    // so sessions the caller does not own — including shared reviewer
+    // threads and other users' sessions — are hidden from the sidebar.
+    // Access is unchanged: any of those can still be opened by id (e.g. a
+    // dashboard deep-link), which goes through the permissive read gate on
+    // `/api/sessions/:sessionId`. Local / single-tenant / apiKey callers
+    // still see everything via the bypasses inside `userOwnsSession`.
+    const sessions = all.filter((s) => userOwnsSession(req as AuthenticatedRequest, s.id));
     // All rows belong to this one agent → one project; resolve it once so
     // `can_design_mode` reflects workflow (no-code) projects, not just worktrees.
     const listProject = findAgent(String(req.params.agentId))?.project ?? null;

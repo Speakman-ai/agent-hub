@@ -25,7 +25,7 @@ import config from './config.js';
 import { getAuthRecord } from './auth-store.js';
 import { findAgent } from './project-model.js';
 import type { AuthenticatedRequest } from './auth.js';
-import type { Role } from './roles.js';
+import { hasAtLeastRole, type Role } from './roles.js';
 
 /**
  * True when `id` looks like a real user row in orgs.db. Used by the
@@ -60,8 +60,23 @@ function isAuthDisabled(): boolean {
 
 export type OwnerResolvable = Pick<
   AuthenticatedRequest,
-  'authUserId' | 'authViaApiKey' | 'authLocalOrgBypass'
+  'authUserId' | 'authViaApiKey' | 'authLocalOrgBypass' | 'authRole'
 >;
+
+/**
+ * True when the caller is an Owner or Admin of the *active* org. Used
+ * only by the READ predicate to grant org admins visibility into any
+ * session in their org (dashboard deep-link click-through), never by the
+ * mutation predicate. `authRole` is the caller's membership role in the
+ * active org (stamped by `authMiddleware`), and every session-scoped read
+ * runs against the active org's DB, so an Admin+ here is an admin of the
+ * session's own org. Cross-org isolation is preserved: a session id that
+ * belongs to another org does not resolve in this org's DB, so the route
+ * handler 404s after the gate passes.
+ */
+function callerCanAdministerOrg(req: OwnerResolvable | undefined): boolean {
+  return hasAtLeastRole(req?.authRole, 'Admin');
+}
 
 /**
  * Snapshot of a WebSocket caller's visibility context. Mirrors the
@@ -258,7 +273,14 @@ export function isSharedCronSession(sessionId: string): boolean {
 export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
   if (isReviewerSession(sessionId)) return true;
   if (isSharedCronSession(sessionId)) return true;
-  return userOwnsSession(req, sessionId);
+  if (userOwnsSession(req, sessionId)) return true;
+  // Org Owners/Admins may READ any session in their org even though the
+  // owner-only sidebar hides it — this is what makes a non-owned session
+  // reachable via the dashboard deep-link. Reads only: `userOwnsSession`
+  // (the mutation predicate) deliberately does NOT grant this, so send /
+  // finalize / delete stay owner-only.
+  if (callerCanAdministerOrg(req)) return true;
+  return false;
 }
 
 /**

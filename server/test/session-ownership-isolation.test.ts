@@ -24,6 +24,7 @@ import { saveAuthRecord, reloadAuthRecord, generateJwtSecret } from '../auth-sto
 import { signJwt } from '../jwt.js';
 import { createUser } from '../users-store.js';
 import { createMembership } from '../memberships-store.js';
+// (createMembership role arg drives the org-admin read grace under test.)
 import { getActiveOrgId } from '../orgs.js';
 import { getSessionOwner } from '../session-ownership.js';
 import config from '../config.js';
@@ -39,6 +40,10 @@ let authPath = '';
 
 let userA: User;
 let userB: User;
+// A plain (non-admin) org member. Used to prove the org-admin read grace
+// does NOT extend to the `User` role — a plain member still cannot read a
+// session they do not own.
+let userC: User;
 
 /**
  * Issue a Bearer-style HS256 token for `userId` against the test
@@ -106,8 +111,14 @@ beforeAll(async () => {
     passwordHash: 'h',
     createdAt: '2026-01-02T00:00:00Z',
   });
+  const cRow = createUser({
+    username: `iso-user-c-${Date.now()}`,
+    passwordHash: 'h',
+    createdAt: '2026-01-03T00:00:00Z',
+  });
   createMembership(aRow.id, orgId, 'Admin');
   createMembership(bRow.id, orgId, 'Admin');
+  createMembership(cRow.id, orgId, 'User');
 
   userA = {
     id: aRow.id,
@@ -118,6 +129,11 @@ beforeAll(async () => {
     id: bRow.id,
     username: bRow.username,
     token: issueTokenForUser(jwtSecret, bRow),
+  };
+  userC = {
+    id: cRow.id,
+    username: cRow.username,
+    token: issueTokenForUser(jwtSecret, cRow),
   };
 });
 
@@ -147,7 +163,7 @@ describe('Per-user session ownership — REST isolation', () => {
     expect(getSessionOwner(sessionId)).toBe(userA.id);
   });
 
-  it('non-owner gets 404 (not 403) on every /api/sessions/:id surface', async () => {
+  it('org admin non-owner can READ but not MUTATE another user’s session; plain user is blocked entirely', async () => {
     const agentId = await createProjectAndAgentAs(userA);
     const create = await request
       .post(`/api/agents/${agentId}/sessions`)
@@ -156,37 +172,49 @@ describe('Per-user session ownership — REST isolation', () => {
       .expect(200);
     const sessionId = (create.body as { id: string }).id;
 
-    // GET /api/sessions/:id — prefix middleware
+    // User B is an org Admin. Under the org-admin read grace they may
+    // OPEN (deep-link) a session they don't own, even though it is hidden
+    // from their owner-only sidebar. GET /api/sessions/:id — prefix gate.
     await request
       .get(`/api/sessions/${sessionId}`)
       .set('Authorization', `Bearer ${userB.token}`)
-      .expect(404);
+      .expect(200);
 
-    // GET /api/sessions/:id/messages — also under the prefix gate
+    // GET /api/sessions/:id/messages — same read gate, also granted.
     await request
       .get(`/api/sessions/${sessionId}/messages`)
       .set('Authorization', `Bearer ${userB.token}`)
-      .expect(404);
+      .expect(200);
 
-    // POST /api/sessions/:id/forward — same prefix gate. We pass an
-    // intentionally-bogus body because the gate fires before any
-    // shape validation.
+    // ...but MUTATIONS stay strictly owner-only. The read grace lives in
+    // `userCanReadSession`, not `userOwnsSession`, so an admin non-owner
+    // still 404s on write surfaces. POST /forward (bogus body — the gate
+    // fires before shape validation).
     await request
       .post(`/api/sessions/${sessionId}/forward`)
       .set('Authorization', `Bearer ${userB.token}`)
       .send({ targetAgentId: 'nope' })
       .expect(404);
 
-    // POST /api/sessions/:id/follow-up — same prefix gate. Bogus body
-    // again: the gate fires before `parseBody` shape validation.
+    // POST /api/sessions/:id/follow-up — same write gate.
     await request
       .post(`/api/sessions/${sessionId}/follow-up`)
       .set('Authorization', `Bearer ${userB.token}`)
       .send({})
       .expect(404);
 
-    // Sanity: User A still sees their own session through the same
-    // surfaces (proves the gate isn't a blanket reject).
+    // User C is a plain (non-admin) member. The read grace does NOT extend
+    // to the `User` role, so even reads 404 (not 403 — no existence probe).
+    await request
+      .get(`/api/sessions/${sessionId}`)
+      .set('Authorization', `Bearer ${userC.token}`)
+      .expect(404);
+    await request
+      .get(`/api/sessions/${sessionId}/messages`)
+      .set('Authorization', `Bearer ${userC.token}`)
+      .expect(404);
+
+    // Sanity: User A still sees their own session (gate isn't a blanket reject).
     await request
       .get(`/api/sessions/${sessionId}`)
       .set('Authorization', `Bearer ${userA.token}`)
@@ -331,7 +359,7 @@ describe('Per-user session ownership — REST isolation', () => {
     expect(sessions.find((s) => s.name === 'iso-test-enumerate')).toBeUndefined();
   });
 
-  it('messages list is scoped to owner — userOwnsSession middleware fires before route handler', async () => {
+  it('messages list is scoped to owner — plain User is blocked by the read gate before the handler', async () => {
     const agentId = await createProjectAndAgentAs(userA);
     const create = await request
       .post(`/api/agents/${agentId}/sessions`)
@@ -340,14 +368,21 @@ describe('Per-user session ownership — REST isolation', () => {
       .expect(200);
     const sessionId = (create.body as { id: string }).id;
 
-    // Same session id from User B's perspective is "not found".
+    // Same session id from a plain (non-admin) member's perspective is
+    // "not found" — the org-admin read grace does not apply to `User`.
     const res = await request
       .get(`/api/sessions/${sessionId}/messages`)
-      .set('Authorization', `Bearer ${userB.token}`)
+      .set('Authorization', `Bearer ${userC.token}`)
       .expect(404);
     // Body shape matches the prefix-gate's 404 payload, not the
     // route's own "no rows" payload.
     expect(res.body).toEqual({ error: 'Session not found' });
+
+    // An org Admin, by contrast, is granted the read (200).
+    await request
+      .get(`/api/sessions/${sessionId}/messages`)
+      .set('Authorization', `Bearer ${userB.token}`)
+      .expect(200);
   });
 
   it('a non-existent session id resolves to 404 for both users (no info leak)', async () => {
