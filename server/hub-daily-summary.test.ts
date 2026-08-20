@@ -203,6 +203,13 @@ describe('collectDailySummaryFacts', () => {
     expect(prompt).toContain('/projects/proj-a/board?card=');
     expect(prompt).toContain('/sessions/');
     expect(prompt).toContain('/hub/todos');
+
+    // "Right now" is folded into Today: current-state facts are grouped under
+    // the TODAY label and the RIGHT NOW label is gone.
+    expect(prompt).not.toContain('RIGHT NOW');
+    expect(prompt).toContain('TODAY — running sessions:');
+    expect(prompt).toContain('TODAY — open cards assigned to you:');
+    expect(prompt).toContain('TODAY — open todos:');
   });
 });
 
@@ -274,7 +281,7 @@ describe('generateDailySummary', () => {
       runFailover: async () => ({
         engine: 'codex-cli',
         model: 'gpt-5.3-codex',
-        output: '## Today\n- wrote tests\n## Right now\n- idle\n## Yesterday\n- hub work',
+        output: '## Today\n- wrote tests\n- idle\n## Yesterday\n- hub work',
         failovers: [],
         detailed: { stdout: 'ok', stderr: '', code: 0, timedOut: false },
       }),
@@ -325,7 +332,7 @@ describe('generateDailySummary', () => {
       runFailover: async () => ({
         engine: 'codex-cli',
         model: 'gpt-5.6-sol',
-        output: '## Today\n- ok\n## Right now\n- idle\n## Yesterday\n- none',
+        output: '## Today\n- ok\n- idle\n## Yesterday\n- none',
         failovers: [],
         detailed: { stdout: 'ok', stderr: '', code: 0, timedOut: false },
       }),
@@ -364,8 +371,7 @@ describe('generateDailySummary', () => {
       runFailover: async () => ({
         engine: 'claude-code',
         model: 'claude-opus-4-6',
-        output:
-          '## Today\n- Today card in Ship summary\n## Right now\n- idle\n## Yesterday\n- none',
+        output: '## Today\n- Today card in Ship summary\n- idle\n## Yesterday\n- none',
         failovers: [],
         detailed: { stdout: 'ok', stderr: '', code: 0, timedOut: false },
       }),

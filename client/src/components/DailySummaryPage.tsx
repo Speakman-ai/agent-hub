@@ -31,7 +31,7 @@ export interface DailySummaryPageProps {
 }
 
 /**
- * Hub Daily Summary — today / right now / yesterday, generated on demand.
+ * Hub Daily Summary — today / yesterday, generated on demand.
  * Visiting the tab only reads; Generate / Regenerate is the spawn.
  */
 export default function DailySummaryPage({

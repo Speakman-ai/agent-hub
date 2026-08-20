@@ -1,5 +1,6 @@
 /**
- * Hub Daily Summary — per-user report of today / right now / yesterday.
+ * Hub Daily Summary — per-user report of today / yesterday. "Today" folds in
+ * the current-state facts (running sessions, open cards, open todos).
  *
  * Persistence is the caller's `preferences_json.hubDailySummary`, keyed by
  * local YYYY-MM-DD in the timezone they send. A stored report whose `date`
@@ -420,20 +421,19 @@ export function formatFactsForPrompt(facts: DailySummaryFacts): string {
     '',
     'Each named ticket, session, todo, and project below already has a markdown link. Copy those links when you mention them.',
     '',
-    'RIGHT NOW — running sessions:',
+    'TODAY — running sessions:',
     linesFor(facts.running, (s) => {
       const name = mdLink(s.sessionName, dailySummarySessionHref(s.sessionId, s.agentId));
       return `${name} [${s.kind}${s.mine ? ', yours' : ', org'}] agent=${s.agentId} started=${s.startedAt}`;
     }),
-    'RIGHT NOW — open cards assigned to you:',
+    'TODAY — open cards assigned to you:',
     linesFor(facts.openCards, (c) => {
       const title = mdLink(c.title, dailySummaryCardHref(c.projectId, c.id));
       const project = mdLink(c.projectName, dailySummaryProjectHref(c.projectId));
       return `${title} (${project} / ${c.columnName})`;
     }),
-    'RIGHT NOW — open todos:',
+    'TODAY — open todos:',
     linesFor(facts.openTodos, (t) => mdLink(t.title, dailySummaryTodoHref())),
-    '',
     'TODAY — sessions you owned that updated:',
     linesFor(facts.todaySessions, (s) => {
       const name = mdLink(s.name, dailySummarySessionHref(s.id, s.agentId));
@@ -505,10 +505,10 @@ const SYSTEM_PROMPT = [
   'Use ONLY the facts provided. Do not invent work, tickets, or sessions.',
   'If a section has no facts, say so in one short sentence.',
   'Output markdown only — no preamble, no code fences around the whole reply.',
-  'Use these three headings, in this order:',
+  'Use these two headings, in this order:',
   '## Today',
-  '## Right now',
   '## Yesterday',
+  'Today covers both what is happening right now (running sessions, open cards, open todos) and what happened earlier today.',
   'Be concise. Use bullet lists. Name projects, tickets, and sessions when given.',
   'When you mention a ticket, session, todo, or project, keep the markdown link from the facts (`[name](url)`). Do not drop the URL.',
   'Hub-kind sessions are the user talking to Hub, not project shipping work — label them as Hub chat.',

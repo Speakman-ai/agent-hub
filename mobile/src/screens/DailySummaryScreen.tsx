@@ -29,7 +29,7 @@ function formatGeneratedAt(iso: string): string {
 }
 
 /**
- * Hub Daily Summary — today / right now / yesterday. Visiting this tab only
+ * Hub Daily Summary — today / yesterday. Visiting this tab only
  * reads; Generate / Regenererate is what spawns a model.
  */
 export default function DailySummaryScreen({
