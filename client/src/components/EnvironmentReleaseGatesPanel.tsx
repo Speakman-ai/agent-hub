@@ -80,18 +80,39 @@ export default function EnvironmentReleaseGatesPanel({
         api.getEpics(projectId).catch(() => null),
       ]);
       // Active sessions = board cards with a linked session that are not yet
-      // done/cancelled (those are the "work in flight" you release on).
+      // done/cancelled (those are the "work in flight" you release on). The
+      // board endpoint returns a flat top-level `cards` array keyed to columns
+      // by `column_id`; columns carry no nested `cards`. Older/other shapes may
+      // nest cards under each column, so handle both.
       const columns: any[] = board?.columns || [];
+      const isDoneOrCancel = (name: unknown) => {
+        const n = String(name || '').toLowerCase();
+        return n.includes('done') || n.includes('cancel');
+      };
+      const columnNameById = new Map<string, string>();
+      const doneOrCancelledColumnIds = new Set<string>();
+      for (const col of columns) {
+        if (col?.id == null) continue;
+        columnNameById.set(String(col.id), String(col?.name || ''));
+        if (isDoneOrCancel(col?.name)) doneOrCancelledColumnIds.add(String(col.id));
+      }
+      // The board endpoint returns cards flat: iterate that. Fall back to any
+      // nested `col.cards` shape, stamping the column name so done/cancel
+      // columns are still excluded when the card lacks a resolvable column_id.
+      const flatCards: any[] = Array.isArray(board?.cards)
+        ? board.cards
+        : columns.flatMap((col: any) =>
+            (col?.cards || []).map((c: any) => ({ __columnName: col?.name, ...c })),
+          );
       const sessions: PickOption[] = [];
       const seen = new Set<string>();
-      for (const col of columns) {
-        const name = String(col?.name || '').toLowerCase();
-        if (name.includes('done') || name.includes('cancel')) continue;
-        for (const card of col?.cards || []) {
-          if (!card?.session_id || seen.has(card.session_id)) continue;
-          seen.add(card.session_id);
-          sessions.push({ id: card.session_id, label: card.title || card.session_id });
-        }
+      for (const card of flatCards) {
+        if (!card?.session_id || seen.has(card.session_id)) continue;
+        const columnName =
+          card.column_id != null ? columnNameById.get(String(card.column_id)) : card.__columnName;
+        if (isDoneOrCancel(columnName)) continue;
+        seen.add(card.session_id);
+        sessions.push({ id: card.session_id, label: card.title || card.session_id });
       }
       setSessionOptions(sessions);
 

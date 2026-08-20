@@ -116,6 +116,34 @@ describe('EnvironmentReleaseGatesPanel', () => {
     expect(within(epics).queryByText('Shipped')).toBeNull();
   });
 
+  // Regression: the real GET /board response returns a FLAT top-level `cards`
+  // array keyed to columns by `column_id` (columns carry no nested `cards`).
+  // The panel used to iterate `col.cards`, so it always found zero sessions and
+  // rendered "No active sessions on the board" even with live card-linked work.
+  it('lists card-linked sessions from the flat board.cards array', async () => {
+    (api.listDeployReleaseGates as any).mockResolvedValue({ gates: [] });
+    (api.getBoard as any).mockResolvedValue({
+      columns: [
+        { id: 'col-todo', name: 'In Progress' },
+        { id: 'col-done', name: 'Done' },
+        { id: 'col-cancel', name: 'Cancelled' },
+      ],
+      cards: [
+        { session_id: 'sess-a', title: 'Fix auth', column_id: 'col-todo' },
+        { session_id: 'sess-done', title: 'Old work', column_id: 'col-done' },
+        { session_id: 'sess-cancel', title: 'Dropped work', column_id: 'col-cancel' },
+        { session_id: null, title: 'No session card', column_id: 'col-todo' },
+      ],
+    });
+    render(<EnvironmentReleaseGatesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByTestId('release-gate-session-options')).toBeTruthy());
+    const sessions = screen.getByTestId('release-gate-session-options');
+    expect(within(sessions).getByText('Fix auth')).toBeTruthy();
+    expect(within(sessions).queryByText('Old work')).toBeNull();
+    expect(within(sessions).queryByText('Dropped work')).toBeNull();
+    expect(within(sessions).queryByText('No active sessions on the board.')).toBeNull();
+  });
+
   it('creates a gate from the selected sessions/epics', async () => {
     (api.listDeployReleaseGates as any).mockResolvedValue({ gates: [] });
     (api.createDeployReleaseGate as any).mockResolvedValue({ gate: gate({ id: 'g9' }) });
