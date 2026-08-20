@@ -151,7 +151,11 @@ export default function HubPage({
             })}
           </nav>
         </header>
-        <div className="flex-1 min-h-0 overflow-hidden">{workspace}</div>
+        {/* Flex column so pane roots using `flex-1` (org/todos/calendar/mail) get a
+            bounded height and can scroll; `h-full` panes (today/summary) still resolve
+            against this bounded box. Without `flex`, `flex-1` is inert and pane content
+            overflows this `overflow-hidden` wrapper with no scrollbar. */}
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col">{workspace}</div>
       </div>
 
       <aside

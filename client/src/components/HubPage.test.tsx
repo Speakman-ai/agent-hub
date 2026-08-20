@@ -55,6 +55,19 @@ describe('HubPage', () => {
     expect(screen.queryByText('todos-body')).not.toBeInTheDocument();
   });
 
+  it('wraps the workspace pane in a bounded flex column so flex-1 pane roots can scroll', () => {
+    // Regression: org/todos/calendar/mail pane roots use `flex-1 overflow-y-auto`,
+    // which only produces a scrollable, bounded box when the wrapper is a flex
+    // container. When the wrapper was plain `block`, `flex-1` was inert and the
+    // content overflowed the `overflow-hidden` wrapper with no scrollbar.
+    render(<HubPage pane="todos" onPaneChange={() => undefined} {...panes} />);
+    const wrapper = screen.getByText('todos-body').parentElement as HTMLElement;
+    expect(wrapper.classList.contains('flex')).toBe(true);
+    expect(wrapper.classList.contains('flex-col')).toBe(true);
+    expect(wrapper.classList.contains('min-h-0')).toBe(true);
+    expect(wrapper.classList.contains('overflow-hidden')).toBe(true);
+  });
+
   it('renders assistant column actions', () => {
     render(
       <HubPage
