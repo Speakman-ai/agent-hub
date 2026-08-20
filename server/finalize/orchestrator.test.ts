@@ -1266,36 +1266,101 @@ describe('runFinalize — non-convergence escalation', () => {
     activeSecondsBilled: 30,
   };
 
-  it('escalates review_not_converging after K consecutive changes_requested rounds instead of dispatching another fix', async () => {
-    // Default K = 3: rounds 1 and 2 dispatch a fix; round 3's changes_requested
-    // trips the escalation BEFORE a third fix is dispatched.
+  it('does NOT early-halt by default: keeps dispatching root-cause-escalated fixes past round 3 until the reviewer approves', async () => {
+    // Default: the review_not_converging early-halt is disabled. Four
+    // consecutive changes_requested rounds each dispatch a fix (the old K=3
+    // halt would have stopped after 2 dispatches); the fifth round approves
+    // and the run converges to ready_to_push.
     const runReview = vi
       .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
-      .mockResolvedValue(CHANGES);
-    // Unique HEAD per call so the §6 no-progress guard never fires first.
-    let headN = 0;
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(REVIEW_OK);
+    // Unique HEAD per changes round (so the §6 no-progress guard never fires),
+    // stable on the approved round's push-gate re-read.
     const resolveHead = vi
       .fn<(...args: unknown[]) => Promise<string>>()
-      .mockImplementation(async () => `sha-${headN++}`);
+      .mockResolvedValueOnce('sha-1') // r1 baseline
+      .mockResolvedValueOnce('sha-2') // r2 baseline (fix1 landed)
+      .mockResolvedValueOnce('sha-3') // r3 baseline (fix2 landed)
+      .mockResolvedValueOnce('sha-4') // r4 baseline (fix3 landed)
+      .mockResolvedValueOnce('sha-5') // r5 baseline (fix4 landed)
+      .mockResolvedValue('sha-5'); // r5 push gate (stable)
 
     const { deps, stmts } = makeDeps({
       runReviewerDispatch: runReview as never,
+      runJobPhase: fakeRunSteps(STEPS_OK),
       resolveHeadSha: resolveHead,
     });
+    // Every review round flags the SAME file → a recurring cluster, so the
+    // root-cause escalation keeps re-attaching each post-round-2 dispatch.
+    (deps.stmts.listReviewerThreadsForRun as unknown as { all: ReturnType<typeof vi.fn> }).all =
+      vi.fn(() => [
+        {
+          id: 't1',
+          run_id: 'r1',
+          file_path: 'client/src/App.tsx',
+          line_start: 4120,
+          line_end: 4147,
+          body: 'in-flight GET can overwrite a newer hub session',
+          author: 'reviewer-agent',
+          created_at: 1,
+        },
+      ]);
 
     const result = await runFinalize(deps, baseOpts());
 
-    expect(result.kind).toBe('failed');
-    if (result.kind !== 'failed') throw new Error('unreachable');
-    expect(result.failureReason).toBe('review_not_converging');
-    // Reviewer ran 3 rounds; only 2 fixes were dispatched (round 3 escalated).
-    expect(runReview).toHaveBeenCalledTimes(3);
-    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(2);
-    // A non-convergence notice was written to the session timeline.
+    // Converged instead of halting: 5 reviews, 4 fixes dispatched (rounds 1-4).
+    expect(result.kind).toBe('ready_to_push');
+    expect(runReview).toHaveBeenCalledTimes(5);
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(4);
+    // No non-convergence notice — the early-halt never fired.
     const timelineKinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
       (call) => JSON.parse(call[7] as string).kind,
     );
-    expect(timelineKinds).toContain('finalize_review_not_converging');
+    expect(timelineKinds).not.toContain('finalize_review_not_converging');
+    // The 3rd and 4th dispatches (past the old K=3 halt) carried the
+    // root-cause escalation directive, not just per-line notes.
+    const calls = (deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[2][1].trigger.rootCauseEscalation).toBeTruthy();
+    expect(calls[3][1].trigger.rootCauseEscalation?.clusters).toEqual(['client/src/App.tsx']);
+  });
+
+  it('restores the early-halt when FINALIZE_MAX_NONCONVERGENCE_ROUNDS is set (escape hatch)', async () => {
+    const prev = process.env.FINALIZE_MAX_NONCONVERGENCE_ROUNDS;
+    process.env.FINALIZE_MAX_NONCONVERGENCE_ROUNDS = '3';
+    try {
+      const runReview = vi
+        .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+        .mockResolvedValue(CHANGES);
+      let headN = 0;
+      const resolveHead = vi
+        .fn<(...args: unknown[]) => Promise<string>>()
+        .mockImplementation(async () => `sha-${headN++}`);
+
+      const { deps, stmts } = makeDeps({
+        runReviewerDispatch: runReview as never,
+        resolveHeadSha: resolveHead,
+      });
+
+      const result = await runFinalize(deps, baseOpts());
+
+      expect(result.kind).toBe('failed');
+      if (result.kind !== 'failed') throw new Error('unreachable');
+      expect(result.failureReason).toBe('review_not_converging');
+      // Reviewer ran 3 rounds; only 2 fixes were dispatched (round 3 halted).
+      expect(runReview).toHaveBeenCalledTimes(3);
+      expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(2);
+      const timelineKinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => JSON.parse(call[7] as string).kind,
+      );
+      expect(timelineKinds).toContain('finalize_review_not_converging');
+    } finally {
+      if (prev === undefined) delete process.env.FINALIZE_MAX_NONCONVERGENCE_ROUNDS;
+      else process.env.FINALIZE_MAX_NONCONVERGENCE_ROUNDS = prev;
+    }
   });
 
   it('does NOT escalate when the loop converges (changes_requested rounds below K then approved)', async () => {

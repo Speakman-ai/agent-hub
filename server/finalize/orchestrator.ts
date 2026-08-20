@@ -211,27 +211,34 @@ export function resolveMaxSameShaReruns(): number {
 
 /**
  * How many CONSECUTIVE reviewer `changes_requested` rounds the fix loop will
- * run before escalating to a human instead of dispatching yet another fix.
+ * run before halting early with `review_not_converging` instead of dispatching
+ * yet another fix.
  *
- * A review loop that keeps returning fresh findings every round is not
- * converging — the underlying change likely has a recurring/root-cause defect
- * the per-line fix turns are only chipping at. Rather than grind the full
- * active-time budget and die `review_failed` (which reads as "the agent gave
- * up"), we stop at this threshold and hand it back with a `review_not_converging`
- * notice naming the recurring cluster, so the human can intervene early.
+ * **Disabled by default (0).** This early-halt used to fire at 3 consecutive
+ * rounds on the theory that a review that keeps flagging the same cluster is
+ * chasing symptoms of one root cause the per-line fixes only chip at. In
+ * practice it gave up too soon: the root-cause escalation (see
+ * {@link computeRootCauseEscalation}) fires at round 2 and rewrites the fix
+ * body from "patch these lines" to "fix the root cause and re-scan every
+ * sibling call site", but the round-3 halt pre-empted it after a SINGLE
+ * escalated dispatch — so the fixer never got room to actually land the
+ * structural change. We now keep dispatching root-cause-escalated fixes and
+ * let the run terminate on its real bounds instead: the active-time budget
+ * ({@link budgetExhausted}) and the {@link MAX_FIX_DISPATCH_LOOPS} runaway
+ * backstop.
  *
- * Default 3 (the third consecutive changes_requested round escalates, since the
- * guard is `consecutiveChangesRequested >= 3`). Override with
- * `FINALIZE_MAX_NONCONVERGENCE_ROUNDS` (integer ≥ 1; a value of 0/blank/invalid
- * falls back to the default). Read at CALL time so ops/tests can tune it.
+ * Default 0 = disabled (the halt never fires). Set
+ * `FINALIZE_MAX_NONCONVERGENCE_ROUNDS` to an integer ≥ 1 to restore the early
+ * halt at that many consecutive rounds; `0`/blank/invalid keep it disabled.
+ * Read at CALL time so ops/tests can tune it.
  */
-export const DEFAULT_MAX_NONCONVERGENCE_ROUNDS = 3;
+export const DEFAULT_MAX_NONCONVERGENCE_ROUNDS = 0;
 
 export function resolveMaxNonConvergenceRounds(): number {
   const raw = process.env.FINALIZE_MAX_NONCONVERGENCE_ROUNDS?.trim();
   if (raw) {
     const n = Number.parseInt(raw, 10);
-    if (Number.isFinite(n) && n >= 1 && String(n) === raw) return n;
+    if (Number.isFinite(n) && n >= 0 && String(n) === raw) return n;
   }
   return DEFAULT_MAX_NONCONVERGENCE_ROUNDS;
 }
@@ -1705,13 +1712,20 @@ export async function runFinalize(
         }
       }
 
-      // Non-convergence escalation: if the reviewer has requested changes for
-      // `maxNonConvergenceRounds` rounds running, stop dispatching fixes and
-      // hand back to a human with a notice naming the recurring cluster —
-      // rather than grinding the whole active-time budget and dying
-      // `review_failed`. Fires only on a review-driven round (CI has not run
-      // yet when the reviewer is still requesting changes).
-      if (reviewerChangesRequested && consecutiveChangesRequested >= maxNonConvergenceRounds) {
+      // Non-convergence early-halt: OPT-IN, disabled by default
+      // (`maxNonConvergenceRounds === 0`). When enabled, if the reviewer has
+      // requested changes for `maxNonConvergenceRounds` rounds running, stop
+      // dispatching fixes and hand back with a notice naming the recurring
+      // cluster. Disabled by default so the loop instead keeps dispatching
+      // root-cause-escalated fixes (see `computeRootCauseEscalation` below) and
+      // terminates on its real bounds — the active-time budget and
+      // `MAX_FIX_DISPATCH_LOOPS`. Fires only on a review-driven round (CI has
+      // not run yet when the reviewer is still requesting changes).
+      if (
+        maxNonConvergenceRounds > 0 &&
+        reviewerChangesRequested &&
+        consecutiveChangesRequested >= maxNonConvergenceRounds
+      ) {
         trace('terminal', {
           result: 'review_not_converging',
           round: loopCount,
