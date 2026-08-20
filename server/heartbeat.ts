@@ -15,6 +15,7 @@ import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cro
 import { getOrCreateProcessWorktree } from './worktree.js';
 import { runWorkspacePurge } from './session-purge.js';
 import { reconcileMemoryFromWiki } from './memory.js';
+import { maybeDispatchScheduledWikiBackfill, isWikiDocSkip } from './wiki-doc-session.js';
 import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
 import {
@@ -821,6 +822,8 @@ export function scheduleAll(_agents?: EnrichedAgent[]): void {
   // PR-env crons (cert-renewal, reaper, pool-alerts) were removed by
   // PR-Env Removal #4 along with the PR-env backing directory.
 
+  scheduleBackgroundAgents();
+
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
 
   if (missed.length > 0) {
@@ -885,6 +888,121 @@ export async function runWikiMemorySync(): Promise<void> {
       console.error(`[Wiki→Memory Sync] Failed for "${project.name}":`, (err as Error).message);
     }
   }
+}
+
+// ─── Background agents (scheduled, project-scoped) ────────────────
+//
+// Distinct from crons (which are user-authored prompts) and from the
+// retired per-agent heartbeats: background agents are built-in unattended
+// jobs configured per project under `project.backgroundAgents`. The first
+// kind is `wiki`, which dispatches the wiki documentation backfill on a
+// cadence — otherwise the wiki is only refreshed on PR merge or via the
+// operator-triggered backfill route.
+
+/** Default cadence for the wiki background agent: daily at 03:00. */
+export const DEFAULT_WIKI_BG_SCHEDULE = '0 3 * * *';
+
+/** Scheduler task key for a project's wiki background agent. */
+export function wikiBackgroundAgentKey(projectId: string): string {
+  return `bg:wiki:${projectId}`;
+}
+
+/**
+ * Fire the wiki background agent for a project: dispatch the wiki
+ * documentation backfill as the configured owner. Never throws — logs the
+ * outcome so a bad run can't kill the scheduler tick.
+ */
+export async function dispatchBackgroundWikiAgent(projectId: string): Promise<void> {
+  try {
+    const project = getProjects().find((p) => p.id === projectId);
+    const wiki = project?.backgroundAgents?.wiki;
+    if (!project || !wiki?.enabled) return;
+    const outcome = maybeDispatchScheduledWikiBackfill({
+      projectId,
+      ownerUserId: wiki.ownerUserId ?? null,
+      model: wiki.model ?? null,
+      limit: wiki.limit,
+    });
+    if (isWikiDocSkip(outcome)) {
+      console.log(
+        `[Background Agent] wiki backfill skipped for "${project.name}": ${outcome.reason}`,
+      );
+    } else {
+      console.log(
+        `[Background Agent] wiki backfill ${outcome.reused ? 'reused' : 'started'} for "${project.name}" (session ${outcome.sessionId})`,
+      );
+    }
+  } catch (err: unknown) {
+    console.error(
+      `[Background Agent] wiki dispatch threw for ${projectId}:`,
+      (err as Error).message,
+    );
+  }
+}
+
+/**
+ * Register a scheduler task per project whose wiki background agent is
+ * enabled. Called from `scheduleAll` (which has already cleared the task
+ * map) so tasks are keyed like the cron/system tasks and torn down on the
+ * next full reschedule.
+ */
+export function scheduleBackgroundAgents(): void {
+  let count = 0;
+  for (const project of getProjects()) {
+    const wiki = project.backgroundAgents?.wiki;
+    if (!wiki?.enabled) continue;
+    const schedule = wiki.schedule?.trim() || DEFAULT_WIKI_BG_SCHEDULE;
+    if (!cron.validate(schedule)) {
+      console.error(`[Background Agent] Invalid wiki schedule for "${project.name}": ${schedule}`);
+      continue;
+    }
+    const key = wikiBackgroundAgentKey(project.id);
+    const task = cron.schedule(
+      schedule,
+      wrapCronTick(() => dispatchBackgroundWikiAgent(project.id), key),
+      defaultTickOptions({
+        intervalSeconds: estimateIntervalSeconds(schedule),
+        name: key,
+        timezone: cronTimezone(wiki.timezone),
+      }),
+    );
+    scheduledTasks.set(key, task);
+    count++;
+    console.log(`[Background Agent] Scheduled wiki for "${project.name}": ${schedule}`);
+  }
+  if (count > 0) console.log(`[Background Agent] ${count} wiki agent(s) scheduled`);
+}
+
+/**
+ * Reschedule a single project's wiki background agent after its config
+ * changes (settings PATCH), without a full `scheduleAll` sweep. Stops any
+ * existing task, then re-registers when enabled with a valid schedule.
+ */
+export function rescheduleBackgroundWikiAgent(project: Project): void {
+  const key = wikiBackgroundAgentKey(project.id);
+  const existing = scheduledTasks.get(key);
+  if (existing) {
+    existing.stop();
+    scheduledTasks.delete(key);
+  }
+  const wiki = project.backgroundAgents?.wiki;
+  if (!wiki?.enabled) return;
+  const schedule = wiki.schedule?.trim() || DEFAULT_WIKI_BG_SCHEDULE;
+  if (!cron.validate(schedule)) {
+    console.error(`[Background Agent] Invalid wiki schedule for "${project.name}": ${schedule}`);
+    return;
+  }
+  const task = cron.schedule(
+    schedule,
+    wrapCronTick(() => dispatchBackgroundWikiAgent(project.id), key),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(schedule),
+      name: key,
+      timezone: cronTimezone(wiki.timezone),
+    }),
+  );
+  scheduledTasks.set(key, task);
+  console.log(`[Background Agent] Rescheduled wiki for "${project.name}": ${schedule}`);
 }
 
 export function rescheduleCron(cronJob: CronRow): void {

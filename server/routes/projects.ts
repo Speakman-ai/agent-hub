@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import cron from 'node-cron';
 import { execFileSync, spawn, ChildProcess, exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
@@ -27,6 +28,7 @@ import {
   patchOnboardContextFilesForShipping,
 } from '../finalize/shipping-prompt.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
+import { rescheduleBackgroundWikiAgent } from '../heartbeat.js';
 import { getUserById } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
 import { isOnboardingComplete, markOnboardingComplete } from '../onboarding-complete.js';
@@ -2283,6 +2285,108 @@ This workspace has no git repo and no PR automation — your job is planning, or
         (project as Record<string, unknown>).securityAutoPr = nextSec;
       }
     }
+    let backgroundAgentsTouched = false;
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'backgroundAgents')) {
+      backgroundAgentsTouched = true;
+      const rawBg = (req.body as Record<string, unknown>).backgroundAgents;
+      if (rawBg === null) {
+        delete (project as Record<string, unknown>).backgroundAgents;
+      } else if (typeof rawBg !== 'object' || Array.isArray(rawBg)) {
+        return res.status(400).json({ error: 'backgroundAgents must be an object or null' });
+      } else {
+        const bg = rawBg as Record<string, unknown>;
+        if (Object.prototype.hasOwnProperty.call(bg, 'wiki')) {
+          const rawWiki = bg.wiki;
+          if (rawWiki === null) {
+            const next = { ...(project.backgroundAgents ?? {}) };
+            delete (next as Record<string, unknown>).wiki;
+            (project as Record<string, unknown>).backgroundAgents = next;
+          } else if (typeof rawWiki !== 'object' || Array.isArray(rawWiki)) {
+            return res
+              .status(400)
+              .json({ error: 'backgroundAgents.wiki must be an object or null' });
+          } else {
+            const w = rawWiki as Record<string, unknown>;
+            const nextWiki: Record<string, unknown> = { ...(project.backgroundAgents?.wiki ?? {}) };
+
+            if (Object.prototype.hasOwnProperty.call(w, 'enabled')) {
+              if (typeof w.enabled !== 'boolean') {
+                return res
+                  .status(400)
+                  .json({ error: 'backgroundAgents.wiki.enabled must be a boolean' });
+              }
+              nextWiki.enabled = w.enabled;
+            }
+            if (Object.prototype.hasOwnProperty.call(w, 'schedule')) {
+              const schedule = w.schedule;
+              if (typeof schedule !== 'string' || !cron.validate(schedule)) {
+                return res.status(400).json({
+                  error: 'backgroundAgents.wiki.schedule must be a valid cron expression',
+                });
+              }
+              nextWiki.schedule = schedule;
+            }
+            if (Object.prototype.hasOwnProperty.call(w, 'timezone')) {
+              const tz = w.timezone;
+              if (tz === null || tz === '') nextWiki.timezone = null;
+              else if (typeof tz !== 'string') {
+                return res
+                  .status(400)
+                  .json({ error: 'backgroundAgents.wiki.timezone must be a string or null' });
+              } else nextWiki.timezone = tz;
+            }
+            if (Object.prototype.hasOwnProperty.call(w, 'ownerUserId')) {
+              const raw = w.ownerUserId;
+              if (raw === null || raw === '') nextWiki.ownerUserId = null;
+              else if (typeof raw !== 'string' || !getUserById(raw)) {
+                return res.status(400).json({
+                  error: 'backgroundAgents.wiki.ownerUserId must be a known user id or null',
+                });
+              } else nextWiki.ownerUserId = raw;
+            }
+            if (Object.prototype.hasOwnProperty.call(w, 'model')) {
+              const model = w.model;
+              if (model === null || model === '') nextWiki.model = null;
+              else if (typeof model !== 'string') {
+                return res
+                  .status(400)
+                  .json({ error: 'backgroundAgents.wiki.model must be a string or null' });
+              } else {
+                // The wiki run uses the docs agent's engine; validate the
+                // override against that engine's model allowlist (the same set
+                // the client picks from). Skip the check when the engine has no
+                // known list, mirroring normalizeCronModel's leniency toward
+                // engine-catalog drift.
+                const docsAgent = project.agents?.find(
+                  (a) => (a.role ?? '').trim().toLowerCase() === 'docs',
+                );
+                const engine = docsAgent?.engine || 'claude-code';
+                const validModels = config.engineValidModels?.[engine] || [];
+                if (validModels.length > 0 && !validModels.includes(model)) {
+                  return res.status(400).json({
+                    error: `backgroundAgents.wiki.model must be a valid ${engine} model`,
+                  });
+                }
+                nextWiki.model = model;
+              }
+            }
+            if (Object.prototype.hasOwnProperty.call(w, 'limit')) {
+              const limit = w.limit;
+              if (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1 || limit > 50) {
+                return res.status(400).json({
+                  error: 'backgroundAgents.wiki.limit must be a number between 1 and 50',
+                });
+              }
+              nextWiki.limit = Math.trunc(limit);
+            }
+            (project as Record<string, unknown>).backgroundAgents = {
+              ...(project.backgroundAgents ?? {}),
+              wiki: nextWiki,
+            };
+          }
+        }
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'securityScan')) {
       const rawScan = (req.body as Record<string, unknown>).securityScan;
       if (rawScan === null) {
@@ -2543,6 +2647,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
       if (err) return res.status(400).json({ error: err });
     }
     saveProjects();
+    // Re-register the wiki background agent so schedule/enable changes take
+    // effect immediately without waiting for the next full scheduler sweep.
+    // Only when this PATCH actually touched backgroundAgents — avoids
+    // needless stop/restart churn on unrelated project edits.
+    if (backgroundAgentsTouched) rescheduleBackgroundWikiAgent(project);
     res.json(project);
   });
 

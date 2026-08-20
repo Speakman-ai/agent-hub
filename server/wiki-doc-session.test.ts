@@ -9,6 +9,7 @@ import {
   dispatchWikiDocBackfill,
   maybeMarkLinkedCardDocumented,
   maybeDispatchWikiDocOnMerge,
+  maybeDispatchScheduledWikiBackfill,
   initWikiDocMergeHook,
   resetWikiDocMergeHook,
   wikiDocSessionNameForCard,
@@ -460,5 +461,129 @@ describe('maybeDispatchWikiDocOnMerge', () => {
 describe('session name helpers', () => {
   it('keeps card ids in the merge session name so reuse can match', () => {
     expect(wikiDocSessionNameForCard('abc')).toBe(`${WIKI_DOC_SESSION_PREFIX} abc`);
+  });
+});
+
+describe('dispatchWikiDocBackfill model override', () => {
+  it('uses the explicit model override instead of the docs agent model', () => {
+    const p = project();
+    const docs = agent({ model: 'claude-sonnet-agent-default' });
+    const stmts = fakeStmts({
+      getSession: { get: () => ({ id: 'sess', name: wikiDocBackfillSessionName() }) },
+    });
+    const result = dispatchWikiDocBackfill(
+      {
+        stmts,
+        config: {} as never,
+        findProject: () => p,
+        findAgent: () => ({ agent: docs, project: p }),
+        handleChat: vi.fn().mockResolvedValue(undefined),
+      },
+      {
+        project: p,
+        cards: [{ id: 'c1', title: 'Old ticket' }],
+        modelOverride: 'claude-opus-override',
+      },
+    );
+    expect(isWikiDocSkip(result)).toBe(false);
+    // 5th positional arg to createSession is the resolved model.
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'docs-1',
+      wikiDocBackfillSessionName(),
+      'claude-code',
+      'claude-opus-override',
+      0,
+      0,
+      1,
+    );
+  });
+});
+
+describe('maybeDispatchScheduledWikiBackfill', () => {
+  it('no-ops when the merge hook is unwired', () => {
+    resetWikiDocMergeHook();
+    expect(maybeDispatchScheduledWikiBackfill({ projectId: 'p1' })).toEqual({
+      skipped: true,
+      reason: 'no_hook',
+    });
+  });
+
+  it('skips when the project is gone', () => {
+    initWikiDocMergeHook({
+      stmts: fakeStmts(),
+      config: {} as never,
+      findProject: () => null,
+      findAgent: () => null,
+      handleChat: vi.fn(),
+    });
+    expect(maybeDispatchScheduledWikiBackfill({ projectId: 'missing' })).toEqual({
+      skipped: true,
+      reason: 'no_project',
+    });
+  });
+
+  it('loads undocumented cards from the board and dispatches as the configured owner/model', () => {
+    const p = project();
+    const docs = agent();
+    const handleChat = vi.fn().mockResolvedValue(undefined);
+    const listUndocumentedCards = vi.fn(() => [
+      { id: 'old-1', title: 'Ancient ticket', description: 'desc', updated_at: '2026-01-01' },
+    ]);
+    const stmts = fakeStmts({
+      getSession: { get: () => ({ id: 'sess', name: wikiDocBackfillSessionName() }) },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      listUndocumentedCards: { all: listUndocumentedCards },
+    });
+    initWikiDocMergeHook({
+      stmts,
+      config: {} as never,
+      findProject: () => p,
+      findAgent: () => ({ agent: docs, project: p }),
+      handleChat,
+    });
+
+    const result = maybeDispatchScheduledWikiBackfill({
+      projectId: 'p1',
+      ownerUserId: 'user-42',
+      model: 'claude-opus-override',
+      limit: 5,
+    });
+
+    expect(isWikiDocSkip(result)).toBe(false);
+    expect(listUndocumentedCards).toHaveBeenCalledWith('board-1', 5);
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { content: string };
+    expect(msg.content).toContain('Ancient ticket');
+    // Owner + model override flow through to the created session.
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'docs-1',
+      wikiDocBackfillSessionName(),
+      'claude-code',
+      'claude-opus-override',
+      0,
+      0,
+      1,
+    );
+  });
+
+  it('skips cleanly when there are no undocumented cards', () => {
+    const p = project();
+    const stmts = fakeStmts({
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      listUndocumentedCards: { all: vi.fn(() => []) },
+    });
+    initWikiDocMergeHook({
+      stmts,
+      config: {} as never,
+      findProject: () => p,
+      findAgent: () => ({ agent: agent(), project: p }),
+      handleChat: vi.fn(),
+    });
+    expect(maybeDispatchScheduledWikiBackfill({ projectId: 'p1' })).toEqual({
+      skipped: true,
+      reason: 'none_undocumented',
+    });
   });
 });

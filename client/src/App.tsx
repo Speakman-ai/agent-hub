@@ -1283,6 +1283,12 @@ export default function App({ initialView }: any = {}) {
     if (currentView.startsWith('project-agents:')) {
       return { tab: 'agents', projectId: currentView.slice('project-agents:'.length) };
     }
+    if (currentView.startsWith('project-background-agents:')) {
+      return {
+        tab: 'background-agents',
+        projectId: currentView.slice('project-background-agents:'.length),
+      };
+    }
     if (currentView.startsWith('project-settings:')) {
       return { tab: 'settings', projectId: currentView.slice('project-settings:'.length) };
     }

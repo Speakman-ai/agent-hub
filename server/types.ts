@@ -3083,6 +3083,41 @@ export interface PrEnvProjectConfig {
   devServer?: DevServerConfig;
 }
 
+/**
+ * Configuration for a project's scheduled background agents. See
+ * `Project.backgroundAgents`. Currently only the built-in `wiki` agent is
+ * supported; the shape is an object (not an array) keyed by built-in kind so
+ * new kinds can be added without a migration.
+ */
+export interface BackgroundAgentsConfig {
+  wiki?: BackgroundWikiAgentConfig;
+}
+
+/**
+ * The built-in wiki-maintenance background agent. When `enabled`, the
+ * scheduler dispatches the wiki documentation backfill on `schedule`,
+ * running as `ownerUserId` (which supplies the per-user engine credentials)
+ * with an optional `model` override applied to the docs agent's engine.
+ */
+export interface BackgroundWikiAgentConfig {
+  /** Off by default. Activating is a single toggle in project settings. */
+  enabled?: boolean;
+  /** node-cron expression (validated on write). Defaults to `0 3 * * *`. */
+  schedule?: string;
+  /** IANA timezone the schedule is interpreted in. Defaults to the scheduler tz. */
+  timezone?: string | null;
+  /**
+   * Hub user the run acts as (per-user CLI credentials + session owner).
+   * `null`/absent runs userless (host-global engine only, like wiki→memory
+   * sync) which fails closed when no non-per-user engine is authed.
+   */
+  ownerUserId?: string | null;
+  /** Optional model override applied to the docs agent's engine. */
+  model?: string | null;
+  /** Max undocumented Done cards reviewed per run. Defaults to 10. */
+  limit?: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -3168,6 +3203,18 @@ export interface Project {
    *   user regardless of this field.
    */
   securityAutoPr?: { enabled?: boolean; autoMerge?: boolean; actorUserId?: string };
+  /**
+   * Project-scoped scheduled "background agents" — unattended AI jobs that run
+   * on a cadence, distinct from interactive sessions and from per-agent
+   * heartbeats (retired). Each entry names which Hub user it runs as, its
+   * cadence, and (where applicable) a model override. The first built-in kind
+   * is `wiki`: it periodically dispatches the wiki documentation backfill
+   * (the docs agent reviews undocumented Done cards and refreshes the wiki),
+   * which is otherwise only merge-driven + operator-triggered. Disabled by
+   * default; the settings UI surfaces the wiki agent with defaults even when
+   * this field is absent, so activating it is a single toggle.
+   */
+  backgroundAgents?: BackgroundAgentsConfig;
   /**
    * Automatic triggers for the dependency security audit (Agent Hub-hosted
    * projects only). Both default off — the audit otherwise only runs from the

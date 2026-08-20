@@ -37,6 +37,7 @@ import {
   MonitorPlay,
   ShieldAlert,
   PanelLeftClose,
+  Sparkles,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion';
@@ -1147,6 +1148,18 @@ export default function Sidebar({
                               >
                                 <Bot size={14} className="flex-shrink-0" />
                                 <span className="truncate">Agents</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onNavigate(`project-background-agents:${project.id}`)
+                                }
+                                className={projectMenuLinkClass(
+                                  currentView === `project-background-agents:${project.id}`,
+                                )}
+                              >
+                                <Sparkles size={14} className="flex-shrink-0" />
+                                <span className="truncate">Background Agents</span>
                               </button>
                               {(() => {
                                 const pendingLessons = skillImprovementCounts[project.id] || 0;

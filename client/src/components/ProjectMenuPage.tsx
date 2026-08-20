@@ -1,8 +1,10 @@
-import { Bot, Clock, FolderGit2 } from 'lucide-react';
+import { Bot, Clock, FolderGit2, Sparkles } from 'lucide-react';
 import { AgentConfigSection, CronSection, ProjectsSection } from './SettingsPage';
+import BackgroundAgentsSection from './BackgroundAgentsSection';
 
 const TAB_META = {
   agents: { label: 'Agents', Icon: Bot },
+  'background-agents': { label: 'Background Agents', Icon: Sparkles },
   settings: { label: 'Project settings', Icon: FolderGit2 },
   crons: { label: 'Cron Jobs', Icon: Clock },
 } as Record<string, any>;
@@ -55,6 +57,14 @@ export default function ProjectMenuPage({
             projects={projects}
             projectId={projectId}
             onAgentsChange={onAgentsChange}
+            showToast={showToast}
+          />
+        )}
+        {activeTab === 'background-agents' && (
+          <BackgroundAgentsSection
+            projects={projects}
+            projectId={projectId}
+            onProjectsChange={onProjectsChange}
             showToast={showToast}
           />
         )}

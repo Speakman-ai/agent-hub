@@ -17,6 +17,7 @@ import type {
   AppConfig,
   BroadcastFn,
   ChatMessage,
+  KanbanBoardRow,
   KanbanCardRow,
   Project,
   SessionRow,
@@ -209,16 +210,21 @@ function kickWikiDocSession(
     kind: 'merge' | 'backfill';
     cardId?: string;
     ownerUserId?: string | null;
+    modelOverride?: string | null;
   },
 ): WikiDocDispatchResult {
   const sessionId = uuidv4();
   const taskId = uuidv4();
   const engine = args.docsAgent.engine || 'claude-code';
-  const model = resolveEffectiveModel(deps.config, engine, {
-    agentModel: args.docsAgent.model,
-    ownerUserId: args.ownerUserId ?? null,
-    agentId: args.docsAgent.id,
-  });
+  // An explicit override (e.g. from a scheduled background agent's config)
+  // wins; otherwise resolve the docs agent's effective model as usual.
+  const model =
+    args.modelOverride?.trim() ||
+    resolveEffectiveModel(deps.config, engine, {
+      agentModel: args.docsAgent.model,
+      ownerUserId: args.ownerUserId ?? null,
+      agentId: args.docsAgent.id,
+    });
 
   // No worktree: docs write through the wiki API, and after merge the
   // project checkout already has the landed change. This also keeps
@@ -336,6 +342,7 @@ export function dispatchWikiDocBackfill(
     project: Project;
     cards: WikiDocBackfillCard[];
     ownerUserId?: string | null;
+    modelOverride?: string | null;
   },
 ): WikiDocOutcome {
   if (args.cards.length === 0) return { skipped: true, reason: 'none_undocumented' };
@@ -366,6 +373,7 @@ export function dispatchWikiDocBackfill(
     prompt,
     kind: 'backfill',
     ownerUserId: args.ownerUserId,
+    modelOverride: args.modelOverride,
   });
 }
 
@@ -410,6 +418,50 @@ export function maybeDispatchWikiDocOnMerge(event: WikiDocMergeEvent): WikiDocOu
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[wiki-doc] merge dispatch failed for ${event.projectId}: ${message}`);
+    return { skipped: true, reason: 'dispatch_error', message };
+  }
+}
+
+/**
+ * Scheduled wiki-maintenance entry point for the `wiki` background agent.
+ * Loads the project's undocumented Done cards and dispatches the same doc
+ * backfill the operator-triggered `POST /wiki/document-backfill` route uses,
+ * but on a cadence and as the configured background-agent owner. Reuses the
+ * late-bound hook deps (no chat.ts import cycle) and no-ops cleanly when the
+ * hook is unwired, the project is gone, or there is nothing to document.
+ */
+export function maybeDispatchScheduledWikiBackfill(args: {
+  projectId: string;
+  ownerUserId?: string | null;
+  model?: string | null;
+  limit?: number;
+}): WikiDocOutcome {
+  if (!mergeHook) return { skipped: true, reason: 'no_hook' };
+  const deps = mergeHook;
+  try {
+    const project = deps.findProject(args.projectId);
+    if (!project) return { skipped: true, reason: 'no_project' };
+
+    const board = deps.stmts.getKanbanBoard.get(args.projectId) as KanbanBoardRow | undefined;
+    const limit = Math.max(1, Math.min(50, Math.trunc(args.limit ?? 10)));
+    const cards = board
+      ? (deps.stmts.listUndocumentedCards.all(board.id, limit) as KanbanCardRow[])
+      : [];
+
+    return dispatchWikiDocBackfill(deps, {
+      project,
+      cards: cards.map((c) => ({
+        id: c.id,
+        title: c.title,
+        description: c.description,
+        updated_at: c.updated_at,
+      })),
+      ownerUserId: args.ownerUserId ?? null,
+      modelOverride: args.model ?? null,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[wiki-doc] scheduled backfill failed for ${args.projectId}: ${message}`);
     return { skipped: true, reason: 'dispatch_error', message };
   }
 }
