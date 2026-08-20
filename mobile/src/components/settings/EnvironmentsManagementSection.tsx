@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { CalendarClock, ChevronDown, ChevronRight, Mail, Pause, Play, RefreshCw, ShieldCheck, Trash2, Zap } from 'lucide-react-native';
+import { CalendarClock, ChevronDown, ChevronRight, Mail, Pause, Play, RefreshCw, Rocket, ShieldCheck, Trash2, Zap } from 'lucide-react-native';
 import { colors } from '../../theme/colors';
 import { api } from '../../utils/api';
 import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
 import EnvironmentSchedulesPanel from './EnvironmentSchedulesPanel';
+import EnvironmentReleaseGatesPanel from './EnvironmentReleaseGatesPanel';
 import EnvironmentNotificationRoutingPanel from './EnvironmentNotificationRoutingPanel';
 import {
   environmentStatus,
@@ -48,6 +49,11 @@ export default function EnvironmentsManagementSection({
   const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
   const [expandedSchedules, setExpandedSchedules] = useState<Record<string, boolean>>({});
   const [expandedRouting, setExpandedRouting] = useState<Record<string, boolean>>({});
+  const [expandedGates, setExpandedGates] = useState<Record<string, boolean>>({});
+
+  const toggleGates = useCallback((name: string) => {
+    setExpandedGates((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
 
   const toggleTriggers = useCallback((name: string) => {
     setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -260,6 +266,30 @@ export default function EnvironmentsManagementSection({
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
+                  onPress={() => toggleGates(env.name)}
+                  style={[
+                    styles.actionButton,
+                    expandedGates[env.name] ? styles.gatesButtonActive : styles.gatesButton,
+                  ]}
+                  accessibilityLabel={`Manage release gates for ${env.name}`}
+                  accessibilityState={{ expanded: !!expandedGates[env.name] }}
+                >
+                  {expandedGates[env.name] ? (
+                    <ChevronDown size={13} color={colors.purple400} />
+                  ) : (
+                    <ChevronRight size={13} color={colors.gray300} />
+                  )}
+                  <Rocket size={13} color={expandedGates[env.name] ? colors.purple400 : colors.gray300} />
+                  <Text
+                    style={[
+                      styles.actionText,
+                      { color: expandedGates[env.name] ? colors.purple400 : colors.gray300 },
+                    ]}
+                  >
+                    Release gates
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
                   onPress={() => toggleRouting(env.name)}
                   style={[
                     styles.actionButton,
@@ -338,6 +368,13 @@ export default function EnvironmentsManagementSection({
               ) : null}
               {expandedSchedules[env.name] && projectId ? (
                 <EnvironmentSchedulesPanel
+                  projectId={projectId}
+                  environmentName={env.name}
+                  onNotify={onNotify}
+                />
+              ) : null}
+              {expandedGates[env.name] && projectId ? (
+                <EnvironmentReleaseGatesPanel
                   projectId={projectId}
                   environmentName={env.name}
                   onNotify={onNotify}
@@ -427,6 +464,8 @@ const styles = StyleSheet.create({
   schedulesButtonActive: { borderColor: colors.blue500, backgroundColor: colors.blue900_40 },
   routingButton: { borderColor: colors.gray700 },
   routingButtonActive: { borderColor: colors.purple500, backgroundColor: colors.purple900_40 },
+  gatesButton: { borderColor: colors.gray700 },
+  gatesButtonActive: { borderColor: colors.purple500, backgroundColor: colors.purple900_40 },
   actionText: { fontSize: 12, fontWeight: '500' },
   disabled: { opacity: 0.5 },
 });

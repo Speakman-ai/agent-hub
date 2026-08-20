@@ -45,6 +45,22 @@ interface UpdateNotificationRoutingBody {
   meta?: unknown;
 }
 
+interface CreateDeployReleaseGateBody {
+  ref?: string | null;
+  sessionIds?: string[];
+  epicIds?: string[];
+  enabled?: boolean;
+  meta?: unknown;
+}
+
+interface UpdateDeployReleaseGateBody {
+  ref?: string | null;
+  sessionIds?: string[];
+  epicIds?: string[];
+  enabled?: boolean;
+  meta?: unknown;
+}
+
 /** Todo priority — reuses the kanban-card enum so a promote maps 1:1. */
 export type TodoPriority = 'urgent' | 'high' | 'medium' | 'low';
 /** Polymorphic link target type (spec TODO-TO-TICKET). */
@@ -1360,6 +1376,53 @@ export const api = {
       `/projects/${projectId}/deploy/environments/${encodeURIComponent(
         environmentName,
       )}/schedules/${scheduleId}`,
+      {
+        method: 'DELETE',
+      },
+    ),
+  // Per-environment release gates (release-gate epic decision): one-shot gates
+  // that fire a single deployment once their selected sessions are all merged
+  // AND their selected epics are all done, then are consumed.
+  listDeployReleaseGates: (projectId: string, environmentName: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/release-gates`,
+    ),
+  createDeployReleaseGate: (
+    projectId: string,
+    environmentName: string,
+    body: CreateDeployReleaseGateBody,
+  ) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/release-gates`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  updateDeployReleaseGate: (
+    projectId: string,
+    environmentName: string,
+    gateId: string,
+    body: UpdateDeployReleaseGateBody,
+  ) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/release-gates/${gateId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteDeployReleaseGate: (projectId: string, environmentName: string, gateId: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/release-gates/${gateId}`,
       {
         method: 'DELETE',
       },

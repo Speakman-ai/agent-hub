@@ -597,6 +597,44 @@ export interface DeploymentEnvironmentNotificationRoutingRow {
   updated_at: string;
 }
 
+/**
+ * Deployment Module — operator-editable per-environment RELEASE GATE (the
+ * release-gate phase on top of the runtime-config layer). Sibling to the
+ * git-event TRIGGERS and cron SCHEDULES.
+ *
+ * A gate is a ONE-SHOT automated deploy: it fires a single deployment once its
+ * curated set of sessions AND/OR epics are all complete, then is consumed
+ * (`status` flips `armed` → `fired`). `session_ids` / `epic_ids` are JSON arrays
+ * of id strings. A gate remains until it is deleted or released (fired).
+ */
+export interface DeploymentEnvironmentReleaseGateRow {
+  id: string;
+  project_id: string;
+  environment_name: string;
+  /** Git ref (branch / tag / sha) the gate deploys when it fires. */
+  ref: string;
+  /** JSON array of session ids that must be merged before the gate fires. */
+  session_ids: string;
+  /** JSON array of epic ids that must be done before the gate fires. */
+  epic_ids: string;
+  /** Identity the fired deployment spawns under; null = system-owned / legacy. */
+  owner_user_id: string | null;
+  /** Lifecycle: armed (waiting), fired (released), failed (enqueue threw). */
+  status: 'armed' | 'fired' | 'failed';
+  /** Operator on/off switch. 1 = enabled (default), 0 = paused (retained). */
+  enabled: number;
+  /** Set when the gate fires: the deployment row it enqueued. */
+  fired_deployment_id: string | null;
+  /** Set when the fire attempt failed: the enqueue error message. */
+  last_error: string | null;
+  /** Timestamp the gate reached a terminal (fired/failed) status. */
+  resolved_at: string | null;
+  /** Free-form JSON stash for forward-compat. */
+  meta: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Deployment Module — approver audit trail for gated environments. */
 export interface DeploymentApprovalRow {
   id: string;
@@ -1994,6 +2032,15 @@ export interface Stmts {
   listDeploymentEnvSchedulesForEnvironment: Stmt;
   listEnabledDeploymentEnvSchedules: Stmt;
   deleteDeploymentEnvSchedule: Stmt;
+  insertDeploymentEnvReleaseGate: Stmt;
+  updateDeploymentEnvReleaseGate: Stmt;
+  markDeploymentEnvReleaseGateFired: Stmt;
+  markDeploymentEnvReleaseGateFailed: Stmt;
+  getDeploymentEnvReleaseGate: Stmt;
+  listDeploymentEnvReleaseGatesForProject: Stmt;
+  listDeploymentEnvReleaseGatesForEnvironment: Stmt;
+  listActiveDeploymentEnvReleaseGates: Stmt;
+  deleteDeploymentEnvReleaseGate: Stmt;
   upsertDeploymentEnvNotificationRouting: Stmt;
   getDeploymentEnvNotificationRouting: Stmt;
   listDeploymentEnvNotificationRouting: Stmt;

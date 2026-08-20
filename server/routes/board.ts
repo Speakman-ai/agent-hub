@@ -64,6 +64,7 @@ import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 import { setSessionOwner, resolveOwnerUserId, getSessionOwner } from '../session-ownership.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { recomputeSessionState } from '../session-state.js';
+import { requestReleaseGateSweep } from '../deploy/release-gate-ticker.js';
 import { epicsWithComputedState, recomputeEpicState } from '../epic-state.js';
 import { disableAutonomousForEmptyEpic } from '../kanban-epic-autonomous-empty.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
@@ -1311,6 +1312,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           if (updatedCard.session_id) {
             recomputeSessionState(stmts, updatedCard.session_id, { agentId, broadcast });
           }
+          // A card landing in Done can complete the last session/epic a release
+          // gate is waiting on — nudge an off-cadence sweep (minute sweep is the
+          // backstop). No-op when deployments/release gates aren't configured.
+          requestReleaseGateSweep('kanban-card-moved');
           maybeStartKanbanColumnWorkflowRuns(
             {
               stmts,

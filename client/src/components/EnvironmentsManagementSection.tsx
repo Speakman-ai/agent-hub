@@ -10,6 +10,7 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Rocket,
   ShieldCheck,
   Trash2,
   Zap,
@@ -18,6 +19,7 @@ import { api } from '../utils/api';
 import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
 import EnvironmentSchedulesPanel from './EnvironmentSchedulesPanel';
 import EnvironmentNotificationRoutingPanel from './EnvironmentNotificationRoutingPanel';
+import EnvironmentReleaseGatesPanel from './EnvironmentReleaseGatesPanel';
 import {
   environmentStatus,
   environmentStatusLabel,
@@ -65,6 +67,11 @@ export default function EnvironmentsManagementSection({
   const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
   const [expandedSchedules, setExpandedSchedules] = useState<Record<string, boolean>>({});
   const [expandedRouting, setExpandedRouting] = useState<Record<string, boolean>>({});
+  const [expandedGates, setExpandedGates] = useState<Record<string, boolean>>({});
+
+  const toggleGates = useCallback((name: string) => {
+    setExpandedGates((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
 
   const toggleTriggers = useCallback((name: string) => {
     setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -260,6 +267,25 @@ export default function EnvironmentsManagementSection({
                     </button>
                     <button
                       type="button"
+                      onClick={() => toggleGates(env.name)}
+                      aria-expanded={!!expandedGates[env.name]}
+                      className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
+                        expandedGates[env.name]
+                          ? 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-200'
+                          : 'border-gray-700 text-gray-300'
+                      }`}
+                      title="Manage release gates"
+                    >
+                      {expandedGates[env.name] ? (
+                        <ChevronDown size={12} />
+                      ) : (
+                        <ChevronRight size={12} />
+                      )}
+                      <Rocket size={12} />
+                      Release gates
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => toggleRouting(env.name)}
                       aria-expanded={!!expandedRouting[env.name]}
                       className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
@@ -325,6 +351,13 @@ export default function EnvironmentsManagementSection({
                 ) : null}
                 {expandedSchedules[env.name] && projectId ? (
                   <EnvironmentSchedulesPanel
+                    projectId={projectId}
+                    environmentName={env.name}
+                    showToast={showToast}
+                  />
+                ) : null}
+                {expandedGates[env.name] && projectId ? (
+                  <EnvironmentReleaseGatesPanel
                     projectId={projectId}
                     environmentName={env.name}
                     showToast={showToast}

@@ -40,6 +40,10 @@ import {
   createSchedule,
   listSchedulesForEnvironment,
 } from '../deploy/deployment-schedule-store.js';
+import {
+  createReleaseGate,
+  listReleaseGatesForEnvironment,
+} from '../deploy/deployment-release-gate-store.js';
 import { DeployConfigError } from '../deploy/deploy-config-error.js';
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
 import {
@@ -286,6 +290,7 @@ beforeEach(() => {
     'deployment_env_runtime_config',
     'deployment_env_trigger',
     'deployment_env_schedule',
+    'deployment_env_release_gate',
     'deployment_env_notification_routing',
     'release_notification_settings',
     'kanban_cards',
@@ -2248,6 +2253,204 @@ environments:
         const { app } = makeApp({ role: 'User' });
         await request(app)
           .delete(`${schedulesUrl('prod')}/${row.id}`)
+          .expect(403);
+      });
+    });
+  });
+
+  describe('release gates CRUD', () => {
+    const gatesUrl = (env: string) =>
+      `/api/projects/${PROJECT_ID}/deploy/environments/${env}/release-gates`;
+
+    describe('GET .../release-gates', () => {
+      it('lists gates with live completion progress', async () => {
+        createReleaseGate({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          sessionIds: ['sess-a', 'sess-b'],
+        });
+        const { app } = makeApp();
+        const res = await request(app).get(gatesUrl('prod')).expect(200);
+        expect(res.body).toMatchObject({ projectId: PROJECT_ID, environmentName: 'prod' });
+        expect(res.body.gates).toHaveLength(1);
+        expect(res.body.gates[0]).toMatchObject({
+          status: 'armed',
+          enabled: true,
+          ref: 'main',
+          sessionIds: ['sess-a', 'sess-b'],
+        });
+        // Neither session exists in the DB → both missing → blocked, not satisfied.
+        expect(res.body.gates[0].progress).toMatchObject({
+          sessionsTotal: 2,
+          sessionsComplete: 0,
+          blocked: true,
+          satisfied: false,
+        });
+      });
+
+      it('returns an empty list for an environment with no gates', async () => {
+        const { app } = makeApp();
+        const res = await request(app).get(gatesUrl('dev')).expect(200);
+        expect(res.body.gates).toEqual([]);
+      });
+
+      it('returns 404 for an unknown project', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .get('/api/projects/missing/deploy/environments/prod/release-gates')
+          .expect(404);
+      });
+    });
+
+    describe('POST .../release-gates', () => {
+      it('creates a gate on a declared env and captures the caller as owner', async () => {
+        const { app } = makeApp();
+        const res = await request(app)
+          .post(gatesUrl('prod'))
+          .send({ sessionIds: ['sess-a'], epicIds: ['epic-1'] })
+          .expect(201);
+        expect(res.body.gate).toMatchObject({
+          environmentName: 'prod',
+          ref: 'main',
+          sessionIds: ['sess-a'],
+          epicIds: ['epic-1'],
+          ownerUserId: 'user-1',
+          status: 'armed',
+          enabled: true,
+        });
+        expect(listReleaseGatesForEnvironment(PROJECT_ID, 'prod')).toHaveLength(1);
+      });
+
+      it('honors a ref override', async () => {
+        const { app } = makeApp();
+        const res = await request(app)
+          .post(gatesUrl('prod'))
+          .send({ ref: 'release-1.2', epicIds: ['epic-1'] })
+          .expect(201);
+        expect(res.body.gate.ref).toBe('release-1.2');
+      });
+
+      it('allows creating a gate on an orphaned (configured) environment', async () => {
+        upsertEnvironmentConfig({
+          projectId: PROJECT_ID,
+          environmentName: 'legacy',
+          enabled: true,
+        });
+        const { app } = makeApp();
+        await request(app)
+          .post(gatesUrl('legacy'))
+          .send({ sessionIds: ['sess-a'] })
+          .expect(201);
+      });
+
+      it('returns 404 for an environment neither declared nor configured', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .post(gatesUrl('ghost'))
+          .send({ sessionIds: ['sess-a'] })
+          .expect(404);
+        expect(listReleaseGatesForEnvironment(PROJECT_ID, 'ghost')).toHaveLength(0);
+      });
+
+      it('returns 400 when the gate watches nothing', async () => {
+        const { app } = makeApp();
+        await request(app).post(gatesUrl('prod')).send({ sessionIds: [], epicIds: [] }).expect(400);
+        await request(app).post(gatesUrl('prod')).send({}).expect(400);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const { app } = makeApp({ role: 'User' });
+        await request(app)
+          .post(gatesUrl('prod'))
+          .send({ sessionIds: ['sess-a'] })
+          .expect(403);
+      });
+    });
+
+    describe('PATCH .../release-gates/:gateId', () => {
+      it('updates a gate (pause + re-scope)', async () => {
+        const row = createReleaseGate({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          sessionIds: ['sess-a'],
+        });
+        const { app } = makeApp();
+        const res = await request(app)
+          .patch(`${gatesUrl('prod')}/${row.id}`)
+          .send({ enabled: false, epicIds: ['epic-9'] })
+          .expect(200);
+        expect(res.body.gate).toMatchObject({
+          enabled: false,
+          sessionIds: ['sess-a'],
+          epicIds: ['epic-9'],
+        });
+      });
+
+      it('returns 400 when an update would leave the gate watching nothing', async () => {
+        const row = createReleaseGate({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          sessionIds: ['sess-a'],
+        });
+        const { app } = makeApp();
+        await request(app)
+          .patch(`${gatesUrl('prod')}/${row.id}`)
+          .send({ sessionIds: [], epicIds: [] })
+          .expect(400);
+      });
+
+      it('returns 404 for a missing gate', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .patch(`${gatesUrl('prod')}/nope`)
+          .send({ enabled: false })
+          .expect(404);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const row = createReleaseGate({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          sessionIds: ['sess-a'],
+        });
+        const { app } = makeApp({ role: 'User' });
+        await request(app)
+          .patch(`${gatesUrl('prod')}/${row.id}`)
+          .send({ enabled: false })
+          .expect(403);
+      });
+    });
+
+    describe('DELETE .../release-gates/:gateId', () => {
+      it('deletes a gate', async () => {
+        const row = createReleaseGate({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          sessionIds: ['sess-a'],
+        });
+        const { app } = makeApp();
+        await request(app)
+          .delete(`${gatesUrl('prod')}/${row.id}`)
+          .expect(200);
+        expect(listReleaseGatesForEnvironment(PROJECT_ID, 'prod')).toHaveLength(0);
+      });
+
+      it('returns 404 for a missing gate', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .delete(`${gatesUrl('prod')}/nope`)
+          .expect(404);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const row = createReleaseGate({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          sessionIds: ['sess-a'],
+        });
+        const { app } = makeApp({ role: 'User' });
+        await request(app)
+          .delete(`${gatesUrl('prod')}/${row.id}`)
           .expect(403);
       });
     });

@@ -25,6 +25,7 @@ import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-co
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
 import { DEPLOYMENT_ENV_SCHEDULE_SCHEMA } from './deploy/deployment-schedule-schema.js';
 import { DEPLOYMENT_ENV_NOTIFICATION_ROUTING_SCHEMA } from './deploy/deployment-notification-routing-schema.js';
+import { DEPLOYMENT_ENV_RELEASE_GATE_SCHEMA } from './deploy/deployment-release-gate-schema.js';
 import { RELEASE_NOTIFICATION_SETTINGS_SCHEMA } from './release-notification-settings.js';
 import {
   SECURITY_AUDIT_SCHEMA,
@@ -3348,6 +3349,12 @@ function initDb(dataDir: string): void {
   // in isolation.
   db.exec(DEPLOYMENT_ENV_NOTIFICATION_ROUTING_SCHEMA);
 
+  // Multi-environment management (release-gate phase): operator-editable
+  // one-shot deploy gates that fire when a curated set of sessions/epics are all
+  // complete. Co-located schema so its store test can migrate an in-memory DB in
+  // isolation.
+  db.exec(DEPLOYMENT_ENV_RELEASE_GATE_SCHEMA);
+
   // Migration: retire the legacy default "Review" kanban column. New boards
   // no longer seed it; existing boards have their Review cards folded into
   // "In Progress" and the column dropped (there is no in-UI column editor
@@ -4176,6 +4183,59 @@ function initDb(dataDir: string): void {
     ),
     deleteDeploymentEnvSchedule: db.prepare(
       'DELETE FROM deployment_env_schedule WHERE project_id = ? AND id = ?',
+    ),
+    // Per-environment release gates (release-gate phase). One-shot gates that
+    // fire a deployment once their sessions/epics are complete. `status` and the
+    // terminal columns are managed by the store's mark helpers, never by update.
+    insertDeploymentEnvReleaseGate: db.prepare(
+      `INSERT INTO deployment_env_release_gate
+        (id, project_id, environment_name, ref, session_ids, epic_ids, owner_user_id, status, enabled, meta)
+       VALUES (@id, @project_id, @environment_name, @ref, @session_ids, @epic_ids, @owner_user_id, @status, @enabled, @meta)`,
+    ),
+    updateDeploymentEnvReleaseGate: db.prepare(
+      `UPDATE deployment_env_release_gate
+       SET ref = @ref,
+           session_ids = @session_ids,
+           epic_ids = @epic_ids,
+           enabled = @enabled,
+           meta = @meta,
+           updated_at = datetime('now')
+       WHERE project_id = @project_id AND id = @id`,
+    ),
+    markDeploymentEnvReleaseGateFired: db.prepare(
+      `UPDATE deployment_env_release_gate
+       SET status = 'fired',
+           fired_deployment_id = @fired_deployment_id,
+           last_error = NULL,
+           resolved_at = datetime('now'),
+           updated_at = datetime('now')
+       WHERE project_id = @project_id AND id = @id AND status = 'armed'`,
+    ),
+    markDeploymentEnvReleaseGateFailed: db.prepare(
+      `UPDATE deployment_env_release_gate
+       SET status = 'failed',
+           last_error = @last_error,
+           resolved_at = datetime('now'),
+           updated_at = datetime('now')
+       WHERE project_id = @project_id AND id = @id AND status = 'armed'`,
+    ),
+    getDeploymentEnvReleaseGate: db.prepare(
+      'SELECT * FROM deployment_env_release_gate WHERE project_id = ? AND id = ?',
+    ),
+    listDeploymentEnvReleaseGatesForProject: db.prepare(
+      `SELECT * FROM deployment_env_release_gate WHERE project_id = ?
+       ORDER BY environment_name ASC, created_at DESC`,
+    ),
+    listDeploymentEnvReleaseGatesForEnvironment: db.prepare(
+      `SELECT * FROM deployment_env_release_gate WHERE project_id = ? AND environment_name = ?
+       ORDER BY created_at DESC`,
+    ),
+    listActiveDeploymentEnvReleaseGates: db.prepare(
+      `SELECT * FROM deployment_env_release_gate WHERE status = 'armed' AND enabled = 1
+       ORDER BY project_id ASC, environment_name ASC, created_at ASC`,
+    ),
+    deleteDeploymentEnvReleaseGate: db.prepare(
+      'DELETE FROM deployment_env_release_gate WHERE project_id = ? AND id = ?',
     ),
     // Per-environment notification routing (notification-routing phase). At most
     // one row per (project, env); upsert applies operator edits without

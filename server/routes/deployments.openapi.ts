@@ -126,6 +126,30 @@ export const NotificationRoutingUpdateRequestSchema = z
     message: 'At least one field is required.',
   });
 
+const RELEASE_GATE_REF_MAX = 255;
+const RELEASE_GATE_MAX_SELECTIONS = 100;
+const releaseGateIdList = z.array(z.string().trim().min(1)).max(RELEASE_GATE_MAX_SELECTIONS);
+
+export const CreateDeployReleaseGateRequestSchema = z.object({
+  ref: z.string().trim().min(1).max(RELEASE_GATE_REF_MAX).nullable().optional(),
+  sessionIds: releaseGateIdList.optional(),
+  epicIds: releaseGateIdList.optional(),
+  enabled: z.boolean().optional(),
+  meta: z.unknown().optional(),
+});
+
+export const UpdateDeployReleaseGateRequestSchema = z
+  .object({
+    ref: z.string().trim().min(1).max(RELEASE_GATE_REF_MAX).nullable().optional(),
+    sessionIds: releaseGateIdList.optional(),
+    epicIds: releaseGateIdList.optional(),
+    enabled: z.boolean().optional(),
+    meta: z.unknown().optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, {
+    message: 'At least one field is required.',
+  });
+
 export const AdjustDeploymentReleaseItemRequestSchema = z.object({
   inclusionStatus: z.enum(['included', 'excluded']),
   reason: z.string().trim().min(1).max(2000),
@@ -450,6 +474,71 @@ const DeployScheduleDeleteResponseSchema = registerComponent(
   z.object({ removed: z.boolean() }),
 );
 
+const ReleaseGateSelectionStatusSchema = registerComponent(
+  'ReleaseGateSelectionStatus',
+  z.object({
+    id: z.string(),
+    state: z.enum(['complete', 'pending', 'missing']),
+  }),
+);
+
+const ReleaseGateProgressSchema = registerComponent(
+  'ReleaseGateProgress',
+  z.object({
+    sessions: z.array(ReleaseGateSelectionStatusSchema),
+    epics: z.array(ReleaseGateSelectionStatusSchema),
+    sessionsComplete: z.number().int(),
+    sessionsTotal: z.number().int(),
+    epicsComplete: z.number().int(),
+    epicsTotal: z.number().int(),
+    /** Any selected session/epic no longer exists → the gate can never fire. */
+    blocked: z.boolean(),
+    /** All selections complete → ready to fire (armed gates only). */
+    satisfied: z.boolean(),
+  }),
+);
+
+const DeployReleaseGateSchema = registerComponent(
+  'DeployReleaseGate',
+  z.object({
+    id: z.string(),
+    projectId: z.string(),
+    environmentName: z.string(),
+    ref: z.string(),
+    sessionIds: z.array(z.string()),
+    epicIds: z.array(z.string()),
+    ownerUserId: z.string().nullable(),
+    status: z.enum(['armed', 'fired', 'failed']),
+    enabled: z.boolean(),
+    firedDeploymentId: z.string().nullable(),
+    lastError: z.string().nullable(),
+    resolvedAt: z.string().nullable(),
+    progress: ReleaseGateProgressSchema,
+    meta: z.unknown().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+);
+
+const DeployReleaseGateListResponseSchema = registerComponent(
+  'DeployReleaseGateListResponse',
+  z.object({
+    projectId: z.string(),
+    environmentName: z.string(),
+    gates: z.array(DeployReleaseGateSchema),
+  }),
+);
+
+const DeployReleaseGateResponseSchema = registerComponent(
+  'DeployReleaseGateResponse',
+  z.object({ gate: DeployReleaseGateSchema }),
+);
+
+const DeployReleaseGateDeleteResponseSchema = registerComponent(
+  'DeployReleaseGateDeleteResponse',
+  z.object({ removed: z.boolean() }),
+);
+
 const NotificationRoutingSchema = registerComponent(
   'NotificationRouting',
   z.object({
@@ -565,6 +654,11 @@ const deployScheduleParams = z.object({
   projectId: z.string(),
   environmentName: z.string(),
   scheduleId: z.string(),
+});
+const deployReleaseGateParams = z.object({
+  projectId: z.string(),
+  environmentName: z.string(),
+  gateId: z.string(),
 });
 const deploymentParams = z.object({ projectId: z.string(), deploymentId: z.string() });
 const deploymentReleaseItemParams = z.object({
@@ -832,6 +926,84 @@ registerPath({
     },
     403: errorResponse('Admin role required.'),
     404: errorResponse('Project or schedule not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/release-gates',
+  tags: ['Deployments'],
+  summary: 'List release gates for an environment',
+  description:
+    'Operator-editable one-shot release gates keyed by (project, environment). A gate fires a single deployment once every selected session is merged AND every selected epic is done, then is consumed (status → fired). Each gate carries live completion `progress`. Gates whose environment was removed from deploy.yaml are retained and listed (they never fire).',
+  request: { params: environmentParams },
+  responses: {
+    200: {
+      description: 'Release gates for the environment.',
+      content: jsonContent(DeployReleaseGateListResponseSchema),
+    },
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/release-gates',
+  tags: ['Deployments'],
+  summary: 'Create a release gate for an environment',
+  description:
+    'Admin+. Creates a one-shot release gate without a commit. The gate must watch at least one session or epic. The environment must be declared in deploy.yaml or already have a runtime config row; an unknown environment name is 404. The deployment fires under the creating caller identity, with ref defaulting to `main`.',
+  request: {
+    params: environmentParams,
+    body: { content: jsonContent(CreateDeployReleaseGateRequestSchema) },
+  },
+  responses: {
+    201: {
+      description: 'Created release gate.',
+      content: jsonContent(DeployReleaseGateResponseSchema),
+    },
+    400: errorResponse('Invalid body or deploy.yaml.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or environment not found.'),
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/release-gates/{gateId}',
+  tags: ['Deployments'],
+  summary: 'Update a release gate',
+  description:
+    'Admin+. Partial update of an armed gate: omitted fields keep their current value. The owner identity and lifecycle status are fixed. A fired/failed gate is terminal (retry by delete + recreate). The gate must still watch at least one session or epic.',
+  request: {
+    params: deployReleaseGateParams,
+    body: { content: jsonContent(UpdateDeployReleaseGateRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Updated release gate.',
+      content: jsonContent(DeployReleaseGateResponseSchema),
+    },
+    400: errorResponse('Invalid body.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or gate not found.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/release-gates/{gateId}',
+  tags: ['Deployments'],
+  summary: 'Delete a release gate',
+  description: 'Admin+. Removes the gate row (the way to cancel a pending release).',
+  request: { params: deployReleaseGateParams },
+  responses: {
+    200: {
+      description: 'Deletion result.',
+      content: jsonContent(DeployReleaseGateDeleteResponseSchema),
+    },
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or gate not found.'),
   },
 });
 

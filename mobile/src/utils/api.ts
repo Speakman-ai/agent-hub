@@ -600,6 +600,18 @@ export const api = {
     deleteDeploySchedule: (projectId: any, environmentName: any, scheduleId: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/schedules/${scheduleId}`, {
         method: 'DELETE',
     }),
+    listDeployReleaseGates: (projectId: any, environmentName: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/release-gates`),
+    createDeployReleaseGate: (projectId: any, environmentName: any, body: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/release-gates`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }),
+    updateDeployReleaseGate: (projectId: any, environmentName: any, gateId: any, body: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/release-gates/${gateId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+    }),
+    deleteDeployReleaseGate: (projectId: any, environmentName: any, gateId: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/release-gates/${gateId}`, {
+        method: 'DELETE',
+    }),
     getNotificationRouting: (projectId: any, environmentName: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/notification-routing`),
     updateNotificationRouting: (projectId: any, environmentName: any, body: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/notification-routing`, {
         method: 'PUT',

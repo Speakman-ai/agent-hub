@@ -228,6 +228,7 @@ import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
 import { maybeRunDeployTriggers } from './deploy/deploy-trigger-hook.js';
 import { initDeploySchedules } from './deploy/deploy-schedule-ticker.js';
+import { initReleaseGates, requestReleaseGateSweep } from './deploy/release-gate-ticker.js';
 import { initEpicStartSchedules } from './autonomous-start-schedule.js';
 import createReleaseNotificationSettingsRoutes from './routes/release-notification-settings.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
@@ -844,6 +845,10 @@ const nativePr = createNativePrService({
       config,
       findProject,
     });
+    // A merge may have completed the last session/epic a release gate is waiting
+    // on — nudge an off-cadence sweep so the gate fires promptly (the minute
+    // sweep is the backstop).
+    requestReleaseGateSweep('base-branch-moved');
     await notifyMirrorPush(project, [`refs/heads/${baseBranch}`], { broadcast });
   },
   // PR head changed (created or reused with a new sha): if Finalize
@@ -2747,6 +2752,14 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       initDeploySchedules({ broadcast, config, findProject });
     } catch (e) {
       console.error('[deploy-schedule] init on boot', (e as Error).message);
+    }
+
+    // Register the once-a-minute release-gate sweep so one-shot gates fire when
+    // their sessions/epics complete. Same broadcast/config/findProject wiring.
+    try {
+      initReleaseGates({ broadcast, config, findProject });
+    } catch (e) {
+      console.error('[release-gate] init on boot', (e as Error).message);
     }
 
     // Register node-cron tasks for every enabled scheduled epic start so a

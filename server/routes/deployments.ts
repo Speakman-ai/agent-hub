@@ -10,6 +10,7 @@ import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import type {
   Agent,
   DeploymentApprovalRow,
+  DeploymentEnvironmentReleaseGateRow,
   DeploymentEnvironmentScheduleRow,
   DeploymentEnvironmentTriggerRow,
   DeploymentReleaseItemDetailRow,
@@ -73,6 +74,22 @@ import {
   unregisterSchedule,
 } from '../deploy/deploy-schedule-ticker.js';
 import {
+  createReleaseGate,
+  deleteReleaseGate,
+  DeployReleaseGateError,
+  listReleaseGatesForEnvironment,
+  parseGateEpicIds,
+  parseGateSessionIds,
+  updateReleaseGate,
+} from '../deploy/deployment-release-gate-store.js';
+import {
+  buildReleaseGateResolvers,
+  evaluateReleaseGate,
+  type ReleaseGateResolvers,
+} from '../deploy/release-gate-evaluator.js';
+import { requestReleaseGateSweep } from '../deploy/release-gate-ticker.js';
+import { getStmts } from '../db.js';
+import {
   resolveNotificationRouting,
   upsertNotificationRouting,
 } from '../deploy/deployment-notification-routing-store.js';
@@ -93,6 +110,7 @@ import {
   AdjustDeploymentReleaseItemRequestSchema,
   ApproveDeploymentRequestSchema,
   CancelDeploymentRequestSchema,
+  CreateDeployReleaseGateRequestSchema,
   CreateDeployScheduleRequestSchema,
   CreateDeployTriggerRequestSchema,
   DeploymentListQuerySchema,
@@ -100,6 +118,7 @@ import {
   NotificationRoutingUpdateRequestSchema,
   RollbackDeploymentRequestSchema,
   TriggerDeploymentRequestSchema,
+  UpdateDeployReleaseGateRequestSchema,
   UpdateDeployScheduleRequestSchema,
   UpdateDeployTriggerRequestSchema,
 } from './deployments.openapi.js';
@@ -683,6 +702,51 @@ function mapScheduleStoreError(err: unknown, res: Response): Response {
   return res.status(500).json({ error: message });
 }
 
+function releaseGateDto(
+  row: DeploymentEnvironmentReleaseGateRow,
+  resolvers: ReleaseGateResolvers,
+): Record<string, unknown> {
+  // Only armed gates carry a live "satisfied" meaning; a fired/failed gate's
+  // progress is a historical snapshot, so surface `satisfied: false` for those.
+  const evaluation = evaluateReleaseGate(row, resolvers);
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    environmentName: row.environment_name,
+    ref: row.ref,
+    sessionIds: parseGateSessionIds(row),
+    epicIds: parseGateEpicIds(row),
+    ownerUserId: row.owner_user_id,
+    status: row.status,
+    enabled: row.enabled === 1,
+    firedDeploymentId: row.fired_deployment_id,
+    lastError: row.last_error,
+    resolvedAt: row.resolved_at,
+    progress: {
+      sessions: evaluation.sessions,
+      epics: evaluation.epics,
+      sessionsComplete: evaluation.sessionsComplete,
+      sessionsTotal: evaluation.sessionsTotal,
+      epicsComplete: evaluation.epicsComplete,
+      epicsTotal: evaluation.epicsTotal,
+      blocked: evaluation.blocked,
+      satisfied: row.status === 'armed' && row.enabled === 1 && evaluation.satisfied,
+    },
+    meta: parseMeta(row.meta),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapReleaseGateStoreError(err: unknown, res: Response): Response {
+  if (err instanceof DeployReleaseGateError) {
+    if (err.reason === 'not_found') return res.status(404).json({ error: err.message });
+    return res.status(400).json({ error: err.message });
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return res.status(500).json({ error: message });
+}
+
 function notificationRoutingDto(
   routing: ReturnType<typeof resolveNotificationRouting>,
 ): Record<string, unknown> {
@@ -1126,6 +1190,116 @@ export default function createDeploymentRoutes(
       }
       // Stop the running node-cron task so a deleted schedule stops firing.
       unregisterSchedule(scheduleId);
+      return res.json({ removed: true });
+    },
+  );
+
+  // ----- Per-environment release gates (release-gate decision) ---------------
+  // Operator-editable one-shot gates that fire a single deployment once their
+  // selected sessions are all merged AND their selected epics are all done. The
+  // list read evaluates live completion progress against the current DB state.
+
+  router.get(
+    '/api/projects/:projectId/deploy/environments/:environmentName/release-gates',
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const resolvers = buildReleaseGateResolvers(getStmts());
+      const gates = listReleaseGatesForEnvironment(projectId, environmentName).map((row) =>
+        releaseGateDto(row, resolvers),
+      );
+      return res.json({ projectId, environmentName, gates });
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/deploy/environments/:environmentName/release-gates',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = CreateDeployReleaseGateRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        // Guard against typos the same way the trigger/schedule POSTs do: the env
+        // must be declared in deploy.yaml OR already have a runtime config row.
+        const gate = await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+          const declared = declaredEnvironmentNames(config);
+          const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
+          if (!declared.has(environmentName) && !hasConfigRow) {
+            throw new DeployConfigError(
+              'unknown_environment',
+              `Unknown environment: ${environmentName}`,
+            );
+          }
+          return createReleaseGate({
+            projectId,
+            environmentName,
+            ref: parsed.data.ref,
+            sessionIds: parsed.data.sessionIds,
+            epicIds: parsed.data.epicIds,
+            // The fired deployment spawns under the creator's identity.
+            ownerUserId: actorUserId(req as AuthenticatedRequest),
+            enabled: parsed.data.enabled,
+            meta: parsed.data.meta,
+          });
+        });
+        // A newly-created gate may already be satisfied (all selections already
+        // complete) — nudge an off-cadence sweep so it fires without waiting.
+        requestReleaseGateSweep('gate-created');
+        const resolvers = buildReleaseGateResolvers(getStmts());
+        return res.status(201).json({ gate: releaseGateDto(gate, resolvers) });
+      } catch (err) {
+        if (err instanceof DeployConfigError) return mapConfigError(err, res);
+        if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+        return mapReleaseGateStoreError(err, res);
+      }
+    },
+  );
+
+  router.patch(
+    '/api/projects/:projectId/deploy/environments/:environmentName/release-gates/:gateId',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const gateId = req.params.gateId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = UpdateDeployReleaseGateRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        const updated = updateReleaseGate(projectId, gateId, parsed.data);
+        if (!updated) return res.status(404).json({ error: 'Release gate not found' });
+        // Re-enabling or re-scoping a gate may make it fire — nudge a sweep.
+        requestReleaseGateSweep('gate-updated');
+        const resolvers = buildReleaseGateResolvers(getStmts());
+        return res.json({ gate: releaseGateDto(updated, resolvers) });
+      } catch (err) {
+        return mapReleaseGateStoreError(err, res);
+      }
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/deploy/environments/:environmentName/release-gates/:gateId',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const gateId = req.params.gateId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      if (!deleteReleaseGate(projectId, gateId)) {
+        return res.status(404).json({ error: 'Release gate not found' });
+      }
       return res.json({ removed: true });
     },
   );

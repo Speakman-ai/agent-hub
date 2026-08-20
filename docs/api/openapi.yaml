@@ -4636,6 +4636,144 @@ components:
           type: boolean
       required:
         - removed
+    ReleaseGateSelectionStatus:
+      type: object
+      properties:
+        id:
+          type: string
+        state:
+          type: string
+          enum:
+            - complete
+            - pending
+            - missing
+      required:
+        - id
+        - state
+    ReleaseGateProgress:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseGateSelectionStatus"
+        epics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseGateSelectionStatus"
+        sessionsComplete:
+          type: integer
+        sessionsTotal:
+          type: integer
+        epicsComplete:
+          type: integer
+        epicsTotal:
+          type: integer
+        blocked:
+          type: boolean
+        satisfied:
+          type: boolean
+      required:
+        - sessions
+        - epics
+        - sessionsComplete
+        - sessionsTotal
+        - epicsComplete
+        - epicsTotal
+        - blocked
+        - satisfied
+    DeployReleaseGate:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        environmentName:
+          type: string
+        ref:
+          type: string
+        sessionIds:
+          type: array
+          items:
+            type: string
+        epicIds:
+          type: array
+          items:
+            type: string
+        ownerUserId:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - armed
+            - fired
+            - failed
+        enabled:
+          type: boolean
+        firedDeploymentId:
+          type: string
+          nullable: true
+        lastError:
+          type: string
+          nullable: true
+        resolvedAt:
+          type: string
+          nullable: true
+        progress:
+          $ref: "#/components/schemas/ReleaseGateProgress"
+        meta:
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - projectId
+        - environmentName
+        - ref
+        - sessionIds
+        - epicIds
+        - ownerUserId
+        - status
+        - enabled
+        - firedDeploymentId
+        - lastError
+        - resolvedAt
+        - progress
+        - createdAt
+        - updatedAt
+    DeployReleaseGateListResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        environmentName:
+          type: string
+        gates:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeployReleaseGate"
+      required:
+        - projectId
+        - environmentName
+        - gates
+    DeployReleaseGateResponse:
+      type: object
+      properties:
+        gate:
+          $ref: "#/components/schemas/DeployReleaseGate"
+      required:
+        - gate
+    DeployReleaseGateDeleteResponse:
+      type: object
+      properties:
+        removed:
+          type: boolean
+      required:
+        - removed
     NotificationRouting:
       type: object
       properties:
@@ -25418,6 +25556,218 @@ paths:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
         "404":
           description: Project or schedule not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/environments/{environmentName}/release-gates:
+    get:
+      tags:
+        - Deployments
+      summary: List release gates for an environment
+      description: Operator-editable one-shot release gates keyed by (project, environment). A gate fires a single deployment once every selected session is merged AND every selected epic is done, then is consumed (status → fired). Each gate carries live completion `progress`. Gates whose environment was removed from deploy.yaml are retained and listed (they never fire).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+      responses:
+        "200":
+          description: Release gates for the environment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployReleaseGateListResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    post:
+      tags:
+        - Deployments
+      summary: Create a release gate for an environment
+      description: Admin+. Creates a one-shot release gate without a commit. The gate must watch at least one session or epic. The environment must be declared in deploy.yaml or already have a runtime config row; an unknown environment name is 404. The deployment fires under the creating caller identity, with ref defaulting to `main`.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ref:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 255
+                sessionIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  maxItems: 100
+                epicIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  maxItems: 100
+                enabled:
+                  type: boolean
+                meta:
+                  nullable: true
+      responses:
+        "201":
+          description: Created release gate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployReleaseGateResponse"
+        "400":
+          description: Invalid body or deploy.yaml.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/environments/{environmentName}/release-gates/{gateId}:
+    patch:
+      tags:
+        - Deployments
+      summary: Update a release gate
+      description: "Admin+. Partial update of an armed gate: omitted fields keep their current value. The owner identity and lifecycle status are fixed. A fired/failed gate is terminal (retry by delete + recreate). The gate must still watch at least one session or epic."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: gateId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ref:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 255
+                sessionIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  maxItems: 100
+                epicIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  maxItems: 100
+                enabled:
+                  type: boolean
+                meta:
+                  nullable: true
+      responses:
+        "200":
+          description: Updated release gate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployReleaseGateResponse"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or gate not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    delete:
+      tags:
+        - Deployments
+      summary: Delete a release gate
+      description: Admin+. Removes the gate row (the way to cancel a pending release).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: gateId
+          in: path
+      responses:
+        "200":
+          description: Deletion result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployReleaseGateDeleteResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or gate not found.
           content:
             application/json:
               schema:
