@@ -246,6 +246,7 @@ import {
 import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentColor';
 import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLive';
 import { deriveSessionState } from './utils/deriveSessionState';
+import { resolveDeepLinkTarget, upsertSessionRow } from './utils/sessionDeepLinkTarget';
 import { deriveSessionTimelineMarkers } from '@shared/utils/sessionTimeline';
 
 /**
@@ -3739,7 +3740,7 @@ export default function App({ initialView }: any = {}) {
 
     api
       .getSessions(agentId)
-      .then((data: any) => {
+      .then(async (data: any) => {
         if (cancelled) return;
         setSessions(data);
         setLoadedSessionsAgentId(agentId);
@@ -3801,9 +3802,32 @@ export default function App({ initialView }: any = {}) {
         } catch {
           /* storage disabled — ignore */
         }
-        const target = targetSessionId
-          ? data.find((s: any) => s.id === targetSessionId) || remembered || data[0]
-          : remembered || data[0];
+        const { target: fallbackTarget, deepLinkFetchId } = resolveDeepLinkTarget(
+          data,
+          targetSessionId,
+          remembered,
+        );
+        let target = fallbackTarget;
+        // Deep-linked to a session the owner-only list omits (e.g. a dashboard
+        // admin click-through into another user's session). Fetch it by id —
+        // the server read-gate lets org admins view it — and select it instead
+        // of snapping back to one of the caller's own sessions. Falls back to
+        // `fallbackTarget` when the read is denied (non-admin caller).
+        if (deepLinkFetchId) {
+          const foreign = await api.getSession(deepLinkFetchId).catch(() => null);
+          if (cancelled) return;
+          if (foreign?.id) {
+            // Merge the single fetched row so `sessions.find(activeSessionId)`
+            // resolves its engine/model/reasoning-effort and the top bar shows
+            // its title. This surfaces exactly one foreign row — the session the
+            // user explicitly opened — in an otherwise owner-only sidebar; it is
+            // not enumeration (the list endpoint is still owner-only). Writes to
+            // it are rejected server-side (owner-only `userOwnsSession`), so the
+            // view stays read-only regardless of what the composer renders.
+            setSessions((prev: any) => upsertSessionRow(prev, foreign));
+            target = foreign;
+          }
+        }
 
         if (target) {
           setActiveSessionId(target.id);

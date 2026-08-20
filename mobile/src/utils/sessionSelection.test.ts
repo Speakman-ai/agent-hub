@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { selectSessionToActivate } from './sessionSelection';
+import { selectSessionToActivate, deepLinkFetchId, upsertSessionRow } from './sessionSelection';
 // Regression tests for the handoff "Open session" race:
 //   handleOpenHandoffSession sets `activeAgentId` + `activeSessionId`
 //   optimistically, but the agent-change sessions-load effect would
@@ -43,5 +43,38 @@ describe('selectSessionToActivate', () => {
     it('skips null entries in the sessions list gracefully', () => {
         const noisy = [null, middle, oldest];
         expect(selectSessionToActivate(noisy, 'middle')).toBe(middle);
+    });
+});
+// Dashboard admin click-through: tapping a session you don't own must open it
+// by id rather than snapping to your newest owned session.
+describe('deepLinkFetchId', () => {
+    const owned = [{ id: 'mine-1' }, { id: 'mine-2' }];
+    it('returns null when no target was requested', () => {
+        expect(deepLinkFetchId(owned, null)).toBeNull();
+        expect(deepLinkFetchId(owned, undefined)).toBeNull();
+    });
+    it('returns null when the target is already in the owned list', () => {
+        expect(deepLinkFetchId(owned, 'mine-2')).toBeNull();
+    });
+    it('returns the target id when it is not in the owned list (non-owned deep-link)', () => {
+        expect(deepLinkFetchId(owned, 'kevins-session')).toBe('kevins-session');
+    });
+    it('signals a fetch even when the caller owns no sessions for the agent', () => {
+        expect(deepLinkFetchId([], 'kevins-session')).toBe('kevins-session');
+    });
+});
+describe('upsertSessionRow', () => {
+    it('prepends a new deep-linked row', () => {
+        const out = upsertSessionRow([{ id: 'a' }], { id: 'b', engine: 'claude-code' });
+        expect(out.map((s) => s.id)).toEqual(['b', 'a']);
+    });
+    it('replaces an existing row in place', () => {
+        const out = upsertSessionRow([{ id: 'a', model: 'old' }, { id: 'b' }], { id: 'a', model: 'new' });
+        expect(out.map((s) => s.id)).toEqual(['a', 'b']);
+        expect(out[0].model).toBe('new');
+    });
+    it('ignores a row without an id', () => {
+        const list = [{ id: 'a' }];
+        expect(upsertSessionRow(list, null)).toBe(list);
     });
 });

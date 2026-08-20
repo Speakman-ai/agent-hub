@@ -41,3 +41,37 @@ export function selectSessionToActivate(sessions: any, targetSessionId: any) {
     }
     return sessions[0];
 }
+
+/**
+ * Decide whether a deep-linked target should be fetched by id.
+ *
+ * The drawer session list (`GET /agents/:agentId/sessions`) is owner-only, so
+ * a session the caller does not own — e.g. an org admin tapping another user's
+ * row in the dashboard Active-sessions panel — is absent from `sessions`. The
+ * server read-gate still lets an admin READ it by id, so when a target is
+ * requested but missing from the owned list we return its id for a direct
+ * fetch instead of silently snapping to the newest owned session.
+ *
+ * @returns The target session id to fetch directly, or null when the target
+ *     is either owned (already in the list) or absent.
+ */
+export function deepLinkFetchId(sessions: any, targetSessionId: any) {
+    if (!targetSessionId)
+        return null;
+    const list = Array.isArray(sessions) ? sessions : [];
+    const owned = list.some((s: any) => s && s.id === targetSessionId);
+    return owned ? null : targetSessionId;
+}
+
+/** Insert or replace a session row by id, keeping list order stable. */
+export function upsertSessionRow(list: any, row: any) {
+    const arr = Array.isArray(list) ? list : [];
+    if (!row || !row.id)
+        return arr;
+    const idx = arr.findIndex((s: any) => s && s.id === row.id);
+    if (idx === -1)
+        return [row, ...arr];
+    const next = arr.slice();
+    next[idx] = row;
+    return next;
+}

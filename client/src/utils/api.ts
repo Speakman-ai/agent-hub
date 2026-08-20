@@ -1461,6 +1461,12 @@ export const api = {
   // Agents & Sessions
   getAgents: () => fetchJSON<AgentWire[]>('/agents'),
   getSessions: (agentId: string) => fetchJSON<SessionWire[]>(`/agents/${agentId}/sessions`),
+  /**
+   * Fetch a single session by id. The server read-gate is permissive (org
+   * admins may read non-owned sessions), so this resolves a dashboard
+   * deep-link to another user's session that the owner-only list omits.
+   */
+  getSession: (sessionId: string) => fetchJSON<SessionWire>(`/sessions/${sessionId}`),
   createSession: (
     agentId: string,
     name?: string,

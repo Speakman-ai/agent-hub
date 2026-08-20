@@ -11,7 +11,7 @@ import { hydrateChangesReady } from '../utils/changesReady';
 import { applyDetectedFlag } from '../utils/worktreeState';
 import { isWorkflowProject } from '../utils/project-mode';
 import { isSessionConsultModeEnabled } from '../utils/sessionDerivedState';
-import { selectSessionToActivate } from '../utils/sessionSelection';
+import { selectSessionToActivate, deepLinkFetchId, upsertSessionRow } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread, isRetiredHeartbeatThread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
@@ -1279,13 +1279,24 @@ export function AppProvider({ children }: any) {
         // Mirror of the web client's logic in `client/src/App.jsx:1277-1304`.
         const targetSessionId = pendingSessionIdRef.current;
         pendingSessionIdRef.current = null;
+        // Guard against a stale async continuation: if the user switches agents
+        // while the sessions list (or the deep-link fetch below) is in flight,
+        // the resolved `.then` must not stomp state for the newer agent. Mirror
+        // of the web client's `cancelled` flag in `client/src/App.tsx`.
+        let cancelled = false;
         // Fetch archived (soft-deleted) sessions in parallel so the drawer's
         // Archived section is populated at the same moment the live list lands.
         api
             .getArchivedSessions(activeAgentId)
-            .then((rows: any) => setArchivedSessions(Array.isArray(rows) ? rows : []))
-            .catch(() => setArchivedSessions([]));
-        api.getSessions(activeAgentId).then((data: any) => {
+            .then((rows: any) => {
+                if (cancelled) return;
+                setArchivedSessions(Array.isArray(rows) ? rows : []);
+            })
+            .catch(() => {
+                if (!cancelled) setArchivedSessions([]);
+            });
+        api.getSessions(activeAgentId).then(async (data: any) => {
+            if (cancelled) return;
             setSessions(data);
             // Hydrate the changes_ready banner state from persisted session rows so
             // the "Create PR" button survives page refreshes / reconnects. Merge
@@ -1305,7 +1316,27 @@ export function AppProvider({ children }: any) {
             }
             // Honor an explicitly requested target session (kanban assign, handoff
             // "Open session" tap, etc.) instead of defaulting to the newest row.
-            const target = selectSessionToActivate(data, targetSessionId);
+            let target = selectSessionToActivate(data, targetSessionId);
+            // Deep-linked to a session the owner-only list omits (dashboard admin
+            // click-through into another user's session). Fetch it by id — the
+            // server read-gate lets org admins view it — and select it instead of
+            // snapping to the caller's newest owned session. Falls back to `target`
+            // when the read is denied (non-admin caller).
+            const fetchId = deepLinkFetchId(data, targetSessionId);
+            if (fetchId) {
+                const foreign = await api.getSession(fetchId).catch(() => null);
+                if (cancelled) return;
+                if (foreign && foreign.id) {
+                    // Merge the single fetched row so downstream lookups resolve
+                    // its engine/model and the top bar shows its title. This
+                    // surfaces exactly one foreign row — the session the user
+                    // explicitly opened — not an enumeration (the list endpoint
+                    // stays owner-only). Writes are rejected server-side, so the
+                    // view is read-only.
+                    setSessions((prev: any) => upsertSessionRow(prev, foreign));
+                    target = foreign;
+                }
+            }
             if (target) {
                 setActiveSessionId(target.id);
                 const agent = agents.find((a: any) => a.id === activeAgentId);
@@ -1323,7 +1354,12 @@ export function AppProvider({ children }: any) {
                 setSessionConsultMode(false);
                 setSessionReasoningEffort('high');
             }
-        }).catch((err: any) => console.error('Failed to load sessions:', err));
+        }).catch((err: any) => {
+            if (!cancelled) console.error('Failed to load sessions:', err);
+        });
+        return () => {
+            cancelled = true;
+        };
     }, [configReady, activeAgentId, modelConfig]);
     useEffect(() => {
         if (!configReady || !getApiBaseUrl())
