@@ -71,6 +71,59 @@ describe('composeDispatchBody', () => {
     expect(body.endsWith(`\n${DISPATCH_TRAILER_REVIEWER}`)).toBe(true);
   });
 
+  it('renders the root-cause escalation preamble + prior-round findings when a cluster recurs', () => {
+    const threads: ReviewerThreadRow[] = [
+      {
+        id: 't1',
+        run_id: 'r1',
+        file_path: 'server/dxf.ts',
+        line_start: 200,
+        line_end: 200,
+        body: '**[6/10]** ASCALE hydrate does not bump the generation.',
+        author: 'reviewer-agent',
+        created_at: 1,
+      },
+    ];
+    const body = composeDispatchBody({
+      reviewerVerdict: 'changes_requested',
+      reviewerThreads: threads,
+      rootCauseEscalation: {
+        clusters: ['server/dxf.ts'],
+        rounds: 2,
+        priorFindings: ['- round 1: server/dxf.ts:100 — stale setScale tap wins the race'],
+      },
+    });
+    expect(body).toContain('Root-cause escalation:');
+    expect(body).toContain('server/dxf.ts');
+    expect(body).toContain('2 rounds running');
+    expect(body).toContain('fix the root cause');
+    // Prior-round findings are surfaced so the fixer sees the whole pattern.
+    expect(body).toContain('Earlier rounds flagged the same area:');
+    expect(body).toContain('round 1: server/dxf.ts:100 — stale setScale tap');
+    // Escalation preamble precedes the current round's notes.
+    expect(body.indexOf('Root-cause escalation:')).toBeLessThan(body.indexOf('Reviewer notes:'));
+    expect(body.endsWith(`\n${DISPATCH_TRAILER_REVIEWER}`)).toBe(true);
+  });
+
+  it('omits the escalation preamble when rootCauseEscalation is absent', () => {
+    const body = composeDispatchBody({
+      reviewerVerdict: 'changes_requested',
+      reviewerThreads: [
+        {
+          id: 't1',
+          run_id: 'r1',
+          file_path: 'server/foo.ts',
+          line_start: 1,
+          line_end: 1,
+          body: 'note',
+          author: 'reviewer-agent',
+          created_at: 1,
+        },
+      ],
+    });
+    expect(body).not.toContain('Root-cause escalation:');
+  });
+
   it('combines step failure + reviewer threads into one body', () => {
     const threads: ReviewerThreadRow[] = [
       {

@@ -48,7 +48,10 @@ import {
   planEngineFailover,
   buildEngineFailoverNotice,
   formatFailoverLogLine,
+  classifyEngineFailure,
+  type FailoverTrigger,
 } from '../engine-failover.js';
+import { ReviewerInfraStallError } from './reviewer-infra-stall.js';
 import {
   probeAllEngineAvailability,
   type EngineAvailability,
@@ -86,6 +89,35 @@ export const REVIEWER_TURN_TIMEOUT_MS_DEFAULT = 10 * 60 * 1000;
  * whole chain once but can never loop.
  */
 export const REVIEWER_FAILOVER_MAX_ATTEMPTS = 4;
+
+/**
+ * When the reviewer turn gives up, decide whether the underlying engine error
+ * is an INFRA failure (provider quota/auth exhaustion, or a wedged provider
+ * that only surfaces as a timeout). If so, wrap it as a {@link
+ * ReviewerInfraStallError} so `runReviewerDispatch` parks the run as
+ * `review_stalled` (not `review_failed`); otherwise return the raw error so a
+ * genuine reviewer bug still reads as `review_failed`.
+ *
+ * Used at every give-up site — the availability-probe hiccup, the
+ * no-engine-available planner verdict, and the defensive max-attempts exit —
+ * so an outage never leaks through one path as a code-side failure. (The
+ * no-engine-available branch has an exact `plan.trigger` and builds the stall
+ * directly; this classifies from the error text for the paths that don't.)
+ */
+function reviewerGiveUpError(err: unknown): unknown {
+  const text = err instanceof Error ? err.message : String(err);
+  const kind = classifyEngineFailure(text);
+  if (kind === 'usage-exhausted' || kind === 'engine-auth' || kind === 'transient') {
+    const trigger: FailoverTrigger =
+      kind === 'usage-exhausted'
+        ? 'usage-exhausted'
+        : kind === 'engine-auth'
+          ? 'engine-auth'
+          : 'transient-exhausted';
+    return new ReviewerInfraStallError(err, trigger);
+  }
+  return err;
+}
 
 export interface InSessionReviewerDeps {
   stmts: Pick<
@@ -435,7 +467,13 @@ export async function runReviewerTurn(
               probeErr instanceof Error ? probeErr.message : String(probeErr)
             }`,
           );
-          throw err;
+          // The probe itself hiccupped (likely part of the same outage), so we
+          // cannot know if a fallback exists — give up on this turn. Still
+          // classify the ORIGINAL turn error: a quota/timeout/auth failure here
+          // is an infra stall, not a code-side review failure. Otherwise the
+          // exact give-up path this hardening targets would leak as
+          // `review_failed` whenever a probe blip coincides with the outage.
+          throw reviewerGiveUpError(err);
         }
 
         // The reviewer spawn path (buildSessionMultiSpawnArgs) only knows how
@@ -453,10 +491,17 @@ export async function runReviewerTurn(
         });
 
         if (!plan.failover) {
-          // Not failover-worthy (a real reviewer bug, a permanent error), or a
-          // switch was warranted but nothing else is authenticated. Either way
-          // surface the original error so the orchestrator records
-          // `review_failed` as before.
+          // A switch WAS warranted (an infra cause: quota/auth/transient-
+          // exhausted) but every failover candidate is unavailable or already
+          // tried → the turn stalled on infrastructure, not on the code.
+          // Surface a typed stall so the orchestrator parks the run as
+          // `review_stalled` (status infra_error) with a user notice, instead
+          // of the code-implying `review_failed`.
+          if (plan.reason === 'no-engine-available' && plan.trigger) {
+            throw new ReviewerInfraStallError(err, plan.trigger);
+          }
+          // `not-failoverable` (a real reviewer bug / permanent error): surface
+          // the original error so the orchestrator records `review_failed`.
           throw err;
         }
 
@@ -499,8 +544,11 @@ export async function runReviewerTurn(
       // Defensive: planEngineFailover returns `no-engine-available` (and we
       // throw above) once the chain is spent, so the loop normally exits via a
       // throw. This only fires if MAX_ATTEMPTS is somehow reached with every
-      // attempt still failover-worthy.
-      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+      // attempt still failover-worthy — i.e. every attempt failed over on an
+      // infra cause. Classify the last error so an infra chain still parks as a
+      // stall rather than a code failure.
+      const lastErr = lastError instanceof Error ? lastError : new Error(String(lastError));
+      throw reviewerGiveUpError(lastErr);
     }
 
     // Parse the tail before persisting so JSON-only reviewer replies do

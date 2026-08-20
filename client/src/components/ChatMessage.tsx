@@ -28,6 +28,7 @@ import FinalizeRunSummaryBlock from './finalize/blocks/FinalizeRunSummaryBlock';
 import TurnChangeSummaryBlock from './finalize/blocks/TurnChangeSummaryBlock';
 import { parseTurnChangeSummaryMetadata } from '../utils/turnChangeSummary';
 import FinalizeTerminalBlock from './finalize/blocks/FinalizeTerminalBlock';
+import FinalizeReviewNoticeBlock from './finalize/blocks/FinalizeReviewNoticeBlock';
 import FinalizeFixDispatchBlock from './finalize/blocks/FinalizeFixDispatchBlock';
 
 function ImageLightbox({ src, alt, onClose }: any) {
@@ -445,6 +446,12 @@ function ChatMessage({
     }
     if (finalizeKind === 'finalize_fix_dispatch') {
       return <FinalizeFixDispatchBlock message={message} />;
+    }
+    if (
+      finalizeKind === 'finalize_review_stalled' ||
+      finalizeKind === 'finalize_review_not_converging'
+    ) {
+      return <FinalizeReviewNoticeBlock message={message} />;
     }
     if (parseShipRequestedMetadata(message.metadata)) {
       return <SystemShipRequestedMessage message={message} />;

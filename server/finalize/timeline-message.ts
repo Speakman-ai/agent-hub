@@ -18,6 +18,12 @@ export const FINALIZE_TIMELINE_KINDS = [
   'finalize_ready_to_push',
   'finalize_run_summary',
   'finalize_run_terminal',
+  // The reviewer step could not complete for an infra reason (engine timeout /
+  // quota / auth exhaustion) — parked as `review_stalled`, NOT a code problem.
+  'finalize_review_stalled',
+  // The review loop was escalated to a human after N consecutive
+  // `changes_requested` rounds (non-convergence) instead of grinding the budget.
+  'finalize_review_not_converging',
 ] as const;
 
 export type FinalizeTimelineKind = (typeof FINALIZE_TIMELINE_KINDS)[number];

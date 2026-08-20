@@ -56,6 +56,7 @@ import {
   type ReviewerLocalDiffInputs,
   type ReviewerRunResult,
 } from './reviewer-dispatch.js';
+import { ReviewerInfraStallError } from './reviewer-infra-stall.js';
 
 interface FakeStmts {
   getFinalizeRun: { get: ReturnType<typeof vi.fn> };
@@ -473,6 +474,103 @@ describe('runReviewerDispatch — driver failure', () => {
         failure_reason: 'review_failed',
       },
     ]);
+  });
+});
+
+describe('runReviewerDispatch — infra stall (review_stalled)', () => {
+  it('parks as review_stalled with infra_error status when the reviewer turn stalls on infrastructure', async () => {
+    const store: ThreadStoreState = { rows: [] };
+    const runner = vi
+      .fn<ReviewerDispatchDeps['runReviewer']>()
+      .mockRejectedValue(
+        new ReviewerInfraStallError(
+          new Error('reviewer turn timed out after 600000ms'),
+          'transient-exhausted',
+        ),
+      );
+    const broadcast = vi.fn();
+    const { deps, stmts } = makeDeps(store, runner, broadcast);
+
+    const outcome = await runReviewerDispatch(deps, {
+      runId: 'run-stall',
+      worktreePath: '/tmp/wt',
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind !== 'failed') throw new Error('unreachable');
+    // The whole point: an infra stall must NOT read as review_failed.
+    expect(outcome.failureReason).toBe('review_stalled');
+    expect(outcome.failureReason).not.toBe('review_failed');
+    expect(outcome.detail).toContain('transient-exhausted');
+    // Distinct terminal state: infra_error, not failed.
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith(
+      'infra_error',
+      'review_stalled',
+      'run-stall',
+    );
+
+    const phaseEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_phase_changed');
+    expect(phaseEvents).toContainEqual({
+      type: 'finalize_run_phase_changed',
+      run_id: 'run-stall',
+      phase: 'review',
+      status: 'infra_error',
+      failure_reason: 'review_stalled',
+    });
+  });
+
+  it.each([
+    ['usage-exhausted' as const],
+    ['engine-auth' as const],
+    ['transient-exhausted' as const],
+  ])('classifies a %s stall as review_stalled', async (trigger) => {
+    const store: ThreadStoreState = { rows: [] };
+    const runner = vi
+      .fn<ReviewerDispatchDeps['runReviewer']>()
+      .mockRejectedValue(new ReviewerInfraStallError(new Error('boom'), trigger));
+    const broadcast = vi.fn();
+    const { deps } = makeDeps(store, runner, broadcast);
+
+    const outcome = await runReviewerDispatch(deps, {
+      runId: `run-${trigger}`,
+      worktreePath: '/tmp/wt',
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+
+    if (outcome.kind !== 'failed') throw new Error('unreachable');
+    expect(outcome.failureReason).toBe('review_stalled');
+  });
+
+  it('still reports review_failed for a genuine (non-stall) reviewer error', async () => {
+    const store: ThreadStoreState = { rows: [] };
+    const runner = vi
+      .fn<ReviewerDispatchDeps['runReviewer']>()
+      .mockRejectedValue(new Error('reviewer ended without a parseable review verdict'));
+    const broadcast = vi.fn();
+    const { deps, stmts } = makeDeps(store, runner, broadcast);
+
+    const outcome = await runReviewerDispatch(deps, {
+      runId: 'run-badverdict',
+      worktreePath: '/tmp/wt',
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+
+    if (outcome.kind !== 'failed') throw new Error('unreachable');
+    expect(outcome.failureReason).toBe('review_failed');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith(
+      'failed',
+      'review_failed',
+      'run-badverdict',
+    );
   });
 });
 

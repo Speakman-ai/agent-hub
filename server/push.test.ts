@@ -449,6 +449,61 @@ describe('mapBroadcastToPush', () => {
     expect(pushed?.payload.data?.agentId).toBe('a2');
   });
 
+  it('maps a review_stalled / review_not_converging finalize run to an awaiting_feedback push', () => {
+    // Reuses the awaiting_feedback event (like AWS Health reuses infra_alert):
+    // the run paused and needs the user. The data.type discriminator keeps them
+    // apart; failure_reason drives the copy.
+    const stalled = mapBroadcastToPush({
+      type: 'finalize_run_completed',
+      status: 'infra_error',
+      failure_reason: 'review_stalled',
+      session_id: 's1',
+      agentId: 'a1',
+      sessionName: 'Ship',
+      run_id: 'r1',
+    });
+    expect(stalled?.event).toBe('awaiting_feedback');
+    expect(stalled?.payload.title).toMatch(/reviewer unavailable/i);
+    expect(stalled?.payload.data).toMatchObject({
+      sessionId: 's1',
+      agentId: 'a1',
+      runId: 'r1',
+      failureReason: 'review_stalled',
+    });
+
+    const notConverging = mapBroadcastToPush({
+      type: 'finalize_run_completed',
+      status: 'failed',
+      failure_reason: 'review_not_converging',
+      session_id: 's2',
+      run_id: 'r2',
+    });
+    expect(notConverging?.event).toBe('awaiting_feedback');
+    expect(notConverging?.payload.title).toMatch(/not converging/i);
+    expect(notConverging?.payload.data?.failureReason).toBe('review_not_converging');
+  });
+
+  it('does NOT push an ordinary finalize failure (only ready_to_push/pushed and the two review-pause reasons)', () => {
+    expect(
+      mapBroadcastToPush({
+        type: 'finalize_run_completed',
+        status: 'failed',
+        failure_reason: 'review_failed',
+        session_id: 's1',
+        run_id: 'r1',
+      }),
+    ).toBeNull();
+    expect(
+      mapBroadcastToPush({
+        type: 'finalize_run_completed',
+        status: 'failed',
+        failure_reason: 'step_failed',
+        session_id: 's1',
+        run_id: 'r1',
+      }),
+    ).toBeNull();
+  });
+
   it('maps support_ticket_created', () => {
     const r = mapBroadcastToPush({
       type: 'support_ticket_created',

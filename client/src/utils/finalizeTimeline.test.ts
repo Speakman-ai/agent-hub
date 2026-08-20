@@ -44,6 +44,17 @@ describe('finalizeTimeline utils', () => {
     expect(parseFinalizeTimelineKind(JSON.stringify({ kind: 'pr_created' }))).toBeNull();
   });
 
+  it('recognises the review-stall and non-convergence notice kinds', () => {
+    // Without these the server notices fall through to the generic italic
+    // system-message fallback instead of the Finalize timeline renderer.
+    expect(parseFinalizeTimelineKind(JSON.stringify({ kind: 'finalize_review_stalled' }))).toBe(
+      'finalize_review_stalled',
+    );
+    expect(
+      parseFinalizeTimelineKind(JSON.stringify({ kind: 'finalize_review_not_converging' })),
+    ).toBe('finalize_review_not_converging');
+  });
+
   it('parses a raw reviewer verdict JSON message for legacy timeline rows', () => {
     const meta = parseRawReviewVerdictContent(
       JSON.stringify({

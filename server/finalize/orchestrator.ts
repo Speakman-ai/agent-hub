@@ -75,6 +75,11 @@ import { runJobPhase } from './job-runner.js';
 import { reconcileFinalizeRunTerminalSteps } from './reconcile-terminal-steps.js';
 import type { FinalizeStepLogStore } from './finalize-log-store.js';
 import { dispatchFixMessage, type SpawnFixTurnFn } from './fix-dispatch.js';
+import {
+  computeRootCauseEscalation,
+  resolveRootCauseEscalationRounds,
+  type ReviewRoundFindings,
+} from './review-cluster-tracker.js';
 import type {
   CancelSignal,
   FixDispatchResult,
@@ -116,6 +121,7 @@ import {
   writeFinalizeRebaseResultTimeline,
   writeFinalizeRunStartedTimeline,
   writeFinalizeRunTerminalTimeline,
+  writeFinalizeTimelineMessage,
   type TimelineMessageDeps,
 } from './timeline-message.js';
 import { emitFinalizeRunSummary } from './run-summary.js';
@@ -201,6 +207,33 @@ export function resolveMaxSameShaReruns(): number {
     if (Number.isFinite(n) && n >= 0 && String(n) === raw) return n;
   }
   return DEFAULT_MAX_SAME_SHA_RERUNS;
+}
+
+/**
+ * How many CONSECUTIVE reviewer `changes_requested` rounds the fix loop will
+ * run before escalating to a human instead of dispatching yet another fix.
+ *
+ * A review loop that keeps returning fresh findings every round is not
+ * converging — the underlying change likely has a recurring/root-cause defect
+ * the per-line fix turns are only chipping at. Rather than grind the full
+ * active-time budget and die `review_failed` (which reads as "the agent gave
+ * up"), we stop at this threshold and hand it back with a `review_not_converging`
+ * notice naming the recurring cluster, so the human can intervene early.
+ *
+ * Default 3 (the third consecutive changes_requested round escalates, since the
+ * guard is `consecutiveChangesRequested >= 3`). Override with
+ * `FINALIZE_MAX_NONCONVERGENCE_ROUNDS` (integer ≥ 1; a value of 0/blank/invalid
+ * falls back to the default). Read at CALL time so ops/tests can tune it.
+ */
+export const DEFAULT_MAX_NONCONVERGENCE_ROUNDS = 3;
+
+export function resolveMaxNonConvergenceRounds(): number {
+  const raw = process.env.FINALIZE_MAX_NONCONVERGENCE_ROUNDS?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1 && String(n) === raw) return n;
+  }
+  return DEFAULT_MAX_NONCONVERGENCE_ROUNDS;
 }
 
 /**
@@ -944,6 +977,17 @@ export async function runFinalize(
     // ITERATION so a stale signal from a prior pass can never escape into
     // the push gate.
     let loopCount = 0;
+    // Consecutive reviewer `changes_requested` verdicts in this run. Reset to 0
+    // on an `approved` verdict; when it reaches `maxNonConvergenceRounds` we
+    // escalate to a human instead of dispatching another fix (non-convergence).
+    let consecutiveChangesRequested = 0;
+    const maxNonConvergenceRounds = resolveMaxNonConvergenceRounds();
+    // Per-round reviewer findings, accumulated in-memory for the life of this
+    // run's fix loop so the fix dispatch can detect a cluster that recurs
+    // across rounds and escalate to a root-cause fix. Cleared on an approved
+    // verdict (a fresh streak starts after any convergence).
+    const reviewClusterHistory: ReviewRoundFindings[] = [];
+    const rootCauseEscalationRounds = resolveRootCauseEscalationRounds();
     // Track the last reviewer + step signals so the combined gate doesn't
     // re-read state from the DB (which would race with the live row).
     let lastReviewerOutcome: ReviewerDispatchOutcome | null = null;
@@ -1622,6 +1666,66 @@ export async function runFinalize(
         lastReviewerOutcome.kind === 'success' &&
         lastReviewerOutcome.verdict === 'changes_requested';
 
+      // Track consecutive non-converging review rounds. A `changes_requested`
+      // verdict bumps the streak; an `approved` verdict resets it (the loop is
+      // converging). Only reviewer-verdict rounds move this — a CI-only
+      // re-dispatch leaves it untouched.
+      if (lastReviewerOutcome.kind === 'success') {
+        if (lastReviewerOutcome.verdict === 'changes_requested') {
+          consecutiveChangesRequested += 1;
+          // Capture this round's findings for cross-round root-cause detection.
+          // Read now (before the next review pass wipes the threads).
+          try {
+            const rows = deps.stmts.listReviewerThreadsForRun.all(runId) as Array<{
+              file_path?: string | null;
+              line_start?: number | null;
+              line_end?: number | null;
+              body?: string | null;
+            }>;
+            reviewClusterHistory.push({
+              round: loopCount,
+              findings: rows.map((r) => ({
+                file_path: r.file_path ?? '',
+                line_start: r.line_start ?? null,
+                line_end: r.line_end ?? null,
+                body: r.body ?? '',
+              })),
+            });
+          } catch (err) {
+            log(
+              `[finalize-orchestrator] review-cluster capture failed for run=${runId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        } else {
+          consecutiveChangesRequested = 0;
+          // Converged this round — start a fresh recurrence streak.
+          reviewClusterHistory.length = 0;
+        }
+      }
+
+      // Non-convergence escalation: if the reviewer has requested changes for
+      // `maxNonConvergenceRounds` rounds running, stop dispatching fixes and
+      // hand back to a human with a notice naming the recurring cluster —
+      // rather than grinding the whole active-time budget and dying
+      // `review_failed`. Fires only on a review-driven round (CI has not run
+      // yet when the reviewer is still requesting changes).
+      if (reviewerChangesRequested && consecutiveChangesRequested >= maxNonConvergenceRounds) {
+        trace('terminal', {
+          result: 'review_not_converging',
+          round: loopCount,
+          consecutiveChangesRequested,
+        });
+        return escalateNonConvergentReview(
+          deps,
+          runId,
+          sessionId,
+          consecutiveChangesRequested,
+          log,
+        );
+      }
+
       // When the reviewer requests changes, dispatch fixes first — do not
       // burn CI budget on code that is already known not mergeable. CI runs
       // only after a subsequent review pass returns `approved`.
@@ -2221,6 +2325,23 @@ export async function runFinalize(
         reviewRequired,
         checksRequired,
       });
+      // Pattern-aware escalation: if the reviewer has flagged the same
+      // file/area cluster for N consecutive rounds, tell the fixer to stop
+      // patching per-line and fix the root cause, and carry the prior rounds'
+      // findings for that cluster. Null (no attachment) on a converged history
+      // or a CI-only dispatch (history is cleared on approval).
+      const escalation = computeRootCauseEscalation(
+        reviewClusterHistory,
+        rootCauseEscalationRounds,
+      );
+      if (escalation) {
+        trigger.rootCauseEscalation = escalation;
+        trace('fix_dispatch', {
+          round: loopCount,
+          rootCauseEscalation: escalation.clusters,
+          recurredRounds: escalation.rounds,
+        });
+      }
       // Mirror a step failure onto the card — exactly when there IS a
       // failed step AND the fix-dispatch loop is about to run. Reviewer-
       // only `changes_requested` cases (no failed step) are already
@@ -2783,6 +2904,128 @@ function postBudgetTimeoutMessageIfPossible(
  * sub-phase set; we mirror it here for the broadcast payload so the UI
  * doesn't need a row re-read to render the terminal state.
  */
+/**
+ * Best-effort: drop a §review-stall message into the originating session so
+ * the human knows the reviewer step could not complete for an INFRA reason
+ * (engine timeout / quota / auth exhaustion) — NOT because their change was
+ * rejected — and how to resume.
+ *
+ * This writes the session-timeline notice; the mobile push is dispatched
+ * separately by the broadcast→push bridge (server/push.ts mapBroadcastToPush,
+ * keyed on the `finalize_run_completed` broadcast's `failure_reason`), so both
+ * the in-app timeline and a notification fire. Whether these warrant their own
+ * dedicated PushEventType (vs. reusing `awaiting_feedback`) is tracked in
+ * AH-1881.
+ */
+function postReviewStalledNotice(
+  deps: OrchestratorDeps,
+  runId: string,
+  detail: string | undefined,
+  log: (msg: string) => void,
+): void {
+  try {
+    const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+    const sessionId = row?.session_id ?? null;
+    if (!sessionId) return;
+    const cause =
+      detail && detail.trim().length > 0
+        ? detail.trim()
+        : 'the reviewer turn could not complete on any available engine';
+    writeFinalizeTimelineMessage(
+      { stmts: deps.stmts, broadcast: deps.broadcast, log },
+      {
+        sessionId,
+        kind: 'finalize_review_stalled',
+        content:
+          'Finalize paused — the reviewer step could not complete for an infrastructure reason, ' +
+          'not a problem with your code. Your changes were NOT rejected. ' +
+          `Cause: ${cause}. Re-run Finalize once a review engine has quota/availability again.`,
+        payload: { runId, reason: 'review_stalled', cause },
+      },
+    );
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] review-stalled notice post failed for run=${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
+ * Summarise the recurring cluster from a run's current reviewer threads: the
+ * distinct files the latest round flagged, most-flagged first. Best-effort —
+ * returns an empty string if there are no threads or the read fails.
+ */
+function summariseRecurringCluster(deps: OrchestratorDeps, runId: string): string {
+  try {
+    const rows = deps.stmts.listReviewerThreadsForRun.all(runId) as Array<{
+      file_path?: string | null;
+    }>;
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      const f = (r.file_path ?? '').trim();
+      if (!f) continue;
+      counts.set(f, (counts.get(f) ?? 0) + 1);
+    }
+    const files = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([f]) => f);
+    if (files.length === 0) return '';
+    const shown = files.slice(0, 3).join(', ');
+    return files.length > 3 ? `${shown} (+${files.length - 3} more)` : shown;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Non-convergence escalation. The reviewer has requested changes for
+ * `rounds` consecutive rounds; stop the auto-loop and hand back to a human
+ * with a timeline notice naming the recurring cluster, terminating the run as
+ * `review_not_converging` (distinct from `review_failed` and `review_stalled`).
+ */
+function escalateNonConvergentReview(
+  deps: OrchestratorDeps,
+  runId: string,
+  sessionId: string | null,
+  rounds: number,
+  log: (msg: string) => void,
+): OrchestratorOutcome {
+  const cluster = summariseRecurringCluster(deps, runId);
+  try {
+    if (sessionId) {
+      const clusterLine = cluster
+        ? ` The reviewer keeps flagging the same area: ${cluster} — likely one root cause the per-line fixes are only chipping at.`
+        : '';
+      writeFinalizeTimelineMessage(
+        { stmts: deps.stmts, broadcast: deps.broadcast, log },
+        {
+          sessionId,
+          kind: 'finalize_review_not_converging',
+          content:
+            `Finalize paused — review is not converging: the reviewer has requested changes ${rounds} rounds running.` +
+            clusterLine +
+            ' Rather than burn the whole time budget, this is handed back for a human to look at the root cause before re-running Finalize.',
+          payload: { runId, reason: 'review_not_converging', rounds, cluster: cluster || null },
+        },
+      );
+    }
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] non-convergence notice post failed for run=${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  return terminate(
+    deps,
+    runId,
+    'failed',
+    'review_not_converging',
+    `reviewer requested changes ${rounds} consecutive rounds${cluster ? ` (recurring cluster: ${cluster})` : ''}`,
+    log,
+  );
+}
+
 function outcomeFromFailed(
   deps: OrchestratorDeps,
   runId: string,
@@ -2795,9 +3038,21 @@ function outcomeFromFailed(
       ? 'timed_out'
       : failureReason === 'container_unavailable' ||
           failureReason === 'worktree_create_failed' ||
-          failureReason === 'github_push_5xx'
+          failureReason === 'github_push_5xx' ||
+          // A reviewer turn that stalled on infrastructure (timeout / quota /
+          // auth with no failover) is not a code failure — mirror the
+          // `infra_error` status the reviewer-dispatch terminate wrote so the
+          // broadcast payload matches the durable row.
+          failureReason === 'review_stalled'
         ? 'infra_error'
         : 'failed';
+  // Tell the user, in the session timeline, that the reviewer step could not
+  // complete for an INFRA reason (not their code) and how to resume. Matches
+  // the finalize-stall precedent (timeline-only; the finalize push taxonomy
+  // was retired). Best-effort — a failed notice must never block the terminal.
+  if (failureReason === 'review_stalled') {
+    postReviewStalledNotice(deps, runId, detail, log);
+  }
   mirrorTerminalFailureOnCard(deps, runId, status, failureReason, detail);
   let row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
   // Defensive terminal write. The v1 sub-phases write the row's terminal

@@ -67,6 +67,21 @@ export const CI_FAILURE_REASONS = [
   'stalled_no_response',
   // Phase-module CI-class codes
   'review_failed',
+  // The reviewer turn could not complete for an INFRA reason (per-turn
+  // timeout, engine API error, provider quota/auth exhaustion) with no
+  // failover engine left. Classified CI-class (NOT infra-auto-retried) for the
+  // same reason as `budget_exhausted`: an immediate run-level retry would
+  // re-hit the same exhausted/timed-out engines and fail identically, so it is
+  // PARKED with a user notice for the human to resume once an engine recovers,
+  // rather than livelocked. It is surfaced with status `infra_error` (not
+  // `failed`) so the human reads it as "not your change", distinct from a
+  // genuine `review_failed`.
+  'review_stalled',
+  // The review loop was escalated to a human after N consecutive
+  // `changes_requested` rounds (non-convergence) rather than grinding the
+  // active-time budget. CI-class: deterministic on the current change set, so
+  // never auto-retried — the human intervenes.
+  'review_not_converging',
   'unsafe_base_branch',
   'no_worktree',
   'no_diff_inputs',

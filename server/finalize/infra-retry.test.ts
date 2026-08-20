@@ -291,6 +291,17 @@ describe('classifyFailureReason', () => {
     expect((INFRA_FAILURE_REASONS as readonly string[]).includes('budget_exhausted')).toBe(false);
   });
 
+  it('review_stalled is CI-class (parked, not auto-retried) — an infra stall the human resumes', () => {
+    // The reviewer turn stalled on infrastructure (timeout / quota / auth with
+    // no failover engine). Like budget_exhausted, an immediate run-level retry
+    // would re-hit the same exhausted engines and fail identically, so it is
+    // parked (CI-class, never auto-retried) with a user notice — NOT looped.
+    expect(classifyFailureReason('review_stalled')).toBe('ci');
+    expect(isInfraFailureReason('review_stalled')).toBe(false);
+    expect((CI_FAILURE_REASONS as readonly string[]).includes('review_stalled')).toBe(true);
+    expect((INFRA_FAILURE_REASONS as readonly string[]).includes('review_stalled')).toBe(false);
+  });
+
   it('spot_reclaimed classifies as infra and as a reclaim', () => {
     expect(classifyFailureReason('spot_reclaimed')).toBe('infra');
     expect(isReclaimFailureReason('spot_reclaimed')).toBe(true);

@@ -41,6 +41,7 @@ import {
   FINALIZE_REVIEWER_TURN_OVERRIDE,
   REVIEWER_GENERAL_FEEDBACK_ANCHOR,
 } from './in-session-reviewer.js';
+import { ReviewerInfraStallError } from './reviewer-infra-stall.js';
 import type { EngineAvailability, SupportedEngine } from '../engine-availability.js';
 import { initOrgsDb } from '../orgs.js';
 import { createUser } from '../users-store.js';
@@ -1102,6 +1103,95 @@ describe('runReviewerTurn — engine failover', () => {
     // An unrecognized failure never walks the chain.
     expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude']);
     expect(probeAvailability).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws ReviewerInfraStallError (usage-exhausted) when the chain is spent — no fallback engine authenticated', async () => {
+    // The reviewer engine is quota-dead and NOTHING else is authenticated, so
+    // planEngineFailover returns no-engine-available. This is the production
+    // path the dispatch/orchestrator tests only inject: the turn must throw a
+    // typed infra stall so the run parks as `review_stalled`, NOT `review_failed`.
+    const { spawnFn, capturedArgs } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'Claude AI usage limit reached. Resets in 3 hours.' },
+    ]);
+    const probeAvailability = vi.fn().mockResolvedValue(availabilityWith(['claude-code']));
+    const { deps } = makeDeps(spawnFn, { probeAvailability });
+
+    const err = await runReviewerTurn(deps, {
+      runId: 'run-stall-usage',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ReviewerInfraStallError);
+    expect((err as ReviewerInfraStallError).trigger).toBe('usage-exhausted');
+    // The chain was walked but there was no engine to switch to.
+    expect(capturedArgs.map((c) => c.bin)).toEqual(['/fake/claude']);
+  });
+
+  it('throws ReviewerInfraStallError (transient-exhausted) on a repeated timeout with no fallback', async () => {
+    const { spawnFn } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'reviewer turn timed out after 5000ms' },
+    ]);
+    const probeAvailability = vi.fn().mockResolvedValue(availabilityWith(['claude-code']));
+    const { deps } = makeDeps(spawnFn, { probeAvailability });
+
+    const err = await runReviewerTurn(deps, {
+      runId: 'run-stall-timeout',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ReviewerInfraStallError);
+    expect((err as ReviewerInfraStallError).trigger).toBe('transient-exhausted');
+  });
+
+  it('parks as ReviewerInfraStallError when the turn is usage-exhausted AND the availability probe hiccups', async () => {
+    // The give-up path where the probe itself throws: without classifying the
+    // ORIGINAL error, a quota outage that also broke the probe would leak as
+    // review_failed. It must still park as a stall.
+    const { spawnFn } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'Claude AI usage limit reached. Resets in 3 hours.' },
+    ]);
+    const probeAvailability = vi.fn().mockRejectedValue(new Error('probe temporarily unreachable'));
+    const { deps } = makeDeps(spawnFn, { probeAvailability });
+
+    const err = await runReviewerTurn(deps, {
+      runId: 'run-probe-stall',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ReviewerInfraStallError);
+    expect((err as ReviewerInfraStallError).trigger).toBe('usage-exhausted');
+  });
+
+  it('still surfaces the raw error (review_failed path) when a NON-infra turn error coincides with a probe hiccup', async () => {
+    const { spawnFn } = makeDispatchSpawnFake([
+      { bin: '/fake/claude', fail: 'reviewer exited with code 1' },
+    ]);
+    const probeAvailability = vi.fn().mockRejectedValue(new Error('probe temporarily unreachable'));
+    const { deps } = makeDeps(spawnFn, { probeAvailability });
+
+    const err = await runReviewerTurn(deps, {
+      runId: 'run-probe-bug',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    }).catch((e) => e);
+
+    expect(err).not.toBeInstanceOf(ReviewerInfraStallError);
+    expect((err as Error).message).toMatch(/exited with code 1/);
   });
 
   it('does not fail over a cancellation', async () => {

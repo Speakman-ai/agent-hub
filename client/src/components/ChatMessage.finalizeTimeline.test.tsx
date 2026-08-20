@@ -39,6 +39,44 @@ describe('ChatMessage finalize timeline routing', () => {
     expect(screen.getByTestId('finalize-review-round-block')).toBeInTheDocument();
   });
 
+  it('routes finalize_review_stalled through the Finalize notice block (not the generic fallback)', () => {
+    render(
+      <ChatMessage
+        message={{
+          role: 'system',
+          metadata: JSON.stringify({
+            kind: 'finalize_review_stalled',
+            runId: 'run-1',
+            reason: 'review_stalled',
+            cause: 'the reviewer engine (and every fallback) is out of usage/quota',
+          }),
+          content:
+            'Finalize paused — the reviewer step could not complete for an infrastructure reason.',
+        }}
+      />,
+    );
+    expect(screen.getByTestId('finalize-review-notice-block')).toBeInTheDocument();
+    expect(screen.getByText(/infrastructure reason/i)).toBeInTheDocument();
+  });
+
+  it('routes finalize_review_not_converging through the Finalize notice block', () => {
+    render(
+      <ChatMessage
+        message={{
+          role: 'system',
+          metadata: JSON.stringify({
+            kind: 'finalize_review_not_converging',
+            runId: 'run-1',
+            reason: 'review_not_converging',
+            rounds: 3,
+          }),
+          content: 'Finalize paused — review is not converging.',
+        }}
+      />,
+    );
+    expect(screen.getByTestId('finalize-review-notice-block')).toBeInTheDocument();
+  });
+
   it('suppresses a raw reviewer verdict assistant message', () => {
     const { container } = render(
       <ChatMessage

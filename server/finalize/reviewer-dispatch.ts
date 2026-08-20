@@ -65,6 +65,7 @@ import {
   writeFinalizeReviewRoundTimeline,
   type TimelineMessageDeps,
 } from './timeline-message.js';
+import { isReviewerInfraStallError, reviewerStallCauseLabel } from './reviewer-infra-stall.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -377,7 +378,7 @@ export type ReviewerDispatchOutcome =
     }
   | {
       kind: 'failed';
-      failureReason: 'review_failed' | 'no_worktree' | 'no_diff_inputs';
+      failureReason: 'review_failed' | 'review_stalled' | 'no_worktree' | 'no_diff_inputs';
       detail: string;
       activeSecondsBilled: number;
     };
@@ -472,6 +473,25 @@ export async function runReviewerDispatch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     clearReviewerStateForFailedPass(stmts, opts.runId);
+    // An infra stall (reviewer turn timed out / quota-dead with no failover
+    // engine) is NOT a code problem — park it as `review_stalled` (infra_error)
+    // so it is not mistaken for the agent failing to converge. A genuine
+    // reviewer failure (unparseable verdict, real bug) stays `review_failed`.
+    if (isReviewerInfraStallError(err)) {
+      // Friendly, single-prefixed cause for the user-facing stall notice —
+      // `reviewerStallCauseLabel` renders the trigger in plain English (the
+      // raw engine error is already on the err chain / failover notices, so we
+      // do not re-wrap `msg` here, which would double the machine text).
+      return terminate(
+        stmts,
+        broadcast,
+        opts.runId,
+        opts.sessionId ?? null,
+        'review_stalled',
+        `${reviewerStallCauseLabel(err.trigger)} (${err.trigger})`,
+        0,
+      );
+    }
     return terminate(
       stmts,
       broadcast,
@@ -611,11 +631,16 @@ function terminate(
   broadcast: BroadcastFn,
   runId: string,
   sessionId: string | null,
-  reason: 'review_failed' | 'no_worktree' | 'no_diff_inputs',
+  reason: 'review_failed' | 'review_stalled' | 'no_worktree' | 'no_diff_inputs',
   detail: string,
   billedSeconds: number,
 ): ReviewerDispatchOutcome {
-  stmts.failFinalizeRun.run('failed', reason, runId);
+  // `review_stalled` is an INFRA outage (reviewer engine timed out / quota-
+  // dead with no failover), not a code failure — surface it as `infra_error`
+  // so the UI and the human read it as "not your change". Every other reason
+  // here is a genuine dispatch failure → `failed`.
+  const status: FinalizeRunStatus = reason === 'review_stalled' ? 'infra_error' : 'failed';
+  stmts.failFinalizeRun.run(status, reason, runId);
   // Emit a terminal phase event so any subscriber that received the
   // earlier `{ status: 'reviewing' }` event sees the corresponding
   // failure transition and clears the spinner row. Without this, the
@@ -626,7 +651,7 @@ function terminate(
     run_id: runId,
     ...(sessionId ? { session_id: sessionId } : {}),
     phase: 'review',
-    status: 'failed',
+    status,
     failure_reason: reason,
   });
   return { kind: 'failed', failureReason: reason, detail, activeSecondsBilled: billedSeconds };

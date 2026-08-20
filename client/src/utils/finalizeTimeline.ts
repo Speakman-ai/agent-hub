@@ -14,6 +14,8 @@ export const FINALIZE_TIMELINE_KINDS = [
   'finalize_run_terminal',
   'finalize_fix_dispatch',
   'finalize_step_output',
+  'finalize_review_stalled',
+  'finalize_review_not_converging',
 ];
 
 function parseRaw(metadataString: any) {

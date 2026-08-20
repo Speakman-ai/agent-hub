@@ -17,6 +17,23 @@ describe('describeFinalizeFailureReason', () => {
     expect(describeFinalizeFailureReason('timeout')).toMatch(/time limit/i);
   });
 
+  it('explains an infra-stalled reviewer as not-your-code, distinct from review_failed', () => {
+    const text = describeFinalizeFailureReason('review_stalled');
+    expect(text).not.toBeNull();
+    expect(text!).toMatch(/infrastructure|quota|timeout/i);
+    expect(text!).toMatch(/not a problem with your code|not a problem/i);
+    expect(text!).not.toBe('review_stalled');
+    // Must not read the same as a genuine review failure.
+    expect(text).not.toBe(describeFinalizeFailureReason('review_failed'));
+  });
+
+  it('explains a non-converging review loop', () => {
+    const text = describeFinalizeFailureReason('review_not_converging');
+    expect(text).not.toBeNull();
+    expect(text!).toMatch(/not converging|round after round/i);
+    expect(text!).not.toBe('review_not_converging');
+  });
+
   it('does not tell a user with a large change set that they changed nothing', () => {
     // Regression: a 325-file session hit no_diff_inputs and was told "There were
     // no code changes for Finalize to review or push." The code means the diff

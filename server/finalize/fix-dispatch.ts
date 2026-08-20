@@ -165,6 +165,18 @@ export interface FixDispatchTrigger {
    * orchestrator can pass through whatever it has without sanitising.
    */
   reviewerVerdict?: 'approved' | 'changes_requested' | null;
+  /**
+   * Set when the reviewer has flagged the same file/area cluster for N
+   * consecutive rounds (see review-cluster-tracker). Escalates the dispatch
+   * body from per-line fixes to a root-cause directive and carries the prior
+   * rounds' findings for the recurring cluster so the fix turn sees the whole
+   * pattern, not just the current round.
+   */
+  rootCauseEscalation?: {
+    clusters: string[];
+    rounds: number;
+    priorFindings: string[];
+  } | null;
 }
 
 /**
@@ -705,6 +717,26 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
     // wording ("phase=review, reviewer requested changes.") regardless
     // of which side of the gate the orchestrator entered from.
     lines.push('Finalize Code Changes: phase=review, reviewer requested changes.');
+  }
+
+  // Root-cause escalation preamble — surfaced BEFORE the current round's notes
+  // so the fixer reads the pattern first. Only present once a cluster has
+  // recurred across rounds (the per-site fixes were not converging).
+  const esc = trigger.rootCauseEscalation;
+  if (esc && esc.clusters.length > 0) {
+    lines.push('');
+    lines.push(
+      `Root-cause escalation: the reviewer has flagged ${esc.clusters.join(', ')} for ` +
+        `${esc.rounds} rounds running. These are almost certainly instances of ONE underlying ` +
+        `defect, not separate bugs — the per-line fixes so far have not converged. Stop patching ` +
+        `individual lines: fix the root cause, then re-scan every sibling call site in the same ` +
+        `area for the same class of problem before ending your turn.`,
+    );
+    if (esc.priorFindings.length > 0) {
+      lines.push('');
+      lines.push('Earlier rounds flagged the same area:');
+      for (const pf of esc.priorFindings) lines.push(pf);
+    }
   }
 
   if (hasReviewerNotes) {

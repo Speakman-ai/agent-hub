@@ -1258,6 +1258,163 @@ describe('runFinalize — reviewer requests changes triggers fix dispatch', () =
   });
 });
 
+describe('runFinalize — non-convergence escalation', () => {
+  const CHANGES: ReviewerDispatchOutcome = {
+    kind: 'success',
+    verdict: 'changes_requested',
+    threadCount: 1,
+    activeSecondsBilled: 30,
+  };
+
+  it('escalates review_not_converging after K consecutive changes_requested rounds instead of dispatching another fix', async () => {
+    // Default K = 3: rounds 1 and 2 dispatch a fix; round 3's changes_requested
+    // trips the escalation BEFORE a third fix is dispatched.
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValue(CHANGES);
+    // Unique HEAD per call so the §6 no-progress guard never fires first.
+    let headN = 0;
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockImplementation(async () => `sha-${headN++}`);
+
+    const { deps, stmts } = makeDeps({
+      runReviewerDispatch: runReview as never,
+      resolveHeadSha: resolveHead,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('failed');
+    if (result.kind !== 'failed') throw new Error('unreachable');
+    expect(result.failureReason).toBe('review_not_converging');
+    // Reviewer ran 3 rounds; only 2 fixes were dispatched (round 3 escalated).
+    expect(runReview).toHaveBeenCalledTimes(3);
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(2);
+    // A non-convergence notice was written to the session timeline.
+    const timelineKinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => JSON.parse(call[7] as string).kind,
+    );
+    expect(timelineKinds).toContain('finalize_review_not_converging');
+  });
+
+  it('does NOT escalate when the loop converges (changes_requested rounds below K then approved)', async () => {
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(REVIEW_OK);
+    // Each changes_requested iteration reads HEAD once (baseline); the approved
+    // iteration reads it twice (baseline + a stable push-gate re-read). Fixes
+    // land commits so the baseline advances each round (no-progress guard).
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-1') // iter1 baseline
+      .mockResolvedValueOnce('sha-2') // iter2 baseline (fix1 landed)
+      .mockResolvedValueOnce('sha-3') // iter3 baseline (fix2 landed)
+      .mockResolvedValue('sha-3'); // iter3 push gate (stable)
+
+    const { deps } = makeDeps({
+      runReviewerDispatch: runReview as never,
+      runJobPhase: fakeRunSteps(STEPS_OK),
+      resolveHeadSha: resolveHead,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    // 2 changes_requested (< K=3) then approved → converges, no escalation.
+    expect(result.kind).toBe('ready_to_push');
+    expect(runReview).toHaveBeenCalledTimes(3);
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('runFinalize — reviewer infra stall (review_stalled)', () => {
+  it('maps a review_stalled reviewer outcome to infra_error and posts a finalize_review_stalled notice', async () => {
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValue({
+        kind: 'failed',
+        failureReason: 'review_stalled',
+        detail: 'the reviewer engine (and every fallback) is out of usage/quota (usage-exhausted)',
+        activeSecondsBilled: 0,
+      });
+
+    const { deps, stmts } = makeDeps({ runReviewerDispatch: runReview as never });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('failed');
+    if (result.kind !== 'failed') throw new Error('unreachable');
+    // Distinct terminal state: infra_error, NOT failed — it is not a code problem.
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('review_stalled');
+    // A review-stall notice was written to the session timeline.
+    const timelineKinds = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => JSON.parse(call[7] as string).kind,
+    );
+    expect(timelineKinds).toContain('finalize_review_stalled');
+  });
+});
+
+describe('runFinalize — root-cause escalation in fix dispatch', () => {
+  const CHANGES: ReviewerDispatchOutcome = {
+    kind: 'success',
+    verdict: 'changes_requested',
+    threadCount: 1,
+    activeSecondsBilled: 30,
+  };
+
+  it('attaches rootCauseEscalation once the same cluster recurs (round 2 dispatch), not on round 1', async () => {
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(REVIEW_OK);
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-1')
+      .mockResolvedValueOnce('sha-2')
+      .mockResolvedValueOnce('sha-3')
+      .mockResolvedValue('sha-3');
+
+    const { deps } = makeDeps({
+      runReviewerDispatch: runReview as never,
+      runJobPhase: fakeRunSteps(STEPS_OK),
+      resolveHeadSha: resolveHead,
+    });
+    // Every review round flags the SAME file → a recurring cluster.
+    (deps.stmts.listReviewerThreadsForRun as unknown as { all: ReturnType<typeof vi.fn> }).all =
+      vi.fn(() => [
+        {
+          id: 't1',
+          run_id: 'r1',
+          file_path: 'server/dxf.ts',
+          line_start: 100,
+          line_end: 100,
+          body: 'persist-generation race',
+          author: 'reviewer-agent',
+          created_at: 1,
+        },
+      ]);
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('ready_to_push');
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(2);
+
+    const calls = (deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    // Round 1: only one round of history → no escalation yet.
+    expect(calls[0][1].trigger.rootCauseEscalation).toBeFalsy();
+    // Round 2: cluster recurred across 2 rounds → escalation attached with
+    // the prior round's findings.
+    const esc = calls[1][1].trigger.rootCauseEscalation;
+    expect(esc).toBeTruthy();
+    expect(esc.clusters).toEqual(['server/dxf.ts']);
+    expect(esc.rounds).toBe(2);
+    expect(esc.priorFindings.join('\n')).toContain('round 1');
+  });
+});
+
 describe('runFinalize — step phase status mapping', () => {
   it('maps timeout to timed_out outcome', async () => {
     const { deps } = makeDeps({

@@ -87,6 +87,25 @@ export function readyToPushPush(args: { sessionName?: string }): { title: string
   };
 }
 
+export function reviewStalledPush(args: { sessionName?: string }): { title: string; body: string } {
+  const subject = args.sessionName ? `"${args.sessionName}"` : 'A session';
+  return {
+    title: 'Finalize paused — reviewer unavailable',
+    body: `${subject} could not finish review (engine timeout / quota) — not a code problem. Re-run when an engine is available.`,
+  };
+}
+
+export function reviewNotConvergingPush(args: { sessionName?: string }): {
+  title: string;
+  body: string;
+} {
+  const subject = args.sessionName ? `"${args.sessionName}"` : 'A session';
+  return {
+    title: 'Finalize paused — review not converging',
+    body: `${subject} kept getting change requests round after round and needs a human to look at the root cause.`,
+  };
+}
+
 export function pushedPush(args: { sessionName?: string; prNumber?: number }): {
   title: string;
   body: string;
@@ -563,9 +582,35 @@ export function mapBroadcastToPush(data: BroadcastData): {
 
     case 'finalize_run_completed': {
       const status = typeof data.status === 'string' ? data.status : null;
-      if (status !== 'ready_to_push' && status !== 'pushed') return null;
+      const failureReason = typeof data.failure_reason === 'string' ? data.failure_reason : null;
       const sessionId = broadcastSessionId(data);
       const sessionName = typeof data.sessionName === 'string' ? data.sessionName : undefined;
+      // A run that parked stalled (infra) or non-converging paused and needs the
+      // user — surface it the same way as an awaiting-feedback prompt (the
+      // taxonomy the finalize notify surface already lives in) rather than
+      // leaving the notice timeline-only. Keyed on failure_reason, NOT status,
+      // so ordinary code failures do not push.
+      if (failureReason === 'review_stalled' || failureReason === 'review_not_converging') {
+        const { title, body } =
+          failureReason === 'review_stalled'
+            ? reviewStalledPush({ sessionName })
+            : reviewNotConvergingPush({ sessionName });
+        return {
+          event: 'awaiting_feedback',
+          payload: {
+            title,
+            body,
+            data: {
+              sessionId,
+              agentId: data.agentId,
+              runId: data.run_id,
+              failureReason,
+              type: 'awaiting_feedback',
+            },
+          },
+        };
+      }
+      if (status !== 'ready_to_push' && status !== 'pushed') return null;
       if (status === 'ready_to_push') {
         const { title, body } = readyToPushPush({ sessionName });
         return {
