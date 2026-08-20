@@ -4,15 +4,23 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  cpSync,
   rmSync,
   readdirSync,
   readFileSync,
   statSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'fs';
+import {
+  cp as cpAsync,
+  link as linkAsync,
+  lstat as lstatAsync,
+  mkdir as mkdirAsync,
+  readdir as readdirAsync,
+  readlink as readlinkAsync,
+  rm as rmAsync,
+  symlink as symlinkAsync,
+} from 'fs/promises';
 import path from 'path';
 import { homedir } from 'os';
 import { createRequire } from 'module';
@@ -1735,6 +1743,205 @@ function resolveInstallCommand(
  * Session clones pass `awaitInstall: false` at setup time; see
  * {@link ensureSessionWorktreeDependenciesInstalled} for the awaited path before commit.
  */
+/** Bound the reflink copy so a pathological tree can't stall session provisioning. */
+const NODE_MODULES_REFLINK_TIMEOUT_MS = 60_000;
+
+/**
+ * Max concurrent directories walked by {@link hardlinkCopyDir}. A real
+ * `node_modules` has tens of thousands of files, so an unbounded fan-out would
+ * queue that many concurrent fs ops with no backpressure (EMFILE / memory
+ * spikes). A small fixed pool caps in-flight file descriptors while keeping the
+ * walk off the event loop — mirrors {@link WORKSPACE_CLEANUP_CONCURRENCY}.
+ */
+const NODE_MODULES_HARDLINK_CONCURRENCY = 8;
+
+type NodeModulesProvisionMode = 'reflink' | 'hardlink' | 'copy' | 'symlink';
+
+/** Best-effort remove a partial target left by a failed tier so the next one starts clean. */
+async function clearPartialProvisionTarget(target: string): Promise<void> {
+  try {
+    await rmAsync(target, { recursive: true, force: true });
+  } catch {
+    // best effort — the next tier's own create will surface a real error
+  }
+}
+
+/**
+ * Recursively hardlink-copy a directory tree: real directories, symlinks
+ * recreated as symlinks (never followed), regular files hardlinked (`link`).
+ *
+ * Fully async (fs/promises) so the O(files) syscall storm across a large
+ * `node_modules` runs off the shared event loop — blocking that traversal inline
+ * is the prod I/O-wait pattern this module must avoid. The walk is a fixed pool
+ * of {@link NODE_MODULES_HARDLINK_CONCURRENCY} workers draining a growing
+ * directory queue (the bounded worker-pool shape used for workspace cleanup),
+ * so in-flight fs ops stay capped instead of fanning out unboundedly.
+ *
+ * Hardlinking isolates **deletion**: removing the copy unlinks its own dir
+ * entries and decrements file link counts, so the donor's separate tree and its
+ * inodes survive — exactly what a project-run `npm ci` (delete-then-reinstall)
+ * needs, on any same-device filesystem including ext4/overlayfs where reflink is
+ * unavailable. Caveat: files share inodes, so an **in-place** modification of an
+ * existing file (`npm rebuild`, `patch-package`) would still reach the donor;
+ * `npm ci`/`npm install` replace files by unlink+create, not in-place edit, so
+ * that path is safe. Throws `EXDEV` when source and target are on different
+ * devices — the caller falls through to a real byte copy.
+ */
+async function hardlinkCopyDir(source: string, target: string): Promise<void> {
+  // Queue of directory pairs still to walk; workers push subdirs as they read
+  // them. `active` counts dirs currently being processed so a worker that finds
+  // the queue empty only exits once no peer could still enqueue more.
+  const queue: Array<{ from: string; to: string }> = [{ from: source, to: target }];
+  let active = 0;
+  let firstError: unknown = null;
+
+  const processDir = async (job: { from: string; to: string }): Promise<void> => {
+    await mkdirAsync(job.to, { recursive: true });
+    const entries = await readdirAsync(job.from, { withFileTypes: true });
+    for (const entry of entries) {
+      const from = path.join(job.from, entry.name);
+      const to = path.join(job.to, entry.name);
+      if (entry.isDirectory()) {
+        queue.push({ from, to });
+      } else if (entry.isSymbolicLink()) {
+        await symlinkAsync(await readlinkAsync(from), to);
+      } else {
+        await linkAsync(from, to);
+      }
+    }
+  };
+
+  const worker = async (): Promise<void> => {
+    // `shift()` + `active++` run with no `await` between them, so no peer can
+    // interleave and observe a job in flight yet uncounted.
+    for (;;) {
+      const job = queue.shift();
+      if (job === undefined) {
+        if (active === 0) return;
+        await new Promise((resolve) => setImmediate(resolve));
+        continue;
+      }
+      active++;
+      try {
+        await processDir(job);
+      } catch (err) {
+        if (firstError === null) firstError = err;
+        queue.length = 0; // stop producing; let in-flight workers drain
+      } finally {
+        active--;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: NODE_MODULES_HARDLINK_CONCURRENCY }, () => worker()));
+  if (firstError !== null) throw firstError;
+}
+
+/**
+ * Provision one `node_modules` dir in a fresh session worktree from the shared
+ * project checkout, returning how it was materialized.
+ *
+ * A junction symlink is near-free but lets a project build that runs a package
+ * manager in the linked dir (e.g. surveytracker's `build_app` runs `npm ci` in
+ * `frontend/`) recurse THROUGH the link and delete/mutate packages in the shared
+ * donor tree — npm's parallel remover then races to `ENOTEMPTY` on a random
+ * nested dir, and, worse, the corruption lands on the inode every other
+ * worktree's symlink also points at, so later fresh sessions fail too (#1905).
+ *
+ * Tiered strategy, each tier giving the session its own dir tree a project
+ * `npm ci` can wipe without touching the donor:
+ *   1. **reflink** — `cp --reflink=always` (GNU coreutils / Linux CoW: xfs
+ *      formatted `reflink=1`, btrfs). Isolates deletion AND in-place edits at
+ *      ~zero data cost. `--reflink=always` fails fast instead of degrading to a
+ *      slow full copy. macOS/BSD `cp` has no `--reflink` (APFS clones need
+ *      `cp -c`); those hosts fall through to the hardlink tier.
+ *   2. **hardlink** — recursive async `link` copy. Isolates deletion on any
+ *      same-device filesystem (ext4/overlayfs — Docker and the DinD Finalize
+ *      runners), where reflink is unavailable. In-place-edit caveat per
+ *      {@link hardlinkCopyDir}.
+ *   3. **copy** — real recursive byte copy. Full isolation when source/target
+ *      are cross-device (`EXDEV` from the hardlink tier).
+ *   4. **symlink** — the legacy junction, i.e. the #1905 corruption hazard.
+ *      Last resort only (all copies failed, or a symlinked donor that can't be
+ *      cloned without dereferencing). Logged at error level naming the hazard so
+ *      it is greppable rather than silent.
+ *
+ * Fully async: every tier runs off the shared event loop (promisified `execFile`
+ * for reflink, fs/promises walk for hardlink/copy) so concurrent session setup
+ * never stalls HTTP/WS handling — the O(files) sync-syscall pattern this replaces
+ * is a known prod I/O-wait cause.
+ */
+async function provisionNodeModules(
+  absoluteSource: string,
+  target: string,
+): Promise<NodeModulesProvisionMode> {
+  // A symlinked donor can't be copied without dereferencing (which would clone a
+  // link back into the donor); keep the legacy junction there. Log it below.
+  let sourceIsDir = false;
+  try {
+    sourceIsDir = (await lstatAsync(absoluteSource)).isDirectory();
+  } catch {
+    sourceIsDir = false;
+  }
+
+  if (sourceIsDir) {
+    // Tier 1: reflink (CoW).
+    try {
+      await execFileP('cp', ['--reflink=always', '-a', absoluteSource, target], {
+        timeout: NODE_MODULES_REFLINK_TIMEOUT_MS,
+      });
+      return 'reflink';
+    } catch (err) {
+      // Reflink-unsupported is the common expected case (ext4/overlayfs), so this
+      // stays at debug level — but the message keeps a genuine misconfiguration
+      // (cp missing, EPERM) triageable instead of fully silent.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      console.debug(
+        `[Workspace] reflink copy unavailable for ${target} (${code ?? 'error'}); ` +
+          `trying hardlink`,
+      );
+      await clearPartialProvisionTarget(target);
+    }
+
+    // Tier 2: hardlink-copy (same-device deletion isolation, incl. ext4/overlayfs).
+    try {
+      await hardlinkCopyDir(absoluteSource, target);
+      return 'hardlink';
+    } catch (err) {
+      await clearPartialProvisionTarget(target);
+      // Only a cross-device donor (EXDEV) should reach the byte-copy tier; any
+      // other hardlink failure is unexpected and worth a breadcrumb.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'EXDEV') {
+        console.warn(
+          `[Workspace] hardlink-copy of node_modules failed for ${target} ` +
+            `(${code ?? 'unknown'}); trying a full copy`,
+        );
+      }
+    }
+
+    // Tier 3: real byte copy (cross-device donor).
+    try {
+      await cpAsync(absoluteSource, target, { recursive: true });
+      return 'copy';
+    } catch (err) {
+      await clearPartialProvisionTarget(target);
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Workspace] full copy of node_modules failed for ${target}: ${message}`);
+    }
+  }
+
+  // Tier 4: last resort — the #1905-corrupting junction. Never silent.
+  console.error(
+    `[Workspace] node_modules provisioning fell back to a junction symlink for ${target} ` +
+      `-> ${absoluteSource}. This is the #1905 corruption hazard: a project-run 'npm ci' in ` +
+      `this dir can delete or mutate the SHARED donor tree, breaking other sessions. ` +
+      `(reflink/hardlink/copy all failed, or the donor is itself a symlink.)`,
+  );
+  await symlinkAsync(absoluteSource, target, 'junction');
+  return 'symlink';
+}
+
 async function setupDependencies(
   sourceDir: string,
   cloneDir: string,
@@ -1779,6 +1986,12 @@ async function setupDependencies(
 
   if (nodeModulesDirs.length > 0) {
     let linked = 0;
+    const byMode: Record<NodeModulesProvisionMode, number> = {
+      reflink: 0,
+      hardlink: 0,
+      copy: 0,
+      symlink: 0,
+    };
     for (const { relative, absolute } of nodeModulesDirs) {
       const target = path.join(cloneDir, relative);
       if (existsSync(target)) continue;
@@ -1789,15 +2002,20 @@ async function setupDependencies(
       }
 
       try {
-        symlinkSync(absolute, target, 'junction');
+        const mode = await provisionNodeModules(absolute, target);
         linked++;
+        byMode[mode]++;
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[Workspace] Failed to symlink ${relative}:`, message);
+        console.warn(`[Workspace] Failed to provision ${relative}:`, message);
       }
     }
     if (linked > 0) {
-      console.log(`[Workspace] Symlinked ${linked} node_modules from source project`);
+      console.log(
+        `[Workspace] Provisioned ${linked} node_modules from source project ` +
+          `(reflink: ${byMode.reflink}, hardlink: ${byMode.hardlink}, ` +
+          `copy: ${byMode.copy}, symlink: ${byMode.symlink})`,
+      );
     }
     if (linked > 0 && !needsDependencyInstall(cloneDir)) {
       clearDependencyInstallFailureMarker(cloneDir);
@@ -1864,12 +2082,13 @@ async function setupDependencies(
   });
 }
 
-function copyFallback(projectCwd: string, destDir: string): string {
+async function copyFallback(projectCwd: string, destDir: string): Promise<string> {
   try {
-    if (!existsSync(destDir)) {
-      mkdirSync(destDir, { recursive: true });
-    }
-    cpSync(projectCwd, destDir, {
+    await mkdirAsync(destDir, { recursive: true });
+    // Async byte copy so this O(files) walk stays off the shared event loop
+    // (same reason as provisionNodeModules — a large source tree copied inline
+    // is a known prod I/O-wait cause).
+    await cpAsync(projectCwd, destDir, {
       recursive: true,
       filter: (src: string) => {
         const base = path.basename(src);
@@ -2410,7 +2629,7 @@ async function getOrCreateProcessWorktreeUnlocked(
     } else {
       console.error(`[Workspace] Failed to create clone "${safeName}":`, message);
     }
-    return copyFallback(projectCwd, cloneDir);
+    return await copyFallback(projectCwd, cloneDir);
   }
 }
 
@@ -3544,5 +3763,7 @@ export const __test = {
   needsDependencyInstall,
   sessionWorkspaceDependencyInstallOpts,
   setupDependencies,
+  provisionNodeModules,
+  hardlinkCopyDir,
   installChildEnv,
 };
