@@ -133,4 +133,40 @@ describe('ops/nginx/agent-hub.conf', () => {
       expect(body).toMatch(/access_log\s+\S+\s+ws_sanitized;/);
     });
   });
+
+  describe('dedicated provisioning event-stream WebSocket location', () => {
+    // POST /api/projects/provision hands back this ws URL; without a dedicated
+    // upgrade-preserving block the handshake dies behind nginx and the browser
+    // reports "WebSocket connection failed" → the stream client surfaces
+    // STREAM_DROPPED ("Provisioning stream dropped and could not be resumed").
+    const provisioningLocation = '^/api/provisioning/[^/]+/events/?$';
+
+    it.each([
+      ['self-hosted edge', CONF],
+      ['container client', CLIENT_CONF],
+    ])('%s preserves WebSocket upgrades before the generic /api proxy', (_label, conf) => {
+      const body = extractLocation(provisioningLocation, conf);
+      expect(body).not.toBeNull();
+      expect(body!).toMatch(/proxy_http_version\s+1\.1;/);
+      expect(body!).toMatch(/proxy_set_header\s+Upgrade\s+\$http_upgrade;/);
+      expect(body!).toMatch(/proxy_set_header\s+Connection\s+\$connection_upgrade;/);
+      expect(body!).toMatch(/proxy_read_timeout\s+86400s;/);
+    });
+
+    it.each([
+      ['self-hosted edge', CONF],
+      ['container client', CLIENT_CONF],
+    ])('%s declares the provisioning block before the generic /api/ block', (_label, conf) => {
+      const provisioningIdx = conf.indexOf('location ~ ^/api/provisioning/[^/]+/events/?$ {');
+      const genericApiIdx = conf.indexOf('location /api/ {');
+      expect(provisioningIdx).toBeGreaterThanOrEqual(0);
+      expect(genericApiIdx).toBeGreaterThanOrEqual(0);
+      expect(provisioningIdx).toBeLessThan(genericApiIdx);
+    });
+
+    it('uses sanitized logging at the self-hosted edge so the ?token= JWT is not stored', () => {
+      const body = extractLocation(provisioningLocation, CONF);
+      expect(body).toMatch(/access_log\s+\S+\s+ws_sanitized;/);
+    });
+  });
 });
