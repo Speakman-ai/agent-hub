@@ -110,7 +110,7 @@ export function buildDevServerKickoffPrompt(
     '7. **Persist** — `POST $AGENT_HUB_URL/api/projects/' +
       projectId +
       '/dev-server/setup-apply` with `{ "devServer": { … }, "secrets": { "env": "<dotenv lines for secret values>" } }`. `devServer.env` holds non-secret values; `devServer.secretKeys` lists secret NAMES only; the plaintext secret values go in `secrets.env` as `KEY=value` dotenv lines (stored encrypted, never in the config). On HTTP 400 fix the reported `prEnv.devServer.<path>` error and retry.',
-    '8. **Verify (optional)** — Tell the user they can click **Start preview** on this session to boot the dev server and confirm it comes up on the mapped port.',
+    '8. **Verify (optional)** — Tell the user they can click **Start preview** on this session to boot the dev server and confirm it comes up on the mapped port. Preview is gated **solely** by a configured `devServer.startCommand` — once setup-apply succeeds it is ready to start. The legacy `prEnv.enabled` flag is a **no-op** left over from the removed PR-environments subsystem; it does not gate the dev-server preview, there is no toggle to flip, and `enabled: false` in the project config is **not** a blocker — never report it as one.',
     '9. **`POST $AGENT_HUB_URL/api/projects/' +
       projectId +
       '/dev-server/wizard-complete`** then `<agenthub:close-card>`.',

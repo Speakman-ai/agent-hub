@@ -234,6 +234,19 @@ describe('buildDevServerKickoffPrompt', () => {
     expect(prompt).toMatch(/never bake a deployment hostname/i);
   });
 
+  it('tells the agent the legacy prEnv.enabled flag is a no-op, not a boot blocker', () => {
+    // Regression: agents kept reading `enabled: false` in the project config
+    // and reporting it as a "master switch" that blocks the preview. The
+    // dev-server runtime is gated only by a configured `startCommand`
+    // (server/preview/preview-block.ts) and never reads `prEnv.enabled`, which
+    // is dead from the removed PR-environments subsystem. The prompt must say
+    // so, or the phantom blocker resurfaces.
+    const prompt = buildDevServerKickoffPrompt('proj-1', '/tmp/work', draft, 'sess-1');
+    expect(prompt).toContain('prEnv.enabled');
+    expect(prompt).toMatch(/no-op/i);
+    expect(prompt).toMatch(/not a blocker|never report it as one/i);
+  });
+
   it('keeps the walkthrough steps uniquely numbered', () => {
     // The step list is hand-numbered prose, so inserting one is easy to get
     // wrong — two "6." entries would have the agent skip a step silently.

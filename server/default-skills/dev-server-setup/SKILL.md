@@ -10,7 +10,7 @@ description: >-
   dev-server/setup-apply. Also checks the app itself is reachable from a remote
   browser (bind address, host allowlist, API base URL, trusted origins). The
   config lives in projects.json; only the reachability fixes touch the repo.
-version: 1.1.0
+version: 1.2.0
 keep-coding-instructions: true
 ---
 
@@ -30,6 +30,13 @@ that means editing the repo. Commit those edits on this session's branch.
 
 This is a worktree-backed session, which lets the user click **Start preview**
 afterward to boot the dev server and verify everything live.
+
+Preview is gated **solely** by a configured `devServer.startCommand`: once
+`setup-apply` persists one, **Start preview** works. The legacy `prEnv.enabled`
+flag is a **no-op** — a leftover of the removed PR-environments subsystem that
+the dev-server runtime never reads. There is no enable toggle to flip, and
+`enabled: false` in the project config does **not** block the preview. Never
+report it to the user as a blocker.
 
 ## Bound values
 

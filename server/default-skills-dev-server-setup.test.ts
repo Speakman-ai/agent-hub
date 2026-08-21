@@ -70,6 +70,17 @@ describe('dev-server-setup skill — remote-browser reachability', () => {
     expect(skill).toMatch(/commit/i);
   });
 
+  it('states that prEnv.enabled is a no-op and not a preview blocker', () => {
+    // Regression: the dev-server runtime is gated only by a configured
+    // startCommand (server/preview/preview-block.ts); `prEnv.enabled` is dead
+    // from the removed PR-environments subsystem. Without this note, agents
+    // read `enabled: false` in the project config and report a phantom blocker.
+    const skill = readSkill();
+    expect(skill).toContain('prEnv.enabled');
+    expect(skill).toMatch(/no-op/i);
+    expect(skill).toMatch(/does \*\*not\*\* block|not a blocker|never report/i);
+  });
+
   it('declares a version above the config-only 1.0.0', () => {
     const version = /^version:\s*(\S+)/m.exec(readSkill())?.[1];
     expect(version).toBeDefined();
