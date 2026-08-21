@@ -1,6 +1,6 @@
 /**
  * Hub — the org/user home surface (assistant + Dashboard / Daily Summary /
- * Org / Todos / Calendar / Mail).
+ * Org / Todos / Calendar / Mail / Support).
  *
  * Constants and parsers shared by web, mobile, and the server so nav hashes,
  * the hidden Hub project, and the assistant agent id cannot drift.
@@ -20,6 +20,7 @@ export const HUB_WORKSPACE_PANES = [
   'todos',
   'calendar',
   'mail',
+  'support',
 ] as const;
 export type HubWorkspacePane = (typeof HUB_WORKSPACE_PANES)[number];
 export const DEFAULT_HUB_PANE: HubWorkspacePane = 'today';
@@ -31,6 +32,7 @@ export const LEGACY_HUB_VIEWS: Record<string, HubWorkspacePane> = {
   todos: 'todos',
   calendar: 'calendar',
   gmail: 'mail',
+  'support-overview': 'support',
 };
 
 export function isHubProjectId(id: string | null | undefined): boolean {

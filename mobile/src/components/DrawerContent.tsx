@@ -504,23 +504,16 @@ export default function DrawerContent({ navigation }: any) {
           <BugReportButton projectId={bugReportProjectId} agentId={activeAgentId || ''} sourceUrl={activeAgent?.name ? `agent:${activeAgent.name}` : ''} buttonStyle={styles.bugReportButton}/>
         </View>
 
-        {/* Hub — assistant + Dashboard / Daily Summary / Org / Todos / Calendar / Mail. */}
+        {/* Hub — assistant + Dashboard / Daily Summary / Org / Todos / Calendar /
+            Mail / Support. The org-wide support overview is a Hub tab now, not a
+            standalone drawer entry; per-project Support links stay in each
+            project's menu. */}
         <TouchableOpacity testID="drawer-global-hub" style={styles.dashboardItem} onPress={() => {
             navigation.navigate('Hub');
             navigation.closeDrawer();
         }}>
           <HubIcon name="LayoutGrid" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
           <Text style={styles.dashboardText}>Hub</Text>
-        </TouchableOpacity>
-
-        {/* Org-wide support overview: every project's support issues on one
-            screen. Per-project Support links stay in each project's menu. */}
-        <TouchableOpacity testID="drawer-support-overview" style={styles.dashboardItem} onPress={() => {
-            navigation.navigate('SupportOverview');
-            navigation.closeDrawer();
-        }}>
-          <HubIcon name="LifeBuoy" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
-          <Text style={styles.dashboardText}>Support</Text>
         </TouchableOpacity>
 
         {cronSessions.length > 0 && (<View style={{ marginBottom: 16 }}>

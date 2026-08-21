@@ -10,6 +10,7 @@ const panes = {
   todos: <span>todos-body</span>,
   calendar: <span>calendar-body</span>,
   mail: <span>mail-body</span>,
+  support: <span>support-body</span>,
 };
 
 describe('HubPage', () => {
@@ -26,6 +27,7 @@ describe('HubPage', () => {
         todos={<div>todos-body</div>}
         calendar={<div>calendar-body</div>}
         mail={<div>mail-body</div>}
+        support={<div>support-body</div>}
       />,
     );
 
@@ -34,12 +36,21 @@ describe('HubPage', () => {
     expect(screen.getByText('assistant-body')).toBeInTheDocument();
     expect(screen.getByTestId('hub-pane-today')).toHaveTextContent('Dashboard');
     expect(screen.getByTestId('hub-pane-summary')).toHaveTextContent('Daily Summary');
+    expect(screen.getByTestId('hub-pane-support')).toHaveTextContent('Support');
     expect(screen.queryByTestId('hub-pane-troubleshoot')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('hub-pane-org'));
     expect(onPaneChange).toHaveBeenCalledWith('org');
     fireEvent.click(screen.getByTestId('hub-pane-summary'));
     expect(onPaneChange).toHaveBeenCalledWith('summary');
+    fireEvent.click(screen.getByTestId('hub-pane-support'));
+    expect(onPaneChange).toHaveBeenCalledWith('support');
+  });
+
+  it('shows the Support pane body when the support tab is active', () => {
+    render(<HubPage pane="support" onPaneChange={() => undefined} {...panes} />);
+    expect(screen.getByText('support-body')).toBeInTheDocument();
+    expect(screen.queryByText('today-body')).not.toBeInTheDocument();
   });
 
   it('shows the selected pane body', () => {

@@ -13,6 +13,7 @@ import DashboardScreen from './DashboardScreen';
 import TodosScreen from './TodosScreen';
 import CalendarScreen from './CalendarScreen';
 import GmailScreen from './GmailScreen';
+import SupportOverviewScreen from './SupportOverviewScreen';
 import ChatScreen from './ChatScreen';
 import {
   DEFAULT_HUB_PANE,
@@ -34,6 +35,7 @@ const TABS: { id: HubTab; label: string; icon: string }[] = [
   { id: 'todos', label: 'Todos', icon: 'ListTodo' },
   { id: 'calendar', label: 'Calendar', icon: 'CalendarDays' },
   { id: 'mail', label: 'Mail', icon: 'Mail' },
+  { id: 'support', label: 'Support', icon: 'LifeBuoy' },
 ];
 
 function HubBody({
@@ -90,6 +92,8 @@ function HubBody({
       return <CalendarScreen navigation={navigation} />;
     case 'mail':
       return <GmailScreen navigation={navigation} />;
+    case 'support':
+      return <SupportOverviewScreen />;
     default: {
       const _never: never = tab;
       return _never;

@@ -6740,15 +6740,6 @@ export default function App({ initialView }: any = {}) {
                     }}
                   />
                 )
-              ) : currentView === 'support-overview' ? (
-                <SupportOverviewPage
-                  onOpenProjectSupport={(projectId: any, ticketId: any = null) => {
-                    setSupportProjectId(projectId);
-                    setSupportTicketId(ticketId);
-                    setCurrentView('support');
-                    setSidebarOpen(false);
-                  }}
-                />
               ) : currentView === 'support' && supportProjectId ? (
                 <CustomerSupportPage
                   ref={supportListRef}
@@ -6769,7 +6760,8 @@ export default function App({ initialView }: any = {}) {
                 currentView === 'dashboard' ||
                 currentView === 'todos' ||
                 currentView === 'calendar' ||
-                currentView === 'gmail' ? (
+                currentView === 'gmail' ||
+                currentView === 'support-overview' ? (
                 <HubPage
                   pane={
                     currentView === 'hub'
@@ -6861,6 +6853,16 @@ export default function App({ initialView }: any = {}) {
                   }
                   mail={
                     <GmailPage onOpenAccountSettings={() => setCurrentView('settings:account')} />
+                  }
+                  support={
+                    <SupportOverviewPage
+                      onOpenProjectSupport={(projectId: any, ticketId: any = null) => {
+                        setSupportProjectId(projectId);
+                        setSupportTicketId(ticketId);
+                        setCurrentView('support');
+                        setSidebarOpen(false);
+                      }}
+                    />
                   }
                   assistant={hubAssistantChat}
                 />

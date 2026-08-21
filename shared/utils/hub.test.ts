@@ -32,11 +32,14 @@ describe('hub constants', () => {
   it('parses workspace panes and maps retired top-level views', () => {
     expect(parseHubPane('org')).toBe('org');
     expect(parseHubPane('summary')).toBe('summary');
+    expect(parseHubPane('support')).toBe('support');
     expect(parseHubPane('troubleshoot')).toBe(DEFAULT_HUB_PANE);
     expect(parseHubPane('nope')).toBe(DEFAULT_HUB_PANE);
     expect(hubPaneFromLegacyView('home')).toBe('today');
     expect(hubPaneFromLegacyView('dashboard')).toBe('org');
     expect(hubPaneFromLegacyView('gmail')).toBe('mail');
+    // The org-wide support overview is now a Hub tab, not a standalone section.
+    expect(hubPaneFromLegacyView('support-overview')).toBe('support');
     expect(hubPaneFromLegacyView('chat')).toBeNull();
   });
 });

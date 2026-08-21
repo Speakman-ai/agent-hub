@@ -5,6 +5,7 @@ import {
   Briefcase,
   CalendarDays,
   House,
+  LifeBuoy,
   ListTodo,
   Mail,
   ScrollText,
@@ -23,6 +24,7 @@ const PANE_META: Record<HubWorkspacePane, { label: string; icon: typeof House; t
   todos: { label: 'Todos', icon: ListTodo, testId: 'hub-pane-todos' },
   calendar: { label: 'Calendar', icon: CalendarDays, testId: 'hub-pane-calendar' },
   mail: { label: 'Mail', icon: Mail, testId: 'hub-pane-mail' },
+  support: { label: 'Support', icon: LifeBuoy, testId: 'hub-pane-support' },
 };
 
 export interface HubPageProps {
@@ -36,6 +38,7 @@ export interface HubPageProps {
   todos: ReactNode;
   calendar: ReactNode;
   mail: ReactNode;
+  support: ReactNode;
   /** When true, show the Assistant tab in the pane strip (narrow viewports). */
   mobileAssistantTab?: boolean;
   mobileTab?: 'assistant' | HubWorkspacePane;
@@ -46,7 +49,10 @@ export interface HubPageProps {
 
 function workspaceBody(
   active: HubWorkspacePane,
-  panes: Pick<HubPageProps, 'today' | 'summary' | 'org' | 'todos' | 'calendar' | 'mail'>,
+  panes: Pick<
+    HubPageProps,
+    'today' | 'summary' | 'org' | 'todos' | 'calendar' | 'mail' | 'support'
+  >,
 ): ReactNode {
   switch (active) {
     case 'today':
@@ -61,6 +67,8 @@ function workspaceBody(
       return panes.calendar;
     case 'mail':
       return panes.mail;
+    case 'support':
+      return panes.support;
     default: {
       const _never: never = active;
       return _never;
@@ -81,6 +89,7 @@ export default function HubPage({
   todos,
   calendar,
   mail,
+  support,
   mobileAssistantTab = false,
   mobileTab = 'today',
   onMobileTabChange,
@@ -94,6 +103,7 @@ export default function HubPage({
     todos,
     calendar,
     mail,
+    support,
   });
 
   return (

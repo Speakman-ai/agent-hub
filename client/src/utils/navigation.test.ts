@@ -133,6 +133,18 @@ describe('navigation defaults', () => {
     expect(parseNavigationHash('#/gmail')).toMatchObject({ view: 'hub', hubPane: 'mail' });
   });
 
+  it('folds the retired org-wide support-overview link into the Hub support tab', () => {
+    expect(parseNavigationHash('#/support-overview')).toMatchObject({
+      view: 'hub',
+      hubPane: 'support',
+    });
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'support' })).toBe('#/hub/support');
+    expect(parseNavigationHash('#/hub/support')).toMatchObject({
+      view: 'hub',
+      hubPane: 'support',
+    });
+  });
+
   it('round-trips Hub panes', () => {
     expect(buildNavigationHash({ view: 'hub', hubPane: 'today' })).toBe('');
     expect(buildNavigationHash({ view: 'hub', hubPane: 'org' })).toBe('#/hub/org');
