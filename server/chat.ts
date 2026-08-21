@@ -998,7 +998,7 @@ Replace each string with real values you need (the example must stay valid JSON 
 Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
 - \`skill\` — load a registered Agent Hub skill (field: \`name\`).
-- \`web\` — live web search via Serper (field: \`query\`). Only works when the server has \`SERPER_API_KEY\` or \`WEB_SEARCH_API_KEY\` set; otherwise the host returns a clear configuration error.
+- \`web\` — live web search via DuckDuckGo (field: \`query\`). Keyless; no server configuration required.
 ${browserToolLines}${previewToolLines}${terminalToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
   } else {
