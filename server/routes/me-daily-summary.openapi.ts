@@ -41,6 +41,30 @@ const DailySummaryResponse = registerComponent(
     }),
 );
 
+const DailySummarySchedule = registerComponent(
+  'MeDailySummarySchedule',
+  z
+    .object({
+      enabled: z.boolean(),
+      timeZone: z.string(),
+      times: z.array(z.string()),
+    })
+    .openapi({
+      description:
+        "Auto-refresh schedule for the caller's Hub Daily Summary: 1+ local `HH:MM` times of day " +
+        "(interpreted in `timeZone`) at which the report regenerates using the caller's own engine credentials.",
+    }),
+);
+
+const DailySummaryScheduleResponse = registerComponent(
+  'MeDailySummaryScheduleResponse',
+  z
+    .object({
+      schedule: DailySummarySchedule.nullable(),
+    })
+    .openapi({ description: 'The stored schedule, or null when the summary is not scheduled.' }),
+);
+
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
 });
@@ -103,5 +127,58 @@ registerPath({
     400: errorResponse('Engine credentials missing for this account.'),
     401: errorResponse('Authentication required.'),
     503: errorResponse('No AI engines are configured or available.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/me/daily-summary/schedule',
+  tags: ['Hub'],
+  summary: "Read the caller's Hub Daily Summary auto-refresh schedule",
+  description:
+    "Returns the caller's stored schedule, or `schedule: null` when the summary is not scheduled.",
+  responses: {
+    200: {
+      description: 'The stored schedule (or null).',
+      content: jsonContent(DailySummaryScheduleResponse),
+    },
+    401: errorResponse('Authentication required.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/me/daily-summary/schedule',
+  tags: ['Hub'],
+  summary: "Set the caller's Hub Daily Summary auto-refresh schedule",
+  description:
+    'Replaces the schedule. Invalid `HH:MM` entries are dropped; an empty or all-invalid `times` ' +
+    'array clears the schedule. The ticker regenerates the report at each configured local time ' +
+    "using the caller's own engine credentials.",
+  request: {
+    body: {
+      content: jsonContent(
+        z.object({
+          enabled: z.boolean().optional().openapi({
+            description: 'When false the times are kept but auto-refresh is paused.',
+          }),
+          timeZone: z.string().optional().openapi({
+            description: 'IANA timezone the times are interpreted in. Defaults to UTC.',
+          }),
+          times: z
+            .array(z.string())
+            .optional()
+            .openapi({ description: '24h local times of day (`HH:MM`). Capped at 12.' }),
+        }),
+      ),
+    },
+  },
+  responses: {
+    200: {
+      description: 'The normalized, stored schedule (or null when cleared).',
+      content: jsonContent(DailySummaryScheduleResponse),
+    },
+    400: errorResponse('Malformed schedule body.'),
+    401: errorResponse('Authentication required.'),
   },
 });

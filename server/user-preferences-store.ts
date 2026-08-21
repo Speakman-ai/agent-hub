@@ -41,6 +41,10 @@
  * ignored on read and dropped on the next write.
  */
 import { getOrgsDb } from './orgs.js';
+import {
+  normalizeDailySummarySchedule,
+  type HubDailySummarySchedule,
+} from './daily-summary-schedule.js';
 
 export interface AgentEngineOverride {
   engine: string;
@@ -69,6 +73,11 @@ export interface UserPreferencesStored {
    * the caller's local today — GET/POST treat that as empty (clears each day).
    */
   hubDailySummary?: HubDailySummaryStored;
+  /**
+   * Auto-refresh schedule for the Hub Daily Summary: 1+ local times of day at
+   * which the Hub regenerates the report for this user. Absent when unscheduled.
+   */
+  hubDailySummarySchedule?: HubDailySummarySchedule;
 }
 
 /**
@@ -170,6 +179,8 @@ function parsePrefsJson(raw: string | null): UserPreferencesStored {
     if (collapsed) result.sidebarCollapsedProjects = collapsed;
     const summary = normalizeHubDailySummary(obj.hubDailySummary);
     if (summary) result.hubDailySummary = summary;
+    const schedule = normalizeDailySummarySchedule(obj.hubDailySummarySchedule);
+    if (schedule) result.hubDailySummarySchedule = schedule;
     return result;
   } catch {
     return {};
@@ -223,6 +234,9 @@ export function replaceUserPreferencesJson(userId: string, prefs: UserPreference
   }
   if (prefs.hubDailySummary) {
     stored.hubDailySummary = prefs.hubDailySummary;
+  }
+  if (prefs.hubDailySummarySchedule) {
+    stored.hubDailySummarySchedule = prefs.hubDailySummarySchedule;
   }
   const json = Object.keys(stored).length > 0 ? JSON.stringify(stored) : null;
   getOrgsDb().prepare('UPDATE users SET preferences_json = ? WHERE id = ?').run(json, userId);
@@ -307,5 +321,32 @@ function mergePreferences(
   if ('hubDailySummary' in partial) {
     next.hubDailySummary = normalizeHubDailySummary(partial.hubDailySummary);
   }
+  if ('hubDailySummarySchedule' in partial) {
+    next.hubDailySummarySchedule = normalizeDailySummarySchedule(partial.hubDailySummarySchedule);
+  }
   return next;
+}
+
+/**
+ * Every user with a persisted Hub Daily Summary schedule. Scans only rows whose
+ * JSON blob mentions the key so the once-a-minute ticker doesn't parse every
+ * user row on every tick.
+ */
+export function listUsersWithDailySummarySchedule(): Array<{
+  userId: string;
+  schedule: HubDailySummarySchedule;
+}> {
+  const rows = getOrgsDb()
+    .prepare(
+      "SELECT id, preferences_json FROM users WHERE preferences_json LIKE '%hubDailySummarySchedule%'",
+    )
+    .all() as Array<{ id: string; preferences_json: string | null }>;
+  const out: Array<{ userId: string; schedule: HubDailySummarySchedule }> = [];
+  for (const row of rows) {
+    const prefs = parsePrefsJson(row.preferences_json ?? null);
+    if (prefs.hubDailySummarySchedule) {
+      out.push({ userId: row.id, schedule: prefs.hubDailySummarySchedule });
+    }
+  }
+  return out;
 }

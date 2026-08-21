@@ -193,6 +193,16 @@ export interface DailySummaryWire {
   report: DailySummaryReportWire | null;
 }
 
+export interface DailySummaryScheduleWire {
+  enabled: boolean;
+  timeZone: string;
+  times: string[];
+}
+
+export interface DailySummaryScheduleResponseWire {
+  schedule: DailySummaryScheduleWire | null;
+}
+
 interface CreateTodoBody {
   title: string;
   notes?: string;
@@ -889,6 +899,13 @@ export const api = {
       // GENERATE_TIMEOUT_MS (90s) for a large hub. The default 15s client
       // timeout aborts long before that, so give it headroom past the server.
       timeout: 120_000,
+    }),
+  getDailySummarySchedule: () =>
+    fetchJSON<DailySummaryScheduleResponseWire>('/me/daily-summary/schedule'),
+  setDailySummarySchedule: (schedule: { enabled: boolean; timeZone?: string; times: string[] }) =>
+    fetchJSON<DailySummaryScheduleResponseWire>('/me/daily-summary/schedule', {
+      method: 'PUT',
+      body: JSON.stringify(schedule),
     }),
   listGoogleCalendarEvents: ({
     calendarId,

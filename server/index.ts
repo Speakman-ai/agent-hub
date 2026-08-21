@@ -230,6 +230,9 @@ import { maybeRunDeployTriggers } from './deploy/deploy-trigger-hook.js';
 import { initDeploySchedules } from './deploy/deploy-schedule-ticker.js';
 import { initReleaseGates, requestReleaseGateSweep } from './deploy/release-gate-ticker.js';
 import { initEpicStartSchedules } from './autonomous-start-schedule.js';
+import { initDailySummarySchedules } from './daily-summary-schedule.js';
+import { generateDailySummary } from './hub-daily-summary.js';
+import { listUsersWithDailySummarySchedule } from './user-preferences-store.js';
 import createReleaseNotificationSettingsRoutes from './routes/release-notification-settings.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
 import { recordJobResourceSummary } from './finalize/metrics.js';
@@ -2769,6 +2772,19 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       initEpicStartSchedules({ getProjects });
     } catch (e) {
       console.error('[epic-start-schedule] init on boot', (e as Error).message);
+    }
+
+    // Register the once-a-minute ticker that auto-refreshes each user's Hub
+    // Daily Summary at their configured local times, reusing their own engine
+    // credentials (same path as the on-demand POST).
+    try {
+      initDailySummarySchedules({
+        routeDeps,
+        listSchedules: listUsersWithDailySummarySchedule,
+        generate: generateDailySummary,
+      });
+    } catch (e) {
+      console.error('[daily-summary-schedule] init on boot', (e as Error).message);
     }
 
     setOnCronSessionUpdate((info: Record<string, unknown>) => {

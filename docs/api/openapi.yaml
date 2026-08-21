@@ -10189,6 +10189,32 @@ components:
         - timeZone
         - report
       description: Today's Daily Summary for the caller, or report=null when none has been generated yet today.
+    MeDailySummarySchedule:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        timeZone:
+          type: string
+        times:
+          type: array
+          items:
+            type: string
+      required:
+        - enabled
+        - timeZone
+        - times
+      description: "Auto-refresh schedule for the caller's Hub Daily Summary: 1+ local `HH:MM` times of day (interpreted in `timeZone`) at which the report regenerates using the caller's own engine credentials."
+    MeDailySummaryScheduleResponse:
+      type: object
+      properties:
+        schedule:
+          allOf:
+            - $ref: "#/components/schemas/MeDailySummarySchedule"
+            - nullable: true
+      required:
+        - schedule
+      description: The stored schedule, or null when the summary is not scheduled.
     MeTodosErrorResponse:
       type: object
       properties:
@@ -34364,6 +34390,66 @@ paths:
                 $ref: "#/components/schemas/MeDailySummaryErrorResponse"
         "503":
           description: No AI engines are configured or available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryErrorResponse"
+  /api/me/daily-summary/schedule:
+    get:
+      tags:
+        - Hub
+      summary: Read the caller's Hub Daily Summary auto-refresh schedule
+      description: "Returns the caller's stored schedule, or `schedule: null` when the summary is not scheduled."
+      responses:
+        "200":
+          description: The stored schedule (or null).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryScheduleResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryErrorResponse"
+    put:
+      tags:
+        - Hub
+      summary: Set the caller's Hub Daily Summary auto-refresh schedule
+      description: Replaces the schedule. Invalid `HH:MM` entries are dropped; an empty or all-invalid `times` array clears the schedule. The ticker regenerates the report at each configured local time using the caller's own engine credentials.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                  description: When false the times are kept but auto-refresh is paused.
+                timeZone:
+                  type: string
+                  description: IANA timezone the times are interpreted in. Defaults to UTC.
+                times:
+                  type: array
+                  items:
+                    type: string
+                  description: 24h local times of day (`HH:MM`). Capped at 12.
+      responses:
+        "200":
+          description: The normalized, stored schedule (or null when cleared).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryScheduleResponse"
+        "400":
+          description: Malformed schedule body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDailySummaryErrorResponse"
+        "401":
+          description: Authentication required.
           content:
             application/json:
               schema:

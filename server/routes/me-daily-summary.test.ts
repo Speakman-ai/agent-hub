@@ -99,3 +99,58 @@ describe('/api/me/daily-summary', () => {
     expect(generate).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('/api/me/daily-summary/schedule', () => {
+  it('requires authentication', async () => {
+    await request(mount(null)).get('/api/me/daily-summary/schedule').expect(401);
+    await request(mount(null)).put('/api/me/daily-summary/schedule').send({}).expect(401);
+  });
+
+  it('returns schedule=null before anything is set', async () => {
+    const res = await request(mount(userA)).get('/api/me/daily-summary/schedule').expect(200);
+    expect(res.body.schedule).toBeNull();
+  });
+
+  it('PUT normalizes (dedupes, sorts, drops invalid), persists, and GET returns it', async () => {
+    const put = await request(mount(userA))
+      .put('/api/me/daily-summary/schedule')
+      .send({
+        enabled: true,
+        timeZone: 'America/New_York',
+        times: ['09:00', '25:99', '09:00', '07:30'],
+      })
+      .expect(200);
+    expect(put.body.schedule).toEqual({
+      enabled: true,
+      timeZone: 'America/New_York',
+      times: ['07:30', '09:00'],
+    });
+
+    const get = await request(mount(userA)).get('/api/me/daily-summary/schedule').expect(200);
+    expect(get.body.schedule.times).toEqual(['07:30', '09:00']);
+    expect(get.body.schedule.enabled).toBe(true);
+  });
+
+  it('clears the schedule when times is empty', async () => {
+    await request(mount(userA))
+      .put('/api/me/daily-summary/schedule')
+      .send({ enabled: true, timeZone: 'UTC', times: ['08:00'] })
+      .expect(200);
+    const cleared = await request(mount(userA))
+      .put('/api/me/daily-summary/schedule')
+      .send({ enabled: true, timeZone: 'UTC', times: [] })
+      .expect(200);
+    expect(cleared.body.schedule).toBeNull();
+  });
+
+  it('400s on a malformed body', async () => {
+    await request(mount(userA))
+      .put('/api/me/daily-summary/schedule')
+      .send({ enabled: 'yes', times: ['08:00'] })
+      .expect(400);
+    await request(mount(userA))
+      .put('/api/me/daily-summary/schedule')
+      .send({ times: 'nope' })
+      .expect(400);
+  });
+});

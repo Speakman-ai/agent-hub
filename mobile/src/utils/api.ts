@@ -851,6 +851,9 @@ export const api = {
     },
     generateDailySummary: (opts: { tz?: string } = {}) =>
         fetchJSON('/me/daily-summary', { method: 'POST', body: JSON.stringify({ tz: opts.tz }) }),
+    getDailySummarySchedule: () => fetchJSON('/me/daily-summary/schedule'),
+    setDailySummarySchedule: (schedule: { enabled: boolean; timeZone?: string; times: string[] }) =>
+        fetchJSON('/me/daily-summary/schedule', { method: 'PUT', body: JSON.stringify(schedule) }),
     // Per-user Google connection (Settings -> Account). Never returns tokens.
     getGoogleStatus: () => fetchJSON('/auth/google/status'),
     // Returns { authorizeUrl }; the caller opens it in the system browser.

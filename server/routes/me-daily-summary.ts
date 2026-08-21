@@ -16,6 +16,11 @@ import {
   parseDailySummaryTimeZone,
   NoEnginesAvailableError,
 } from '../hub-daily-summary.js';
+import { getUserPreferencesRow, mergeUserPreferencesJson } from '../user-preferences-store.js';
+import {
+  normalizeDailySummarySchedule,
+  type HubDailySummarySchedule,
+} from '../daily-summary-schedule.js';
 import './me-daily-summary.openapi.js';
 
 export interface MeDailySummaryRouteOptions {
@@ -75,6 +80,44 @@ export default function createMeDailySummaryRoutes(
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: message });
     }
+  });
+
+  router.get('/api/me/daily-summary/schedule', (req: Request, res: Response) => {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const schedule = getUserPreferencesRow(areq.authUserId).hubDailySummarySchedule ?? null;
+    res.json({ schedule });
+  });
+
+  router.put('/api/me/daily-summary/schedule', (req: Request, res: Response) => {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Invalid schedule body' });
+      return;
+    }
+    if ('enabled' in body && typeof body.enabled !== 'boolean') {
+      res.status(400).json({ error: '`enabled` must be a boolean' });
+      return;
+    }
+    if ('times' in body && !Array.isArray(body.times)) {
+      res.status(400).json({ error: '`times` must be an array of HH:MM strings' });
+      return;
+    }
+    // Normalization drops invalid times and clears the schedule when nothing
+    // valid remains, so passing `{ times: [] }` (or all-invalid) turns it off.
+    const normalized: HubDailySummarySchedule | undefined = normalizeDailySummarySchedule(body);
+    const stored = mergeUserPreferencesJson(areq.authUserId, {
+      hubDailySummarySchedule: normalized,
+    });
+    res.json({ schedule: stored.hubDailySummarySchedule ?? null });
   });
 
   return router;

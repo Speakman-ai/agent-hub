@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  TextInput,
+  Switch,
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { api } from '../utils/api';
@@ -123,26 +125,158 @@ export default function DailySummaryScreen({
         </TouchableOpacity>
       </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      {loading && !generating ? (
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.body}>
+        {loading && !generating ? (
+          <Text style={styles.muted}>Loading…</Text>
+        ) : hasToday && report ? (
+          <View>
+            <Text style={styles.meta}>
+              Generated {formatGeneratedAt(report.generatedAt)}
+              {report.engine ? ` · ${report.engine}` : ''}
+              {report.model ? ` / ${report.model}` : ''}
+            </Text>
+            <Markdown style={markdownStyles as any} onLinkPress={onLinkPress}>
+              {report.markdown}
+            </Markdown>
+          </View>
+        ) : (
+          <View style={styles.empty} testID="daily-summary-empty">
+            <Text style={styles.emptyTitle}>No summary for today yet.</Text>
+            <Text style={styles.muted}>
+              Generate a report of what you did today, what is running now, and what happened
+              yesterday.
+            </Text>
+          </View>
+        )}
+        <ScheduleEditor />
+      </ScrollView>
+    </View>
+  );
+}
+
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const DEFAULT_TIME = '09:00';
+
+/**
+ * Auto-refresh schedule: one or more local times of day at which the Hub
+ * regenerates this summary using the user's own Claude credentials.
+ */
+function ScheduleEditor() {
+  const [enabled, setEnabled] = useState(false);
+  const [times, setTimes] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const timeZone = localTimeZone() ?? 'UTC';
+
+  const apply = useCallback((schedule: any) => {
+    setEnabled(schedule?.enabled ?? false);
+    setTimes(Array.isArray(schedule?.times) ? schedule.times : []);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const body: any = await api.getDailySummarySchedule();
+        if (!cancelled) apply(body?.schedule);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apply]);
+
+  const save = useCallback(
+    async (nextEnabled: boolean, nextTimes: string[]) => {
+      setSaving(true);
+      setError(null);
+      try {
+        const clean = Array.from(new Set(nextTimes.filter((t) => HHMM_RE.test(t)))).sort();
+        const body: any = await api.setDailySummarySchedule({
+          enabled: nextEnabled,
+          timeZone,
+          times: clean,
+        });
+        apply(body?.schedule);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [apply, timeZone],
+  );
+
+  return (
+    <View style={styles.schedule} testID="daily-summary-schedule">
+      <View style={styles.scheduleHeader}>
+        <HubIcon name="Clock" size={14} color={colors.sky400} />
+        <Text style={styles.scheduleTitle}>Auto-refresh schedule</Text>
+        <Switch
+          value={enabled}
+          disabled={loading || saving}
+          onValueChange={(next) => {
+            setEnabled(next);
+            void save(next, times);
+          }}
+          testID="daily-summary-schedule-enabled"
+        />
+      </View>
+      <Text style={styles.muted}>
+        Regenerates at each time below (in {timeZone}) using your Claude credentials.
+      </Text>
+      {loading ? (
         <Text style={styles.muted}>Loading…</Text>
-      ) : hasToday && report ? (
-        <ScrollView contentContainerStyle={styles.body}>
-          <Text style={styles.meta}>
-            Generated {formatGeneratedAt(report.generatedAt)}
-            {report.engine ? ` · ${report.engine}` : ''}
-            {report.model ? ` / ${report.model}` : ''}
-          </Text>
-          <Markdown style={markdownStyles as any} onLinkPress={onLinkPress}>
-            {report.markdown}
-          </Markdown>
-        </ScrollView>
       ) : (
-        <View style={styles.empty} testID="daily-summary-empty">
-          <Text style={styles.emptyTitle}>No summary for today yet.</Text>
-          <Text style={styles.muted}>
-            Generate a report of what you did today, what is running now, and what happened
-            yesterday.
-          </Text>
+        <View style={styles.scheduleBody}>
+          {times.length === 0 ? (
+            <Text style={styles.muted}>No times yet. Add one below.</Text>
+          ) : (
+            times.map((time, idx) => (
+              <View key={idx} style={styles.timeRow}>
+                <TextInput
+                  value={time}
+                  placeholder="HH:MM"
+                  placeholderTextColor={colors.gray500}
+                  editable={!saving}
+                  onChangeText={(v) => setTimes((prev) => prev.map((t, i) => (i === idx ? v : t)))}
+                  style={styles.timeInput}
+                  testID="daily-summary-schedule-time"
+                />
+                <TouchableOpacity
+                  onPress={() => setTimes((prev) => prev.filter((_, i) => i !== idx))}
+                  disabled={saving}
+                  style={styles.timeRemove}
+                >
+                  <HubIcon name="Trash2" size={13} color={colors.gray400} />
+                </TouchableOpacity>
+              </View>
+            ))
+          )}
+          <View style={styles.scheduleActions}>
+            <TouchableOpacity
+              onPress={() => setTimes((prev) => [...prev, DEFAULT_TIME])}
+              disabled={saving}
+              style={styles.scheduleButton}
+              testID="daily-summary-schedule-add"
+            >
+              <Text style={styles.scheduleButtonLabel}>Add time</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => void save(enabled, times)}
+              disabled={saving}
+              style={[styles.scheduleButton, styles.scheduleSave]}
+              testID="daily-summary-schedule-save"
+            >
+              <Text style={styles.scheduleSaveLabel}>{saving ? 'Saving…' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
         </View>
       )}
     </View>
@@ -177,9 +311,41 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.5 },
   buttonLabel: { color: colors.white, fontSize: 12, fontWeight: '600' },
   error: { color: colors.red400, fontSize: 13, paddingHorizontal: 16, marginBottom: 8 },
-  muted: { color: colors.gray500, fontSize: 13, paddingHorizontal: 16 },
+  muted: { color: colors.gray500, fontSize: 13 },
+  scroll: { flex: 1 },
   body: { paddingHorizontal: 16, paddingBottom: 24 },
   meta: { color: colors.gray500, fontSize: 12, marginBottom: 12 },
-  empty: { paddingHorizontal: 16, paddingTop: 32, gap: 6 },
+  empty: { paddingTop: 32, gap: 6 },
   emptyTitle: { color: colors.gray300, fontSize: 14, fontWeight: '500' },
+  schedule: {
+    marginTop: 20,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.gray800,
+    paddingTop: 16,
+    gap: 8,
+  },
+  scheduleHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  scheduleTitle: { color: colors.white, fontSize: 14, fontWeight: '600', flex: 1 },
+  scheduleBody: { gap: 8 },
+  timeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  timeInput: {
+    backgroundColor: colors.gray800,
+    color: colors.gray200,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    fontSize: 14,
+    width: 96,
+  },
+  timeRemove: { padding: 6 },
+  scheduleActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  scheduleButton: {
+    backgroundColor: colors.gray800,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  scheduleButtonLabel: { color: colors.gray200, fontSize: 12, fontWeight: '600' },
+  scheduleSave: { backgroundColor: '#0e7490' },
+  scheduleSaveLabel: { color: colors.white, fontSize: 12, fontWeight: '600' },
 });
