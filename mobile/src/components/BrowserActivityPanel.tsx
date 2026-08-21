@@ -17,7 +17,7 @@ export default function BrowserActivityPanel({ timelineEntries, streaming, scree
     const hint = useMemo<any>(() => deriveStreamingBrowserHint(timelineEntries), [timelineEntries]);
     const rows = useMemo<any>(() => mergeBrowserTimelineRows(timelineEntries), [timelineEntries]);
     const hasRunningBrowser = !!(streaming && rows.some((r: any) => r.phase === 'running'));
-    const [open, setOpen] = useState(false);
+    const [open, setOpen] = useState(true);
     if (!hint && rows.length === 0)
         return null;
     const hasLive = !!(streaming && hint);

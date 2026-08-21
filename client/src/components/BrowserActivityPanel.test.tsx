@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import BrowserActivityPanel from './BrowserActivityPanel';
 
 describe('BrowserActivityPanel', () => {
-  it('shows collapsible browser activity timeline', () => {
+  it('is expanded by default and can be toggled closed', () => {
     const timeline = [
       {
         seq: 1,
@@ -34,10 +34,12 @@ describe('BrowserActivityPanel', () => {
     render(<BrowserActivityPanel timelineEntries={timeline} streaming={false} screenshots={{}} />);
     expect(screen.getByTestId('browser-activity-panel')).toBeTruthy();
     const btn = screen.getByRole('button', { name: /Browser Activity/i });
-    expect(btn!.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.getByText(/Browser Activity/)).toBeTruthy();
-    fireEvent.click(btn as any);
+    // Expanded by default so activity is visible without a click.
     expect(btn!.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText(/Opened example\.com/)).toBeTruthy();
+    // Still collapsible.
+    fireEvent.click(btn as any);
+    expect(btn!.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText(/Opened example\.com/)).toBeNull();
   });
 });
