@@ -15,6 +15,7 @@ import { mapWithConcurrency } from '../git-host/recent-pushes.js';
 import { computeSessionState } from '../session-state.js';
 import { getUserById } from '../users-store.js';
 import { isHubAssistantAgentId } from '../../shared/utils/hub.js';
+import { isWikiDocSessionName } from '../wiki-doc-session.js';
 
 /**
  * Mirrors `authIsConfigured` in routes/orgs.ts. When neither JWT-backed user
@@ -292,6 +293,10 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
           // The Hub assistant is the org/user home helper, not project work —
           // its sessions never belong in the org's in-flight work queue.
           !isHubAssistantAgentId(r.agent_id) &&
+          // Wiki-doc sessions ([Wiki] ...) are ephemeral docs-agent runs that
+          // never wait on a human (they self-archive on turn end). Keep them out
+          // of the queue so a burst of post-merge doc reviews can't drown it.
+          !isWikiDocSessionName(r.name) &&
           (!mergedSessionIds.has(r.id) || runningTaskBySession.has(r.id)),
       )
       .map((r) => ({ r, state: computeSessionState(stmts, r.id) }))

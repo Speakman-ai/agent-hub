@@ -34,6 +34,17 @@ export function wikiDocSessionNameForCard(cardId: string): string {
   return `${WIKI_DOC_SESSION_PREFIX} ${cardId}`;
 }
 
+/**
+ * True for any session whose name carries the wiki-doc prefix. These are
+ * ephemeral, no-worktree docs-agent sessions (see `kickWikiDocSession`): they
+ * review a merged change, write/update at most one wiki page through the wiki
+ * API, and are done. They never wait on a human, so they must be excluded from
+ * the org "active sessions" queue and self-archived when their turn ends.
+ */
+export function isWikiDocSessionName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && name.startsWith(WIKI_DOC_SESSION_PREFIX);
+}
+
 export function wikiDocBackfillSessionName(): string {
   return `${WIKI_DOC_SESSION_PREFIX} backfill`;
 }
@@ -392,6 +403,52 @@ export function maybeMarkLinkedCardDocumented(
   if (Number(card.documented) === 1) return { marked: false, cardId: card.id };
   stmts.markCardDocumented.run(card.id);
   return { marked: true, cardId: card.id };
+}
+
+/**
+ * Self-archive an ephemeral wiki-doc session once its turn ends. No-op for any
+ * session that is not a `[Wiki]` session, already deleted, or unknown. Marks a
+ * still-running background task terminal (so the sidebar stops showing it as
+ * busy), then soft-deletes the session and broadcasts `session_deleted` so it
+ * drops out of the active-sessions queue instead of lingering "waiting for user
+ * input" forever. Never throws — chat turn teardown must not fail on cleanup.
+ */
+export function maybeArchiveWikiDocSession(
+  deps: { stmts: Stmts; broadcast?: BroadcastFn },
+  args: { sessionId: string; agentId?: string; error?: string | null },
+): { archived: boolean } {
+  try {
+    const session = deps.stmts.getSession.get(args.sessionId) as SessionRow | undefined;
+    if (!session || session.deleted_at) return { archived: false };
+    if (!isWikiDocSessionName(session.name)) return { archived: false };
+
+    try {
+      const bgTask = deps.stmts.getBackgroundTaskBySession.get(args.sessionId) as
+        | { id: string; status: string }
+        | undefined;
+      if (bgTask?.status === 'running') {
+        const terminal = args.error?.trim() ? 'error' : 'done';
+        deps.stmts.updateBackgroundTaskStatus.run(terminal, bgTask.id);
+        deps.broadcast?.({
+          type: 'task_complete',
+          taskId: bgTask.id,
+          sessionId: args.sessionId,
+          agentId: args.agentId ?? session.agent_id,
+          status: terminal,
+        });
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    deps.stmts.softDeleteSession.run(args.sessionId);
+    deps.broadcast?.({ type: 'session_deleted', sessionId: args.sessionId });
+    return { archived: true };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[wiki-doc] session archival failed for ${args.sessionId}: ${msg}`);
+    return { archived: false };
+  }
 }
 
 // ─── Late-bound merge hook (avoids a chat.ts import cycle) ────────

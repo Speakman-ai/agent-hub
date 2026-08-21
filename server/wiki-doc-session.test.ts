@@ -16,6 +16,8 @@ import {
   wikiDocBackfillSessionName,
   WIKI_DOC_SESSION_PREFIX,
   isWikiDocSkip,
+  isWikiDocSessionName,
+  maybeArchiveWikiDocSession,
 } from './wiki-doc-session.js';
 import type { Agent, KanbanCardRow, Project, SessionRow, Stmts } from './types.js';
 
@@ -585,5 +587,85 @@ describe('maybeDispatchScheduledWikiBackfill', () => {
       skipped: true,
       reason: 'none_undocumented',
     });
+  });
+});
+
+describe('isWikiDocSessionName', () => {
+  it('matches [Wiki] sessions and ignores everything else', () => {
+    expect(isWikiDocSessionName(wikiDocSessionNameForCard('card-1'))).toBe(true);
+    expect(isWikiDocSessionName(wikiDocBackfillSessionName())).toBe(true);
+    expect(isWikiDocSessionName(`${WIKI_DOC_SESSION_PREFIX} anything`)).toBe(true);
+    expect(isWikiDocSessionName('Review: PR #12 fix login')).toBe(false);
+    expect(isWikiDocSessionName('My session')).toBe(false);
+    expect(isWikiDocSessionName(null)).toBe(false);
+    expect(isWikiDocSessionName(undefined)).toBe(false);
+  });
+});
+
+describe('maybeArchiveWikiDocSession', () => {
+  function archiveStmts(session: Partial<SessionRow> | undefined, bgTask?: unknown) {
+    return {
+      getSession: { get: vi.fn(() => session) },
+      getBackgroundTaskBySession: { get: vi.fn(() => bgTask) },
+      updateBackgroundTaskStatus: { run: vi.fn() },
+      softDeleteSession: { run: vi.fn() },
+    } as unknown as Stmts & Record<string, { run: ReturnType<typeof vi.fn> }>;
+  }
+
+  it('soft-deletes a completed wiki-doc session and completes a running task', () => {
+    const stmts = archiveStmts(
+      { id: 'sess', name: wikiDocSessionNameForCard('card-1'), agent_id: 'docs-1' },
+      { id: 'task-1', status: 'running' },
+    );
+    const broadcast = vi.fn();
+
+    const result = maybeArchiveWikiDocSession({ stmts, broadcast }, { sessionId: 'sess' });
+
+    expect(result).toEqual({ archived: true });
+    expect(stmts.updateBackgroundTaskStatus.run).toHaveBeenCalledWith('done', 'task-1');
+    expect(stmts.softDeleteSession.run).toHaveBeenCalledWith('sess');
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'session_deleted', sessionId: 'sess' }),
+    );
+  });
+
+  it('marks the task error when the turn ended with an error', () => {
+    const stmts = archiveStmts(
+      { id: 'sess', name: wikiDocSessionNameForCard('card-1'), agent_id: 'docs-1' },
+      { id: 'task-1', status: 'running' },
+    );
+
+    maybeArchiveWikiDocSession({ stmts, broadcast: vi.fn() }, { sessionId: 'sess', error: 'boom' });
+
+    expect(stmts.updateBackgroundTaskStatus.run).toHaveBeenCalledWith('error', 'task-1');
+    expect(stmts.softDeleteSession.run).toHaveBeenCalledWith('sess');
+  });
+
+  it('does not touch non-[Wiki] sessions', () => {
+    const stmts = archiveStmts({ id: 'sess', name: 'Review: PR #9', agent_id: 'rev-1' });
+
+    const result = maybeArchiveWikiDocSession({ stmts, broadcast: vi.fn() }, { sessionId: 'sess' });
+
+    expect(result).toEqual({ archived: false });
+    expect(stmts.softDeleteSession.run).not.toHaveBeenCalled();
+  });
+
+  it('no-ops for an already-deleted or missing session', () => {
+    const deleted = archiveStmts({
+      id: 'sess',
+      name: wikiDocSessionNameForCard('card-1'),
+      agent_id: 'docs-1',
+      deleted_at: '2026-08-21T00:00:00Z',
+    } as Partial<SessionRow>);
+    expect(
+      maybeArchiveWikiDocSession({ stmts: deleted, broadcast: vi.fn() }, { sessionId: 'sess' }),
+    ).toEqual({ archived: false });
+    expect(deleted.softDeleteSession.run).not.toHaveBeenCalled();
+
+    const missing = archiveStmts(undefined);
+    expect(
+      maybeArchiveWikiDocSession({ stmts: missing, broadcast: vi.fn() }, { sessionId: 'nope' }),
+    ).toEqual({ archived: false });
+    expect(missing.softDeleteSession.run).not.toHaveBeenCalled();
   });
 });

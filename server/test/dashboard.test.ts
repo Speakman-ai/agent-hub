@@ -332,6 +332,29 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(body.headline.activeSessions).toBe(body.activeSessions.length);
   });
 
+  it('excludes ephemeral [Wiki] docs sessions from the queue + count', async () => {
+    // Post-merge wiki-doc sessions ([Wiki] <card>) never wait on a human — they
+    // self-archive on turn end — so a burst of them must not drown the queue
+    // (regression: 59 stranded "[Wiki] …" rows flooded the active-sessions panel).
+    const project = await createProject({ name: 'Dashboard Wiki Session Project' });
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, name: 'Wiki Docs Agent' });
+    const agentId = agent.id as string;
+    const wikiSession = await createSession({
+      agentId,
+      name: '[Wiki] 58403bf0-2dbf-43e3-94b3-b2fbf148cf10',
+    });
+    const normalSession = await createSession({ agentId, name: 'Real Work Session' });
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    expect(body.activeSessions.some((s) => s.sessionId === wikiSession.id)).toBe(false);
+    // A normal session on the same agent is unaffected.
+    expect(body.activeSessions.some((s) => s.sessionId === normalSession.id)).toBe(true);
+    expect(body.headline.activeSessions).toBe(body.activeSessions.length);
+  });
+
   it('excludes the Hub assistant agent sessions from the queue + count', async () => {
     // The Hub assistant (`__hub_assistant__`) is the org/user home helper, not
     // project work. Its sessions land in the org DB just like any other, and

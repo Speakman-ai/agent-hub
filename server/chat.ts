@@ -69,6 +69,7 @@ import {
 } from './session-env/session-startup-hooks.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
+import { maybeArchiveWikiDocSession } from './wiki-doc-session.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import { runGoogleReadAction } from './google-react.js';
 import {
@@ -3447,6 +3448,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts, broadcast },
             { sessionId, agentId, error: err.message },
           );
+          maybeArchiveWikiDocSession(
+            { stmts, broadcast },
+            { sessionId, agentId, error: err.message },
+          );
           drainQueue(sessionId);
           return;
         }
@@ -3488,6 +3493,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts, broadcast },
             { sessionId, agentId, error: errText },
           );
+          maybeArchiveWikiDocSession({ stmts, broadcast }, { sessionId, agentId, error: errText });
           drainQueue(sessionId);
           return;
         }
@@ -3649,6 +3655,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts, broadcast },
             { sessionId, agentId, error: errText },
           );
+          maybeArchiveWikiDocSession({ stmts, broadcast }, { sessionId, agentId, error: errText });
           drainQueue(sessionId);
           return;
         }
@@ -5105,6 +5112,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts: S, broadcast },
             { sessionId, agentId, error: errorMsg },
           );
+          maybeArchiveWikiDocSession(
+            { stmts: S, broadcast },
+            { sessionId, agentId, error: errorMsg },
+          );
           // Terminal errored close (non-transient exit, no output, no failover
           // left). A Finalize fix-dispatch / rebase-conflict wait for this
           // session blocks on a turn-end signal and this branch never reaches
@@ -6049,6 +6060,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             S.updateNoteProcessing.run('success', finalContent.substring(0, 1000), np.id);
           }
         } catch {}
+
+        // Ephemeral wiki-doc sessions ([Wiki] ...) self-archive on their
+        // terminal turn — like the auto-review reviewer sessions — so they drop
+        // out of the active-sessions queue instead of lingering "waiting for
+        // user input". A ReAct continuation is not terminal yet.
+        if (!shouldAutoContinue) {
+          maybeArchiveWikiDocSession({ stmts: S, broadcast }, { sessionId, agentId });
+        }
 
         if (project.ahw && !isAutoContinuation) {
           const briefEntry = `**Chat** — User: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}\nAssistant: ${finalContent.substring(0, 200)}${finalContent.length > 200 ? '...' : ''}`;
