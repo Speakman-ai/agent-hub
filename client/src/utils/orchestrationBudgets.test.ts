@@ -43,13 +43,13 @@ describe('ORCHESTRATION_FIELD_META', () => {
       ]),
     );
     expect(byKey.maxContinuationDepth).toBe(
-      `${DEFAULT_ORCHESTRATION_BUDGETS.maxContinuationDepth} default`,
+      `${DEFAULT_ORCHESTRATION_BUDGETS.maxContinuationDepth} unlimited`,
     );
     expect(byKey.maxReactWallClockMs).toBe(
       `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactWallClockMs} unlimited`,
     );
     expect(byKey.maxReactModelTurns).toBe(
-      `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactModelTurns} (depth only)`,
+      `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactModelTurns} unlimited`,
     );
     expect(byKey.maxReactActionsPerTurn).toBe(
       `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactActionsPerTurn} default`,

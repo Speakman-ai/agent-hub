@@ -89,7 +89,7 @@ describe('evaluateReactContinuationBudgets', () => {
     expect(r.reasons).toEqual([]);
   });
 
-  it('blocks when continuation depth reaches cap', () => {
+  it('blocks when continuation depth reaches a configured finite cap', () => {
     const r = evaluateReactContinuationBudgets({
       reactLoopEnabled: true,
       continuationContextAdded: true,
@@ -97,10 +97,24 @@ describe('evaluateReactContinuationBudgets', () => {
       continuationDepth: 8,
       chainStartedAtMs: 0,
       nowMs: 100,
-      budgets,
+      budgets: { ...budgets, maxContinuationDepth: 8 },
     });
     expect(r.ok).toBe(false);
     expect(r.reasons.some((x) => x.includes('continuation depth'))).toBe(true);
+  });
+
+  it('does not block on depth when the cap is 0 (unlimited, default)', () => {
+    const r = evaluateReactContinuationBudgets({
+      reactLoopEnabled: true,
+      continuationContextAdded: true,
+      controlFlowPresent: false,
+      continuationDepth: 1000,
+      chainStartedAtMs: 0,
+      nowMs: 100,
+      budgets,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.reasons).toEqual([]);
   });
 
   it('blocks on wall clock when configured', () => {
@@ -141,7 +155,7 @@ describe('projectOrchestrationDefaults', () => {
   it('uses defaults when project has no budgets', () => {
     const p = { id: 'x', name: 'n', cwd: '/', ahw: '/', agents: [] } as unknown as Project;
     const d = projectOrchestrationDefaults(p);
-    expect(d.maxContinuationDepth).toBe(8);
+    expect(d.maxContinuationDepth).toBe(0);
     expect(d.maxReactActionsPerTurn).toBe(8);
     expect(d.maxWikiRagCallsPerSession).toBe(16);
     expect(d.maxWebSearchCallsPerSession).toBe(16);

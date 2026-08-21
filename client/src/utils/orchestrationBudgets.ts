@@ -5,7 +5,7 @@
  */
 
 export const DEFAULT_ORCHESTRATION_BUDGETS = {
-  maxContinuationDepth: 8,
+  maxContinuationDepth: 0,
   maxReactWallClockMs: 0,
   maxReactModelTurns: 0,
   maxReactActionsPerTurn: 8,
@@ -17,8 +17,8 @@ export const ORCHESTRATION_FIELD_META = [
   {
     key: 'maxContinuationDepth',
     label: 'Max continuation depth',
-    hint: 'Default 8',
-    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxContinuationDepth} default`,
+    hint: '0 = unlimited',
+    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxContinuationDepth} unlimited`,
   },
   {
     key: 'maxReactWallClockMs',
@@ -29,8 +29,8 @@ export const ORCHESTRATION_FIELD_META = [
   {
     key: 'maxReactModelTurns',
     label: 'Max model turns / chain',
-    hint: '0 = depth only',
-    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactModelTurns} (depth only)`,
+    hint: '0 = unlimited',
+    placeholder: `${DEFAULT_ORCHESTRATION_BUDGETS.maxReactModelTurns} unlimited`,
   },
   {
     key: 'maxReactActionsPerTurn',

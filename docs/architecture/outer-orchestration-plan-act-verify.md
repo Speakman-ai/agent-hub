@@ -10,7 +10,7 @@ Today the host already composes several “loops,” but they solve different pr
 
 | Mechanism | Scope | Persisted? | Typical stop condition |
 |-----------|--------|------------|-------------------------|
-| Inner ReAct (`<agenthub:react>`) | One assistant turn → host tool actions → optional auto-continue | Observations merged into `pending_skill_context`; continuation depth capped (`MAX_AUTO_CONTINUATION_DEPTH`) | No `<agenthub:close-card>`; budgets not exhausted |
+| Inner ReAct (`<agenthub:react>`) | One assistant turn → host tool actions → optional auto-continue | Observations merged into `pending_skill_context`; continuation depth cap is off by default (`maxContinuationDepth: 0` = unlimited), configurable per-project/epic | No `<agenthub:close-card>`; budgets not exhausted |
 | Auto-continuation retry | Scheduling when continuation is blocked (busy session) | Retry counter in memory for the scheduling path | `AUTO_CONTINUATION_MAX_RETRIES` |
 | Autonomous epic dispatch | Kanban-driven “next card” work | Card `session_id`, iteration counters, epic flags | Max iterations, empty queue, human gate (Review) |
 

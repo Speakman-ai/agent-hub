@@ -14,10 +14,11 @@ import type { KanbanEpicRow, Project } from './types.js';
 export const HOST_REACT_ACTIONS_PARSE_CAP = 12;
 
 export interface OrchestrationBudgetsPartial {
+  /** Max auto-continuation turns in one chain. 0 = unlimited. */
   maxContinuationDepth?: number;
   /** Wall-clock budget for one user-turn ReAct chain (ms). 0 = unlimited. */
   maxReactWallClockMs?: number;
-  /** Max model invocations (CLI rounds) in one chain. 0 = unlimited (depth cap still applies). */
+  /** Max model invocations (CLI rounds) in one chain. 0 = unlimited. */
   maxReactModelTurns?: number;
   maxReactActionsPerTurn?: number;
   maxWikiRagCallsPerSession?: number;
@@ -34,7 +35,7 @@ export interface ResolvedOrchestrationBudgets {
 }
 
 export const DEFAULT_ORCHESTRATION_BUDGETS: ResolvedOrchestrationBudgets = {
-  maxContinuationDepth: 8,
+  maxContinuationDepth: 0,
   maxReactWallClockMs: 0,
   maxReactModelTurns: 0,
   maxReactActionsPerTurn: 8,
@@ -204,7 +205,7 @@ export function evaluateReactContinuationBudgets(
     return { ok: false, reasons: [] };
   }
 
-  if (continuationDepth >= budgets.maxContinuationDepth) {
+  if (budgets.maxContinuationDepth > 0 && continuationDepth >= budgets.maxContinuationDepth) {
     reasons.push(`continuation depth ${continuationDepth} >= max ${budgets.maxContinuationDepth}`);
   }
 
