@@ -1208,8 +1208,9 @@ export default function createDeploymentRoutes(
     '/api/projects/:projectId/deploy/release-gate-candidates',
     (req: Request, res: Response) => {
       const projectId = req.params.projectId as string;
-      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
-      const sessions = buildReleaseGateSessionCandidates(getStmts(), projectId);
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const sessions = buildReleaseGateSessionCandidates(getStmts(), project);
       return res.json({ projectId, sessions });
     },
   );

@@ -296,6 +296,7 @@ beforeEach(() => {
     'kanban_cards',
     'kanban_columns',
     'kanban_boards',
+    'sessions',
     'support_tickets',
   ]);
 });
@@ -2296,12 +2297,16 @@ environments:
       });
     }
 
-    it('returns only live sessions on non-terminal cards, dropping dangling ids', async () => {
+    it('returns live sessions, dropping those on terminal (Done/Cancelled) cards', async () => {
+      // Candidates are sourced from the project's live sessions (sidebar
+      // parity), not from cards. A card on a Done/Cancelled column drops its
+      // session; a card referencing a non-existent session (sess-gone) never
+      // appears because there is no live session to enumerate. Labels come from
+      // the session name.
       seedBoard(
         [
           { session_id: 'sess-live', title: 'Fix auth', column: 'todo' },
           { session_id: 'sess-gone', title: 'Purged session', column: 'todo' },
-          { session_id: 'sess-live, sess-live', title: 'Corrupt link', column: 'todo' },
           { session_id: 'sess-done', title: 'Old work', column: 'done' },
           { session_id: 'sess-cancel', title: 'Dropped', column: 'cancel' },
           { session_id: null, title: 'No session', column: 'todo' },
@@ -2311,13 +2316,20 @@ environments:
       const { app } = makeApp();
       const res = await request(app).get(candidatesUrl).expect(200);
       expect(res.body).toMatchObject({ projectId: PROJECT_ID });
-      expect(res.body.sessions).toEqual([{ id: 'sess-live', label: 'Fix auth' }]);
+      expect(res.body.sessions).toEqual([{ id: 'sess-live', label: 'Session sess-live' }]);
     });
 
-    it('returns an empty list when the project has no board', async () => {
+    it('offers live sessions even when the project has no board', async () => {
+      // No board → no terminal filtering, but live sessions are still offered.
+      getDb()
+        .prepare('INSERT OR REPLACE INTO sessions (id, agent_id, name) VALUES (?, ?, ?)')
+        .run('sess-boardless', 'agent-1', 'Ad-hoc thread');
       const { app } = makeApp();
       const res = await request(app).get(candidatesUrl).expect(200);
-      expect(res.body).toEqual({ projectId: PROJECT_ID, sessions: [] });
+      expect(res.body).toEqual({
+        projectId: PROJECT_ID,
+        sessions: [{ id: 'sess-boardless', label: 'Ad-hoc thread' }],
+      });
     });
 
     it('returns 404 for an unknown project', async () => {
