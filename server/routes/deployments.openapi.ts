@@ -539,6 +539,22 @@ const DeployReleaseGateDeleteResponseSchema = registerComponent(
   z.object({ removed: z.boolean() }),
 );
 
+const ReleaseGateSessionCandidateSchema = registerComponent(
+  'ReleaseGateSessionCandidate',
+  z.object({
+    id: z.string(),
+    label: z.string(),
+  }),
+);
+
+const ReleaseGateCandidatesResponseSchema = registerComponent(
+  'ReleaseGateCandidatesResponse',
+  z.object({
+    projectId: z.string(),
+    sessions: z.array(ReleaseGateSessionCandidateSchema),
+  }),
+);
+
 const NotificationRoutingSchema = registerComponent(
   'NotificationRouting',
   z.object({
@@ -926,6 +942,23 @@ registerPath({
     },
     403: errorResponse('Admin role required.'),
     404: errorResponse('Project or schedule not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/release-gate-candidates',
+  tags: ['Deployments'],
+  summary: 'List candidate sessions for a release gate',
+  description:
+    'Project-wide, server-validated list of in-flight sessions the operator may add to a release gate. Derived from non-terminal board cards but filtered to sessions that still exist and are not yet merged, so a purged or corrupt session id left on an old card is never offered.',
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: 'Candidate sessions for a release gate.',
+      content: jsonContent(ReleaseGateCandidatesResponseSchema),
+    },
+    404: errorResponse('Project not found.'),
   },
 });
 

@@ -75,45 +75,17 @@ export default function EnvironmentReleaseGatesPanel({
   const loadOptions = useCallback(async () => {
     if (!projectId) return;
     try {
-      const [board, epicsRes] = await Promise.all([
-        api.getBoard(projectId, { limit: 500 }).catch(() => null),
+      const [candidatesRes, epicsRes] = await Promise.all([
+        api.listReleaseGateSessionCandidates(projectId).catch(() => null),
         api.getEpics(projectId).catch(() => null),
       ]);
-      // Active sessions = board cards with a linked session that are not yet
-      // done/cancelled (those are the "work in flight" you release on). The
-      // board endpoint returns a flat top-level `cards` array keyed to columns
-      // by `column_id`; columns carry no nested `cards`. Older/other shapes may
-      // nest cards under each column, so handle both.
-      const columns: any[] = board?.columns || [];
-      const isDoneOrCancel = (name: unknown) => {
-        const n = String(name || '').toLowerCase();
-        return n.includes('done') || n.includes('cancel');
-      };
-      const columnNameById = new Map<string, string>();
-      const doneOrCancelledColumnIds = new Set<string>();
-      for (const col of columns) {
-        if (col?.id == null) continue;
-        columnNameById.set(String(col.id), String(col?.name || ''));
-        if (isDoneOrCancel(col?.name)) doneOrCancelledColumnIds.add(String(col.id));
-      }
-      // The board endpoint returns cards flat: iterate that. Fall back to any
-      // nested `col.cards` shape, stamping the column name so done/cancel
-      // columns are still excluded when the card lacks a resolvable column_id.
-      const flatCards: any[] = Array.isArray(board?.cards)
-        ? board.cards
-        : columns.flatMap((col: any) =>
-            (col?.cards || []).map((c: any) => ({ __columnName: col?.name, ...c })),
-          );
-      const sessions: PickOption[] = [];
-      const seen = new Set<string>();
-      for (const card of flatCards) {
-        if (!card?.session_id || seen.has(card.session_id)) continue;
-        const columnName =
-          card.column_id != null ? columnNameById.get(String(card.column_id)) : card.__columnName;
-        if (isDoneOrCancel(columnName)) continue;
-        seen.add(card.session_id);
-        sessions.push({ id: card.session_id, label: card.title || card.session_id });
-      }
+      // Candidate sessions are resolved and validated server-side: only real,
+      // in-flight (non-merged) sessions on non-terminal cards come back, so a
+      // purged or corrupt session id dangling on an old board card is never
+      // offered. See GET /deploy/release-gate-candidates.
+      const sessions: PickOption[] = Array.isArray(candidatesRes?.sessions)
+        ? candidatesRes.sessions.map((s: any) => ({ id: s.id, label: s.label || s.id }))
+        : [];
       setSessionOptions(sessions);
 
       const epics: any[] = Array.isArray(epicsRes) ? epicsRes : epicsRes?.epics || [];

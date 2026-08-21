@@ -1400,6 +1400,13 @@ export const api = {
   // Per-environment release gates (release-gate epic decision): one-shot gates
   // that fire a single deployment once their selected sessions are all merged
   // AND their selected epics are all done, then are consumed.
+  // Candidate sessions the operator may gate a release on: project-wide, and
+  // server-validated so only real, in-flight (non-merged) sessions come back —
+  // never a purged/corrupt session id dangling on an old board card.
+  listReleaseGateSessionCandidates: (projectId: string) =>
+    fetchJSON<{ projectId: string; sessions: { id: string; label: string }[] }>(
+      `/projects/${projectId}/deploy/release-gate-candidates`,
+    ),
   listDeployReleaseGates: (projectId: string, environmentName: string) =>
     fetchJSON(
       `/projects/${projectId}/deploy/environments/${encodeURIComponent(

@@ -9,7 +9,7 @@ vi.mock('../utils/api', () => ({
     createDeployReleaseGate: vi.fn(),
     updateDeployReleaseGate: vi.fn(),
     deleteDeployReleaseGate: vi.fn(),
-    getBoard: vi.fn(),
+    listReleaseGateSessionCandidates: vi.fn(),
     getEpics: vi.fn(),
   },
 }));
@@ -48,15 +48,11 @@ function gate(over: any = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   (window as any).confirm = vi.fn(() => true);
-  (api.getBoard as any).mockResolvedValue({
-    columns: [
-      {
-        name: 'In Progress',
-        cards: [{ session_id: 'sess-a', title: 'Fix auth' }],
-      },
-      // Done cards must not appear as pickable sessions.
-      { name: 'Done', cards: [{ session_id: 'sess-done', title: 'Old work' }] },
-    ],
+  // The server validates candidacy now (live, non-merged sessions only); the
+  // panel just renders what it returns.
+  (api.listReleaseGateSessionCandidates as any).mockResolvedValue({
+    projectId: 'proj-1',
+    sessions: [{ id: 'sess-a', label: 'Fix auth' }],
   });
   (api.getEpics as any).mockResolvedValue([
     { id: 'epic-1', name: 'Billing', state: 'in_progress' },
@@ -116,32 +112,35 @@ describe('EnvironmentReleaseGatesPanel', () => {
     expect(within(epics).queryByText('Shipped')).toBeNull();
   });
 
-  // Regression: the real GET /board response returns a FLAT top-level `cards`
-  // array keyed to columns by `column_id` (columns carry no nested `cards`).
-  // The panel used to iterate `col.cards`, so it always found zero sessions and
-  // rendered "No active sessions on the board" even with live card-linked work.
-  it('lists card-linked sessions from the flat board.cards array', async () => {
+  // Regression: the picker used to be built client-side from raw board cards
+  // and listed sessions that no longer existed (purged/corrupt session ids on
+  // old cards). It now renders exactly the server-validated candidates and
+  // shows the empty state when there are none.
+  it('renders only the server-validated candidate sessions', async () => {
     (api.listDeployReleaseGates as any).mockResolvedValue({ gates: [] });
-    (api.getBoard as any).mockResolvedValue({
-      columns: [
-        { id: 'col-todo', name: 'In Progress' },
-        { id: 'col-done', name: 'Done' },
-        { id: 'col-cancel', name: 'Cancelled' },
-      ],
-      cards: [
-        { session_id: 'sess-a', title: 'Fix auth', column_id: 'col-todo' },
-        { session_id: 'sess-done', title: 'Old work', column_id: 'col-done' },
-        { session_id: 'sess-cancel', title: 'Dropped work', column_id: 'col-cancel' },
-        { session_id: null, title: 'No session card', column_id: 'col-todo' },
+    (api.listReleaseGateSessionCandidates as any).mockResolvedValue({
+      projectId: 'proj-1',
+      sessions: [
+        { id: 'sess-a', label: 'Fix auth' },
+        { id: 'sess-b', label: 'Add search' },
       ],
     });
     render(<EnvironmentReleaseGatesPanel projectId="proj-1" environmentName="prod" />);
     await waitFor(() => expect(screen.getByTestId('release-gate-session-options')).toBeTruthy());
+    expect(api.listReleaseGateSessionCandidates).toHaveBeenCalledWith('proj-1');
     const sessions = screen.getByTestId('release-gate-session-options');
     expect(within(sessions).getByText('Fix auth')).toBeTruthy();
-    expect(within(sessions).queryByText('Old work')).toBeNull();
-    expect(within(sessions).queryByText('Dropped work')).toBeNull();
-    expect(within(sessions).queryByText('No active sessions on the board.')).toBeNull();
+    expect(within(sessions).getByText('Add search')).toBeTruthy();
+  });
+
+  it('shows the empty state when the server returns no candidate sessions', async () => {
+    (api.listDeployReleaseGates as any).mockResolvedValue({ gates: [] });
+    (api.listReleaseGateSessionCandidates as any).mockResolvedValue({
+      projectId: 'proj-1',
+      sessions: [],
+    });
+    render(<EnvironmentReleaseGatesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByText('No active sessions on the board.')).toBeTruthy());
   });
 
   it('creates a gate from the selected sessions/epics', async () => {

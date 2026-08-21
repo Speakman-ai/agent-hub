@@ -4774,6 +4774,28 @@ components:
           type: boolean
       required:
         - removed
+    ReleaseGateSessionCandidate:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+      required:
+        - id
+        - label
+    ReleaseGateCandidatesResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseGateSessionCandidate"
+      required:
+        - projectId
+        - sessions
     NotificationRouting:
       type: object
       properties:
@@ -25588,6 +25610,31 @@ paths:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
         "404":
           description: Project or schedule not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/release-gate-candidates:
+    get:
+      tags:
+        - Deployments
+      summary: List candidate sessions for a release gate
+      description: Project-wide, server-validated list of in-flight sessions the operator may add to a release gate. Derived from non-terminal board cards but filtered to sessions that still exist and are not yet merged, so a purged or corrupt session id left on an old card is never offered.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Candidate sessions for a release gate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseGateCandidatesResponse"
+        "404":
+          description: Project not found.
           content:
             application/json:
               schema:

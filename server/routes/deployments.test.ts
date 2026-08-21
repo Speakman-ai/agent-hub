@@ -2258,6 +2258,74 @@ environments:
     });
   });
 
+  describe('GET .../deploy/release-gate-candidates', () => {
+    const candidatesUrl = `/api/projects/${PROJECT_ID}/deploy/release-gate-candidates`;
+
+    // Seed a board for PROJECT_ID with the given cards, plus a `sessions` row
+    // for each id in `liveSessions`. Cards reference the shared column set so a
+    // single To Do / Done / Cancelled classification drives the filter.
+    function seedBoard(
+      cards: { session_id: string | null; title: string; column: 'todo' | 'done' | 'cancel' }[],
+      liveSessions: string[],
+    ) {
+      const db = getDb();
+      const boardId = 'cand-board';
+      db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)').run(
+        boardId,
+        PROJECT_ID,
+        'Board',
+      );
+      const columns: Record<string, string> = { todo: 'To Do', done: 'Done', cancel: 'Cancelled' };
+      let pos = 0;
+      for (const [key, name] of Object.entries(columns)) {
+        db.prepare(
+          'INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?, ?, ?, ?)',
+        ).run(`cand-col-${key}`, boardId, name, pos++);
+      }
+      for (const sid of liveSessions) {
+        db.prepare('INSERT OR REPLACE INTO sessions (id, agent_id, name) VALUES (?, ?, ?)').run(
+          sid,
+          'agent-1',
+          `Session ${sid}`,
+        );
+      }
+      cards.forEach((card, i) => {
+        db.prepare(
+          'INSERT INTO kanban_cards (id, column_id, board_id, title, session_id, position) VALUES (?, ?, ?, ?, ?, ?)',
+        ).run(`cand-card-${i}`, `cand-col-${card.column}`, boardId, card.title, card.session_id, i);
+      });
+    }
+
+    it('returns only live sessions on non-terminal cards, dropping dangling ids', async () => {
+      seedBoard(
+        [
+          { session_id: 'sess-live', title: 'Fix auth', column: 'todo' },
+          { session_id: 'sess-gone', title: 'Purged session', column: 'todo' },
+          { session_id: 'sess-live, sess-live', title: 'Corrupt link', column: 'todo' },
+          { session_id: 'sess-done', title: 'Old work', column: 'done' },
+          { session_id: 'sess-cancel', title: 'Dropped', column: 'cancel' },
+          { session_id: null, title: 'No session', column: 'todo' },
+        ],
+        ['sess-live', 'sess-done', 'sess-cancel'],
+      );
+      const { app } = makeApp();
+      const res = await request(app).get(candidatesUrl).expect(200);
+      expect(res.body).toMatchObject({ projectId: PROJECT_ID });
+      expect(res.body.sessions).toEqual([{ id: 'sess-live', label: 'Fix auth' }]);
+    });
+
+    it('returns an empty list when the project has no board', async () => {
+      const { app } = makeApp();
+      const res = await request(app).get(candidatesUrl).expect(200);
+      expect(res.body).toEqual({ projectId: PROJECT_ID, sessions: [] });
+    });
+
+    it('returns 404 for an unknown project', async () => {
+      const { app } = makeApp();
+      await request(app).get('/api/projects/missing/deploy/release-gate-candidates').expect(404);
+    });
+  });
+
   describe('release gates CRUD', () => {
     const gatesUrl = (env: string) =>
       `/api/projects/${PROJECT_ID}/deploy/environments/${env}/release-gates`;

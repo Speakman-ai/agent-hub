@@ -88,6 +88,7 @@ import {
   type ReleaseGateResolvers,
 } from '../deploy/release-gate-evaluator.js';
 import { requestReleaseGateSweep } from '../deploy/release-gate-ticker.js';
+import { buildReleaseGateSessionCandidates } from '../deploy/release-gate-candidates.js';
 import { getStmts } from '../db.js';
 import {
   resolveNotificationRouting,
@@ -1198,6 +1199,20 @@ export default function createDeploymentRoutes(
   // Operator-editable one-shot gates that fire a single deployment once their
   // selected sessions are all merged AND their selected epics are all done. The
   // list read evaluates live completion progress against the current DB state.
+
+  // Candidate sessions the operator may add to a release gate. Project-wide (a
+  // release-gate target is not environment-specific), validated server-side so
+  // only real, in-flight sessions surface — never a purged or corrupt session id
+  // left dangling on an old board card.
+  router.get(
+    '/api/projects/:projectId/deploy/release-gate-candidates',
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const sessions = buildReleaseGateSessionCandidates(getStmts(), projectId);
+      return res.json({ projectId, sessions });
+    },
+  );
 
   router.get(
     '/api/projects/:projectId/deploy/environments/:environmentName/release-gates',
