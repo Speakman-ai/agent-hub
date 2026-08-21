@@ -42694,16 +42694,10 @@ paths:
       parameters:
         - schema:
             type: string
-            enum:
-              - new
-              - investigating
-              - converted
-              - closed
-              - duplicate
-              - wont_do
-            description: Filter to a single lifecycle status.
+            description: "Filter to one or more lifecycle states, comma-separated (e.g. `new,investigating`). Absent → every status. Each token must be one of: new, investigating, converted, closed, duplicate, wont_do."
+            example: new,investigating
           required: false
-          description: Filter to a single lifecycle status.
+          description: "Filter to one or more lifecycle states, comma-separated (e.g. `new,investigating`). Absent → every status. Each token must be one of: new, investigating, converted, closed, duplicate, wont_do."
           name: status
           in: query
         - schema:

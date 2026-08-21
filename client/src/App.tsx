@@ -79,6 +79,7 @@ import ThreadList from './components/ThreadList';
 import ThreadView from './components/ThreadView';
 import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 import CustomerSupportPage from './components/CustomerSupportPage';
+import SupportOverviewPage from './components/SupportOverviewPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import TodosPage from './components/TodosPage';
@@ -6739,6 +6740,15 @@ export default function App({ initialView }: any = {}) {
                     }}
                   />
                 )
+              ) : currentView === 'support-overview' ? (
+                <SupportOverviewPage
+                  onOpenProjectSupport={(projectId: any, ticketId: any = null) => {
+                    setSupportProjectId(projectId);
+                    setSupportTicketId(ticketId);
+                    setCurrentView('support');
+                    setSidebarOpen(false);
+                  }}
+                />
               ) : currentView === 'support' && supportProjectId ? (
                 <CustomerSupportPage
                   ref={supportListRef}

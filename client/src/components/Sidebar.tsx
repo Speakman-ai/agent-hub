@@ -610,8 +610,21 @@ export default function Sidebar({
             <span className="flex-1 truncate text-sm font-medium">Hub</span>
           </button>
 
-          {/* Org-wide support overview lives on Hub → Org. Per-project Support
-              links — with unread badges — stay in each project's menu below. */}
+          {/* Org-wide support overview: every project's support issues on one
+              page. Per-project Support links — with unread badges — stay in each
+              project's menu below. */}
+          <button
+            onClick={() => onNavigate('support-overview')}
+            data-testid="sidebar-support-overview"
+            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
+              currentView === 'support-overview'
+                ? 'bg-gray-800 text-white'
+                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+            }`}
+          >
+            <LifeBuoy size={14} className="flex-shrink-0" />
+            <span className="flex-1 truncate text-sm font-medium">Support</span>
+          </button>
 
           {/* Scheduled Tasks (cron sessions) render per-project inside each
               project block below. But a cron may have no rendered home: its

@@ -17,8 +17,9 @@ import { serializeSupportTickets } from '../support-ticket-serialization.js';
  * project filter regardless of which `projectId` filter is active.
  *
  * Optional query params (all compose, all applied server-side):
- *   - `status`    — filter to one lifecycle state (new | investigating |
- *                   converted | closed)
+ *   - `status`    — filter to one or more lifecycle states, comma-separated
+ *                   (e.g. `new,investigating`). Absent → every status. A UI
+ *                   filter group can map to several states in one request.
  *   - `projectId` — scope to a single project (404 if the project is unknown)
  *   - `unread`    — when `true`/`1`, keep only tickets a human hasn't viewed
  *                   yet (`read_at IS NULL`). Powers the dashboard's
@@ -34,11 +35,30 @@ export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Rou
   const router = Router();
 
   router.get('/api/support-tickets', (req: Request, res: Response) => {
-    const status = req.query.status as string | undefined;
-    if (status && !(SUPPORT_TICKET_STATUSES as readonly string[]).includes(status)) {
-      return res
-        .status(400)
-        .json({ error: `status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}` });
+    // `status` accepts a comma-separated list (e.g. `new,investigating`) so a
+    // dashboard filter group can map to several lifecycle states in one request.
+    // Absent → every status (unchanged). A repeated key makes Express parse an
+    // array; only a single string is valid, so reject any other shape with 400
+    // rather than letting `.split` throw a 500.
+    const rawStatus = req.query.status;
+    let statuses: SupportTicketStatus[] | undefined;
+    if (rawStatus !== undefined) {
+      if (typeof rawStatus !== 'string') {
+        return res
+          .status(400)
+          .json({ error: `status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}` });
+      }
+      const tokens = rawStatus
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const bad = tokens.filter((s) => !(SUPPORT_TICKET_STATUSES as readonly string[]).includes(s));
+      if (bad.length) {
+        return res
+          .status(400)
+          .json({ error: `status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}` });
+      }
+      statuses = tokens.length ? (tokens as SupportTicketStatus[]) : undefined;
     }
 
     const projectId = req.query.projectId as string | undefined;
@@ -72,7 +92,7 @@ export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Rou
     const tickets = serializeSupportTickets(
       listAllSupportTickets({
         projectId: resolvedProjectId,
-        statuses: status ? [status as SupportTicketStatus] : undefined,
+        statuses,
         unread,
       }),
       { canReadReporterEmail },
@@ -85,7 +105,7 @@ export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Rou
     // `projectId`/`status` filter, so derive them from an unfiltered scan of
     // distinct projects-with-tickets rather than from the (possibly filtered)
     // `tickets` above. Ordered by descending ticket count, then name.
-    const allRows = resolvedProjectId || status || unread ? listAllSupportTickets() : tickets;
+    const allRows = resolvedProjectId || statuses || unread ? listAllSupportTickets() : tickets;
     const countByProject = new Map<string, number>();
     for (const t of allRows) {
       countByProject.set(t.project_id, (countByProject.get(t.project_id) ?? 0) + 1);

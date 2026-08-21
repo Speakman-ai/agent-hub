@@ -21,6 +21,7 @@ import NotesScreen from './src/screens/NotesScreen';
 import PullRequestsScreen from './src/screens/PullRequestsScreen';
 import ThreadsScreen from './src/screens/ThreadsScreen';
 import CustomerSupportScreen from './src/screens/CustomerSupportScreen';
+import SupportOverviewScreen from './src/screens/SupportOverviewScreen';
 import CalendarScreen from './src/screens/CalendarScreen';
 import GmailScreen from './src/screens/GmailScreen';
 import SecurityScreen from './src/screens/SecurityScreen';
@@ -224,6 +225,7 @@ function AppContent() {
             <Stack.Screen name="PullRequests" component={PullRequestsScreen}/>
             <Stack.Screen name="Threads" component={ThreadsScreen}/>
             <Stack.Screen name="CustomerSupport" component={CustomerSupportScreen}/>
+            <Stack.Screen name="SupportOverview" component={SupportOverviewScreen}/>
             <Stack.Screen name="Calendar" component={CalendarScreen}/>
             <Stack.Screen name="Gmail" component={GmailScreen}/>
             <Stack.Screen name="Security" component={SecurityScreen}/>

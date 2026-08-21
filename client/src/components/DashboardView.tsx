@@ -239,7 +239,10 @@ export default function DashboardView({
               onOpenPulls={onOpenPulls}
               onOpenExternalUrl={onOpenExternalUrl}
             />
-            <SupportIssuesPanel onOpenProjectSupport={onOpenProjectSupport} />
+            <SupportIssuesPanel
+              onOpenProjectSupport={onOpenProjectSupport}
+              onViewAll={onNavigate ? () => onNavigate('support-overview') : undefined}
+            />
             <RecentActivity
               items={data.recentActivity}
               onOpenSession={onOpenSession}
@@ -760,7 +763,7 @@ function sortSupportBySeverity(list: any) {
  *
  * @param {(projectId: string) => void} [onOpenProjectSupport]
  */
-function SupportIssuesPanel({ onOpenProjectSupport }: any) {
+function SupportIssuesPanel({ onOpenProjectSupport, onViewAll }: any) {
   const [tickets, setTickets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
@@ -822,6 +825,14 @@ function SupportIssuesPanel({ onOpenProjectSupport }: any) {
           <LifeBuoy size={14} className="text-blue-400" />
           New support issues
         </h2>
+        {onViewAll ? (
+          <button
+            onClick={onViewAll}
+            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            View all
+          </button>
+        ) : null}
       </div>
       <div
         data-testid="support-issues"

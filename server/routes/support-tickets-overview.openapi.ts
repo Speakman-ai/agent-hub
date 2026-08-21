@@ -63,9 +63,15 @@ registerPath({
   request: {
     query: z.object({
       status: z
-        .enum(STATUSES)
+        .string()
         .optional()
-        .openapi({ description: 'Filter to a single lifecycle status.' }),
+        .openapi({
+          description:
+            'Filter to one or more lifecycle states, comma-separated (e.g. `new,investigating`). Absent → every status. Each token must be one of: ' +
+            STATUSES.join(', ') +
+            '.',
+          example: 'new,investigating',
+        }),
       projectId: z
         .string()
         .optional()

@@ -106,6 +106,29 @@ describe('support-tickets overview (cross-project)', () => {
     expect(body.tickets.length).toBe(1);
   });
 
+  it('filters to a comma-separated status list', async () => {
+    const a = await createProject();
+    const newId = await seedTicket(a.id as string, 'critical', 'new');
+    const investigatingId = await seedTicket(a.id as string, 'high', 'investigating');
+    await seedTicket(a.id as string, 'medium', 'closed');
+
+    const res = await request
+      .get(`/api/support-tickets?projectId=${a.id}&status=new,investigating`)
+      .expect(200);
+    const body = res.body as OverviewBody;
+    const ids = body.tickets.map((t) => t.id).sort();
+    expect(ids).toEqual([newId, investigatingId].sort());
+    expect(body.tickets.every((t) => t.status === 'new' || t.status === 'investigating')).toBe(
+      true,
+    );
+    // The project filter options stay the full unfiltered set (all 3 tickets).
+    expect(body.projects.find((p) => p.id === a.id)?.count).toBe(3);
+  });
+
+  it('400s when any token in a status list is invalid', async () => {
+    await request.get('/api/support-tickets?status=new,bogus').expect(400);
+  });
+
   it('filters to unread tickets when unread=true', async () => {
     const a = await createProject();
     const readId = await seedTicket(a.id as string, 'critical', 'new');

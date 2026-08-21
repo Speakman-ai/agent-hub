@@ -513,6 +513,16 @@ export default function DrawerContent({ navigation }: any) {
           <Text style={styles.dashboardText}>Hub</Text>
         </TouchableOpacity>
 
+        {/* Org-wide support overview: every project's support issues on one
+            screen. Per-project Support links stay in each project's menu. */}
+        <TouchableOpacity testID="drawer-support-overview" style={styles.dashboardItem} onPress={() => {
+            navigation.navigate('SupportOverview');
+            navigation.closeDrawer();
+        }}>
+          <HubIcon name="LifeBuoy" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
+          <Text style={styles.dashboardText}>Support</Text>
+        </TouchableOpacity>
+
         {cronSessions.length > 0 && (<View style={{ marginBottom: 16 }}>
             <View style={styles.sectionLabelRow}>
               <HubIcon name="Clock" size={12} color={colors.gray500}/>
