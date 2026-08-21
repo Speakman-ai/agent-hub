@@ -176,6 +176,13 @@ describe('provisioningStatus pure model', () => {
       expect(cls!.hint).toMatch(/administration: write|owner/i);
     });
 
+    it('maps a copy-template failure (code 3) to a permission-oriented hint', () => {
+      const cls = classifyError({ code: 3, message: 'Failed to copy template' });
+      expect(cls!.code).toBe(3);
+      expect(cls!.hint).toMatch(/writable|ownership|UID/i);
+      expect(cls!.hint).not.toMatch(/timed out|overloaded/i);
+    });
+
     it('preserves server-provided hint over the default', () => {
       const cls = classifyError({
         code: 5,

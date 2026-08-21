@@ -223,10 +223,21 @@ export function createTemplateExecutor(opts: TemplateExecutorOptions): Provision
           };
         } catch (err: unknown) {
           const msg = (err as Error)?.message ?? 'unknown copy error';
+          // A denied write here is almost always a bind-mount ownership
+          // mismatch on the projects data dir, not a transient failure —
+          // give the operator the path and the actual fix instead of the
+          // generic "template copy failed" hint.
+          const syscallCode = (err as NodeJS.ErrnoException)?.code;
+          const hint =
+            syscallCode === 'EACCES' || syscallCode === 'EPERM'
+              ? `Permission denied creating the workspace at ${workspace}. The projects data dir is not writable by the server process — align its ownership with the container UID:GID (e.g. chown the bind-mounted ~/.agent-hub/projects to match the user in docker-compose, or set UID/GID in .env). Retrying will not help until the ownership is fixed.`
+              : undefined;
           return {
             status: 'failed',
             message: 'template copy failed',
-            error: { code: -1, message: `Failed to copy template: ${msg}` },
+            // code 3 == template copy failed (see client hintForCode); -1 is
+            // reserved for container timeout and would render a misleading hint.
+            error: { code: 3, message: `Failed to copy template: ${msg}`, hint },
           };
         }
       }

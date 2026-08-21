@@ -70,6 +70,52 @@ describe('template executor — copy-template phase', () => {
     expect(existsSync(path.join(workspace, 'manifest.json'))).toBe(false);
   });
 
+  it('reports a copy failure as code 3 with a permission hint on EACCES', async () => {
+    const executor = createTemplateExecutor({
+      resolveWorkspace: () => workspace,
+      copyTree: () => {
+        const err = new Error(
+          `EACCES: permission denied, mkdir '${workspace}'`,
+        ) as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      },
+    });
+
+    const result = await executor.runPhase('copy-template', {
+      jobId: 'j-eacces',
+      projectId: 'proj-eacces',
+      payload: { appType: 'web-app', stack: 'typescript-node-tsx' },
+      log: () => {},
+    });
+
+    expect(result.status).toBe('failed');
+    // -1 collides with the container-timeout hint; copy failures must be code 3.
+    expect(result.error?.code).toBe(3);
+    expect(result.error?.hint).toContain(workspace);
+    expect(result.error?.hint).toMatch(/permission|ownership|UID/i);
+  });
+
+  it('reports a non-permission copy failure as code 3 without a permission hint', async () => {
+    const executor = createTemplateExecutor({
+      resolveWorkspace: () => workspace,
+      copyTree: () => {
+        throw new Error('ENOSPC: no space left on device');
+      },
+    });
+
+    const result = await executor.runPhase('copy-template', {
+      jobId: 'j-enospc',
+      projectId: 'proj-enospc',
+      payload: { appType: 'web-app', stack: 'typescript-node-tsx' },
+      log: () => {},
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.error?.code).toBe(3);
+    expect(result.error?.hint).toBeUndefined();
+  });
+
   it('honours stack:"idk" by falling back to the appType default (cli → go-cobra)', async () => {
     let copied: { src: string; dest: string } | null = null;
     const executor = createTemplateExecutor({

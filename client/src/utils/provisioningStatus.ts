@@ -165,7 +165,7 @@ function hintForCode(code: any) {
     case 2:
       return 'Bad scaffold spec. Verify the stack + project name passed validation.';
     case 3:
-      return 'Template copy failed inside the container. The base image may be stale — rebuild scaffold-base.';
+      return 'Template copy failed — the projects data dir is likely not writable by the server process. Check the bind-mount ownership / UID:GID of ~/.agent-hub/projects.';
     case 4:
       return 'Git init/commit failed. Check that the container has a writable /work mount.';
     case 5:
