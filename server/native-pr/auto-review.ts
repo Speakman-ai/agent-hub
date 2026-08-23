@@ -27,6 +27,7 @@ import {
   ALL_SUPPORTED_ENGINES,
   type SupportedEngine,
 } from '../engine-availability.js';
+import { failoverChainFor } from '../engine-failover.js';
 import { resolveEffectiveModel } from '../effective-model.js';
 import { resolveSessionCliSpawnEnv } from '../per-user-cli-spawn.js';
 import { setSessionOwner } from '../session-ownership.js';
@@ -99,7 +100,7 @@ export interface AutoReviewOpts {
   trigger?: 'pr_create' | 'head_update' | 'manual_request';
 }
 
-/** Hub user to run the review as — never falls back to a different engine. */
+/** Hub user whose credentials and model preferences the review uses. */
 function resolveAutoReviewActingUser(
   opts: AutoReviewOpts,
   pr: Pick<PullRequestRow, 'author'>,
@@ -204,12 +205,7 @@ export async function maybeRunPrAutoReview(
       dispatched.delete(key);
       return { dispatched: false, reason: 'no_pusher' };
     }
-    const engine = reviewer.engine || 'claude-code';
-    const model = resolveEffectiveModel(deps.config, engine, {
-      agentModel: reviewer.model ?? null,
-      ownerUserId: actingUserId,
-      agentId: reviewer.id,
-    });
+    const preferredEngine = reviewer.engine || 'claude-code';
 
     // Resolve the SAME per-user spawn env handleChat will build for the owned
     // reviewer session — HOME pinned to the acting user's per-user tree and
@@ -239,7 +235,7 @@ export async function maybeRunPrAutoReview(
       });
     } catch (err: unknown) {
       console.warn(
-        `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${engine}" spawn env unavailable (${
+        `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${preferredEngine}" spawn env unavailable (${
           err instanceof Error ? err.message : String(err)
         }) — skipping`,
       );
@@ -247,19 +243,49 @@ export async function maybeRunPrAutoReview(
       return { dispatched: false, reason: 'engine_env_unavailable' };
     }
 
-    if (isSupportedEngine(engine)) {
-      const probe = await probeEngineAvailability(engine, deps.config, {
-        userId: actingUserId,
-        env: reviewerSpawnEnv,
-      });
-      if (!probe.available) {
-        console.warn(
-          `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${engine}" unavailable (${probe.reason ?? 'unknown'}) — skipping`,
-        );
-        dispatched.delete(key);
-        return { dispatched: false, reason: 'engine_unavailable' };
+    // Preflight the same ordered fallback chain used by regular sessions and
+    // the Finalize reviewer. A native PR review used to probe only the shared
+    // Reviewer assignment and skip the review entirely when that engine was
+    // unavailable, even when the acting user had another authenticated CLI.
+    // Probe with the same per-user env the eventual session spawn receives so
+    // every candidate is evaluated against the correct HOME/credentials.
+    let engine: SupportedEngine | null = null;
+    let preferredUnavailableReason: string | null = null;
+    if (isSupportedEngine(preferredEngine)) {
+      for (const candidate of failoverChainFor(preferredEngine)) {
+        const probe = await probeEngineAvailability(candidate, deps.config, {
+          userId: actingUserId,
+          env: reviewerSpawnEnv,
+        });
+        if (candidate === preferredEngine && !probe.available) {
+          preferredUnavailableReason = probe.reason ?? 'unknown';
+        }
+        if (probe.available) {
+          engine = candidate;
+          break;
+        }
       }
     }
+    if (!engine) {
+      console.warn(
+        `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${preferredEngine}" and all fallback engines unavailable — skipping`,
+      );
+      dispatched.delete(key);
+      return { dispatched: false, reason: 'engine_unavailable' };
+    }
+    if (engine !== preferredEngine) {
+      console.warn(
+        `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${preferredEngine}" unavailable (${preferredUnavailableReason ?? 'unknown'}); using fallback "${engine}"`,
+      );
+    }
+    const model = resolveEffectiveModel(deps.config, engine, {
+      // The shared Reviewer model belongs to the configured engine. Carrying
+      // it onto a fallback can ask the replacement CLI for a model it does not
+      // support, so fallback engines resolve their own per-user/default model.
+      agentModel: engine === preferredEngine ? (reviewer.model ?? null) : null,
+      ownerUserId: actingUserId,
+      agentId: reviewer.id,
+    });
     // Atomic dispatch guard: claim the in-flight slot BEFORE creating the
     // reviewer session. A manual request intentionally bypasses the in-memory
     // per-sha dedup above, so without this two clients (or repeated REST calls)

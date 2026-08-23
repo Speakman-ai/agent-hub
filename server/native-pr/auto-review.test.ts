@@ -638,28 +638,83 @@ describe('maybeRunPrAutoReview', () => {
     expect(handleChat).not.toHaveBeenCalled();
   });
 
-  it('skips instead of falling back when the reviewer engine is unavailable', async () => {
+  it('falls back to the next authenticated engine when the reviewer engine is unavailable', async () => {
     const { project, branch } = await hostedPrProject();
     const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
     reviewer.engine = 'codex-cli';
     reviewer.model = 'gpt-5.5';
 
-    probeSpy.mockResolvedValue({
-      engine: 'codex-cli',
-      available: false,
-      reason: 'no-credentials',
-      detail: 'No Codex credentials',
-    });
+    probeSpy.mockImplementation(async (engine) =>
+      engine === 'codex-cli'
+        ? {
+            engine,
+            available: false,
+            reason: 'no-credentials',
+            detail: 'No Codex credentials',
+          }
+        : { engine, available: engine === 'claude-code' },
+    );
 
     const handleChat = vi.fn();
-    await maybeRunPrAutoReview(
+    const result = await maybeRunPrAutoReview(
       project,
       { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
       { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
       { force: true, trigger: 'pr_create' },
     );
 
+    expect(result.dispatched).toBe(true);
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { sessionId: string };
+    const session = stmts.getSession.get(msg.sessionId) as { engine: string; model: string };
+    expect(session.engine).toBe('claude-code');
+    expect(session.model).not.toBe('gpt-5.5');
+    expect(probeSpy.mock.calls.map(([engine]) => engine)).toEqual(['codex-cli', 'claude-code']);
+  });
+
+  it('returns engine_unavailable and allows a later retry when every fallback is unavailable', async () => {
+    const { project, branch } = await hostedPrProject();
+    const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
+    reviewer.engine = 'codex-cli';
+
+    probeSpy.mockImplementation(async (engine) => ({
+      engine,
+      available: false,
+      reason: 'no-credentials',
+      detail: `No ${engine} credentials`,
+    }));
+
+    const handleChat = vi.fn();
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+    };
+    const pr = { number: 1, head_branch: branch, status: 'open' as const, author: 'ryan' };
+
+    const unavailable = await maybeRunPrAutoReview(project, pr, deps, {
+      force: true,
+      trigger: 'pr_create',
+    });
+
+    expect(unavailable).toEqual({ dispatched: false, reason: 'engine_unavailable' });
     expect(handleChat).not.toHaveBeenCalled();
+
+    // The failed preflight must release the per-head dispatch key. Once the
+    // preferred engine becomes available, retrying the same PR head dispatches
+    // instead of returning `deduped`.
+    probeSpy.mockImplementation(async (engine) => ({
+      engine,
+      available: engine === 'codex-cli',
+    }));
+    const retry = await maybeRunPrAutoReview(project, pr, deps, {
+      force: true,
+      trigger: 'pr_create',
+    });
+
+    expect(retry.dispatched).toBe(true);
+    expect(handleChat).toHaveBeenCalledOnce();
   });
 
   it('probes against the per-user spawn env (per-user HOME), not bare process.env', async () => {
