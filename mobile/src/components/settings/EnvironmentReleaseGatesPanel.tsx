@@ -87,8 +87,10 @@ export function EnvironmentReleaseGatesPanelContent({
         <Text style={styles.title}>Release gates</Text>
       </View>
       <Text style={styles.help}>
-        A release gate deploys a ref to {environmentName} once every selected session is merged and
-        every selected epic is done — then it is consumed. A deleted selection blocks the gate.
+        A release gate automatically deploys a ref to {environmentName} once every selected session
+        is merged and every selected epic is done. Creating it is the approval, so the deployment
+        will not wait for another approval. It is then consumed. A deleted selection blocks the
+        gate.
       </Text>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}

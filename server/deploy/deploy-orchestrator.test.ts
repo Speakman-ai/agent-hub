@@ -1528,6 +1528,31 @@ describe('triggerDeployment — gated environment', () => {
     expect(env.active_deployment_id).toBeNull();
   });
 
+  it('bypasses the approval gate for a release-gate trigger and runs immediately', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'prod',
+        ref: 'release-gate-sha',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+        trigger: 'release_gate',
+        triggeredBy: 'gate-owner',
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('success');
+    expect(dep.started_at).toBeTruthy();
+    expect(dep.completed_at).toBeTruthy();
+    expect(fb.spawnArgs.map((s) => s.run)).toEqual(['./deploy-prod.sh']);
+    expect(listDeploymentApprovals(dep.id)).toHaveLength(0);
+    const env = getDeploymentEnvironment(PROJECT, 'prod')!;
+    expect(env.current_ref).toBe('release-gate-sha');
+    expect(env.active_deployment_id).toBeNull();
+  });
+
   it('still parks manual/push/rollback triggers at awaiting_approval', async () => {
     for (const trigger of ['manual', 'push', 'rollback'] as const) {
       const fb = makeFakeBackend([{ exitCode: 0 }]);

@@ -107,6 +107,7 @@ describe('EnvironmentReleaseGatesPanelContent', () => {
     expect(html).toContain('main');
     expect(html).toContain('waiting');
     expect(html).toContain('0/1 sessions');
+    expect(html).toContain('Creating it is the approval');
   });
 
   it('renders the blocked status when a selection is missing', () => {

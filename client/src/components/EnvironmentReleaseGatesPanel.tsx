@@ -192,9 +192,11 @@ export default function EnvironmentReleaseGatesPanel({
         <span className="text-xs font-semibold text-gray-200">Release gates</span>
       </div>
       <p className="mb-3 text-[11px] leading-relaxed text-gray-500">
-        A release gate deploys a ref to <span className="font-mono">{environmentName}</span> once
-        every selected session is merged and every selected epic is done — then it is consumed. If a
-        selected item is deleted the gate is blocked until you remove it.
+        A release gate automatically deploys a ref to{' '}
+        <span className="font-mono">{environmentName}</span> once every selected session is merged
+        and every selected epic is done. Creating it is the approval, so the deployment will not
+        wait for another approval. It is then consumed. If a selected item is deleted the gate is
+        blocked until you remove it.
       </p>
 
       {error ? (

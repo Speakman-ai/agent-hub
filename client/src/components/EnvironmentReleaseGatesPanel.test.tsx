@@ -71,6 +71,7 @@ describe('EnvironmentReleaseGatesPanel', () => {
     expect(within(row).getByText('main')).toBeTruthy();
     expect(within(row).getByText('waiting')).toBeTruthy();
     expect(within(row).getByText('0/1 sessions')).toBeTruthy();
+    expect(screen.getByText(/Creating it is the approval/)).toBeTruthy();
   });
 
   it('shows blocked status when a selection is missing', async () => {
