@@ -52,7 +52,33 @@ export const ALL_CONTEXT_FILES: readonly string[] = [
   ...AGENT_CONTEXT_FILES,
 ];
 
-export function contextFilePath(paths: ProjectPaths, filename: string): string {
+/**
+ * Repo checkout root for files that live in git, not the Hub workspace.
+ * Session worktree wins when present (that's the live clone agents edit);
+ * otherwise `project.cwd`.
+ */
+export function resolveCheckoutContextRoot(
+  paths: Pick<ProjectPaths, 'cwd'>,
+  sessionWorktreePath?: string | null,
+): string {
+  const worktree = typeof sessionWorktreePath === 'string' ? sessionWorktreePath.trim() : '';
+  if (worktree) return worktree;
+  return typeof paths.cwd === 'string' && paths.cwd.trim() ? paths.cwd.trim() : '';
+}
+
+export function contextFilePath(
+  paths: ProjectPaths,
+  filename: string,
+  opts?: { checkoutRoot?: string | null },
+): string {
+  // CLAUDE.md is a repo convention (Claude Code / Cursor load it from the
+  // checkout root). Hub workspace (`ahw` = ~/.agent-hub/projects/<id>/)
+  // never seeds it — reading it from ahw silently skips the file that
+  // actually exists at cwd/worktree.
+  if (filename === 'CLAUDE.md') {
+    const root = resolveCheckoutContextRoot(paths, opts?.checkoutRoot);
+    return root ? path.join(root, filename) : '';
+  }
   if (!paths.ahw) return '';
   if (AGENT_CONTEXT_FILES.includes(filename)) {
     return paths.agentDir ? path.join(paths.agentDir, filename) : '';

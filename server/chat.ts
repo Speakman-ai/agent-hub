@@ -908,8 +908,10 @@ The generic \`browser\` tool is off for this agent, but you can still verify **t
 
   const paths = resolveProjectPaths(project as Project, agent as Agent);
 
-  // Project workspace docs (ahw). CLAUDE.md: repo dev commands, architecture, testing —
-  // same file Cursor often injects as workspace rules; include here for CLI engines.
+  // Project workspace docs (ahw) vs repo docs (checkout). AGENTS.md / SOUL.md /
+  // IDENTITY.md live in the Hub data dir. CLAUDE.md is a repo file: Claude Code
+  // loads it natively from cwd, and other engines need Hub to inject the same
+  // checkout copy. Do not read it from ahw — that path is never seeded.
   //
   // CLAUDE.md is the single largest per-turn cost in the enriched prompt
   // (22 KB on the agent-hub repo, May 2026 audit). It carries dev-loop
@@ -917,12 +919,13 @@ The generic \`browser\` tool is off for this agent, but you can still verify **t
   // gate it behind `isFirstMessage`. Identity / team files (AGENTS.md,
   // SOUL.md, IDENTITY.md) stay on every turn because the model regularly
   // role-confuses without the identity reminder anchored mid-prompt.
+  const checkoutRoot = options.sessionWorktreePath || project.cwd || '';
   const baseContextOrder = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md'];
   const contextOrder = isFirstMessage ? [...baseContextOrder, 'CLAUDE.md'] : baseContextOrder;
   let agentsMdIncluded = false;
   let identityMdIncluded = false;
   for (const filename of contextOrder) {
-    const filePath = contextFilePath(paths, filename);
+    const filePath = contextFilePath(paths, filename, { checkoutRoot });
     if (filePath && existsSync(filePath)) {
       try {
         const content = readFileSync(filePath, 'utf-8');

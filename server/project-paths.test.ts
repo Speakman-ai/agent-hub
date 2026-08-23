@@ -1,6 +1,7 @@
 import {
   resolveProjectPaths,
   contextFilePath,
+  resolveCheckoutContextRoot,
   resolveWorkspaceDataDir,
   resolveWorkspaceSkillsDir,
   SHARED_CONTEXT_FILES,
@@ -111,6 +112,28 @@ describe('contextFilePath', () => {
     expect(contextFilePath(paths, 'MEMORY.md')).toBe('/data/projects/myapp/MEMORY.md');
   });
 
+  it('resolves CLAUDE.md to the checkout (cwd), not the Hub workspace (ahw)', () => {
+    expect(contextFilePath(paths, 'CLAUDE.md')).toBe('/projects/myapp/CLAUDE.md');
+    expect(contextFilePath(paths, 'CLAUDE.md')).not.toBe('/data/projects/myapp/CLAUDE.md');
+  });
+
+  it('resolves CLAUDE.md from the session worktree when checkoutRoot is set', () => {
+    expect(contextFilePath(paths, 'CLAUDE.md', { checkoutRoot: '/wt/session-1' })).toBe(
+      '/wt/session-1/CLAUDE.md',
+    );
+  });
+
+  it('still resolves CLAUDE.md from cwd when ahw is unset', () => {
+    const emptyAhw = resolveProjectPaths(
+      { cwd: '/projects/myapp' } as Project,
+      {
+        id: 'a',
+      } as Agent,
+    );
+    expect(contextFilePath(emptyAhw, 'CLAUDE.md')).toBe('/projects/myapp/CLAUDE.md');
+    expect(contextFilePath(emptyAhw, 'SOUL.md')).toBe('');
+  });
+
   it('resolves agent-specific files to agent dir', () => {
     expect(contextFilePath(paths, 'IDENTITY.md')).toBe(
       '/data/projects/myapp/agents/agent-1/IDENTITY.md',
@@ -121,6 +144,18 @@ describe('contextFilePath', () => {
     const emptyPaths = resolveProjectPaths({ cwd: '/x' } as Project, { id: 'a' } as Agent);
     expect(contextFilePath(emptyPaths, 'SOUL.md')).toBe('');
     expect(contextFilePath(emptyPaths, 'IDENTITY.md')).toBe('');
+  });
+});
+
+describe('resolveCheckoutContextRoot', () => {
+  it('prefers a non-empty session worktree over cwd', () => {
+    expect(resolveCheckoutContextRoot({ cwd: '/repo' }, '/wt/session-1')).toBe('/wt/session-1');
+  });
+
+  it('falls back to cwd when worktree is missing or blank', () => {
+    expect(resolveCheckoutContextRoot({ cwd: '/repo' })).toBe('/repo');
+    expect(resolveCheckoutContextRoot({ cwd: '/repo' }, '  ')).toBe('/repo');
+    expect(resolveCheckoutContextRoot({ cwd: '/repo' }, null)).toBe('/repo');
   });
 });
 
