@@ -75,9 +75,17 @@ registerPath({
   tags: ['Artifacts'],
   summary: 'Upload an artifact to a session',
   description:
-    'Stores a raw file body as a session artifact. Send the bytes as the request body with `Content-Type` set to the file’s MIME type and `x-filename` set to the display name. Used by agents (via the agent-hub artifact script) and the web UI. Rejects executables/native binaries and bodies over 100 MB.',
+    'Stores a raw file body as a session artifact. Send the bytes as the request body with `Content-Type` set to the file’s MIME type and `x-filename` set to the display name. Agents can set `x-artifact-presentation: inline` for user-requested deliverables that should open automatically in the active session viewer. Used by agents (via the agent-hub artifact script) and the web UI. Rejects executables/native binaries and bodies over 100 MB.',
   request: {
     params: sessionIdParam,
+    headers: z.object({
+      'x-filename': z.string().optional().openapi({ description: 'Artifact display filename.' }),
+      'x-agent-id': z.string().optional().openapi({ description: 'Creating agent ID.' }),
+      'x-artifact-presentation': z.enum(['inline']).optional().openapi({
+        description:
+          'Requests automatic opening in the active session viewer after the upload completes.',
+      }),
+    }),
     body: {
       content: {
         'application/octet-stream': {

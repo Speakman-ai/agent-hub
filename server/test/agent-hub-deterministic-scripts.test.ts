@@ -219,6 +219,53 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     });
   });
 
+  describe('artifacts.sh presentation upload (mock server)', () => {
+    it('marks --present uploads for the inline viewer', async () => {
+      const tempDir = mkdtempSync(path.join(os.tmpdir(), 'artifact-present-test-'));
+      const sourcePath = path.join(tempDir, 'report.md');
+      writeFileSync(sourcePath, '# Report\n');
+      let captured: { url?: string; presentation?: string; body?: string } = {};
+      const server = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk) => chunks.push(chunk));
+        req.on('end', () => {
+          captured = {
+            url: req.url,
+            presentation: req.headers['x-artifact-presentation'] as string | undefined,
+            body: Buffer.concat(chunks).toString('utf8'),
+          };
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ id: 'artifact-1' }));
+        });
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const { port } = server.address() as AddressInfo;
+        const result = await spawnAsync(
+          path.join(DEFAULT_SCRIPTS, 'artifacts.sh'),
+          ['put', '--present', sourcePath, 'Generated report.md'],
+          {
+            ...process.env,
+            AGENT_HUB_URL: `http://127.0.0.1:${port}`,
+            AGENT_HUB_API_KEY: 'test-key',
+            AGENT_HUB_SESSION_ID: 'session-1',
+            AGENT_HUB_DATA_DIR: tempDir,
+          },
+        );
+        expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+        expect(captured).toMatchObject({
+          url: '/api/sessions/session-1/artifacts',
+          presentation: 'inline',
+          body: '# Report\n',
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    }, 15_000);
+  });
+
   // ─── Source-level assertions ──────────────────────────────────────────
   // POST /board/cards does NOT accept epic_id — epic linking is a separate
   // endpoint. The create-card wrapper must chain a second call when

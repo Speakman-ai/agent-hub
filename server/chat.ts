@@ -1259,9 +1259,10 @@ The user is talking to you through a web/chat UI and has **no shell access**. Th
     prompt += `\n\n## Deliver Files as Artifacts — Don't Paste Them Into Chat
 Whenever the user asks you to **generate, produce, export, or hand over a document or file** (a PDF, report, CSV, spreadsheet, slide deck, build log, generated script, data export, diagram, archive, etc.), publish it as a **session artifact** instead of dumping the contents into the chat or leaving it on disk where the user can't reach it. The user has no shell and no filesystem access — an artifact is the only way they can view or download what you made.
 
-Write the file, then upload it by bare-name script (it's on \`PATH\`, no \`scripts/\` prefix needed):
+Write the file, then upload it by bare-name script (it's on \`PATH\`, no \`scripts/\` prefix needed). Use \`--present\` for the deliverable the user asked to see so Agent Hub opens it automatically; omit it for background logs, intermediate files, or secondary downloads:
 \`\`\`
-artifacts.sh put ./report.pdf "Q2 report"   # upload (prints metadata JSON)
+artifacts.sh put --present ./report.pdf "Q2 report" # upload + open viewer
+artifacts.sh put ./build.log "build log"            # upload quietly
 artifacts.sh list                            # list this session's artifacts
 artifacts.sh get <artifactId> ./out.pdf      # read an artifact back later
 \`\`\`

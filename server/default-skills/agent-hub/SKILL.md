@@ -150,14 +150,14 @@ WebSocket mid-stream drops) with the recovery step that usually unsticks them.
 
 ## Artifacts — share generated documents
 
-When you generate a document the user should be able to view or download
-(a PDF, a report, a script, a build log, an exported CSV…), publish it as a
-**session artifact** with `scripts/artifacts.sh`. Uploaded artifacts show up
-in the session's **Artifacts panel** in the web/mobile/Electron UI, and you
-can read them back later in the same or a follow-up turn.
+Publish generated documents as **session artifacts** with `scripts/artifacts.sh`
+so users can view or download them from the web/mobile/Electron Artifacts panel.
+Use `--present` to auto-open a safe primary deliverable in the active viewer;
+omit it for logs, intermediates, archives, and secondary downloads. Artifacts remain available in later turns.
 
 ```bash
-scripts/artifacts.sh put ./report.pdf "Q2 report"   # upload (prints metadata JSON)
+scripts/artifacts.sh put --present ./report.pdf "Q2 report" # upload + open viewer
+scripts/artifacts.sh put ./build.log "build log"            # upload quietly
 scripts/artifacts.sh list                            # list this session's artifacts
 scripts/artifacts.sh get <artifactId> ./out.pdf      # download bytes back to a file
 scripts/artifacts.sh delete <artifactId>             # remove one

@@ -5,7 +5,10 @@
 # you can read them back too.
 #
 # Usage:
-#   artifacts.sh put <file> [display-name]   Upload <file> as an artifact.
+#   artifacts.sh put [--present] <file> [display-name]
+#                                            Upload <file> as an artifact.
+#                                            --present opens the safe inline
+#                                            viewer for the active session.
 #   artifacts.sh list                        List this session's artifacts (JSON).
 #   artifacts.sh get <artifactId> [outfile]  Download an artifact's bytes
 #                                            (to <outfile>, else stdout).
@@ -20,7 +23,7 @@
 #   AGENT_HUB_AGENT_ID    optional — stamped as the artifact's creator
 #
 # Examples:
-#   artifacts.sh put ./report.pdf
+#   artifacts.sh put --present ./report.pdf
 #   artifacts.sh put ./out/build.log "nightly build log"
 #   artifacts.sh list
 #   artifacts.sh get 6f1c… ./downloaded.pdf
@@ -32,7 +35,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/ah-api.sh"
 
 usage() {
-  sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -55,6 +58,11 @@ mime_of() {
 
 cmd_put() {
   require_session
+  local present=0
+  if [[ "${1:-}" == "--present" ]]; then
+    present=1
+    shift
+  fi
   local file="${1:-}"
   [[ -n "$file" ]] || die "put: <file> is required"
   [[ -f "$file" ]] || die "put: no such file: $file"
@@ -68,6 +76,8 @@ cmd_put() {
   [[ -n "$key" ]] && auth_args+=(-H "x-api-key: $key")
   local agent_args=()
   [[ -n "${AGENT_HUB_AGENT_ID:-}" ]] && agent_args+=(-H "x-agent-id: $AGENT_HUB_AGENT_ID")
+  local presentation_args=()
+  [[ "$present" == "1" ]] && presentation_args+=(-H "x-artifact-presentation: inline")
 
   local body_file http_code
   body_file="$(mktemp)"
@@ -75,6 +85,7 @@ cmd_put() {
     curl -sS -X POST \
       "${auth_args[@]}" \
       "${agent_args[@]}" \
+      "${presentation_args[@]}" \
       -H "Content-Type: $ctype" \
       -H "x-filename: $name" \
       --data-binary @"$file" \

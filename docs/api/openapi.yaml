@@ -15275,7 +15275,7 @@ paths:
       tags:
         - Artifacts
       summary: Upload an artifact to a session
-      description: Stores a raw file body as a session artifact. Send the bytes as the request body with `Content-Type` set to the file’s MIME type and `x-filename` set to the display name. Used by agents (via the agent-hub artifact script) and the web UI. Rejects executables/native binaries and bodies over 100 MB.
+      description: "Stores a raw file body as a session artifact. Send the bytes as the request body with `Content-Type` set to the file’s MIME type and `x-filename` set to the display name. Agents can set `x-artifact-presentation: inline` for user-requested deliverables that should open automatically in the active session viewer. Used by agents (via the agent-hub artifact script) and the web UI. Rejects executables/native binaries and bodies over 100 MB."
       parameters:
         - schema:
             type: string
@@ -15284,6 +15284,29 @@ paths:
           description: Session ID.
           name: sessionId
           in: path
+        - schema:
+            type: string
+            description: Artifact display filename.
+          required: false
+          description: Artifact display filename.
+          name: x-filename
+          in: header
+        - schema:
+            type: string
+            description: Creating agent ID.
+          required: false
+          description: Creating agent ID.
+          name: x-agent-id
+          in: header
+        - schema:
+            type: string
+            enum:
+              - inline
+            description: Requests automatic opening in the active session viewer after the upload completes.
+          required: false
+          description: Requests automatic opening in the active session viewer after the upload completes.
+          name: x-artifact-presentation
+          in: header
       requestBody:
         content:
           application/octet-stream:

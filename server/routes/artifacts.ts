@@ -188,6 +188,8 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
       const contentType =
         (req.headers['content-type'] as string | undefined) || 'application/octet-stream';
       const createdBy = (req.headers['x-agent-id'] as string | undefined) || null;
+      const presentation =
+        req.headers['x-artifact-presentation'] === 'inline' ? ('inline' as const) : undefined;
 
       const rejectReason = validateUploadContent(contentType, buf);
       if (rejectReason) {
@@ -228,6 +230,7 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
         sessionId,
         ownerUserId: getSessionOwner(sessionId),
         artifact: view,
+        presentation,
         count: artifactCount(sessionId),
       });
       res.json(view);

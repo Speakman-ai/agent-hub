@@ -18,6 +18,10 @@ vi.mock('react-native', () => ({
 vi.mock('./AppIcon', () => ({
   default: ({ name }: any) => React.createElement('AppIcon', { 'data-name': name }),
 }));
+vi.mock('@kishannareshpal/expo-pdf', () => ({ PdfView: 'PdfView' }));
+vi.mock('react-native-webview', () => ({ WebView: 'WebView' }));
+vi.mock('react-native-markdown-display', () => ({ default: 'Markdown' }));
+vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
 
 import { SessionArtifactsPanelContent, isStaleLoad } from './SessionArtifactsPanel';
 

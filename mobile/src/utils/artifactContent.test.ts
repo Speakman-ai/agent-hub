@@ -5,7 +5,12 @@ vi.mock('./config', () => ({
   getAuthHeaders: () => ({ Authorization: 'Bearer tok' }),
 }));
 
-import { buildArtifactContentUrl, safeCacheName, shareArtifact } from './artifactContent';
+import {
+  buildArtifactContentUrl,
+  safeCacheName,
+  shareArtifact,
+  loadArtifactPreview,
+} from './artifactContent';
 
 describe('buildArtifactContentUrl', () => {
   it('builds the plain content URL', () => {
@@ -48,12 +53,13 @@ describe('safeCacheName', () => {
 
 function makeDeps(over: any = {}) {
   const downloadAsync = vi.fn().mockResolvedValue({ status: 200, uri: 'file:///cache/report.pdf' });
+  const readAsStringAsync = vi.fn().mockResolvedValue('{"answer":42}');
   const shareAsync = vi.fn().mockResolvedValue(undefined);
   return {
-    fileSystem: { cacheDirectory: 'file:///cache/', downloadAsync },
+    fileSystem: { cacheDirectory: 'file:///cache/', downloadAsync, readAsStringAsync },
     sharing: { isAvailableAsync: vi.fn().mockResolvedValue(true), shareAsync },
     ...over,
-    _spies: { downloadAsync, shareAsync },
+    _spies: { downloadAsync, readAsStringAsync, shareAsync },
   };
 }
 
@@ -103,5 +109,32 @@ describe('shareArtifact', () => {
   it('requires sessionId and artifact id', async () => {
     await expect(shareArtifact('', { id: 'a1' }, {}, deps)).rejects.toThrow('sessionId is required');
     await expect(shareArtifact('s1', {}, {}, deps)).rejects.toThrow('artifact.id is required');
+  });
+});
+
+describe('loadArtifactPreview', () => {
+  it('decodes and formats a JSON artifact for the in-app viewer', async () => {
+    const deps = makeDeps();
+    const preview = await loadArtifactPreview(
+      's1',
+      { id: 'a1', filename: 'data.json', contentType: 'application/json' },
+      deps,
+    );
+    expect(preview).toEqual({
+      uri: 'file:///cache/report.pdf',
+      text: '{\n  "answer": 42\n}',
+    });
+    expect(deps._spies.readAsStringAsync).toHaveBeenCalledWith('file:///cache/report.pdf');
+  });
+
+  it('keeps binary preview resources as local URIs without decoding them as text', async () => {
+    const deps = makeDeps();
+    const preview = await loadArtifactPreview(
+      's1',
+      { id: 'a1', filename: 'report.pdf', contentType: 'application/pdf' },
+      deps,
+    );
+    expect(preview).toEqual({ uri: 'file:///cache/report.pdf', text: '' });
+    expect(deps._spies.readAsStringAsync).not.toHaveBeenCalled();
   });
 });

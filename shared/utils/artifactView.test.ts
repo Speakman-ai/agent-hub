@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { formatBytes, extOf, isInlineViewable, artifactGlyph } from './artifactView';
+import {
+  formatBytes,
+  extOf,
+  isInlineViewable,
+  artifactGlyph,
+  artifactRenderKind,
+  shouldAutoPresentArtifact,
+} from './artifactView';
 
 describe('formatBytes', () => {
   it('formats bytes, KB, MB', () => {
@@ -64,5 +71,45 @@ describe('artifactGlyph', () => {
     expect(artifactGlyph('application/octet-stream', 'deploy.sh')).toBe('📜');
     expect(artifactGlyph('application/octet-stream', 'data.csv')).toBe('📊');
     expect(artifactGlyph('application/octet-stream', 'unknown.bin')).toBe('📎');
+  });
+});
+
+describe('artifactRenderKind', () => {
+  it('selects dedicated renderers for supported document families', () => {
+    expect(artifactRenderKind('application/pdf', 'report.pdf')).toBe('pdf');
+    expect(artifactRenderKind('image/png', 'chart.png')).toBe('image');
+    expect(artifactRenderKind('text/markdown', 'notes.md')).toBe('markdown');
+    expect(artifactRenderKind('application/json', 'data.json')).toBe('text');
+  });
+
+  it('refuses active or unsupported content', () => {
+    expect(artifactRenderKind('text/html', 'page.html')).toBeNull();
+    expect(artifactRenderKind('application/zip', 'files.zip')).toBeNull();
+  });
+});
+
+describe('shouldAutoPresentArtifact', () => {
+  const event = {
+    type: 'artifact_created',
+    sessionId: 'session-a',
+    presentation: 'inline',
+    artifact: { filename: 'report.pdf', contentType: 'application/pdf' },
+  };
+
+  it('auto-presents an explicitly marked safe artifact in the active session', () => {
+    expect(shouldAutoPresentArtifact(event, 'session-a')).toBe(true);
+  });
+
+  it('does not steal focus for ordinary, background-session, or unsafe artifacts', () => {
+    expect(shouldAutoPresentArtifact({ ...event, presentation: undefined }, 'session-a')).toBe(
+      false,
+    );
+    expect(shouldAutoPresentArtifact(event, 'session-b')).toBe(false);
+    expect(
+      shouldAutoPresentArtifact(
+        { ...event, artifact: { filename: 'page.html', contentType: 'text/html' } },
+        'session-a',
+      ),
+    ).toBe(false);
   });
 });

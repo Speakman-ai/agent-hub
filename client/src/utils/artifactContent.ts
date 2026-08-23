@@ -4,7 +4,11 @@ import { getApiBase, getAuthHeaders } from './connection';
 // <a href> / window.open can't carry the bearer token. We fetch the bytes with
 // auth headers, wrap them in a blob object URL, and hand that to the browser.
 
-async function fetchArtifactBlob(sessionId: any, artifactId: any, { download = false }: any = {}) {
+export async function fetchArtifactBlob(
+  sessionId: any,
+  artifactId: any,
+  { download = false }: any = {},
+) {
   const base = getApiBase();
   const qs = download ? '?download=1' : '';
   const res = await fetch(`${base}/sessions/${sessionId}/artifacts/${artifactId}/content${qs}`, {
@@ -12,15 +16,6 @@ async function fetchArtifactBlob(sessionId: any, artifactId: any, { download = f
   });
   if (!res.ok) throw new Error(`Failed to fetch artifact (${res.status})`);
   return res.blob();
-}
-
-/** Open an artifact inline in a new browser tab. */
-export async function viewArtifact(sessionId: any, artifactId: any) {
-  const blob = await fetchArtifactBlob(sessionId, artifactId, { download: false });
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener,noreferrer');
-  // Revoke after a delay so the new tab has time to load the blob.
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 /** Trigger a browser download of an artifact under its original filename. */

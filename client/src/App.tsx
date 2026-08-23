@@ -249,6 +249,7 @@ import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLi
 import { deriveSessionState } from './utils/deriveSessionState';
 import { resolveDeepLinkTarget, upsertSessionRow } from './utils/sessionDeepLinkTarget';
 import { deriveSessionTimelineMarkers } from '@shared/utils/sessionTimeline';
+import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
 
 /**
  * @param {object} [props]
@@ -478,6 +479,10 @@ export default function App({ initialView }: any = {}) {
   /** Per-session counter bumped on `artifact_created` / `artifact_deleted` WS
    * events; passed to the artifacts pane as a reloadToken to keep it live. */
   const [artifactTickBySession, setArtifactTickBySession] = useState<Record<string, any>>({});
+  /** Latest user-requested deliverable to show in each session's inline viewer. */
+  const [presentedArtifactBySession, setPresentedArtifactBySession] = useState<Record<string, any>>(
+    {},
+  );
   /** Optimistic UI while POST /sessions/:id/preview/start is in flight. */
   const [previewStartingBySession, setPreviewStartingBySession] = useState<Record<string, any>>({});
   /** While POST /sessions/:id/workspace/ensure is cloning the session worktree. */
@@ -3428,8 +3433,20 @@ export default function App({ initialView }: any = {}) {
           }
           if (data.type === 'artifact_created' && sid === activeSessionIdRef.current) {
             const name = data.artifact?.filename;
+            const autoPresent = shouldAutoPresentArtifact(data, activeSessionIdRef.current);
+            if (autoPresent) {
+              setPresentedArtifactBySession((prev: any) => ({
+                ...prev,
+                [sid]: data.artifact,
+              }));
+              setArtifactsPaneOpenBySession((prev: any) => ({ ...prev, [sid]: true }));
+              setDiffPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+              setTerminalPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+            }
             showToast(
-              name ? `New artifact: ${name}` : 'The agent generated a new artifact.',
+              name
+                ? `${autoPresent ? 'Opened' : 'New'} artifact: ${name}`
+                : 'The agent generated a new artifact.',
               'info',
               7000,
             );
@@ -7659,6 +7676,15 @@ export default function App({ initialView }: any = {}) {
                         <SessionArtifactsPane
                           sessionId={activeSessionId}
                           reloadToken={artifactTickBySession[activeSessionId] || 0}
+                          presentedArtifact={presentedArtifactBySession[activeSessionId] || null}
+                          onPresentedArtifact={(sessionId: any, artifactId: any) =>
+                            setPresentedArtifactBySession((prev: any) => {
+                              if (prev[sessionId]?.id !== artifactId) return prev;
+                              const next = { ...prev };
+                              delete next[sessionId];
+                              return next;
+                            })
+                          }
                           onClose={() =>
                             setArtifactsPaneOpenBySession((prev: any) => ({
                               ...prev,

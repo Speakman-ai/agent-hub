@@ -258,6 +258,7 @@ describe('Prompt trim — May 2026 audit', () => {
       });
       expect(first).toContain('Deliver Files as Artifacts');
       expect(first).toContain('artifacts.sh put');
+      expect(first).toContain('artifacts.sh put --present');
       // Should mention the panel so agents point the user there instead of pasting bytes.
       expect(first).toContain('Artifacts panel');
     });

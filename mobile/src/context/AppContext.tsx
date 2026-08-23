@@ -26,6 +26,7 @@ import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySe
 import { usePendingLessonTotal } from '../hooks/usePendingLessonTotal';
 import { resolveStreamingFromSnapshot, buildStreamingAgentState } from '@shared/utils/activeTaskSnapshot';
 import { buildInterruptQueuedMessageDispatch, isPersistedUploadAttachment, } from '@shared/utils/queuedMessageAttachments';
+import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
 import { appendImportEvent } from '@shared/utils/projectImportWizard';
 import { addKanbanRefreshProject, createRefreshScheduler } from '@shared/utils/kanbanRefresh';
 const AppContext = createContext<any>(null);
@@ -92,6 +93,9 @@ export function AppProvider({ children }: any) {
     // WS event so the SessionArtifactsPanel reloads its list live. Shape:
     //   { [sessionId]: number }
     const [artifactReloadBySession, setArtifactReloadBySession] = useState<any>({});
+    // One-shot user-requested deliverable events. ChatScreen acknowledges an
+    // entry after handing it to the full-screen artifact viewer.
+    const [presentedArtifactBySession, setPresentedArtifactBySession] = useState<any>({});
     // Cron-linked sessions
     const [cronSessions, setCronSessions] = useState<any[]>([]);
     // Threads (persistent output logs for crons)
@@ -661,6 +665,9 @@ export function AppProvider({ children }: any) {
                 if (!sid)
                     break;
                 setArtifactReloadBySession((prev: any) => ({ ...prev, [sid]: (prev[sid] || 0) + 1 }));
+                if (shouldAutoPresentArtifact(data, activeSessionIdRef.current)) {
+                    setPresentedArtifactBySession((prev: any) => ({ ...prev, [sid]: data.artifact }));
+                }
                 break;
             }
             // Cron session updates
@@ -2224,6 +2231,15 @@ export function AppProvider({ children }: any) {
             return next;
         });
     }, []);
+    const acknowledgePresentedArtifact = useCallback((sessionId: any, artifactId: any) => {
+        setPresentedArtifactBySession((prev: any) => {
+            if (prev[sessionId]?.id !== artifactId)
+                return prev;
+            const next = { ...prev };
+            delete next[sessionId];
+            return next;
+        });
+    }, []);
     const triggerCreateTicketAndPr = useCallback(async () => {
         const sessionId = activeSessionIdRef.current;
         if (!sessionId)
@@ -2329,6 +2345,8 @@ export function AppProvider({ children }: any) {
         eventsByMessage,
         browserScreensBySession,
         artifactReloadBySession,
+        presentedArtifactBySession,
+        acknowledgePresentedArtifact,
         handleDequeue,
         handleInterruptQueuedMessage,
         handleEditQueuedMessage,

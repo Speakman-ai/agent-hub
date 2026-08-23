@@ -30,8 +30,8 @@ export function extOf(filename: any) {
  * Whether the client can SAFELY render this artifact inline (so "View" opens
  * it rather than forcing a download).
  *
- * Artifacts are agent-controlled and the web `viewArtifact` opens a same-origin
- * blob URL, so we must NEVER offer inline View for active/scriptable content —
+ * Artifacts are agent-controlled and the web viewer creates a same-origin blob
+ * URL, so we must NEVER offer inline View for active/scriptable content —
  * HTML, SVG, XML, JS — which could run in the app origin on click. This is a
  * strict allowlist of non-active, natively-renderable types (no `text/*` /
  * `image/*` prefix matching, no `svg`). The server enforces the same boundary
@@ -76,6 +76,43 @@ export function isInlineViewable(contentType: any, filename: any) {
     return INLINE_VIEWABLE_EXTS.includes(extOf(filename));
   }
   return false;
+}
+
+export type ArtifactRenderKind = 'pdf' | 'image' | 'markdown' | 'text';
+
+/**
+ * Pick the inert renderer used by the web and mobile artifact viewers.
+ * Returns null for downloads that must not be rendered inside Agent Hub.
+ */
+export function artifactRenderKind(contentType: any, filename: any): ArtifactRenderKind | null {
+  if (!isInlineViewable(contentType, filename)) return null;
+  const ct = (contentType || '').split(';')[0].trim().toLowerCase();
+  const ext = extOf(filename);
+  if (ct === 'application/pdf' || (ct === 'application/octet-stream' && ext === 'pdf')) {
+    return 'pdf';
+  }
+  if (ct.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) {
+    return 'image';
+  }
+  if (ct === 'text/markdown' || ext === 'md') return 'markdown';
+  return 'text';
+}
+
+/**
+ * Presentation is deliberately opt-in. Agents also upload background logs,
+ * archives, and intermediate exports; those should update the artifact badge
+ * without stealing the user's active pane. Only a present-marked, safely
+ * renderable artifact created in the currently visible session auto-opens.
+ */
+export function shouldAutoPresentArtifact(event: any, activeSessionId: any) {
+  return Boolean(
+    event?.type === 'artifact_created' &&
+    event?.presentation === 'inline' &&
+    event?.sessionId &&
+    event.sessionId === activeSessionId &&
+    event?.artifact &&
+    artifactRenderKind(event.artifact.contentType, event.artifact.filename),
+  );
 }
 
 /**

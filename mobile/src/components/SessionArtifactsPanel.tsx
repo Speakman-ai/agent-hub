@@ -25,6 +25,7 @@ import { shareArtifact } from '../utils/artifactContent';
 import { formatBytes, isInlineViewable, artifactGlyph } from '@shared/utils/artifactView';
 import { shortDate } from '../utils/time';
 import { colors } from '../theme/colors';
+import SessionArtifactViewerModal from './SessionArtifactViewerModal';
 
 /**
  * Whether a resolved `/artifacts` fetch is stale and must be discarded before
@@ -154,11 +155,17 @@ export function SessionArtifactsPanelContent({
   );
 }
 
-export default function SessionArtifactsPanel({ sessionId, reloadNonce = 0 }: any) {
+export default function SessionArtifactsPanel({
+  sessionId,
+  reloadNonce = 0,
+  presentedArtifact = null,
+  onPresentedArtifact,
+}: any) {
   const [artifacts, setArtifacts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<any>(null);
   const [busyId, setBusyId] = useState('');
+  const [selectedArtifact, setSelectedArtifact] = useState<any>(null);
 
   // Stale-response guard (mirrors the web SessionArtifactsPane): this component
   // instance is reused when `activeSessionId` changes, so a slow load for the
@@ -192,25 +199,20 @@ export default function SessionArtifactsPanel({ sessionId, reloadNonce = 0 }: an
   useEffect(() => {
     setArtifacts([]);
     setError(null);
+    setSelectedArtifact(null);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!presentedArtifact?.id) return;
+    setSelectedArtifact(presentedArtifact);
+    onPresentedArtifact?.(sessionId, presentedArtifact.id);
+  }, [onPresentedArtifact, presentedArtifact, sessionId]);
 
   useEffect(() => {
     load();
   }, [load, reloadNonce]);
 
-  const handleView = useCallback(
-    async (artifact: any) => {
-      setBusyId(artifact.id);
-      try {
-        await shareArtifact(sessionId, artifact, { download: false });
-      } catch (err: any) {
-        setError(err?.message || 'Failed to open artifact');
-      } finally {
-        setBusyId('');
-      }
-    },
-    [sessionId],
-  );
+  const handleView = useCallback((artifact: any) => setSelectedArtifact(artifact), []);
 
   const handleDownload = useCallback(
     async (artifact: any) => {
@@ -251,16 +253,23 @@ export default function SessionArtifactsPanel({ sessionId, reloadNonce = 0 }: an
   );
 
   return (
-    <SessionArtifactsPanelContent
-      artifacts={artifacts}
-      loading={loading}
-      error={error}
-      busyId={busyId}
-      onView={handleView}
-      onDownload={handleDownload}
-      onDelete={handleDelete}
-      onRefresh={load}
-    />
+    <>
+      <SessionArtifactsPanelContent
+        artifacts={artifacts}
+        loading={loading}
+        error={error}
+        busyId={busyId}
+        onView={handleView}
+        onDownload={handleDownload}
+        onDelete={handleDelete}
+        onRefresh={load}
+      />
+      <SessionArtifactViewerModal
+        sessionId={sessionId}
+        artifact={selectedArtifact}
+        onClose={() => setSelectedArtifact(null)}
+      />
+    </>
   );
 }
 
