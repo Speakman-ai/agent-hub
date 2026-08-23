@@ -970,6 +970,11 @@ describe('buildEnrichedPrompt — lead response contract', () => {
       _getEnrichedAgent: mockGetEnrichedAgent,
     });
     expect(prompt).toContain('## Lead Response Contract');
+    expect(prompt).toMatch(/Writing Style still governs short answers/i);
+    expect(prompt).toMatch(
+      /do \*\*not\*\* append a Goal \/ Actions taken \/ Evidence \/ Result recap/i,
+    );
+    expect(prompt).toMatch(/For non-trivial execution updates/);
   });
 
   it('does not include the lead response contract on subsequent messages', () => {

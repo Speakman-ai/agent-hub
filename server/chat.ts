@@ -1376,7 +1376,9 @@ The submitted secret stays retrievable until the request's TTL expires, so you c
   // rule.
   if (agent.role === 'lead' && isFirstMessage) {
     prompt += `\n\n## Lead Response Contract
-For non-trivial execution updates, end with a compact structured block in prose (not JSON) using these headings:
+Writing Style still governs short answers. A yes/no or one-line question gets that answer in the first line — do **not** append a Goal / Actions taken / Evidence / Result recap to a status check, a clarification, or any reply that did not execute work.
+
+For non-trivial execution updates (you implemented, investigated, or otherwise changed the repo this turn), end with a compact structured block in prose (not JSON) using these headings:
 - \`Goal\`
 - \`Actions taken\`
 - \`Evidence\`
