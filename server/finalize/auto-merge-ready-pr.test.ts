@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { autoMergeReadyPr, AUTO_MERGE_ACTOR, type NativePrMerger } from './auto-merge-ready-pr.js';
 import type { GhRunner } from '../github-auto-merge.js';
 import type { Project } from '../types.js';
@@ -7,9 +7,26 @@ const PROJECT = { id: 'agent-hub', gitHost: 'agenthub' } as unknown as Project;
 const NATIVE_PR = '/projects/agent-hub/pulls/11';
 const GITHUB_PR = 'https://github.com/acme/repo/pull/42';
 
+afterEach(() => vi.useRealTimers());
+
 function fakeGh(impl?: (args: string[]) => void): GhRunner {
   return vi.fn(async (args: string[]) => {
     impl?.(args);
+    if (args[1] === 'view') {
+      return {
+        stdout: JSON.stringify({
+          statusCheckRollup: [
+            {
+              __typename: 'CheckRun',
+              name: 'test',
+              status: 'COMPLETED',
+              conclusion: 'SUCCESS',
+            },
+          ],
+        }),
+        stderr: '',
+      };
+    }
     return { stdout: 'Merged', stderr: '' };
   });
 }
@@ -96,20 +113,30 @@ describe('autoMergeReadyPr', () => {
   });
 
   it('routes a github.com PR through the gh merge path, not native', async () => {
+    vi.useFakeTimers();
     const calls: string[][] = [];
     const runGh = fakeGh((args) => calls.push(args));
     const merge = vi.fn();
 
-    const result = await autoMergeReadyPr({
+    const pending = autoMergeReadyPr({
       prUrl: GITHUB_PR,
       project: { id: 'gh', gitHost: 'github' } as unknown as Project,
       nativePr: { merge },
       runGh,
     });
+    await vi.advanceTimersByTimeAsync(30_000);
+    const result = await pending;
+    vi.useRealTimers();
 
     expect(result.source).toBe('github');
     expect(result.merged).toBe(true);
     expect(merge).not.toHaveBeenCalled();
-    expect(calls).toEqual([['pr', 'merge', '--squash', GITHUB_PR]]);
+    expect(calls).toEqual([
+      ['pr', 'view', GITHUB_PR, '--json', 'statusCheckRollup'],
+      ['pr', 'view', GITHUB_PR, '--json', 'statusCheckRollup'],
+      ['pr', 'view', GITHUB_PR, '--json', 'statusCheckRollup'],
+      ['pr', 'view', GITHUB_PR, '--json', 'statusCheckRollup'],
+      ['pr', 'merge', '--squash', GITHUB_PR],
+    ]);
   });
 });

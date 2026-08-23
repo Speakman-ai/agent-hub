@@ -80,8 +80,8 @@ describe('deriveLocalDockerPreviewSubdomainBase', () => {
   });
 
   it('does not derive for production public URLs', () => {
-    expect(deriveLocalDockerPreviewSubdomainBase('https://agenthub.surveytracker.io')).toBeNull();
-    expect(deriveLocalDockerPreviewSubdomainBase('https://hub.example.com')).toBeNull();
+    expect(deriveLocalDockerPreviewSubdomainBase('https://agenthub.example.com')).toBeNull();
+    expect(deriveLocalDockerPreviewSubdomainBase('https://hub.example.net')).toBeNull();
   });
 
   it('can be disabled with AGENT_HUB_PREVIEW_LOCAL_DOCKER=0', () => {

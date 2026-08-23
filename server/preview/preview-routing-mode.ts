@@ -43,7 +43,7 @@ export interface PreviewRoutingInputs {
 /**
  * Hostnames that are locally-resolved without a public certificate:
  * loopback, mDNS `*.local`, and common LAN suffixes. Prod public URLs
- * (`agenthub.surveytracker.io`, `hub.example.com`, …) must NOT match.
+ * (`agenthub.example.com`, `hub.example.net`, …) must NOT match.
  *
  * This is not a product hostname list — operators pick their own
  * `AGENT_HUB_PUBLIC_URL` (dnsmasq, `/etc/hosts`, `*.local`, …). A
