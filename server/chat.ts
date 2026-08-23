@@ -1059,12 +1059,10 @@ When creating cards: use a **concise title** (under 60 chars) summarizing the pr
 ${linkedCardLine}
 
 ### Auto-closing a card as duplicate / already-done
-If you pick up a card and discover the work is redundant — either covered by an earlier ticket or already shipped — don't just leave the card parked. End your turn with a fenced block like:
-\`\`\`
+If you pick up a card and discover the work is redundant — either covered by an earlier ticket or already shipped — don't just leave the card parked. End your turn with this block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
 <agenthub:close-card>
 {"reason": "duplicate", "note": "Covered by card 5c8f2a — see PR #313.", "duplicateOfCardId": "5c8f2a..."}
 </agenthub:close-card>
-\`\`\`
 - \`reason\`: \`"duplicate"\` or \`"already-done"\` (required)
 - \`note\`: one-line explanation shown in the auto-close comment (required)
 - \`duplicateOfCardId\`: optional, the canonical card id the work duplicates
@@ -1166,16 +1164,25 @@ Your job ends at a clean local commit on the feature branch after tests pass. Do
    - **Acceptance Criteria**: Bulleted checklist of conditions that must be met for this to be complete
    Include \`session_id: "$AGENT_HUB_SESSION_ID"\` when creating the card — this links it to your session and **auto-renames the sidebar** to the card title.
    Move to "In Progress" when you begin.`;
+      const lifecycleBranchStep = promptWorktree
+        ? `2. **Branch**: Stay on this session's current branch${options.sessionWorktreeBranch ? ` (\`${options.sessionWorktreeBranch}\`)` : ''}. Do not run \`git checkout -b\`, \`git switch -c\`, or otherwise create or switch branches — the platform already created this worktree's branch.`
+        : `2. **Branch**: \`git checkout ${lifecycleBaseBranch} && git pull && git checkout -b feature/<name>\``;
+      const existingPrReadFailures = repoHostedOnHub
+        ? '`ah-api.sh GET "/api/projects/$PROJECT_ID/pulls/<n>"` (this repo is hosted on Agent Hub — do not use `gh pr checks` for Hub PR status; `gh` is still fine for GitHub Actions logs)'
+        : '`gh pr checks`';
+      const existingPrCheckout = promptWorktree
+        ? 'Stay on this session branch'
+        : 'Check out branch';
       prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
 This project is connected to GitHub. Follow this lifecycle for changes:
 
 ${lifecycleStep1}
-2. **Branch**: \`git checkout ${lifecycleBaseBranch} && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
+${lifecycleBranchStep}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
 4. **Test & Lint**: ${finalizeConfigured ? `Run **targeted** tests only while iterating. ${finalizeTargetedTestGuidance} **Do not run the full \`.agent-hub/ci.yaml\` suite in-session** — the human uses **Finalize Code Changes** for that; read pass/fail and step logs in the session strip.` : `${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding`}
 5. **${finalizeConfigured ? 'Commit (Finalize ships)' : 'Ship'}**: Rebase on latest \`origin/${lifecycleBaseBranch}\`${finalizeConfigured ? ', commit locally' : ', run tests/lint, and commit'}.${finalizeConfigured ? ` **Stop there** — do not push or open a PR. The human uses **Finalize Code Changes** on the session, then **Push to ${pushTargetLabel}** after gates pass.` : ` Commit, push, and open the PR ${repoHostedOnHub ? 'via the Agent Hub API (`ah-api.sh POST "/api/projects/$PROJECT_ID/pulls"` with headBranch/title/body — this repo is hosted on Agent Hub, do NOT use `gh pr create`)' : 'with `gh pr create`'} yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and add a comment on the card containing the PR URL.`} Never merge your own PR.
 
-**Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit${finalizeConfigured ? ' locally' : ', and push to the same branch'}. Do not open duplicate PRs. Do NOT merge.
+**Existing PRs**: ${existingPrCheckout}, read failures (${existingPrReadFailures}), fix, commit${finalizeConfigured ? ' locally' : ', and push to the same branch'}. Do not open duplicate PRs. Do NOT merge.
 **Shortcuts**: Trivial fixes skip card creation. Found a bug? Create a "To Do" card.`;
     } else if (isGitHubConnected && projectMode === 'workflow') {
       prompt += `\n\n## Development — Workflow mode
@@ -1193,6 +1200,9 @@ You are in a git worktree. Never commit to main. Commit to the current feature b
     // the May 2026 prompt-trim audit these were three near-duplicate
     // blocks each restating "do not emit questions like…" and the
     // "ask first" exceptions — saved ~2 KB on the first message.
+    const implementOnBranch = promptWorktree
+      ? "Implement on this session's current branch. Do not create or switch branches."
+      : 'Implement on a feature branch.';
     const biasToActionSteps =
       projectMode === 'workflow'
         ? `**Just do the work:** implement, test, and commit in the project checkout following team conventions.`
@@ -1200,23 +1210,23 @@ You are in a git worktree. Never commit to main. Commit to the current feature b
           ? options.sessionHasLinkedCard
             ? `**Just do the work:**
 1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
-2. Implement on a feature branch.
+2. ${implementOnBranch}
 3. Rebase and commit locally — run only tests you added or changed while fixing. Existing tests run in Finalize. **Do not push or open a PR** (human uses Finalize Code Changes).`
             : `**Just do the work:**
 1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
 2. Move it to In Progress.
-3. Implement on a feature branch.
+3. ${implementOnBranch}
 4. Rebase and commit locally — run only tests you added or changed while fixing. Existing tests run in Finalize. **Do not push or open a PR** (human uses Finalize Code Changes).`
           : options.sessionHasLinkedCard
             ? `**Just do the work:**
 1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
-2. Implement on a feature branch.
+2. ${implementOnBranch}
 3. Rebase, test, commit, push, and open/update the PR.
 4. Move card to Review and comment with PR URL.`
             : `**Just do the work:**
 1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
 2. Move it to In Progress.
-3. Implement on a feature branch.
+3. ${implementOnBranch}
 4. Rebase, test, commit, push, and open the PR.
 5. Move card to Review and comment with PR URL.`;
     const biasToActionScope =
@@ -1238,7 +1248,7 @@ ${biasToActionSteps}
 - The action is destructive and irreversible (e.g. \`git push --force\` to main, deleting production data, rotating shared secrets).
 - The user has explicitly asked you to propose a plan before executing.
 
-Everything else: ship it. A rejected change costs a few minutes; a blocked agent costs the user's entire turn.
+${finalizeConfigured ? 'Everything else: do the work.' : 'Everything else: ship it.'} A rejected change costs a few minutes; a blocked agent costs the user's entire turn.
 
 ## Research Questions — Answer on the Spot, Don't Card It
 When a user asks a research or investigation question (how something works, why it behaves a certain way, where a feature lives, what the current state of X is), just do the research and answer inline. Do **not** offer to open a ticket for the investigation itself. Cards are for work to ship, not questions to answer — if research surfaces a concrete bug or feature, *then* create a card for that follow-up work.
@@ -1287,12 +1297,10 @@ Training data has a knowledge cutoff and grows stale. Whenever you are asked any
 - **Ecosystem state** — "What does the landscape look like for X?"
 - **Current guidance** — "How should we structure / architect X?"
 
-Use the \`<agenthub:react>\` web action to search first:
-\`\`\`
+Use the \`<agenthub:react>\` web action to search first (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
 <agenthub:react>
 {"actions":[{"tool":"web","query":"best way to do X in 2025"}]}
 </agenthub:react>
-\`\`\`
 
 **Do not** answer opinion or best-practice questions from training data alone. Training data is a starting point; a live web search is the answer.`;
 

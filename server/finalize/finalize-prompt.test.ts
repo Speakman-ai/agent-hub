@@ -124,5 +124,15 @@ describe('buildEnrichedPrompt — Finalize configured', () => {
     });
     expect(prompt).toContain("Bias to Action — Don't Ask, Just Ship");
     expect(prompt).toMatch(/open the PR with `gh pr create`/i);
+    expect(prompt).toContain('Everything else: ship it.');
+  });
+
+  it('closes Bias to Action with "do the work" instead of "ship it" when Finalize is on', () => {
+    const prompt = buildEnrichedPrompt(makeProject() as never, makeAgent() as never, {
+      isFirstMessage: true,
+      finalizeConfigured: true,
+    });
+    expect(prompt).toContain('Everything else: do the work.');
+    expect(prompt).not.toContain('Everything else: ship it.');
   });
 });

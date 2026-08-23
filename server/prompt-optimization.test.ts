@@ -942,6 +942,91 @@ describe('buildEnrichedPrompt — tasks-only project (no GitHub)', () => {
   });
 });
 
+describe('buildEnrichedPrompt — first-turn contradiction cut', () => {
+  beforeEach(() => {
+    mkdirSync(tmpBase, { recursive: true });
+    mkdirSync(path.join(tmpBase, 'skills'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  const section = (prompt: string, heading: string) => {
+    const start = prompt.indexOf(heading);
+    if (start === -1) return '';
+    const end = prompt.indexOf('\n\n## ', start + heading.length);
+    return prompt.slice(start, end === -1 ? undefined : end);
+  };
+
+  it('tells worktree sessions to stay on the current branch instead of checkout -b', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ githubRepo: 'owner/repo' }), makeAgent(), {
+      isFirstMessage: true,
+      useWorktree: true,
+      sessionWorktreePath: '/tmp/session-wt',
+      sessionWorktreeBranch: 'agent-hub/hub-frontend/session-abc',
+    });
+    const lifecycle = section(prompt, '## Development Lifecycle');
+    expect(lifecycle).toContain('Stay on this session');
+    expect(lifecycle).toContain('agent-hub/hub-frontend/session-abc');
+    expect(lifecycle).not.toMatch(/git checkout -b feature/);
+    expect(lifecycle).not.toContain('safe to branch here');
+    expect(prompt).toContain("Implement on this session's current branch");
+    expect(prompt).not.toContain('Implement on a feature branch');
+  });
+
+  it('keeps checkout -b for non-worktree GitHub sessions', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ githubRepo: 'owner/repo' }), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toMatch(/git checkout main && git pull && git checkout -b feature/);
+    expect(prompt).toContain('Implement on a feature branch');
+    expect(prompt).not.toContain('safe to branch here');
+  });
+
+  it('teaches close-card as a naked XML tag, not a fenced example', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ githubRepo: 'owner/repo' }), makeAgent(), {
+      isFirstMessage: true,
+    });
+    const kanban = section(prompt, '## Kanban Board');
+    expect(kanban).toContain('<agenthub:close-card>');
+    expect(kanban).toMatch(/naked XML tag/i);
+    expect(kanban).not.toMatch(/fenced block like/i);
+    expect(kanban).not.toMatch(/```\s*\n<agenthub:close-card>/);
+  });
+
+  it('teaches web-search ReAct as a naked XML tag, not a fenced example', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    const web = section(prompt, '## Web Search');
+    expect(web).toContain('<agenthub:react>');
+    expect(web).toMatch(/naked XML tag/i);
+    expect(web).not.toMatch(/```\s*\n<agenthub:react>/);
+  });
+
+  it('points Hub-hosted Existing PRs at the Hub API, not gh pr checks', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject({ githubRepo: 'owner/repo', gitHost: 'agenthub' }),
+      makeAgent(),
+      { isFirstMessage: true },
+    );
+    const lifecycle = section(prompt, '## Development Lifecycle');
+    expect(lifecycle).toContain('ah-api.sh GET');
+    expect(lifecycle).toMatch(/do not use `gh pr checks` for Hub PR status/);
+    expect(lifecycle).toMatch(/GitHub Actions logs/);
+  });
+
+  it('keeps gh pr checks for GitHub-hosted Existing PRs', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ githubRepo: 'owner/repo' }), makeAgent(), {
+      isFirstMessage: true,
+    });
+    const lifecycle = section(prompt, '## Development Lifecycle');
+    expect(lifecycle).toContain('`gh pr checks`');
+    expect(lifecycle).not.toMatch(/do not use `gh pr checks`/);
+  });
+});
+
 describe('buildEnrichedPrompt — lead response contract', () => {
   beforeEach(() => {
     mkdirSync(tmpBase, { recursive: true });
