@@ -130,7 +130,7 @@ describe('NativePrService', () => {
     expect(created.prUrl).toBe(`/projects/${projectId}/pulls/1`);
 
     // List shape — the fields PullRequestsPage consumes.
-    const pulls = service.listPulls({ project, state: 'open', limit: 30 });
+    const pulls = await service.listPulls({ project, state: 'open', limit: 30 });
     expect(pulls).toHaveLength(1);
     expect(pulls[0]).toMatchObject({
       number: 1,
@@ -142,6 +142,8 @@ describe('NativePrService', () => {
       head: branch,
       base: 'main',
       labels: [],
+      mergeable: true,
+      merge_blocked_reason: null,
     });
     expect(typeof pulls[0].created_at).toBe('string');
 
@@ -170,7 +172,7 @@ describe('NativePrService', () => {
     expect(git(bare, 'rev-parse refs/heads/main')).toBe(result.mergedSha);
     expect(git(bare, `rev-list --parents -n1 ${result.mergedSha}`)).toContain(mainBefore);
 
-    const merged = service.listPulls({ project, state: 'closed', limit: 10 });
+    const merged = await service.listPulls({ project, state: 'closed', limit: 10 });
     expect(merged[0]).toMatchObject({ number: 1, state: 'closed', merged: true });
     expect(merged[0].merged_at).toBeTruthy();
 
@@ -218,7 +220,8 @@ describe('NativePrService', () => {
       actor: 'u-tester',
     });
     expect(result).toMatchObject({ ok: false, status: 409, mergeable: false });
-    expect(service.listPulls({ project, state: 'open', limit: 10 })).toHaveLength(1);
+    const [summary] = await service.listPulls({ project, state: 'open', limit: 10 });
+    expect(summary).toMatchObject({ number: 1, mergeable: false });
   });
 
   it('revert: undoes the merge on the base branch, records it, and re-fires the branch-moved hook', async () => {
@@ -270,7 +273,7 @@ describe('NativePrService', () => {
     );
 
     // The PR stays merged; the revert is recorded alongside it.
-    const [summary] = service.listPulls({ project, state: 'closed', limit: 10 });
+    const [summary] = await service.listPulls({ project, state: 'closed', limit: 10 });
     expect(summary).toMatchObject({
       number: 1,
       merged: true,
@@ -386,9 +389,9 @@ describe('NativePrService', () => {
 
     expect(service.close({ project, number: 1 }).row.status).toBe('closed');
     expect(() => service.close({ project, number: 1 })).toThrow(NativePrError);
-    expect(() =>
+    await expect(
       service.listPulls({ project: { ...project, gitHost: 'github' }, state: 'open', limit: 5 }),
-    ).toThrow(NativePrError);
+    ).rejects.toThrow(NativePrError);
     await expect(service.getDetail({ project, number: 99 })).rejects.toThrow('not found');
   });
 

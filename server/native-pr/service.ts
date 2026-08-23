@@ -41,8 +41,10 @@ import { isKnownHubUserId } from './author-user.js';
 import { NativePrError } from './errors.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { mapWithConcurrency } from '../git-host/recent-pushes.js';
 
 const execFileP = promisify(execFile);
+const LIST_MERGEABILITY_CONCURRENCY = 4;
 
 async function ciConfigTextAtCommit(repoPath: string, sha: string): Promise<string | null> {
   try {
@@ -125,7 +127,7 @@ export interface NativePrService {
     limit: number;
     /** Rows to skip for offset pagination (page N → (N-1) * pageSize). Defaults to 0. */
     offset?: number;
-  }): Array<Record<string, unknown>>;
+  }): Promise<Array<Record<string, unknown>>>;
   /**
    * All PRs (any state) whose base or head branch equals `branch`, summarized.
    * Filtered in storage (no page limit) — used by the epic-pulls endpoint so a
@@ -785,22 +787,42 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       return { row, prUrl, created };
     },
 
-    listPulls({ project, state, limit, offset = 0 }) {
+    async listPulls({ project, state, limit, offset = 0 }) {
       if (!isAgentHubHosted(project)) {
         throw new NativePrError('Project is not Agent Hub-hosted', 400);
       }
       // Load the board's feature-branch epics once, not per row.
       const epics = epicsForProject(stmts, project.id);
-      return listPullRequests(stmts, project.id, state, limit, offset).map((row) =>
-        summarize(project.id, row, {
+      const repoPath = bareRepoPath(project.id);
+      const rows = listPullRequests(stmts, project.id, state, limit, offset);
+      return mapWithConcurrency(rows, LIST_MERGEABILITY_CONCURRENCY, async (row) => {
+        let mergeable: boolean | null = null;
+        let blockedReason: string | null = null;
+        if (row.status === 'open') {
+          const [baseSha, headSha] = await Promise.all([
+            revParse(repoPath, `refs/heads/${row.base_branch}`),
+            revParse(repoPath, `refs/heads/${row.head_branch}`),
+          ]);
+          if (baseSha && headSha) {
+            try {
+              mergeable = (await mergeTree(repoPath, baseSha, headSha)).mergeable;
+            } catch {
+              // Keep the tri-state unknown on an infrastructure/git failure.
+            }
+          }
+          blockedReason = await mergeBlockedReason(stmts, project, row, repoPath);
+        }
+        return summarize(project.id, row, {
+          mergeable,
+          merge_blocked_reason: blockedReason,
           review_decision: reviewDecisionFor(stmts, project.id, row),
           // CI status badge on list rows. Uses the recorded head_sha (no
           // per-row git call); the detail view resolves the live head.
           check_rollup: checksForSha(stmts, project.id, row.head_sha),
           linked_card: linkedCardFor(stmts, project.id, row.number),
           linked_epic: linkedEpicForRow(epics, row),
-        }),
-      );
+        });
+      });
     },
 
     listPullsForBranch({ project, branch }) {

@@ -179,7 +179,7 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
         try {
           // One extra row tells us whether another page exists without a
           // second COUNT query.
-          const rows = deps.nativePr.listPulls({
+          const rows = await deps.nativePr.listPulls({
             project,
             state: state as 'open' | 'closed' | 'all',
             limit: limit + 1,

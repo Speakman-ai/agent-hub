@@ -100,6 +100,8 @@ describe('native PR route branches', () => {
       html_url: prUrl,
       head: branch,
       base: 'main',
+      mergeable: true,
+      merge_blocked_reason: null,
     });
   });
 
