@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as connection from './connection';
 import {
   derivePaneState,
   normalizePreviewPorts,
@@ -11,6 +12,7 @@ import {
   previewIframeSrc,
   previewProxySessionIdFromUrl,
   resolvePreviewBrowserUrl,
+  resolvePreviewBrowsingOrigin,
   rewriteLoopbackPreviewUrl,
   withPreviewTicket,
   shouldShowSessionPreviewPane,
@@ -328,6 +330,88 @@ describe('resolvePreviewBrowserUrl', () => {
     ).toBe('http://localhost:4101/board');
   });
 
+  it('emits http://<session>.preview.local.agenthub.com when the parent Hub is HTTP local Docker', () => {
+    // One operator's DNS (not a product hostname): PUBLIC_URL=http://local.agenthub.com
+    // with compose deriving preview.local.agenthub.com. nginx only listens on
+    // :80 and there is no wildcard cert, so the iframe must keep http.
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'http://local.agenthub.com',
+        subdomainBase: 'preview.local.agenthub.com',
+      }),
+    ).toBe(`http://${sid}.preview.local.agenthub.com/`);
+  });
+
+  it('keeps :8080 on http://<session>.preview.hub.local when the Hub is published there', () => {
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'http://hub.local:8080',
+        subdomainBase: 'preview.hub.local:8080',
+      }),
+    ).toBe(`http://${sid}.preview.hub.local:8080/`);
+    // Port may live on the Hub origin even if an explicit base omitted it.
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'http://hub.local:8080',
+        subdomainBase: 'preview.hub.local',
+      }),
+    ).toBe(`http://${sid}.preview.hub.local:8080/`);
+    // Vite on :3050 must not steal the Hub's :8080.
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'http://localhost:3050',
+        subdomainBase: 'preview.hub.local:8080',
+        insecure: true,
+      }),
+    ).toBe(`http://${sid}.preview.hub.local:8080/`);
+  });
+
+  it('keeps path-prefix on the Hub/API origin in remote mode, not the Vite shell', () => {
+    // Vite UI at :3050 connected to https://hub.example.com. The pane must
+    // pass resolvePreviewBrowsingOrigin() (getServerBase), never
+    // window.location.origin, or path-prefix iframes load on localhost.
+    const spy = vi.spyOn(connection, 'getServerBase').mockReturnValue('https://hub.example.com');
+    try {
+      expect(resolvePreviewBrowsingOrigin()).toBe('https://hub.example.com');
+      expect(
+        resolvePreviewBrowserUrl('/api/sessions/non-uuid-id/preview/proxy/', {
+          origin: resolvePreviewBrowsingOrigin(),
+        }),
+      ).toBe('https://hub.example.com/api/sessions/non-uuid-id/preview/proxy/');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('inherits http for any HTTP Hub hostname, not only one lab DNS name', () => {
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'http://hub.lan',
+        subdomainBase: 'preview.hub.lan',
+      }),
+    ).toBe(`http://${sid}.preview.hub.lan/`);
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'http://agenthub.home.example.net',
+        subdomainBase: 'preview.agenthub.home.example.net',
+      }),
+    ).toBe(`http://${sid}.preview.agenthub.home.example.net/`);
+  });
+
+  it('inherits http on loopback Vite when the Hub itself is published over HTTP', () => {
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'http://localhost:3050',
+        subdomainBase: 'preview.hub.mycompany.net',
+        insecure: true,
+      }),
+    ).toBe(`http://${sid}.preview.hub.mycompany.net/`);
+  });
+
   it('returns a subdomain URL when subdomainBase is configured and sessionId is a UUID', () => {
     // Subdomain mode hides the path-prefix mount from the dev server
     // entirely — the iframe loads at `<sid>.<base>/...` and the app
@@ -339,6 +423,16 @@ describe('resolvePreviewBrowserUrl', () => {
         subdomainBase: 'preview.agenthub.dev.example.com',
       }),
     ).toBe(`https://${sid}.preview.agenthub.dev.example.com/some/page?foo=1`);
+  });
+
+  it('keeps https for hosted subdomain bases even when the SPA origin is http localhost', () => {
+    const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
+    expect(
+      resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/`, {
+        origin: 'http://localhost:3050',
+        subdomainBase: 'preview.agenthub.dev.example.com',
+      }),
+    ).toBe(`https://${sid}.preview.agenthub.dev.example.com/`);
   });
 
   it('falls back to path-prefix when subdomainBase is set but sessionId is not a UUID', () => {

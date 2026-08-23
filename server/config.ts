@@ -27,6 +27,7 @@ import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
 import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
+import { deriveLocalDockerPreviewSubdomainBase } from './preview/preview-routing-mode.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -471,7 +472,13 @@ const config: AppConfig = {
   // subdomain mode OFF; only the path-prefix proxy is active. Requires
   // a wildcard ACM cert + Route 53 alias + ALB listener cert
   // attachment in the operator's stack; see the session-previews RFC.
-  previewSubdomainBase: resolve('AGENT_HUB_PREVIEW_SUBDOMAIN_BASE', 'previewSubdomainBase', null),
+  previewSubdomainBase: (() => {
+    const explicit = resolve('AGENT_HUB_PREVIEW_SUBDOMAIN_BASE', 'previewSubdomainBase', null);
+    if (explicit && explicit.trim()) return explicit.trim();
+    return deriveLocalDockerPreviewSubdomainBase(
+      resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),
+    );
+  })(),
 
   // ── GitHub ─────────────────────────────────────────────────────
   publicUrl: resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),

@@ -25,6 +25,7 @@ import {
   previewIframeSrc,
   previewProxySessionIdFromUrl,
   resolvePreviewBrowserUrl,
+  resolvePreviewBrowsingOrigin,
   rewriteLoopbackPreviewUrl,
   withPreviewTicket,
 } from '../utils/sessionPreviewState';
@@ -224,6 +225,10 @@ export default function SessionPreviewPane({
   const [previewSubdomainBase, setPreviewSubdomainBase] = useState<string | null>(
     SUBDOMAIN_LOADING,
   );
+  // True when the Hub is published over HTTP (compose / LAN). Loopback Vite
+  // clients need this so they inherit http instead of forcing the hosted
+  // https wildcard. Non-loopback HTTP origins already inherit from location.
+  const [previewInsecure, setPreviewInsecure] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -232,7 +237,10 @@ export default function SessionPreviewPane({
           headers: getAuthHeaders(),
         });
         if (!r.ok) {
-          if (!cancelled) setPreviewSubdomainBase(null);
+          if (!cancelled) {
+            setPreviewSubdomainBase(null);
+            setPreviewInsecure(false);
+          }
           return;
         }
         const cfg = await r.json();
@@ -242,8 +250,20 @@ export default function SessionPreviewPane({
             ? cfg.previewSubdomainBase
             : null,
         );
+        let hubIsHttp = false;
+        if (typeof cfg.publicUrl === 'string' && cfg.publicUrl.trim()) {
+          try {
+            hubIsHttp = new URL(cfg.publicUrl).protocol === 'http:';
+          } catch {
+            hubIsHttp = false;
+          }
+        }
+        setPreviewInsecure(hubIsHttp);
       } catch {
-        if (!cancelled) setPreviewSubdomainBase(null);
+        if (!cancelled) {
+          setPreviewSubdomainBase(null);
+          setPreviewInsecure(false);
+        }
       }
     })();
     return () => {
@@ -367,9 +387,14 @@ export default function SessionPreviewPane({
       return '';
     }
     return resolvePreviewBrowserUrl(activeRawUrl, {
+      // Hub/API origin (getServerBase in remote mode), not the Vite shell.
+      // window.location.origin would rewrite path-prefix iframes onto
+      // http://localhost:3050 when the SPA is connected to a remote Hub.
+      origin: resolvePreviewBrowsingOrigin(),
       subdomainBase: previewSubdomainBase,
+      insecure: previewInsecure,
     });
-  }, [state.status, activeRawUrl, previewSubdomainBase]);
+  }, [state.status, activeRawUrl, previewSubdomainBase, previewInsecure]);
 
   const baseIframeSrc = useMemo(() => {
     if (!browserPreviewUrl) return '';

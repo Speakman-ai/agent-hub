@@ -78,6 +78,12 @@ services:
       - AGENT_HUB_API_KEY=${AGENT_HUB_API_KEY:-}
       - AGENT_HUB_BOT_GITHUB_TOKEN=${AGENT_HUB_BOT_GITHUB_TOKEN:-}
       - AGENT_HUB_PUBLIC_URL=${AGENT_HUB_PUBLIC_URL:-}
+      # Local Docker / LAN Hubs: derive `preview.<public-host>` when unset so
+      # session previews get a real origin (Vite HMR) instead of a 501. Set
+      # AGENT_HUB_PREVIEW_LOCAL_DOCKER=0 to disable. Prod Terraform sets the
+      # wildcard base explicitly and does not use this compose file.
+      - AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=${AGENT_HUB_PREVIEW_SUBDOMAIN_BASE:-}
+      - AGENT_HUB_PREVIEW_LOCAL_DOCKER=${AGENT_HUB_PREVIEW_LOCAL_DOCKER:-1}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       # Codex: default on (--dangerously-bypass-approvals-and-sandbox); set false in .env to re-enable sandbox.
       - AGENT_HUB_CODEX_DANGER_BYPASS=${AGENT_HUB_CODEX_DANGER_BYPASS:-true}

@@ -111,7 +111,7 @@ export function withPreviewTicket(url: any, ticket: any, { origin }: any = {}) {
  * configured remote URL). Returns `null` in non-browser test environments
  * when no `origin` override is passed.
  */
-export function resolvePreviewBrowsingOrigin(originOverride: any) {
+export function resolvePreviewBrowsingOrigin(originOverride?: any) {
   if (originOverride) return originOverride;
   if (typeof window === 'undefined') return null;
   const base = getServerBase();
@@ -187,7 +187,71 @@ export function rewriteLoopbackPreviewUrl(url: any, originOverride?: any) {
 const SESSION_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Build the subdomain iframe URL `https://<sid>.<base>/<original-path>`
+ * Scheme for a subdomain preview iframe.
+ *
+ * Hosted deployments always use HTTPS (wildcard ACM cert + Secure
+ * cookies). An HTTP Hub — whatever hostname the operator published,
+ * not a product domain — has no wildcard cert and the compose nginx
+ * vhost only listens on :80, so the iframe must keep `http:`.
+ *
+ * A Vite client on `http://localhost:3050` talking to a hosted Hub
+ * still emits `https:` unless `/api/config` says the Hub itself is
+ * HTTP (`insecure: true`).
+ */
+export function subdomainPreviewScheme(
+  origin: string | null | undefined,
+  opts?: { insecure?: boolean },
+): 'http' | 'https' {
+  if (origin && typeof origin === 'string') {
+    try {
+      const parsed = new URL(origin);
+      if (parsed.protocol === 'https:') return 'https';
+      if (parsed.protocol === 'http:') {
+        const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+        const loopback = isLoopbackHostname(host);
+        // Any HTTP Hub origin the browser is actually on (LAN DNS, `/etc/hosts`,
+        // `*.local`, …) — do not special-case one lab hostname.
+        if (!loopback) return 'http';
+        // Loopback SPA (Vite / Electron) follows the Hub's published protocol
+        // so `http://localhost` + a hosted wildcard stays https.
+        return opts?.insecure ? 'http' : 'https';
+      }
+    } catch {
+      return opts?.insecure ? 'http' : 'https';
+    }
+  }
+  return opts?.insecure ? 'http' : 'https';
+}
+
+/** Non-default `:port` baked into a derived base (`preview.hub.local:8080`). */
+function previewBasePortSuffix(base: string): { host: string; portSuffix: string } {
+  const m = base.match(/^(.*):(\d+)$/);
+  if (m) return { host: m[1], portSuffix: `:${m[2]}` };
+  return { host: base, portSuffix: '' };
+}
+
+/**
+ * When the derived/explicit base has no port, keep a non-default port from
+ * the Hub origin (`http://hub.local:8080` → iframe `:8080`). Never take the
+ * port from a loopback SPA origin — that's Vite on :3050, not the Hub.
+ */
+function hubOriginPortSuffix(origin: string | null | undefined): string {
+  if (!origin || typeof origin !== 'string') return '';
+  try {
+    const parsed = new URL(origin);
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (isLoopbackHostname(host)) return '';
+    if (!parsed.port) return '';
+    if (parsed.protocol === 'http:' && parsed.port === '80') return '';
+    if (parsed.protocol === 'https:' && parsed.port === '443') return '';
+    return `:${parsed.port}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Build the subdomain iframe URL `<scheme>://<sid>.<base>/<original-path>`
  * for subdomain-mode previews. Returns `null` when `subdomainBase` is
  * unset (subdomain mode off) or when `sessionId` doesn't match the
  * UUID shape the server requires.
@@ -196,10 +260,19 @@ const SESSION_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
  * in the path-prefix URL — we strip that prefix so the dev server
  * sees `/` (its default base) and emits asset URLs accordingly.
  *
+ * `origin` is the parent Hub origin. Local-docker HTTP Hubs keep `http:`;
+ * everything else stays `https:`.
+ *
  * Exported for testability; the higher-level `resolvePreviewBrowserUrl`
  * decides whether to call it based on the per-server config.
  */
-export function buildSubdomainPreviewUrl(pathPrefixUrl: any, sessionId: any, subdomainBase: any) {
+export function buildSubdomainPreviewUrl(
+  pathPrefixUrl: any,
+  sessionId: any,
+  subdomainBase: any,
+  origin?: string | null,
+  insecure?: boolean,
+) {
   if (!subdomainBase) return null;
   if (!sessionId || !SESSION_ID_UUID_RE.test(sessionId)) return null;
   const cleanBase = subdomainBase
@@ -239,41 +312,38 @@ export function buildSubdomainPreviewUrl(pathPrefixUrl: any, sessionId: any, sub
   if (internalPort !== null && !(internalPort >= 1 && internalPort <= 65535)) return null;
   const hostLabel =
     internalPort === null ? sessionId.toLowerCase() : `${internalPort}--${sessionId.toLowerCase()}`;
-  // Browser scheme: protocols other than https usually mean the
-  // operator is testing locally without a wildcard cert; if HTTPS
-  // isn't already in use on the parent, subdomain mode won't work
-  // anyway (cookie Secure flag, ALB listener), so we hardcode https.
-  return `https://${hostLabel}.${cleanBase}${normalisedInner}${search}${hash}`;
+  const scheme = subdomainPreviewScheme(origin, { insecure });
+  const { host, portSuffix: basePort } = previewBasePortSuffix(cleanBase);
+  const portSuffix = basePort || hubOriginPortSuffix(origin);
+  return `${scheme}://${hostLabel}.${host}${portSuffix}${normalisedInner}${search}${hash}`;
 }
 
 /**
  * Turn a Hub preview-proxy URL (relative or absolute) into an absolute URL
  * the iframe should actually load. Two outcomes:
  *
- *   - When `subdomainBase` is set (server has the wildcard cert + Route 53
- *     wired), return the subdomain URL `https://<sid>.<base>/<inner-path>`.
- *     The app sees itself at `/` and every dev-server framework renders
- *     correctly with zero per-app config (Phase 4 of the session-previews
- *     RFC).
+ *   - When `subdomainBase` is set, return the subdomain URL
+ *     `<scheme>://<sid>.<base>/<inner-path>`. Scheme is `https` on hosted
+ *     Hubs and the parent Hub protocol on local Docker (no wildcard cert).
  *
  *   - Otherwise, return the same Hub-origin path-prefix URL the server
  *     emitted, normalised to the browsing origin so it works even when
  *     server `publicUrl` doesn't match the host the user loaded the SPA
  *     from. This is the back-compat default.
  */
-export function resolvePreviewBrowserUrl(url: any, { origin, subdomainBase }: any = {}) {
+export function resolvePreviewBrowserUrl(url: any, { origin, subdomainBase, insecure }: any = {}) {
   if (!url || typeof url !== 'string') return url;
   const sessionId = previewProxySessionIdFromUrl(url);
   if (!sessionId) return url;
 
+  const browsingOrigin = resolvePreviewBrowsingOrigin(origin);
+
   // Subdomain mode wins when configured. Falls back to path-prefix if
   // the helper refuses to build (non-UUID session id, bad base, etc.).
   if (subdomainBase) {
-    const subUrl = buildSubdomainPreviewUrl(url, sessionId, subdomainBase);
+    const subUrl = buildSubdomainPreviewUrl(url, sessionId, subdomainBase, origin, insecure);
     if (subUrl) return subUrl;
   }
-
-  const browsingOrigin = resolvePreviewBrowsingOrigin(origin);
   if (!browsingOrigin) return url;
 
   try {

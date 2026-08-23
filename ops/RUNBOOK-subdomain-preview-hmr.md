@@ -16,8 +16,25 @@ every project is forced onto a static, rebuild-to-see-changes preview.
 Subdomain mode serves each preview at `<sessionId>.preview.<alb_fqdn>`, the app
 renders at `/`, and dev-server HMR Just Works.
 
-Subdomain mode needs **all three** layers below. If any one is missing, previews
-fall back to static and HMR is dead:
+## Local Docker / LAN Hub (no ACM, no Terraform)
+
+A compose Hub on **whatever hostname you published** (`http://localhost`,
+`http://hub.local`, `http://agenthub.lan`, or a custom LAN DNS name) does
+**not** need a wildcard certificate. Compose sets `AGENT_HUB_PREVIEW_LOCAL_DOCKER=1`
+and the server derives `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=preview.<hub-host>`
+from `AGENT_HUB_PUBLIC_URL`. That host is yours — there is no product domain.
+
+What you still need:
+
+| Layer | Local Docker |
+|---|---|
+| DNS | Point `*.preview.<hub-host>` at this machine (dnsmasq `address=/<hub-host>/<lan-ip>` covers every subdomain of that name) |
+| Reverse proxy | `client/nginx.conf` has a `server_name ~^.+\.preview\.` block that forwards those Hosts to the server (HTTP :80). For HTTPS, add `*.preview.<hub-host>` to the LAN Caddyfile → `agent-hub-server:3051` |
+| Hub env | `AGENT_HUB_PUBLIC_URL=http://<your-hub-host>` and (optional) explicit `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=preview.<your-hub-host>`. Recreate the server container after changing env. |
+
+Do **not** set `AGENT_HUB_PREVIEW_ALLOW_PATH_PREFIX=1` here — that is the degraded mode that white-screens Vite.
+
+Subdomain mode on a **hosted** ALB still needs **all three** layers below. If any one is missing, previews fall back to static and HMR is dead:
 
 | Layer | Required | How to check |
 |---|---|---|
