@@ -92,7 +92,7 @@ describe('intakeSupportTicket — created broadcast payload', () => {
         stmts,
         broadcast,
         config,
-        serverDir: '.',
+        uploadsDir: 'uploads',
         cwd: '/tmp/project',
         agent: { id: 'project-dev', engine: 'codex-cli', model: 'gpt-5.5' },
         userId: 'support-user',
@@ -121,7 +121,7 @@ describe('intakeSupportTicket — created broadcast payload', () => {
 
     const ticket = await intakeSupportTicket(
       { projectId, type: 'question', severity: 'low', body: 'how do I export?' },
-      { stmts, broadcast, config, serverDir: '.' },
+      { stmts, broadcast, config, uploadsDir: 'uploads' },
     );
 
     expect(broadcast).toHaveBeenCalledTimes(1);
@@ -147,7 +147,7 @@ describe('intakeSupportTicket — created broadcast payload', () => {
         body: 'please follow up',
         reporterEmail: 'alice@example.com',
       },
-      { stmts, broadcast, config, serverDir: '.' },
+      { stmts, broadcast, config, uploadsDir: 'uploads' },
     );
 
     expect(ticket.reporter_email).toBe('alice@example.com');

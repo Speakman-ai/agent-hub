@@ -18,7 +18,9 @@ services:
     volumes:
       # Bind-mount host data for local dev (override AGENT_HUB_HOST_DATA_DIR in .env).
       - ${AGENT_HUB_HOST_DATA_DIR:-${HOME}/.agent-hub/data}:/data
-      - server-uploads:/app/server/uploads
+      # Read the pre-2.31 named volume once so startup can import existing
+      # /uploads references into /data/uploads without writing legacy storage.
+      - server-uploads:/legacy-uploads:ro
       # Worktrees live under the data dir (`HOME=/data` → `/data/.agent-hub/workspaces`).
       # Do not overlay that path with ~/.agent-hub/workspaces — it hides session clones.
       - ${AGENT_HUB_HOST_ORGS_DIR:-${HOME}/.agent-hub/orgs}:/data/.agent-hub/orgs
@@ -41,6 +43,11 @@ services:
     environment:
       - NODE_ENV=production
       - AGENT_HUB_DATA_DIR=/data
+      # Keep uploads below the existing writable /data mount. A separate bind
+      # mount for a missing uploads subdirectory is created root:root by Docker
+      # on Linux before this non-root service starts.
+      - AGENT_HUB_UPLOADS_DIR=/data/uploads
+      - AGENT_HUB_LEGACY_UPLOADS_DIR=/legacy-uploads
       - AGENT_HUB_PORT=3051
       - AGENT_HUB_HOST=0.0.0.0
       # Writable HOME for the host uid (image /home/node is owned by uid 1000).

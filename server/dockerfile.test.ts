@@ -4,6 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const dockerfilePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'Dockerfile');
+const composePath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'docker-compose.yml',
+);
 
 describe('server/Dockerfile', () => {
   it('avoids recursive chown over full /app (Docker Desktop perf regression)', () => {
@@ -128,5 +133,17 @@ describe('server/Dockerfile', () => {
     for (const [engine, marker] of Object.entries(engineInstallMarkers)) {
       expect(runtimeStage, `expected runtime stage to install the ${engine} CLI`).toContain(marker);
     }
+  });
+});
+
+describe('docker-compose.yml upload storage', () => {
+  it('keeps fresh-host uploads under the existing writable data mount', () => {
+    const compose = readFileSync(composePath, 'utf8');
+
+    expect(compose).toContain('- AGENT_HUB_UPLOADS_DIR=/data/uploads');
+    expect(compose).toContain('- AGENT_HUB_LEGACY_UPLOADS_DIR=/legacy-uploads');
+    expect(compose).toContain('- server-uploads:/legacy-uploads:ro');
+    expect(compose).toMatch(/\nvolumes:\n\s+server-uploads:\s*$/);
+    expect(compose).not.toMatch(/^\s*-\s+.*\/uploads:\/app\/server\/uploads\s*$/m);
   });
 });

@@ -85,6 +85,21 @@ describe('config.ts — test-context safety rail (assertSafeTestDataDir wiring)'
     expect(mod.default.projectsDir).toBe(path.join(process.env.AGENT_HUB_DATA_DIR, 'projects'));
   });
 
+  it('honours the configured durable uploads directory', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = path.join(os.tmpdir(), `agent-hub-uploads-${process.pid}`);
+    process.env.AGENT_HUB_UPLOADS_DIR = path.join(process.env.AGENT_HUB_DATA_DIR, 'uploads');
+    process.env.AGENT_HUB_LEGACY_UPLOADS_DIR = path.join(
+      process.env.AGENT_HUB_DATA_DIR,
+      'legacy-uploads',
+    );
+
+    const mod = await import('./config.js');
+    expect(mod.default.uploadsDir).toBe(process.env.AGENT_HUB_UPLOADS_DIR);
+    expect(mod.default.legacyUploadsDir).toBe(process.env.AGENT_HUB_LEGACY_UPLOADS_DIR);
+  });
+
   it('throws when AGENT_HUB_PROJECTS_DIR points at the live projects tree even if dataDir is tmp', async () => {
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';

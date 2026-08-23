@@ -4,6 +4,7 @@ import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, SupportTicketSeverity } from '../types.js';
 import { intakeSupportTicket } from '../support-ticket-intake.js';
 import { pickMainDevAgent } from '../routing.js';
+import { resolveUploadsDir } from '../uploads-dir.js';
 import { resolveOwnerUserId } from '../session-ownership.js';
 import { normalizeReporterEmail } from '../support-tickets-store.js';
 import {
@@ -320,6 +321,7 @@ export function buildBugReportTicketBody(input: BugReportInput): string {
 
 export default function createBugReportRoutes(deps: RouteDeps): Router {
   const { stmts, broadcast, findProject, config, serverDir } = deps;
+  const uploadsDir = resolveUploadsDir(config, serverDir);
   const router = Router();
 
   function applyCors(_req: Request, res: Response, next: NextFunction): void {
@@ -429,7 +431,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         if (screenshotFile && screenshotFile.data.length > 0) {
           try {
             screenshotRef = await persistSupportTicketScreenshotBuffer(
-              serverDir,
+              uploadsDir,
               screenshotFile.data,
             );
             screenshotMissReason = null;
@@ -490,7 +492,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
             stmts,
             broadcast,
             config,
-            serverDir,
+            uploadsDir,
             cwd: project.cwd,
             agent: pickMainDevAgent(project),
             userId: resolveOwnerUserId(req as AuthenticatedRequest),
@@ -509,7 +511,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
       } catch (err) {
         // The ticket didn't land — remove a screenshot we may have written so it
         // isn't orphaned under /uploads.
-        await deleteSupportTicketScreenshot(serverDir, screenshotRef);
+        await deleteSupportTicketScreenshot(uploadsDir, screenshotRef);
         const message = err instanceof Error ? err.message : String(err);
         console.error('[Bug Reports] Unexpected failure:', message);
         return res.status(500).json({ error: message });

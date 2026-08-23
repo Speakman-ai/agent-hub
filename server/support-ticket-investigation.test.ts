@@ -183,32 +183,39 @@ describe('resolveReplayContext', () => {
 
   it('reads a local json upload', () => {
     writeFileSync(path.join(serverDir, 'uploads', 'r.json'), '{"events":[1,2,3]}');
-    expect(resolveReplayContext('/uploads/r.json', serverDir)).toBe('{"events":[1,2,3]}');
+    expect(resolveReplayContext('/uploads/r.json', path.join(serverDir, 'uploads'))).toBe(
+      '{"events":[1,2,3]}',
+    );
   });
 
   it('truncates oversized replays', () => {
     writeFileSync(path.join(serverDir, 'uploads', 'big.txt'), 'a'.repeat(10_000));
-    const out = resolveReplayContext('/uploads/big.txt', serverDir);
+    const out = resolveReplayContext('/uploads/big.txt', path.join(serverDir, 'uploads'));
     expect(out).toContain('…(truncated)');
     expect(out!.length).toBeLessThan(10_000);
   });
 
   it('ignores remote URLs and non-uploads refs', () => {
-    expect(resolveReplayContext('https://example.com/replay', serverDir)).toBeNull();
-    expect(resolveReplayContext('replay-abc', serverDir)).toBeNull();
+    const uploadsDir = path.join(serverDir, 'uploads');
+    expect(resolveReplayContext('https://example.com/replay', uploadsDir)).toBeNull();
+    expect(resolveReplayContext('replay-abc', uploadsDir)).toBeNull();
   });
 
   it('ignores binary capture types (zip/video)', () => {
     writeFileSync(path.join(serverDir, 'uploads', 'cap.webm'), 'binarydata');
-    expect(resolveReplayContext('/uploads/cap.webm', serverDir)).toBeNull();
+    expect(resolveReplayContext('/uploads/cap.webm', path.join(serverDir, 'uploads'))).toBeNull();
   });
 
   it('rejects path traversal out of the uploads dir', () => {
-    expect(resolveReplayContext('/uploads/../../secret.json', serverDir)).toBeNull();
+    expect(
+      resolveReplayContext('/uploads/../../secret.json', path.join(serverDir, 'uploads')),
+    ).toBeNull();
   });
 
   it('returns null when the file does not exist', () => {
-    expect(resolveReplayContext('/uploads/missing.json', serverDir)).toBeNull();
+    expect(
+      resolveReplayContext('/uploads/missing.json', path.join(serverDir, 'uploads')),
+    ).toBeNull();
   });
 });
 

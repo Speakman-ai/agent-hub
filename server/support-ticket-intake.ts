@@ -25,7 +25,7 @@ export interface SupportTicketIntakeDeps {
   stmts: RouteDeps['stmts'];
   broadcast: RouteDeps['broadcast'];
   config: RouteDeps['config'];
-  serverDir: string;
+  uploadsDir: string;
   /** Working dir for the AI investigation (the project's cwd). */
   cwd?: string;
   /** Primary project agent used for the automatic investigation. */
@@ -154,7 +154,7 @@ export async function intakeSupportTicket(
     triggerSupportTicketInvestigation(ticket.id, {
       config: deps.config,
       broadcast: deps.broadcast,
-      serverDir: deps.serverDir,
+      uploadsDir: deps.uploadsDir,
       cwd: deps.cwd,
       agentId: deps.agent?.id,
       agentEngine: deps.agent?.engine,

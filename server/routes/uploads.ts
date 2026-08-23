@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import express from 'express';
 import type { RouteDeps } from '../types.js';
 import { validateUploadContent } from '../upload-validation.js';
+import { resolveUploadsDir } from '../uploads-dir.js';
 
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
 
@@ -43,9 +44,9 @@ function pickSavedExtension(contentType: string, originalName: string): string {
 }
 
 export default function createUploadRoutes(deps: RouteDeps): Router {
-  const { serverDir } = deps;
+  const { serverDir, config } = deps;
   const router = Router();
-  const UPLOADS_DIR = path.join(serverDir, 'uploads');
+  const UPLOADS_DIR = resolveUploadsDir(config, serverDir);
 
   router.post('/api/upload', (req: Request, res: Response) => {
     try {

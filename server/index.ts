@@ -82,6 +82,8 @@ import {
   reconcileRumLifecycle,
 } from './replays/rum-lifecycle-reconciler.js';
 import config, { refreshShellPath } from './config.js';
+import { resolveUploadsDir } from './uploads-dir.js';
+import { migrateLegacyUploads } from './uploads-migration.js';
 import {
   beginSessionEnvSelection,
   initSessionEnvSelection,
@@ -1007,7 +1009,12 @@ app.use(authMiddleware);
 // configured GITHUB_TOKEN's rate-limit budget against api.github.com.
 app.use(createReleasesRoutes());
 
-const UPLOADS_DIR: string = path.join(__dirname, 'uploads');
+const UPLOADS_DIR = resolveUploadsDir(config, __dirname);
+migrateLegacyUploads({
+  legacyUploadsDir: config.legacyUploadsDir,
+  uploadsDir: UPLOADS_DIR,
+  markerPath: path.join(config.dataDir, 'migrations', 'legacy-server-uploads-v1'),
+});
 mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use('/uploads', express.static(UPLOADS_DIR));
 

@@ -42,6 +42,7 @@ import { escapeUntrustedForPrompt } from './untrusted-prompt.js';
 import { getStmts } from './db.js';
 import { parseReplayIdFromRef } from './replays/replay-store.js';
 import { loadReplayRefResult } from './replays/replay-context-loader.js';
+import { resolveUploadsDir } from './uploads-dir.js';
 
 /** Engines that can be selected for an operator-triggered investigation. */
 export const SUPPORT_INVESTIGATION_ENGINES: readonly SupportedEngine[] = [
@@ -251,14 +252,13 @@ function matchingBraceEnd(text: string, start: number): number {
  */
 export function resolveReplayContext(
   replayRef: string | null | undefined,
-  serverDir: string,
+  uploadsDir: string,
 ): string | null {
   if (!replayRef) return null;
   const ref = replayRef.trim();
   if (!ref.startsWith('/uploads/')) return null;
   if (!/\.(json|txt)$/i.test(ref)) return null;
   // Resolve strictly inside the uploads dir — never follow `..` out of it.
-  const uploadsDir = path.join(serverDir, 'uploads');
   const filename = path.basename(ref);
   const full = path.join(uploadsDir, filename);
   if (path.dirname(full) !== uploadsDir) return null;
@@ -374,6 +374,8 @@ const defaultRunner: InvestigationRunner = async ({
 export interface InvestigateDeps {
   config?: AppConfig;
   broadcast?: BroadcastFn;
+  uploadsDir?: string;
+  /** Source-tree fallback used only for legacy callers without uploadsDir. */
   serverDir?: string;
   cwd?: string;
   preferredEngine?: SupportedEngine | null;
@@ -407,6 +409,7 @@ export async function investigateSupportTicket(
 
   const cfg = deps.config ?? configDefault;
   const serverDir = deps.serverDir ?? process.cwd();
+  const uploadsDir = deps.uploadsDir ?? resolveUploadsDir(cfg, serverDir);
   const cwd = deps.cwd && existsSync(deps.cwd) ? deps.cwd : process.env.HOME || '/tmp';
   const runner = deps.runner ?? defaultRunner;
 
@@ -417,7 +420,7 @@ export async function investigateSupportTicket(
   // that the ticket body alone can still produce.
   const resolveTranscript = deps.resolveReplayTranscript ?? resolveReplayTranscriptContext;
   const transcript = await resolveTranscript(ticket.replay_ref, cfg).catch(() => null);
-  const replayContext = transcript ?? resolveReplayContext(ticket.replay_ref, serverDir);
+  const replayContext = transcript ?? resolveReplayContext(ticket.replay_ref, uploadsDir);
   const prompt = buildSupportTicketInvestigationPrompt(ticket, {
     replayContext,
     replayContextKind: transcript ? 'transcript' : 'raw',

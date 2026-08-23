@@ -400,6 +400,14 @@ const config: AppConfig = {
   // ── Directories ────────────────────────────────────────────────
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME) as string,
   dataDir: resolve('AGENT_HUB_DATA_DIR', 'dataDir', DEFAULT_DATA_DIR) as string,
+  uploadsDir: resolve(
+    'AGENT_HUB_UPLOADS_DIR',
+    'uploadsDir',
+    path.join(__dirname, 'uploads'),
+  ) as string,
+  legacyUploadsDir: resolve('AGENT_HUB_LEGACY_UPLOADS_DIR', 'legacyUploadsDir', null) as
+    | string
+    | null,
   // Live default is ~/.agent-hub/projects (bind-mounted separately from
   // dataDir in docker-compose). In test context, fall back under DATA_DIR
   // so a forgotten AGENT_HUB_PROJECTS_DIR cannot mkdir into the operator's

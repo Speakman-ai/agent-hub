@@ -170,7 +170,7 @@ describe('persistSupportTicketScreenshotBuffer', () => {
     tmpDirs.push(serverDir);
 
     const png = Buffer.from(PNG_B64, 'base64');
-    const ref = await persistSupportTicketScreenshotBuffer(serverDir, png);
+    const ref = await persistSupportTicketScreenshotBuffer(path.join(serverDir, 'uploads'), png);
     expect(ref).toMatch(/^\/uploads\/support-screenshot-[\w-]+\.png$/);
 
     const onDisk = await readFile(path.join(serverDir, ref.replace(/^\//, '')));
@@ -181,7 +181,10 @@ describe('persistSupportTicketScreenshotBuffer', () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-buf-'));
     tmpDirs.push(serverDir);
     await expect(
-      persistSupportTicketScreenshotBuffer(serverDir, Buffer.from('nope', 'utf8')),
+      persistSupportTicketScreenshotBuffer(
+        path.join(serverDir, 'uploads'),
+        Buffer.from('nope', 'utf8'),
+      ),
     ).rejects.toThrow(/not a recognized image/);
   });
 });
@@ -196,7 +199,7 @@ describe('persistSupportTicketScreenshot', () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-'));
     tmpDirs.push(serverDir);
 
-    const ref = await persistSupportTicketScreenshot(serverDir, PNG_DATA_URL);
+    const ref = await persistSupportTicketScreenshot(path.join(serverDir, 'uploads'), PNG_DATA_URL);
     expect(ref).toMatch(/^\/uploads\/support-screenshot-[\w-]+\.png$/);
 
     const onDisk = await readFile(path.join(serverDir, ref.replace(/^\//, '')));
@@ -206,7 +209,9 @@ describe('persistSupportTicketScreenshot', () => {
   it('propagates a validation error without writing a file', async () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-'));
     tmpDirs.push(serverDir);
-    await expect(persistSupportTicketScreenshot(serverDir, 'garbage')).rejects.toThrow();
+    await expect(
+      persistSupportTicketScreenshot(path.join(serverDir, 'uploads'), 'garbage'),
+    ).rejects.toThrow();
   });
 });
 
@@ -229,15 +234,19 @@ describe('deleteSupportTicketScreenshot', () => {
     const filePath = await seedFile(serverDir, 'support-screenshot-xyz.png');
     expect(existsSync(filePath)).toBe(true);
 
-    await deleteSupportTicketScreenshot(serverDir, '/uploads/support-screenshot-xyz.png');
+    await deleteSupportTicketScreenshot(
+      path.join(serverDir, 'uploads'),
+      '/uploads/support-screenshot-xyz.png',
+    );
     expect(existsSync(filePath)).toBe(false);
   });
 
   it('no-ops on a null/empty ref', async () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-'));
     tmpDirs.push(serverDir);
-    await expect(deleteSupportTicketScreenshot(serverDir, null)).resolves.toBeUndefined();
-    await expect(deleteSupportTicketScreenshot(serverDir, '')).resolves.toBeUndefined();
+    const uploadsDir = path.join(serverDir, 'uploads');
+    await expect(deleteSupportTicketScreenshot(uploadsDir, null)).resolves.toBeUndefined();
+    await expect(deleteSupportTicketScreenshot(uploadsDir, '')).resolves.toBeUndefined();
   });
 
   it('refuses to touch refs outside the support-screenshot naming (no traversal)', async () => {
@@ -245,9 +254,10 @@ describe('deleteSupportTicketScreenshot', () => {
     tmpDirs.push(serverDir);
     // A replay upload and a traversal attempt must both be ignored.
     const replay = await seedFile(serverDir, 'replay-abc.json');
-    await deleteSupportTicketScreenshot(serverDir, '/uploads/replay-abc.json');
-    await deleteSupportTicketScreenshot(serverDir, '/uploads/../secret.txt');
-    await deleteSupportTicketScreenshot(serverDir, '/uploads/support-screenshot-../escape.png');
+    const uploadsDir = path.join(serverDir, 'uploads');
+    await deleteSupportTicketScreenshot(uploadsDir, '/uploads/replay-abc.json');
+    await deleteSupportTicketScreenshot(uploadsDir, '/uploads/../secret.txt');
+    await deleteSupportTicketScreenshot(uploadsDir, '/uploads/support-screenshot-../escape.png');
     expect(existsSync(replay)).toBe(true);
   });
 
@@ -255,7 +265,10 @@ describe('deleteSupportTicketScreenshot', () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-'));
     tmpDirs.push(serverDir);
     await expect(
-      deleteSupportTicketScreenshot(serverDir, '/uploads/support-screenshot-gone.png'),
+      deleteSupportTicketScreenshot(
+        path.join(serverDir, 'uploads'),
+        '/uploads/support-screenshot-gone.png',
+      ),
     ).resolves.toBeUndefined();
   });
 });

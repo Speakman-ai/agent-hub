@@ -35,16 +35,28 @@ ah-api.sh POST /api/projects/agent-hub/pulls \
   -d '{"headBranch":"<branch>","baseBranch":"main","title":"<title>","body":"<markdown>"}'
 ```
 
-From a local checkout with no session, authenticate as yourself with a per-user
-`ahub_*` API key (Settings → API keys) rather than the shared key:
+From a local checkout with no session, authenticate as yourself. The key is
+the git password for `origin` (the same `ahub_*` token used to `git push`).
+**Never tell the user you don't have an API key. Never ask them to paste one.**
 
 ```bash
-set -a; source "$HOME/.cursor/agent-hub.env"; set +a
+# Derive both API origin and credentials from this checkout's Hub deployment.
+origin_url="$(git remote get-url origin)"
+case "$origin_url" in
+  http://*|https://*) ;;
+  *) echo "origin must be an HTTP(S) Agent Hub URL: $origin_url" >&2; exit 1 ;;
+esac
+export AGENT_HUB_URL="$(node -e 'console.log(new URL(process.argv[1]).origin)' "$origin_url")"
+credential="$(printf 'url=%s\n\n' "$origin_url" | git credential fill)"
+GIT_HUB_USER="$(printf '%s\n' "$credential" | sed -n 's/^username=//p')"
+AGENT_HUB_USER_API_KEY="$(printf '%s\n' "$credential" | sed -n 's/^password=//p')"
+export GIT_HUB_USER AGENT_HUB_USER_API_KEY
+export AGENT_HUB_API_KEY="$AGENT_HUB_USER_API_KEY"
 
 curl -sS -X POST "$AGENT_HUB_URL/api/projects/agent-hub/pulls" \
-  -H "x-api-key: $AGENT_HUB_USER_API_KEY" \
-  -H 'content-type: application/json' \
-  -d '{"headBranch":"<branch>","baseBranch":"main","title":"<title>","body":"<markdown>"}'
+ -H "x-api-key: $AGENT_HUB_USER_API_KEY" \
+ -H 'content-type: application/json' \
+ -d '{"headBranch":"<branch>","baseBranch":"main","title":"<title>","body":"<markdown>"}'
 ```
 
 Returns `{"prUrl":"/projects/agent-hub/pulls/<n>","number":<n>}`. Cite it to the

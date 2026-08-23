@@ -21,9 +21,21 @@
  * executor (defaulting to the stub) for gh-* and validate/mint-token.
  */
 
-import { cpSync, mkdirSync } from 'fs';
+import {
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  readlinkSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  type Dirent,
+  type Stats,
+} from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
+import { randomUUID } from 'crypto';
 import type {
   ProvisioningExecutor,
   ProvisioningPhaseId,
@@ -146,11 +158,146 @@ export const defaultSpawnCommand: SpawnCommand = (command, { cwd, log, timeoutMs
   });
 };
 
-/** Default tree copier — recursive `cp -r` via `fs.cpSync`. */
-export const defaultCopyTree: (srcDir: string, destDir: string) => void = (srcDir, destDir) => {
-  mkdirSync(destDir, { recursive: true });
-  cpSync(srcDir, destDir, { recursive: true });
-};
+/**
+ * Default tree copier.
+ *
+ * Walk + `copyFileSync` rather than `fs.cpSync`. `cpSync` preserves mode via
+ * `chmod` on the destination, which Docker Desktop virtiofs rejects with
+ * EACCES/ENOENT on nested bind-mount overlays (projects mounted over
+ * `/data/.agent-hub/projects`). Every destination type collision goes through
+ * one transactional replacement path: move the old entry aside, attempt the
+ * replacement, then either remove the backup on success or restore it after
+ * any failure.
+ */
+interface CopyTreeFs {
+  copyFileSync: (src: string, dest: string) => void;
+  lstatSync: (path: string) => Stats;
+  mkdirSync: (dir: string, options: { recursive: true }) => unknown;
+  readlinkSync: (path: string) => string;
+  readdirSync: (dir: string, options: { withFileTypes: true }) => Dirent[];
+  renameSync: (from: string, to: string) => void;
+  rmSync: (path: string, options: { force: true; recursive?: true }) => void;
+  symlinkSync: (target: string, path: string) => void;
+}
+
+/** Build a tree copier with injectable filesystem operations for recovery tests. */
+export function createCopyTree(
+  overrides: Partial<CopyTreeFs> = {},
+): (src: string, dest: string) => void {
+  const fsOps: CopyTreeFs = {
+    copyFileSync,
+    lstatSync,
+    mkdirSync,
+    readlinkSync,
+    readdirSync: (dir, options) => readdirSync(dir, options),
+    renameSync,
+    rmSync,
+    symlinkSync,
+    ...overrides,
+  };
+
+  const restoreBackup = (backup: string, dest: string, cause: unknown): never => {
+    try {
+      fsOps.renameSync(backup, dest);
+    } catch (atomicRestoreErr: unknown) {
+      try {
+        fsOps.rmSync(dest, { force: true, recursive: true });
+        fsOps.renameSync(backup, dest);
+      } catch (fallbackRestoreErr: unknown) {
+        throw new AggregateError(
+          [cause, atomicRestoreErr, fallbackRestoreErr],
+          `Template copy failed and destination restore also failed: ${dest}`,
+        );
+      }
+    }
+    throw cause;
+  };
+
+  const replaceDestination = (dest: string, cause: unknown, replace: () => void): void => {
+    const backup = `${dest}.agent-hub-copy-backup-${randomUUID()}`;
+    let backedUp = false;
+    try {
+      fsOps.renameSync(dest, backup);
+      backedUp = true;
+    } catch (renameErr: unknown) {
+      if ((renameErr as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
+    }
+
+    try {
+      replace();
+    } catch (replaceErr: unknown) {
+      if (backedUp) restoreBackup(backup, dest, replaceErr);
+      fsOps.rmSync(dest, { force: true, recursive: true });
+      throw replaceErr;
+    }
+    if (backedUp) fsOps.rmSync(backup, { force: true, recursive: true });
+  };
+
+  const copyDirectory = (srcDir: string, destDir: string): void => {
+    let destStat: Stats | null = null;
+    try {
+      destStat = fsOps.lstatSync(destDir);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        fsOps.mkdirSync(destDir, { recursive: true });
+      } else if (code === 'EACCES' || code === 'EPERM') {
+        replaceDestination(destDir, err, () => {
+          fsOps.mkdirSync(destDir, { recursive: true });
+          copyDirectoryContents(srcDir, destDir);
+        });
+        return;
+      } else {
+        throw err;
+      }
+    }
+
+    if (destStat && !destStat.isDirectory()) {
+      replaceDestination(destDir, new Error(`Destination is not a directory: ${destDir}`), () => {
+        fsOps.mkdirSync(destDir, { recursive: true });
+        copyDirectoryContents(srcDir, destDir);
+      });
+      return;
+    }
+    copyDirectoryContents(srcDir, destDir);
+  };
+
+  const copyDirectoryContents = (srcDir: string, destDir: string): void => {
+    for (const entry of fsOps.readdirSync(srcDir, { withFileTypes: true })) {
+      const src = path.join(srcDir, entry.name);
+      const dest = path.join(destDir, entry.name);
+      if (entry.isDirectory()) {
+        copyDirectory(src, dest);
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        const target = fsOps.readlinkSync(src);
+        try {
+          fsOps.symlinkSync(target, dest);
+        } catch (err: unknown) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code !== 'EEXIST' && code !== 'EACCES' && code !== 'EPERM') throw err;
+          replaceDestination(dest, err, () => fsOps.symlinkSync(target, dest));
+        }
+        continue;
+      }
+      if (!entry.isFile()) {
+        throw new Error(`Unsupported template entry type: ${src}`);
+      }
+      try {
+        fsOps.copyFileSync(src, dest);
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'EACCES' && code !== 'EPERM' && code !== 'ENOENT') throw err;
+        replaceDestination(dest, err, () => fsOps.copyFileSync(src, dest));
+      }
+    }
+  };
+
+  return copyDirectory;
+}
+
+export const defaultCopyTree = createCopyTree();
 
 /**
  * Build a production executor. The returned object satisfies

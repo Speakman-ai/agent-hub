@@ -169,10 +169,9 @@ export function validateScreenshotBuffer(buffer: Buffer): { mime: string; ext: s
   return { mime, ext: EXT_BY_MIME[mime]! };
 }
 
-/** Write validated image bytes under `<serverDir>/uploads`, returning the
+/** Write validated image bytes under the configured uploads directory, returning the
  *  server-relative `screenshot_ref` to store on the ticket. */
-async function writeScreenshot(serverDir: string, buffer: Buffer, ext: string): Promise<string> {
-  const uploadsDir = path.join(serverDir, 'uploads');
+async function writeScreenshot(uploadsDir: string, buffer: Buffer, ext: string): Promise<string> {
   mkdirSync(uploadsDir, { recursive: true });
   const filename = `support-screenshot-${uuidv4()}.${ext}`;
   // Async write: a screenshot can be several MB and this runs on a public
@@ -182,32 +181,32 @@ async function writeScreenshot(serverDir: string, buffer: Buffer, ext: string): 
 }
 
 /**
- * Validate + persist a screenshot data URL under `<serverDir>/uploads`.
+ * Validate + persist a screenshot data URL under the configured uploads directory.
  * Returns the server-relative ref (`/uploads/support-screenshot-<id>.<ext>`)
  * to store on the ticket. Throws (via {@link parseScreenshotDataUrl}) on
  * invalid input so the caller can map it to a 4xx.
  */
 export async function persistSupportTicketScreenshot(
-  serverDir: string,
+  uploadsDir: string,
   dataUrl: string,
 ): Promise<string> {
   const { ext, buffer } = parseScreenshotDataUrl(dataUrl);
-  return writeScreenshot(serverDir, buffer, ext);
+  return writeScreenshot(uploadsDir, buffer, ext);
 }
 
 /**
  * Validate + persist raw image bytes (e.g. a `multipart/form-data` file part)
- * under `<serverDir>/uploads`, returning the server-relative ref. Unlike
+ * under the configured uploads directory, returning the server-relative ref. Unlike
  * {@link persistSupportTicketScreenshot} the input is the decoded buffer, not a
  * base64 data URL — used by the public bug-report intake, which parses multipart
  * bytes directly. Throws (via {@link validateScreenshotBuffer}) on invalid input.
  */
 export async function persistSupportTicketScreenshotBuffer(
-  serverDir: string,
+  uploadsDir: string,
   buffer: Buffer,
 ): Promise<string> {
   const { ext } = validateScreenshotBuffer(buffer);
-  return writeScreenshot(serverDir, buffer, ext);
+  return writeScreenshot(uploadsDir, buffer, ext);
 }
 
 /**
@@ -226,7 +225,7 @@ const SCREENSHOT_REF_RE = /^\/uploads\/(support-screenshot-[A-Za-z0-9._-]+)$/;
  * mask the original outcome of the request.
  */
 export async function deleteSupportTicketScreenshot(
-  serverDir: string,
+  uploadsDir: string,
   ref: string | null | undefined,
 ): Promise<void> {
   if (!ref) return;
@@ -235,7 +234,7 @@ export async function deleteSupportTicketScreenshot(
   const filename = match[1]!;
   if (filename.includes('..')) return;
   try {
-    await unlink(path.join(serverDir, 'uploads', filename));
+    await unlink(path.join(uploadsDir, filename));
   } catch {
     // File already gone / never written — nothing to roll back.
   }

@@ -1,5 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  mkdirSync,
+  copyFileSync,
+  readlinkSync,
+  symlinkSync,
+} from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
@@ -10,6 +21,7 @@ const __dirname = path.dirname(__filename);
 
 import {
   buildTemplateSpawnEnv,
+  createCopyTree,
   createTemplateExecutor,
   defaultCopyTree,
   defaultSpawnCommand,
@@ -68,6 +80,215 @@ describe('template executor — copy-template phase', () => {
     expect(existsSync(path.join(workspace, 'README.md'))).toBe(true);
     // The manifest must NOT leak into the scaffolded project.
     expect(existsSync(path.join(workspace, 'manifest.json'))).toBe(false);
+  });
+
+  it('defaultCopyTree overwrites files in an existing dest directory', () => {
+    // Project onboarding mkdir's workspace before copy-template runs. cpSync
+    // then chmod's that dest dir to match the template — virtiofs EACCES.
+    // This copier must only write files, not chmod the dest dir.
+    const src = mkdtempSync(path.join(os.tmpdir(), 'tmpl-src-'));
+    const dest = mkdtempSync(path.join(os.tmpdir(), 'tmpl-dest-'));
+    try {
+      writeFileSync(path.join(src, 'root.txt'), 'new-root');
+      mkdirSync(path.join(src, 'nested'));
+      writeFileSync(path.join(src, 'nested', 'child.txt'), 'child');
+      writeFileSync(path.join(dest, 'root.txt'), 'old-root');
+      defaultCopyTree(src, dest);
+      expect(readFileSync(path.join(dest, 'root.txt'), 'utf8')).toBe('new-root');
+      expect(readFileSync(path.join(dest, 'nested', 'child.txt'), 'utf8')).toBe('child');
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['EACCES', 'EPERM', 'ENOENT'])('backs up and retries a ghost file after %s', (code) => {
+    const src = mkdtempSync(path.join(os.tmpdir(), 'tmpl-retry-src-'));
+    const dest = mkdtempSync(path.join(os.tmpdir(), 'tmpl-retry-dest-'));
+    try {
+      const srcFile = path.join(src, 'root.txt');
+      const destFile = path.join(dest, 'root.txt');
+      writeFileSync(srcFile, 'new-root');
+      writeFileSync(destFile, 'ghost');
+      const copy = vi.fn((from: string, to: string) => {
+        if (copy.mock.calls.length === 1) {
+          const err = new Error(`${code}: simulated ghost file`) as NodeJS.ErrnoException;
+          err.code = code;
+          throw err;
+        }
+        copyFileSync(from, to);
+      });
+      const remove = vi.fn((target: string, options: { force: true; recursive?: true }) =>
+        rmSync(target, options),
+      );
+
+      createCopyTree({ copyFileSync: copy, rmSync: remove })(src, dest);
+
+      expect(copy).toHaveBeenCalledTimes(2);
+      expect(remove).not.toHaveBeenCalledWith(destFile, { force: true });
+      expect(remove).toHaveBeenCalledWith(
+        expect.stringContaining(`${destFile}.agent-hub-copy-backup-`),
+        { force: true, recursive: true },
+      );
+      expect(readFileSync(destFile, 'utf8')).toBe('new-root');
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['EACCES', 'EPERM', 'ENOENT'])(
+    'restores an existing destination when a source-side %s repeats on retry',
+    (code) => {
+      const src = mkdtempSync(path.join(os.tmpdir(), 'tmpl-source-fail-src-'));
+      const dest = mkdtempSync(path.join(os.tmpdir(), 'tmpl-source-fail-dest-'));
+      try {
+        const srcFile = path.join(src, 'root.txt');
+        const destFile = path.join(dest, 'root.txt');
+        writeFileSync(srcFile, 'unreadable-source');
+        writeFileSync(destFile, 'keep-me');
+        const copy = vi.fn(() => {
+          const err = new Error(`${code}: simulated source failure`) as NodeJS.ErrnoException;
+          err.code = code;
+          err.path = srcFile;
+          throw err;
+        });
+
+        expect(() => createCopyTree({ copyFileSync: copy })(src, dest)).toThrow(
+          /simulated source failure/,
+        );
+
+        expect(copy).toHaveBeenCalledTimes(2);
+        expect(readFileSync(destFile, 'utf8')).toBe('keep-me');
+        expect(
+          readdirSync(dest).filter((name) => name.includes('.agent-hub-copy-backup-')),
+        ).toEqual([]);
+      } finally {
+        rmSync(src, { recursive: true, force: true });
+        rmSync(dest, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('does not remove the destination after a non-recoverable copy error', () => {
+    const src = mkdtempSync(path.join(os.tmpdir(), 'tmpl-fail-src-'));
+    const dest = mkdtempSync(path.join(os.tmpdir(), 'tmpl-fail-dest-'));
+    try {
+      writeFileSync(path.join(src, 'root.txt'), 'new-root');
+      const destFile = path.join(dest, 'root.txt');
+      writeFileSync(destFile, 'keep-me');
+      const original = new Error('EIO: simulated disk failure') as NodeJS.ErrnoException;
+      original.code = 'EIO';
+      const remove = vi.fn();
+      const copyTree = createCopyTree({
+        copyFileSync: () => {
+          throw original;
+        },
+        rmSync: remove,
+      });
+
+      expect(() => copyTree(src, dest)).toThrow(original);
+      expect(remove).not.toHaveBeenCalled();
+      expect(readFileSync(destFile, 'utf8')).toBe('keep-me');
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves symbolic links from the template tree', () => {
+    const src = mkdtempSync(path.join(os.tmpdir(), 'tmpl-link-src-'));
+    const dest = mkdtempSync(path.join(os.tmpdir(), 'tmpl-link-dest-'));
+    try {
+      writeFileSync(path.join(src, 'target.txt'), 'target');
+      symlinkSync('target.txt', path.join(src, 'link.txt'));
+
+      defaultCopyTree(src, dest);
+
+      expect(readlinkSync(path.join(dest, 'link.txt'))).toBe('target.txt');
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it('transactionally replaces a destination directory with a template symlink', () => {
+    const src = mkdtempSync(path.join(os.tmpdir(), 'tmpl-link-collision-src-'));
+    const dest = mkdtempSync(path.join(os.tmpdir(), 'tmpl-link-collision-dest-'));
+    try {
+      symlinkSync('target.txt', path.join(src, 'link'));
+      mkdirSync(path.join(dest, 'link'));
+      writeFileSync(path.join(dest, 'link', 'keep.txt'), 'old-directory-content');
+
+      defaultCopyTree(src, dest);
+
+      expect(readlinkSync(path.join(dest, 'link'))).toBe('target.txt');
+      expect(readdirSync(dest).filter((name) => name.includes('.agent-hub-copy-backup-'))).toEqual(
+        [],
+      );
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it('restores a destination directory when a colliding symlink retry fails', () => {
+    const src = mkdtempSync(path.join(os.tmpdir(), 'tmpl-link-fail-src-'));
+    const dest = mkdtempSync(path.join(os.tmpdir(), 'tmpl-link-fail-dest-'));
+    try {
+      const destLink = path.join(dest, 'link');
+      symlinkSync('target.txt', path.join(src, 'link'));
+      mkdirSync(destLink);
+      writeFileSync(path.join(destLink, 'keep.txt'), 'preserve-me');
+      const createLink = vi.fn((_target: string, linkPath: string) => {
+        if (createLink.mock.calls.length === 2) writeFileSync(linkPath, 'partial-retry-output');
+        const err = new Error(
+          createLink.mock.calls.length === 1 ? 'EEXIST: destination exists' : 'EPERM: retry failed',
+        ) as NodeJS.ErrnoException;
+        err.code = createLink.mock.calls.length === 1 ? 'EEXIST' : 'EPERM';
+        throw err;
+      });
+
+      expect(() => createCopyTree({ symlinkSync: createLink })(src, dest)).toThrow(/retry failed/);
+
+      expect(createLink).toHaveBeenCalledTimes(2);
+      expect(readFileSync(path.join(destLink, 'keep.txt'), 'utf8')).toBe('preserve-me');
+      expect(readdirSync(dest).filter((name) => name.includes('.agent-hub-copy-backup-'))).toEqual(
+        [],
+      );
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it('restores a colliding file when replacement by a directory fails', () => {
+    const src = mkdtempSync(path.join(os.tmpdir(), 'tmpl-dir-fail-src-'));
+    const dest = mkdtempSync(path.join(os.tmpdir(), 'tmpl-dir-fail-dest-'));
+    try {
+      mkdirSync(path.join(src, 'nested'));
+      writeFileSync(path.join(src, 'nested', 'child.txt'), 'unreadable-source');
+      const destNested = path.join(dest, 'nested');
+      writeFileSync(destNested, 'preserve-file');
+      const copy = vi.fn(() => {
+        const err = new Error('EACCES: nested source failure') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      });
+
+      expect(() => createCopyTree({ copyFileSync: copy })(src, dest)).toThrow(
+        /nested source failure/,
+      );
+
+      expect(copy).toHaveBeenCalledTimes(2);
+      expect(readFileSync(destNested, 'utf8')).toBe('preserve-file');
+      expect(readdirSync(dest).filter((name) => name.includes('.agent-hub-copy-backup-'))).toEqual(
+        [],
+      );
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
+    }
   });
 
   it('reports a copy failure as code 3 with a permission hint on EACCES', async () => {

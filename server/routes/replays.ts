@@ -36,6 +36,7 @@ import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { verifyRumToken } from '../rum-clients-store.js';
 import { resolveReplayPolicy, resolveIngestQuota } from '../replays/replay-config.js';
 import { computeRetainedUntil, toSqliteUtc } from '../replays/replay-retention.js';
+import { resolveUploadsDir } from '../uploads-dir.js';
 
 /**
  * Public, rate-limited session-replay ingest endpoint, plus authenticated read
@@ -46,7 +47,7 @@ import { computeRetainedUntil, toSqliteUtc } from '../replays/replay-retention.j
  * uncaught error). The events are gzipped and persisted as a durable blob via
  * the artifact store, indexed by a `session_replays` metadata row (see
  * server/replays/replay-store.ts). For backward compatibility a plain
- * `server/uploads/replay-<uuid>.json` companion is also written — the exact
+ * `<uploadsDir>/replay-<uuid>.json` companion is also written — the exact
  * textual form the support-ticket investigation's `resolveReplayContext` reads
  * back and splices into the triage prompt. The response carries the replay id
  * and the `/uploads/...` ref.
@@ -319,7 +320,7 @@ export function decodeReplayBatchBody(
 export default function createReplayRoutes(deps: RouteDeps): Router {
   const { serverDir, stmts, config, findProject } = deps;
   const router = Router();
-  const UPLOADS_DIR = path.join(serverDir, 'uploads');
+  const UPLOADS_DIR = resolveUploadsDir(config, serverDir);
   mkdirSync(UPLOADS_DIR, { recursive: true });
 
   // Per-tenant hourly ingest budgets, keyed on the RUM token's project. A tenant

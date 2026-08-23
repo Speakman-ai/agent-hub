@@ -47,6 +47,7 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { resolveOwnerUserId } from '../session-ownership.js';
 import { triggerSupportTicketInvestigation } from '../support-ticket-investigation.js';
 import { pickMainDevAgent } from '../routing.js';
+import { resolveUploadsDir } from '../uploads-dir.js';
 
 import {
   defaultReporterEmail,
@@ -117,6 +118,7 @@ function screenshotReferencedByConvertedCard(
  */
 export default function createSupportTicketRoutes(deps: RouteDeps): Router {
   const { broadcast, findProject, stmts } = deps;
+  const uploadsDir = resolveUploadsDir(deps.config, deps.serverDir);
   const router = Router();
 
   /**
@@ -259,7 +261,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       triggerSupportTicketInvestigation(ticket.id, {
         config: deps.config,
         broadcast: deps.broadcast,
-        serverDir: deps.serverDir,
+        uploadsDir,
         cwd: project.cwd,
         agentId: mainDevAgent.id,
         agentEngine: mainDevAgent.engine,
@@ -309,7 +311,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     let screenshotRef: string | null = null;
     if (screenshot) {
       try {
-        screenshotRef = await persistSupportTicketScreenshot(deps.serverDir, screenshot);
+        screenshotRef = await persistSupportTicketScreenshot(uploadsDir, screenshot);
       } catch (err) {
         return res.status(400).json({ error: (err as Error).message });
       }
@@ -332,7 +334,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           stmts,
           broadcast,
           config: deps.config,
-          serverDir: deps.serverDir,
+          uploadsDir,
           cwd: project.cwd,
           agent: pickMainDevAgent(project),
           userId: resolveOwnerUserId(req as AuthenticatedRequest),
@@ -342,7 +344,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     } catch (err) {
       // The ticket didn't land — remove the screenshot we just wrote so it
       // isn't orphaned (intake validates body/type/severity and can throw).
-      await deleteSupportTicketScreenshot(deps.serverDir, screenshotRef);
+      await deleteSupportTicketScreenshot(uploadsDir, screenshotRef);
       res.status(400).json({ error: (err as Error).message });
     }
   });
@@ -418,7 +420,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           screenshotRef = null;
         } else {
           try {
-            screenshotRef = await persistSupportTicketScreenshot(deps.serverDir, screenshot);
+            screenshotRef = await persistSupportTicketScreenshot(uploadsDir, screenshot);
           } catch (err) {
             return res.status(400).json({ error: (err as Error).message });
           }
@@ -474,7 +476,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
             previousRef !== screenshotRef &&
             !screenshotReferencedByConvertedCard(stmts, ticket, previousRef)
           ) {
-            await deleteSupportTicketScreenshot(deps.serverDir, previousRef);
+            await deleteSupportTicketScreenshot(uploadsDir, previousRef);
           }
         }
         broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
@@ -486,7 +488,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         // (null = clear, undefined = untouched), so this never deletes the
         // ticket's existing attachment.
         if (typeof screenshotRef === 'string') {
-          await deleteSupportTicketScreenshot(deps.serverDir, screenshotRef);
+          await deleteSupportTicketScreenshot(uploadsDir, screenshotRef);
         }
         res.status(400).json({ error: (err as Error).message });
       }
@@ -854,7 +856,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         ticket.screenshot_ref &&
         !screenshotReferencedByConvertedCard(stmts, ticket, ticket.screenshot_ref)
       ) {
-        await deleteSupportTicketScreenshot(deps.serverDir, ticket.screenshot_ref);
+        await deleteSupportTicketScreenshot(uploadsDir, ticket.screenshot_ref);
       }
       broadcastTicket('support_ticket_deleted', project.id, { ticketId: ticket.id });
       res.json({ ok: true });

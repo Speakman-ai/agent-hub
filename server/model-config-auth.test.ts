@@ -13,6 +13,8 @@ function makeConfig(): AppConfig {
     grokBin: '/usr/local/bin/grok',
     defaultCwd: '/tmp',
     dataDir: '/tmp',
+    uploadsDir: '/tmp/uploads',
+    legacyUploadsDir: null,
     projectsDir: '/tmp/projects',
     defaultModel: 'claude-opus-4-8',
     engineDefaultModels: {

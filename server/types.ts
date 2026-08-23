@@ -3653,6 +3653,14 @@ export interface AppConfig {
   grokBin: string;
   defaultCwd: string;
   dataDir: string;
+  /**
+   * Durable local upload directory. Defaults to `<serverDir>/uploads` for
+   * source checkouts; Docker configures `/data/uploads` so uploads live under
+   * the existing writable data mount.
+   */
+  uploadsDir: string;
+  /** Optional read-only source used once to migrate the legacy Docker volume. */
+  legacyUploadsDir: string | null;
   projectsDir: string;
   defaultModel: string;
   engineDefaultModels: Record<string, string>;
