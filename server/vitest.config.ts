@@ -39,6 +39,7 @@ export default defineConfig({
       AGENT_HUB_TEST_MODE: '1',
       AGENT_HUB_PORT: '0',
       AGENT_HUB_DATA_DIR: TEST_DATA_DIR,
+      AGENT_HUB_PROJECTS_DIR: path.join(TEST_DATA_DIR, 'projects'),
     },
     coverage: {
       reporter: ['text', 'lcov'],

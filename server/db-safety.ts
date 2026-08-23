@@ -94,11 +94,15 @@ export class UnsafeTestDatabaseError extends Error {
  * Fail-closed gate for opening a database directory. No-op outside test
  * context; throws when a test runner would open a DB outside tmpdir.
  */
-export function assertSafeTestDataDir(dataDir: string, env: NodeJS.ProcessEnv = process.env): void {
+export function assertSafeTestDataDir(
+  dataDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  what = 'to open database dir',
+): void {
   if (!isTestContext(env)) return;
   if (env.AGENT_HUB_ALLOW_UNSAFE_TEST_DB === '1') return;
   if (isScratchPath(dataDir)) return;
-  throw new UnsafeTestDatabaseError('to open database dir', dataDir);
+  throw new UnsafeTestDatabaseError(what, dataDir);
 }
 
 /**

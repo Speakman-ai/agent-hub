@@ -78,9 +78,20 @@ describe('config.ts — test-context safety rail (assertSafeTestDataDir wiring)'
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
     process.env.AGENT_HUB_DATA_DIR = path.join(os.tmpdir(), `agent-hub-guard-ok-${process.pid}`);
+    delete process.env.AGENT_HUB_PROJECTS_DIR;
 
     const mod = await import('./config.js');
     expect(mod.default.dataDir).toBe(process.env.AGENT_HUB_DATA_DIR);
+    expect(mod.default.projectsDir).toBe(path.join(process.env.AGENT_HUB_DATA_DIR, 'projects'));
+  });
+
+  it('throws when AGENT_HUB_PROJECTS_DIR points at the live projects tree even if dataDir is tmp', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = path.join(os.tmpdir(), `agent-hub-guard-ok-${process.pid}`);
+    process.env.AGENT_HUB_PROJECTS_DIR = path.join(os.homedir(), '.agent-hub', 'projects');
+
+    await expect(import('./config.js')).rejects.toThrow(/db-safety.*REFUSING to use projects dir/);
   });
 
   it('does NOT throw in production (no test-context env) even when dataDir is the default', async () => {

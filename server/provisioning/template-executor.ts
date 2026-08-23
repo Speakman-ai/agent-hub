@@ -230,7 +230,7 @@ export function createTemplateExecutor(opts: TemplateExecutorOptions): Provision
           const syscallCode = (err as NodeJS.ErrnoException)?.code;
           const hint =
             syscallCode === 'EACCES' || syscallCode === 'EPERM'
-              ? `Permission denied creating the workspace at ${workspace}. The projects data dir is not writable by the server process — align its ownership with the container UID:GID (e.g. chown the bind-mounted ~/.agent-hub/projects to match the user in docker-compose, or set UID/GID in .env). Retrying will not help until the ownership is fixed.`
+              ? `Permission denied creating the workspace at ${workspace}. The projects data dir is not writable by the server process — align its ownership with the container UID:GID (e.g. chown the bind-mounted ~/.agent-hub/projects to match the user in docker-compose, or set UID/GID in .env). If ownership already matches, a projects dir with tens of thousands of leftover test folders can make Docker Desktop virtiofs fail writes the same way. Retrying will not help until the directory is writable.`
               : undefined;
           return {
             status: 'failed',

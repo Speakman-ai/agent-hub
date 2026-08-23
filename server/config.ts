@@ -2,7 +2,7 @@ import { readFileSync, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync 
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { assertSafeTestDataDir } from './db-safety.js';
+import { assertSafeTestDataDir, isTestContext } from './db-safety.js';
 import type { AppConfig } from './types.js';
 import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import {
@@ -400,10 +400,15 @@ const config: AppConfig = {
   // ── Directories ────────────────────────────────────────────────
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME) as string,
   dataDir: resolve('AGENT_HUB_DATA_DIR', 'dataDir', DEFAULT_DATA_DIR) as string,
+  // Live default is ~/.agent-hub/projects (bind-mounted separately from
+  // dataDir in docker-compose). In test context, fall back under DATA_DIR
+  // so a forgotten AGENT_HUB_PROJECTS_DIR cannot mkdir into the operator's
+  // real projects tree — that leak filled the Docker bind-mount with ~32k
+  // leftover folders and made copy-template fail with EACCES.
   projectsDir: resolve(
     'AGENT_HUB_PROJECTS_DIR',
     'projectsDir',
-    path.join(HOME, '.agent-hub', 'projects'),
+    isTestContext() ? path.join(DATA_DIR, 'projects') : path.join(HOME, '.agent-hub', 'projects'),
   ) as string,
 
   // ── Models ─────────────────────────────────────────────────────
@@ -668,6 +673,8 @@ const config: AppConfig = {
     return Object.values(this.engineValidModels).flat();
   },
 };
+
+assertSafeTestDataDir(config.projectsDir, process.env, 'to use projects dir');
 
 export function defaultModelForEngine(engine: string): string {
   return config.engineDefaultModels[engine] || config.engineValidModels[engine]?.[0] || '';

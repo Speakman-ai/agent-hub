@@ -99,6 +99,16 @@ describe('assertSafeTestDataDir — the 2026-07-01 incident shape', () => {
       assertSafeTestDataDir('/data', { VITEST: 'true', AGENT_HUB_ALLOW_UNSAFE_TEST_DB: '1' }),
     ).not.toThrow();
   });
+
+  it('throws for the live ~/.agent-hub/projects tree (test-mkdir leak)', () => {
+    expect(() =>
+      assertSafeTestDataDir(
+        path.join(os.homedir(), '.agent-hub', 'projects'),
+        { VITEST: 'true' },
+        'to use projects dir',
+      ),
+    ).toThrow(/REFUSING to use projects dir/);
+  });
 });
 
 describe('assertScratchDbFile — destructive-statement gate', () => {

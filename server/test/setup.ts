@@ -33,6 +33,12 @@ if (!TEST_DATA_DIR.startsWith(os.tmpdir())) {
 
 // Override BEFORE the test file body imports anything from server/.
 process.env.AGENT_HUB_DATA_DIR = TEST_DATA_DIR;
+// projectsDir defaults to ~/.agent-hub/projects (NOT under dataDir). Tests
+// that POST /api/projects mkdir into that path leaked ~32k throwaway folders
+// into the live Docker bind-mount and made provisioning copy-template fail
+// with EACCES. Pin it under the same isolated tmp dir as dataDir.
+process.env.AGENT_HUB_PROJECTS_DIR = path.join(TEST_DATA_DIR, 'projects');
+mkdirSync(process.env.AGENT_HUB_PROJECTS_DIR, { recursive: true });
 delete process.env.AGENT_HUB_API_KEY;
 // App-wired push-CI / PR-CI triggers (smart-HTTP onPush, native PR create
 // hooks) must never spawn the REAL finalize job runner in tests — it
