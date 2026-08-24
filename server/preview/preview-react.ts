@@ -300,6 +300,31 @@ const NO_PREVIEW_MARKDOWN = [
   'in the chat toolbar.',
 ].join('\n');
 
+/**
+ * Markdown for the `launch_failed` outcome. The drive browser is the bundled
+ * Playwright Chromium, so a launch failure is an environment/launch problem —
+ * NOT a missing tool. The message says so explicitly to stop the model from
+ * concluding "screenshots aren't available here" and reporting a false
+ * limitation; `msg` already carries the resolved executable path / `[MISSING ON
+ * DISK]` / `PLAYWRIGHT_BROWSERS_PATH` diagnostic from browser.ts.
+ */
+export function formatPreviewLaunchFailedMarkdown(msg: string): string {
+  return [
+    '## Preview tool error',
+    '',
+    'Failed to open the preview drive browser. The drive browser is the',
+    '**bundled Playwright Chromium** — this is an environment/launch failure,',
+    'not a missing capability. Do not report that screenshots are unavailable:',
+    'the preview `screenshot` tool exists and works whenever Chromium can launch.',
+    '',
+    'Launch diagnostic:',
+    '',
+    '```',
+    msg,
+    '```',
+  ].join('\n');
+}
+
 // ─── Main entry ──────────────────────────────────────────────────
 
 /**
@@ -515,7 +540,7 @@ export async function runPreviewReActStep(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return outcome(
-      `## Preview tool error\nFailed to open the preview drive browser: ${msg}`,
+      formatPreviewLaunchFailedMarkdown(msg),
       1,
       'launch_failed',
       'Preview browser failed to start',

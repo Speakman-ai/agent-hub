@@ -113,6 +113,41 @@ describe('server/Dockerfile', () => {
     expect(runtimeStage).toContain('ubuntu_arm64');
   });
 
+  it('bundles Playwright Chromium (browser + system deps) in the runtime stage', () => {
+    // The preview `screenshot`/`navigate`/`click` ops and the `browser` tool drive
+    // a Playwright-launched Chromium inside the container. If any of these steps is
+    // dropped, the image ships without a working browser and every screenshot fails
+    // with "MISSING ON DISK" (server/browser.ts) — the exact regression a stale/
+    // hand-rolled image hits. Guard all three invariants:
+    //   1. PLAYWRIGHT_BROWSERS_PATH pins the browser dir identically at build (root)
+    //      and runtime (node); a mismatch makes chromium.executablePath() dangle.
+    //   2. `playwright install-deps chromium` installs the system libs the pinned
+    //      Chromium needs (a drifted lib set lets Chromium spawn then crash).
+    //   3. `playwright install chromium` downloads the browser using the PINNED
+    //      local playwright (bare `npx playwright`, never `npx --yes`, which would
+    //      fetch a mismatched Chromium revision).
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    const runtimeIdx = dockerfile.indexOf('FROM node:22-slim AS runtime');
+    expect(runtimeIdx).toBeGreaterThan(-1);
+    const runtimeStage = dockerfile.slice(runtimeIdx);
+
+    expect(runtimeStage, 'expected runtime stage to set PLAYWRIGHT_BROWSERS_PATH').toMatch(
+      /ENV\s+PLAYWRIGHT_BROWSERS_PATH=\S+/,
+    );
+    expect(
+      runtimeStage,
+      'expected runtime stage to run `playwright install-deps chromium`',
+    ).toMatch(/playwright\s+install-deps\s+chromium/);
+    expect(runtimeStage, 'expected runtime stage to run `playwright install chromium`').toMatch(
+      /playwright\s+install\s+chromium/,
+    );
+    // Must use the pinned local playwright, not `npx --yes` (mismatched revision).
+    expect(
+      runtimeStage,
+      'expected `playwright install chromium` to NOT use `npx --yes`',
+    ).not.toMatch(/npx\s+--yes\s+playwright\s+install\s+chromium/);
+  });
+
   it('installs every supported agent-engine CLI in the runtime stage', () => {
     // Each engine in ALL_SUPPORTED_ENGINES needs its CLI baked into the image
     // so the engine works out of the box (config.ts points the *Bin paths at

@@ -319,6 +319,7 @@ import {
   resolvePreviewHealthHost,
 } from './preview/preview-public-url.js';
 import { attachDefaultPreviewProxyUpgrade } from './preview/preview-proxy.js';
+import { logBrowserCapabilityAtBoot } from './browser-capability.js';
 import { PtyHost } from './terminal/pty-host.js';
 import { PtySession } from './terminal/pty-session.js';
 import { buildTerminalShellEnv } from './terminal/terminal-shell-env.js';
@@ -2689,6 +2690,15 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     } catch (e) {
       console.error('[git-host] mirror reconcile poller failed to start:', (e as Error).message);
     }
+
+    // Browser capability self-check: launch the bundled Playwright Chromium
+    // once and log whether the preview/browser tools can actually screenshot.
+    // Fire-and-forget and best-effort — a missing/mislinked Chromium must be
+    // loud at boot (operators see it here) instead of surfacing only when an
+    // agent first tries to screenshot. See server/Dockerfile PLAYWRIGHT_BROWSERS_PATH.
+    void logBrowserCapabilityAtBoot().catch((e) =>
+      console.error('[browser] capability check errored:', (e as Error).message),
+    );
 
     const sessionsToResume: ResumeEntry[] = reconcileOrphanedTasks();
 

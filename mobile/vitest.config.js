@@ -16,6 +16,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // Stub static image assets (require('./x.png')) so image-loading components
+    // are importable — see vitest.setup.assets.cjs.
+    setupFiles: ['./vitest.setup.assets.cjs'],
     include: [
       'src/utils/**/*.test.ts',
       'src/hooks/**/*.test.ts',

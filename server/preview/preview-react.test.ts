@@ -5,6 +5,7 @@ import path from 'path';
 import { browserScreenshotDirForSession } from '../browser-screenshot-store.js';
 import {
   runPreviewReActStep,
+  formatPreviewLaunchFailedMarkdown,
   previewBrowserSessionId,
   PREVIEW_REACT_OPS,
   PREVIEW_DRIVE_OPS,
@@ -155,6 +156,21 @@ describe('preview-react — op surface', () => {
     expect(r.hostExit).toBe(1);
     expect(r.hostDetail).toBe('bad_op');
     expect(r.markdown).toContain('Unsupported or missing op');
+  });
+});
+
+describe('formatPreviewLaunchFailedMarkdown', () => {
+  it('frames a launch failure as an environment issue, not a missing capability', () => {
+    const md = formatPreviewLaunchFailedMarkdown(
+      'Chromium launch failed: spawn ENOENT. PLAYWRIGHT_BROWSERS_PATH=/ms-playwright; executablePath=/x [MISSING ON DISK]',
+    );
+    // Counters the "no bundled Playwright" confabulation.
+    expect(md).toContain('bundled Playwright Chromium');
+    expect(md).toContain('not a missing capability');
+    expect(md.toLowerCase()).toContain('the preview `screenshot` tool exists'.toLowerCase());
+    // Preserves the real launch diagnostic for actionable debugging.
+    expect(md).toContain('[MISSING ON DISK]');
+    expect(md).toContain('PLAYWRIGHT_BROWSERS_PATH=/ms-playwright');
   });
 });
 
