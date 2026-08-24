@@ -147,3 +147,34 @@ describe('docker-compose.yml upload storage', () => {
     expect(compose).not.toMatch(/^\s*-\s+.*\/uploads:\/app\/server\/uploads\s*$/m);
   });
 });
+
+describe('docker-compose.yml Finalize runner bootstrap', () => {
+  it('builds the configured runner image before the server starts', () => {
+    const compose = readFileSync(composePath, 'utf8');
+
+    expect(compose).toMatch(
+      /finalize-runner-image:\n\s+build:\n\s+context: \.\n\s+dockerfile: server\/finalize\/runner\/Dockerfile/,
+    );
+    expect(compose).toContain(
+      'image: ${FINALIZE_RUNNER_IMAGE_UBUNTU_24_04:-agent-hub/finalize-runner:ubuntu-24.04}',
+    );
+    expect(compose).toMatch(
+      /server:[\s\S]*?depends_on:\n\s+finalize-runner-image:\n\s+condition: service_completed_successfully/,
+    );
+  });
+
+  it('uses a self-contained runner Dockerfile that bundles the fleet agent', () => {
+    const runnerDockerfile = readFileSync(
+      path.join(path.dirname(dockerfilePath), 'finalize', 'runner', 'Dockerfile'),
+      'utf8',
+    );
+
+    expect(runnerDockerfile).toContain('FROM node:22-slim AS runner-agent-build');
+    expect(runnerDockerfile).toContain('COPY server/package.json server/package-lock.json ./');
+    expect(runnerDockerfile).toContain('--outfile=finalize/runner/runner-agent.mjs');
+    expect(runnerDockerfile).toContain(
+      'COPY --from=runner-agent-build /src/server/finalize/runner/runner-agent.mjs /usr/local/bin/runner-agent.mjs',
+    );
+    expect(runnerDockerfile).not.toMatch(/^COPY runner-agent\.mjs/m);
+  });
+});

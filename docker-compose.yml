@@ -1,4 +1,18 @@
 services:
+  # Build the job image as part of a normal Compose install. Scaffolded
+  # projects use `runs-on: ubuntu-24.04` immediately, so leaving this as an
+  # undocumented host-side prerequisite makes their first Finalize run try to
+  # pull the local-only `agent-hub/finalize-runner` tag and fail. This one-shot
+  # service exits after Compose has materialized the image; the server waits for
+  # it before accepting work.
+  finalize-runner-image:
+    build:
+      context: .
+      dockerfile: server/finalize/runner/Dockerfile
+    image: ${FINALIZE_RUNNER_IMAGE_UBUNTU_24_04:-agent-hub/finalize-runner:ubuntu-24.04}
+    entrypoint: ['/bin/true']
+    restart: 'no'
+
   server:
     build:
       context: .
@@ -10,11 +24,11 @@ services:
     # Supplementary group 0 reaches docker.sock when it is root:root mode 660
     # inside the Desktop VM. On Docker Desktop, also enable Settings →
     # "Allow the default Docker socket to be used" if previews cannot spawn.
-    user: "${UID:-1000}:${GID:-1000}"
+    user: '${UID:-1000}:${GID:-1000}'
     group_add:
-      - "0"
+      - '0'
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
     volumes:
       # Bind-mount host data for local dev (override AGENT_HUB_HOST_DATA_DIR in .env).
       - ${AGENT_HUB_HOST_DATA_DIR:-${HOME}/.agent-hub/data}:/data
@@ -89,9 +103,18 @@ services:
       - AGENT_HUB_CODEX_DANGER_BYPASS=${AGENT_HUB_CODEX_DANGER_BYPASS:-true}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,http://localhost:3050}
     expose:
-      - "3051"
+      - '3051'
+    depends_on:
+      finalize-runner-image:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3051/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:3051/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -105,13 +128,13 @@ services:
       # self-hosted build never phones home. Set these in .env to point the
       # built client at your own hub (see .env.example).
       args:
-        VITE_BUG_REPORT_ENDPOINT: "${VITE_BUG_REPORT_ENDPOINT:-}"
-        VITE_REPLAY_INGEST_ENDPOINT: "${VITE_REPLAY_INGEST_ENDPOINT:-}"
-        VITE_RELEASE_BUCKET_BASE: "${VITE_RELEASE_BUCKET_BASE:-}"
+        VITE_BUG_REPORT_ENDPOINT: '${VITE_BUG_REPORT_ENDPOINT:-}'
+        VITE_REPLAY_INGEST_ENDPOINT: '${VITE_REPLAY_INGEST_ENDPOINT:-}'
+        VITE_RELEASE_BUCKET_BASE: '${VITE_RELEASE_BUCKET_BASE:-}'
     container_name: agent-hub-client
     restart: unless-stopped
     ports:
-      - "${AGENT_HUB_WEB_PORT:-80}:80"
+      - '${AGENT_HUB_WEB_PORT:-80}:80'
     depends_on:
       server:
         condition: service_healthy

@@ -1,8 +1,25 @@
 # Finalize CI runner — ubuntu-24.04 with DinD, Compose, Buildx, Node LTS, Chrome.
 # Production (GHA parity, linux amd64):
-#   docker build --platform linux/amd64 -t agent-hub/finalize-runner:ubuntu-24.04 server/finalize/runner
+#   docker build --platform linux/amd64 -f server/finalize/runner/Dockerfile -t agent-hub/finalize-runner:ubuntu-24.04 .
 # Local Apple Silicon dev (native arm64, faster Cypress):
-#   docker build -t agent-hub/finalize-runner:ubuntu-24.04-arm64 server/finalize/runner
+#   docker build -f server/finalize/runner/Dockerfile -t agent-hub/finalize-runner:ubuntu-24.04 .
+
+# Build the pull-based fleet agent inside the image build. Keeping this stage
+# self-contained matters for Docker Compose installs: a fresh checkout has no
+# generated runner-agent.mjs, and Compose cannot run the old host-side bundling
+# script before it resolves/builds this image.
+FROM node:22-slim AS runner-agent-build
+
+WORKDIR /src/server
+
+COPY server/package.json server/package-lock.json ./
+RUN npm ci --ignore-scripts --include=dev
+
+COPY server/ ./
+RUN npx --no-install esbuild finalize/runner-agent-cli.ts \
+    --bundle --platform=node --format=esm --target=node22 \
+    --banner:js="import{createRequire as __cr}from'module';const require=__cr(import.meta.url);" \
+    --outfile=finalize/runner/runner-agent.mjs
 
 FROM ubuntu:24.04
 
@@ -213,13 +230,12 @@ RUN case "${TARGETARCH}" in \
   esac \
   && rm -rf /var/lib/apt/lists/*
 
-COPY entrypoint.sh /usr/local/bin/runner-entrypoint.sh
+COPY server/finalize/runner/entrypoint.sh /usr/local/bin/runner-entrypoint.sh
 RUN chmod +x /usr/local/bin/runner-entrypoint.sh
 
-# Pull-based runner agent (bundled single-file ESM via esbuild). Generated into
-# this build context by build.sh / CI BEFORE `docker build` — see build.sh.
-# Used by the `agent` entrypoint mode; harmless in `daemon` (job) containers.
-COPY runner-agent.mjs /usr/local/bin/runner-agent.mjs
+# Pull-based runner agent (bundled single-file ESM via esbuild). Used by the
+# `agent` entrypoint mode; harmless in `daemon` (job) containers.
+COPY --from=runner-agent-build /src/server/finalize/runner/runner-agent.mjs /usr/local/bin/runner-agent.mjs
 
 # Non-root runner user (GHA-style workspace path), pinned to uid/gid 1000.
 #

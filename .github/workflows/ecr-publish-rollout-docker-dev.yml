@@ -267,31 +267,11 @@ jobs:
           cache-from: type=gha,scope=agent-hub-server
           cache-to: type=gha,mode=max,scope=agent-hub-server,ignore-error=true
 
-      - name: Set up Node (for runner-agent bundle)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Bundle runner-agent into the runner build context
-        # The runner Dockerfile COPYs runner-agent.mjs. esbuild bundles the
-        # runner-agent's npm imports (yaml, uuid, …) INTO the single .mjs, so
-        # server deps must be installed first — a fresh CI checkout has no
-        # node_modules (a previous comment wrongly claimed none was needed; the
-        # first release after the fleet code merged failed here on unresolved
-        # 'yaml'/'uuid').
-        run: |
-          cd server
-          npm ci
-          npx --yes esbuild@0.27.7 finalize/runner-agent-cli.ts \
-            --bundle --platform=node --format=esm --target=node22 \
-            --banner:js="import{createRequire as __cr}from'module';const require=__cr(import.meta.url);" \
-            --outfile=finalize/runner/runner-agent.mjs
-
       - name: Build + push Finalize runner image
         id: build_runner
         uses: docker/build-push-action@v5
         with:
-          context: server/finalize/runner
+          context: .
           file: server/finalize/runner/Dockerfile
           push: true
           platforms: linux/amd64
