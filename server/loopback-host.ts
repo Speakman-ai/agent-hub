@@ -7,10 +7,13 @@
  *     through and blocks everything else.
  *   - Preview dial-host resolution treats a loopback address as "no
  *     session-specific host", deferring to the Hub-wide default. That matters
- *     because a Hub running inside Docker cannot reach a dev server on *its
- *     own* loopback — it needs the docker-host gateway
- *     (`AGENT_HUB_PREVIEW_HEALTH_HOST`) instead. A session env that answers on
- *     its own address reports that address and is used verbatim.
+ *     because a Hub running inside Docker cannot reach a *host-published*
+ *     preview on the Hub container's own loopback — that path needs the
+ *     docker-host gateway (`AGENT_HUB_PREVIEW_HEALTH_HOST`). A process the
+ *     Hub spawned into its own netns (host-adapter `tsx` / `npm run dev`)
+ *     *does* answer on that loopback; the readiness probe tries it first
+ *     and only then the gateway. A session env that answers on its own
+ *     address reports that address and is used verbatim.
  *
  * `0.0.0.0` counts as loopback here: as a *destination* it is not a routable
  * address for reaching another namespace, so the same "defer to the default"

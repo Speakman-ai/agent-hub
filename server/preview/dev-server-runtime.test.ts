@@ -252,7 +252,7 @@ function makeHarness(
   opts: {
     fetchOk?: boolean;
     /** Full fetch override — wins over `fetchOk`. */
-    fetchImpl?: (url: string) => Promise<{ ok: boolean; status: number }>;
+    fetchImpl?: (url: string, timeoutMs?: number) => Promise<{ ok: boolean; status: number }>;
     envSetup?: (env: FakeSessionEnv) => void;
     createEnvError?: Error;
     resolveEnvPort?: (internalPort: number, hostPort: number) => number;
@@ -1390,6 +1390,110 @@ describe('DevServerRuntime two-phase readiness', () => {
     const call = notifyStatus.mock.calls.find((c) => c[0]?.status === 'failed');
     expect(call?.[0]?.error).toContain('api');
     expect(call?.[0]?.error).toContain(':8787');
+  });
+
+  it('probes Hub loopback before the docker-host gateway for host-adapter previews', async () => {
+    const notifyStatus = vi.fn();
+    const h = makeHarness({
+      healthUrlBase: (port) => `http://host.docker.internal:${port}`,
+      fetchImpl: async (url) => {
+        if (url.includes('host.docker.internal')) throw new Error('ECONNREFUSED');
+        return { ok: true, status: 200 };
+      },
+      notifyStatus,
+    });
+
+    const started = await h.runtime.start('session-coresident', makeProject(), '/worktree');
+    await flushMicrotasks();
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('ready');
+    expect(h.fetch.mock.calls.some((c) => String(c[0]).includes('127.0.0.1'))).toBe(true);
+    expect(h.runtime.getSessionUpstreamHost('session-coresident')).toBe('127.0.0.1');
+    expect(h.runtime.serverReachableUrlForPort(started.port, 'session-coresident')).toBe(
+      `http://127.0.0.1:${started.port}`,
+    );
+  });
+
+  it('still reaches a host-published preview via the docker-host gateway', async () => {
+    const h = makeHarness({
+      healthUrlBase: (port) => `http://host.docker.internal:${port}`,
+      fetchImpl: async (url, timeoutMs) => {
+        if (url.includes('127.0.0.1')) throw new Error('ECONNREFUSED');
+        // The gateway socket does not exist before `docker compose up`; it
+        // becomes reachable during the normal readiness loop after spawn.
+        if (timeoutMs !== undefined) throw new Error('ECONNREFUSED');
+        return { ok: true, status: 200 };
+      },
+    });
+
+    const started = await h.runtime.start('session-published', makeProject(), '/worktree');
+    await flushMicrotasks();
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('ready');
+    expect(h.fetch.mock.calls.some((c) => String(c[0]).includes('host.docker.internal'))).toBe(
+      true,
+    );
+    // Gateway win must not pin loopback, or the proxy would skip HEALTH_HOST.
+    expect(h.runtime.getSessionUpstreamHost('session-published')).toBeNull();
+  });
+
+  it('ignores a preexisting gateway response until loopback becomes healthy', async () => {
+    let loopbackAttempts = 0;
+    const h = makeHarness({
+      healthUrlBase: (port) => `http://host.docker.internal:${port}`,
+      fetchImpl: async (url) => {
+        if (url.includes('host.docker.internal')) return { ok: true, status: 200 };
+        loopbackAttempts++;
+        if (loopbackAttempts === 1) throw new Error('ECONNREFUSED');
+        return { ok: true, status: 200 };
+      },
+    });
+
+    const started = await h.runtime.start('session-gateway-collision', makeProject(), '/worktree');
+    await flushMicrotasks(40);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('ready');
+    expect(loopbackAttempts).toBe(2);
+    expect(
+      h.fetch.mock.calls.some(
+        ([url, timeoutMs]) =>
+          String(url).includes('host.docker.internal') && timeoutMs !== undefined,
+      ),
+    ).toBe(true);
+    expect(h.runtime.getSessionUpstreamHost('session-gateway-collision')).toBe('127.0.0.1');
+    expect(h.runtime.serverReachableUrlForPort(started.port, 'session-gateway-collision')).toBe(
+      `http://127.0.0.1:${started.port}`,
+    );
+  });
+
+  it('keeps retrying loopback after a provisional gateway error response', async () => {
+    let loopbackAttempts = 0;
+    let gatewayReadinessAttempts = 0;
+    const h = makeHarness({
+      healthUrlBase: (port) => `http://host.docker.internal:${port}`,
+      fetchImpl: async (url, timeoutMs) => {
+        if (url.includes('host.docker.internal')) {
+          if (timeoutMs !== undefined) throw new Error('ECONNREFUSED');
+          gatewayReadinessAttempts++;
+          return { ok: false, status: 503 };
+        }
+        loopbackAttempts++;
+        if (loopbackAttempts === 1) throw new Error('ECONNREFUSED');
+        return { ok: true, status: 200 };
+      },
+    });
+
+    const started = await h.runtime.start(
+      'session-gateway-provisional',
+      makeProject(),
+      '/worktree',
+    );
+    await flushMicrotasks(40);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('ready');
+    expect(gatewayReadinessAttempts).toBe(1);
+    expect(loopbackAttempts).toBe(2);
+    expect(h.runtime.getSessionUpstreamHost('session-gateway-provisional')).toBe('127.0.0.1');
   });
 });
 

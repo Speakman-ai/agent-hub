@@ -28,7 +28,10 @@ export const systemClock: Clock = {
 };
 
 /** A 2xx-or-network-error fetch surface. */
-export type HealthFetchFn = (url: string) => Promise<{ ok: boolean; status: number }>;
+export type HealthFetchFn = (
+  url: string,
+  timeoutMs?: number,
+) => Promise<{ ok: boolean; status: number }>;
 
 /** Cadence for the dev-server reap pass — every 60 seconds. */
 export const PREVIEW_REAPER_CRON = '* * * * *';

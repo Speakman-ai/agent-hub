@@ -383,6 +383,12 @@ interface ActiveDevServer {
   ownsEnv: boolean;
   /** Set before dispose so the exit handler doesn't mark a stop as a crash. */
   stopping: boolean;
+  /**
+   * Hostname that actually answered the readiness probe when it is the
+   * Hub's own loopback and `healthUrlBase` points at the docker-host
+   * gateway. Null means "use the Hub-wide default" (published-port path).
+   */
+  probeHost: string | null;
 }
 
 interface ReservedEntry {
@@ -422,6 +428,9 @@ export class DevServerRuntime {
   private readonly isPortFree: IsPortFreeFn;
   private readonly notifyLog: DevServerNotifyLogFn | null;
   private readonly notifyStatus: DevServerNotifyStatusFn | null;
+
+  /** Keep collision detection fast even when a gateway route blackholes. */
+  private static readonly CANDIDATE_PREFLIGHT_TIMEOUT_MS = 250;
   private readonly onSessionActivity: ((sessionId: string) => void) | null;
   private readonly logger: NonNullable<DevServerRuntimeDeps['logger']>;
 
@@ -705,7 +714,13 @@ export class DevServerRuntime {
    * whatever else happens to answer there.
    */
   serverReachableUrlForPort(port: number, sessionId?: string): string {
-    return this.probeUrlBase(sessionId ? this.getSessionUpstreamHost(sessionId) : null, port);
+    if (sessionId) {
+      const host = this.getSessionUpstreamHost(sessionId);
+      // Use a discovered host verbatim — wrapping 127.0.0.1 in probeUrlBase
+      // would translate it back to the docker-host gateway.
+      if (host) return `http://${host}:${port}`;
+    }
+    return this.healthUrlBase(port);
   }
 
   /** Alias matching the preview-react runtime surface. */
@@ -741,15 +756,19 @@ export class DevServerRuntime {
   getSessionUpstreamHost(sessionId: string): string | null {
     const row = this.getActiveBySessionId(sessionId);
     if (!row) return null;
-    const env = this.active.get(row.id)?.env;
+    const record = this.active.get(row.id);
+    // A host-adapter process that answered on the Hub's own loopback must
+    // pin that host so the proxy does not follow AGENT_HUB_PREVIEW_HEALTH_HOST
+    // out to the docker gateway, where the port was never published.
+    if (record?.probeHost) return record.probeHost;
+    const env = record?.env;
     if (!env || env.disposed) return null;
     // Every mapping in one env shares a dial host, so the first is enough.
     const host = env.listPortMappings()[0]?.host;
     if (!host) return null;
-    // A loopback mapping means the env publishes onto the host, and the Hub's
-    // own loopback is not necessarily the right way there: a Hub in a
-    // container must go via the docker-host gateway. Returning null hands
-    // that decision back to the Hub-wide default, which knows.
+    // A loopback mapping with no discovered probe host means "reach me on
+    // the host". Returning null hands that to the Hub-wide default (the
+    // docker-host gateway when the Hub itself is containerized).
     return isLoopbackHost(host) ? null : host;
   }
 
@@ -1006,6 +1025,7 @@ export class DevServerRuntime {
       }),
       ownsEnv,
       stopping: false,
+      probeHost: null,
     };
     this.active.set(groupId, record);
 
@@ -1159,6 +1179,19 @@ export class DevServerRuntime {
       }
     }
 
+    const healthPath = cfg.healthPath ?? '/';
+    const companionPorts = reserved
+      .filter((r) => !r.primary)
+      .map((r) => ({ label: r.name, hostPort: r.hostPort }));
+    // The host allocator can only inspect the Hub's own network namespace.
+    // Before the process starts, snapshot fallback URLs that already answer
+    // through the docker-host gateway. The new preview cannot own those
+    // sockets, so health checks must never select them as its upstream.
+    const preexistingProbeUrls = await this.findPreexistingFallbackProbeUrls(primaryDialHost, [
+      { port: primaryEntry.hostPort, path: healthPath },
+      ...companionPorts.map((entry) => ({ port: entry.hostPort, path: '/' })),
+    ]);
+
     let proc: SessionEnvProcess;
     try {
       proc = env.spawn(cfg.startCommand, {
@@ -1199,16 +1232,12 @@ export class DevServerRuntime {
       });
     });
 
-    const healthPath = cfg.healthPath ?? '/';
     const readyTimeoutMs = cfg.readyTimeoutMs ?? this.readyTimeoutMs;
     // Every declared portMap entry is a browsable surface the user can open in
     // the pane, so readiness must gate on ALL of them binding — not just the
     // primary. A multi-service stack (e.g. web + api) that flips to ready the
     // moment the primary answers leaves the user staring at a connection error
     // when they open the companion port that has not started listening yet.
-    const companionPorts = reserved
-      .filter((r) => !r.primary)
-      .map((r) => ({ label: r.name, hostPort: r.hostPort }));
     void this.runHealthCheck(
       groupId,
       primaryDialHost,
@@ -1216,6 +1245,7 @@ export class DevServerRuntime {
       healthPath,
       readyTimeoutMs,
       companionPorts,
+      preexistingProbeUrls,
     ).catch((err) => {
       this.logger.error(`[dev-server ${groupId}] health check crashed: ${(err as Error).message}`);
     });
@@ -1529,10 +1559,71 @@ export class DevServerRuntime {
    * probing the docker-host gateway for a port nothing published reaches
    * either nothing or an unrelated process holding that number, and the
    * preview times out looking like a dev server that never booted.
+   *
+   * Host-adapter processes spawned inside the Hub container bind in this
+   * netns, so {@link probeUrlCandidates} tries loopback *before* the
+   * gateway rather than replacing loopback with it.
    */
   private probeUrlBase(dialHost: string | null, port: number): string {
     if (dialHost && !isLoopbackHost(dialHost)) return `http://${dialHost}:${port}`;
     return this.healthUrlBase(port);
+  }
+
+  /**
+   * Probe URLs for a mapped port. Container-IP envs have one candidate.
+   * Loopback mappings try the Hub's own loopback first (co-resident
+   * `tsx` / `npm run dev`) and then `healthUrlBase` (a port published
+   * onto the docker host, e.g. `docker compose up` as the start command).
+   */
+  private probeUrlCandidates(dialHost: string | null, port: number): string[] {
+    if (dialHost && !isLoopbackHost(dialHost)) return [`http://${dialHost}:${port}`];
+    const loopback = `http://127.0.0.1:${port}`;
+    const translated = this.healthUrlBase(port);
+    if (translated === loopback) return [loopback];
+    return [loopback, translated];
+  }
+
+  /**
+   * Find fallback candidates that answered before this preview process
+   * existed. Such a response belongs to a different network namespace or
+   * stale service and must not be accepted as readiness for this session.
+   */
+  private async findPreexistingFallbackProbeUrls(
+    dialHost: string | null,
+    probes: Array<{ port: number; path: string }>,
+  ): Promise<Set<string>> {
+    const fallbackUrls = probes.flatMap(({ port, path }) =>
+      this.probeUrlCandidates(dialHost, port)
+        .slice(1)
+        .map((base) => `${base}${path}`),
+    );
+    const occupied = new Set<string>();
+    await Promise.all(
+      fallbackUrls.map(async (url) => {
+        try {
+          await this.fetch(url, DevServerRuntime.CANDIDATE_PREFLIGHT_TIMEOUT_MS);
+          occupied.add(url);
+        } catch {
+          // Nothing answered before spawn, so this remains a valid fallback.
+        }
+      }),
+    );
+    return occupied;
+  }
+
+  /** Pin the proxy to Hub loopback when that is what the probe actually hit. */
+  private rememberLoopbackProbeHost(groupId: string, healthUrl: string): void {
+    let hostname: string;
+    let gatewayHost: string;
+    try {
+      hostname = new URL(healthUrl).hostname;
+      gatewayHost = new URL(this.healthUrlBase(0)).hostname;
+    } catch {
+      return;
+    }
+    if (!isLoopbackHost(hostname) || isLoopbackHost(gatewayHost)) return;
+    const record = this.active.get(groupId);
+    if (record) record.probeHost = hostname;
   }
 
   private async runHealthCheck(
@@ -1542,8 +1633,12 @@ export class DevServerRuntime {
     healthPath: string,
     readyTimeoutMs: number,
     companionPorts: Array<{ label: string; hostPort: number }> = [],
+    preexistingProbeUrls: ReadonlySet<string> = new Set(),
   ): Promise<void> {
-    const healthUrl = `${this.probeUrlBase(dialHost, hostPort)}${healthPath}`;
+    const candidateUrls = this.probeUrlCandidates(dialHost, hostPort)
+      .map((base) => `${base}${healthPath}`)
+      .filter((url) => !preexistingProbeUrls.has(url));
+    let healthUrl: string | null = null;
     const startedAt = this.clock.nowMs();
     // Two-phase budget, carried over from the compose runtime's build-exit
     // rebase. Phase one is BUILD/BOOT: the dev server is installing deps or
@@ -1575,7 +1670,30 @@ export class DevServerRuntime {
       // Stopped (row gone) or already terminal — nothing left to probe.
       if (status !== 'starting') return;
       try {
-        const res = await this.fetch(healthUrl);
+        const urls: string[] = healthUrl ? [healthUrl] : candidateUrls;
+        let res: { ok: boolean; status: number } | null = null;
+        for (const url of urls) {
+          try {
+            res = await this.fetch(url);
+            const isPreferredCandidate = url === candidateUrls[0];
+            // A response from the preferred candidate proves the intended
+            // socket exists, even if the app still returns 4xx/5xx. A fallback
+            // remains provisional until it is healthy so loopback gets another
+            // chance on the next poll instead of being bypassed forever.
+            if (isPreferredCandidate || res.ok) {
+              healthUrl = url;
+              this.rememberLoopbackProbeHost(groupId, url);
+            }
+            break;
+          } catch {
+            // This candidate is not bound yet; try the next (loopback vs gateway).
+          }
+        }
+        if (res === null) {
+          // No candidate accepted a connection — still building/booting.
+          await this.clock.sleep(this.healthIntervalMs);
+          continue;
+        }
         // Any response — even a 4xx/5xx — means the socket is bound: the
         // build/boot phase is over. Rebase the readiness window once.
         if (boundAtMs === null) {
@@ -1590,7 +1708,15 @@ export class DevServerRuntime {
           // Hold in `starting` until every companion port is listening too, so
           // the pane never renders a ready preview whose other service refuses
           // the connection at the socket level.
-          if (await this.allCompanionsBound(dialHost, companionPorts, boundCompanions)) {
+          const companionHost = healthUrl ? new URL(healthUrl).hostname : dialHost;
+          if (
+            await this.allCompanionsBound(
+              companionHost,
+              companionPorts,
+              boundCompanions,
+              preexistingProbeUrls,
+            )
+          ) {
             this.markReady(groupId);
             return;
           }
@@ -1629,13 +1755,18 @@ export class DevServerRuntime {
     dialHost: string | null,
     companionPorts: Array<{ label: string; hostPort: number }>,
     bound: Set<number>,
+    preexistingProbeUrls: ReadonlySet<string> = new Set(),
   ): Promise<boolean> {
     const pending = companionPorts.filter((c) => !bound.has(c.hostPort));
     if (pending.length === 0) return true;
     await Promise.all(
       pending.map(async (c) => {
+        const url = dialHost
+          ? `http://${dialHost}:${c.hostPort}/`
+          : `${this.probeUrlBase(null, c.hostPort)}/`;
+        if (preexistingProbeUrls.has(url)) return;
         try {
-          await this.fetch(`${this.probeUrlBase(dialHost, c.hostPort)}/`);
+          await this.fetch(url);
           bound.add(c.hostPort);
         } catch {
           // Not listening yet — leave it pending for the next tick.

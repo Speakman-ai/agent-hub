@@ -110,7 +110,7 @@ describe('probePreviewHealth — Host override (Vite/Angular allowedHosts)', () 
         // 127.0.0.2 -> healthProbeHostHeader returns 'localhost', so the probe
         // sends Host: localhost and the gate returns 200.
         const viaProbe = await probePreviewHealth(`http://${EXTRA_LOOPBACK}:${port}/`);
-        expect(viaProbe).toEqual({ ok: true, statusCode: 200 });
+        expect(viaProbe).toEqual({ ok: true, statusCode: 200, reached: true });
 
         // Contrast: undici's global fetch ignores a manual Host override, so it
         // sends Host: 127.0.0.2 and the gate 403s. This is the production
@@ -132,9 +132,20 @@ describe('probePreviewHealth — Host override (Vite/Angular allowedHosts)', () 
     const { port, close } = await startAllowedHostsServer();
     try {
       const res = await probePreviewHealth(`http://localhost:${port}/`);
-      expect(res).toEqual({ ok: true, statusCode: 200 });
+      expect(res).toEqual({ ok: true, statusCode: 200, reached: true });
     } finally {
       close();
     }
+  });
+
+  it('reports reached:false on connection refused so readiness does not treat it as bound', async () => {
+    const holder = net.createServer();
+    await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', () => resolve()));
+    const { port } = holder.address() as AddressInfo;
+    await new Promise<void>((resolve, reject) =>
+      holder.close((err) => (err ? reject(err) : resolve())),
+    );
+    const res = await probePreviewHealth(`http://127.0.0.1:${port}/`, 500);
+    expect(res).toEqual({ ok: false, reached: false });
   });
 });

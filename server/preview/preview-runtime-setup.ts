@@ -82,8 +82,15 @@ export function createPreviewRuntimes(
 ): CreatePreviewRuntimesResult {
   const devServerRuntime = new DevServerRuntime({
     db: deps.db,
-    fetch: async (url) => {
-      const { ok, statusCode } = await probePreviewHealth(url);
+    fetch: async (url, timeoutMs) => {
+      const { ok, statusCode, reached } = await probePreviewHealth(url, timeoutMs);
+      // Connection refused / timeout must throw so runHealthCheck keeps
+      // the bind phase open. Returning `{ ok: false }` here is what made
+      // Docker Hub previews fail with "port bound (no 2xx)" while the
+      // app was healthy on the Hub container's loopback.
+      if (!reached) {
+        throw new Error(`preview health probe did not reach ${url}`);
+      }
       return { ok, status: statusCode ?? 0 };
     },
     loadProjectEnv: (projectId, ctx) =>

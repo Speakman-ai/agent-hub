@@ -40,6 +40,12 @@ export function filterComposeLogLinesForUi(lines: string[]): string[] {
 export interface PreviewHealthProbeResult {
   ok: boolean;
   statusCode?: number;
+  /**
+   * True only when the socket accepted and returned an HTTP status.
+   * Connection errors and timeouts must stay `false` so readiness does
+   * not treat "nothing listening" as "bound but not 2xx".
+   */
+  reached: boolean;
 }
 
 /** HTTP GET probe suitable for compose preview health polling. */
@@ -51,7 +57,7 @@ export function probePreviewHealth(
   try {
     parsed = new URL(healthUrl);
   } catch {
-    return Promise.resolve({ ok: false });
+    return Promise.resolve({ ok: false, reached: false });
   }
 
   const lib = parsed.protocol === 'https:' ? https : http;
@@ -62,6 +68,12 @@ export function probePreviewHealth(
   const port = parsed.port !== '' ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80;
 
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: PreviewHealthProbeResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
     const req = lib.get(
       {
         hostname: parsed.hostname,
@@ -73,16 +85,17 @@ export function probePreviewHealth(
       (res) => {
         res.resume();
         const code = res.statusCode ?? 0;
-        resolve({
+        finish({
           ok: (code >= 200 && code < 300) || (code >= 300 && code < 400),
           statusCode: code,
+          reached: true,
         });
       },
     );
     req.on('timeout', () => {
       req.destroy();
-      resolve({ ok: false });
+      finish({ ok: false, reached: false });
     });
-    req.on('error', () => resolve({ ok: false }));
+    req.on('error', () => finish({ ok: false, reached: false }));
   });
 }
