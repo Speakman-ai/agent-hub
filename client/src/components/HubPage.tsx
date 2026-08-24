@@ -4,12 +4,12 @@ import {
   Bot,
   Briefcase,
   CalendarDays,
-  House,
   LifeBuoy,
   ListTodo,
   Mail,
   ScrollText,
 } from 'lucide-react';
+import BrandLogo from './BrandLogo';
 import {
   DEFAULT_HUB_PANE,
   HUB_WORKSPACE_PANES,
@@ -17,7 +17,10 @@ import {
   type HubWorkspacePane,
 } from '@shared/utils/hub';
 
-const PANE_META: Record<HubWorkspacePane, { label: string; icon: typeof House; testId: string }> = {
+const PANE_META: Record<
+  HubWorkspacePane,
+  { label: string; icon: typeof Briefcase; testId: string }
+> = {
   today: { label: 'Dashboard', icon: Briefcase, testId: 'hub-pane-today' },
   summary: { label: 'Daily Summary', icon: ScrollText, testId: 'hub-pane-summary' },
   org: { label: 'Org', icon: BarChart3, testId: 'hub-pane-org' },
@@ -114,8 +117,9 @@ export default function HubPage({
         }`}
       >
         <header className="shrink-0 border-b border-gray-800 px-3 py-2 flex items-center gap-2">
-          <House size={16} className="text-cyan-400 shrink-0" />
-          <h1 className="text-sm font-semibold text-white">Hub</h1>
+          <h1 className="m-0 leading-none shrink-0">
+            <BrandLogo size="sm" />
+          </h1>
           <nav
             className="flex-1 flex items-center gap-1 overflow-x-auto ml-2"
             aria-label="Hub sections"

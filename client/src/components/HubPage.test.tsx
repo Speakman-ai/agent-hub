@@ -32,6 +32,8 @@ describe('HubPage', () => {
     );
 
     expect(screen.getByTestId('hub-page')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Agent Hub' })).toBeInTheDocument();
+    expect(screen.getByTestId('brand-logo')).toBeInTheDocument();
     expect(screen.getByText('today-body')).toBeInTheDocument();
     expect(screen.getByText('assistant-body')).toBeInTheDocument();
     expect(screen.getByTestId('hub-pane-today')).toHaveTextContent('Dashboard');

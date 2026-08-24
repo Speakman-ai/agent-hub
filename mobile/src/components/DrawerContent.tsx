@@ -31,6 +31,7 @@ import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
 import HubIcon from './HubIcon';
 import BugReportButton from './BugReportButton';
+import BrandLogo from './BrandLogo';
 
 /**
  * The one API call the collapsed-project saver makes. Module scope so every
@@ -481,6 +482,12 @@ export default function DrawerContent({ navigation }: any) {
 
       {/* Agents grouped by Project */}
       <ScrollView style={styles.agentList}>
+        <TouchableOpacity testID="drawer-global-hub" style={styles.dashboardItem} onPress={() => {
+            navigation.navigate('Hub');
+            navigation.closeDrawer();
+        }} accessibilityLabel="Hub">
+          <BrandLogo size="sm" />
+        </TouchableOpacity>
         <View style={styles.connectionRow}>
           <Pressable onLongPress={showConnectionInfo} style={[
             styles.connectionBadge,
@@ -503,18 +510,6 @@ export default function DrawerContent({ navigation }: any) {
           </Pressable>
           <BugReportButton projectId={bugReportProjectId} agentId={activeAgentId || ''} sourceUrl={activeAgent?.name ? `agent:${activeAgent.name}` : ''} buttonStyle={styles.bugReportButton}/>
         </View>
-
-        {/* Hub — assistant + Dashboard / Daily Summary / Org / Todos / Calendar /
-            Mail / Support. The org-wide support overview is a Hub tab now, not a
-            standalone drawer entry; per-project Support links stay in each
-            project's menu. */}
-        <TouchableOpacity testID="drawer-global-hub" style={styles.dashboardItem} onPress={() => {
-            navigation.navigate('Hub');
-            navigation.closeDrawer();
-        }}>
-          <HubIcon name="LayoutGrid" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
-          <Text style={styles.dashboardText}>Hub</Text>
-        </TouchableOpacity>
 
         {cronSessions.length > 0 && (<View style={{ marginBottom: 16 }}>
             <View style={styles.sectionLabelRow}>
@@ -803,14 +798,6 @@ const styles = StyleSheet.create({
         borderRadius: 8,
         marginBottom: 16,
         backgroundColor: colors.gray800,
-    },
-    dashboardIcon: {
-        flexShrink: 0,
-    },
-    dashboardText: {
-        color: colors.gray200,
-        fontSize: 14,
-        fontWeight: '500',
     },
     projectCollapseLoading: {
         minHeight: 44,

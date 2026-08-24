@@ -96,6 +96,7 @@ vi.mock('@shared/utils/sidebarProjectCollapse', async () => {
   };
 });
 vi.mock('./BugReportButton', () => ({ default: nativeHost('BugReportButton') }));
+vi.mock('./BrandLogo', () => ({ default: nativeHost('BrandLogo') }));
 vi.mock('./HubIcon', () => ({ default: nativeHost('HubIcon') }));
 vi.mock('./SessionStateIcon', () => ({ default: nativeHost('SessionStateIcon') }));
 vi.mock('@shared/utils/humanCron', () => ({ default: () => '' }));

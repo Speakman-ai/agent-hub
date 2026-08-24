@@ -15,6 +15,7 @@ import { StatusBar } from 'expo-status-bar';
 import { colors } from '../theme/colors';
 import { login, setup, getAuthStatus, updateEmail, needsEmailUpdate, completeMfaLogin, forgotPassword } from '../utils/auth';
 import { getApiBaseUrl } from '../utils/config';
+import BrandLogo from './BrandLogo';
 
 export function getPostAuthenticationMode({ needsEmailUpdateValue }: { needsEmailUpdateValue: boolean }) {
     return needsEmailUpdateValue ? 'email-update' : 'authenticated';
@@ -170,7 +171,7 @@ export default function LoginScreen({ onAuthenticated }: any) {
     const isForgot = mode === 'forgot';
     const isForgotSent = mode === 'forgot-sent';
     const acceptsLegacyIdentifier = !isSetup && !isEmailUpdate && !isForgot;
-    const title = pendingMfa ? 'Verify MFA' : isEmailUpdate ? 'Set your email' : isForgot || isForgotSent ? 'Reset your password' : isSetup ? 'Create your account' : 'Sign in to Agent Hub';
+    const title = pendingMfa ? 'Verify MFA' : isEmailUpdate ? 'Set your email' : isForgot || isForgotSent ? 'Reset your password' : isSetup ? 'Create your account' : null;
     const subtitle = pendingMfa
         ? 'Enter an authenticator code or use a recovery code.'
         : isForgotSent
@@ -187,10 +188,11 @@ export default function LoginScreen({ onAuthenticated }: any) {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
-            <View style={styles.iconBadge}>
-              {mode === 'loading' ? (<ActivityIndicator size="small" color={colors.emerald400}/>) : (<Text style={styles.iconEmoji}>{isSetup ? 'U' : 'K'}</Text>)}
+            <View style={styles.logoWrap}>
+              <BrandLogo size="lg" />
             </View>
-            <Text style={styles.title}>{title}</Text>
+            {mode === 'loading' ? <ActivityIndicator size="small" color={colors.emerald400} style={styles.loadingSpinner} /> : null}
+            {title ? <Text style={styles.title}>{title}</Text> : null}
             <Text style={styles.subtitle}>{subtitle}</Text>
 
             {mode !== 'loading' && pendingMfa && (<>
@@ -279,20 +281,13 @@ const styles = StyleSheet.create({
         borderColor: colors.gray700,
         padding: 20,
     },
-    iconBadge: {
-        width: 56,
-        height: 56,
-        borderRadius: 28,
-        borderWidth: 1,
-        borderColor: 'rgba(16, 185, 129, 0.3)',
-        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    logoWrap: {
         alignItems: 'center',
-        justifyContent: 'center',
-        alignSelf: 'center',
         marginBottom: 12,
     },
-    iconEmoji: {
-        fontSize: 26,
+    loadingSpinner: {
+        marginBottom: 12,
+        alignSelf: 'center',
     },
     title: {
         fontSize: 20,

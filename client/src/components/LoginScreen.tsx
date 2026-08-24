@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Lock, Loader2, UserPlus, KeyRound, ShieldCheck } from 'lucide-react';
 import { login, setup, getAuthStatus, completeMfaLogin, forgotPassword } from '../utils/auth';
 import { getApiBase } from '../utils/connection';
+import BrandLogo from './BrandLogo';
 
 /**
  * Full-screen login gate.
@@ -111,7 +112,7 @@ export default function LoginScreen({ onAuthenticated }: any) {
       ? 'Create your account'
       : isForgot
         ? 'Reset your password'
-        : 'Sign in to Agent Hub';
+        : null;
   const subtitle = pendingMfa
     ? 'Enter an authenticator code or use a recovery code.'
     : isSetup
@@ -124,16 +125,13 @@ export default function LoginScreen({ onAuthenticated }: any) {
     <div className="min-h-screen bg-gray-900 flex items-center justify-center px-4">
       <div className="w-full max-w-sm bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-6">
         <div className="flex flex-col items-center gap-2 mb-6">
-          <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
-            {mode === 'loading' ? (
-              <Loader2 className="w-6 h-6 text-emerald-400 animate-spin" />
-            ) : pendingMfa ? (
-              <ShieldCheck className="w-6 h-6 text-emerald-400" />
-            ) : (
-              <Icon className="w-6 h-6 text-emerald-400" />
-            )}
-          </div>
-          <h1 className="text-lg font-semibold text-white">{title}</h1>
+          <BrandLogo size="lg" />
+          {mode === 'loading' ? (
+            <Loader2 className="w-5 h-5 text-emerald-400 animate-spin mt-1" />
+          ) : pendingMfa ? (
+            <ShieldCheck className="w-5 h-5 text-emerald-400 mt-1" />
+          ) : null}
+          {title ? <h1 className="text-lg font-semibold text-white">{title}</h1> : null}
           <p className="text-xs text-gray-400 text-center">{subtitle}</p>
         </div>
 

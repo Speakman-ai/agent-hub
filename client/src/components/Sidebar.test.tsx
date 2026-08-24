@@ -116,11 +116,20 @@ describe('Sidebar — Hub nav (global home)', () => {
       <Sidebar {...buildProps({ googleGmailNavVisible: true, googleCalendarNavVisible: true })} />,
     );
     expect(screen.getByTestId('sidebar-global-hub')).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('sidebar-global-hub')).getByTestId('brand-logo'),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('sidebar-global-hub')).queryByText('Hub'),
+    ).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-global-home')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-global-todos')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-global-calendar')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-global-gmail')).not.toBeInTheDocument();
     expect(screen.queryByText('Dashboard', { selector: 'button span' })).not.toBeInTheDocument();
+    const hub = screen.getByTestId('sidebar-global-hub');
+    const connected = screen.getByTestId('sidebar-connection-status');
+    expect(hub.compareDocumentPosition(connected) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('navigates to hub', () => {

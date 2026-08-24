@@ -41,7 +41,8 @@ describe('LoginScreen', () => {
     const onAuthenticated = vi.fn();
 
     const { container } = render(<LoginScreen onAuthenticated={onAuthenticated} />);
-    await screen.findByText(/Sign in to Agent Hub/i);
+    await screen.findByRole('button', { name: /^Sign in$/i });
+    expect(screen.queryByRole('heading', { name: /Sign in to Agent Hub/i })).toBeNull();
 
     const inputs = container.querySelectorAll('input');
     fireEvent.change(inputs[0], { target: { value: 'legacy-user' } });
@@ -74,7 +75,7 @@ describe('LoginScreen', () => {
     const onAuthenticated = vi.fn();
 
     const { container } = render(<LoginScreen onAuthenticated={onAuthenticated} />);
-    await screen.findByText(/Sign in to Agent Hub/i);
+    await screen.findByRole('button', { name: /^Sign in$/i });
 
     const inputs = container.querySelectorAll('input');
     fireEvent.change(inputs[0], { target: { value: 'owner@example.com' } });
@@ -117,7 +118,7 @@ describe('LoginScreen', () => {
     });
 
     const { container } = render(<LoginScreen onAuthenticated={vi.fn()} />);
-    await screen.findByText(/Sign in to Agent Hub/i);
+    await screen.findByRole('button', { name: /^Sign in$/i });
     const inputs = container.querySelectorAll('input');
     fireEvent.change(inputs[0], { target: { value: 'owner@example.com' } });
     fireEvent.change(inputs[1], { target: { value: 'correct-password' } });
@@ -146,7 +147,7 @@ describe('LoginScreen', () => {
     (forgotPassword as any).mockResolvedValue({ ok: true });
 
     const { container } = render(<LoginScreen onAuthenticated={vi.fn()} />);
-    await screen.findByText(/Sign in to Agent Hub/i);
+    await screen.findByRole('button', { name: /^Sign in$/i });
 
     // Two inputs before forgot mode: email + password.
     expect(container.querySelectorAll('input')).toHaveLength(2);
@@ -191,7 +192,7 @@ describe('LoginScreen', () => {
     );
 
     const { container } = render(<LoginScreen onAuthenticated={vi.fn()} />);
-    await screen.findByText(/Sign in to Agent Hub/i);
+    await screen.findByRole('button', { name: /^Sign in$/i });
     const inputs = container.querySelectorAll('input');
     fireEvent.change(inputs[0], { target: { value: 'owner@example.com' } });
     fireEvent.change(inputs[1], { target: { value: 'correct-password' } });

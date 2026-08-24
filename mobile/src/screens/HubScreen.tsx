@@ -7,6 +7,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import HubIcon from '../components/HubIcon';
+import BrandLogo from '../components/BrandLogo';
 import DashboardHomeScreen from './DashboardHomeScreen';
 import DailySummaryScreen from './DailySummaryScreen';
 import DashboardScreen from './DashboardScreen';
@@ -170,7 +171,7 @@ export default function HubScreen({ navigation, route }: any) {
         >
           <Text style={styles.menuIcon}>{'☰'}</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>Hub</Text>
+        <BrandLogo size="sm" />
       </View>
       <ScrollView
         horizontal
@@ -215,7 +216,6 @@ const styles = StyleSheet.create({
   },
   menuButton: { padding: 6 },
   menuIcon: { color: colors.gray300, fontSize: 22 },
-  title: { color: colors.white, fontSize: 18, fontWeight: '600', flex: 1 },
   tabs: { paddingHorizontal: 12, paddingBottom: 8, gap: 6, flexDirection: 'row' },
   tab: {
     flexDirection: 'row',

@@ -8,6 +8,7 @@ import {
   getAuthHeaders,
 } from '../utils/connection';
 import { isAuthenticated } from '../utils/auth';
+import BrandLogo from './BrandLogo';
 
 /**
  * Pre-setup "Connect to server" gate for Electron.
@@ -142,6 +143,9 @@ export default function ConnectFirstScreen({ children }: any) {
         {phase === 'chooser' && (
           <>
             <div className="text-center">
+              <div className="flex justify-center mb-4">
+                <BrandLogo size="lg" />
+              </div>
               <h1 className="text-xl font-bold text-white mb-1">Welcome to Agent Hub</h1>
               <p className="text-gray-400 text-sm">
                 Do you want to run a server on this computer, or sign in to one you already have?

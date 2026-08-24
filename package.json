@@ -84,7 +84,7 @@
         "dmg",
         "zip"
       ],
-      "icon": null,
+      "icon": "client/public/icon.png",
       "category": "public.app-category.developer-tools",
       "x64ArchFiles": "**/better-sqlite3/build/Release/test_extension.node"
     },

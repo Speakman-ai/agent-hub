@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { KeyRound, Loader2, Lock } from 'lucide-react';
+import { Loader2, Lock } from 'lucide-react';
 import { resetPassword } from '../utils/auth';
 import { getApiBase } from '../utils/connection';
+import BrandLogo from './BrandLogo';
 
 export default function ResetPasswordPage({ token, onComplete }: any) {
   const [password, setPassword] = useState('');
@@ -32,9 +33,7 @@ export default function ResetPasswordPage({ token, onComplete }: any) {
     <div className="min-h-screen bg-gray-900 flex items-center justify-center px-4">
       <div className="w-full max-w-sm bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-6">
         <div className="flex flex-col items-center gap-2 mb-6">
-          <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
-            <KeyRound className="w-6 h-6 text-emerald-400" />
-          </div>
+          <BrandLogo size="lg" />
           <h1 className="text-lg font-semibold text-white">Reset your password</h1>
           <p className="text-xs text-gray-400 text-center">
             {done ? 'Your password has been changed.' : 'Choose a new password for your account.'}

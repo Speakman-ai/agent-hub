@@ -18,7 +18,6 @@ import {
   ScrollText,
   AlertTriangle,
   BarChart3,
-  House,
   Plus,
   Archive,
   RotateCcw,
@@ -52,6 +51,7 @@ import SessionStateIcon from './SessionStateIcon';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import { deriveWatchIndicator, watchIndicatorTitle } from '../utils/backgroundShells';
 import BugReportButton from './BugReportButton';
+import BrandLogo from './BrandLogo';
 import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
 import { isWorkflowProject } from '../utils/projectMode';
 import { readNavGroupCollapsed, writeNavGroupCollapsed } from '../utils/sidebarNavGroupCollapse';
@@ -558,6 +558,29 @@ export default function Sidebar({
           </div>
         )}
         <div className="p-3">
+          {/* Hub — org/user home: assistant + Dashboard / Daily Summary / Org /
+              Todos / Calendar / Mail / Support. The org-wide support overview is
+              a Hub tab, not a standalone section; per-project Support links —
+              with unread badges — stay in each project's menu below. */}
+          <button
+            onClick={() => onNavigate('hub')}
+            data-testid="sidebar-global-hub"
+            aria-label="Hub"
+            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center transition-colors ${
+              currentView === 'hub' ||
+              currentView === 'home' ||
+              currentView === 'dashboard' ||
+              currentView === 'todos' ||
+              currentView === 'calendar' ||
+              currentView === 'gmail' ||
+              currentView === 'support-overview'
+                ? 'bg-gray-800'
+                : 'hover:bg-gray-800/50'
+            }`}
+          >
+            <BrandLogo size="sm" />
+          </button>
+
           <div className="flex items-center gap-2 mb-3">
             <span
               className={`flex-1 min-w-0 text-xs px-2.5 py-2 rounded-lg text-center truncate ${
@@ -590,29 +613,6 @@ export default function Sidebar({
               </button>
             )}
           </div>
-
-          {/* Hub — org/user home: assistant + Dashboard / Daily Summary / Org /
-              Todos / Calendar / Mail / Support. The org-wide support overview is
-              a Hub tab, not a standalone section; per-project Support links —
-              with unread badges — stay in each project's menu below. */}
-          <button
-            onClick={() => onNavigate('hub')}
-            data-testid="sidebar-global-hub"
-            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
-              currentView === 'hub' ||
-              currentView === 'home' ||
-              currentView === 'dashboard' ||
-              currentView === 'todos' ||
-              currentView === 'calendar' ||
-              currentView === 'gmail' ||
-              currentView === 'support-overview'
-                ? 'bg-gray-800 text-white'
-                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-            }`}
-          >
-            <House size={14} className="flex-shrink-0" />
-            <span className="flex-1 truncate text-sm font-medium">Hub</span>
-          </button>
 
           {/* Scheduled Tasks (cron sessions) render per-project inside each
               project block below. But a cron may have no rendered home: its

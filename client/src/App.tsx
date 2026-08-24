@@ -9,6 +9,7 @@ import {
   Suspense,
 } from 'react';
 import Sidebar from './components/Sidebar';
+import BrandLogo from './components/BrandLogo';
 import TopBar from './components/TopBar';
 import ChatMessage from './components/ChatMessage';
 import ThinkingIndicator from './components/ThinkingIndicator';
@@ -6201,8 +6202,8 @@ export default function App({ initialView }: any = {}) {
         >
           {/* Spacer for macOS traffic lights (left side) */}
           {isMac && <div style={{ width: 78 }} />}
-          <span className="text-xs text-gray-500 font-medium select-none flex-1 text-center">
-            Agent Hub
+          <span className="flex-1 flex items-center justify-center select-none">
+            <BrandLogo size="sm" />
           </span>
           {isMac && <div style={{ width: 78 }} />}
         </div>
@@ -6222,6 +6223,7 @@ export default function App({ initialView }: any = {}) {
             slide-out drawer instead. */}
         {sidebarCollapsed && (
           <div className="hidden md:flex flex-col items-center w-10 flex-shrink-0 border-r border-gray-800 bg-gray-900 pt-2.5 electron-no-drag">
+            <BrandLogo variant="mark" size="sm" className="mb-2" />
             <button
               type="button"
               onClick={() => setSidebarCollapsed(false)}

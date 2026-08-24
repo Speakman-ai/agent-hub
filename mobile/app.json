@@ -59,7 +59,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#030712"
+        "backgroundColor": "#1E40AF"
       },
       "edgeToEdgeEnabled": true,
       "package": "com.agenthub.mobile"

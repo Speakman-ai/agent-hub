@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Bot, Rocket, Loader2, UserPlus, Lock } from 'lucide-react';
+import { Rocket, Loader2, UserPlus, Lock } from 'lucide-react';
 import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connection';
 import { setup as setupHubAuth, login as loginHubAuth } from '../utils/auth';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs';
@@ -8,6 +8,7 @@ import MyClaudeAuthSection from './MyClaudeAuthSection';
 import MyCursorAuthSection from './MyCursorAuthSection';
 import MyCodexAuthSection from './MyCodexAuthSection';
 import MyGrokAuthSection from './MyGrokAuthSection';
+import BrandLogo from './BrandLogo';
 
 const DEFAULT_ORG_NAME = 'Personal';
 
@@ -310,6 +311,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   return (
     <div className="fixed inset-0 z-[70] bg-gray-950 overflow-y-auto">
       <div className="min-h-full w-full max-w-2xl mx-auto p-8">
+        <div className="flex justify-center mb-6">
+          <BrandLogo size="lg" />
+        </div>
         <StepIndicator currentStep={step} minStep={initialStep} stepLabels={stepLabels} />
 
         {/* Hub owner account — only when auth.json has no users yet */}
@@ -406,7 +410,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
         {currentKey === 'welcome' && (
           <div className="text-center space-y-6">
             <div className="text-gray-300">
-              <Bot size={64} />
+              <BrandLogo variant="mark" size="lg" className="mx-auto" />
             </div>
             <div>
               <h1 className="text-2xl font-bold text-white mb-3">Welcome to Agent Hub</h1>

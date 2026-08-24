@@ -53,8 +53,16 @@ function pruneRecent() {
  */
 function getAppIcon() {
   try {
-    const iconPath = path.join(__dirname, '..', 'client', 'public', 'icon.png');
-    return nativeImage.createFromPath(iconPath);
+    const candidates = [
+      path.join(__dirname, 'icon.png'),
+      path.join(__dirname, '..', 'client', 'public', 'icon.png'),
+      path.join(__dirname, '..', 'client', 'dist', 'icon.png'),
+    ];
+    for (const iconPath of candidates) {
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) return img;
+    }
+    return undefined;
   } catch {
     return undefined;
   }

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle, Loader2, Mail } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
 import { api } from '../utils/api';
 import { setToken } from '../utils/auth';
+import BrandLogo from './BrandLogo';
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
@@ -78,9 +79,7 @@ export default function InviteAcceptPage({ token }: any) {
     <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
       <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-6">
         <div className="flex flex-col items-center gap-2 mb-5">
-          <div className="w-12 h-12 rounded-full bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center">
-            <Mail size={22} className="text-indigo-300" />
-          </div>
+          <BrandLogo size="lg" />
           <h1 className="text-lg font-semibold text-white">Join Agent Hub</h1>
         </div>
 

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Loader2, WifiOff, Settings as SettingsIcon, Monitor, Mail } from 'lucide-react';
+import { Loader2, WifiOff, Settings as SettingsIcon, Monitor } from 'lucide-react';
 import LoginScreen from './LoginScreen';
 import InviteAcceptPage from './InviteAcceptPage';
 import ResetPasswordPage from './ResetPasswordPage';
+import BrandLogo from './BrandLogo';
 import {
   isAuthenticated,
   getAuthStatus,
@@ -118,6 +119,7 @@ export default function AuthGate({ children }: any) {
         data-testid="auth-gate-loading"
         className="flex flex-col h-screen bg-gray-950 text-gray-100 items-center justify-center gap-3"
       >
+        <BrandLogo size="md" />
         <Loader2 size={24} className="animate-spin text-indigo-400" />
         <p className="text-xs text-gray-500">Checking authentication…</p>
       </div>
@@ -158,6 +160,7 @@ export default function AuthGate({ children }: any) {
       >
         <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-6 space-y-4">
           <div className="flex flex-col items-center gap-2">
+            <BrandLogo size="lg" />
             <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center">
               <WifiOff size={22} className="text-red-400" />
             </div>
@@ -283,9 +286,7 @@ function LegacyEmailPrompt({ onComplete }: any) {
         className="w-full max-w-sm bg-gray-900 border border-gray-700 rounded-lg p-6 shadow-lg"
       >
         <div className="flex flex-col items-center gap-2 mb-5">
-          <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
-            <Mail className="w-6 h-6 text-emerald-400" />
-          </div>
+          <BrandLogo size="lg" />
           <h1 className="text-lg font-semibold text-white">Set your email</h1>
           <p className="text-xs text-gray-400 text-center">
             Agent Hub now uses email as the sign-in identifier.
