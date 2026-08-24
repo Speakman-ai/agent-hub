@@ -2160,6 +2160,22 @@ function initDb(dataDir: string): void {
   // and cause the trigger to mint a colliding human id. See the constant's doc.
   db.exec(KANBAN_BOARD_CARD_SEQ_RECONCILE_SQL);
 
+  // Three-state epic lifecycle column. Ordered here — ahead of
+  // installStatsCompletionTimestamps below — because the epic completion-timestamp
+  // backfill/triggers read `kanban_epics.state`. On a DB whose kanban_epics
+  // predates the bootstrap `state` column, that read runs during schema setup,
+  // before the additive reconciler can heal the drift, so the column must be
+  // ALTER-ed in first (the schema-reconcile.ts "known limitation"). The probe
+  // makes it idempotent; the same guard on a wider epics migration below is a
+  // no-op once this has run.
+  try {
+    db.prepare('SELECT state FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec(
+      "ALTER TABLE kanban_epics ADD COLUMN state TEXT DEFAULT NULL CHECK (state IS NULL OR state IN ('not_started', 'in_progress', 'done'))",
+    );
+  }
+
   // Completion / resolution timestamps for the per-project Stats page. Adds
   // completed_at (cards, epics) + resolved_at (support tickets), the triggers
   // that maintain them on every transition, and a one-time backfill of legacy
@@ -2754,13 +2770,8 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN labels TEXT DEFAULT NULL');
   }
 
-  try {
-    db.prepare('SELECT state FROM kanban_epics LIMIT 1').get();
-  } catch {
-    db.exec(
-      "ALTER TABLE kanban_epics ADD COLUMN state TEXT DEFAULT NULL CHECK (state IS NULL OR state IN ('not_started', 'in_progress', 'done'))",
-    );
-  }
+  // `kanban_epics.state` is migrated earlier (just before
+  // installStatsCompletionTimestamps), which the completion backfill depends on.
 
   // Scheduled epic start (autonomous phase sweep at a determined local time).
   // A single optional schedule per epic — a node-cron expression interpreted in
