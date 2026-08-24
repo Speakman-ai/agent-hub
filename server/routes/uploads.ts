@@ -6,42 +6,9 @@ import express from 'express';
 import type { RouteDeps } from '../types.js';
 import { validateUploadContent } from '../upload-validation.js';
 import { resolveUploadsDir } from '../uploads-dir.js';
+import { extensionForContentType as pickSavedExtension } from '../mime-extensions.js';
 
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
-
-const MIME_TO_EXT: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'image/svg+xml': 'svg',
-  'video/mp4': 'mp4',
-  'video/webm': 'webm',
-  'video/quicktime': 'mov',
-  'video/x-msvideo': 'avi',
-  'video/x-matroska': 'mkv',
-  'application/pdf': 'pdf',
-  'text/plain': 'txt',
-  'text/markdown': 'md',
-  'application/json': 'json',
-  'application/zip': 'zip',
-  'application/gzip': 'gz',
-  'application/x-gzip': 'gz',
-};
-
-function pickSavedExtension(contentType: string, originalName: string): string {
-  const t = contentType.split(';')[0].trim().toLowerCase();
-  if (MIME_TO_EXT[t]) return MIME_TO_EXT[t];
-  const ext = path.extname(path.basename(originalName)).replace(/^\./, '').toLowerCase();
-  if (ext && /^[a-z0-9]{1,12}$/.test(ext)) return ext;
-  if (t.startsWith('text/')) {
-    const sub = t.slice(5);
-    const safe = sub.replace(/\+xml$/i, '').replace(/[^a-z0-9]/g, '');
-    if (safe.length >= 1 && safe.length <= 16) return safe;
-    return 'txt';
-  }
-  return 'dat';
-}
 
 export default function createUploadRoutes(deps: RouteDeps): Router {
   const { serverDir, config } = deps;

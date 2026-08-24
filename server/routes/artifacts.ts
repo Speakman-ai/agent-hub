@@ -16,6 +16,7 @@ import type { RouteDeps, ArtifactRow } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { userOwnsSession, getSessionOwner } from '../session-ownership.js';
 import { validateUploadContent } from '../upload-validation.js';
+import { ensureFilenameExtension } from '../mime-extensions.js';
 import {
   getArtifactStore,
   getArtifactStoreForLocation,
@@ -182,11 +183,18 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
           .json({ error: `File too large. Max size: ${MAX_ARTIFACT_SIZE / 1024 / 1024}MB` });
       }
 
-      const filename = decodeFilenameHeader(
-        (req.headers['x-filename'] as string | undefined) || 'artifact',
-      ).slice(0, 255);
       const contentType =
         (req.headers['content-type'] as string | undefined) || 'application/octet-stream';
+      // Guarantee every stored artifact carries an extension (derived from the
+      // content type when the caller's name lacks one) so downloads open in the
+      // right app and the Artifacts panel shows a real file type. The 255-char
+      // cap is applied inside the helper so it trims the basename, never the
+      // extension it just guaranteed.
+      const filename = ensureFilenameExtension(
+        decodeFilenameHeader((req.headers['x-filename'] as string | undefined) || 'artifact'),
+        contentType,
+        255,
+      );
       const createdBy = (req.headers['x-agent-id'] as string | undefined) || null;
       const presentation =
         req.headers['x-artifact-presentation'] === 'inline' ? ('inline' as const) : undefined;

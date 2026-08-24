@@ -134,6 +134,55 @@ describe('POST /api/sessions/:id/artifacts', () => {
       .expect(404);
   });
 
+  it('appends an extension derived from the content type when the name has none', async () => {
+    const id = await newSessionId();
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'application/pdf')
+      .set('x-filename', 'Quarterly Report')
+      .send(Buffer.from('%PDF-1.4 fake pdf bytes'))
+      .expect(200);
+    expect(upload.body.filename).toBe('Quarterly Report.pdf');
+  });
+
+  it('defaults an omitted filename to artifact.<ext> from the content type', async () => {
+    const id = await newSessionId();
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'text/markdown')
+      // no x-filename header at all
+      .send(Buffer.from('# notes'))
+      .expect(200);
+    expect(upload.body.filename).toBe('artifact.md');
+  });
+
+  it('keeps the extension when the name is capped at the 255-char limit', async () => {
+    const id = await newSessionId();
+    // A 255-char extensionless name: a naive slice(0,255) after appending
+    // ".pdf" would slice the suffix back off. The stored name must still end
+    // in .pdf and stay within the column limit.
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'application/pdf')
+      .set('x-filename', 'a'.repeat(255))
+      .send(Buffer.from('%PDF-1.4 fake pdf bytes'))
+      .expect(200);
+    expect(upload.body.filename.length).toBeLessThanOrEqual(255);
+    expect(upload.body.filename.endsWith('.pdf')).toBe(true);
+  });
+
+  it('leaves an already-extensioned filename untouched', async () => {
+    const id = await newSessionId();
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'application/json')
+      .set('x-filename', 'data.json')
+      .serialize((v) => v)
+      .send(Buffer.from('{"a":1}'))
+      .expect(200);
+    expect(upload.body.filename).toBe('data.json');
+  });
+
   it('serves active content (HTML) as a neutralized attachment, never inline', async () => {
     const id = await newSessionId();
     const upload = await request
