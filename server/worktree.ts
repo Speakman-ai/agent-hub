@@ -651,6 +651,72 @@ async function enableHuskyHooks(cloneDir: string): Promise<void> {
 }
 
 /**
+ * Marker line that opens the Agent-Hub-managed block appended to a clone's
+ * `.git/info/exclude`. Used to detect (and avoid duplicating) the block on
+ * reuse.
+ */
+const GIT_EXCLUDE_MARKER = '# agent-hub: keep Agent-Hub-injected Claude settings out of git status';
+
+/**
+ * Paths Agent Hub itself writes into a worktree that must never surface as an
+ * uncommitted change. `.claude/settings.json` carries the session-scoped Stop
+ * hook + format guard we inject on every claude-code spawn
+ * (see {@link ../server/hooks.ts writeHooksConfig}); the other two are
+ * Claude Code's own local state / the retired MCP config file.
+ */
+const GIT_EXCLUDE_PATHS = [
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.claude/mcp-config.json',
+] as const;
+
+/**
+ * Given the current contents of a `.git/info/exclude` file, return the new
+ * contents with the Agent-Hub-managed block appended, or `null` if the block
+ * is already present (so the caller can skip the write). Pure so it can be
+ * unit-tested without a real repo.
+ */
+export function computeGitExcludeContent(existing: string): string | null {
+  if (existing.includes(GIT_EXCLUDE_MARKER)) return null;
+  const block = [GIT_EXCLUDE_MARKER, ...GIT_EXCLUDE_PATHS].join('\n');
+  if (existing.length === 0) return block + '\n';
+  const sep = existing.endsWith('\n') ? '' : '\n';
+  return existing + sep + block + '\n';
+}
+
+/**
+ * Keep Agent-Hub-injected Claude settings files out of `git status` for a
+ * clone by appending them to the repo's local `.git/info/exclude`. This is a
+ * local, never-committed ignore file, so it applies "by default for all
+ * projects" without touching the project's tracked `.gitignore`. It only
+ * affects *untracked* files — a repo that deliberately commits
+ * `.claude/settings.json` is unaffected.
+ *
+ * Idempotent (guarded by {@link GIT_EXCLUDE_MARKER}) and best-effort: a missing
+ * repo, permissions error, or unusual git layout logs and continues so it can
+ * never block clone setup.
+ */
+async function ensureAgentHubGitExclude(cloneDir: string): Promise<void> {
+  try {
+    // `--git-path info/exclude` resolves the correct location for both plain
+    // clones and linked worktrees without us hand-assembling the path.
+    const rel = (
+      await runGit(['rev-parse', '--git-path', 'info/exclude'], { cwd: cloneDir })
+    ).trim();
+    if (!rel) return;
+    const excludePath = path.isAbsolute(rel) ? rel : path.join(cloneDir, rel);
+    const existing = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8') : '';
+    const next = computeGitExcludeContent(existing);
+    if (next === null) return;
+    mkdirSync(path.dirname(excludePath), { recursive: true });
+    writeFileSync(excludePath, next, 'utf-8');
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[Workspace] Failed to write git exclude in ${cloneDir}:`, message);
+  }
+}
+
+/**
  * Copy git user.name and user.email from a source repo (or global config)
  * into a newly-cloned directory so that `git commit` works without a global identity.
  */
@@ -2536,6 +2602,7 @@ async function getOrCreateProcessWorktreeUnlocked(
       console.warn(`[Workspace] Sync failed for "${safeName}", reusing as-is:`, message);
     }
     await enableHuskyHooks(cloneDir);
+    await ensureAgentHubGitExclude(cloneDir);
     await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
       awaitInstall: false,
       preferInstallAllScript: false,
@@ -2607,6 +2674,7 @@ async function getOrCreateProcessWorktreeUnlocked(
       );
     }
     await enableHuskyHooks(cloneDir);
+    await ensureAgentHubGitExclude(cloneDir);
     // Git-level provisioning is done: cloned, user config copied, synced to the
     // base tip, hooks wired. Dependency install is deliberately outside the
     // marker — it is idempotent and re-run on every reuse, so a failure there
@@ -3285,6 +3353,7 @@ async function ensureSessionWorkspaceUnlocked(
     });
 
     await enableHuskyHooks(cloneDir);
+    await ensureAgentHubGitExclude(cloneDir);
     try {
       await setupDependencies(projectCwd, cloneDir, installCommand ?? null, {
         ...sessionScopedDependencyInstallOpts(session),
@@ -3513,6 +3582,7 @@ async function ensureSessionWorkspaceUnlocked(
 
     await copyGitUserConfig(projectCwd, cloneDir);
     await enableHuskyHooks(cloneDir);
+    await ensureAgentHubGitExclude(cloneDir);
 
     // Only now is the workspace genuinely reusable: cloned, positioned on
     // `effectiveBranch`, checked out, and hooks wired. Writing the marker at
