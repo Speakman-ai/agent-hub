@@ -11,11 +11,25 @@ export class EmailNotConfiguredError extends Error {
   }
 }
 
+/**
+ * Subset of nodemailer's attachment shape we use. Inline images reference
+ * `cid:<cid>` from the HTML body (e.g. the branded email logo); regular
+ * attachments omit `cid`.
+ */
+export interface EmailAttachment {
+  filename?: string;
+  content?: Buffer | string;
+  path?: string;
+  cid?: string;
+  contentType?: string;
+}
+
 export interface SendEmailInput {
   to: string;
   subject: string;
   text: string;
   html?: string;
+  attachments?: EmailAttachment[];
   smtp?: SmtpConfig;
 }
 
@@ -61,6 +75,7 @@ export async function sendEmail(input: SendEmailInput) {
     subject: input.subject,
     text: input.text,
     html: input.html,
+    attachments: input.attachments,
   });
 }
 
@@ -123,6 +138,7 @@ export interface EmailMessage {
   subject: string;
   text: string;
   html?: string;
+  attachments?: EmailAttachment[];
 }
 
 export interface EmailSendResult {

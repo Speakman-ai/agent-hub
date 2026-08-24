@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getStmts } from './db.js';
 import { sendEmailResult } from './email-sender.js';
+import { buildBrandedReleaseEmail } from './email-branding.js';
 import { listDeploymentReleaseItemsWithContext } from './deploy/deployment-store.js';
 import { deploymentReleaseLabel } from './deploy/release-label.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from './release-digest.js';
@@ -498,10 +499,13 @@ export async function deliverReleaseNotificationOutboxBatch(
     const claimed = claimReleaseNotificationOutboxForDelivery(candidate);
     if (!claimed) continue;
     try {
+      const branded = buildBrandedReleaseEmail(claimed.body_text);
       const result = await sendEmailResult({
         to: claimed.recipient_email,
         subject: claimed.subject,
         text: claimed.body_text,
+        html: branded.html,
+        attachments: branded.attachments,
       });
       if (result.sent) {
         getStmts().markReleaseNotificationOutboxSent.run(claimed.id, claimed.attempts);

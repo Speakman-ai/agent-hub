@@ -88,6 +88,15 @@ describe('PATCH /api/config — engine bin paths', () => {
     expect(readFileConfig().codexDangerBypass).toBe(false);
   });
 
+  it('persists emailLogoEnabled and exposes it on GET /api/config', async () => {
+    await request.patch('/api/config').send({ emailLogoEnabled: false }).expect(200);
+    expect(readFileConfig().emailLogoEnabled).toBe(false);
+    const off = await request.get('/api/config').expect(200);
+    expect(off.body.emailLogoEnabled).toBe(false);
+    await request.patch('/api/config').send({ emailLogoEnabled: true }).expect(200);
+    expect(readFileConfig().emailLogoEnabled).toBe(true);
+  });
+
   it('persists openaiApiKey, masks responses, and exposes configured status', async () => {
     await request.patch('/api/config').send({ openaiApiKey: ' sk-openai-test ' }).expect(200);
 

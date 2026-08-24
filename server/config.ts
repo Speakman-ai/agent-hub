@@ -502,6 +502,18 @@ const config: AppConfig = {
   // ── Auth ───────────────────────────────────────────────────────
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
   smtp: normalizeSmtpConfig(fileConfig.smtp),
+  // Brand deployment/release notification emails with the Agent Hub logo.
+  // Default true; opt out with AGENT_HUB_EMAIL_LOGO_ENABLED=false or
+  // `"emailLogoEnabled": false` in config.json.
+  emailLogoEnabled: (() => {
+    const k = 'AGENT_HUB_EMAIL_LOGO_ENABLED' as const;
+    if (process.env[k] !== undefined) {
+      if (envMeansFalse(k)) return false;
+      if (envMeansTrue(k)) return true;
+      return coerceConfigBooleanLoose(process.env[k], true);
+    }
+    return coerceConfigBooleanLoose(fileConfig.emailLogoEnabled, true);
+  })(),
   // AI provider credentials for Claude / Cursor / Codex are strictly
   // per-account — they live encrypted in `orgs.db` `users` and are managed
   // via `/api/auth/me/*-auth` (see server/users-store.ts). There is

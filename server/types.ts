@@ -3732,6 +3732,13 @@ export interface AppConfig {
    */
   smtp: SmtpConfig;
   /**
+   * Whether customer-facing deployment/release notification emails render the
+   * Agent Hub logo in the HTML header (inline `cid:` image). Default true.
+   * Disable with `AGENT_HUB_EMAIL_LOGO_ENABLED=false` or
+   * `"emailLogoEnabled": false` in config.json to send unbranded emails.
+   */
+  emailLogoEnabled: boolean;
+  /**
    * Host-wide OpenAI API key. NOT an agent-engine credential (Codex spawns
    * use the per-account `codex_api_key`). This powers host utilities that
    * call OpenAI directly: Whisper transcription (`/api/transcribe`) and the

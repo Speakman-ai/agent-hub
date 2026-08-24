@@ -82,6 +82,10 @@ export const AppConfigComponent = registerComponent(
       anthropicApiKey: z.string(),
       anthropicApiKeySet: z.boolean(),
       codexDangerBypass: z.boolean().optional(),
+      emailLogoEnabled: z.boolean().optional().openapi({
+        description:
+          'Whether deployment/release notification emails render the Agent Hub logo in the HTML header. Default true. Configurable via `emailLogoEnabled` in config.json, `PATCH /api/config`, or env `AGENT_HUB_EMAIL_LOGO_ENABLED`.',
+      }),
       codexProfile: z.string().nullable().optional().openapi({
         description:
           'Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.',
@@ -343,6 +347,10 @@ export const PatchConfigRequestSchema = z
     }),
     publicUrl: z.string().optional(),
     codexDangerBypass: z.boolean().optional(),
+    emailLogoEnabled: z.boolean().optional().openapi({
+      description:
+        'Enable/disable the Agent Hub logo in deployment/release notification email headers. Default true.',
+    }),
     codexProfile: z.string().nullable().optional().openapi({
       description:
         'Codex CLI profile name. Pass null / empty string to clear. Forwarded as `--profile <name>` on every codex spawn.',

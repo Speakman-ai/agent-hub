@@ -3062,6 +3062,9 @@ components:
           type: boolean
         codexDangerBypass:
           type: boolean
+        emailLogoEnabled:
+          type: boolean
+          description: Whether deployment/release notification emails render the Agent Hub logo in the HTML header. Default true. Configurable via `emailLogoEnabled` in config.json, `PATCH /api/config`, or env `AGENT_HUB_EMAIL_LOGO_ENABLED`.
         codexProfile:
           type: string
           nullable: true
@@ -23758,6 +23761,9 @@ paths:
                   type: string
                 codexDangerBypass:
                   type: boolean
+                emailLogoEnabled:
+                  type: boolean
+                  description: Enable/disable the Agent Hub logo in deployment/release notification email headers. Default true.
                 codexProfile:
                   type: string
                   nullable: true

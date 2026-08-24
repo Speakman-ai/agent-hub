@@ -55,6 +55,7 @@ function makeConfig(): AppConfig {
       password: null,
       from: '',
     },
+    emailLogoEnabled: true,
     codexProfile: null,
     sessionEnvAdapter: 'auto' as const,
     codexDangerBypass: true,

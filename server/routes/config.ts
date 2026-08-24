@@ -375,6 +375,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           }
         : { configured: false, clientId: null },
       codexDangerBypass: !!config.codexDangerBypass,
+      emailLogoEnabled: config.emailLogoEnabled !== false,
       codexProfile: config.codexProfile || null,
       _file: {
         claudeBin: fileConfig.claudeBin || null,
@@ -529,6 +530,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'transcriptionProvider',
       'publicUrl',
       'codexDangerBypass',
+      'emailLogoEnabled',
       'codexProfile',
     ] as const;
     const body = (req.body || {}) as Record<string, unknown>;
@@ -540,6 +542,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if (updates.codexDangerBypass !== undefined) {
       updates.codexDangerBypass = coerceConfigBooleanLoose(updates.codexDangerBypass, false);
+    }
+    if (updates.emailLogoEnabled !== undefined) {
+      updates.emailLogoEnabled = coerceConfigBooleanLoose(updates.emailLogoEnabled, true);
     }
     if (updates.openaiApiKey !== undefined) {
       const raw = updates.openaiApiKey;

@@ -26,6 +26,7 @@ import {
 } from './deploy/deployment-store.js';
 import { createSupportTicket } from './support-tickets-store.js';
 import { addReleaseDigestRecipient } from './release-notification-settings.js';
+import { BRAND_LOGO_CID } from './email-branding.js';
 import { upsertNotificationRouting } from './deploy/deployment-notification-routing-store.js';
 import {
   deliverReleaseNotificationOutboxBatch,
@@ -493,6 +494,29 @@ describe('release notification outbox', () => {
         text: expect.stringContaining('Release digest for production (abc123)'),
       }),
     );
+  });
+
+  it('renders a branded HTML part with the inline logo attachment on delivered emails', async () => {
+    sendEmailMock.mockResolvedValue({ sent: true });
+    const deployment = successfulProductionDeployment();
+    const cardId = insertReleaseCard({ cardId: 'card-branding-1' });
+    ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+    addReleaseDigestRecipient({ projectId: P, email: 'brand@example.com' });
+    await enqueueReleaseNotificationsForDeployment(deployment);
+
+    await deliverReleaseNotificationOutboxBatch();
+
+    const message = sendEmailMock.mock.calls.at(-1)?.[0];
+    expect(message).toBeDefined();
+    // HTML alternative references the inline logo and wraps the body.
+    expect(message?.html).toContain(`cid:${BRAND_LOGO_CID}`);
+    expect(message?.html).toContain('<html>');
+    // Plain-text part is unchanged so image-blocking clients still get the body.
+    expect(message?.text).toEqual(expect.stringContaining('Release digest for production'));
+    // Logo travels as an inline attachment, not a hosted URL.
+    expect(message?.attachments).toEqual([
+      expect.objectContaining({ cid: BRAND_LOGO_CID, contentType: 'image/png' }),
+    ]);
   });
 
   it('labels release emails with the GitHub release version instead of the commit hash', async () => {
