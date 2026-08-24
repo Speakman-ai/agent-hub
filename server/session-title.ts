@@ -180,6 +180,25 @@ export function pickInitialSessionTitle(
   };
 }
 
+/**
+ * Only a genuine user turn may drive the automatic session title.
+ *
+ * A real user turn is one whose text is persisted as a `user` message: either
+ * persisted this turn, or replayed from the queue (persisted earlier). Synthetic
+ * turns — commit nudge, ship trigger, auto-continuation — send a CLI-only prompt
+ * with `skipUserMessagePersist` and must NOT title from it, or their prompt text
+ * (e.g. "You left uncommitted changes on '<branch>'…") hijacks the session name
+ * and the linked card / PR title derived from it.
+ */
+export function isRealUserTitleTurn(input: {
+  fromQueue?: boolean;
+  isAutoContinuation?: boolean;
+  skipUserMessagePersist?: boolean;
+}): boolean {
+  if (input.fromQueue) return true;
+  return !input.isAutoContinuation && !input.skipUserMessagePersist;
+}
+
 export interface TurnSessionTitlePickInput {
   /** Current persisted session name. */
   currentTitle?: string | null;

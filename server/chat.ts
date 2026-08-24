@@ -214,6 +214,7 @@ import {
   scheduleTitleUpgrade,
   shouldPersistTurnSessionTitlePick,
   titleSourceForPick,
+  isRealUserTitleTurn,
 } from './session-title.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import { applyAssistantTextChunk } from './assistant-stream-buffer.js';
@@ -2633,9 +2634,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       );
       const isFirstMessage = priorMessages.length === 0;
 
+      // Only genuine user turns may drive the auto-title; synthetic/auto turns
+      // (commit nudge, ship trigger, auto-continuation) send a CLI-only prompt
+      // whose text would otherwise hijack the session/card/PR name.
+      const isRealUserTurn = isRealUserTitleTurn({
+        fromQueue: msg._fromQueue,
+        isAutoContinuation,
+        skipUserMessagePersist: msg._skipUserMessagePersist,
+      });
+
       // Auto-rename on every user turn while the title is still owned by the
       // automatic title flow. Manual/card/hook titles are not clobbered.
-      if (session) {
+      if (session && isRealUserTurn) {
         let linkedCardTitle: string | null = null;
         try {
           const linkedCard = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as

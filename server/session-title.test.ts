@@ -9,6 +9,7 @@ import {
   scheduleTitleUpgrade,
   shouldPersistTurnSessionTitlePick,
   titleSourceForPick,
+  isRealUserTitleTurn,
   type LlmTitleOptions,
 } from './session-title.js';
 
@@ -1077,5 +1078,35 @@ describe('scheduleTitleUpgrade', () => {
         openaiApiKey: 'sk-oai',
       }),
     );
+  });
+});
+
+describe('isRealUserTitleTurn', () => {
+  it('treats a plain persisted user turn as real', () => {
+    expect(isRealUserTitleTurn({})).toBe(true);
+    expect(
+      isRealUserTitleTurn({
+        fromQueue: false,
+        isAutoContinuation: false,
+        skipUserMessagePersist: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('treats a queued (previously persisted) turn as real', () => {
+    // A queue replay is persisted earlier, so its text is a genuine user message
+    // even though it is not persisted again this turn.
+    expect(isRealUserTitleTurn({ fromQueue: true, skipUserMessagePersist: true })).toBe(true);
+  });
+
+  it('rejects the commit-nudge / ship-trigger synthetic turn', () => {
+    // Regression: the uncommitted-changes commit nudge sends a CLI-only prompt
+    // with skipUserMessagePersist. Titling from it renamed the session (and the
+    // linked card / PR) to "You left uncommitted changes on '<branch>'…".
+    expect(isRealUserTitleTurn({ fromQueue: false, skipUserMessagePersist: true })).toBe(false);
+  });
+
+  it('rejects an auto-continuation turn', () => {
+    expect(isRealUserTitleTurn({ isAutoContinuation: true })).toBe(false);
   });
 });
