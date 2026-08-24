@@ -3,6 +3,7 @@ import {
   AUTO_CONTINUATION_MAX_RETRIES,
   AUTO_CONTINUATION_PROMPT,
   buildGrokHeadlessPrompt,
+  buildInlineHubPrompt,
   engineResumesAcrossTurns,
   buildAutoContinuationPrompt,
   clipUtf8StringToMaxBytes,
@@ -58,6 +59,36 @@ describe('buildGrokHeadlessPrompt', () => {
     expect(out.indexOf('## Loaded Skill: test')).toBeLessThan(
       out.indexOf('Previous conversation:'),
     );
+  });
+});
+
+describe('buildInlineHubPrompt', () => {
+  // The fallback the cursor-agent branch uses when writeCursorHubSessionRule
+  // refuses (pre-existing non-Hub rule / symlink / IO failure): the Hub rules
+  // must ride -p inline rather than vanish.
+  it('prepends the enriched Hub rules and pins the commit reminder at the tail', () => {
+    const out = buildInlineHubPrompt({
+      enrichedPrompt: 'HUB_GIT_RULE stay on the session branch',
+      finalPrompt: 'Human: fix the login button',
+      committable: true,
+    });
+    expect(out.startsWith('HUB_GIT_RULE stay on the session branch\n\n')).toBe(true);
+    expect(out).toContain('Human: fix the login button');
+    // Reminder last so applyArgvPromptCap's tail-keep cannot drop it.
+    expect(out).toContain(LOCAL_COMMIT_REMINDER_MARKER);
+    expect(out.lastIndexOf(LOCAL_COMMIT_REMINDER_MARKER)).toBeGreaterThan(
+      out.indexOf('Human: fix the login button'),
+    );
+  });
+
+  it('omits the commit reminder on non-committable turns', () => {
+    const out = buildInlineHubPrompt({
+      enrichedPrompt: 'HUB_RULES',
+      finalPrompt: 'user turn',
+      committable: false,
+    });
+    expect(out).toBe('HUB_RULES\n\nuser turn');
+    expect(out).not.toContain(LOCAL_COMMIT_REMINDER_MARKER);
   });
 });
 

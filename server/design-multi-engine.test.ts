@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import type { AppConfig, DesignMessageRow } from './types.js';
 import {
   buildDesignSpawnArgs,
@@ -8,6 +11,7 @@ import {
   resolveDesignStudioModel,
   isDesignChatEngine,
 } from './design-multi-engine.js';
+import { cursorHubSessionRuleRelPath } from './spawn-prompt-payload.js';
 
 function cfg(partial: Partial<AppConfig>): AppConfig {
   return partial as AppConfig;
@@ -166,34 +170,84 @@ describe('buildDesignSpawnArgs', () => {
     ).toThrow('cursor-agent requires engineSessionId');
   });
 
-  it('cursor-agent: first turn embeds system + prompt and resumes chat id', () => {
-    const { bin, args } = buildDesignSpawnArgs({
-      ...baseInput,
-      engine: 'cursor-agent',
-      model: 'composer-2.5',
-      engineSessionId: 'cur-abc',
-      isNewEngineSession: true,
-    });
-    expect(bin).toBe(bins.cursor);
-    const pIdx = args.indexOf('-p');
-    expect(args[pIdx + 1]).toContain('SYS');
-    expect(args[pIdx + 1]).toContain('Do the thing');
-    expect(args).toContain('--resume');
-    expect(args[args.indexOf('--resume') + 1]).toBe('cur-abc');
-    expect(args).toContain('stream-json');
+  it('cursor-agent: first turn writes the per-design Hub rule to cwd and keeps -p user-only', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-design-cursor-'));
+    try {
+      const { bin, args, systemPromptFileCleanup } = buildDesignSpawnArgs({
+        ...baseInput,
+        engine: 'cursor-agent',
+        model: 'composer-2.5',
+        engineSessionId: 'cur-abc',
+        isNewEngineSession: true,
+        cwd,
+      });
+      expect(bin).toBe(bins.cursor);
+      const pIdx = args.indexOf('-p');
+      expect(args[pIdx + 1]).toBe('Do the thing');
+      expect(args[pIdx + 1]).not.toContain('SYS');
+      // Rule file is scoped by designId (baseInput.designId === 'design-uuid-1').
+      const rulePath = path.join(cwd, cursorHubSessionRuleRelPath('design-uuid-1'));
+      expect(readFileSync(rulePath, 'utf8')).toContain('SYS');
+      expect(args).toContain('--resume');
+      expect(args[args.indexOf('--resume') + 1]).toBe('cur-abc');
+      expect(args).toContain('stream-json');
+      // The caller must get a cleanup to remove the rule on process close.
+      expect(typeof systemPromptFileCleanup).toBe('function');
+      systemPromptFileCleanup!();
+      expect(existsSync(rulePath)).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
-  it('cursor-agent: follow-up sends only cli content', () => {
-    const { args } = buildDesignSpawnArgs({
-      ...baseInput,
-      engine: 'cursor-agent',
-      model: 'composer-2.5',
-      engineSessionId: 'cur-abc',
-      isNewEngineSession: false,
-      cliContent: 'Second turn',
-    });
-    const pIdx = args.indexOf('-p');
-    expect(args[pIdx + 1]).toBe('Second turn');
+  it('cursor-agent: first turn inlines Hub rules into -p when a non-Hub file blocks the rule path', () => {
+    // A pre-existing non-Hub file at the per-design rule path makes the write
+    // refuse; the system prompt then rides -p inline so Cursor still gets it.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-design-cursor-collide-'));
+    try {
+      const rulePath = path.join(cwd, cursorHubSessionRuleRelPath('design-uuid-1'));
+      mkdirSync(path.dirname(rulePath), { recursive: true });
+      writeFileSync(rulePath, 'user owns this\n', 'utf8');
+
+      const { args } = buildDesignSpawnArgs({
+        ...baseInput,
+        engine: 'cursor-agent',
+        model: 'composer-2.5',
+        engineSessionId: 'cur-abc',
+        isNewEngineSession: true,
+        cwd,
+      });
+      const pIdx = args.indexOf('-p');
+      expect(args[pIdx + 1]).toContain('SYS');
+      expect(args[pIdx + 1]).toContain('Do the thing');
+      expect(readFileSync(rulePath, 'utf8')).toBe('user owns this\n');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('cursor-agent: follow-up rewrites the rule and sends only cli content in -p', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-design-cursor-resume-'));
+    try {
+      const { args, systemPromptFileCleanup } = buildDesignSpawnArgs({
+        ...baseInput,
+        engine: 'cursor-agent',
+        model: 'composer-2.5',
+        engineSessionId: 'cur-abc',
+        isNewEngineSession: false,
+        cliContent: 'Second turn',
+        cwd,
+      });
+      // The rule is (re)written every turn, so -p stays user-only on resume.
+      const pIdx = args.indexOf('-p');
+      expect(args[pIdx + 1]).toBe('Second turn');
+      expect(
+        readFileSync(path.join(cwd, cursorHubSessionRuleRelPath('design-uuid-1')), 'utf8'),
+      ).toContain('SYS');
+      expect(typeof systemPromptFileCleanup).toBe('function');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it('gemini-cli is retired: never plans a Gemini spawn (falls through to the claude default)', () => {

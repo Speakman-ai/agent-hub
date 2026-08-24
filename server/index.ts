@@ -270,6 +270,7 @@ import { handleMultiAgentCancel } from './session-multi-agent.js';
 
 import { initDesignChat, handleDesignChat, handleDesignCancel } from './design-chat.js';
 import { ensureDesignsRoot, getDesign as getDesignStore } from './designs-store.js';
+import { sweepOrphanedCursorRuleFiles } from './cursor-rule-registry.js';
 import { createSessionDesignFilesHandler } from './session-files-mount.js';
 import { createGitHostMediaHandler, validateGitHostMediaToken } from './git-host-media-mount.js';
 import { readRepoBlob } from './git-host/repo-read.js';
@@ -890,6 +891,23 @@ function getDesignsRoot(): string {
   return path.join(_activeDataDir, 'designs');
 }
 ensureDesignsRoot(getDesignsRoot());
+
+// Crash-safe cleanup: remove any per-session Cursor `.cursor/rules` files a
+// previous run left behind (a crash / SIGKILL skips the per-spawn close
+// handler). This makes the on-disk Hub rule delivery safe even in shared/real
+// project directories, where a lingering always-apply file would otherwise
+// steer later unrelated Cursor sessions.
+try {
+  const sweptCursorRules = sweepOrphanedCursorRuleFiles();
+  if (sweptCursorRules > 0) {
+    console.log(`[startup] Swept ${sweptCursorRules} orphaned Cursor session rule file(s).`);
+  }
+} catch (err: unknown) {
+  console.warn(
+    '[startup] Cursor rule sweep failed:',
+    err instanceof Error ? err.message : String(err),
+  );
+}
 
 initDesignChat({
   stmts: stmts!,

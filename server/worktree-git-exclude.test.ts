@@ -19,6 +19,7 @@ describe('computeGitExcludeContent', () => {
     '.claude/settings.json',
     '.claude/settings.local.json',
     '.claude/mcp-config.json',
+    '.cursor/rules/agent-hub.session-*.mdc',
     '',
   ].join('\n');
 
@@ -42,6 +43,26 @@ describe('computeGitExcludeContent', () => {
     const once = computeGitExcludeContent('');
     expect(once).not.toBeNull();
     expect(computeGitExcludeContent(once as string)).toBeNull();
+  });
+
+  it('adds a newly-introduced managed path to a pre-existing marker block', () => {
+    // A worktree excluded before the Cursor session rule joined GIT_EXCLUDE_PATHS:
+    // marker present, but the new path missing.
+    const legacy = [
+      '# agent-hub: keep Agent-Hub-injected Claude settings out of git status',
+      '.claude/settings.json',
+      '.claude/settings.local.json',
+      '.claude/mcp-config.json',
+      '',
+    ].join('\n');
+    const out = computeGitExcludeContent(legacy);
+    expect(out).not.toBeNull();
+    expect(out).toContain('.cursor/rules/agent-hub.session-*.mdc');
+    // Existing lines are preserved and the marker is not duplicated.
+    const markerCount = (out as string).split('# agent-hub: keep Agent-Hub-injected').length - 1;
+    expect(markerCount).toBe(1);
+    // A second pass is now a no-op.
+    expect(computeGitExcludeContent(out as string)).toBeNull();
   });
 });
 

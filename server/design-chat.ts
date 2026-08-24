@@ -328,8 +328,16 @@ export async function handleDesignChat(
 
     let bin: string;
     let args: string[];
+    // Best-effort removal of the cursor-agent per-design `.cursor/rules` file,
+    // invoked from the finally below so the always-apply rule never lingers in
+    // the design artifact dir (matches the chat close-handler cleanup).
+    let cursorRuleCleanup: (() => void) | null | undefined = null;
     try {
-      ({ bin, args } = buildDesignSpawnArgs({
+      ({
+        bin,
+        args,
+        systemPromptFileCleanup: cursorRuleCleanup,
+      } = buildDesignSpawnArgs({
         engine,
         model,
         designId,
@@ -352,6 +360,7 @@ export async function handleDesignChat(
           ? { HOME: spawnEnv.HOME, AWS_CONFIG_FILE: spawnEnv.AWS_CONFIG_FILE }
           : undefined,
         codexEnv: spawnEnv,
+        cwd: designDir,
       }));
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -379,129 +388,138 @@ export async function handleDesignChat(
       linkAwsSsoHostCacheIntoSpawnHome(spawnEnv);
     }
 
-    const finalTextOut = await new Promise<string>((resolve, reject) => {
-      const timeout = config.defaultTimeoutMs;
-      const proc = spawn(bin, args, {
-        cwd: designDir,
-        env: spawnEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      }) as ChildProcess;
-      state.proc = proc;
-      trackChild(proc);
+    let finalTextOut: string;
+    try {
+      finalTextOut = await new Promise<string>((resolve, reject) => {
+        const timeout = config.defaultTimeoutMs;
+        const proc = spawn(bin, args, {
+          cwd: designDir,
+          env: spawnEnv,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
+        }) as ChildProcess;
+        state.proc = proc;
+        trackChild(proc);
 
-      const timer = setTimeout(() => {
-        killProcessGroup(proc, 'SIGTERM');
-        reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
-      }, timeout);
+        const timer = setTimeout(() => {
+          killProcessGroup(proc, 'SIGTERM');
+          reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
+        }, timeout);
 
-      const handleEvent = (event: StreamEvent): void => {
-        if (event.type === 'assistant_text') {
-          const text =
-            typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-          const { next } = applyAssistantTextChunk(
-            buffers,
-            text,
-            !!event.partial,
-            event.replacesAssistantBuffer ? { replace: true } : undefined,
-          );
-          buffers = next;
-          const visible = accumulateAssistantStream(buffers.finalText, buffers.partialFallback);
-          state.lastStream = visible;
-          broadcast({
-            type: 'design_stream',
-            designId,
-            content: visible,
-          });
-        }
-
-        if (
-          engine === 'codex-cli' &&
-          event.type === 'system' &&
-          event.sessionId &&
-          !codexThreadPersisted
-        ) {
-          codexThreadPersisted = true;
-          try {
-            stmts.updateDesignEngineSessionId.run(event.sessionId, designId);
-          } catch (e: unknown) {
-            const m = e instanceof Error ? e.message : String(e);
-            console.warn('[design] Failed to persist codex engine_session_id:', m);
+        const handleEvent = (event: StreamEvent): void => {
+          if (event.type === 'assistant_text') {
+            const text =
+              typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
+            const { next } = applyAssistantTextChunk(
+              buffers,
+              text,
+              !!event.partial,
+              event.replacesAssistantBuffer ? { replace: true } : undefined,
+            );
+            buffers = next;
+            const visible = accumulateAssistantStream(buffers.finalText, buffers.partialFallback);
+            state.lastStream = visible;
+            broadcast({
+              type: 'design_stream',
+              designId,
+              content: visible,
+            });
           }
-        }
 
-        if (event.type === 'tool_result' && event.output) {
-          toolResultOutputs += '\n' + event.output;
-        }
-
-        if (event.type === 'result' && event.isError && event.text) {
-          if (!streamErrorMessage) streamErrorMessage = event.text;
-        }
-        if (
-          event.type === 'unknown' &&
-          typeof event.text === 'string' &&
-          (event.text.startsWith('codex error:') || event.text.startsWith('codex item error:'))
-        ) {
-          if (!streamErrorMessage) streamErrorMessage = event.text;
-        }
-      };
-
-      proc.stdout!.on('data', (chunk: Buffer) => {
-        for (const event of parser.feed(chunk)) handleEvent(event);
-      });
-
-      proc.stderr!.on('data', (chunk: Buffer) => {
-        errorOutput += chunk.toString();
-      });
-
-      proc.on('close', (code: number | null) => {
-        clearTimeout(timer);
-        state.proc = null;
-        if (state.cancelled) {
-          reject(new Error('Cancelled'));
-          return;
-        }
-        if (spawnErrored) return;
-
-        for (const event of parser.flush()) handleEvent(event);
-
-        const assembled = (buffers.finalText || buffers.partialFallback).trim() + toolResultOutputs;
-
-        if (code !== 0 && !assembled) {
-          let errorMsg = pickProcessErrorMessage({
-            stderr: errorOutput,
-            streamErrorMessage,
-            engine,
-            exitCode: code,
-          });
-          if (code === -2 || code === -13) {
-            const configKey =
-              engine === 'cursor-agent'
-                ? 'cursorBin'
-                : engine === 'codex-cli'
-                  ? 'codexBin'
-                  : engine === 'grok-cli'
-                    ? 'grokBin'
-                    : 'claudeBin';
-            const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
-            errorMsg =
-              `${engine} binary ${reason} at ${bin}. ` +
-              `Update ${configKey} in Settings (or ~/.agent-hub/data/config.json) to the correct path.`;
+          if (
+            engine === 'codex-cli' &&
+            event.type === 'system' &&
+            event.sessionId &&
+            !codexThreadPersisted
+          ) {
+            codexThreadPersisted = true;
+            try {
+              stmts.updateDesignEngineSessionId.run(event.sessionId, designId);
+            } catch (e: unknown) {
+              const m = e instanceof Error ? e.message : String(e);
+              console.warn('[design] Failed to persist codex engine_session_id:', m);
+            }
           }
-          reject(new Error(errorMsg));
-          return;
-        }
 
-        resolve(assembled.trim() || errorOutput.trim() || '(empty response)');
-      });
+          if (event.type === 'tool_result' && event.output) {
+            toolResultOutputs += '\n' + event.output;
+          }
 
-      proc.on('error', (err: Error) => {
-        spawnErrored = true;
-        clearTimeout(timer);
-        state.proc = null;
-        reject(err);
+          if (event.type === 'result' && event.isError && event.text) {
+            if (!streamErrorMessage) streamErrorMessage = event.text;
+          }
+          if (
+            event.type === 'unknown' &&
+            typeof event.text === 'string' &&
+            (event.text.startsWith('codex error:') || event.text.startsWith('codex item error:'))
+          ) {
+            if (!streamErrorMessage) streamErrorMessage = event.text;
+          }
+        };
+
+        proc.stdout!.on('data', (chunk: Buffer) => {
+          for (const event of parser.feed(chunk)) handleEvent(event);
+        });
+
+        proc.stderr!.on('data', (chunk: Buffer) => {
+          errorOutput += chunk.toString();
+        });
+
+        proc.on('close', (code: number | null) => {
+          clearTimeout(timer);
+          state.proc = null;
+          if (state.cancelled) {
+            reject(new Error('Cancelled'));
+            return;
+          }
+          if (spawnErrored) return;
+
+          for (const event of parser.flush()) handleEvent(event);
+
+          const assembled =
+            (buffers.finalText || buffers.partialFallback).trim() + toolResultOutputs;
+
+          if (code !== 0 && !assembled) {
+            let errorMsg = pickProcessErrorMessage({
+              stderr: errorOutput,
+              streamErrorMessage,
+              engine,
+              exitCode: code,
+            });
+            if (code === -2 || code === -13) {
+              const configKey =
+                engine === 'cursor-agent'
+                  ? 'cursorBin'
+                  : engine === 'codex-cli'
+                    ? 'codexBin'
+                    : engine === 'grok-cli'
+                      ? 'grokBin'
+                      : 'claudeBin';
+              const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
+              errorMsg =
+                `${engine} binary ${reason} at ${bin}. ` +
+                `Update ${configKey} in Settings (or ~/.agent-hub/data/config.json) to the correct path.`;
+            }
+            reject(new Error(errorMsg));
+            return;
+          }
+
+          resolve(assembled.trim() || errorOutput.trim() || '(empty response)');
+        });
+
+        proc.on('error', (err: Error) => {
+          spawnErrored = true;
+          clearTimeout(timer);
+          state.proc = null;
+          reject(err);
+        });
       });
-    });
+    } finally {
+      // Remove the per-design Cursor rule on every exit path (close, error,
+      // timeout, cancel) so it never outlives the turn in the artifact dir.
+      cursorRuleCleanup?.();
+      cursorRuleCleanup = null;
+    }
 
     if (engine === 'claude-code' && startedWithoutSession) {
       try {

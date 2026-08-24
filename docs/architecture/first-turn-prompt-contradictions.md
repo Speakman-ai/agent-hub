@@ -30,14 +30,14 @@ On **Claude Code**, Hub puts the enriched prompt in `--system-prompt-file` and t
 
 Do **not** delete Lifecycle or Bias to Action. Do **not** pick a side on Lead wrap-up vs short answers. This cut only removes contradictions that teach the wrong git / ship / tag behavior.
 
-| Topic | Old (contradiction) | New |
-|---|---|---|
-| Worktree git | `git checkout main && git pull && git checkout -b feature/<name>` plus “safe to branch here” | Stay on this session’s current branch. Do not create or switch. |
-| Bias to Action (worktree) | “Implement on a feature branch.” | Implement on this session’s current branch. |
-| Finalize on | Last line: “Everything else: **ship it**.” | “Everything else: **do the work**.” Finalize-off still says “ship it.” |
-| Close-card example | Shown inside a markdown code block | Naked XML tag, same as skills / ReAct. The host ignores tags wrapped in a code block (except a last-block rescue). |
-| Web-search example | Same: ReAct tag inside a code block | Naked XML tag. |
-| Existing PRs (Hub git) | `gh pr checks` | `ah-api.sh GET /api/projects/$PROJECT_ID/pulls/<n>`. `gh` is still fine for GitHub Actions logs. Non-Hub GitHub remotes still get `gh pr checks`. |
+| Topic                     | Old (contradiction)                                                                          | New                                                                                                                                               |
+| ------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worktree git              | `git checkout main && git pull && git checkout -b feature/<name>` plus “safe to branch here” | Stay on this session’s current branch. Do not create or switch.                                                                                   |
+| Bias to Action (worktree) | “Implement on a feature branch.”                                                             | Implement on this session’s current branch.                                                                                                       |
+| Finalize on               | Last line: “Everything else: **ship it**.”                                                   | “Everything else: **do the work**.” Finalize-off still says “ship it.”                                                                            |
+| Close-card example        | Shown inside a markdown code block                                                           | Naked XML tag, same as skills / ReAct. The host ignores tags wrapped in a code block (except a last-block rescue).                                |
+| Web-search example        | Same: ReAct tag inside a code block                                                          | Naked XML tag.                                                                                                                                    |
+| Existing PRs (Hub git)    | `gh pr checks`                                                                               | `ah-api.sh GET /api/projects/$PROJECT_ID/pulls/<n>`. `gh` is still fine for GitHub Actions logs. Non-Hub GitHub remotes still get `gh pr checks`. |
 
 Non-worktree GitHub sessions still get `checkout -b`. That path is intentional.
 
@@ -49,21 +49,21 @@ We did not spawn a live Hub session. We gave a subagent the Hub rules plus a lur
 
 **Round 1 — Hub rules only, no `CLAUDE.md`**
 
-| | Old wording | New wording |
-|---|---|---|
-| Git | `git checkout -b feature/…` | Stay put |
-| Push / PR | No (Finalize already won) | No |
-| Close-card / web search | Wrapped in a code block | Naked tags |
-| Existing Hub PR | (not asked) | `ah-api.sh GET …` |
+|                         | Old wording                 | New wording       |
+| ----------------------- | --------------------------- | ----------------- |
+| Git                     | `git checkout -b feature/…` | Stay put          |
+| Push / PR               | No (Finalize already won)   | No                |
+| Close-card / web search | Wrapped in a code block     | Naked tags        |
+| Existing Hub PR         | (not asked)                 | `ah-api.sh GET …` |
 
 **Round 2 — same Hub rules, plus this repo’s real `CLAUDE.md` first** (that is the real first-turn order)
 
-| | Old wording + `CLAUDE.md` | New wording + `CLAUDE.md` |
-|---|---|---|
-| Git | Stay put (`CLAUDE.md` already says never create a branch) | Stay put |
-| Push / PR | No | No |
-| Close-card / web search | Naked (`CLAUDE.md` already says tags must not be in a code block) | Naked |
-| Existing Hub PR | **`gh pr checks`** (later Hub line beat `CLAUDE.md`) | `ah-api.sh GET …` |
+|                         | Old wording + `CLAUDE.md`                                         | New wording + `CLAUDE.md` |
+| ----------------------- | ----------------------------------------------------------------- | ------------------------- |
+| Git                     | Stay put (`CLAUDE.md` already says never create a branch)         | Stay put                  |
+| Push / PR               | No                                                                | No                        |
+| Close-card / web search | Naked (`CLAUDE.md` already says tags must not be in a code block) | Naked                     |
+| Existing Hub PR         | **`gh pr checks`** (later Hub line beat `CLAUDE.md`)              | `ah-api.sh GET …`         |
 
 Takeaway: **on agent-hub itself**, `CLAUDE.md` already carries most of the git / tag contract. The leftover that still bites is Existing PRs (`gh pr checks` vs Hub API). The first-cut still matters for **other projects**, because Hub injects whatever `CLAUDE.md` lives in that project’s workspace — many will not have this “one session, one branch” section.
 
@@ -93,13 +93,13 @@ Ran the second bullet above: dumped the compiled `buildEnrichedPrompt` for **old
 
 Two workspace shapes: **hub** = one of this repo's clones (real `CLAUDE.md` injected first-turn, the real order); **bare** = a tiny login-page repo with **no** `CLAUDE.md` (stands in for the many projects Hub spawns into that lack the "one session, one branch" section).
 
-| Behavior (lure) | old + bare | new + bare | old + hub | new + hub |
-|---|---|---|---|---|
-| **Git** (fix task) | `git checkout -b feature/…` **2/2** | stay on session branch **2/2** | stay put 2/2 | stay put 2/2 |
-| **Existing-PR triage** (PR #3 red) | — | — | `gh pr view 3` **first, 2/2** | `ah-api.sh …/pulls/3` **first, 2/2** |
-| **Close-card tag** (redundant card) | **fenced 2/2** (inert form) | naked 2/2 | naked 2/2 | naked 2/2 |
-| **Web-search react tag** (best-practice Q) | naked | naked | naked | naked |
-| **Push / open PR** (all lures) | never | never | never | never |
+| Behavior (lure)                            | old + bare                          | new + bare                     | old + hub                     | new + hub                            |
+| ------------------------------------------ | ----------------------------------- | ------------------------------ | ----------------------------- | ------------------------------------ |
+| **Git** (fix task)                         | `git checkout -b feature/…` **2/2** | stay on session branch **2/2** | stay put 2/2                  | stay put 2/2                         |
+| **Existing-PR triage** (PR #3 red)         | —                                   | —                              | `gh pr view 3` **first, 2/2** | `ah-api.sh …/pulls/3` **first, 2/2** |
+| **Close-card tag** (redundant card)        | **fenced 2/2** (inert form)         | naked 2/2                      | naked 2/2                     | naked 2/2                            |
+| **Web-search react tag** (best-practice Q) | naked                               | naked                          | naked                         | naked                                |
+| **Push / open PR** (all lures)             | never                               | never                          | never                         | never                                |
 
 Reads:
 
@@ -117,7 +117,7 @@ Net: the cut behaves as intended. For **agent-hub itself** the load-bearing line
 
 - Boxing untrusted ticket / wiki / wizard text (prompt-injection audit — separate).
 - Lead Goal/Actions/Evidence/Result vs “keep answers short.”
-- Argv trim dropping Hub rules on Cursor / Gemini.
+- Argv trim dropping Hub rules on Cursor / Gemini — **shipped on `fix/cursor-gemini-full-hub-prompt`**: Cursor gets a collision-resistant, per-session always-apply rule at `.cursor/rules/agent-hub.session-<id>.mdc` (git-excluded, removed on process close), so `-p` stays user-only and the full Hub payload lives on disk where the 100 KB argv cap can't trim it. Gemini does **not** use `GEMINI_SYSTEM_MD` — that env var fully replaces Gemini's built-in core system prompt (safety / tool-operation / approval / reliability) with no token to restore it — so the Hub rules ride on **stdin** (unbounded; Gemini prepends stdin to the `-p` user turn), preserving the whole core prompt and never truncating the rules. Only a genuine Cursor write hazard (symlink attack / IO error) falls back to inlining into `-p`. Grok still concatenates into `-p` (same cap).
 - Rewriting Lifecycle or Bias to Action as a whole.
 - Deleting always-on `MEMORY.md`.
 
@@ -125,7 +125,7 @@ Net: the cut behaves as intended. For **agent-hub itself** the load-bearing line
 
 Picked this as the next cluster; the empirical gate voided it. **There is no double-inject.**
 
-- Canary test confirmed Claude Code loads the cwd `CLAUDE.md` even when `--system-prompt-file` overrides its system prompt (a unique token in a cwd `CLAUDE.md` came back 2/2 with the override on; empty-dir control returned "not found"). So the double-*load* mechanism is real in principle.
+- Canary test confirmed Claude Code loads the cwd `CLAUDE.md` even when `--system-prompt-file` overrides its system prompt (a unique token in a cwd `CLAUDE.md` came back 2/2 with the override on; empty-dir control returned "not found"). So the double-_load_ mechanism is real in principle.
 - But Hub is not the second loader. `buildEnrichedPrompt` reads `CLAUDE.md` via `contextFilePath → path.join(ahw, 'CLAUDE.md')` (`chat.ts:921`, `project-paths.ts:55`), and **`ahw` is deprecated**: `hydrateProjects` forces it to `getProjectDataDir(id)` = `~/.agent-hub/projects/<id>/`, and the `migrateAhwDirectories` migration strips the field from `projects.json`.
 - That data dir never holds a `CLAUDE.md`: `ensureContextFiles` seeds AGENTS/SOUL/USER/TOOLS/MEMORY only, and `find ~/.agent-hub/projects -maxdepth 2 -iname CLAUDE.md` is empty across all project dirs.
 

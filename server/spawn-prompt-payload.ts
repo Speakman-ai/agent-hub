@@ -14,11 +14,24 @@
  *   • codex-cli    — uses the `-` stdin sentinel (`codex exec -`). The
  *                    full combined prompt is piped via the child's stdin
  *                    and the positional argv carries only the sentinel.
- *   • cursor-agent — no documented file or stdin alternative. We apply
- *                    a soft cap (`SAFE_ARG_STRLEN_BYTES`) and trim the
- *                    enriched prefix when needed, emitting a `TOOL_ERROR`
- *                    so growth shows up in session-health mining.
- *   • gemini-cli   — same constraint as cursor; same cap-and-trim path.
+ *   • cursor-agent — no `--system-prompt-file`, no stdin, and no per-invocation
+ *                    rules flag (rules only load from `.cursor/rules` in cwd).
+ *                    We write Hub rules to a *per-session* always-apply file,
+ *                    `.cursor/rules/agent-hub.session-<id>.mdc`, whose
+ *                    collision-resistant name cannot overwrite a repo-owned or
+ *                    another session's file, and `-p` carries only the user
+ *                    turn. The full rule payload lives on disk, so the argv cap
+ *                    never trims it; the file is git-excluded and removed on
+ *                    process close. Only a genuine write failure (symlink
+ *                    attack / IO error) falls back to inlining into `-p`.
+ *   • gemini-cli   — no `--system-prompt-file`, and `GEMINI_SYSTEM_MD` *fully
+ *                    replaces* Gemini's built-in core system prompt (safety,
+ *                    tool-operation, approval, reliability) with no token to
+ *                    restore it. So we do NOT override it: the Hub rules ride
+ *                    on **stdin** (unbounded — the kernel argv cap applies to
+ *                    argv elements, not stdin), which the CLI prepends to the
+ *                    `-p` user turn. This preserves the entire core prompt and
+ *                    the argv cap can never trim the Hub payload.
  *
  * The 100 KB soft cap is well below the kernel's 128 KiB hard ceiling
  * but leaves ~28 KB of headroom for any flags Claude/Codex still pass
@@ -26,9 +39,43 @@
  * a hard wall on the agent's behalf — it's a defense against the cliff.
  */
 
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  mkdirSync,
+  existsSync,
+  readFileSync,
+  statSync,
+  lstatSync,
+  realpathSync,
+} from 'fs';
 import os from 'os';
 import path from 'path';
+import { registerCursorRuleFile } from './cursor-rule-registry.js';
+
+/** Workspace-relative directory Cursor loads always-apply project rules from. */
+export const CURSOR_HUB_RULES_DIR = '.cursor/rules';
+
+/**
+ * Gitignore-style glob covering every Hub-written Cursor session rule. Used for
+ * the local `.git/info/exclude` entry so no session's rule can be committed or
+ * show up as an untracked change, regardless of its session id.
+ */
+export const CURSOR_HUB_SESSION_RULE_GLOB = `${CURSOR_HUB_RULES_DIR}/agent-hub.session-*.mdc`;
+
+/**
+ * Collision-resistant, per-session path for the Cursor always-apply rule. The
+ * session id is baked into the filename so the Hub write can never overwrite a
+ * repository-owned file at a fixed path, nor clobber another concurrent
+ * session's rule — the reviewer-requested out-of-band delivery that keeps the
+ * complete Hub payload on disk (never trimmed by the argv cap) even in a shared
+ * project directory.
+ */
+export function cursorHubSessionRuleRelPath(sessionId: string): string {
+  const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'unknown';
+  return `${CURSOR_HUB_RULES_DIR}/agent-hub.session-${safe}.mdc`;
+}
 
 /**
  * Linux kernel cap on a single argv element. Set to `PAGE_SIZE * 32`
@@ -85,9 +132,219 @@ export function writeSystemPromptFile(
 }
 
 /**
- * Soft truncation guard for engines without a file/stdin escape hatch
- * (cursor-agent, gemini-cli). Returns the prompt unchanged when below
- * the cap; otherwise trims the enriched prefix from the front (preserving
+ * Marker embedded in every Hub-written Cursor rule. Lets us recognize our own
+ * managed file so a later spawn overwrites the Hub file it wrote but refuses to
+ * clobber a user's / repo's own file that happens to sit at the same path.
+ * Rendered as a markdown comment so Cursor ignores it.
+ */
+export const CURSOR_HUB_RULE_MARKER = '<!-- agent-hub:session-rule managed; do not edit -->';
+
+/**
+ * Format Hub session instructions as a Cursor project rule that always
+ * attaches. `alwaysApply: true` with no globs/description is the "Always
+ * Apply" mode the CLI honors in headless `-p` / `--print` runs.
+ */
+export function formatCursorHubSessionRule(body: string): string {
+  return `---\nalwaysApply: true\n---\n${CURSOR_HUB_RULE_MARKER}\n\n${body.replace(/\s+$/, '')}\n`;
+}
+
+/**
+ * Resolve the common git dir for a per-worktree gitdir. A linked worktree's
+ * gitdir (`<common>/.git/worktrees/<name>`) carries a `commondir` pointer file
+ * (usually `../..`) back to the shared `<common>/.git`. `info/exclude` lives in
+ * that common dir, not the per-worktree one — mirroring
+ * `git rev-parse --git-path info/exclude` without shelling out to git.
+ */
+function resolveGitCommonDir(gitDir: string): string {
+  try {
+    const commonDirFile = path.join(gitDir, 'commondir');
+    if (existsSync(commonDirFile)) {
+      const rel = readFileSync(commonDirFile, 'utf8').trim();
+      if (rel) return path.isAbsolute(rel) ? rel : path.resolve(gitDir, rel);
+    }
+  } catch {
+    /* best-effort — fall back to the gitdir itself */
+  }
+  return gitDir;
+}
+
+/**
+ * Resolve `.git/info/exclude` for a worktree or plain clone. Returns
+ * null when `cwd` is not a git checkout. Best-effort; never throws.
+ *
+ * For a linked worktree `.git` is an indirection file pointing at the
+ * per-worktree gitdir, but Git reads `info/exclude` from the *common* git dir.
+ * We follow `commondir` so the Hub-owned rule is excluded where Git actually
+ * looks, instead of a per-worktree path Git never reads.
+ */
+export function resolveGitInfoExcludePath(cwd: string): string | null {
+  try {
+    const gitPath = path.join(cwd, '.git');
+    if (!existsSync(gitPath)) return null;
+    const st = statSync(gitPath);
+    if (st.isDirectory()) return path.join(gitPath, 'info', 'exclude');
+    const text = readFileSync(gitPath, 'utf8');
+    const match = /^gitdir:\s*(.+)$/m.exec(text);
+    if (!match?.[1]) return null;
+    const gitDir = match[1].trim();
+    const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.resolve(cwd, gitDir);
+    return path.join(resolveGitCommonDir(absGitDir), 'info', 'exclude');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append `relPath` to the repo's local `.git/info/exclude` if missing.
+ * Best-effort: a missing repo or permissions error is ignored so a
+ * spawn never fails because we couldn't hide a Hub-owned file.
+ */
+export function appendLocalGitExclude(cwd: string, relPath: string): void {
+  const excludePath = resolveGitInfoExcludePath(cwd);
+  if (!excludePath) return;
+  try {
+    mkdirSync(path.dirname(excludePath), { recursive: true });
+    const existing = existsSync(excludePath) ? readFileSync(excludePath, 'utf8') : '';
+    const lines = existing.split(/\r?\n/);
+    if (lines.includes(relPath)) return;
+    const sep = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
+    writeFileSync(excludePath, `${existing}${sep}${relPath}\n`, 'utf8');
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * True when the deepest existing ancestor of `abs` canonicalizes to a location
+ * inside `cwd`. Guards against a tracked `.cursor` / `rules` symlink redirecting
+ * the write outside the worktree: we realpath the nearest existing directory in
+ * the chain and confirm containment before creating the rest.
+ */
+function writeTargetStaysInsideCwd(cwd: string, abs: string): boolean {
+  let realCwd: string;
+  try {
+    realCwd = realpathSync(cwd);
+  } catch {
+    return false;
+  }
+  let ancestor = path.dirname(abs);
+  while (!existsSync(ancestor)) {
+    const up = path.dirname(ancestor);
+    if (up === ancestor) break;
+    ancestor = up;
+  }
+  let realAncestor: string;
+  try {
+    realAncestor = realpathSync(ancestor);
+  } catch {
+    return false;
+  }
+  const rel = path.relative(realCwd, realAncestor);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * Best-effort removal of a session's Cursor rule file. Never follows a symlink
+ * at the final component (unlinks the link, not its target) and never throws —
+ * cleanup must never break a turn teardown.
+ */
+export function removeCursorHubSessionRuleFile(abs: string): void {
+  try {
+    // rmSync unlinks the path itself; for a symlink it removes the link, not
+    // whatever it points at. force:true swallows ENOENT (already gone).
+    rmSync(abs, { force: true });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Write Hub rules into the spawn cwd as a Cursor always-apply rule so the CLI
+ * loads the *complete* payload from disk instead of an argv element the kernel
+ * cap could trim. The filename is per-session
+ * (`.cursor/rules/agent-hub.session-<id>.mdc`), which makes it collision
+ * resistant: it can never overwrite a repository-owned file at a fixed path nor
+ * another concurrent session's rule. The file is git-excluded (so it can't be
+ * committed or surface as an untracked change) and the returned `cleanup()`
+ * removes it on process close, so it does not linger to pollute unrelated
+ * Cursor chats. Callers write it before every turn and invoke `cleanup()` from
+ * the spawn's close handler.
+ *
+ * This is written for EVERY cwd, including shared / real project directories —
+ * a shared-cwd session is a supported execution shape and still needs the full
+ * (untrimmed) rules. To keep that safe without relying only on best-effort
+ * close cleanup, each written path is recorded in a Hub-owned manifest
+ * (`registerCursorRuleFile`) that the server sweeps at startup
+ * (`sweepOrphanedCursorRuleFiles`), so a file a crashed process left behind is
+ * deterministically removed on the next boot and can never persist to
+ * contaminate later unrelated Cursor sessions. Between turns the close handler
+ * removes it, so its normal footprint is a single active turn.
+ *
+ * Refuses (returns null, logs, never throws) for a genuine write hazard, so the
+ * caller can fall back to inlining into `-p`:
+ *   • a tracked `.cursor` / `rules` symlink would redirect the write outside
+ *     the cwd,
+ *   • the target itself is a symlink (writing would follow it and overwrite
+ *     whatever it points at),
+ *   • a pre-existing regular file at the path is *not* a Hub-managed rule, or
+ *   • the write throws (permissions / IO).
+ */
+export function writeCursorHubSessionRule(
+  cwd: string,
+  body: string,
+  sessionId: string,
+): { path: string; cleanup: () => void } | null {
+  const relPath = cursorHubSessionRuleRelPath(sessionId);
+  const abs = path.join(cwd, relPath);
+  if (!writeTargetStaysInsideCwd(cwd, abs)) {
+    console.warn(`[spawn] Refusing to write Cursor Hub rule: path escapes cwd (${abs})`);
+    return null;
+  }
+  try {
+    // lstat (not stat) so a symlinked final component is caught instead of
+    // followed. ENOENT is the normal "create it" path.
+    const lst = lstatSync(abs);
+    if (lst.isSymbolicLink()) {
+      console.warn(`[spawn] Refusing to write Cursor Hub rule: ${abs} is a symlink`);
+      return null;
+    }
+    if (lst.isDirectory()) {
+      console.warn(`[spawn] Refusing to write Cursor Hub rule: ${abs} is a directory`);
+      return null;
+    }
+    if (lst.isFile()) {
+      const existing = readFileSync(abs, 'utf8');
+      if (!existing.includes(CURSOR_HUB_RULE_MARKER)) {
+        console.warn(`[spawn] Refusing to overwrite non-Hub Cursor rule at ${abs}`);
+        return null;
+      }
+    }
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      console.warn(`[spawn] Refusing to write Cursor Hub rule: cannot stat ${abs}`);
+      return null;
+    }
+  }
+  try {
+    mkdirSync(path.dirname(abs), { recursive: true });
+    writeFileSync(abs, formatCursorHubSessionRule(body), { encoding: 'utf8', mode: 0o600 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[spawn] Failed to write Cursor Hub rule at ${abs}: ${message}`);
+    return null;
+  }
+  appendLocalGitExclude(cwd, CURSOR_HUB_SESSION_RULE_GLOB);
+  // Record for the crash-safe startup sweep so a missed close cleanup (crash /
+  // SIGKILL) can never leave this file behind in a shared/real repo.
+  registerCursorRuleFile(abs);
+  return { path: abs, cleanup: () => removeCursorHubSessionRuleFile(abs) };
+}
+
+/**
+ * Soft truncation guard for engines that still pass a prompt as a single
+ * argv element (oversized *user* messages, grok-cli, or a cwd-less
+ * cursor/gemini fallback). Returns the prompt unchanged when below
+ * the cap; otherwise trims the prefix from the front (preserving
  * the user-facing tail / final prompt) and returns the trimmed result
  * with a `truncated` signal so the caller can emit `TOOL_ERROR`.
  *

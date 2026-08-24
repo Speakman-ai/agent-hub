@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import {
@@ -9,7 +9,14 @@ import {
   applyArgvPromptCap,
   logArgvCapTruncation,
   buildHistoryBootstrapPrompt,
+  writeCursorHubSessionRule,
+  cursorHubSessionRuleRelPath,
+  CURSOR_HUB_SESSION_RULE_GLOB,
+  CURSOR_HUB_RULE_MARKER,
+  resolveGitInfoExcludePath,
 } from './spawn-prompt-payload.js';
+import { lstatSync, symlinkSync } from 'fs';
+import { execFileSync } from 'child_process';
 
 describe('spawn-prompt-payload', () => {
   afterEach(() => {
@@ -266,6 +273,189 @@ describe('buildHistoryBootstrapPrompt', () => {
       const res = buildHistoryBootstrapPrompt(messages, 'now what', cap);
       expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(cap);
       expect(res.prompt).toContain('now what');
+    }
+  });
+});
+
+const SID = 'sess-ABC123';
+
+describe('cursorHubSessionRuleRelPath', () => {
+  it('bakes the session id into a collision-resistant .cursor/rules path', () => {
+    expect(cursorHubSessionRuleRelPath('sess-ABC123')).toBe(
+      '.cursor/rules/agent-hub.session-sess-ABC123.mdc',
+    );
+    // Path-unsafe characters are sanitized so the filename stays a single
+    // component inside .cursor/rules.
+    expect(cursorHubSessionRuleRelPath('a/b c:*')).toBe(
+      '.cursor/rules/agent-hub.session-a_b_c__.mdc',
+    );
+  });
+
+  it('two sessions never share a rule path', () => {
+    expect(cursorHubSessionRuleRelPath('s1')).not.toBe(cursorHubSessionRuleRelPath('s2'));
+  });
+});
+
+describe('writeCursorHubSessionRule', () => {
+  it('writes a per-session always-apply rule, git-excludes the glob, and returns a cleanup', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-cursor-rule-'));
+    try {
+      mkdirSync(path.join(cwd, '.git', 'info'), { recursive: true });
+      writeFileSync(path.join(cwd, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      const body = 'Stay on the session branch. Do not run `git checkout -b`.';
+      const result = writeCursorHubSessionRule(cwd, body, SID);
+      expect(result).not.toBeNull();
+      expect(result!.path).toBe(path.join(cwd, cursorHubSessionRuleRelPath(SID)));
+      const written = readFileSync(result!.path, 'utf8');
+      expect(written.startsWith('---\nalwaysApply: true\n---\n')).toBe(true);
+      expect(written).toContain(CURSOR_HUB_RULE_MARKER);
+      expect(written).toContain(body);
+      // The git-exclude is the session glob, not a fixed path.
+      const exclude = readFileSync(path.join(cwd, '.git', 'info', 'exclude'), 'utf8');
+      expect(exclude).toContain(CURSOR_HUB_SESSION_RULE_GLOB);
+
+      // cleanup() removes the file (so it never lingers after the session).
+      expect(existsSync(result!.path)).toBe(true);
+      result!.cleanup();
+      expect(existsSync(result!.path)).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('writes into a shared/real project cwd too (unbounded on-disk delivery)', () => {
+    // Shared-cwd sessions are a supported shape and still need the full rules.
+    // The write is not restricted to isolated dirs; crash-safety comes from the
+    // startup manifest sweep, and the close handler removes the file each turn.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-shared-cwd-'));
+    try {
+      const huge = 'HUB_RULE_MARKER ' + 'x'.repeat(200_000); // > kernel argv cap
+      const result = writeCursorHubSessionRule(cwd, huge, SID);
+      expect(result).not.toBeNull();
+      const written = readFileSync(result!.path, 'utf8');
+      // The complete oversized payload is on disk — nothing was trimmed.
+      expect(written).toContain('HUB_RULE_MARKER');
+      expect(Buffer.byteLength(written, 'utf8')).toBeGreaterThan(150_000);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('two concurrent sessions in the same cwd write distinct, non-clobbering files', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-cursor-concurrent-'));
+    try {
+      const a = writeCursorHubSessionRule(cwd, 'rules for A', 'sessA');
+      const b = writeCursorHubSessionRule(cwd, 'rules for B', 'sessB');
+      expect(a!.path).not.toBe(b!.path);
+      expect(readFileSync(a!.path, 'utf8')).toContain('rules for A');
+      expect(readFileSync(b!.path, 'utf8')).toContain('rules for B');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('overwrites its own Hub-managed rule on a later turn', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-cursor-rewrite-'));
+    try {
+      writeCursorHubSessionRule(cwd, 'first body', SID);
+      const result = writeCursorHubSessionRule(cwd, 'second body', SID);
+      const written = readFileSync(result!.path, 'utf8');
+      expect(written).toContain('second body');
+      expect(written).not.toContain('first body');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to overwrite a pre-existing non-Hub file at the rule path', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-cursor-collide-'));
+    try {
+      const abs = path.join(cwd, cursorHubSessionRuleRelPath(SID));
+      mkdirSync(path.dirname(abs), { recursive: true });
+      const userContent = '---\nalwaysApply: true\n---\n\nUser owns this rule.\n';
+      writeFileSync(abs, userContent, 'utf8');
+      expect(writeCursorHubSessionRule(cwd, 'Hub rules', SID)).toBeNull();
+      expect(readFileSync(abs, 'utf8')).toBe(userContent);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses when a symlinked parent dir would redirect the write outside cwd', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'hub-cursor-escape-'));
+    try {
+      const cwd = path.join(root, 'worktree');
+      const outside = path.join(root, 'outside');
+      mkdirSync(cwd, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      symlinkSync(outside, path.join(cwd, '.cursor'));
+      expect(writeCursorHubSessionRule(cwd, 'Hub rules', SID)).toBeNull();
+      expect(existsSync(path.join(outside, 'rules'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses when the target itself is a symlink', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'hub-cursor-symlink-'));
+    try {
+      const cwd = path.join(root, 'worktree');
+      const abs = path.join(cwd, cursorHubSessionRuleRelPath(SID));
+      mkdirSync(path.dirname(abs), { recursive: true });
+      const target = path.join(root, 'secret.txt');
+      writeFileSync(target, 'do not clobber\n', 'utf8');
+      symlinkSync(target, abs);
+      expect(writeCursorHubSessionRule(cwd, 'Hub rules', SID)).toBeNull();
+      expect(lstatSync(abs).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('do not clobber\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('resolveGitInfoExcludePath', () => {
+  it('returns .git/info/exclude for a plain clone', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-exclude-plain-'));
+    try {
+      mkdirSync(path.join(cwd, '.git', 'info'), { recursive: true });
+      expect(resolveGitInfoExcludePath(cwd)).toBe(path.join(cwd, '.git', 'info', 'exclude'));
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the COMMON git dir for a linked worktree, not the per-worktree gitdir', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'hub-exclude-worktree-'));
+    try {
+      const main = path.join(root, 'main');
+      mkdirSync(main, { recursive: true });
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: main });
+      execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: main });
+      execFileSync('git', ['config', 'user.name', 'T'], { cwd: main });
+      writeFileSync(path.join(main, 'README.md'), 'v1\n');
+      execFileSync('git', ['add', 'README.md'], { cwd: main });
+      execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: main });
+      const wt = path.join(root, 'wt');
+      execFileSync('git', ['worktree', 'add', '-q', wt, '-b', 'feature'], { cwd: main });
+
+      const resolved = resolveGitInfoExcludePath(wt);
+      // Git reads info/exclude from the common dir (main/.git), never the
+      // per-worktree .git/worktrees/<name> dir.
+      const expected = execFileSync(
+        'git',
+        ['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
+        {
+          cwd: wt,
+        },
+      )
+        .toString()
+        .trim();
+      expect(resolved).not.toBeNull();
+      expect(path.resolve(resolved!)).toBe(path.resolve(expected));
+      expect(resolved).not.toContain(path.join('worktrees'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

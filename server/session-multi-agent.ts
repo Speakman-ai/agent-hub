@@ -495,6 +495,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
       let args: string[];
       let stdinPrompt: string | null;
       let systemPromptFileCleanup: (() => void) | null = null;
+      let extraEnv: Record<string, string> | null = null;
       try {
         const plan = buildSessionMultiSpawnArgs({
           engine,
@@ -514,6 +515,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
           codexProfile: config.codexProfile,
           advisory: true,
           sessionId,
+          cwd,
           codexEnv: spawnEnv,
           config,
         });
@@ -521,6 +523,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
         args = plan.args;
         stdinPrompt = plan.stdinPrompt;
         systemPromptFileCleanup = plan.systemPromptFileCleanup ?? null;
+        extraEnv = plan.extraEnv ?? null;
       } catch (err: unknown) {
         reject(err instanceof Error ? err : new Error(String(err)));
         return;
@@ -536,7 +539,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
       const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
       const proc = spawn(bin, args, {
         cwd,
-        env: spawnEnv,
+        env: extraEnv ? { ...spawnEnv, ...extraEnv } : spawnEnv,
         stdio: [childStdin, 'pipe', 'pipe'],
         detached: true,
       }) as ChildProcess;

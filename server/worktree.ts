@@ -38,6 +38,7 @@ import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credent
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
 import { rebaseOntoBase } from './pre-push-rebase.js';
 import { isIsolatedModeActive } from './session-mode.js';
+import { CURSOR_HUB_SESSION_RULE_GLOB } from './spawn-prompt-payload.js';
 import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
 
 /**
@@ -668,16 +669,32 @@ const GIT_EXCLUDE_PATHS = [
   '.claude/settings.json',
   '.claude/settings.local.json',
   '.claude/mcp-config.json',
+  CURSOR_HUB_SESSION_RULE_GLOB,
 ] as const;
 
 /**
  * Given the current contents of a `.git/info/exclude` file, return the new
- * contents with the Agent-Hub-managed block appended, or `null` if the block
- * is already present (so the caller can skip the write). Pure so it can be
- * unit-tested without a real repo.
+ * contents with the Agent-Hub-managed paths present, or `null` when every
+ * managed path is already listed (so the caller can skip the write). Pure so it
+ * can be unit-tested without a real repo.
+ *
+ * When the marker exists but the block predates a newly-introduced managed path
+ * (e.g. the Cursor session rule added to an already-excluded worktree), the
+ * missing paths are appended so the Hub-owned file can never surface as an
+ * untracked/committable change in a reused worktree.
  */
 export function computeGitExcludeContent(existing: string): string | null {
-  if (existing.includes(GIT_EXCLUDE_MARKER)) return null;
+  const lines = existing.split(/\r?\n/);
+  const hasMarker = lines.includes(GIT_EXCLUDE_MARKER);
+  const missing = GIT_EXCLUDE_PATHS.filter((p) => !lines.includes(p));
+  if (hasMarker) {
+    if (missing.length === 0) return null;
+    // Marker already present: append only the paths it lacks. Their exact
+    // location in the file is irrelevant to git; grouping under the marker is
+    // cosmetic, so a plain append keeps this simple and idempotent.
+    const sep = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
+    return existing + sep + missing.join('\n') + '\n';
+  }
   const block = [GIT_EXCLUDE_MARKER, ...GIT_EXCLUDE_PATHS].join('\n');
   if (existing.length === 0) return block + '\n';
   const sep = existing.endsWith('\n') ? '' : '\n';

@@ -14,6 +14,7 @@ import {
   logArgvCapTruncation,
   SAFE_ARG_STRLEN_BYTES,
   writeSystemPromptFile,
+  writeCursorHubSessionRule,
 } from './spawn-prompt-payload.js';
 import { resolveGrokSpawnModel } from './config.js';
 import { withLocalCommitReminder } from './local-commit-reminder.js';
@@ -86,6 +87,12 @@ export interface BuildSessionMultiSpawnArgsInput {
    * short reminder placed last survives that trim.
    */
   tailReminder?: string;
+  /**
+   * Spawn cwd. Required for cursor-agent to write the Hub always-apply
+   * rule file; when omitted we fall back to the argv cap (tests / callers
+   * that have not been wired yet).
+   */
+  cwd?: string;
   /** Used for `--system-prompt-file` temp paths and argv-cap logging. */
   sessionId?: string;
   codexEnv?: NodeJS.ProcessEnv;
@@ -96,9 +103,15 @@ export interface BuildSessionMultiSpawnArgsInput {
 export interface SessionMultiSpawnPlan {
   bin: string;
   args: string[];
+  /** Written to the child's stdin (codex `-` sentinel; gemini Hub-rules prefix). */
   stdinPrompt: string | null;
-  /** Best-effort rm of per-spawn system-prompt temp dir (claude-code). */
+  /**
+   * Best-effort cleanup after the child closes: the claude-code system-prompt
+   * temp dir, or the cursor-agent per-session `.mdc` rule file.
+   */
   systemPromptFileCleanup?: (() => void) | null;
+  /** Merged into the child env. Currently unused (kept as a forward seam). */
+  extraEnv?: Record<string, string> | null;
 }
 
 export function buildSessionMultiSpawnArgs(
@@ -132,16 +145,46 @@ export function buildSessionMultiSpawnArgs(
         'buildSessionMultiSpawnArgs: cursor-agent requires cursorChatId (call createCursorChat first)',
       );
     }
-    const rawPrompt = withTailReminder(`${systemPrompt}\n\n${userPrompt}`);
-    const capped = applyArgvPromptCap(rawPrompt);
-    if (capped.truncated && input.sessionId) {
-      logArgvCapTruncation('cursor-agent', input.sessionId, capped.originalBytes, rawPrompt.length);
+    // Write the Hub rules to a collision-resistant per-session `.cursor/rules`
+    // file (loaded from disk, never trimmed by the argv cap) so `-p` stays
+    // user-only. Needs a cwd and a sessionId to scope the filename; without
+    // either, or on a genuine write hazard, fall back to inlining the system
+    // prompt into `-p` (capped) so Cursor still receives the Hub rules.
+    const ruleWrite =
+      input.cwd != null && input.sessionId
+        ? writeCursorHubSessionRule(input.cwd, systemPrompt, input.sessionId)
+        : null;
+    let prompt: string;
+    if (ruleWrite) {
+      const rawUser = withTailReminder(userPrompt);
+      const capped = applyArgvPromptCap(rawUser);
+      if (capped.truncated && input.sessionId) {
+        logArgvCapTruncation(
+          'cursor-agent-user',
+          input.sessionId,
+          capped.originalBytes,
+          Buffer.byteLength(rawUser, 'utf8'),
+        );
+      }
+      prompt = capped.prompt;
+    } else {
+      const rawPrompt = withTailReminder(`${systemPrompt}\n\n${userPrompt}`);
+      const capped = applyArgvPromptCap(rawPrompt);
+      if (capped.truncated && input.sessionId) {
+        logArgvCapTruncation(
+          'cursor-agent',
+          input.sessionId,
+          capped.originalBytes,
+          rawPrompt.length,
+        );
+      }
+      prompt = capped.prompt;
     }
     return {
       bin: bins.cursor,
       args: [
         '-p',
-        capped.prompt,
+        prompt,
         // `--force` auto-approves tool calls. Reviewer turns need it to read
         // worktree files even though they are read-only (edits forbidden by
         // the reviewer system prompt); plain advisor turns still omit it.
@@ -155,15 +198,26 @@ export function buildSessionMultiSpawnArgs(
         '--stream-partial-output',
       ],
       stdinPrompt: null,
-      systemPromptFileCleanup: null,
+      systemPromptFileCleanup: ruleWrite ? ruleWrite.cleanup : null,
     };
   }
 
   if (engine === 'gemini-cli') {
-    const rawPrompt = withTailReminder(`${systemPrompt}\n\n${userPrompt}`);
-    const capped = applyArgvPromptCap(rawPrompt);
+    // Deliver the Hub rules on STDIN (unbounded), not GEMINI_SYSTEM_MD and not
+    // the head of `-p`. GEMINI_SYSTEM_MD *fully replaces* Gemini's built-in core
+    // system prompt (safety, tool operation, approval, reliability) with no
+    // token to restore it, and inlining at the head of `-p` lets the argv cap
+    // trim the rules. Gemini prepends stdin to the `-p` user turn, so the whole
+    // core prompt is preserved and the Hub payload can never be truncated.
+    const rawUser = withTailReminder(userPrompt);
+    const capped = applyArgvPromptCap(rawUser);
     if (capped.truncated && input.sessionId) {
-      logArgvCapTruncation('gemini-cli', input.sessionId, capped.originalBytes, rawPrompt.length);
+      logArgvCapTruncation(
+        'gemini-cli-user',
+        input.sessionId,
+        capped.originalBytes,
+        Buffer.byteLength(rawUser, 'utf8'),
+      );
     }
     const args = ['-p', capped.prompt, '--output-format', 'stream-json'];
     if (model && model !== 'auto') {
@@ -174,7 +228,12 @@ export function buildSessionMultiSpawnArgs(
     if (!advisory || reviewerReadOnly) {
       args.push('--yolo');
     }
-    return { bin: bins.gemini, args, stdinPrompt: null, systemPromptFileCleanup: null };
+    return {
+      bin: bins.gemini,
+      args,
+      stdinPrompt: systemPrompt,
+      systemPromptFileCleanup: null,
+    };
   }
 
   if (engine === 'grok-cli') {

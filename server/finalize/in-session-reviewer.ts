@@ -895,6 +895,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
           reviewerReadOnly: args.reviewerReadOnly,
           tailReminder: args.tailReminder,
           sessionId: args.sessionId,
+          cwd: args.cwd,
           codexEnv: args.spawnEnv,
           config: args.config,
         });
@@ -914,7 +915,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
       const stdinSetting: 'ignore' | 'pipe' = plan.stdinPrompt !== null ? 'pipe' : 'ignore';
       const proc = args.spawnFn(plan.bin, plan.args, {
         cwd: args.cwd,
-        env: args.spawnEnv,
+        env: plan.extraEnv ? { ...args.spawnEnv, ...plan.extraEnv } : args.spawnEnv,
         stdio: [stdinSetting, 'pipe', 'pipe'],
         detached: true,
       }) as ChildProcess;

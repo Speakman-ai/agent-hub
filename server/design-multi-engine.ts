@@ -13,6 +13,7 @@ import {
 } from './codex-exec-sandbox.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { writeCursorHubSessionRule } from './spawn-prompt-payload.js';
 import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
 import type { AppConfig, DesignMessageRow } from './types.js';
 
@@ -122,6 +123,8 @@ export interface BuildDesignSpawnArgsInput {
   awsSsoEnabled?: boolean;
   awsAccessEnv?: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'>;
   codexEnv?: NodeJS.ProcessEnv;
+  /** Design artifact directory — Cursor Hub rules are written here. */
+  cwd?: string;
 }
 
 /**
@@ -131,6 +134,13 @@ export interface BuildDesignSpawnArgsInput {
 export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
   bin: string;
   args: string[];
+  /**
+   * Best-effort removal of the cursor-agent per-design `.cursor/rules` file.
+   * The caller MUST invoke it from the design spawn's close/error path so the
+   * always-apply rule does not linger in the design artifact dir. null for
+   * every other engine and when the rule was inlined into `-p`.
+   */
+  systemPromptFileCleanup?: (() => void) | null;
 } {
   const {
     engine,
@@ -159,7 +169,17 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     if (!engineSessionId) {
       throw new Error('buildDesignSpawnArgs: cursor-agent requires engineSessionId before spawn');
     }
-    const prompt = isNewEngineSession ? `${systemPrompt}\n\n${promptWithHistory}` : cliContent;
+    // Write the Hub rules to a collision-resistant per-design `.cursor/rules`
+    // file (scoped by designId) in the isolated, Hub-owned design artifact dir
+    // so `-p` stays user-only and the full payload is never trimmed by the argv
+    // cap. We (re)write it every turn — including on --resume — and return the
+    // cleanup so the caller removes it on process close/error. On a genuine
+    // write hazard (no cwd, symlink, IO error) the system prompt rides `-p`
+    // inline instead so Cursor still receives the Hub rules.
+    const ruleWrite =
+      input.cwd != null ? writeCursorHubSessionRule(input.cwd, systemPrompt, designId) : null;
+    const userTurn = isNewEngineSession ? promptWithHistory : cliContent;
+    const prompt = ruleWrite ? userTurn : `${systemPrompt}\n\n${userTurn}`;
     return {
       bin: bins.cursor,
       args: [
@@ -174,6 +194,7 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
         'stream-json',
         '--stream-partial-output',
       ],
+      systemPromptFileCleanup: ruleWrite ? ruleWrite.cleanup : null,
     };
   }
 

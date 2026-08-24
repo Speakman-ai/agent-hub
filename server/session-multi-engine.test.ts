@@ -1,5 +1,22 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import { buildSessionMultiSpawnArgs, normalizeSessionMultiEngine } from './session-multi-engine.js';
+import { cursorHubSessionRuleRelPath } from './spawn-prompt-payload.js';
+
+// The Cursor rule is only written into a Hub-owned isolated worktree (under the
+// Hub workspaces root); create test cwds there to exercise the on-disk path.
+const MULTI_WORKTREE_ROOT = path.join(
+  os.homedir(),
+  '.agent-hub',
+  'workspaces',
+  'session-multi-test',
+);
+function makeMultiWorktreeCwd(): string {
+  mkdirSync(MULTI_WORKTREE_ROOT, { recursive: true });
+  return mkdtempSync(path.join(MULTI_WORKTREE_ROOT, 'session-'));
+}
 
 describe('buildSessionMultiSpawnArgs', () => {
   const bins = {
@@ -182,6 +199,7 @@ describe('buildSessionMultiSpawnArgs', () => {
       reviewerReadOnly: true,
     });
     expect(readOnly.args).toContain('--yolo');
+    readOnly.systemPromptFileCleanup?.();
 
     const plain = buildSessionMultiSpawnArgs({
       engine: 'gemini-cli',
@@ -192,6 +210,7 @@ describe('buildSessionMultiSpawnArgs', () => {
       advisory: true,
     });
     expect(plain.args).not.toContain('--yolo');
+    plain.systemPromptFileCleanup?.();
   });
 
   it('cursor-agent keeps --force on reviewerReadOnly advisory turns but omits it on plain advisory', () => {
@@ -253,6 +272,110 @@ describe('buildSessionMultiSpawnArgs', () => {
     });
     // Claude takes the user prompt as the last positional argv element.
     expect(plan.args[plan.args.length - 1]).toContain('TAIL_REMINDER_MARKER');
+  });
+
+  it('cursor-agent writes the per-session Hub rule to disk, keeps -p user-only, returns cleanup', () => {
+    const cwd = makeMultiWorktreeCwd();
+    try {
+      const hugeSystem = 'HUB_GIT_RULE stay on the session branch ' + 'x'.repeat(150_000);
+      const plan = buildSessionMultiSpawnArgs({
+        engine: 'cursor-agent',
+        model: 'auto',
+        systemPrompt: hugeSystem,
+        userPrompt: 'fix the login button',
+        bins,
+        cursorChatId: 'chat-1',
+        cwd,
+        sessionId: 'sess-cursor-1',
+        tailReminder: 'TAIL_REMINDER_MARKER',
+      });
+      expect(plan.args[1]).toBe('fix the login button\n\nTAIL_REMINDER_MARKER');
+      expect(plan.args[1]).not.toContain('HUB_GIT_RULE');
+      const rulePath = path.join(cwd, cursorHubSessionRuleRelPath('sess-cursor-1'));
+      const rule = readFileSync(rulePath, 'utf8');
+      expect(rule).toContain('HUB_GIT_RULE stay on the session branch');
+      expect(Buffer.byteLength(plan.args[1], 'utf8')).toBeLessThan(10_000);
+      // cleanup() removes the per-session rule.
+      expect(typeof plan.systemPromptFileCleanup).toBe('function');
+      plan.systemPromptFileCleanup!();
+      expect(existsSync(rulePath)).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('cursor-agent inlines Hub rules into -p when no sessionId is available to scope the file', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-cursor-nosid-'));
+    try {
+      const plan = buildSessionMultiSpawnArgs({
+        engine: 'cursor-agent',
+        model: 'auto',
+        systemPrompt: 'HUB_GIT_RULE stay on the session branch',
+        userPrompt: 'fix the login button',
+        bins,
+        cursorChatId: 'chat-1',
+        cwd,
+        // no sessionId
+        tailReminder: 'TAIL_REMINDER_MARKER',
+      });
+      expect(plan.systemPromptFileCleanup).toBeNull();
+      expect(plan.args[1]).toContain('HUB_GIT_RULE stay on the session branch');
+      expect(plan.args[1]).toContain('fix the login button');
+      expect(plan.args[1]).toContain('TAIL_REMINDER_MARKER');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('cursor-agent inlines Hub rules and preserves a pre-existing non-Hub rule at its path', () => {
+    const cwd = makeMultiWorktreeCwd();
+    try {
+      const rulePath = path.join(cwd, cursorHubSessionRuleRelPath('sess-cursor-2'));
+      mkdirSync(path.dirname(rulePath), { recursive: true });
+      writeFileSync(rulePath, "user's own cursor rule\n", 'utf8');
+
+      const plan = buildSessionMultiSpawnArgs({
+        engine: 'cursor-agent',
+        model: 'auto',
+        systemPrompt: 'HUB_GIT_RULE stay on the session branch',
+        userPrompt: 'fix the login button',
+        bins,
+        cursorChatId: 'chat-1',
+        cwd,
+        sessionId: 'sess-cursor-2',
+        tailReminder: 'TAIL_REMINDER_MARKER',
+      });
+
+      expect(readFileSync(rulePath, 'utf8')).toBe("user's own cursor rule\n");
+      expect(plan.systemPromptFileCleanup).toBeNull();
+      expect(plan.args[1]).toContain('HUB_GIT_RULE stay on the session branch');
+      expect(plan.args[1]).toContain('fix the login button');
+      expect(plan.args[1]).toContain('TAIL_REMINDER_MARKER');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('gemini-cli delivers Hub rules on stdin, keeps -p user-only (no GEMINI_SYSTEM_MD override)', () => {
+    const hugeSystem = 'HUB_PR_RULE use ah-api.sh not gh pr create ' + 'y'.repeat(150_000);
+    const plan = buildSessionMultiSpawnArgs({
+      engine: 'gemini-cli',
+      model: 'gemini-2.5-pro',
+      systemPrompt: hugeSystem,
+      userPrompt: 'open the pull request',
+      bins,
+      sessionId: 'sess-gemini-1',
+      tailReminder: 'TAIL_REMINDER_MARKER',
+    });
+    // Hub rules ride stdin (unbounded, never trimmed); Gemini's built-in core
+    // prompt is preserved because we no longer set GEMINI_SYSTEM_MD.
+    expect(plan.stdinPrompt).toContain('HUB_PR_RULE use ah-api.sh not gh pr create');
+    expect(plan.args[0]).toBe('-p');
+    expect(plan.args[1]).toContain('open the pull request');
+    expect(plan.args[1]).toContain('TAIL_REMINDER_MARKER');
+    expect(plan.args[1]).not.toContain('HUB_PR_RULE');
+    expect(plan.extraEnv).toBeUndefined();
+    expect(plan.systemPromptFileCleanup).toBeNull();
   });
 });
 

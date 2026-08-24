@@ -159,6 +159,7 @@ import {
   applyArgvPromptCap,
   logArgvCapTruncation,
   buildHistoryBootstrapPrompt,
+  writeCursorHubSessionRule,
   SAFE_ARG_STRLEN_BYTES,
 } from './spawn-prompt-payload.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
@@ -2045,6 +2046,27 @@ export function buildGrokHeadlessPrompt(args: {
   // for the user to say "commit"; without this suffix that habit wins
   // whenever the shipping-contract head is trimmed. Only pin it when the
   // session is writing into a Finalize-tracked worktree.
+  return buildInlineHubPrompt(args);
+}
+
+/**
+ * Combine the enriched (system) prompt and the user turn into a single argv
+ * element, pinning the local-commit reminder at the tail so `applyArgvPromptCap`
+ * (which keeps the tail) cannot drop it.
+ *
+ * Shared inline-delivery path for engines that normally hand Hub rules to the
+ * CLI out-of-band — Cursor's always-apply `.mdc` rule, Gemini's
+ * `GEMINI_SYSTEM_MD` — but must fall back to inlining them into `-p` when that
+ * channel is unavailable (e.g. `writeCursorHubSessionRule` refuses a
+ * pre-existing non-Hub file / symlink, or the write fails). Without this the
+ * Hub rules would silently vanish for the turn and the engine would run on its
+ * stock CLI persona.
+ */
+export function buildInlineHubPrompt(args: {
+  enrichedPrompt: string;
+  finalPrompt: string;
+  committable: boolean;
+}): string {
   const combined = `${args.enrichedPrompt}\n\n${args.finalPrompt}`;
   return args.committable ? withLocalCommitReminder(combined) : combined;
 }
@@ -3705,16 +3727,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       let args: string[];
       let bin: string;
-      // Prompt content to write to the child's stdin after spawn. Used by
-      // the codex-cli branch (which uses the `-` stdin sentinel) — null
-      // for every other engine so the spawn site can switch stdio modes
-      // without branching the handle logic.
+      // Prompt content to write to the child's stdin after spawn. Used by the
+      // codex-cli branch (the `-` stdin sentinel carries the whole prompt) and
+      // the gemini-cli branch (stdin carries the Hub rules, which Gemini
+      // prepends to the `-p` user turn). null for every other engine so the
+      // spawn site can switch stdio modes without branching the handle logic.
       let stdinPrompt: string | null = null;
       // Temp-file cleanup thunk for the claude-code branch's
       // `--system-prompt-file <path>` payload. null when no temp file
       // was written. Invoked from the `proc.on('close')` handler so we
       // don't leak per-spawn tmp dirs.
       let systemPromptFileCleanup: (() => void) | null = null;
+      // Extra env for engines that take Hub rules via a file path. Merged into
+      // spawnEnv after it is assembled. (Currently unused — Gemini inlines its
+      // Hub rules into `-p` — but kept as the seam for any future file-backed
+      // engine env.)
+      let extraChildEnv: Record<string, string> | null = null;
       const workflowSession = isWorkflowProject(project as Project);
       const consultModeSession = isConsultModeActive(session!);
       const hubModeSession = isHubModeActive(session!);
@@ -3726,18 +3754,40 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         askMode: readOnlyCliSession,
       });
       if (engine === 'cursor-agent') {
-        const rawPrompt =
-          isNewEngineSession || forceSystemPromptThisTurn
-            ? `${enrichedPrompt}\n\n${finalPrompt}`
-            : cliContent + imagePromptSuffix;
-        // cursor-agent has no documented stdin or --prompt-file flag, so
-        // the entire prompt rides in a single `-p` argv element. Apply
-        // the soft cap to avoid the kernel's 128 KiB MAX_ARG_STRLEN
-        // cliff; emit TOOL_ERROR when we trim so growth shows up in
-        // session health.
+        // Cursor has no --system-prompt-file, no stdin, and no per-invocation
+        // rules flag — rules only load from `.cursor/rules` in cwd. We write the
+        // Hub rules to a collision-resistant per-session always-apply file
+        // (agent-hub.session-<id>.mdc) so `-p` stays user-only and the *complete*
+        // git / close-card / Hub-PR contract lives on disk where the argv cap
+        // can never trim it. This happens for EVERY cwd, including shared/real
+        // project dirs (a supported shape that still needs the full rules); the
+        // file is git-excluded, removed on process close via
+        // systemPromptFileCleanup, and — crucially — recorded in a manifest the
+        // server sweeps at startup, so a crash can't leave it behind to steer
+        // later unrelated Cursor sessions. We (re)write it every turn (--resume
+        // included). Only a genuine write hazard (symlink / IO) falls back to
+        // inlining into `-p`.
+        const ruleWrite = writeCursorHubSessionRule(effectiveCwd, enrichedPrompt, sessionId);
+        if (ruleWrite) {
+          systemPromptFileCleanup = ruleWrite.cleanup;
+        }
+        const injectSystemThisTurn = isNewEngineSession || forceSystemPromptThisTurn;
+        const userTurnPrompt = injectSystemThisTurn ? finalPrompt : cliContent + imagePromptSuffix;
+        // Only a genuine write hazard (symlink attack / IO error) returns null;
+        // then the rules must ride `-p` inline or Cursor runs without the Hub
+        // contract. This path can still be trimmed by the argv cap, but it is
+        // the rare last resort — the on-disk file is the normal channel.
+        const rawPrompt = ruleWrite
+          ? userTurnPrompt
+          : buildInlineHubPrompt({ enrichedPrompt, finalPrompt: userTurnPrompt, committable });
         const capped = applyArgvPromptCap(rawPrompt);
         if (capped.truncated) {
-          logArgvCapTruncation('cursor-agent', sessionId, capped.originalBytes, rawPrompt.length);
+          logArgvCapTruncation(
+            'cursor-agent-user',
+            sessionId,
+            capped.originalBytes,
+            Buffer.byteLength(rawPrompt, 'utf8'),
+          );
         }
         const prompt = capped.prompt;
         args = [
@@ -3767,14 +3817,26 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // `needsHistoryBootstrap` branch earlier already concatenates prior
         // messages into `finalPrompt` when engineSessionId is null, which is
         // exactly the shape Gemini expects.
-        const combined = `${enrichedPrompt}\n\n${finalPrompt}`;
-        const rawPrompt = committable ? withLocalCommitReminder(combined) : combined;
-        // Gemini CLI takes the prompt as a single `-p` argv string with
-        // no documented stdin/file alternative. Same kernel cap applies
-        // as cursor-agent — see spawn-prompt-payload.ts.
-        const capped = applyArgvPromptCap(rawPrompt);
+        //
+        // We deliver the Hub rules on STDIN, not GEMINI_SYSTEM_MD and not the
+        // head of `-p`. GEMINI_SYSTEM_MD *fully replaces* Gemini's built-in core
+        // system prompt (safety, tool operation, approval, reliability) with no
+        // token to restore it, and inlining the rules at the head of `-p` lets
+        // the kernel argv cap trim them on an oversized turn. Gemini reads stdin
+        // and prepends it to the `-p` argument, so [Hub rules on stdin] +
+        // [user turn in -p] preserves the whole core prompt AND cannot truncate
+        // the Hub payload (the argv cap applies to argv elements, not stdin).
+        stdinPrompt = committable ? withLocalCommitReminder(enrichedPrompt) : enrichedPrompt;
+        // Only the user turn (+ history bootstrap) rides `-p`; cap that argv
+        // element for its own size — the Hub rules are safe on stdin.
+        const capped = applyArgvPromptCap(finalPrompt);
         if (capped.truncated) {
-          logArgvCapTruncation('gemini-cli', sessionId, capped.originalBytes, rawPrompt.length);
+          logArgvCapTruncation(
+            'gemini-cli-user',
+            sessionId,
+            capped.originalBytes,
+            Buffer.byteLength(finalPrompt, 'utf8'),
+          );
         }
         const prompt = capped.prompt;
         args = ['-p', prompt, '--output-format', 'stream-json'];
@@ -4199,6 +4261,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // Merge allowlisted caller-supplied env vars (e.g. DEV_HUB_API_KEY from
       // autonomous-dispatch for cross-hub cards). See `mergeAllowlistedExtraEnv`.
       mergeAllowlistedExtraEnv(spawnEnv, msg.extraEnv);
+      if (extraChildEnv) Object.assign(spawnEnv, extraChildEnv);
 
       if (process.env.AGENT_HUB_DEBUG_CLAUDE_AUTH === '1' && engine === 'claude-code') {
         console.log('[chat] claude-code spawn auth:', {
@@ -4393,8 +4456,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       } else {
         // Open stdin as a pipe only when the engine branch staged a
-        // `stdinPrompt` (currently codex-cli using the `-` sentinel).
-        // Every other engine leaves stdin closed so an over-eager CLI
+        // `stdinPrompt` (codex-cli's `-` sentinel, or gemini-cli's Hub-rules
+        // prefix). Every other engine leaves stdin closed so an over-eager CLI
         // never blocks on a read that will never come.
         const childStdin: 'ignore' | 'pipe' = stdinPrompt !== null ? 'pipe' : 'ignore';
         const proc = spawn(bin, args, {
