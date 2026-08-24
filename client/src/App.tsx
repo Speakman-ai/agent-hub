@@ -4719,6 +4719,16 @@ export default function App({ initialView }: any = {}) {
       consultMode: agentId === activeAgentId ? sessionConsultMode : false,
     });
     insertCreatedSession(agentId, session);
+    // Pin the agent-change sessions-load effect to the session we just made.
+    // A cross-project focus that targeted the already-active agent parks a
+    // session id in pendingSessionIdRef without changing activeAgentId, so the
+    // load effect never re-runs to consume it. Left in place, that stale foreign
+    // id becomes this agent's deep-link target, gets fetched cross-project via
+    // api.getSession, and surfaces the other project's session instead of the
+    // empty new one — the "+ New Session opens an existing session in the wrong
+    // project" bug. Every sibling navigator (focusAgentSession,
+    // handleOpenHandoffSession, the hub loader) sets this for the same reason.
+    pendingSessionIdRef.current = session.id;
     setActiveAgentId(agentId);
     setActiveSessionId(session.id);
     setSessionEngine(session.engine || agent?.engine || 'claude-code');
@@ -4802,6 +4812,10 @@ export default function App({ initialView }: any = {}) {
         const session = await api.createSession(agentId, undefined, {
           consultMode: sessionConsultMode,
         });
+        // Same guard as handleNewSession: pin the agent-change load effect to
+        // this new session so a stale foreign id in pendingSessionIdRef can't be
+        // resolved as a cross-project deep-link and surface the wrong session.
+        pendingSessionIdRef.current = session.id;
         setActiveAgentId(agentId);
         insertCreatedSession(agentId, session);
         setActiveSessionId(session.id);
