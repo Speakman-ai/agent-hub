@@ -1,6 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Agent Hub">
-  <rect width="64" height="64" rx="14" fill="#1E40AF"/>
-  <path d="M32 9 53 21v22L32 55 11 43V21L32 9Z" fill="none" stroke="#F8FAFC" stroke-width="4" stroke-linejoin="round"/>
-  <circle cx="32" cy="32" r="6" fill="#F8FAFC"/>
-  <path d="m32 32 12-7M37 35l11 6M27 35l-11 6" fill="none" stroke="#F8FAFC" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Agent Hub">
+  <rect width="512" height="512" rx="96" fill="#1E40AF"/>
+  <g fill="none" stroke="#F8FAFC" stroke-width="32" stroke-linejoin="round"><polygon points="256,58 427.5,157 427.5,355 256,454 84.5,355 84.5,157"/></g>
+  <g stroke="#F8FAFC" stroke-width="32" stroke-linecap="round">
+    <line x1="256" y1="256" x2="427.5" y2="355"/>
+    <line x1="256" y1="256" x2="84.5" y2="355"/>
+    <line x1="256" y1="256" x2="256" y2="454"/>
+  </g>
+  <polygon points="264.0,269.9 346.1,222.5 358.9,196.6 330.1,194.7 248.0,242.1" fill="#F8FAFC" stroke="#F8FAFC" stroke-width="2" stroke-linejoin="miter"/>
+  <polygon points="256,210 296,233 296,279 256,302 216,279 216,233" fill="#F8FAFC" stroke="#F8FAFC" stroke-width="8" stroke-linejoin="round"/>
 </svg>

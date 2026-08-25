@@ -19,7 +19,7 @@ export default function BrandLogo({
   if (variant === 'mark') {
     return (
       <img
-        src="/logo-mark.png?v=3"
+        src="/logo-mark.png?v=4"
         alt={alt}
         className={`${SIZE[size].mark} ${className}`.trim()}
         data-testid="brand-logo-mark"
@@ -28,7 +28,7 @@ export default function BrandLogo({
   }
   return (
     <img
-      src="/logo.png?v=3"
+      src="/logo.png?v=4"
       alt={alt}
       className={`${SIZE[size].full} w-auto ${className}`.trim()}
       data-testid="brand-logo"

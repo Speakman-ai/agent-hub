@@ -8,14 +8,14 @@ describe('BrandLogo', () => {
   it('renders the full lockup by default', () => {
     render(<BrandLogo />);
     const img = screen.getByTestId('brand-logo');
-    expect(img).toHaveAttribute('src', '/logo.png?v=3');
+    expect(img).toHaveAttribute('src', '/logo.png?v=4');
     expect(img).toHaveAttribute('alt', 'Agent Hub');
   });
 
   it('renders the square mark when variant is mark', () => {
     render(<BrandLogo variant="mark" />);
     const img = screen.getByTestId('brand-logo-mark');
-    expect(img).toHaveAttribute('src', '/logo-mark.png?v=3');
+    expect(img).toHaveAttribute('src', '/logo-mark.png?v=4');
     expect(img).toHaveAttribute('alt', 'Agent Hub');
   });
 
@@ -34,19 +34,23 @@ describe('brand mark vector (favicon.svg)', () => {
   ].find(existsSync);
   const svg = readFileSync(faviconPath as string, 'utf8');
 
-  // Regression: the top spoke used to start at (32,26) — the top of the r=6
-  // hub circle centered at (32,32) — and head up-right, so it only grazed the
-  // circle and read as disconnected. Its start must sit at the hub center so
-  // it connects like the other two spokes.
-  it('starts the top spoke at the hub center, not the circle edge', () => {
-    const spokes = svg.match(/<path d="(m32 [^"]*)"/);
-    expect(spokes, 'spoke path not found in favicon.svg').not.toBeNull();
-    const d = spokes![1];
-    expect(d.startsWith('m32 32')).toBe(true);
-    expect(d.startsWith('m32 26')).toBe(false);
+  // Regression: every spoke must originate at the hub center (256,256) so it
+  // reads as connected to the hub, not grazing/detached. The new mark draws the
+  // round-cap spokes as <line> elements; all must share the hub-center origin.
+  it('starts all round-cap spokes at the hub center (256,256)', () => {
+    const lines = [...svg.matchAll(/<line [^>]*>/g)].map((m) => m[0]);
+    expect(lines.length, 'spoke lines not found in favicon.svg').toBe(3);
+    for (const line of lines) {
+      expect(line).toMatch(/x1="256"\s+y1="256"/);
+    }
   });
 
-  it('keeps the hub circle centered at (32,32)', () => {
-    expect(svg).toMatch(/<circle cx="32" cy="32" r="6"/);
+  // The hub is now a small hexagon (echoing the outer frame) rather than a
+  // circle, centered on (256,256): its polygon spans the top/bottom vertices
+  // 256,210 and 256,302 (mean y = 256) with no <circle> hub remaining.
+  it('keeps the hexagon hub centered at (256,256) and drops the circle', () => {
+    expect(svg).not.toContain('<circle');
+    expect(svg).toContain('256,210');
+    expect(svg).toContain('256,302');
   });
 });
