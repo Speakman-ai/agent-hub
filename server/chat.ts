@@ -144,6 +144,7 @@ import {
   stripFencedCodeBlockBodies,
 } from './action-block-parsing.js';
 import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
+import { closeTagPatternSource } from '../shared/utils/controlTagPattern.js';
 import {
   appendCodexAwsAccessDirs,
   appendCodexExecSandboxFlags,
@@ -1518,7 +1519,12 @@ export function detectReActBlock(text: string): string | null {
   // `detectSkillBlock` — the same auto-continuation feedback loop
   // applied to ReAct blocks before this guard was in place.
   const scanned = stripFencedCodeBlockBodies(text);
-  const re = /<agenthub:react>\s*[\s\S]*?\s*<\/agenthub:react>/gi;
+  // Closing tag tolerates a dropped `agenthub:` prefix (`</react>`); the
+  // full-form opening tag still anchors the match. See controlTagPattern.ts.
+  const re = new RegExp(
+    `<agenthub:react>\\s*[\\s\\S]*?\\s*${closeTagPatternSource('agenthub:react')}`,
+    'gi',
+  );
   let match: RegExpExecArray | null;
   let last: string | null = null;
   while ((match = re.exec(scanned)) !== null) {
@@ -1535,7 +1541,12 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
   if (typeof raw !== 'string' || !raw.trim()) {
     return { error: 'malformed', detail: 'Empty react block payload' };
   }
-  const tagMatch = raw.match(/<agenthub:react>\s*([\s\S]*?)\s*<\/agenthub:react>/i);
+  const tagMatch = raw.match(
+    new RegExp(
+      `<agenthub:react>\\s*([\\s\\S]*?)\\s*${closeTagPatternSource('agenthub:react')}`,
+      'i',
+    ),
+  );
   const payload = (tagMatch ? tagMatch[1] : raw).trim();
   if (Buffer.byteLength(payload, 'utf-8') > MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES) {
     return {

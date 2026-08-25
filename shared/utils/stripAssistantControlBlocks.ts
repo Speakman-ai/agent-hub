@@ -1,3 +1,5 @@
+import { closeTagPatternSource } from './controlTagPattern.js';
+
 const TAGS = [
   'agenthub:react',
   'agenthub:skill',
@@ -22,14 +24,17 @@ export function stripAssistantControlBlocks(
   }
   for (const tag of TAGS) {
     const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Closing tag tolerates a dropped `agenthub:` prefix (`</react>`); the
+    // full-form opening tag still anchors the match. See controlTagPattern.ts.
+    const closeTag = closeTagPatternSource(tag);
 
     result = result.replace(
       new RegExp(
         '```[^`\\n]*\\r?\\n[ \\t]*<' +
           escapedTag +
-          '>[\\s\\S]*?</' +
-          escapedTag +
-          '>[ \\t]*\\r?\\n[ \\t]*```',
+          '>[\\s\\S]*?' +
+          closeTag +
+          '[ \\t]*\\r?\\n[ \\t]*```',
         'gi',
       ),
       '',
@@ -39,18 +44,15 @@ export function stripAssistantControlBlocks(
       new RegExp(
         '~~~[^~\\n]*\\r?\\n[ \\t]*<' +
           escapedTag +
-          '>[\\s\\S]*?</' +
-          escapedTag +
-          '>[ \\t]*\\r?\\n[ \\t]*~~~',
+          '>[\\s\\S]*?' +
+          closeTag +
+          '[ \\t]*\\r?\\n[ \\t]*~~~',
         'gi',
       ),
       '',
     );
 
-    result = result.replace(
-      new RegExp(`<${escapedTag}>\\s*[\\s\\S]*?\\s*</${escapedTag}>`, 'gi'),
-      '',
-    );
+    result = result.replace(new RegExp(`<${escapedTag}>\\s*[\\s\\S]*?\\s*${closeTag}`, 'gi'), '');
   }
 
   result = result.replace(/\n{3,}/g, '\n\n').trim();

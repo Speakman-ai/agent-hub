@@ -97,6 +97,20 @@ describe('stripAssistantControlBlocks', () => {
     expect(result!).toContain('Searching wiki.');
   });
 
+  it('strips a react block whose closing tag dropped the agenthub: prefix', () => {
+    // Regression: `</react>` (prefix-less close) previously survived the strip
+    // and leaked into the rendered markdown as garbled autolink text.
+    const text = [
+      'Let me screenshot to confirm.',
+      '<agenthub:react>{"actions":[{"tool":"preview","op":"screenshot"}]}</react>',
+    ].join('\n');
+    const result = stripAssistantControlBlocks(text);
+    expect(result!).not.toContain('agenthub:react');
+    expect(result!).not.toContain('</react>');
+    expect(result!).not.toContain('preview');
+    expect(result!).toContain('Let me screenshot to confirm.');
+  });
+
   it('strips all supported control block types', () => {
     const text = [
       'Content.',

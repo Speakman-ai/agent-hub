@@ -10,6 +10,7 @@ import {
   extractJsonFromTagBody,
   stripFencedCodeBlockBodies,
 } from './action-block-parsing.js';
+import { closeTagPatternSource } from '../shared/utils/controlTagPattern.js';
 
 const PER_REFERENCE_BYTE_CAP = 8 * 1024;
 const TOTAL_REFERENCES_BYTE_CAP = 32 * 1024;
@@ -122,7 +123,12 @@ export function detectSkillBlock(text: string): string | null {
   // that explains the skill syntax would queue a phantom skill load
   // and trigger an auto-continuation loop until the depth cap hits.
   const scanned = stripFencedCodeBlockBodies(text);
-  const re = /<agenthub:skill>\s*[\s\S]*?\s*<\/agenthub:skill>/gi;
+  // Closing tag tolerates a dropped `agenthub:` prefix (`</skill>`); the
+  // full-form opening tag still anchors the match. See controlTagPattern.ts.
+  const re = new RegExp(
+    `<agenthub:skill>\\s*[\\s\\S]*?\\s*${closeTagPatternSource('agenthub:skill')}`,
+    'gi',
+  );
   let match: RegExpExecArray | null;
   let last: string | null = null;
   while ((match = re.exec(scanned)) !== null) {
@@ -143,7 +149,12 @@ export function parseSkillBlock(raw: string): SkillInvokeTask | SkillInvokeMalfo
     return { error: 'malformed', detail: 'Empty skill block payload' };
   }
 
-  const tagMatch = raw.match(/<agenthub:skill>\s*([\s\S]*?)\s*<\/agenthub:skill>/i);
+  const tagMatch = raw.match(
+    new RegExp(
+      `<agenthub:skill>\\s*([\\s\\S]*?)\\s*${closeTagPatternSource('agenthub:skill')}`,
+      'i',
+    ),
+  );
   const payload = (tagMatch ? tagMatch[1] : raw).trim();
 
   // Tolerate fenced/prose-wrapped/multi-line bodies — see action-block-parsing.ts.

@@ -310,6 +310,19 @@ describe('ReAct block parse', () => {
     expect(parsed).toMatchObject({ error: 'malformed' });
   });
 
+  it('detects and parses a block whose closing tag dropped the agenthub: prefix', () => {
+    // Regression: a model emitted `</react>` instead of `</agenthub:react>`.
+    // The block was neither executed (no auto-continuation → session stopped)
+    // nor stripped from the rendered markdown.
+    const input =
+      'Let me screenshot to confirm.\n<agenthub:react>{"actions":[{"tool":"preview","op":"screenshot"}]}</react>';
+    const raw = detectReActBlock(input);
+    expect(raw).not.toBeNull();
+    const parsed = parseReActBlock(raw!);
+    if ('error' in parsed) throw new Error(parsed.detail);
+    expect(parsed.actions).toEqual([{ tool: 'preview', op: 'screenshot' }]);
+  });
+
   it('parses a google calendar read action', () => {
     const payload = JSON.stringify({
       actions: [

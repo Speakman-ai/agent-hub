@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { Stmts, BroadcastFn, KanbanCardRow, KanbanColumnRow } from './types.js';
 import { extractJsonFromTagBody } from './action-block-parsing.js';
+import { closeTagPatternSource } from '../shared/utils/controlTagPattern.js';
 import { recomputeSessionState } from './session-state.js';
 
 // ─── Kanban card auto-close — `<agenthub:close-card>` block protocol ─────────
@@ -100,7 +101,13 @@ export function detectCloseCardBlock(text: string): CloseCardDetectionResult {
   if (typeof text !== 'string') {
     return { present: false, task: null, reason: null, rawBody: null };
   }
-  const match = text.match(/<agenthub:close-card>\s*([\s\S]*?)\s*<\/agenthub:close-card>/);
+  // Closing tag tolerates a dropped `agenthub:` prefix (`</close-card>`); the
+  // full-form opening tag still anchors the match. See controlTagPattern.ts.
+  const match = text.match(
+    new RegExp(
+      `<agenthub:close-card>\\s*([\\s\\S]*?)\\s*${closeTagPatternSource('agenthub:close-card')}`,
+    ),
+  );
   if (!match) return { present: false, task: null, reason: null, rawBody: null };
   const rawBody = match[1] ?? '';
   // Tolerate fenced wrappers (```json ... ```), prose before/after the JSON

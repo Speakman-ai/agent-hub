@@ -29,6 +29,8 @@
 // clear `reason: 'missing-toagent'` style error the agent can learn
 // from) than silently drop the whole block.
 
+import { closeTagPatternSource } from '../shared/utils/controlTagPattern.js';
+
 /** Result of `extractJsonFromTagBody`: a JSON string ready for `JSON.parse`, or null. */
 export function extractJsonFromTagBody(rawBody: string): string | null {
   if (typeof rawBody !== 'string') return null;
@@ -361,7 +363,7 @@ export function detectTagBlockInLastFence(text: string, tagName: string): string
   if (typeof text !== 'string' || !text.trim()) return null;
 
   const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const tagRe = new RegExp(`<${escaped}>\\s*[\\s\\S]*?\\s*</${escaped}>`, 'i');
+  const tagRe = new RegExp(`<${escaped}>\\s*[\\s\\S]*?\\s*${closeTagPatternSource(tagName)}`, 'i');
 
   /** Last ``` or ~~~ fence that runs to EOF, with the same fence char on open/close. */
   const candidates: Array<{ block: string; matchIndex: number }> = [];
